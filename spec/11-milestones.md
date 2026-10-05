@@ -46,13 +46,13 @@ Tasks:
 
 ## M2 — Safe yolo + more harnesses
 
-- Execution isolation per [13](13-sandboxes-and-vms.md): `sandbox` level (Seatbelt on macOS; bubblewrap + Landlock + seccomp on Linux), `container` level (Apple `container`, OrbStack/Docker, Podman, Docker Sandboxes), host-side egress proxy with network profiles and egress Interactions, credential projection (Claude token, Codex auth, pi/omp env), `clone` code isolation + `task sync` via host-side fetch, devcontainer support, `--yolo` / `--isolate`.
+- Execution isolation per [13](13-sandboxes-and-vms.md): `sandbox` level (Seatbelt on macOS; bubblewrap + Landlock + seccomp on Linux), `container` level (Apple `container`, OrbStack/Docker, Podman, Docker Sandboxes), host-side egress proxy with network profiles and egress Interactions, credential projection (Claude token, Codex auth, pi/omp env), `clone` code isolation + `task sync` via host-side fetch, devcontainer support, `--yolo` / `--isolate`. Dropped/pasted path translation into sandbox/container inboxes (06 A11, local namespaces; remote follows in M3).
 - Harnesses: OpenCode, Gemini CLI, ACP-generic, custom harness manifests (`espi`, Hermes), Herdr-compatible self-report; screen detector manifests with golden corpus and nightly drift detection; signed manifest channel.
 - Turns/items/usage/rate-limit extraction from adapters and transcripts.
 
 ## M3 — Remote + preview
 
-- Saved SSH machines, no-sudo bootstrap with checksum, bridge multiplexing over SSH stdio, unified multi-machine sidebar, `--machine` forwarding (never falls back to local), reconnect/offline states, bandwidth budgets and adaptive frame rate, remote clipboard, image paste local → remote.
+- Saved SSH machines, no-sudo bootstrap with checksum, bridge multiplexing over SSH stdio, unified multi-machine sidebar, `--machine` forwarding (never falls back to local), reconnect/offline states, bandwidth budgets and adaptive frame rate, remote clipboard, image paste local → remote, **dropped/pasted path translation over the bridge** (06 A11).
 - Previews: discovery (process-tree listening sockets + URLs in output + `vibeke preview declare`); **access via a dedicated browser profile over SOCKS through the bridge** so `localhost:5173` on the remote works unmodified (no Host rewriting); authenticated per-preview proxy origins as the alternative mode. Automatic forwarding of discovered ports is opt-in.
 - Remote **scriptable** headless Chromium over CDP (navigate, click, type, eval, screenshot, console/network logs, DOM snapshot) exposed as CLI + `vibeke mcp`; navigation restricted to declared previews (redirects, subresources and WebSockets included).
 - Screenshots as blobs with `environment_label`; `EvidenceRecord` groundwork (12): base/head sha, checks observed, artifacts.

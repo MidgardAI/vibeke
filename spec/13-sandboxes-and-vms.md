@@ -93,6 +93,8 @@ Consequences, all for free from 06/07:
 | Package caches | ro host cache + rw overlay, or shared rw cache volume (opt-in) | named cache volumes per ecosystem (npm/pnpm store, cargo registry, pip) shared across tasks |
 | Temp | private `$TMPDIR` | private |
 
+**Dropped/pasted local files** (06 A11): the box sees a read-only `/vibeke/inbox` (container/VM) or the host inbox dir on the sandbox allowlist. When you drag a file from `~/Desktop` onto a sandboxed pane, the client copies it into the inbox and rewrites the pasted path — the allowlist is never widened to the file's original location.
+
 Filesystem allowlists are generated from: global profile + harness manifest `[sandbox]` section (e.g. Claude needs `~/.claude/` state dir) + repo `.vibeke/sandbox.toml` (can only *narrow* unless the user approves widening, 09).
 
 ## 6. Git safety at the boundary

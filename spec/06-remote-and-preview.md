@@ -148,17 +148,65 @@ Users ask for mosh. We provide mosh-like behaviour without giving up the rest of
 ```
 user ctrl+v (image on local clipboard)
 TUI: read clipboard image (NSPasteboard / wl-paste / xclip) ─► blob_put over link ─► remote blob store
-remote server: path = ~/.local/state/vibeke/<s>/uploads/<hash>.png
+remote server: path = <pane inbox>/<blake3-12>/clipboard-<ts>.png   (pane inbox: see A11.4)
    ├─ structured harness (pi/omp RPC, Codex app-server, ACP): send as image content in the next prompt
    │     (pi: prompt{images:[{type:"image",data,mimeType}]}; codex: localImage input item)
    └─ TUI harness (claude, codex TUI): bracketed-paste the file path (Claude/Codex accept image paths)
 emit agent.item{kind:user_message, attachments:[blob]}
 ```
-- Keybinding `remote_image_paste = "ctrl+v"` is active only when the clipboard holds an image and the focused pane is remote; otherwise ctrl+v passes through. Also available as `vibeke attach-file <path> --pane devbox/w3:p5`, which accepts any file type and uploads it.
+- Keybinding `remote_image_paste = "ctrl+v"` is active only when the clipboard holds an image and the focused pane cannot see local files (remote, container, VM, or a sandbox that denies the source); otherwise ctrl+v passes through. Also available as `vibeke attach-file <path> --pane devbox/w3:p5`, which accepts any file type and uploads it. Both use the A11 pipeline.
 
 **Remote → local (show an image produced remotely):**
 - **Kitty graphics** emitted by a remote program are parsed by the remote VT engine (when the engine supports it, an M0 criterion). Images are stored as blobs and placements are sent in render frames by hash. The local client fetches each blob once (cached) and re-emits kitty graphics to the host terminal, or falls back to a `[image 1280×720 — prefix+i to open]` placeholder.
 - Screenshots and other agent artifacts use the same blob path (B6).
+
+### A11. Dropped and pasted paths: filesystem namespace translation (M3)
+
+**Problem.** Dragging `~/Desktop/Screenshot 2026-10-05 at 20.49.03.png` onto iTerm2/Ghostty/Kitty/WezTerm inserts the *local* path as text (shell-escaped, usually as a bracketed paste). An agent in a pane on devbox — or in a container, a VM, or a sandbox that denies `~/Desktop` — receives a path that doesn't exist in its filesystem.
+
+**Principle.** Every pane has an *execution namespace* (02/13: `host`, `ssh{machine}`, `sandbox`, `container`, `vm`). The Vibeke TUI client always runs on the machine the user is sitting at, so it sees every paste **before** it reaches the pane. When pasted text names local files the target namespace can't see, the client copies them into that namespace's inbox and rewrites the paste. This is one mechanism for remote machines, local containers/VMs and local sandboxes; it is not tied to any terminal emulator's file-transfer feature.
+
+#### A11.1 Detection (client-side, `vk-tui` input pipeline)
+1. Trigger: a **paste event** from the host terminal (bracketed paste; drag-and-drop arrives this way in iTerm2, Ghostty, Kitty, WezTerm — **[verify M0]** per terminal, incl. whether each uses backslash escapes, quotes or `file://` URLs). Typed keystrokes are never rewritten.
+2. Parse the paste with POSIX shell-word rules (backslash escapes, single/double quotes) plus `file://` URLs (percent-decoded). Newline- or space-separated lists of several dropped files are supported.
+3. Rewrite only if **all** of:
+   - every token is an absolute or `~/` path that exists locally (`stat`, regular file or directory);
+   - the paste consists only of path tokens (default). With `paste.translate = "embedded"`, path tokens inside mixed text are also translated; other text is left byte-for-byte;
+   - the focused pane's namespace cannot see the path: pane is on another machine, or in a container/VM, or in a sandbox whose allowlist doesn't include it (the client asks the server `pane.can_see_paths {pane, paths}`, which evaluates the pane's runner and sandbox profile).
+4. Otherwise the paste goes through untouched (local host panes are never affected).
+
+#### A11.2 Transfer
+- Files are hashed (blake3) locally and sent with `blob_put` over the link's **bulk channel** (separate flow-controlled stream; render and input never wait behind it, A4). Content-addressed: re-dropping the same screenshot costs nothing. Chunked and resumable across reconnects.
+- Size policy: ≤ `paste.max_auto_bytes` (default 50 MiB total) uploads immediately; larger, or any directory, asks first in the status line (`↵ upload 312 MB · esc paste original`). Directories are sent as a tar stream and unpacked on arrival (symlinks not followed; special files skipped).
+- Non-ASCII and spaces in names are preserved.
+
+#### A11.3 Rewrite and delivery
+- The paste is held (status line: `⇡ uploading Screenshot…png 2.1 MB`) and delivered as one bracketed paste once all files have arrived; `esc` cancels and sends the original text instead. Small files feel instant.
+- Each path is replaced by its in-namespace path, **re-escaped in the same style as the original** (backslash-escaped stays backslash-escaped, quoted stays quoted), keeping the original basename so the agent sees a meaningful name:
+  `/Users/demo/Desktop/Screenshot\ 2026-10-05\ at\ 20.49.03.png` → `/home/demo/.local/state/vibeke/inbox/3f9a1c0b2e7d/Screenshot\ 2026-10-05\ at\ 20.49.03.png`
+- TUI harnesses (Claude Code, Codex, pi, omp) recognise image paths in pasted text and attach the image. For headless runs (pi/omp RPC, Codex app-server, ACP), images are additionally offered as native image content in the next prompt (A10).
+- Event: `paste.translated {pane, files:[{blob, bytes, local_name}], target_namespace}` (no local paths in the event — only basenames; 09 §9).
+
+#### A11.4 Pane inbox (where files land)
+| Namespace | Inbox path seen by the agent | Notes |
+|---|---|---|
+| `ssh{machine}` | `$XDG_STATE_HOME/vibeke/inbox/<blake3-12>/<basename>` on that machine | |
+| `container` / `vm` | `/vibeke/inbox/<blake3-12>/<basename>` (read-only mount of a host-side inbox dir) | 13 §5 |
+| `sandbox` (local) | `$XDG_STATE_HOME/vibeke/inbox/<blake3-12>/<basename>` on the host, which is on every sandbox profile's read-only allowlist | a copy, not a widening of the allowlist to `~/Desktop` |
+| `host` (local) | — (no translation) | |
+
+- Never inside the repo/worktree (no accidental commits). Retention: `paste.inbox_retention = "14d"`, plus cleanup when the task is archived.
+- Files are written 0600 in a 0700 directory.
+
+#### A11.5 Security
+- Only the local client initiates transfers, and only for content the user explicitly pasted/dropped. There is **no** API by which a remote server, pane, plugin or agent can request a local file (no reverse fetch, no mount). Bridge/broker reject `blob_get` toward the client for anything the client didn't push.
+- Directory drops and large files always confirm. `paste.translate = "off"` disables the feature; `"ask"` confirms every translation.
+
+#### A11.6 Topology requirement and fallbacks
+- Works whenever the Vibeke client runs locally and attaches to the remote (`vibeke --machine devbox`, or the unified multi-machine view). If the user instead runs `ssh devbox` and starts `vibeke` *on the remote*, no local process sees the drop. Fallbacks: `vibeke ssh devbox` (a thin wrapper that runs the local client against the remote server, recommended in docs and `doctor`), or terminal-specific features (iTerm2 shell-integration scp upload) which Vibeke does not depend on.
+
+#### A11.7 Alternative considered: mounting local files on the remote
+A reverse mount (`/vibeke/local/Users/demo/...` via FUSE/9p, fetched lazily) keeps paths nearly unchanged and handles big folders, but breaks when disconnected, needs FUSE on the remote, and gives the remote a live window into the laptop. Rejected as default; possible post-1.0 opt-in for directories only.
 
 ---
 
@@ -395,6 +443,9 @@ inline_thumbnails = true
 - Remote upgrade `vibeke machine upgrade devbox` with 5 running agents: no agent process restarts (PIDs unchanged).
 - Bandwidth budgets in A7 pass in CI (netem-shaped link fixture).
 - Image paste: a PNG on the laptop clipboard pasted into a remote Claude pane results in Claude receiving a valid path to the file on devbox. Pasted into a remote pi RPC run, it arrives as `images` content.
+- Path drop (A11): dragging `~/Desktop/Screenshot 2026-10-05 at 20.49.03.png` from Finder into iTerm2, Ghostty, Kitty and WezTerm with a remote Claude pane focused delivers a paste of an existing devbox inbox path with the same basename and escaping style; Claude attaches the image. Same drop into a local host pane is untouched; into a local container/VM pane it yields `/vibeke/inbox/...`; into a local sandbox pane it yields the host inbox path and the agent can read it while `~/Desktop` stays denied.
+- Dropping 3 files at once translates all three in one paste; re-dropping the same file re-uses the blob (no second transfer); a 300 MB drop asks first; `esc` during upload pastes the original text.
+- No API call from a remote server, pane token or plugin can cause the client to send a file it wasn't given by a user paste (negative test).
 - OSC 52 copy in a remote Neovim lands in the laptop clipboard after the one-time `ask_once` approval for that machine (and without a prompt when `clipboard.remote_write = "allow"`).
 
 **M3 (preview fabric):**

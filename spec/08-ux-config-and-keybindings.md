@@ -304,6 +304,11 @@ copy_on_select    = false
 primary_selection = false
 remote_write      = "ask_once"        # ask_once (per machine) | allow | deny — OSC 52 writes from remote panes (06 A9, 09 §7)
 
+[paste]                               # 06 A11 — translate dropped/pasted local paths for panes that can't see them
+translate        = "paths_only"      # paths_only | embedded | ask | off
+max_auto_bytes   = "50MiB"           # larger drops and any directory ask first
+inbox_retention  = "14d"
+
 [keys]
 prefix             = "ctrl+b"
 prefix_timeout_ms  = 1500
