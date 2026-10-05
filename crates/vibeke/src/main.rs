@@ -149,6 +149,8 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("machine") => remote::machine_cmd(&g, &args[1..]),
+        Some("debug") if args.get(1).map(String::as_str) == Some("latency") => debug::latency(&g, &args[2..]).await,
+        Some("debug") if args.get(1).map(String::as_str) == Some("bandwidth") => debug::bandwidth(&g, &args[2..]).await,
         Some("api") if args.get(1).map(String::as_str) == Some("call") => {
             let Some(method) = args.get(2) else {
                 eprintln!("vibeke api call <method> [json]");
