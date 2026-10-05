@@ -1,140 +1,128 @@
-//! Escape framing tracker running alongside the VT engine. It keeps the raw bytes of an
-//! incomplete sequence (so a snapshot taken mid-sequence captures parser state exactly, 03 §2.3)
-//! and extracts the few sequences the engine ignores: OSC 7/9/99/777/133, XTVERSION,
-//! modifyOtherKeys and synchronized-update (2026) brackets.
+//! Escape scanner running beside libghostty-vt for the two things the engine parses but does
+//! not expose (see `vendor/libghostty-vt.patches.md`, "Gaps handled outside the engine"):
+//!
+//! - `CSI > 4 ; Pv m` — the xterm modifyOtherKeys **level** (Ghostty keeps only a level-2 bool).
+//! - `OSC 99` — kitty desktop notifications (Ghostty parses and drops them).
+//!
+//! Everything else the M0 tracker did (pending parser bytes, OSC 7/9/777/133, XTVERSION, DA3,
+//! sync-update 2026) is now the engine's: parser continuation lives in the native snapshot.
+//! The scanner skips ground-state text with `memchr`-style search for ESC, so it costs little.
+//! After a restore it is resynchronised by feeding it the engine's exported continuation.
 
-const MAX_PENDING: usize = 1 << 20;
 const MAX_OSC: usize = 64 * 1024;
+const MAX_CSI: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum State {
     #[default]
     Ground,
-    Utf8(u8),
     Esc,
-    EscInter,
     Csi,
+    /// OSC body; `collect` says whether this OSC is one we keep (prefix "99;").
     Osc,
     OscEsc,
+    /// DCS / APC / PM / SOS string: skipped until ST.
     Str,
     StrEsc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tracked {
-    Osc(Vec<u8>),
-    Csi {
-        private: Option<u8>,
-        params: Vec<u8>,
-        inter: Vec<u8>,
-        fin: u8,
-    },
+    /// `CSI > 4 ; Pv m`: new modifyOtherKeys level (0..=2).
+    ModifyOtherKeys(u8),
+    /// Full reset (`ESC c`).
+    Reset,
+    /// Body of an `OSC 99 ; ...` sequence, without the leading `99;`.
+    Osc99(Vec<u8>),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Tracker {
     state: State,
-    pending: Vec<u8>,
     seq: Vec<u8>,
+    /// For `Osc`: still undecided (< 3 bytes) or confirmed "99;".
+    osc_keep: bool,
 }
 
 impl Tracker {
-    /// Bytes of the sequence currently being received (empty at a safe cut point).
-    pub fn pending(&self) -> &[u8] {
-        if self.state == State::Ground {
-            &[]
-        } else {
-            &self.pending
-        }
-    }
-
-    pub fn is_safe(&self) -> bool {
-        self.state == State::Ground
-    }
-
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<Tracked>) {
-        for &b in bytes {
-            if self.state != State::Ground && self.pending.len() < MAX_PENDING {
-                self.pending.push(b);
-            }
-            self.step(b, out);
-            if self.state == State::Ground {
-                self.pending.clear();
+        let mut i = 0;
+        while i < bytes.len() {
+            match self.state {
+                State::Ground => match bytes[i..].iter().position(|&b| b == 0x1b) {
+                    Some(p) => {
+                        self.state = State::Esc;
+                        i += p + 1;
+                    }
+                    None => return,
+                },
+                State::Str => match bytes[i..]
+                    .iter()
+                    .position(|&b| matches!(b, 0x1b | 0x18 | 0x1a))
+                {
+                    Some(p) => {
+                        let b = bytes[i + p];
+                        self.state = if b == 0x1b {
+                            State::StrEsc
+                        } else {
+                            State::Ground
+                        };
+                        i += p + 1;
+                    }
+                    None => return,
+                },
+                _ => {
+                    self.step(bytes[i], out);
+                    i += 1;
+                }
             }
         }
-    }
-
-    fn begin(&mut self, s: State, b: u8) {
-        if self.state == State::Ground {
-            self.pending.clear();
-            self.pending.push(b);
-        }
-        self.seq.clear();
-        self.state = s;
     }
 
     fn step(&mut self, b: u8, out: &mut Vec<Tracked>) {
         use State::*;
-        if matches!(b, 0x18 | 0x1a) && !matches!(self.state, Ground | Utf8(_)) {
+        // CAN / SUB abort any sequence.
+        if matches!(b, 0x18 | 0x1a) {
             self.state = Ground;
             return;
         }
         match self.state {
-            Ground => match b {
-                0x1b => self.begin(Esc, b),
-                0xc2..=0xdf => self.begin(Utf8(1), b),
-                0xe0..=0xef => self.begin(Utf8(2), b),
-                0xf0..=0xf4 => self.begin(Utf8(3), b),
-                _ => {}
-            },
-            Utf8(n) => {
-                if (0x80..=0xbf).contains(&b) {
-                    self.state = if n == 1 { Ground } else { Utf8(n - 1) };
-                } else {
-                    self.state = Ground;
-                    self.pending.clear();
-                    self.step(b, out);
-                }
-            }
+            Ground | Str => unreachable!("handled in feed"),
             Esc => match b {
                 b'[' => {
                     self.seq.clear();
-                    self.state = Csi
+                    self.state = Csi;
                 }
                 b']' => {
                     self.seq.clear();
-                    self.state = Osc
+                    self.osc_keep = true;
+                    self.state = Osc;
                 }
                 b'P' | b'_' | b'^' | b'X' => self.state = Str,
-                0x20..=0x2f => self.state = EscInter,
-                0x1b => self.begin(Esc, b),
-                _ => self.state = Ground,
-            },
-            EscInter => match b {
+                b'c' => {
+                    out.push(Tracked::Reset);
+                    self.state = Ground;
+                }
+                0x1b => {}
+                // Intermediates keep us in the escape; anything else ends it.
                 0x20..=0x2f => {}
                 _ => self.state = Ground,
             },
             Csi => match b {
                 0x40..=0x7e => {
                     self.state = Ground;
-                    let (private, rest) = match self.seq.first() {
-                        Some(&c @ (b'?' | b'>' | b'=' | b'<')) => (Some(c), &self.seq[1..]),
-                        _ => (None, &self.seq[..]),
-                    };
-                    let split = rest
-                        .iter()
-                        .position(|b| (0x20..=0x2f).contains(b))
-                        .unwrap_or(rest.len());
-                    out.push(Tracked::Csi {
-                        private,
-                        params: rest[..split].to_vec(),
-                        inter: rest[split..].to_vec(),
-                        fin: b,
-                    });
+                    if b == b'm' && self.seq.first() == Some(&b'>') {
+                        let ps = params(&self.seq[1..]);
+                        if ps.first() == Some(&4) {
+                            out.push(Tracked::ModifyOtherKeys(
+                                ps.get(1).copied().unwrap_or(0).min(2) as u8,
+                            ));
+                        }
+                    }
                 }
-                0x1b => self.begin(Esc, b),
+                0x1b => self.state = Esc,
                 _ => {
-                    if self.seq.len() < 256 {
+                    if self.seq.len() < MAX_CSI {
                         self.seq.push(b)
                     }
                 }
@@ -142,36 +130,45 @@ impl Tracker {
             Osc => match b {
                 0x07 => {
                     self.state = Ground;
-                    out.push(Tracked::Osc(std::mem::take(&mut self.seq)));
+                    self.finish_osc(out);
                 }
                 0x1b => self.state = OscEsc,
                 _ => {
-                    if self.seq.len() < MAX_OSC {
-                        self.seq.push(b)
+                    if self.osc_keep {
+                        self.seq.push(b);
+                        if self.seq.len() <= 3 {
+                            self.osc_keep = b"99;".starts_with(&self.seq);
+                        } else if self.seq.len() > MAX_OSC {
+                            self.osc_keep = false;
+                        }
                     }
                 }
             },
             OscEsc => {
-                self.state = Ground;
                 if b == b'\\' {
-                    out.push(Tracked::Osc(std::mem::take(&mut self.seq)));
+                    self.state = Ground;
+                    self.finish_osc(out);
                 } else {
+                    // ESC ends the OSC (as in the VT parser) and starts a new escape.
+                    self.state = Esc;
                     self.step(b, out);
                 }
             }
-            Str => {
-                if b == 0x1b {
-                    self.state = StrEsc
-                }
-            }
             StrEsc => {
-                if b == b'\\' {
-                    self.state = Ground
-                } else if b != 0x1b {
-                    self.state = Str
+                self.state = if b == b'\\' { Ground } else { Esc };
+                if self.state == Esc {
+                    self.step(b, out);
                 }
             }
         }
+    }
+
+    fn finish_osc(&mut self, out: &mut Vec<Tracked>) {
+        if self.osc_keep && self.seq.len() >= 3 {
+            out.push(Tracked::Osc99(self.seq[3..].to_vec()));
+        }
+        self.seq.clear();
+        self.osc_keep = false;
     }
 }
 
@@ -194,18 +191,39 @@ pub fn params(p: &[u8]) -> Vec<u32> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pending_bytes_captured() {
+    fn run(chunks: &[&[u8]]) -> Vec<Tracked> {
         let mut t = Tracker::default();
         let mut out = vec![];
-        t.feed(b"ab\x1b[3", &mut out);
-        assert_eq!(t.pending(), b"\x1b[3");
-        t.feed(b"1m", &mut out);
-        assert!(t.pending().is_empty());
-        t.feed(&"é".as_bytes()[..1], &mut out);
-        assert_eq!(t.pending(), &"é".as_bytes()[..1]);
-        t.feed(&"é".as_bytes()[1..], &mut out);
-        t.feed(b"\x1b]7;file://h/tmp\x1b\\", &mut out);
-        assert!(out.contains(&Tracked::Osc(b"7;file://h/tmp".to_vec())));
+        for c in chunks {
+            t.feed(c, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn extracts_across_splits() {
+        let all: &[u8] = b"a\x1b[>4;2mx\x1b]99;i=1:p=body;hi\x1b\\\x1b]7;file://h/x\x07\x1bc";
+        let want = vec![
+            Tracked::ModifyOtherKeys(2),
+            Tracked::Osc99(b"i=1:p=body;hi".to_vec()),
+            Tracked::Reset,
+        ];
+        assert_eq!(run(&[all]), want);
+        for cut in 1..all.len() {
+            assert_eq!(run(&[&all[..cut], &all[cut..]]), want, "cut {cut}");
+        }
+    }
+
+    #[test]
+    fn strings_and_aborts() {
+        // ESC [ inside an APC payload is not a CSI; CAN aborts a CSI.
+        assert_eq!(
+            run(&[b"\x1b_Gx=1;\x1b[>4;1m"]),
+            vec![Tracked::ModifyOtherKeys(1)]
+        );
+        assert_eq!(run(&[b"\x1b_G\x9b>4;1m\x1b\\"]), vec![]);
+        assert_eq!(run(&[b"\x1b[>4\x18;2m"]), vec![]);
+        assert_eq!(run(&[b"\x1b[>4m"]), vec![Tracked::ModifyOtherKeys(0)]);
+        assert_eq!(run(&[b"\x1b]999;x\x07"]), vec![]);
     }
 }

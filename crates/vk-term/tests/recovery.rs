@@ -61,11 +61,16 @@ fn synthetic() -> Vec<u8> {
 
 fn state(e: &Engine) -> String {
     let mut out = format!(
-        "{:?}\n{:?}\n{}\n{}\n",
+        "{:?}\n{:?}\n{}\n{}\n{:?}\n{} {} {:?} {}\n",
         e.cursor(),
         e.modes(),
         e.term_mode(),
-        e.title()
+        e.title(),
+        e.input_modes(),
+        e.in_sync_update(),
+        e.modify_other_keys(),
+        e.cwd(),
+        e.scrolled_total(),
     );
     for i in 0..e.history_len() {
         out.push_str(&format!("{:?}\n", e.history_row(i).unwrap()));
