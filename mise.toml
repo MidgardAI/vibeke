@@ -6,6 +6,7 @@ rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src", profile = "
 "cargo:cargo-nextest" = "latest"
 "cargo:cargo-deny" = "latest"
 bun = "latest"            # integrations/pi-extension (TypeScript) and harness test fixtures
+zig = "0.16.0"            # builds the vendored libghostty-vt (vk-term build.rs, spec/03 §2.2)
 
 [env]
 CARGO_TERM_COLOR = "always"

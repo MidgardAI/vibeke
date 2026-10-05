@@ -1,0 +1,11 @@
+{
+  "repo": "https://github.com/ghostty-org/ghostty",
+  "commit": "35a81a980bb9fce09a1ea762a68b55f8eb3477ed",
+  "commit_date": "2026-10-05T14:05:03+08:00",
+  "commit_subject": "renderer: always release shaders (#14542)",
+  "ghostty_version": "1.3.2-dev",
+  "zig_version": "0.16.0",
+  "vendored_on": "2026-10-06",
+  "subset": "Only the files `zig build -Demit-lib-vt` reads, collected from the Zig cache manifests of a full-tree build and verified by building aarch64-macos, x86_64-macos, x86_64-linux-musl and aarch64-linux-gnu from the subset: build.zig, build.zig.zon, LICENSE, include/, src/build/, build.zig + build.zig.zon of every pkg/*, and the imported part of src/ and pkg/{highway,simdutf,wuffs,apple-sdk,android-ndk}. Unmodified upstream bytes.",
+  "zig_packages": "Fetched by zig at build time and hash-pinned by build.zig.zon / pkg/*/build.zig.zon (uucode, translate_c, aro, highway, wuffs, pixels, zlib, ghostty-themes); cached in the global Zig cache after the first build."
+}
