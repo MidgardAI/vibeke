@@ -136,7 +136,7 @@ If these don't improve materially over the baseline, the release does not gradua
 | Security | §12 of 09 red-team agent | every PR |
 | Perf | §2 | every PR (subset), nightly (full), release gate (real terminals) |
 
-**Toolchain**: CI builds and tests with the latest stable Rust pinned in `rust-toolchain.toml` (01 §2), bumped within a week of each stable release by an automated PR that must pass the full PR gate; a nightly job also builds with the upcoming beta to catch breakage early. No MSRV older than the pinned stable is tested or supported.
+**Toolchain**: CI builds and tests with the latest stable Rust pinned in `mise.toml` (01 §2), bumped within a week of each stable release by an automated PR that must pass the full PR gate; a nightly job also builds with the upcoming beta to catch breakage early. No MSRV older than the pinned stable is tested or supported.
 
 Coverage target: ≥ 80% line coverage on `vk-proto`, `vk-hold`, `vk-store`, `vk-agents` (adapter logic), `vk-compat`; the TUI is covered by snapshot and e2e tests instead.
 

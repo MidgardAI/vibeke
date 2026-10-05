@@ -79,7 +79,7 @@ QUIC roaming transport + predictive echo (mosh-style) · plugin marketplace · f
 
 ## Suggested first two weeks (M0 kickoff)
 
-1. Repo scaffold: Cargo workspace per 01 §6, `rust-toolchain.toml` on latest stable, CI (fmt, clippy `-D warnings`, nextest, cargo-deny), Renovate for toolchain bumps.
+1. Repo scaffold: Cargo workspace per 01 §6, `mise.toml` (already in the repo) as the toolchain source, CI via `jdx/mise-action` running `mise run ci` (fmt, clippy `-D warnings`, nextest, cargo-deny), Renovate for toolchain bumps.
 2. `vk-proto` v0: IDs, event envelope, holder protocol messages with input ids/acks.
 3. `vk-hold` prototype (PTY and pipe modes) + chaos loop script.
 4. VT engine bindings behind `VtEngine`, recovery-requirement test suite (mid-sequence cut, resize interleaving, terminal queries, alt screen).

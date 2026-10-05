@@ -1,0 +1,27 @@
+# Toolchain for Vibeke. `mise install` sets everything up; CI uses jdx/mise-action with this file.
+# Rust is pinned to the latest stable and bumped within a week of each stable release (spec/01 §2).
+
+[tools]
+rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src", profile = "minimal" }
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-deny" = "latest"
+bun = "latest"            # integrations/pi-extension (TypeScript) and harness test fixtures
+
+[env]
+CARGO_TERM_COLOR = "always"
+
+[tasks.build]
+run = "cargo build --workspace"
+
+[tasks.test]
+run = "cargo nextest run --workspace"
+
+[tasks.lint]
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo deny check",
+]
+
+[tasks.ci]
+depends = ["lint", "test"]

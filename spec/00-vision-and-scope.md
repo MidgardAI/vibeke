@@ -53,7 +53,7 @@ Each item alone can be copied; the bet is the combination, shipped open source a
 7. **Bounded Herdr compatibility**: config importer, env aliases, and the Herdr-socket subset existing clients use (M5).
 8. **Quality bars**: measured keyboard fidelity, CPU/bandwidth budgets, golden tests per harness version.
 
-**Toolchain:** Rust, latest stable (edition 2024), pinned in `rust-toolchain.toml` and bumped each stable release (01 §2).
+**Toolchain:** Rust, latest stable (edition 2024), pinned in `mise.toml` and bumped each stable release (01 §2).
 
 ## Success metrics (gate for M1 and every later milestone)
 
