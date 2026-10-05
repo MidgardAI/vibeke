@@ -1,13 +1,14 @@
 # 08 — UX, configuration and keybindings
 
-This section covers the TUI client's user-facing surface: layout chrome, navigation, notifications, the interaction overlay, the full `config.toml` schema, keybinding syntax and defaults, hot reload, and the Herdr importer. Rendering and input mechanics are in [03-terminal-engine-and-tui.md](03-terminal-engine-and-tui.md). The objects shown here (workspaces, groups, agent runs, interactions, notifications) are defined in [02-data-model-and-event-log.md](02-data-model-and-event-log.md).
+This section covers the TUI client's user-facing surface: layout chrome, navigation, notifications, interaction cards, the full `config.toml` schema, keybinding syntax and defaults, hot reload, and the Herdr importer. Rendering and input mechanics are in [03-terminal-engine-and-tui.md](03-terminal-engine-and-tui.md). The objects shown here (workspaces, groups, agent runs, interactions, notifications) are defined in [02-data-model-and-event-log.md](02-data-model-and-event-log.md).
 
 **Milestones** used throughout (see [11](11-milestones.md)): **M0** spikes · **M1** supervision slice · **M2** safe yolo + more harnesses · **M3** remote + preview · **M4** VMs + polish/parity · **M5** compatibility + plugins · **M6** hardening/Windows/1.0 · **post-1.0** deferred unless demanded.
 
 UX principles:
+0. **The focused pane belongs to the agent.** Vibeke never draws over, re-renders, or intercepts keys in the agent TUI you are looking at (only the prefix key is Vibeke's). People know Claude's, Codex's and pi's own UIs; those stay exactly as their vendors ship them. Vibeke's structured surfaces — interaction cards, peek, inbox, fleet tiles' timelines, notifications with actions — are for agents you are **not** looking at (other panes, tabs, workspaces, machines; the phone in Phase 2). Answering a card resolves the agent's own dialog through its native channel, and the agent's UI updates itself. Nothing appears over the focused pane unless you explicitly invoked it (palette, goto, peek, `prefix+a`), and even then no bytes reach the agent until you act.
 1. **Familiar defaults work on day one.** Default prefix `ctrl+b`, tmux-style default bindings, and an importer for Herdr config.
 2. **What needs me is always visible**, but never steals focus.
-3. **Structured, not scraped.** When an agent asks something, Vibeke shows a native prompt you can answer without learning that agent's TUI. The agent's own UI keeps working too.
+3. **Structured, not scraped — around the agent, not over it.** Vibeke understands agents through hooks/extensions/RPC so it can tell you *elsewhere* that an agent needs you and let you answer from there. In the focused pane you use the agent's own UI. Vibeke-rendered transcripts (headless runs) are for the phone and automation, not the desktop default: on the desktop every agent you start runs its real TUI.
 4. **Show uncertainty.** Inferred states look different from reported ones.
 5. **Everything has a command.** Every action is in the command palette, bindable, and available over the CLI/API.
 
@@ -30,7 +31,7 @@ UX principles:
 └─────────────────────────┴──────────────────────────────────────────────────────────────────────┘
 ```
 
-Regions: **sidebar** (left or right, collapsible), **tab bar** (top or bottom), **pane area** (tiled layout + floating panes), optional **status bar** (top or bottom, independent of the tab bar), **overlays** (palette, switcher, interaction overlay, popups, toasts).
+Regions: **sidebar** (left or right, collapsible), **tab bar** (top or bottom), **pane area** (tiled layout + floating panes), optional **status bar** (top or bottom, independent of the tab bar), **user-invoked popups** (palette, switcher, peek, interaction cards, toasts — toasts sit outside the focused pane's frame where possible and never take keyboard focus).
 
 ## 2. Sidebar
 
@@ -94,7 +95,7 @@ Regions: **sidebar** (left or right, collapsible), **tab bar** (top or bottom), 
 enabled  = true
 position = "bottom"
 left     = ["machine", "task", "branch", "ports"]
-center   = ["attention"]           # "2 need you" — click opens interaction overlay for the oldest
+center   = ["attention"]           # "2 need you" — click opens the card for the oldest unfocused one
 right    = ["agents_summary", "clock"]
 ```
 
@@ -110,13 +111,13 @@ Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` 
 - **Floating panes** (M4): `prefix+f` creates a floating pane (default 70%×70%, centred); `prefix+shift+f` toggles visibility of all floats in the tab. Floats can be moved/resized with the mouse or in resize mode (`m` toggles move). A tiled pane can be floated and back (`pane float`/`pane embed`).
 - **Popups** (`type = "popup"`): session-modal terminals that don't change the layout and close when the command exits (used by `[[keys.command]]`, edit-scrollback, plugin actions). Width and height accept cells or `%`.
 - **Synchronized input** (post-1.0): `prefix+shift+s` toggles sync for the current tab. Input to the focused pane is mirrored to every pane in the tab that is in the sync set (default all; `prefix+alt+s` toggles a single pane's membership). A bright `SYNC` badge shows in the tab bar and the status bar. Paste is mirrored too. Agent panes are **excluded by default** (`ui.sync_input.include_agents = false`) to avoid prompting N agents by accident.
-- **Focus follows mouse**: `ui.focus_follows_mouse = false`. When enabled, hovering a pane focuses it after `ui.focus_follows_mouse_delay_ms = 120`; it never applies while a popup or overlay is open.
+- **Focus follows mouse**: `ui.focus_follows_mouse = false`. When enabled, hovering a pane focuses it after `ui.focus_follows_mouse_delay_ms = 120`; it never applies while a popup or card is open.
 - **Close**: `prefix+x` closes the pane after confirmation when a non-shell foreground process is running (configurable `ui.confirm_close = "running" | "always" | "never"`).
 
 ## 6. Navigation
 
 ### 6.1 Navigate mode
-`prefix+w` opens navigate mode: the sidebar gets keyboard focus. Movement: `up/down` move between workspaces and agents, `h j k l` move between panes, `enter` focuses, `1..9` jump, `esc` exits. Plus: `/` filter, `space` peek (§6.4), `a` answer (opens the interaction overlay for the selected agent), `u` mark unread, `p` pin, `r` rename, `x` close (confirm), `n` new workspace, `t` new task (05).
+`prefix+w` opens navigate mode: the sidebar gets keyboard focus. Movement: `up/down` move between workspaces and agents, `h j k l` move between panes, `enter` focuses, `1..9` jump, `esc` exits. Plus: `/` filter, `space` peek (§6.4), `a` answer (opens the interaction card for the selected agent, if unfocused), `u` mark unread, `p` pin, `r` rename, `x` close (confirm), `n` new workspace, `t` new task (05).
 
 ### 6.2 Goto / fuzzy switcher
 `prefix+g`: one fuzzy list over workspaces, tabs, panes, agents (by name, harness, state), tasks, previews and machines. Typing filters; prefix tokens narrow the kind: `@agent`, `#task`, `:tab`, `>command` (switches to the palette), `!state` (`!approve` lists everything awaiting approval). Results are ranked by match score, then recency, then urgency. `enter` jumps; `ctrl+enter` opens in a new client split view (M4).
@@ -128,12 +129,16 @@ Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` 
 Learned from Claude Code agent view. In the sidebar (or goto list), `space` on an agent row opens a floating peek of that run without changing focus:
 - Header: harness, name, task/branch, isolation, state with source, time in state.
 - Body: for structured runs, the last assistant message and last tool calls from the transcript (rendered markdown, not terminal cells); for screen-only runs, the last 30 terminal lines.
-- Open interaction, if any, inline with the overlay's keys (`y`/`n`/…).
+- Open interaction, if any, as an inline card with the card keys (`y`/`n`/…) (§8).
 - **Reply box**: start typing to compose a follow-up; `enter` sends via `agent.prompt` (native for structured runs — pi RPC `follow_up`/`steer`, Codex `turn/start`/`turn/steer`, Claude via typed input with bracketed paste), `alt+enter` sends as steer when the run is working and the harness supports it.
 - `enter` on an empty reply focuses the pane; `esc` closes. Peek never marks the run seen unless a reply is sent.
 
 ### 6.5 Workspace and agent cycling
-`previous_workspace`, `next_workspace`, `previous_agent`, `next_agent`, `focus_agent` (indexed) and `next_attention` (**default `prefix+a`**: jumps to the oldest open interaction, else the oldest `done`).
+`previous_workspace`, `next_workspace`, `previous_agent`, `next_agent`, `focus_agent` (indexed) and `next_attention` (**default `prefix+a`**: opens the card for the oldest open interaction on an unfocused agent, else focuses the oldest `done`; `prefix+A` focuses that agent's pane instead).
+
+### 6.6 Fleet grid and inbox views
+- **Fleet grid** (`prefix+F`, M4; a view, not a layout change): one tile per agent run. **Tiles default to a live miniature of the real terminal** (the agent's own UI, scaled by cropping to the last rows); `t` toggles a tile (or `T` all tiles) to Vibeke's structured timeline (tool calls, diff size, state, preview). `ui.fleet.tile_view = "terminal" | "timeline"`. `enter` focuses the real pane.
+- **Inbox view** (`prefix+i`, M1): a full-screen list of open interactions on unfocused agents, ranked by urgency (risk, wait, blocking), with the card for the selected item and a peek of the agent. It replaces the pane area while open (agents keep running; nothing is drawn over a focused pane because there is none while the view is open). `esc` returns.
 
 ## 7. Notifications
 
@@ -156,11 +161,14 @@ notification.created → policy (rules, quiet hours, presence) → channels
 ### 7.2 Toasts
 Stacked at the top-right of the pane area, max 3, auto-dismiss after 6 s (except interactions, which stay until answered or dismissed). `prefix+o` (`open_notification_target`) jumps to the newest toast's target.
 
-## 8. Interaction overlay (answering agents natively)
+## 8. Interaction cards (answering agents you're not looking at)
 
-When an agent run has an open `Interaction` (02 §1.1), Vibeke can show it as a **structured popup**, independent of how the agent draws its own prompt.
+When an agent run has an open `Interaction` (02 §1.1) and **its pane is not focused**, Vibeke can show it as a **structured card**, independent of how the agent draws its own prompt. When you focus that pane, you see and answer the agent's own dialog instead (for held gate-mode hooks, focusing releases them so the native dialog appears — 04 §7.2).
 
-Triggers: `prefix+a` (next attention), `a` in navigate mode or peek, clicking the sidebar badge or attention segment, or automatically when the user focuses a pane with an open interaction and `ui.interaction_overlay.auto_open = "focus"` (default `"never"`: the agent's own UI stays primary when you're looking at it).
+`ui.interaction_overlay = "off" | "unfocused" | "always"` (default **`"unfocused"`**):
+- `off`: no cards. The sidebar badge and notifications still show that an agent needs you; acting on them focuses the pane.
+- `unfocused` (default): cards for unfocused agents only — inline in the sidebar row, in peek, in the inbox view, in notifications with actions, and as a popup when you explicitly invoke it (`prefix+a`, `a` in navigate mode/peek, clicking the badge or attention segment). Never for the focused pane; never popped up spontaneously.
+- `always`: as `unfocused`, plus a card may be opened (on explicit invocation) for the focused pane's own interaction — for users who prefer one uniform card UI. Still never auto-opens over the focused pane.
 
 ```
 ┌ claude · samplehub/fix-login · needs approval ──────────────────── i42 ┐
@@ -177,16 +185,18 @@ Triggers: `prefix+a` (next attention), `a` in navigate mode or peek, clicking th
 - **Approval**: shows the tool, command/paths, a diff (scrollable, syntax-highlighted, `d` toggles full screen), risk and reasons. Keys: `y` allow once, `s` allow for session (only if the harness supports session scope natively), `r` creates a policy rule pre-filled from this interaction (02 §4) and lets you edit scope and regex before saving, `n` deny, `e` deny with a message (sent to the agent as the denial reason when the channel supports it).
 - **Question** (AskUserQuestion, elicitation, pickers): each question as a list with `j/k` and `space` to toggle (multi-select) or `enter` (single). `tab` moves to the free-text field when `allow_free_text`. Submit `ctrl+enter`.
 - **Plan review**: rendered markdown of `plan_md`, with `y` approve, `e` request changes with text, `n` reject.
-- **Delivery**: the answer goes out through the interaction's `answer_channel`. `native` → adapter (hook response, extension, RPC). `keystrokes` → the adapter's verified key sequence (04: navigate, re-read the screen, confirm the cursor is on the target option, then press Enter; on mismatch, abort and show "couldn't deliver — answer in pane", jumping focus there). The overlay shows a delivery spinner, then ✓, or the failure with the reason (`interaction.answer_failed`).
-- If the interaction is resolved elsewhere (in the agent TUI, another client or a rule), the overlay closes with a toast "answered in pane" or "answered by rule r3".
-- Multiple open interactions: header `1/3`, `]`/`[` cycle. `A` in the overlay header opens the **batch view**: interactions grouped by fingerprint (same tool + normalized command) with "allow all N" (only for `risk ≤ medium` and only native channels).
+- **Delivery**: the answer goes out through the interaction's `answer_channel`. `native` → adapter (hook response, extension, RPC). `keystrokes` → the adapter's verified key sequence (04: navigate, re-read the screen, confirm the cursor is on the target option, then press Enter; on mismatch, abort and show "couldn't deliver — answer in pane", jumping focus there). The card shows a delivery spinner, then ✓, or the failure with the reason (`interaction.answer_failed`).
+- If the interaction is resolved elsewhere (in the agent TUI, another client or a rule), the card closes with a toast "answered in pane" or "answered by rule r3".
+- Multiple open interactions: header `1/3`, `]`/`[` cycle. `A` in the card header opens the **batch view**: interactions grouped by fingerprint (same tool + normalized command) with "allow all N" (only for `risk ≤ medium` and only native channels).
 
-- **Delivery states** (02/04): the overlay reflects `decision_recorded → delivering → delivered`, or `delivery_failed` / `delivery_unknown`. `delivery_unknown` (e.g. server crashed mid-delivery) never auto-retries; the overlay asks the user to check the pane, and the adapter reconciles with the harness before any resend.
+- **Delivery states** (02/04): the card reflects `decision_recorded → delivering → delivered`, or `delivery_failed` / `delivery_unknown`. `delivery_unknown` (e.g. server crashed mid-delivery) never auto-retries; the card asks the user to check the pane, and the adapter reconciles with the harness before any resend.
+
+**Focus acceptance (M1):** with any agent focused, an interaction arriving for that agent produces no Vibeke-drawn content over the pane and zero bytes written to its PTY; the agent's native dialog is what the user sees (gate-mode hooks released within 200 ms of focus). Cards for unfocused agents answer natively without changing focus.
 
 **Acceptance is by tested capability, not by harness name.** Each (harness version × launch mode × interaction kind) has a capability record in the harness capability matrix (04): `observe`, `answer_native`, `answer_keystrokes`, `reconcile`.
-- **M1:** for every matrix cell marked `answer_native` (expected: Claude Code `PermissionRequest`; pi/omp extension gate; Codex hooks `PermissionRequest`), answering from the overlay sends zero keystrokes to the agent TUI, the agent proceeds within 300 ms p95, and a server kill between decision and delivery ends in `delivered` or `delivery_unknown`, never a duplicate decision.
+- **M1:** for every matrix cell marked `answer_native` (expected: Claude Code `PermissionRequest`; Codex hooks `PermissionRequest`; pi extension dialogs via the uiContext wrapper where golden-tested — pi has no Vibeke gate, 04 §6.3), answering from a card sends zero keystrokes to the agent TUI, the agent proceeds within 300 ms p95, and a server kill between decision and delivery ends in `delivered` or `delivery_unknown`, never a duplicate decision.
 - For cells marked only `answer_keystrokes` (e.g. questions where native answering is unverified), verified keystroke delivery succeeds on the golden corpus and fails safe (no Enter) on every mismatch fixture; the UI labels the delivery as best-effort.
-- Cells marked `observe` only: the overlay shows the interaction and an "answer in pane" button; no answer is attempted.
+- Cells marked `observe` only: the card shows the interaction and a "jump to pane" button; no answer is attempted.
 
 ## 9. Onboarding
 
@@ -246,7 +256,7 @@ Vibeke additions beyond the base set are marked ✚.
 
 \* `rename_pane` is bound to `prefix+shift+p`, so we default `pin_pane` to `prefix+alt+p` (§2.3 references to "pin" use this binding). `vibeke keys check` must report no conflicts on the shipped defaults (CI test).
 
-Mode-local keymaps: `[keys.navigate]`, `[keys.copy_mode]` (D#587), `[keys.resize]`, `[keys.overlay]`. All are rebindable.
+Mode-local keymaps: `[keys.navigate]`, `[keys.copy_mode]`, `[keys.resize]`, `[keys.card]`. All are rebindable.
 
 ### 10.3 Custom commands
 `[[keys.command]]` (`type = "shell" | "pane" | "popup"`, `width`/`height`) plus ✚ `type = "float"` (persistent floating pane), ✚ `cwd = "pane" | "workspace" | path`, ✚ `env`, ✚ `title`, and ✚ `when = "agent:claude"` (only active when the focused pane runs that harness).
@@ -312,6 +322,7 @@ width = "80%"
 height = "80%"
 
 [ui]
+interaction_overlay        = "unfocused"   # off | unfocused | always — cards only for agents you're not looking at (§8)
 max_fps                    = 120
 background_animation_fps   = 4
 animate                    = true
@@ -349,9 +360,10 @@ center   = ["attention"]
 right    = ["agents_summary", "clock"]
 [ui.sync_input]
 include_agents = false
-[ui.interaction_overlay]
-auto_open = "never"                   # never | focus | always
-batch     = true
+[ui.interactions]
+batch     = true                      # batch view for same-fingerprint approvals (§8)
+[ui.fleet]
+tile_view = "terminal"                # terminal (live miniature of the agent's own UI) | timeline
 
 [notifications]
 channel               = "native"      # native | osc | both | none

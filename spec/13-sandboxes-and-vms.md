@@ -155,7 +155,7 @@ Agents need model credentials inside the box, and should get nothing else.
 | Level | Approvals inside | Vibeke policy engine (02 §4) | Classification (§2.2) |
 |---|---|---|---|
 | `host` (non-yolo) | harness asks; Vibeke uses `gate`/`answer_native` where the capability matrix allows (04 §2.3) | allow/deny/ask rules | cooperative guardrail |
-| `host` + yolo | none (harness doesn't ask) | `deny` rules still applied for harnesses with pre-tool hooks (Claude `PreToolUse`, Codex `PreToolUse` for Bash, pi/omp `tool_call`) — "yolo with a seatbelt". Fail-closed per 04 §2.7, but bypassable by the agent itself | cooperative guardrail |
+| `host` + yolo | none (harness doesn't ask) | `deny` rules still applied for harnesses with pre-tool hooks (Claude `PreToolUse`, Codex `PreToolUse` for Bash) — "yolo with a seatbelt". **Not for pi/omp**: Vibeke has no gate there (04 §6.3); pi/omp yolo on the host gets the badge only — use `--isolate` for real protection. Fail-closed per 04 §2.7, but bypassable by the agent itself | cooperative guardrail |
 | `sandbox`/`container`/`vm` + yolo | none inside | **boundary policy**: egress, push, credential use, port exposure, copying artifacts out — fail-closed | enforced |
 | `sandbox`/`container`/`vm` non-yolo | as host | in-box rules (guardrail) **plus** boundary policy (enforced) | enforced at the boundary |
 

@@ -30,7 +30,7 @@ So "multi-machine", "previews" and "an attention sidebar" are table stakes, not 
 Each item alone can be copied; the bet is the combination, shipped open source and fast:
 
 1. **Bring your own harness, structurally.** pi, omp, personal wrappers (`espi`), Hermes and any manifest-described CLI get the same depth of integration (state, interactions, resume, usage) as Claude Code and Codex. Screen-scraping tools guess; vendor tools only support themselves.
-2. **Interactions as objects with native delivery.** Approvals, questions and plan reviews have ids, risk, and a delivery state machine; they are answered via hook response / extension / RPC, not keystrokes. This is the foundation for answering from anywhere (Phase 2 phone surface).
+2. **Interactions as objects with native delivery.** Approvals, questions and plan reviews have ids, risk, and a delivery state machine; they are answered via hook response / extension / RPC, not keystrokes — from cards for agents you're not looking at, while the focused agent keeps its own UI. Vibeke surfaces each harness's own approval mechanism (for pi: whichever permission extension the user installed) rather than adding its own. This is the foundation for answering from anywhere (Phase 2 phone surface).
 3. **Safe yolo.** `--yolo` runs agents without approvals *inside* an OS sandbox, container or VM; commands are free and only boundary actions (egress outside the allowlist, push, credential use) are gated. User-typed yolo on the host is supported and clearly badged. No terminal multiplexer offers this; cloud products only isolate in their own cloud.
 4. **Terminal-agnostic and headless-friendly.** Runs inside any modern terminal and on headless Linux devboxes over SSH — unlike macOS-only GUI apps.
 5. **Evidence (Phase 2).** Tasks come back with an `EvidenceRecord` (exact base/head revision, checks actually run, screenshots with their environment label) so review becomes review-by-exception ([12](12-phase-2-outlook.md)).
@@ -86,6 +86,7 @@ If M1 misses the first two targets materially, stop and re-evaluate (sidecar fal
 
 ## Design principles
 
+0. **The focused pane belongs to the agent.** Vibeke never draws over, re-renders or intercepts keys in the agent TUI you're looking at; its structured surfaces (cards, peek, inbox) are for agents you are not looking at (08 §0).
 1. **Structured first, screen last.** If the harness can tell us, ask the harness. Never present a guess as fact: every agent state has a `source` and `confidence`, and the UI shows when it is guessing.
 2. **The server is disposable; processes are not.** Processes, scrollback, state and open interactions survive a server restart; on-screen restoration is best-effort (01 §1.2).
 3. **Every change is observable.** State lives in SQLite; each change also appends an event in the same transaction. Clients subscribe with a cursor and never miss a change.

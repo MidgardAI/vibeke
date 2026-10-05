@@ -16,7 +16,7 @@ No calendar estimates are given: the earlier week numbers were unsupported place
 |---|---|---|
 | VT engine (03 §2) | Which of libghostty-vt / wezterm-term / alacritty_terminal meets the **recovery requirement**: serialize + restore incl. parser mid-sequence state, modes, alt screen; continue from a byte offset; reflow; kitty keyboard; graphics. One engine is chosen and pinned; no second engine is kept compiling. | Scored rubric, chosen engine, `VtEngine` trait v0 |
 | Holder durability (01 §1.2) | Do processes survive `kill -9` of the server; how good is screen recovery (checkpoint on ring half-full, safe cut points, forced redraw via resize nudge, holder-answered terminal queries); input with ids/acks so delivery is never duplicated; **pipe mode** so headless adapters (pi `--mode rpc`, Codex app-server) are also owned by a holder and survive server restarts | Holder prototype, chaos loop, measured failure envelope written into 01 §4 |
-| Harness reality check (04 [verify] list) | Run every **[verify]** item against live binaries: Claude `PermissionRequest`/AskUserQuestion via hook and `updatedPermissions` shape; Codex hooks under `--disable daemon_auto_start` and under `-a never`; deterministic Codex thread binding; omp `tool_call` vs approval ordering; pi gate failure semantics | Capability matrix (harness version × launch mode × interaction kind) checked into 04 |
+| Harness reality check (04 [verify] list) | Run every **[verify]** item against live binaries: Claude `PermissionRequest`/AskUserQuestion via hook and `updatedPermissions` shape; Codex hooks under `--disable daemon_auto_start` and under `-a never`; deterministic Codex thread binding; omp `tool_call` vs approval ordering; pi/omp shared-uiContext wrapper (writable methods, `signal` dismisses the native dialog) per version | Capability matrix (harness version × launch mode × interaction kind) checked into 04 |
 | Approval-delivery transaction | Decision record → delivery lease → native delivery → ack, with idempotency key, `delivery_unknown` and reconciliation, under server kill at every step | Prototype + chaos test; final state machine in 02/04 |
 | Input latency | Client-side keymap + server render stream ≤ 3 ms p99 added latency on Ghostty and Kitty | Measured prototype |
 
@@ -32,8 +32,8 @@ Minimal daily-use runtime:
 - Config + hot reload; Herdr config and session importer.
 
 Agents:
-- **Claude Code** (hooks + transcript), **pi and omp** (`@vibeke/pi-extension`; gate fails closed when enforcement is enabled), **Codex** via the PATH shim (per-pane embedded app-server) + hooks, with screen fallback.
-- `AgentState` with source/confidence, `Interaction` objects with the delivery state machine, interaction overlay, **peek and reply without attaching**, batch answer for identical native approvals.
+- **Claude Code** (hooks + transcript), **pi and omp** (`@vibeke/pi-extension`, observe-only — no Vibeke approval gate; dialogs of the user's own permission extension surfaced and answerable via the shared-uiContext wrapper where golden-tested, RPC Extension UI Protocol in headless mode, screen fallback), **Codex** via the PATH shim (per-pane embedded app-server) + hooks, with screen fallback.
+- `AgentState` with source/confidence, `Interaction` objects with the delivery state machine, interaction cards for unfocused agents (the focused pane always shows the agent's own UI; gate-mode release-on-focus), inbox view, **peek and reply without attaching**, batch answer for identical native approvals.
 - `agent start|prompt|wait|read|send-keys|get|list`, names, resume after reboot.
 - `vibeke integration install|status|uninstall|doctor` for Claude, pi/omp, Codex (coexists with existing hooks).
 - Yolo detection for user-typed flags (13 §3.1); `deny` policy rules via pre-tool hooks.
@@ -106,7 +106,7 @@ For reconciling references in other sections written against the earlier plan:
 | M1 local core | core runtime (sessions, panes, splits, holders, outbox, API, input fidelity, copy mode basics, config, importer) | **M1** |
 | M1 local core | groups, floating panes, status bar, palette, sidebar side, bottom tabs, copy-on-select, FTS archive, edit scrollback, native notifications, theme propagation, layout export | **M4** |
 | M1 local core | synchronized input | **post-1.0** |
-| M2 agents/harnesses | Claude, pi/omp, Codex adapters; interactions; overlay; integrations; resume; policy basics | **M1** |
+| M2 agents/harnesses | Claude, pi/omp, Codex adapters; interactions; cards; integrations; resume; policy basics | **M1** |
 | M2 agents/harnesses | OpenCode, Gemini, ACP, custom manifests, self-report, screen manifests + drift, signed manifest channel, usage extraction | **M2** |
 | M3 tasks + remote | git worktree tasks, ports, setup, async removal, advisory collisions | **M1** |
 | M3 tasks + remote | jj workspaces | **M4** |

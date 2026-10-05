@@ -82,7 +82,7 @@ Machine 1─* Session 1─* Group? 1─* Workspace 1─* Tab 1─* Pane ─? Age
 **Answering is a two-step, recoverable transaction:**
 1. `interaction.answer` records the decision (`status=answered`, `delivery.state=decision_recorded`, new `decision_rev`) in one DB transaction. First writer wins; later answers from other clients get `already_answered` with the winning decision.
 2. A delivery task takes a lease (`delivering`), delivers through the native channel with the `idempotency_key`, and records `delivered` or `failed{reason}`.
-3. If the server crashes between 1 and 3, the state on restart is `delivering` with an expired lease → **reconcile before retry**: ask the harness whether the native request is still pending (Codex: pending server request still open; Claude: the blocked hook shim is still connected and waiting; pi/omp: extension reports its pending gate). Still pending → redeliver (idempotent). Resolved → mark `delivered` or `resolved_elsewhere`. Unknowable → `delivery_unknown`, surfaced to the user; never silently retried.
+3. If the server crashes between 1 and 3, the state on restart is `delivering` with an expired lease → **reconcile before retry**: ask the harness whether the native request is still pending (Codex: pending server request still open; Claude: the blocked hook shim is still connected and waiting; pi/omp: extension snapshot reports the still-open extension dialog / omp approval; pi RPC: the `extension_ui_request` id is still unanswered). Still pending → redeliver (idempotent). Resolved → mark `delivered` or `resolved_elsewhere`. Unknowable → `delivery_unknown`, surfaced to the user; never silently retried.
 4. Keystroke delivery is always best-effort: verified before Enter (04 §8), but the app can change between check and keypress, so the result is `delivered` only when the adapter or screen confirms the dialog closed with the expected outcome; otherwise `delivery_unknown`.
 
 **Turn / Item** (structured adapters only; optional for screen-only harnesses). Modeled after Codex app-server's Thread/Turn/Item and ACP so mapping is lossless:
@@ -221,7 +221,7 @@ match   = { tool = "Bash", command_regex = 'rm -rf|git push --force|curl .*\| *(
 effect  = "deny"
 ```
 
-- Policy is evaluated **only for harnesses whose adapter can gate natively** (Claude `PermissionRequest`/`PreToolUse` hooks, pi/omp extension `tool_call`, Codex app-server approvals). For screen-only harnesses, policy can only *suggest*.
+- Policy is evaluated **only for harnesses whose adapter can gate natively** (Claude `PermissionRequest`/`PreToolUse` hooks, Codex hooks and app-server approvals, ACP `session/request_permission`). **Not pi/omp:** Vibeke has no gate there; approvals belong to the user's pi permission extension (or omp's own modes), and a policy rule can at most auto-answer that extension's dialog where the `answer_native: extension dialogs` capability exists (04 §6.3). For screen-only harnesses, policy can only *suggest*.
 - Vibeke policy never *loosens* a harness's own permission config beyond what that harness's native mechanism allows; it can answer "allow" on the user's behalf only for prompts the harness actually raised.
 - Every automatic decision emits `policy.rule_matched` and is visible in the pane's agent timeline.
 - Phase 1 records `(interaction fingerprint → human decision)` so Phase 2 can propose rules ("you approved `pnpm test` 30× in samplehub").

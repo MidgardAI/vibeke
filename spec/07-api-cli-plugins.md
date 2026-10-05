@@ -369,7 +369,7 @@ Opened by `render.attach` on a fresh connection, authenticated by the same `clie
 | 0x09 | `Clipboard` | `{selection: clipboard|primary, data, origin_machine}` — OSC 52 from a pane, policy-gated (06 A9, 09 §7) |
 | 0x0A | `Title` | `{pane, title}` |
 | 0x0B | `ModeChange` | `{pane, mouse_mode, bracketed_paste, kitty_kbd_flags, focus_events, alt_screen}` |
-| 0x0C | `Popup` | server-driven modal (confirmations, pickers, interaction overlay): `{id, kind, model}` |
+| 0x0C | `Popup` | user-invoked modal (confirmations, pickers, interaction cards, peek): `{id, kind, model, invoked_by: client_action}` — the server never sends an unsolicited `Popup` over a client's focused pane (08 §0) |
 | 0x0D | `Pong` | `{nonce, server_ts}` |
 | 0x0E | `Goodbye` | `{reason}` |
 | 0x0F | `InputAck` | `{input_id, status: written \| rejected{reason} \| dropped_offline}` |

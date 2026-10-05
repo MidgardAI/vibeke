@@ -203,6 +203,7 @@ The client keeps a `ClientScreen`: its copy of each visible pane's rows plus chr
 3. Diff against the previous composed grid and emit the minimal escape sequence stream (cursor moves, SGR changes, text), wrapped in synchronized-update (`CSI ? 2026 h/l`) when the host supports it.
 4. Images: place via kitty graphics (with unicode placeholders so they clip correctly at pane edges), else sixel, else iTerm2 inline, else a `[image 640×480 · click to open]` placeholder cell span (§9).
 5. Cursor: shown at the focused pane's cursor with the app's requested shape; hidden while popups have focus.
+6. **The focused pane is the agent's** (08 §0): the compositor draws Vibeke content over the focused pane's cells only for user-invoked popups (palette, goto, peek, cards), never spontaneously; toasts and attention badges live in chrome (sidebar, tab bar, status bar). Vibeke never re-renders an agent's TUI from structured data in a pane — pane cells always come from the agent's PTY.
 
 The compositor runs on its own thread with a frame budget. It never waits on the network; it draws whatever state it has.
 
