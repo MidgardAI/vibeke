@@ -22,7 +22,7 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 | 09 | [Security and privacy](spec/09-security-and-privacy.md) — threat model, agent containment, plugins, previews, updates |
 | 10 | [Quality, performance and testing](spec/10-quality-performance-testing.md) — budgets, chaos, keyboard matrix, golden tests, release |
 | 11 | [Milestones](spec/11-milestones.md) — M0–M6 build plan and risks |
-| 13 | [Sandboxes and VMs](spec/13-sandboxes-and-vms.md) — host / OS sandbox / container / VM execution, safe yolo, egress proxy, credentials, git boundary |
 | 12 | [Phase 2 outlook](spec/12-phase-2-outlook.md) — inbox, evidence, merge, mobile; what Phase 1 must provide |
+| 13 | [Sandboxes and VMs](spec/13-sandboxes-and-vms.md) — host / OS sandbox / container / VM execution, safe yolo, egress proxy, credentials, git boundary |
 
-Also: [integrations/pi-extension/DESIGN.md](integrations/pi-extension/DESIGN.md) · design review
+Also: [integrations/pi-extension/DESIGN.md](integrations/pi-extension/DESIGN.md) · design review · design review
