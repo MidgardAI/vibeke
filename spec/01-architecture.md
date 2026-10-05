@@ -147,6 +147,7 @@ crates/
   vk-server       # state actor, command bus, API server, render server, notification dispatch
   vk-agents       # harness manifests, adapter trait, built-in adapters, screen detector engine
   vk-tasks        # task workspaces: git/jj worktrees, port allocator, env/setup scripts, collision tracker
+  vk-sandbox      # execution isolation: Seatbelt/bwrap sandboxes, container & VM providers, egress proxy, credential projection (13)
   vk-remote       # machines, SSH bootstrap, bridge, transport (ssh-stdio, quic), forwarding
   vk-preview      # port discovery, HTTP/WS reverse proxy, CDP browser service, screenshot store
   vk-plugins      # manifest, argv actions, plugin process host, capabilities, KV storage

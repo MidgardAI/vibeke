@@ -44,13 +44,14 @@ Dogfooding starts at the end of M1 (Vibeke is used on the maintainer's machine f
 
 - `vk-tasks`: `task new` with git worktree / jj workspace, env copy/clone strategies, setup scripts, port leases, async removal, cleanup policies, branch/PR status in sidebar.
 - Collision tracker for shared-cwd agents; advisory claims; "split into task"; best-of-N task families (`--agents claude:2,codex:1`) + `task compare` (text-level).
-- `Runner` trait (local + ssh implementations).
+- `Runner` trait (local + ssh implementations) **plus** execution isolation per [13](13-sandboxes-and-vms.md): `sandbox` level (Seatbelt / bwrap+Landlock), egress proxy + network profiles, `container` level (Apple `container`, OrbStack/Docker, Podman), `clone` code isolation + `task sync`, devcontainers, credential projection, `--yolo`.
 - `vk-remote`: saved machines, no-sudo bootstrap with checksum, bridge multiplexing over SSH stdio, unified multi-machine sidebar, `--machine` forwarding (never falls back to local), reconnect/offline states, bandwidth budgets + adaptive frame rate, OSC 52 clipboard, image paste local→remote.
 
 ## M4 — Preview fabric
 
 - `vk-preview`: port discovery (process tree sockets + output URL detection + declare), forwarding through the bridge, local reverse proxy with per-preview `*.vibeke.localhost` origins, header rewriting, WebSocket/HMR/SSE, HTTPS upstreams, mirror mode for hard-coded ports, DNS-rebinding protection.
 - Headless Chromium over CDP on the dev-server machine: screenshots, console/network errors, DOM snapshot, visual diff.
+- `vm` execution level (Lima vz/Tart, Firecracker/Cloud Hypervisor), template snapshots, warm pools, forked best-of-N VMs (13 §9).
 - `vibeke preview …`, `vibeke browser …`, and `vibeke mcp` so agents screenshot their own work; inline screenshots via kitty graphics; screenshots stored as blobs with events.
 
 ## M5 — Plugins, Herdr compatibility, QUIC

@@ -74,7 +74,9 @@ trait IsolationBackend {
 | `worktree` (default for git) | `git worktree add -b <branch> <path> <base>` | `base` defaults to `origin/<default_branch>` after a `git fetch --quiet` (skippable with `tasks.fetch_before_create=false`, 5 s timeout, falls back to local). Sets `extensions.worktreeConfig` only if needed. Submodules: `git submodule update --init --recursive` if `.gitmodules` exists (configurable). |
 | `jj` (default when `.jj/` exists) | `jj workspace add --name <slug> -r <base> <path>` | Branch → jj bookmark `<branch>` created on first commit (`jj bookmark create`). Status via `jj log -r @ --no-graph -T …`. Co-located git repos keep working. |
 | `none` | Workspace rooted at the repo itself | Shared cwd. The collision tracker (§10) is active. |
-| `container` / `microvm` | via `Runner` (§12) | Designed now, implemented after Phase 1. |
+| `clone` | private clone inside a container/VM (`git clone --reference`), synced back by host-side fetch | Default code isolation for `container`/`vm` execution — see [13](13-sandboxes-and-vms.md) §6. |
+
+Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal axis, specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) and in Phase 1 scope (M3–M4).
 
 **Worktree root**: `tasks.root = "~/.vibeke/worktrees"`, layout `<root>/<repo-name>-<hash6>/<slug>`. `tasks.root = "sibling"` gives the maintainer's current convention, `../<repo>-<slug>`, next to the repo (e.g. `~/code/samplehub-lk20-maths-grade-names`). Either way the path is stored on the Task, never recomputed.
 
@@ -231,7 +233,7 @@ Per task/workspace, refreshed on fs events (debounced 500 ms) and at most every 
 
 ## 14. Runner abstraction
 
-Where a task's processes run. Phase 1 implements `local` and `ssh` (the remote machine's own server). Containers and microVMs are designed now so the task model doesn't change later.
+Where a task's processes run. Phase 1 implements `local` and `ssh`, **and** `sandbox`, `container` and `vm` runners as specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) (M3–M4). Cloud runners are Phase 2.
 
 ```rust
 #[async_trait]
@@ -246,7 +248,7 @@ trait Runner {
 }
 ```
 
-Container and microVM notes, out of Phase 1 scope:
+Container and microVM notes (detailed in 13):
 - Docker Sandboxes / Apple `container` / Firecracker-based providers implement `Runner`.
 - The holder runs *inside* the sandbox, reached via a vsock or exec stream.
 - `snapshot`/`fork` enable Phase 2 "branch this agent at turn N".

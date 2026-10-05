@@ -26,7 +26,7 @@ Be honest about where the market already is:
 1. **Daily terminal use**: workspaces, tabs, panes, splits, zoom, sidebar with agent states, notifications, persistent named sessions, multiple clients, remote machines over SSH, socket API + CLI, worktrees, plugins, themes, keybindings, copy mode.
 2. **Structured agent understanding** for Claude Code, Codex, pi, omp, OpenCode, Gemini CLI, and any harness described by a manifest; unified state machine and `Interaction` model.
 3. **Process durability**: processes survive server crash, upgrade and client disconnect; after reboot, agents resume via harness resume commands.
-4. **Isolation by default**: one-command task workspace (worktree + branch + ports + env + agent).
+4. **Isolation by default**: one-command task workspace (worktree + branch + ports + env + agent), with optional execution isolation (OS sandbox, container or VM) so "yolo" agents can run contained ([13](13-sandboxes-and-vms.md)).
 5. **Remote preview fabric**: open, screenshot and inspect a dev server running on a remote machine as if it were local; share images in both directions.
 6. **Durable event log + full API** that the Phase 2 mobile/web surface can be built on without changing the server.
 7. **Herdr compatibility layer**: import Herdr config/sessions; optionally expose a Herdr-compatible socket so existing tools work on day one.
@@ -37,7 +37,7 @@ Be honest about where the market already is:
 - Mobile/web UI, push notifications, the attention inbox UI, evidence bundles, merge queue, planner (Phase 2+). Phase 1 ships the *data and APIs* for them, not the UI.
 - Being a terminal emulator application (we run *inside* Ghostty/Kitty/WezTerm/iTerm2/Windows Terminal like tmux does). A native GUI client is a possible Phase 3.
 - Building our own coding agent. Vibeke hosts agents; it is not one.
-- Cloud-hosted sandboxes. Phase 1 supports local + SSH machines; microVM/cloud runners are designed for (the `Runner` abstraction) but deferred.
+- Cloud-hosted sandboxes. Phase 1 supports local + SSH machines **and local isolation levels — OS sandbox, container, VM — as an alternative to running on the host** ([13](13-sandboxes-and-vms.md)); cloud runners use the same `Runner` abstraction in Phase 2.
 - Windows as a first-class host in M1–M4 (planned for M6; the architecture must not preclude it — ConPTY, named pipes).
 
 ## Users
