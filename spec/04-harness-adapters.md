@@ -507,6 +507,8 @@ Each subsection lists: manifest highlights, the event-to-state mapping, how inte
    - Hooks arriving without `VIBEKE_PANE_ID` but with a `session_id` matching a correlated thread are routed to that run.
 3. **Screen fallback** when neither is possible.
 
+**PATH shim for user-typed Codex (makes strategy 1 the common case).** Vibeke prepends `~/.local/share/vibeke/shims` to `PATH` in every pane (`agents.shims = true`, default on; per-harness opt-out). The `codex` shim is a tiny exec wrapper: it locates the real `codex` later in `PATH`, adds `--disable daemon_auto_start` (unless the user passed an explicit daemon flag or `CODEX_VIBEKE_SHIM=0`), and `exec`s it with **all user arguments untouched** — so `codex -a never -s danger-full-access` behaves exactly as typed, just with a per-pane embedded server whose hooks carry `VIBEKE_PANE_ID`. The same shim mechanism is available to any harness manifest (`[launch] shim_args = [...]`). `vibeke doctor` warns when an alias/function in the user's shell shadows the shim. **[verify M2]** that hooks (`SessionStart`, `PreToolUse`, `Stop`) still fire under `-a never` / `danger-full-access`; `PermissionRequest` will not, by design.
+
 **Headless mode:** `codex app-server` (stdio) owned by `AppServerAdapter`, one process per run (or one per Vibeke session, multiplexing threads, behind `codex.headless_shared = true`).
 
 ### 6.3 pi (`pi`) and omp (`omp`)
