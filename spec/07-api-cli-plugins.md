@@ -687,7 +687,22 @@ Bind all callback paths to that grant; disable/unlink/uninstall or trust revocat
 
 ## 8. Herdr compatibility layer (`vk-compat`) [M5; importer in M1]
 
-Goal: an existing Herdr user switches with one command, and **existing socket clients work unmodified** against Vibeke. Scope is bounded to what is listed here.
+Goal: existing **Herdr plugins, CLI automation and socket clients run unmodified** against Vibeke's public compatibility surface. M5 covers the full public extension contract of the supported baseline, including the host APIs available to plugins. Import remains available in M1; the current SSH replacement goal does not acquire an M5 dependency.
+
+### 8.0 Supported baseline and meaning of full compatibility
+
+Initial required baseline: **Herdr v0.9.3**, tag resolved on 2026-10-06 to commit **`7b116c05bfda646af39d2524c54e70c751f57ee8`**. This pins a target for implementation; no current compatibility certification is implied. Reference material at that revision:
+
+- [Plugin authoring contract](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/plugins.mdx), [plugin schema](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/src/api/schema/plugins.rs), [plugin CLI implementation](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/src/cli/plugin.rs).
+- [Public CLI reference](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/cli-reference.mdx) and [socket API reference](https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/socket-api.mdx). The compiled baseline's `herdr api schema --json`, CLI help and behavior are the final oracle; preview documentation can contain differences from the shipped binary.
+
+At M5, check in `tests/compat/herdr/<version>/` containing the source revision, reference-binary checksums, full API schema, CLI grammar/help snapshots, manifest fixtures and a complete conformance inventory. Every public command, request, response, event, manifest field and platform branch must have an implementation mapping and tests. A single client trace or a selection of popular plugins is insufficient coverage. Valid baseline operations may not be stubbed, ignored, or rejected as `method_not_found` because Vibeke has not implemented them.
+
+Compatibility preserves observable arguments/defaults, output and error shapes, exit codes, identifiers, lifecycle, focus/layout effects and timing contracts. Native API differences stay on the native endpoint. `herdr --version`, `api schema`, `ping` and snapshot metadata from the compatibility launcher/endpoint describe the tested emulation target consistently; `vibeke doctor` separately identifies Vibeke and reports the target and coverage status. Before the full gate passes, report partial support explicitly rather than advertising the baseline as fully supported.
+
+**Boundary:** full compatibility here means the public plugin/automation contract. Implement public CLI operations using Vibeke's own runtime, including attachment and remote routing where exposed by the CLI. Running an original Herdr TUI binary against Vibeke, reproducing Herdr's private binary rendering/live-handoff transport, or sharing its internal session files in place is not required. Public UI-control methods and plugin-pane APIs are included. Private-transport exclusion must never be used to omit a public CLI operation. M5 certifies macOS/Linux; Windows adds the same contract in M6.
+
+Record each supported version independently. New Herdr releases trigger schema/help/behavior diffs and a compatibility update; never widen the advertised baseline merely because a semver comparison passes. Retain fixtures for every advertised version and document explicit migration/deprecation before retiring one. `min_herdr_version` is a prerequisite check, not proof that an arbitrary historical or future plugin is compatible.
 
 ### 8.1 Importer [M1]
 
@@ -702,31 +717,37 @@ Goal: an existing Herdr user switches with one command, and **existing socket cl
 | `[ui]` sidebar widths/collapsed | `[ui]` |
 | `[update] channel` | ignored (reported) |
 | `session.json` (v3): workspaces → tabs → layout → panes (cwd, `agent_session {source, agent, kind: id|path, value}`) | workspaces/tabs/layouts recreated; panes started with shells in their cwd; panes with an `agent_session` offered for resume via the harness resume argv (`claude --resume <id>`, `codex resume <id>`, `pi --session <path>`) |
-| `~/.config/herdr/plugins.json`, `plugins/` | listed; each offered for `plugin install` via §7.6 import |
+| `~/.config/herdr/plugins.json`, `plugins/`, plugin config/state directories | M1: inventory only. M5: preserve manifests/source metadata, offer install/link with legacy trust consent, copy config/state with a conflict report; never modify Herdr's originals (§7.7) |
 | Herdr integrations (`~/.claude/hooks/herdr-agent-state.sh`, `~/.codex/hooks.json` + `herdr-agent-state.sh`, pi extension) | detected; `vibeke integration install` installs Vibeke's alongside (they no-op outside Herdr because they check `HERDR_ENV`) |
 
 Report printed as a table; nothing is deleted from `~/.config/herdr`.
 
-### 8.2 Environment aliases [M1]
+### 8.2 Environment aliases and CLI launcher [M1 bootstrap; full contract M5]
 
-With `compat.herdr_env = true` (default on when an import has been done), every pane also gets: `HERDR_ENV=1`, `HERDR_SOCKET_PATH=<compat socket>`, `HERDR_PANE_ID=<herdr-style id>`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_BIN_PATH=<vibeke shim>`. The shim `herdr` (installed only if no real `herdr` is on PATH, or explicitly via `vibeke compat install-shim`) maps the Herdr CLI subset (`pane …`, `agent …`, `workspace …`, `tab …`, `worktree …`, `pane report-agent`) onto Vibeke methods. Existing Herdr integrations therefore report into Vibeke as `self_report` sources.
+With `compat.herdr_env = true` (default on when an import has been done), every pane also gets: `HERDR_ENV=1`, `HERDR_SOCKET_PATH=<compat endpoint>`, `HERDR_PANE_ID=<herdr-style id>`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_BIN_PATH=<absolute compatibility launcher>`. M1 exposes the implemented bootstrap/reporting surface and reports its partial status; existing integration reports become `self_report` sources. M5 implements the entire baseline public CLI grammar and behavior, including plugin commands, global flags, session selection, JSON/human output and exit status. An explicit `vibeke compat install-shim` can expose the launcher to external automation. Plugin invocations always receive the private PATH launcher (§7.7), irrespective of a real Herdr binary elsewhere on PATH.
+
+All compatibility commands operate on Vibeke-owned sessions/configuration/registrations, including lifecycle and integration management. They must never accidentally stop, upgrade, configure or install into a running Herdr instance. Explicit session selection overrides inherited socket context according to the baseline, and selects the corresponding Vibeke compatibility endpoint with the same caller authority.
 
 ### 8.3 Compat socket [M5]
 
 - Path layout mirrors Herdr's so existing socket clients' session discovery works: default session `<herdr_root>/herdr.sock`, named sessions `<herdr_root>/sessions/<name>/herdr.sock`, where `<herdr_root>` defaults to `$RUNTIME/<session>/herdr-compat/` and is exported via `HERDR_SOCKET_PATH`. Users who run socket clients set `HERDR_SOCKET_PATH` or `compat.herdr_socket_path = "~/.config/herdr/herdr.sock"` when Herdr is no longer installed. The socket is removed on clean stop (clients use socket presence as liveness).
-- Wire format exactly as Herdr: newline JSON `{"id": "<string>", "method": "...", "params": {...}}`; **one request per connection, server closes after the response**, except `events.subscribe` which streams. Response `{"id", "result": {"type": "<result_type>", …}}`; errors `{"id": "", "error": {"code": "<snake_case>", "message"}}`. Request line cap ≥ 1 MiB. Integer ids → `invalid_request`.
-- Ids: Herdr-style `w<ulid-ish>`, `<ws>:t<n>`, `<ws>:p<n>` handles are produced by a stable mapping table (compat ids never reused; `pane.move` yields a new id like Herdr).
-- `agent_status` mapping: `working → working`, `needs_approval|needs_answer → blocked`, `done → done`, `idle → idle`, `starting|unknown|error|rate_limited → unknown` (`error`/`rate_limited` additionally set `agent_status_detail`, ignored by Herdr clients). `exited` → no agent.
-- `agent_session` on panes: `{source: "vibeke:<harness>", agent, kind: "id"|"path", value}` derived from `AgentRun.harness_session_id` / `transcript_path` (pi uses `kind:"path"`), and, cleared when the run ends (avoids the stale-ref problem).
+- Wire format exactly as Herdr: newline JSON `{"id": "<string>", "method": "...", "params": {...}}`; ordinary requests close after the response and `events.subscribe` streams, as verified against the baseline. Success uses `{"id", "result": {"type": "<result_type>", …}}`; errors use `{"id", "error": {"code": "<snake_case>", "message"}}`. Echo a recoverable string request id on errors; use an empty id only when it cannot be recovered. Match baseline framing, line limits, invalid UTF-8/JSON handling, integer-id rejection and connection closure. No native JSON-RPC envelope or mandatory `client.hello` leaks into this endpoint.
+- Ids: Herdr-style `w<n>`, `<ws>:t<n>`, `<ws>:p<n>` handles come from a persisted mapping table with the baseline's allocation/move behavior. Internal Vibeke ULIDs never leak into compat fields.
+- Project execution/attention/read state into the baseline's agent status schema and semantics, including wait conditions and occupant binding; structured adapters remain Vibeke's source of truth. Do not add native-only states or fields to compatibility responses. Unknown agent states and session end/resume behavior have differential fixtures.
+- `agent_session` is derived from `AgentRun.harness_session_id` / `transcript_path` and retained/cleared in the compat projection according to the baseline lifecycle. Native cleanup rules must not silently change the Herdr response contract.
 - `revision` is real (pane revision counter). `scroll` provided.
 
-**Scope rule.** The compat socket implements **the existing-client subset only**: exactly the methods and events exercised by recorded socket-client fixtures and a pinned socket-client smoke test (conformance below). Rows in the table that those fixtures don't exercise are *documented mappings*, implemented only when a fixture requiring them is added; everything else returns `method_not_found` with a hint to the native API. Compat connections are identified and scoped exactly like native connections (09 §3.1) — a pane-scoped caller gets pane scope here too.
+**Scope rule.** Implement every public method and event in the baseline schema, including methods absent from the table below. The checked-in inventory (§8.0) is exhaustive; these tables are implementation notes and cannot narrow it. `method_not_found` is reserved for methods unknown to the selected baseline. Authentication and authorization failures are explicit errors, never disguised as missing methods.
 
-**Method mapping (the methods existing socket clients use, plus documented neighbours):**
+The public compatibility listener derives caller identity from peer credentials and the same pane/process scope rules as the native endpoint, without requiring a new handshake. A plugin invocation gets a private broker endpoint, bound server-side to its approved grant, exposed through `HERDR_SOCKET_PATH`. The launcher propagates that identity for native calls and session routing; raw JSON clients need no changes. Broker creation, server recovery, revocation and scope enforcement are covered by 09 §6. A restricted caller cannot select a different session or omit a token to acquire a legacy grant.
+
+Required coverage includes all server, notification, client, session, workspace, worktree, tab, pane, popup, layout, agent, event, integration and plugin methods. In particular, implement the surfaces omitted by the earlier subset-only design: `plugin.link/list/unlink/enable/disable`, `plugin.action.list/invoke`, `plugin.log.list`, `plugin.pane.open/focus/close`, `popup.close`, `layout.export/apply/set_split_ratio`, `pane.process_info/move/swap/resize/zoom`, `client.window_title.set/clear`, `agent.view.set/clear`, metadata reporting, and every remaining public schema entry. Full CLI coverage additionally includes operations performed client-side rather than by one matching socket method.
+
+**Initial method mapping (non-exhaustive; validate shapes against §8.0):**
 
 | Herdr method (params) | Herdr `result.type` | Vibeke implementation |
 |---|---|---|
-| `session.snapshot {}` | `session_snapshot` → `{version, protocol, workspaces, tabs, panes, agents, layouts, focused_workspace_id, focused_tab_id, focused_pane_id}` | `session.snapshot` projected to Herdr shapes; `focused_*` = most recently active TUI client's focus; `protocol: 20` (the Herdr protocol level we emulate) |
+| `session.snapshot {}` | `session_snapshot` → `{version, protocol, workspaces, tabs, panes, agents, layouts, focused_workspace_id, focused_tab_id, focused_pane_id}` | `session.snapshot` projected to Herdr shapes; focus and version/protocol metadata follow the selected tested baseline (§8.0), not a hardcoded historical protocol number |
 | `workspace.list {}` | `workspace_list` → `workspaces[] {workspace_id, number, label, focused, pane_count, tab_count, active_tab_id, agent_status}` | `workspace.list`; `agent_status` = most urgent among its runs |
 | `workspace.create {cwd, focus:false, label?}` | `workspace_created` → `{workspace, tab, root_pane}` | `workspace.create` |
 | `workspace.rename {workspace_id, label}` | `workspace_info` | `workspace.rename` (empty string stored literally, as Herdr) |
@@ -740,7 +761,7 @@ With `compat.herdr_env = true` (default on when an import has been done), every 
 | `tab.close {tab_id}` | `ok` | `tab.close {force:true}` (Herdr semantics: closes all panes) |
 | `pane.list {}` | `pane_list` → `panes[] {pane_id, terminal_id, workspace_id, tab_id, focused, cwd, foreground_cwd, agent, agent_status, agent_session, revision, scroll, label?}` | `pane.list` |
 | `pane.get {pane_id}` / `pane.current {}` | `pane_info` | `pane.get` / `pane.current` |
-| `pane.read {pane_id, source: visible|recent|recent_unwrapped|detection, lines, format: text|ansi}` | `pane_read` → `{read: {text, truncated, revision}}` | `pane.read` — **never** moves the operator's view, even for `lines > viewport_rows` on alt-screen agents (improvement; background `visible` polls are unaffected) |
+| `pane.read {pane_id, source: visible|recent|recent_unwrapped|detection, lines, format: text|ansi}` | `pane_read` → `{read: {text, truncated, revision}}` | compat read projection preserves baseline wrapping, source/line handling and scroll semantics; native reads retain their own contract |
 | `pane.send_text {pane_id, text}` | ack | `pane.send_text {paste: raw}` — raw bytes, no bracketed paste (Herdr semantics; existing clients depend on it) |
 | `pane.send_keys {pane_id, keys}` | ack; `invalid_key` on unknown | `pane.send_keys` restricted to Herdr's accepted set in compat mode (so existing clients' validation probes behave identically) |
 | `pane.send_input` | ack | `pane.send_text` + keys |
@@ -759,7 +780,7 @@ With `compat.herdr_env = true` (default on when an import has been done), every 
 | `events.subscribe {subscriptions: [{type, pane_id?}]}` | ack `subscription_started`, then `{"event": "<snake_case>", "data": {...}}` lines | internal subscription translated per table below; `pane.agent_status_changed`, `pane.scroll_changed`, `pane.output_matched` require `pane_id` (Herdr rule) |
 | `events.wait` | event | `events.wait` |
 
-Event translation (compat stream; snake_case `event` field, dot-form subscription `type`):
+Initial event translation (compat stream; snake_case `event` field, dot-form subscription `type`; extend to the entire baseline event schema, including loss/reconnect behavior):
 
 | Herdr subscription type | Emitted from Vibeke event |
 |---|---|
@@ -773,4 +794,16 @@ Event translation (compat stream; snake_case `event` field, dot-form subscriptio
 | `layout.updated` | `tab.layout_changed` (full `PaneLayoutSnapshot`) |
 | `worktree.created/opened/removed` | `worktree.*` |
 
-Conformance: `tests/compat/` replays recorded bridge traffic (fixtures from `bridge/mux/herdr/fixture.ts`) against the compat socket and diffs response shapes; CI also runs a pinned socket-client release against a Vibeke test session (smoke: dashboard loads, reply sent, key sent, tab created, events stream). Out of scope: Herdr's TUI-specific client methods, plugin-pane internals, `herdr --remote` wire protocol, and anything not listed above (`method_not_found` with a hint to the native API).
+### 8.4 Conformance and release gate
+
+Run the pinned Herdr binary and Vibeke in separate temporary homes/runtime directories and apply identical scripted operations. Compare CLI stdout/stderr/exit codes, request/response schemas, error behavior, event sequences, plugin context/env, files, process effects and rendered terminal interactions. Normalize only declared nondeterministic values (timestamps, generated ids via a bijection, temporary roots and process ids); never normalize missing fields, events, focus behavior or errors away. No test touches the operator's live Herdr sessions or plugin data.
+
+M5 requires:
+
+1. **Complete contract coverage:** every entry in the baseline inventory has passing positive/negative tests; no missing methods, skipped manifest fields or unsupported baseline operations on macOS/Linux. Validate against schema and observed binary behavior, including raw clients and the launcher.
+2. **Unmodified plugins:** pin real plugin repo SHAs and execute their original manifests/source through install, link, actions, hooks, logs, terminal placements and removal. Include at least a layout/worktree workflow, event notification, link preview, stateful startup restoration, and a plugin that uses raw socket callbacks. Fixtures exercise any surface those examples miss. Stub only external services/credentials, not Herdr callbacks or plugin code.
+3. **Lifecycle and storage:** offline install/link, shared registry across named sessions, enable/disable propagation, build failures, reinstall, missing manifests, restart/takeover, exactly-once-per-activation startup dispatch, config/state preservation, and migration/rollback with real Herdr still installed.
+4. **Routing and authority:** both `HERDR_BIN_PATH` and bare `herdr` select Vibeke; explicit sessions and remote execution target the correct host/session; raw callbacks retain the approved identity; long-lived actions/panes survive normal server recovery; revoked/disabled grants reject callbacks; restricted callers cannot invoke a broader plugin to escalate.
+5. **Socket-client regression:** replay recorded bridge traffic (`bridge/mux/herdr/fixture.ts`) and run a pinned socket-client smoke test (dashboard, reply, key input, tab creation, event stream) alongside the full suite.
+
+Publish the baseline/platform matrix and failures with the build. Until all required entries pass, label support partial; a passing socket-client smoke test alone never establishes full compatibility. Windows argv/PATHEXT, paths, named pipes and popup behavior become the same release gate at M6. Test scheduling and milestone gates are specified in [10](10-quality-performance-testing.md).

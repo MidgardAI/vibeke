@@ -12,5 +12,4 @@ serde.workspace = true
 postcard.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
-
-[dev-dependencies]
+thiserror.workspace = true
