@@ -1,0 +1,479 @@
+# 08 — UX, configuration and keybindings
+
+This section covers the TUI client's user-facing surface: layout chrome, navigation, notifications, the interaction overlay, the full `config.toml` schema, keybinding syntax and defaults, hot reload, and the Herdr importer. Rendering and input mechanics are in [03-terminal-engine-and-tui.md](03-terminal-engine-and-tui.md). The objects shown here (workspaces, groups, agent runs, interactions, notifications) are defined in [02-data-model-and-event-log.md](02-data-model-and-event-log.md).
+
+**Milestones** used throughout: **M0** spikes · **M1** local core · **M2** agents/harnesses · **M3** tasks + remote · **M4** preview fabric · **M5** plugins + compat + QUIC · **M6** hardening/Windows/1.0.
+
+UX principles:
+1. **Familiar defaults work on day one.** Default prefix `ctrl+b`, tmux-style default bindings, and an importer for Herdr config.
+2. **What needs me is always visible**, but never steals focus.
+3. **Structured, not scraped.** When an agent asks something, Vibeke shows a native prompt you can answer without learning that agent's TUI. The agent's own UI keeps working too.
+4. **Show uncertainty.** Inferred states look different from reported ones.
+5. **Everything has a command.** Every action is in the command palette, bindable, and available over the CLI/API.
+
+---
+
+## 1. Screen anatomy
+
+```
+┌─ sidebar ───────────────┬─ tab bar (top|bottom) ─────────────────────────────────────────────┐
+│ ▾ clients               │ 1 api  2 web*  3 ⚑review                                            │
+│   ▾ samplehub      ●2   ├─────────────────────────────────┬──────────────────────────────────┤
+│     ◆ fix-login  ⚠ ✓    │                                 │                                  │
+│       claude  ⚠ approve │          pane w5:p18            │          pane w5:p20             │
+│       codex   ● working │          (claude)               │          (codex)                 │
+│     ◆ seo-todo   ✓      │                                 │                                  │
+│   ▸ dashboard       ○    │                                 │                                  │
+│ ▸ personal              │                                 │                                  │
+│ ─ pinned ─              ├─────────────────────────────────┴──────────────────────────────────┤
+│   backend/claude  ? ask  │ status: devbox ● │ k7 fix-login ⎇ fix/login :4100 │ 2 need you │ 22:41│
+└─────────────────────────┴──────────────────────────────────────────────────────────────────────┘
+```
+
+Regions: **sidebar** (left or right, collapsible), **tab bar** (top or bottom), **pane area** (tiled layout + floating panes), optional **status bar** (top or bottom, independent of the tab bar), **overlays** (palette, switcher, interaction overlay, popups, toasts).
+
+## 2. Sidebar
+
+### 2.1 Tree
+- Levels: **Machine** (shown only when more than one machine is connected) → **Group** (optional, nestable) → **Workspace** → **Agent rows** (one per live agent run in the workspace) → optional **plain pane rows** (`ui.sidebar.show_shell_panes = false` by default).
+- Tasks (05) render as workspaces with a `◆` marker plus branch name. A task workspace sits under its source repo's workspace when `ui.sidebar.nest_tasks = true` (default).
+- Collapsing a node aggregates its children: `●2` = two working, a red badge = needs you. Aggregates always bubble up the **most urgent** child state (precedence: `needs_approval` > `needs_answer` > `error` > `rate_limited` > `done` > `working` > `idle` > `unknown`).
+- Keyboard: navigate mode (§6) or `prefix+w` picker. Mouse: click to focus, drag to reorder or move into a group, right-click opens a context menu.
+
+### 2.2 Agent row anatomy
+`<harness icon/name> <name?> <state glyph> <short label> <age?>`
+
+| State | Glyph | Colour token | Label |
+|---|---|---|---|
+| starting | `◌` | `muted` | starting |
+| working | `●` (pulsing at ≤ 2 Hz when `ui.animate`) | `accent` | working · 3m |
+| needs_approval | `⚠` | `red` | approve: `Bash pnpm test` (truncated) |
+| needs_answer | `?` | `yellow` | ask: first question |
+| done (unseen) | `✓` bold | `green` | done |
+| idle (seen) | `○` | `muted` | idle |
+| error | `✗` | `red` | error: rate limit / API |
+| rate_limited | `⏸` | `yellow` | limited until 23:10 |
+| exited | `⊘` | `muted` | exited (code) |
+| unknown | `·` | `muted` | — |
+
+**Source/confidence indicator** (principle 4): the state glyph is drawn normally for `source = adapter | self_report`. For `screen` or `process`, or when `confidence < 0.8`, it is drawn **hollow/dim with a trailing `~`** (`⚠~`), and the tooltip or `info` shows `inferred from screen (0.72)`. `ui.sidebar.show_state_source = "inferred-only" | "always" | "never"`.
+
+### 2.3 Unread, marked-unread, pinned
+- **Unread**: a pane gets `unread` when it produced output or changed state while not visible in any client. Shown as bold row text. Cleared when focused.
+- **Mark unread**: `prefix+u` or context menu toggles `marked_unread` on the current agent/pane. It stays until explicitly cleared or focused again (`ui.marked_unread_clears_on_focus = false` keeps it until toggled).
+- **Pinned**: `prefix+alt+p` pins the pane. Pinned rows also appear in a `─ pinned ─` section at the bottom of the sidebar, in pin order.
+- `done` vs `idle` works like this: idle work finished while the user wasn't looking is `done` until seen. "Seen" means focused in any attached TUI client (CLI reads don't count; Phase 2 mobile clients will).
+
+### 2.4 Placement and sizing
+- `ui.sidebar.position = "left" | "right"`.
+- `ui.sidebar.width` (default 28), `min_width` 18, `max_width` 48, auto-fit to names when `ui.sidebar.auto_width = true`. Drag the border to resize; the width is saved per client.
+- `ui.sidebar.collapsed = false`; `prefix+b` toggles. When collapsed, a 2-column rail shows only urgency badges per workspace.
+- Row tokens are configurable (including `hide = true`) via `[[ui.sidebar.token]]` rules: match by harness, state or regex, then rename, recolour or hide.
+
+## 3. Tab bar
+
+- Position `ui.tabs.position = "top" | "bottom" | "hidden"`.
+- Each tab shows `number` plus title: `3 review`. `ui.tabs.show_numbers = true`. Numbers are per workspace, assigned at creation, and renumbered only on explicit `tab renumber`.
+- Title source order: custom title → `auto_title` (the focused pane's agent name or harness, else the process name, else OSC title) → `shell`.
+- The tab shows the most urgent agent state among its panes as a glyph prefix (`⚑`, `?`, `✓`).
+- Overflow: scroll arrows plus the `prefix+g` goto. Mouse: click to switch, middle-click to close (confirm if processes are running), drag to reorder.
+
+## 4. Status bar (optional)
+
+`ui.status_bar.enabled = false` by default. When enabled, `position = "top" | "bottom"`, with segments on the left, centre and right:
+
+```toml
+[ui.status_bar]
+enabled  = true
+position = "bottom"
+left     = ["machine", "task", "branch", "ports"]
+center   = ["attention"]           # "2 need you" — click opens interaction overlay for the oldest
+right    = ["agents_summary", "clock"]
+```
+
+Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` (task port range and live previews), `attention`, `agents_summary` (`●3 ✓1 ⚠1`), `cpu`, `clock`, `prefix_indicator`, `mode` (normal/navigate/copy/resize), `sync_input`.
+
+**Plugin segments** (M5): plugins contribute `status.segment` with `{id, interval_ms | event_driven, render → spans}` (07). They appear as `plugin:<id>/<segment>` in the lists above. A segment that renders slower than 50 ms is dropped with a warning.
+
+## 5. Panes, floating panes, popups, zoom, resize
+
+- **Splits**: `prefix+v` (vertical, side by side), `prefix+minus` (horizontal). `pane.split` via API supports `--size 30%`.
+- **Zoom**: `prefix+z` toggles the focused pane to fill the tab. A `Z` marker appears in the tab.
+- **Resize mode**: `prefix+r` then `h j k l` / arrows (shift = ×5), `=` equalizes, `esc`/`enter` exits. Mouse: drag borders.
+- **Floating panes** (D#782): `prefix+f` creates a floating pane (default 70%×70%, centred); `prefix+shift+f` toggles visibility of all floats in the tab. Floats can be moved/resized with the mouse or in resize mode (`m` toggles move). A tiled pane can be floated and back (`pane float`/`pane embed`).
+- **Popups** (`type = "popup"`): session-modal terminals that don't change the layout and close when the command exits (used by `[[keys.command]]`, edit-scrollback, plugin actions). Width and height accept cells or `%`.
+- **Synchronized input**: `prefix+shift+s` toggles sync for the current tab. Input to the focused pane is mirrored to every pane in the tab that is in the sync set (default all; `prefix+alt+s` toggles a single pane's membership). A bright `SYNC` badge shows in the tab bar and the status bar. Paste is mirrored too. Agent panes are **excluded by default** (`ui.sync_input.include_agents = false`) to avoid prompting N agents by accident.
+- **Focus follows mouse**: `ui.focus_follows_mouse = false`. When enabled, hovering a pane focuses it after `ui.focus_follows_mouse_delay_ms = 120`; it never applies while a popup or overlay is open.
+- **Close**: `prefix+x` closes the pane after confirmation when a non-shell foreground process is running (configurable `ui.confirm_close = "running" | "always" | "never"`).
+
+## 6. Navigation
+
+### 6.1 Navigate mode
+`prefix+w` opens navigate mode: the sidebar gets keyboard focus. Movement: `up/down` move between workspaces and agents, `h j k l` move between panes, `enter` focuses, `1..9` jump, `esc` exits. Plus: `/` filter, `space` peek (§6.4), `a` answer (opens the interaction overlay for the selected agent), `u` mark unread, `p` pin, `r` rename, `x` close (confirm), `n` new workspace, `t` new task (05).
+
+### 6.2 Goto / fuzzy switcher
+`prefix+g`: one fuzzy list over workspaces, tabs, panes, agents (by name, harness, state), tasks, previews and machines. Typing filters; prefix tokens narrow the kind: `@agent`, `#task`, `:tab`, `>command` (switches to the palette), `!state` (`!approve` lists everything awaiting approval). Results are ranked by match score, then recency, then urgency. `enter` jumps; `ctrl+enter` opens in a new client split view (M3).
+
+### 6.3 Command palette
+`prefix+p` is taken by `previous_tab`, so the palette is **`prefix+:`** and also `ctrl+shift+p` as a direct binding when the host reports it unambiguously (kitty keyboard). It lists every action (built-in, `[[keys.command]]`, plugin actions) with its current binding. Actions take arguments through inline prompts (for example `split: size?`). It remembers the last 20 used.
+
+### 6.4 Peek
+In the sidebar, `space` on an agent row shows a floating read-only preview of that pane (last 30 lines plus a state header plus an open interaction if any) without changing focus. `enter` inside peek focuses the pane; `a` answers.
+
+### 6.5 Workspace and agent cycling
+`previous_workspace`, `next_workspace`, `previous_agent`, `next_agent`, `focus_agent` (indexed) and `next_attention` (**default `prefix+a`**: jumps to the oldest open interaction, else the oldest `done`).
+
+## 7. Notifications
+
+### 7.1 Pipeline
+Sources: agent state transitions (configurable which), interactions opened, bell, OSC 9/777/99 from panes, plugins, system (remote disconnected, update available).
+
+```
+notification.created → policy (rules, quiet hours, presence) → channels
+   channels: toast (in-TUI)  |  host-terminal OSC (9 / 777 / 99)  |  native OS notifier  |  sound  |  bell
+```
+
+- **Presence**: a notification for a pane that is visible and focused in an attached client whose host terminal window is focused (focus events from the host, 03 §7.2) is suppressed except as a toast. `notifications.suppress_when_focused = true`.
+- **Coalescing**: multiple notifications about one agent within `coalesce_ms` (3000) merge into one.
+- **Native OS notifier**: macOS through a helper inside the signed bundle (`UNUserNotificationCenter`, so notifications carry the Vibeke identity and actions); Linux through `org.freedesktop.Notifications` over D-Bus; Windows toast in M6. Routing through the terminal loses click-to-focus. We support both and default to `native` when available, falling back to `osc`.
+- **Click-to-focus**: native notifications carry `vibeke://focus?session=…&pane=…`. Clicking runs `vibeke focus <pane>`, which focuses the pane in the most recently active attached client and asks the OS to raise that host terminal window (macOS: activate the app by bundle id from `TERM_PROGRAM`/`__CFBundleIdentifier` captured at attach; Linux: `xdg-activation` token when available). Approval notifications on macOS also carry **Allow / Deny actions** that answer the interaction directly (only when `answer_channel = native` and the action's risk isn't `high`).
+- **Sound**: `notifications.sound = "default" | "none" | path`, configurable per kind.
+- **Quiet hours**: `notifications.quiet_hours = "22:00-07:00"` (only `urgency = high` gets through).
+
+### 7.2 Toasts
+Stacked at the top-right of the pane area, max 3, auto-dismiss after 6 s (except interactions, which stay until answered or dismissed). `prefix+o` (`open_notification_target`) jumps to the newest toast's target.
+
+## 8. Interaction overlay (answering agents natively)
+
+When an agent run has an open `Interaction` (02 §1.1), Vibeke can show it as a **structured popup**, independent of how the agent draws its own prompt.
+
+Triggers: `prefix+a` (next attention), `a` in navigate mode or peek, clicking the sidebar badge or attention segment, or automatically when the user focuses a pane with an open interaction and `ui.interaction_overlay.auto_open = "focus"` (default `"never"`: the agent's own UI stays primary when you're looking at it).
+
+```
+┌ claude · samplehub/fix-login · needs approval ──────────────────── i42 ┐
+│ Bash                                                    risk: medium   │
+│   pnpm prisma migrate dev --name add_login_attempts                    │
+│ cwd ~/.vibeke/worktrees/samplehub/fix-login                            │
+│ reasons: writes database, network access                               │
+│                                                                        │
+│ [y] allow once   [s] allow for session   [r] add rule…   [n] deny      │
+│ [e] deny with message…   [o] open pane   [esc] later                   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Approval**: shows the tool, command/paths, a diff (scrollable, syntax-highlighted, `d` toggles full screen), risk and reasons. Keys: `y` allow once, `s` allow for session (only if the harness supports session scope natively), `r` creates a policy rule pre-filled from this interaction (02 §4) and lets you edit scope and regex before saving, `n` deny, `e` deny with a message (sent to the agent as the denial reason when the channel supports it).
+- **Question** (AskUserQuestion, elicitation, pickers): each question as a list with `j/k` and `space` to toggle (multi-select) or `enter` (single). `tab` moves to the free-text field when `allow_free_text`. Submit `ctrl+enter`.
+- **Plan review**: rendered markdown of `plan_md`, with `y` approve, `e` request changes with text, `n` reject.
+- **Delivery**: the answer goes out through the interaction's `answer_channel`. `native` → adapter (hook response, extension, RPC). `keystrokes` → the adapter's verified key sequence (04: navigate, re-read the screen, confirm the cursor is on the target option, then press Enter; on mismatch, abort and show "couldn't deliver — answer in pane", jumping focus there). The overlay shows a delivery spinner, then ✓, or the failure with the reason (`interaction.answer_failed`).
+- If the interaction is resolved elsewhere (in the agent TUI, another client or a rule), the overlay closes with a toast "answered in pane" or "answered by rule r3".
+- Multiple open interactions: header `1/3`, `]`/`[` cycle. `A` in the overlay header opens the **batch view**: interactions grouped by fingerprint (same tool + normalized command) with "allow all N" (only for `risk ≤ medium` and only native channels).
+
+**Acceptance (M2):** for Claude Code (hooks), pi and omp (extension), Codex (app-server mode), answering approvals and AskUserQuestion from the overlay works with zero keystrokes reaching the agent TUI, and the agent proceeds within 300 ms. For screen-only harnesses, verified keystroke delivery succeeds on the golden corpus and fails safe (no Enter) on every mismatch fixture.
+
+## 9. Onboarding
+
+First run (`onboarding = true` or no config):
+1. **Detect** host terminal capabilities (03 §6.1) and print a short pass/warn table (keyboard protocol, graphics, clipboard, notifications).
+2. **Import from Herdr?** If `~/.config/herdr/config.toml` exists: "Import keybindings, theme, sidebar rules and worktree dir? [Y/n]". A running Herdr session can also be recreated (layout plus cwd plus agent resume) via `vibeke import herdr --session` (§12).
+3. **Agent integrations**: detect installed harnesses (claude, codex, pi, omp, opencode, gemini, …) with versions, and offer `vibeke integration install <name>` for each, showing exactly which files will be modified (diff preview) (04).
+4. **Notifications**: choose native / terminal / none, then send a test notification and confirm the click focuses Vibeke.
+5. **Theme**: pick from the built-ins, with auto light/dark.
+6. Write `~/.config/vibeke/config.toml` with only the non-default choices, and set `onboarding = false`.
+
+Everything onboarding does is also available later from `vibeke setup` and the palette.
+
+## 10. Keybindings
+
+### 10.1 Syntax (tmux-style)
+```
+binding   := [ "prefix+" ] chord ( " " chord )*        # space-separated sequence after prefix, e.g. "prefix+g w"
+chord     := ( modifier "+" )* key
+modifier  := ctrl | shift | alt | super | cmd | hyper | meta | altgr
+key       := a-z | 0-9 | f1..f24 | enter | tab | esc | backspace | space | up | down | left | right | home | end
+           | pageup | pagedown | insert | delete | named punctuation (minus, comma, period, slash, backslash,
+             semicolon, quote, backtick, lbracket, rbracket, equal, plus, ampersand, colon, question, …)
+           | literal single printable char (e.g. "[", "?")
+range     := "1..9"   (indexed bindings: switch_tab = "prefix+1..9")
+```
+- `"prefix+n"` requires the prefix. A chord without `prefix+` is a **direct** binding active in terminal mode and is consumed before the pane sees it. Direct bindings warn at config load if they shadow common app keys (`ctrl+c`, `ctrl+d`, `ctrl+r`, `esc`).
+- Matching uses the base-layout key (03 §7.1), so bindings are layout-independent. `cmd`/`super` bindings need a host that reports them (kitty keyboard); config load warns otherwise.
+- Prefix behaviour: `keys.prefix_timeout_ms = 1500`; pressing the prefix twice sends the prefix key to the pane (tmux-like, `keys.prefix_passthrough = true`).
+- Empty string `""` unbinds. `vibeke keys list` prints the effective keymap; `vibeke keys check` reports conflicts.
+
+### 10.2 Default keymap
+Vibeke additions beyond the base set are marked ✚.
+
+| Action | Default | | Action | Default |
+|---|---|---|---|---|
+| help | `prefix+?` | | split_vertical | `prefix+v` |
+| settings | `prefix+s` | | split_horizontal | `prefix+minus` |
+| detach | `prefix+q` | | close_pane | `prefix+x` |
+| reload_config | `prefix+shift+r` | | zoom | `prefix+z` |
+| open_notification_target | `prefix+o` | | resize_mode | `prefix+r` |
+| workspace_picker / navigate | `prefix+w` | | toggle_sidebar | `prefix+b` |
+| goto | `prefix+g` | | focus_pane_left/down/up/right | `prefix+h/j/k/l` |
+| new_workspace | `prefix+shift+n` | | cycle_pane_next / previous | `prefix+tab` / `prefix+shift+tab` |
+| new_worktree | `prefix+shift+g` | | edit_scrollback | `prefix+e` |
+| rename_workspace | `prefix+shift+w` | | ✚ copy_mode | `prefix+[` |
+| close_workspace | `prefix+shift+d` | | ✚ paste_buffer | `prefix+]` |
+| new_tab | `prefix+c` | | ✚ command_palette | `prefix+:` |
+| rename_tab | `prefix+shift+t` | | ✚ search_scrollback | `prefix+/` |
+| previous_tab / next_tab | `prefix+p` / `prefix+n` | | ✚ next_attention | `prefix+a` |
+| switch_tab | `prefix+1..9` | | ✚ mark_unread | `prefix+u` |
+| close_tab | `prefix+shift+x` | | ✚ pin_pane | `prefix+alt+p`* |
+| rename_pane | `prefix+shift+p`* | | ✚ float_new / toggle_floats | `prefix+f` / `prefix+shift+f` |
+| remote_image_paste | `ctrl+v` (remote only) | | ✚ sync_input | `prefix+shift+s` |
+| | | | ✚ new_task | `prefix+shift+k` |
+| | | | ✚ preview_list / open | `prefix+shift+o` |
+
+\* `rename_pane` is bound to `prefix+shift+p`, so we default `pin_pane` to `prefix+alt+p` (§2.3 references to "pin" use this binding). `vibeke keys check` must report no conflicts on the shipped defaults (CI test).
+
+Mode-local keymaps: `[keys.navigate]`, `[keys.copy_mode]` (D#587), `[keys.resize]`, `[keys.overlay]`. All are rebindable.
+
+### 10.3 Custom commands
+`[[keys.command]]` (`type = "shell" | "pane" | "popup"`, `width`/`height`) plus ✚ `type = "float"` (persistent floating pane), ✚ `cwd = "pane" | "workspace" | path`, ✚ `env`, ✚ `title`, and ✚ `when = "agent:claude"` (only active when the focused pane runs that harness).
+
+## 11. `config.toml` schema
+
+Location: `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). Unknown keys produce warnings, never errors. The JSON Schema is generated from Rust types (`vibeke config schema`) for editor completion. `vibeke --default-config` prints a fully commented default file.
+
+```toml
+onboarding = false
+
+[theme]
+name        = "catppuccin"            # built-ins: catppuccin(-latte), terminal, tokyo-night, dracula, nord, gruvbox,
+                                      # one-dark, solarized, kanagawa, rose-pine, vesper + any themes/*.toml
+auto_switch = true
+dark_name   = "catppuccin"
+light_name  = "catppuccin-latte"
+[theme.custom]                        # token overrides: panel_bg, fg, muted, accent, red, yellow, green, blue, border, selection…
+accent = "#f5c2e7"
+[theme.pane]                          # default pane palette overrides (ansi0..15, fg, bg, cursor) — propagated per 03 §10.4
+bg = "reset"
+
+[terminal]
+default_shell        = ""             # "" → $SHELL → /bin/sh
+shell_mode           = "auto"         # auto | login | non_login
+new_cwd              = "follow"       # follow | home | current | <path>
+term                 = "xterm-256color"
+scrollback_lines     = 10000
+archive_scrollback   = true
+archive_styles       = false
+archive_max_per_pane = "200MiB"
+archive_days         = 30
+grapheme_width       = "auto"         # auto | unicode | legacy
+allow_passthrough    = false
+host_overrides       = {}             # e.g. { kitty_graphics = false } for misreporting hosts
+[terminal.env]                        # extra env injected in every pane
+EDITOR = "nvim"
+
+[clipboard]
+osc52_write       = "allow"           # allow | deny
+osc52_read        = "deny"            # deny | ask | allow
+copy_on_select    = false
+primary_selection = false
+
+[keys]
+prefix             = "ctrl+b"
+prefix_timeout_ms  = 1500
+prefix_passthrough = true
+altgr_mode         = "auto"           # auto | text | chord
+shift_enter_legacy = "cr"             # cr | lf
+# … action = "binding" entries as in §10.2
+[keys.copy_mode]
+mode = "vi"                           # vi | emacs
+# per-key overrides…
+[[keys.command]]
+key = "prefix+alt+g"
+type = "popup"
+command = "lazygit"
+width = "80%"
+height = "80%"
+
+[ui]
+max_fps                    = 120
+background_animation_fps   = 4
+animate                    = true
+focus_follows_mouse        = false
+focus_follows_mouse_delay_ms = 120
+confirm_close              = "running"
+marked_unread_clears_on_focus = false
+[ui.sidebar]
+position          = "left"            # left | right
+width             = 28
+min_width         = 18
+max_width         = 48
+auto_width        = true
+collapsed         = false
+show_shell_panes  = false
+nest_tasks        = true
+show_state_source = "inferred-only"   # inferred-only | always | never
+[[ui.sidebar.token]]                  # token rules
+match = { harness = "codex" }
+label = "cx"
+[ui.tabs]
+position     = "top"                  # top | bottom | hidden
+show_numbers = true
+[ui.status_bar]
+enabled  = false
+position = "bottom"
+left     = ["machine", "task", "branch"]
+center   = ["attention"]
+right    = ["agents_summary", "clock"]
+[ui.sync_input]
+include_agents = false
+[ui.interaction_overlay]
+auto_open = "never"                   # never | focus | always
+batch     = true
+
+[notifications]
+channel               = "native"      # native | osc | both | none
+sound                 = "default"
+suppress_when_focused = true
+coalesce_ms           = 3000
+quiet_hours           = ""            # "22:00-07:00"
+[notifications.on]                    # which events notify
+needs_approval = true
+needs_answer   = true
+done           = true
+error          = true
+bell           = false
+osc            = true
+remote_disconnected = true
+
+[agents]                              # see 04 for harness manifests and adapter options
+auto_detect       = true
+resume_on_restart = "ask"             # ask | always | never
+name_from_task    = true
+[agents.harness.claude]
+enabled = true
+integration = "hooks"                 # hooks | stream-json | screen
+extra_args = []
+[agents.harness.pi]
+integration = "extension"             # extension | rpc | screen
+
+[policy]                              # rules: 02 §4
+[[policy.rule]]
+match  = { tool = "Bash", command_regex = '^(pnpm|npm) (test|run lint)( |$)' }
+effect = "allow"
+
+[tasks]                               # see 05
+root          = "~/.vibeke/worktrees"
+vcs           = "auto"                # auto | git | jj
+default_agent = "claude"
+port_block    = 10
+setup_script  = ".vibeke/setup.sh"
+copy_files    = [".env", ".env.local"]
+
+[preview]                             # see 06
+auto_discover     = true
+auto_forward      = true
+origin_style      = "subdomain"       # subdomain (v4.localhost:7890) | port
+browser           = "chromium"        # chromium | none
+screenshot_format = "png"
+
+[remote]                              # see 06
+[[remote.machine]]
+label   = "devbox"
+address = "demo@devbox.tailnet"
+transport = "ssh"                     # ssh | quic (M5)
+keybindings = "local"                 # local | server
+
+[plugins]                             # see 07
+enabled = ["acme.example"]
+
+[compat]
+herdr_env    = true                   # export HERDR_* aliases in panes
+herdr_socket = false                  # expose Herdr-compatible API socket (M5)
+
+[update]
+channel       = "stable"              # stable | preview
+version_check = true
+```
+
+### 11.1 Repo-local config
+`.vibeke/config.toml` in a repo root can set `tasks.*`, `preview.*`, `policy.rule` (scoped to the repo) and `[[keys.command]]`. It is ignored until trusted (`vibeke trust` or the onboarding prompt shown when you first open the workspace). The trust record is a hash of the file, so any change requires re-trust.
+
+### 11.2 Hot reload
+- `prefix+shift+r`, `vibeke config reload`, or file-watch (`config.watch = true`, default) → parse → validate → diff → apply.
+- Applies live: theme, keys, ui.*, notifications, policy, preview, plugins enable/disable, sidebar tokens.
+- Applies to new panes only: terminal.default_shell, shell_mode, term, env. A toast says so.
+- On parse or validation error: keep the old config, show a toast with `file:line: message`, and `vibeke config check` prints the details. Never apply partially.
+- Emits `session.config_reloaded { changed_keys }`.
+
+## 12. Herdr importer
+
+`vibeke import herdr [--config] [--session] [--dry-run]` (also offered in onboarding).
+
+| Herdr | Vibeke | Notes |
+|---|---|---|
+| `onboarding` | `onboarding` | |
+| `[theme] name/auto_switch/dark_name/light_name/[theme.custom]` | same keys | Built-in theme names are identical. |
+| `[terminal] default_shell/shell_mode/new_cwd` | same | |
+| `[update] channel/version_check` | same | `manifest_check` → `agents.manifest_check` |
+| `[keys] prefix` + every action key | same action names | Herdr's legacy `[keys.indexed]` → `switch_tab`/`switch_workspace`/`focus_agent` ranges. Bindings using `cmd`/`super` warn if the host lacks kitty keyboard. |
+| `[[keys.command]]` | same | Windows `cmd.exe` semantics preserved on Windows hosts only. |
+| `[worktrees] directory` | `tasks.root` | |
+| `[ui] sidebar_width/min/max/collapsed` | `ui.sidebar.*` | |
+| sidebar token rules (`hide = true` etc.) | `[[ui.sidebar.token]]` | 1:1 schema. |
+| `remote_image_paste` | same | |
+| `session.json` workspaces/tabs/panes/layout/cwd | recreated layout | `--session` only. |
+| `agent_session {agent, value}` per pane | `resume_on_restart` candidates | Offered for resume via harness resume argv (04). |
+| Herdr hook integrations (`~/.claude/hooks/herdr-agent-state.sh`, `~/.codex/hooks.json`) | left untouched | Vibeke's integrations install alongside. `HERDR_*` env aliases keep Herdr's scripts harmless (they report to the compat socket if enabled, else exit 0). |
+| Plugins (`~/.config/herdr/plugins`, `herdr-plugin.toml`) | `vibeke plugin import` | Argv actions are compatible (07); unsupported fields reported. |
+
+The importer prints a report of mapped, defaulted and unsupported keys, and never overwrites an existing Vibeke config without `--force` (it writes `config.imported.toml` instead).
+
+**Acceptance (M1 config, M2 session):** importing a real `~/.config/herdr` (config + session.json with several workspaces) recreates every workspace and tab layout with correct cwds, and offers to resume all 7 Claude/Codex agents by their stored session ids.
+
+## 13. Capability checklist
+
+| Capability | Vibeke | Milestone |
+|---|---|---|
+| Workspaces / tabs / panes, splits, zoom, resize | §5 | M1 |
+| Sidebar with agent states (idle/working/blocked/done/unknown) | §2, richer state set (02) | M1 (shell), M2 (agents) |
+| Persistent server, detach/attach, named sessions | 01 §1, holders | M1 |
+| Multiple clients on one session | render stream per client (03 §5) | M1 |
+| Notifications (terminal-routed) | §7, plus native and click-to-focus | M1 (osc), M2 (native) |
+| Keybindings with prefix, custom commands (shell/pane/popup) | §10 | M1 |
+| Themes, auto light/dark | §11, 03 §10.4 | M1 |
+| Copy mode, edit scrollback | 03 §11 | M1 |
+| Config reload | §11.2 | M1 |
+| Socket API + CLI (`workspace`, `tab`, `pane`, `agent`, `notification`, `worktree`, `session`) | 07 | M1 (core), M2 (agent) |
+| `agent start / prompt --wait / wait --until / read / send-keys` | 04, 07 | M2 |
+| Agent self-report (`pane report-agent`) | adapter API + compat | M2 |
+| Built-in integrations | `vibeke integration install` | M2 |
+| Agent skill | `vibeke --skill` | M2 |
+| Agent resume after restart | 04 resume handles | M2 |
+| Worktree helpers | tasks (05) | M3 |
+| Remote via SSH, saved machines, `--machine` CLI forwarding | 06 | M3 |
+| Remote image paste | 06 | M3 |
+| Plugins (argv actions, panes, hooks, link handlers, marketplace topic) | 07 | M5 |
+| Live handoff on update | normal path via holders | M1 |
+| Update channels, `update` | §11 `[update]` | M1 |
+| Windows host (ConPTY, named pipes) | — | M6 |
+| Layout export/apply | 07 `layout.*` | M1 |
+| Event subscriptions | durable cursor events (02 §2.3) | M1 |
+
+## 14. Requested features we ship
+
+| Request | What we ship | Milestone |
+|---|---|---|
+| Multiple remote servers in one client | Machines tree in the sidebar, combined attention across machines, `--machine` on every CLI verb (06) | M3 |
+| D#1381 Tab numbers with custom titles | `ui.tabs.show_numbers`, `number + title` | M1 |
+| D#651 Same session in several terminal windows | Multi-client by design; each client has an independent viewport, focused tab and keymap (`client.view` per client); optional `follow` mode mirrors another client's focus | M1 |
+| D#1620 Hierarchical space groups | `Group` entity, nestable, drag-and-drop, aggregate badges | M1 |
+| D#748 Copy-on-select (PRIMARY) | `clipboard.copy_on_select`, `primary_selection` | M1 |
+| D#864 Mark unread for agents | `marked_unread`, `prefix+u` | M1 |
+| D#587 Configurable copy-mode keys | `[keys.copy_mode]`, vi/emacs sets | M1 |
+| D#480 / D#2209 Jujutsu workspaces | `tasks.vcs = "jj"`, `jj workspace add` backend (05) | M3 |
+| D#834 Tab bar at the bottom | `ui.tabs.position = "bottom"` | M1 |
+| D#1629 tmux-style status bar | `[ui.status_bar]` with built-in segments; plugin segments in M5 | M1 (built-in), M5 (plugins) |
+| D#1465 Sidebar left/right | `ui.sidebar.position` | M1 |
+| D#563 `/` search in copy mode | vi search + FTS over archived scrollback | M1 |
+| D#782 Floating popup panes | floating panes + popups | M1 |
+| D#1780 Mosh transport | QUIC roaming transport with state-sync and local echo prediction (06) | M5 |
+| D#625 Click a notification to focus its pane | native notifier with `vibeke://focus` and window raise | M2 |
+| Synchronized input across panes | `prefix+shift+s`, per-pane membership, agents excluded by default | M1 |
+| Command palette | `prefix+:` / `ctrl+shift+p` | M1 |
+| D#1428 Async worktree delete (~10 s hang) | Task archive/remove runs as a background job with progress in the sidebar; the UI never blocks; `git worktree remove` is followed by background `rm` of ignored build dirs | M3 |
