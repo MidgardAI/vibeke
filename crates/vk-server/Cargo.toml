@@ -1,7 +1,31 @@
 [package]
 name = "vk-server"
+description = "Vibeke server: state actor, holders, render stream, JSON-RPC API, agents, notifications"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+vk-proto = { workspace = true }
+vk-hold = { workspace = true }
+vk-term = { workspace = true }
+vk-store = { workspace = true }
+vk-tasks = { workspace = true }
+vk-redact = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+rand.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+blake3.workspace = true
+base64.workspace = true
+libc.workspace = true
+regex.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

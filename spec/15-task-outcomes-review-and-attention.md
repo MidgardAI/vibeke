@@ -287,14 +287,14 @@ Missing/failed required criteria require explicit exceptions naming each criteri
 
 Build a deterministic projection over authorized source objects: live Interactions, delivery failures/unknowns, actionable run/setup/check errors, and review packages with an unreviewed candidate. Routine working runs stay in the sidebar; the inbox has an optional **Also working** footer. A review candidate is created on an explicit user request or a settled-turn checkpoint with a changed subject; streaming output/file events do not create notification floods.
 
-This evolves 08 §6.6's M1 inbox in place: one surface, the same `prefix+i`, progressively adding task/review items. At T3, `next_attention` (`prefix+a`) follows this ordering, opening the first actionable unseen item; seen/snoozed/expired items follow the same filtering rules. Before T3 the current M1 ordering remains. There are never two inboxes competing for a keybinding.
+This evolves 08 §6.6's M1 inbox in place: one surface, the same `prefix+i`, progressively adding task/review items. At T3, `next_attention` (`prefix+a`) follows this ordering, opening the first actionable item using the same snooze/expiry filters. Reading an unresolved Interaction does not remove it from attention; seen review candidates can move below unseen candidates within their class. Before T3 the current M1 ordering remains. There are never two inboxes competing for a keybinding.
 
 Use stable object IDs and revisions for deduplication. Group related items by task, while preserving each actual Interaction and action. A review item is keyed by task plus candidate subject; reading it marks seen, not accepted. Dismissed errors reopen only on a new occurrence. A task without confirmed intent can show **Changes to inspect**, never verified readiness.
 
 Order by this precedence, with user pinning within a class and age as a stable tie-breaker:
 
 1. Unconfirmed/failed decision delivery, or source errors that make continued action unsafe/uncertain: durable storage unavailable, lost verification runner with uncertain outcome, or lost integration identity during a pending send. Ordinary setup/test failures remain with their blocking-decision/review item and do not outrank expiring approvals.
-2. Open Interactions with a native deadline approaching; show the actual deadline.
+2. Open Interactions with a native deadline approaching (default: at most 60 seconds remaining, configurable); show the actual deadline. Expired native requests are reconciled and do not remain answerable merely because their card is cached.
 3. Other blocking decisions, ordered by explicit task priority, confirmed dependent tasks and waiting time.
 4. Review candidates, ordered by task priority and age.
 
