@@ -152,6 +152,8 @@ The briefing result contains short items with text, existing target IDs and sour
 
 Execution state, open approvals, delivery state and test results remain authoritative in Vibeke. Generated text cannot modify them. "The agent says tests passed" is distinct from a recorded successful check. Review briefs use [12's evidence freshness rules](12-phase-2-outlook.md); a screenshot is described with its recorded environment.
 
+For tracked-task review briefs, [15 §6–7](15-task-outcomes-review-and-attention.md) refines the evidence categories and freshness rules: an observed command can have passed while its code binding remains unverified and its criterion remains unsupported. Generated prose must preserve that distinction.
+
 The UI labels generated interpretation and shows its timestamp and sources. If relevant state has changed, mark the result stale and offer refresh. Revalidate the live target when the user opens or acts on an item; never act on an interaction's cached status.
 
 ## 8. Requests, validation and persistence

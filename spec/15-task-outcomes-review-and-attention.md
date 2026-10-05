@@ -141,6 +141,8 @@ This is an example of content, not a promise that a model can infer a valid regr
 
 New code makes old evidence and acceptance stale as described in §7. **Mark reviewed** records an acceptance for the exact displayed intent revision and change subject. Missing required checks are shown explicitly; a user may accept with a recorded exception rather than fabricate a pass. This neither merges a PR nor finishes/removes its workspace. **Finish task** is a separate lifecycle action.
 
+In initial T2, formal acceptance requires a committed candidate. A dirty checkout remains inspectable and annotatable; the action explains **Select a committed revision to record acceptance**. Vibeke never commits the user's work automatically. Later stable dirty-subject capture can extend acceptance without changing its meaning.
+
 ## 3. Entry modes and graceful degradation
 
 | Situation | Available experience | Limit or fallback |
@@ -176,6 +178,7 @@ TaskIntent {
 - `source_refs` identify machine/session/run/turn/item and, where applicable, source digests. Handwritten requirements have user provenance. A generated draft also stores its assistant result reference.
 - Keep a bounded copy of the user-selected source excerpt with the intent, under the same content scope and purge policy. This preserves inspectability after ordinary transcript/item compaction without retaining unrelated conversation text. A purged excerpt becomes unavailable; it is never restored from a cache.
 - `stop_at` records intent. It cannot grant or enforce merge/deploy permissions. Unsupported external outcome verification remains manual/unknown and the UI says so.
+- `unspecified` initially means the stopping point has not been mapped. The user can explicitly choose **No separate delivery outcome to verify**, confirming that value while leaving the original request and its constraints intact; final outcome assessment then requires human judgment. An unconfirmed default cannot make readiness pass.
 - Every criterion has a stable ID; changed meaning creates a new criterion version. Optional checks never block readiness. Constraints requiring judgment become explicit human criteria rather than disappearing into a summary.
 - Extraction preserves scope and negatives such as "draft PR only". If the source is ambiguous, show an editable question; do not silently choose the more permissive interpretation.
 - Changes create immutable intent revisions. Human acceptance of an older revision is retained as history and cannot satisfy the new one automatically.
@@ -185,6 +188,8 @@ TaskIntent {
 One task can involve several runs. One long-running CLI session can work on several successive tasks. New prompts usually refine the current task; they do not automatically create one task per turn.
 
 **Start another task in this session** lets the user close the current binding and select the next request. A default binding switch takes effect at the next turn boundary. While a turn is running, a switch is queued and shown as pending; it does not reassign that turn's checks/interactions. Historical turn-range edits require explicit selection and invalidate affected derived reviews. Overlapping foreground-task bindings for the same turn are refused.
+
+Closing a binding pins its consistently captured end-boundary candidate, if one exists. In T2 this is a committed candidate; if only dirty/unbound work exists, record **No bound end candidate** and let the user choose an explicit committed range later. Once the run moves to task B, task A's review never follows the checkout's live diff automatically or absorbs B's subsequent edits. Historical observations remain available with their original limits.
 
 Boundaries follow native conversation identity, not the command's name. `/clear`, `/new`, a fork, or `/resume` to a different conversation suspends automatic association even where 04 preserves the `AgentRun` ID; offer **Continue task** or **Track new work**. Compaction and resume of the same conversation are not new boundaries. Pending interactions retain the association they had when opened.
 
@@ -205,11 +210,13 @@ Execution-resource identity remains separate and stable: inherited `VIBEKE_TASK_
 
 Task lifecycle remains `active | parked | finished | archived`. Tracking status, review readiness and acceptance are independent. `task.finish` may finish without acceptance, but must record **Finished without review**; automation must not interpret lifecycle `finished` as verified success. Readiness or acceptance never triggers cleanup.
 
+When an owned workspace is archived/removed under 05, enumerate attached tasks that reference it in the cleanup impact/confirmation. After deletion, mark those tasks' live source unavailable; their retained immutable candidates remain historical and follow normal retention. An attached record does not secretly prevent explicitly authorized owner cleanup, and cleanup cannot present its dependent live reviews as current afterward.
+
 ## 5. Change subjects and attribution
 
 Keep **review base** and **observation baseline** separate. The review base defines the diff the user wants to inspect; the observation baseline records what existed when tracking began and does not prove who made it.
 
-For an owned task, propose its recorded resolved base. For an attached task, propose a previously recorded source-turn-start commit if available; otherwise propose the merge-base with an explicitly known target branch, falling back to current `HEAD` when no target is known. Show the choice and full diff before confirmation. Do not reconstruct a historical commit from timestamps/file-change claims or silently fetch to choose a different base. Tracking-time dirty content is not the default review base: edits already made after the prompt must remain visible.
+For an owned task, propose its recorded resolved base. For an attached task, propose the merge-base with the user-selected target branch, or with `Workspace.repo.default_branch` when configured and locally resolvable; otherwise fall back to current `HEAD`. Show the choice and full diff before confirmation. This slice does not add a historical turn-start commit recorder. Do not reconstruct a historical commit from timestamps/file-change claims or silently fetch to choose a different base. Tracking-time dirty content is not the default review base: edits already made after the prompt must remain visible.
 
 Capture an observation baseline immediately: repository identity, resolved head, complete staged/unstaged/untracked change digest, observation time and selected source range. If earlier authorship is unknown, label **May include preexisting changes** and offer an explicit base or selected patch. Warn that the HEAD fallback omits earlier committed work. Repositories without usable VCS can track intent/interactions and manual review; automatic revision-based readiness requires a supported captured subject.
 
@@ -224,6 +231,8 @@ Never run a destructive Git operation to obtain a baseline. Background capture i
 ### 6.1 Package contents
 
 A `ReviewPackage` contains the exact intent revision and change subject, links to the source request and diff, current criterion assessments, observed checks, artifacts, attributed findings, external outcome observations, and any previous human acceptance. It is a projection with a revision and source cursor vector, not a second source of truth.
+
+The accept-capable view renders its diff/files from that immutable subject's stored content or verified immutable Git objects, never from a fresh unqualified `git diff` or mutable PR head. Acceptance names the same digest shown to the user. A separate **Live checkout** view is labeled live and cannot submit acceptance for another candidate. If the inspected subject becomes unavailable or the view switches candidates, invalidate the acceptance form and require a refreshed inspection.
 
 The default view answers, in order: what was requested; what changed; what supports each requirement; what is missing or disputed; which action is available. Optional generated prose cites the underlying objects and follows 14. The deterministic view always works.
 
@@ -247,11 +256,13 @@ Checks are arbitrary code, including source/tests modified by the agent. **Run m
 
 Changed commands, runner permissions, endpoints or recipe digests require renewed authorization. Record resolved script definitions/test configuration (for example package scripts and referenced Makefile targets) alongside the full subject/environment identity, and flag task-modified definitions. Unchanged argv does not mean unchanged executable code. A repo file or agent suggestion cannot authorize itself. Separately authorizing verification never grants new permissions to the implementation agent.
 
-Verification uses a disposable checkout/snapshot on the task's machine or an explicitly selected runner. It does not reset/stash the active checkout or silently run remotely requested commands on the laptop. Dependencies/fixtures and any reused services are recorded; shared mutable services prevent claims of hermetic or fully independent verification.
+Verification uses a disposable checkout/snapshot on the task's machine or an explicitly selected runner, defaulting to the originating implementation's containment level and permitted resource profile (or a verified stricter profile). For several implementation runs, choose a profile that does not silently broaden their applicable permissions; if none is available, ask the user to select one. Missing containment support never silently falls back to host.
+
+Running a contained task's verification on the host requires a distinct **Outside this task's containment** confirmation for that candidate, showing the containment being lost and newly reachable filesystem, network and credential classes without exposing secret values. The ordinary host-run click alone is insufficient. Verification does not reset/stash the active checkout or silently execute remote requests on the laptop. Dependencies/fixtures and reused services are recorded; shared mutable services prevent hermetic/fully independent verification claims.
 
 Snapshot capture requires a stable subject, including dirty/untracked content when selected. Capture must detect concurrent writes; checks performed against a changing live checkout are labeled unbound unless the runner can establish the complete subject for the execution interval. Matching start/end hashes alone cannot exclude intermediate changes. The UI offers a stable commit or isolated snapshot when it cannot bind evidence.
 
-**Initial T2 scope:** verify committed revisions in disposable checkouts with an explicit environment manifest. Dirty-tree/selected-patch snapshot verification is T4 and is unavailable until stable capture is demonstrated. Dirty work still has useful diff/observed-command/manual review and acceptance-with-exceptions flows. Host verification always uses the per-candidate action above; contained automatic verification additionally depends on 13's containment workstream. Neither flow may be described as hermetic if shared mutable services affect its result.
+**Initial T2 scope:** verify and formally accept committed revisions, using disposable checkouts and an explicit environment manifest for checks. Dirty work remains inspectable/annotatable but cannot receive formal acceptance until the user selects a committed candidate. Stable dirty/selected-patch content capture for acceptance and execution-interval binding for verification are separate T4 capabilities; neither is assumed available in T2. Host verification always uses the per-candidate action above; contained automatic verification additionally depends on 13's containment workstream. Neither flow may be described as hermetic if shared mutable services affect its result.
 
 Check execution is explicit and bounded: concurrency, timeout, log size and output retention follow the existing runner limits. State is `queued -> running -> passed|failed|cancelled|interrupted|unknown`. Submission has caller-scoped idempotency. On restart reconcile the holder/runner before recording an outcome; never launch a duplicate external-side-effecting check automatically. Cancellation records partial output and never fabricates a failure/pass.
 
@@ -266,8 +277,10 @@ PR evidence includes provider/repository/PR identity, target branch, head revisi
 | Label | Meaning |
 |---|---|
 | Turn finished | A turn completed; no statement about the task outcome |
+| Needs task details | Required intent/criterion/stopping-point mappings remain unconfirmed; show the original request and an edit action |
+| Changes to inspect | Untracked work or work without confirmed intent has an inspectable diff/observations; no criterion-completion claim |
 | Review available | A package exists; it may contain missing/failed/stale evidence |
-| Ready for your review | Intent and criterion/stop mappings are confirmed; subject stable/current; all required machine-verifiable criteria supported; no failed/unknown required criterion or unresolved blocking concern; bound implementation runs idle, no open task Interactions, pending binding switches or unresolved message delivery; required human judgment is presented for review |
+| Ready for your review | Intent and criterion/stop mappings are confirmed; subject stable/current; all required machine-verifiable criteria supported; no failed/unknown required criterion or unresolved blocking concern; bound implementation runs idle, no known active writer in the same checkout (including other tasks, untracked runs and writing shell processes), no open task Interactions, pending binding switches or unresolved message delivery; required human judgment is presented for review |
 | Reviewed | The user accepted this intent revision and subject, including any explicitly recorded exceptions |
 | Review outdated | The accepted intent, subject, required environment/check definitions or relevant external outcome no longer matches current state |
 
@@ -275,7 +288,7 @@ Known blocking findings are explicit user-marked blockers or trusted check failu
 
 Freshness is evaluated from the complete evidence subject, relevant environment and check-definition digests, intent revision and live source coverage. A rebase invalidates SHA-bound evidence even if a model says the code is equivalent. No semantic-equivalence shortcut in the initial implementation. Dependency/fixture changes invalidate affected checks; unavailable environment identity yields unknown freshness.
 
-An active, disconnected or otherwise unverifiable bound implementation run prevents Ready; use **Review available — agent active/state unavailable**. Historical immutable candidates remain inspectable while work continues, with their exact subject and age displayed. Reading an old candidate is never labeled review of the current moving checkout.
+An active, disconnected or otherwise unverifiable bound implementation run, or another known writer in the checkout, prevents Ready; use **Review available — agent/writer active or state unavailable**. Absence of a known writer is a necessary condition, not proof of a stable filesystem; immutable-subject and execution-binding requirements still apply. Historical immutable candidates remain inspectable while work continues, with their exact subject and age displayed. Reading an old candidate is never labeled review of the current moving checkout.
 
 **Mark reviewed** sends expected intent revision, package revision, subject digest and any exceptions. The owner revalidates source observations, serializes the expected-version check with acceptance in its state transaction, and accepts the named immutable subject only. A known competing update returns `conflict` with `reason=review_changed`. This is not an atomic transaction with an external filesystem: a later observed change invalidates current acceptance without deleting its history. If a live subject cannot be captured consistently, require an explicit immutable candidate or keep the action unavailable. Offline/gapped sources cannot produce a new acceptance; users may save a local review draft for later submission.
 
@@ -297,6 +310,8 @@ Order by this precedence, with user pinning within a class and age as a stable t
 2. Open Interactions with a native deadline approaching (default: at most 60 seconds remaining, configurable); show the actual deadline. Expired native requests are reconciled and do not remain answerable merely because their card is cached.
 3. Other blocking decisions, ordered by explicit task priority, confirmed dependent tasks and waiting time.
 4. Review candidates, ordered by task priority and age.
+
+After ranked actionable items are exhausted, `next_attention` retains the M1 fallback: focus the oldest unseen `✓ done` run, including untracked runs. These can appear in the inbox's **Finished turns** footer without creating tasks or review packages. Users who never track work keep their existing navigation behavior.
 
 Risk is displayed and raises prominence within a class; risk alone must not imply that approval is recommended. T3 starts with run-blocking status, explicit priority and age. Confirmed dependency links/counts are a later optional enhancement, not required setup: inferred links are excluded from ranking, cycles are rejected when that enhancement ships. Explanations reflect available data, for example "Waiting 12m; blocks this run"; counts such as "two linked tasks" require real confirmed edges.
 
@@ -336,13 +351,14 @@ These are proposed schema extensions, not currently supported configuration or A
 |---|---|
 | Task extension | `owner_machine/session`, `workspace_ownership`, `current_intent_revision?`, explicit priority; existing lifecycle remains |
 | TaskIntent | Immutable confirmed revisions per §4; drafts stored separately and never treated as authority |
-| TaskRunBinding | Task/run/native-conversation identity, selected start/end turn or source cursors, effective boundary, role `implementation|review|verification`, actor; at most one foreground binding per run turn |
+| TaskRunBinding | Task/run/native-conversation identity, selected start/end turn or source cursors, effective boundary, role `implementation`, `review` or `verification`, actor; at most one foreground binding per run turn |
 | ChangeSubject | Immutable content identity and selected review scope per §5 |
 | CheckDefinition / CheckRun | Recipe revision/trust grant, argv or explicit shell command, cwd/env/runner scope, subject, lifecycle, exact observations and log references |
 | ReviewPackage / Assessment | Intent/subject, projection revision, source cursors/coverage, criterion result and supporting references; regenerate only from authorized inputs |
 | ReviewAcceptance | Task, exact intent/package/subject, actor/time, exceptions, current or outdated status derived from live state |
 | TaskMessage | Intended recipient/binding, text reference, idempotency/delivery state per §9 |
 | InboxPreference / Dependency | Per-user seen/snooze/pin state tied to subject revision; explicit confirmed dependency edges with provenance |
+| PendingClientOperation | Durable local caller/owner identity, idempotency key, operation kind, expected revisions/payload digest and outcome; persisted before dispatch, reconciled after restart |
 
 Extend 12's `EvidenceRecord` with check-definition identity, subject identity, collection category, runtime/build identity where applicable and source coverage. Existing evidence lacking these additions remains readable as **Legacy evidence — binding incomplete** and cannot automatically satisfy stronger readiness. No destructive rewrite of historical events.
 
@@ -358,6 +374,7 @@ All mutations accept caller-scoped idempotency keys and expected object revision
 | `task.message.prepare/send/get` | Preview recipient/text, explicitly send, inspect delivery; no coupling of save success to send success |
 | `task.review.get` | Deterministic package with source cursor vector and freshness; no model call or check execution |
 | `task.review.accept` | Atomic acceptance of expected revisions/subject with explicit exceptions |
+| `task.operation.get` | Authorized caller queries a durable mutation receipt by idempotency key; unknown/expired receipt never means safe to repeat blindly |
 | `task.check.list/run/cancel` | Read defined checks and explicitly authorize/submit/cancel verification |
 | `task.dependency.add/remove` (later) | Confirm explicit dependency edges; cycle checks and normal mutation authorization |
 | `attention.list` | Ranked items, coverage and optional effort budget; deterministic by default |
@@ -370,6 +387,8 @@ Optional extraction, explanation and review prose are named operations on 14's `
 The owner is the server hosting the task's primary workspace/checkout. Tracking a devbox run from a local client creates the task on devbox; the client forwards machine-qualified `task.*` requests through 07. This is the same owner in plain-SSH and local-bridge topologies. The local coordinator stores only its per-user inbox preferences, cached projections and unsent drafts; it does not mirror authority for acceptance. Cross-machine run bindings are later extensions; T1–T3 binds only runs on that owner and explicitly rejects other-owner attachment as unsupported.
 
 The task's owner server is authoritative for intent, bindings, subjects and acceptance. Multi-machine inboxes aggregate authorized projections with independent source cursors. Remote observations are never silently relabeled local. If sources cannot be revalidated, acceptance is unavailable. If the link drops after an acceptance request, the result may be unknown: reconcile using the same idempotency key on reconnect, never claim no acceptance occurred merely because its acknowledgment was lost.
+
+Persist the pending operation and its idempotency key in the client's local state before dispatch, alongside its draft/expected revisions, so a client crash does not create a new key. On reconnect/restart query the owner's receipt with `task.operation.get`; do not automatically resubmit a mutating request whose outcome is unknown. Owners retain deduplication receipts for the supported reconciliation window (initially 30 days, advertised to clients). Expired/missing receipts require a fresh inspection and explicit user action; they cannot justify a silent retry.
 
 Persist mutations and their events in the same SQLite transaction. New event families include `task.intent_updated`, `task.binding_changed`, `task.message_*`, `check.*`, `review.candidate_created`, `review.accepted`, `review.invalidated`, `attention.preference_changed`, `task.dependency_changed`. Events contain IDs, revisions and metadata rather than full prompts, generated text, secrets or logs. Blob content follows 09.
 
@@ -420,6 +439,11 @@ On reconnect, recover authoritative state before applying pending UI actions. `e
 | Red then green on different subjects versus identical subject | Fixed revision can pass; same-subject inconsistency remains visible and needs judgment |
 | Switch attached task; send with another client focused or draft present | Resource/broker/env scope unchanged; unsafe paste refused with zero bytes |
 | Prune sync/item history after seven days | Acceptance history and bounded intent source remain per their policies; purged content is not reconstructed |
+| T2 dirty checkout; inspect subject X while live checkout becomes Y | Inspect-only until a committed candidate is selected; accept-capable diff and acceptance both name X, never the mutable live diff |
+| Task A ends and task B or an untracked shell writes in the same checkout | A pins its end candidate or reports none; no absorption of B's edits and no live Ready while a known writer is active |
+| No tracked tasks and no pending Interactions | Next attention still reaches the oldest unseen done run |
+| Contained task requests host verification | Default retains containment; explicit host escape confirmation lists newly reachable resource classes |
+| Owned checkout cleanup and client crash after acceptance dispatch | Attached records lose live availability but preserve history; restarted client reconciles the original durable idempotency key |
 
 Test with recorded harness fixtures and isolated repositories before opt-in live Claude/Codex smoke tests. Include both directly typed and Vibeke-launched sessions; capability results apply only to tested versions/modes. No requirement that every harness natively answer every interaction.
 

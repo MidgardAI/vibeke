@@ -23,6 +23,7 @@ vk-tui = { path = "crates/vk-tui" }
 vk-cli = { path = "crates/vk-cli" }
 vk-compat = { path = "crates/vk-compat" }
 vk-redact = { path = "crates/vk-redact" }
+vk-config = { path = "crates/vk-config" }
 
 alacritty_terminal = { version = "0.26", default-features = false, features = ["serde"] }
 anyhow = "1"

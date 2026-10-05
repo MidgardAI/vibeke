@@ -1,7 +1,21 @@
 [package]
 name = "vk-cli"
+description = "Vibeke CLI: command tree mapped onto the JSON-RPC API, client connection, server spawning"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+vk-proto = { workspace = true }
+vk-server = { workspace = true }
+vk-config = { path = "../vk-config" }
+vk-compat = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
