@@ -24,5 +24,6 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 | 11 | [Milestones](spec/11-milestones.md) — value proof first: M0 spikes → M1 supervision slice → M2 safe yolo → M3 remote + preview → M4 VMs + parity → M5 compat + plugins → M6 1.0 |
 | 12 | [Phase 2 outlook](spec/12-phase-2-outlook.md) — EvidenceRecord, inbox, merge, mobile; what Phase 1 must provide |
 | 13 | [Sandboxes and VMs](spec/13-sandboxes-and-vms.md) — host / OS sandbox / container / VM execution, safe yolo, egress proxy, credentials, git boundary |
+| 14 | [LLM assistance](spec/14-llm-assistance.md) — optional genai integration, provider/model selection, grounded briefings, context/privacy boundaries and staged rollout |
 
 Also: [integrations/pi-extension/DESIGN.md](integrations/pi-extension/DESIGN.md) · design review · design review

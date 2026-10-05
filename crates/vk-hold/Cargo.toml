@@ -1,0 +1,23 @@
+[package]
+name = "vk-hold"
+description = "Per-pane holder process: owns the PTY and child, journals output, survives server restarts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vk-proto = { workspace = true, default-features = false }
+rustix.workspace = true
+libc.workspace = true
+polling.workspace = true
+signal-hook.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+rand.workspace = true
+anyhow.workspace = true
+postcard.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+vk-proto = { workspace = true, default-features = false }
+libc.workspace = true
