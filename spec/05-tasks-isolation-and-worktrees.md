@@ -1,14 +1,17 @@
 # 05 — Tasks, isolation and worktrees
 
-A **task workspace** is the default way to give an agent somewhere to work. One command produces an isolated checkout, a branch, a collision-free port range, an env, a finished setup script and a running agent. Running several agents in one shared cwd stays possible, because people do it (the maintainer's samplehub workspace has 2 Claude + 1 Codex in one directory). In that case Vibeke watches for collisions and offers a one-step migration into tasks.
+A **task workspace** is the default way to give an agent somewhere to work. One command produces an isolated checkout, a branch, a collision-free port range, an env, a finished setup script and a running agent. Running several agents in one shared cwd stays possible, because people do it (the maintainer's samplehub workspace has 2 Claude + 1 Codex in one directory). In that case Vibeke watches for collisions and warns (advisory only); moving a running agent out of a shared cwd is a Phase 2 feature (§11).
 
-Implemented in crate `vk-tasks`. Data model: `Task` in [02](02-data-model-and-event-log.md) §1.1. Milestone: **M3** (shared-cwd collision tracker: **M2**, since it only needs adapter events).
+**Scope of the isolation a task gives you.** A worktree or jj workspace is **checkout isolation**: each agent edits its own files and branch. It is **not execution isolation** — every task still runs as you, on the same machine, sharing databases, caches, credentials, `~`, Docker, and anything else reachable from your user. Linked/cloned directories (§5) and shared services (a local Postgres) are shared too. For execution isolation (OS sandbox, container, VM — and safe "yolo") see [13](13-sandboxes-and-vms.md); a task combines one checkout mode with one execution level.
+
+Implemented in crate `vk-tasks`. Data model: `Task` in [02](02-data-model-and-event-log.md) §1.1. Milestones (see [11](11-milestones.md)): git worktree tasks, env/setup, port leases, async removal and advisory collision warnings **M1**; jj workspaces **M4**; tasks on remote machines **M3**; best-of-N **post-1.0** (launch may land in M2 together with containers); split-into-task: Phase 2.
 
 ## 1. User-facing commands
 
 ```
 vibeke task new "fix login redirect" [--agent claude] [--agents claude:2,codex:1]
-                [--base <ref>] [--branch <name>] [--isolation worktree|jj|none]
+                [--base <ref>] [--branch <name>] [--checkout worktree|jj|clone|none]
+                [--isolate host|sandbox|container|vm] [--yolo]          # execution level: 13
                 [--repo <path>] [--machine <m>] [--prompt <text>|--prompt-file <f>]
                 [--no-setup] [--no-focus] [--group <g>]
 vibeke task list [--all] [--json]
@@ -17,14 +20,14 @@ vibeke task open <k7>                 # focus its workspace (creates panes if pa
 vibeke task park <k7>                 # stop agents (offer resume), keep worktree
 vibeke task finish <k7> [--archive]   # mark finished; optional archive (see §8)
 vibeke task rm <k7> [--force] [--keep-branch]
-vibeke task adopt [--pane <id>|--run <a12>] [--title …]   # "split into task" (§10)
+vibeke task adopt [--path <worktree>|--pane <id>] [--title …]   # record an existing worktree/pane as a task; moves nothing (§4)
 vibeke task setup rerun <k7>
 vibeke task ports <k7>
 ```
 
-TUI equivalents: `prefix+shift+g` opens "New task" (title, agent(s), base, isolation, prompt). There are task actions in the workspace context menu and the command palette.
+TUI equivalents: `prefix+shift+g` opens "New task" (title, agent(s), base, checkout mode, execution level, prompt). There are task actions in the workspace context menu and the command palette.
 
-`task new` resolves the repo from `--repo`, falling back to the focused pane's cwd. It fails clearly if there is no VCS and `--isolation` isn't `none`.
+`task new` resolves the repo from `--repo`, falling back to the focused pane's cwd. It fails clearly if there is no VCS and `--checkout` isn't `none`.
 
 ## 2. Lifecycle
 
@@ -53,7 +56,7 @@ The task is **idempotent and resumable**. If the server restarts mid-creation, t
 ## 3. Naming
 
 - **slug**: title lowercased, ASCII-folded (`ø→o`, `æ→ae`, `å→a`), non-alnum → `-`, truncated to 40 chars, plus `-<4 base32>` if it collides. Example: `fix-login-redirect`.
-- **branch**: `config.tasks.branch_template`, default `{user}/{slug}` (user = `git config user.name` handle-ized, or `vk`). With `--branch`, the given name is used as-is. An existing branch is checked out rather than created, but only if no other worktree holds it.
+- **branch**: `tasks.branch_template`, default `{user}/{slug}` (user = `git config user.name` handle-ized, or `vk`). With `--branch`, the given name is used as-is. An existing branch is checked out rather than created, but only if no other worktree holds it.
 - **workspace name**: `{repo}:{slug}`, and the sidebar shows it nested under the repo's group.
 - **handle**: `k7`, never reused.
 
@@ -76,7 +79,7 @@ trait IsolationBackend {
 | `none` | Workspace rooted at the repo itself | Shared cwd. The collision tracker (§10) is active. |
 | `clone` | private clone inside a container/VM (`git clone --reference`), synced back by host-side fetch | Default code isolation for `container`/`vm` execution — see [13](13-sandboxes-and-vms.md) §6. |
 
-Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal axis, specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) and in Phase 1 scope (M3–M4).
+Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal axis, specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) and in Phase 1 scope (M2–M4).
 
 **Worktree root**: `tasks.root = "~/.vibeke/worktrees"`, layout `<root>/<repo-name>-<hash6>/<slug>`. `tasks.root = "sibling"` gives the maintainer's current convention, `../<repo>-<slug>`, next to the repo (e.g. `~/code/samplehub-lk20-maths-grade-names`). Either way the path is stored on the Task, never recomputed.
 
@@ -134,14 +137,25 @@ Templating variables available in `env`, `install`, `setup`: `{slug}`, `{slug_un
 
 Goal: N tasks of the same repo can all run `pnpm dev` without fighting over 3000/5173.
 
-- Global pool `tasks.ports.pool = "20000-29999"`. Each task leases a contiguous range of `ports.count` (default 10), aligned to 10.
-- Leases are stored in SQLite (`port_leases(task_id, start, end, machine_id)`) and are **machine-scoped**: tasks on devbox lease from devbox's server.
-- At lease time each port is probed (`bind` on 127.0.0.1 and ::1). An occupied range is skipped. Leases are released on `task rm` and kept while parked.
-- Injected env (in every pane of the task workspace, and in setup):
-  - `VIBEKE_PORT_BASE`, `VIBEKE_PORT_END`, `VIBEKE_TASK`, `VIBEKE_TASK_SLUG`, `VIBEKE_WORKTREE`
-  - `PORT = base + offset` (configurable mapping, as above)
-- Framework helpers (documented, not magic): Vite reads `PORT` only when the config uses `process.env.PORT`, and Next uses `PORT` natively. `vibeke task doctor` warns when a known dev server starts on a port outside the task's range. Port discovery (06 §5) sees it either way, so previews still work.
-- `vibeke task ports k7` prints the mapping. The sidebar task row shows the live previews.
+**Leases are machine-wide, not per session.** Several Vibeke sessions (`default`, `work`, a test session) on one machine share one lease table:
+
+- `~/.local/state/vibeke/machine/ports.db` (SQLite, WAL) — under state, not `$XDG_RUNTIME_DIR`, because leases of parked tasks must survive reboots.
+- Allocation runs inside `BEGIN IMMEDIATE` (a write lock shared by all sessions on the machine), so two sessions can never hand out the same range.
+- Schema: `port_leases(start, end, session_uuid, task_id, machine_uuid, created_at, released_at)`.
+- Remote tasks lease from the remote machine's table (the remote server allocates).
+
+**Pool and ranges.** `tasks.port_pool = "20000-29999"`; each task leases a contiguous block of `tasks.port_block` ports (default 10), aligned to the block size. The default pool lies **below the OS ephemeral range** (macOS 49152–65535, Linux 32768–60999 by default), so the kernel never hands these ports out to outgoing connections. `vibeke doctor` warns if the machine's ephemeral range overlaps the pool.
+
+**What a lease does and doesn't reserve.** Probing a port (bind, then close) proves nothing: another process can bind it a millisecond later, and holding the socket open would block the dev server itself. So:
+- A lease is a **reservation among Vibeke sessions** (enforced by the lock above), not an OS-level reservation.
+- Protection against non-Vibeke processes is statistical (pool outside the ephemeral range, rarely used by other software) plus **detection**: at lease time ports are probed and occupied blocks skipped; when a known dev server in the task fails with `EADDRINUSE` or starts outside the block (06 §B2 discovery), `task doctor` reports it and offers `vibeke task ports k7 --re-lease`.
+- Leases are released on `task rm`, kept while parked, and garbage-collected when their session or task no longer exists (checked by `machine_uuid` + `session_uuid`).
+
+**Injected env** (every pane of the task workspace, and setup):
+- `VIBEKE_PORT_BASE`, `VIBEKE_PORT_END`, `VIBEKE_TASK`, `VIBEKE_TASK_SLUG`, `VIBEKE_WORKTREE`
+- `PORT = base + offset` (configurable mapping, as above)
+
+Framework helpers (documented, not magic): Vite reads `PORT` only when the config uses `process.env.PORT`; Next uses `PORT` natively. Ports from the lease are pre-declared as previews when `[previews]` names them (06 §B2). `vibeke task ports k7` prints the mapping.
 
 ## 7. Setup scripts
 
@@ -173,7 +187,9 @@ Removing a worktree of a large repo (node_modules, build dirs) can take ~10 s an
 
 ## 10. Shared cwd: collision tracker
 
-Many users run several agents in one directory (`isolation = none`, or simply panes in the same repo). Vibeke makes this visible instead of forbidding it.
+Many users run several agents in one directory (`checkout = "none"`, or simply panes in the same repo). Vibeke makes this visible instead of forbidding it.
+
+**Collision detection is advisory.** A `file_change` item is evidence that a tool *attempted or reported* an edit, not proof of who owns a file's current content: Bash commands, formatters, git operations and non-integrated harnesses edit files without reporting, and two runs can make overlapping edits that attribution can't untangle. Vibeke warns; it never blocks, reverts or reassigns changes on the basis of attribution.
 
 **Signals:**
 1. **Adapter `file_change` items** (authoritative): Claude `PostToolUse` for Edit/Write/MultiEdit/NotebookEdit; pi/omp extension `tool_execution_end` for edit/write; Codex `file_change`/patch items (app-server mode) or the `apply_patch` hook; OpenCode plugin file events. These carry the path and the run.
@@ -192,36 +208,33 @@ Many users run several agents in one directory (`isolation = none`, or simply pa
 - The pane frame shows a ⚠ badge, and the sidebar shows "2 agents editing `src/auth.ts`".
 - A notification fires (once per path-set per window).
 - The popup lists paths, runs and timeline, with these actions:
-  - **Split into task** (§11);
+  - **Start a fresh task from here**: creates a task from the shared checkout's `HEAD` and starts a *new* run there with a hand-off prompt; the original run keeps working where it is (nothing is moved);
   - **Pause one agent** (sends interrupt via adapter);
   - **Tell the agents**: injects a short steering message via the adapter, e.g. "Note: another agent (codex, pane w5:p3) is also editing src/auth.ts — coordinate or avoid." Only for harnesses that support steer/follow-up natively (pi/omp `steer`, Claude hook `additionalContext` on next `UserPromptSubmit`/`PostToolUse`). Never by typing into a TUI mid-turn.
   - **Ignore for this path**.
 
-**Advisory claims** (groundwork for Phase 2): `vibeke claim add --run a12 "src/auth/**"` and API `task.claim`. The collision tracker raises `severity: high` immediately when another run writes inside a claimed glob. Adapters may expose claims to agents (the Claude hook can deny an Edit inside a foreign claim when `collision.enforce_claims = true`, off by default).
+**Advisory claims** (groundwork for Phase 2): `vibeke claim add --run a12 "src/auth/**"` and API `task.claim`. The collision tracker raises `severity: high` immediately when another run writes inside a claimed glob. With `collision.enforce_claims = true` (off by default), cooperating adapters deny *reported* edit tools inside a foreign claim (Claude `PreToolUse` Edit/Write, pi/omp `tool_call`); this is a courtesy guardrail, not enforcement — shell commands and non-integrated harnesses are unaffected.
 
-## 11. "Split into task" migration
+## 11. "Split into task" migration — deferred to Phase 2
 
-Takes a run working in a shared cwd and moves it into its own task without losing work:
+Moving a *running* agent and its uncommitted changes out of a shared checkout is not in Phase 1. Copying or reverting files while other writers are active is not a transaction, `git diff` omits staged changes by default, `git stash` without `-u` omits untracked files, and file-level attribution can't separate overlapping edits. Phase 1 offers "start a fresh task from here" (§10) instead and makes isolated tasks the default.
 
-1. Pick the run (and optionally the paths it owns, defaulting to the files attributed to it in the collision window).
-2. Create a task with base = the current `HEAD` of the shared checkout.
-3. Move the changes: `git diff -- <paths>` plus untracked files attributed to the run are applied into the new worktree, then reverted in the shared checkout. **Confirm with the diff first**, and keep a safety stash (`git stash push -m vibeke-split-<ulid> -- <paths>`) before reverting.
-4. Move the agent:
-   - If the harness supports resume: stop the run, then `resume.argv` with cwd = the new worktree. This works for Claude `--resume <id>`, Codex `resume <id>`, pi `--session <id>`, and omp `--resume`.
-   - The adapter then injects a note: "Your working directory moved to <path>; continue there."
-   - If the harness can't resume: start a fresh run with a generated hand-off prompt (last N turns summarized from the transcript).
-5. Emit `task.created` + `task.run_attached` + `agent.resume_handle`. The old pane is closed or left as a shell (user choice).
-
-This is transactional from the user's perspective: on failure at any step after 3, the stash is restored and a notification explains what happened.
+Outline for the Phase 2 design (requirements, not a spec):
+1. **Quiesce all writers** in the shared checkout: interrupt every run via its adapter (not only the one being moved), wait for `idle`, and refuse if any pane in that cwd has a non-agent foreground process writing files (watcher quiet for N seconds).
+2. **Capture full state** atomically: staged (`git diff --cached --binary`), unstaged (`git diff --binary`), untracked (`git ls-files --others --exclude-standard -z` + contents), plus a `git stash create`-style snapshot commit as a recovery point that is not applied to the working tree.
+3. **Select** the changes to move with an explicit user-reviewed patch (attribution only pre-selects).
+4. **Validate** applicability in the new worktree (`git apply --check --index`) before touching the source.
+5. **Apply, then verify, then revert the source** — keep the recovery point until the destination is verified and the agent has resumed there.
+6. Resume the agent with its resume handle in the new cwd (or hand-off prompt), then release the other writers.
 
 ## 12. Best-of-N launch (Phase 2 groundwork)
 
 `vibeke task new "make the import 3x faster" --agents claude:2,codex:1 --prompt-file spec.md`
 
 - Creates a **task family**: parent Task `k7` and child tasks `k7.1…k7.3`, each with its own worktree and branch (`{user}/{slug}-1…`) and port range, all from the same base ref.
-- The same prompt is sent to all runs, plus a per-run suffix (`config.tasks.best_of_n.suffix`, optional).
+- The same prompt is sent to all runs, plus a per-run suffix (`tasks.best_of_n.suffix`, optional; 08 §11).
 - The sidebar groups the family. Each child shows state, diff stat (`+120 −34, 6 files`), test status if declared (`[tasks.check] command = "pnpm test"` run on finish), and previews.
-- Phase 1 stops at **side-by-side info + `vibeke task compare k7`** (prints diff stats, check results, and `git diff k7.1..k7.2`). Phase 2 adds the comparison UI, evidence bundles and pick-and-merge.
+- Phase 1 stops at **side-by-side info + `vibeke task compare k7`** (prints diff stats, check results, and `git diff k7.1..k7.2`). Phase 2 adds the comparison UI, evidence bundles and pick-and-merge. Best-of-N launch is **post-1.0**, possibly earlier in M2 alongside containers (see 11).
 
 ## 13. Branch status in the sidebar
 
@@ -233,7 +246,7 @@ Per task/workspace, refreshed on fs events (debounced 500 ms) and at most every 
 
 ## 14. Runner abstraction
 
-Where a task's processes run. Phase 1 implements `local` and `ssh`, **and** `sandbox`, `container` and `vm` runners as specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) (M3–M4). Cloud runners are Phase 2.
+Where a task's processes run. Phase 1 implements `local` and `ssh`, **and** `sandbox`, `container` and `vm` runners as specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) (M2 sandbox/container, M4 VM). Cloud runners are Phase 2.
 
 ```rust
 #[async_trait]
@@ -256,17 +269,20 @@ Container and microVM notes (detailed in 13):
 
 ## 15. Config summary
 
+Canonical schema: [08](08-ux-config-and-keybindings.md) §11. Keys used here (`root`, `vcs`, `default_agent`, `port_block`, `setup_script`, `copy_files` are defined there; the rest are introduced by this section):
+
 ```toml
 [tasks]
 root = "~/.vibeke/worktrees"          # or "sibling"
-default_isolation = "auto"            # auto = jj if .jj else worktree; or none
+vcs = "auto"                          # auto | git | jj
+checkout = "auto"                     # auto (jj workspace if .jj, else worktree) | worktree | jj | clone | none
 branch_template = "{user}/{slug}"
 fetch_before_create = true
 default_agent = "claude"
-
-[tasks.ports]
-pool = "20000-29999"
-count = 10
+port_pool = "20000-29999"
+port_block = 10
+setup_script = ".vibeke/setup.sh"
+copy_files = [".env", ".env.local"]
 
 [tasks.cleanup]
 on_finish = "keep"
@@ -278,15 +294,15 @@ protect_dirty = true
 enabled = true
 window = "30m"
 fs_attribution = "auto"               # auto | off | aggressive (fanotify)
-enforce_claims = false
+enforce_claims = false                # courtesy guardrail for cooperating adapters only
 ```
 
 ## 16. Acceptance criteria
 
-- **M2 (collision tracker, shared cwd):**
+- **M1 (collision tracker, shared cwd):**
   - Two Claude runs plus one Codex run in one repo.
   - Edits to the same file by two runs produce a `task.collision_detected` event within 2 s of the second write, a badge, and a notification. Attribution for Claude/pi/omp is via adapter events, verified in e2e tests with recorded hook traces.
-- **M3:**
+- **M1 (tasks):**
   - `vibeke task new "x" --agent claude` on a 50k-file pnpm repo on APFS:
     - the workspace opens in < 1.5 s;
     - `node_modules` is cloned via clonefile;
@@ -294,12 +310,10 @@ enforce_claims = false
     - the agent starts after setup with `PORT` from its lease;
     - `vibeke task ports` matches the injected env.
   - Three tasks of the same repo run `pnpm dev` concurrently without port conflicts.
-  - jj repo: `task new` creates a jj workspace, and the sidebar shows the bookmark and status.
+  - (M4) jj repo: `task new` creates a jj workspace, and the sidebar shows the bookmark and status.
   - `task rm` on a 3 GB worktree returns control in < 200 ms, and the trash is reaped in the background. A server kill during reaping resumes on restart.
-  - "Split into task" moves a Claude run with 3 modified files into a new worktree:
-    - the files are present there and reverted in the source;
-    - the agent resumes its session in the new cwd;
-    - a safety stash exists.
-  - `--agents claude:2,codex:1` creates 3 child tasks with distinct branches, ports and worktrees, and `task compare` prints diff stats.
+  - "Start a fresh task from here" on a collision creates a task from the shared `HEAD` and starts a new run with a hand-off prompt, without touching the shared checkout or the original run.
+  - Two Vibeke sessions on one machine creating tasks concurrently never receive overlapping port blocks (stress test: 50 parallel `task new` across 2 sessions).
+  - (post-1.0, or M2 with containers) `--agents claude:2,codex:1` creates 3 child tasks with distinct branches, ports and worktrees, and `task compare` prints diff stats.
   - Removing a checkout with uncommitted changes is refused without `--force` and shows the diff stat.
-  - All operations work identically with `--machine devbox`, where the task lives on the remote and the sidebar shows the machine badge.
+  - (M3) All operations work identically with `--machine devbox`, where the task lives on the remote and the sidebar shows the machine badge.

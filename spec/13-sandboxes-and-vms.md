@@ -1,6 +1,6 @@
 # 13 — Sandboxes and VMs: isolated execution as an alternative
 
-**Status: Phase 1 scope (M3 + M4).** This supersedes the "container/microVM designed now, implemented after Phase 1" notes in [05](05-tasks-isolation-and-worktrees.md) §4/§14 and the cloud-sandbox non-goal in [00](00-vision-and-scope.md). Cloud-hosted runners remain Phase 2; **local** sandboxes, containers and VMs are Phase 1.
+**Status: Phase 1 scope (yolo detection M1, `sandbox` + `container` M2, `vm` M4 — see [11](11-milestones.md)).** This supersedes the "container/microVM designed now, implemented after Phase 1" notes in [05](05-tasks-isolation-and-worktrees.md) §4/§14 and the cloud-sandbox non-goal in [00](00-vision-and-scope.md). Cloud-hosted runners remain Phase 2; **local** sandboxes, containers and VMs are Phase 1.
 
 ## 1. Why this is in Phase 1
 
@@ -28,6 +28,18 @@ Any combination is valid except `vm`/`container` + `none` (sandboxed agents neve
 
 `docker sandbox` (Docker Sandboxes, microVM-backed, with "Kits") is supported as a `container`-level provider when present.
 
+### 2.2 Guardrails vs containment (the security line)
+
+Vibeke is explicit about which levels **enforce** anything against a misbehaving or prompt-injected agent (09 §2):
+
+| Level | Classification | Why |
+|---|---|---|
+| `host` (with or without yolo) | **Cooperative guardrails only** | The agent runs as your UID. It can read the pane token from its environment, edit harness hook configs, call the harness's own CLI with other flags, connect to Vibeke sockets, or type into its own TTY. Policy `deny` rules, hook gates, and the "can't answer your own interaction" rule stop *mistakes and cooperative agents*, not an adversary. The UI never calls a host run "contained". |
+| `sandbox` | **Enforced containment** (filesystem + network + Vibeke API) | The process tree runs under a kernel-enforced profile: no access outside the allowlist, egress only via the proxy, and **no access to Vibeke's privileged sockets or state** (§4.1). |
+| `container` / `vm` | **Enforced containment**, stronger | Separate userland (container) or kernel (vm); only the broker channel crosses the boundary. |
+
+Rules that depend on enforcement (boundary actions, egress approvals, "agent cannot answer its own interactions" as a *security* property) are only claimed for `sandbox`/`container`/`vm` runs.
+
 ## 3. User experience
 
 ```bash
@@ -38,8 +50,8 @@ vibeke agent start --kind pi --pane w3:p2 --isolate container         # also for
 ```
 
 - **`--yolo`** = launch the harness with its approval-bypass flags (from the harness manifest, 04) **and** apply `isolation.yolo_default`. Running yolo on `host` requires `--yolo --isolate host` plus a one-time confirmation per workspace, and the pane gets a permanent red `YOLO·HOST` badge.
-- **User-typed yolo is supported, never blocked.** Vibeke is a terminal: if you type `codex -a never -s danger-full-access`, `codex --yolo`, `claude --dangerously-skip-permissions`, or run pi, it runs exactly as typed — no interception, no confirmation. The adapter detects the effective mode from (a) the process argv (manifest `[yolo] detect_args`), (b) hook payloads (`permission_mode`, Codex approval/sandbox policy from `SessionStart`/thread config), and (c) the harness's own status line as a fallback, and marks the run `yolo: true`, `execution: host` → red `YOLO·HOST` badge, `agent.state` still fully tracked. The confirmation prompt applies only when *Vibeke* launches a yolo run on the host (`--yolo --isolate host`), and is skippable per workspace with `isolation.confirm_host_yolo = false`.
-- Optional nudge (off by default, `isolation.suggest_sandbox_for_yolo = true`): a one-line hint in the sidebar "relaunch this in a sandbox?" that restarts the run with `codex resume <id>` inside the chosen isolation level.
+- **User-typed yolo is supported, never blocked.** Vibeke is a terminal: if you type `codex -a never -s danger-full-access`, `codex --yolo`, `claude --dangerously-skip-permissions`, or run pi, it runs exactly as typed — no interception, no confirmation. The adapter detects the effective mode from (a) the process argv (manifest `[yolo] detect_args`), (b) hook payloads (`permission_mode`, Codex approval/sandbox policy from `SessionStart`/thread config), and (c) the harness's own status line as a fallback, and marks the run `yolo: true`, `execution: host` → red `YOLO·HOST` badge. All state facets (04 §2.4: liveness, execution state, pending interactions, adapter health) are still tracked; with `-a never` there simply are no approval interactions. For Codex, the PATH shim (04 §6.2) still adds only `--disable daemon_auto_start` so the run is deterministically bound to its pane; all user arguments pass through untouched. The confirmation prompt applies only when *Vibeke* launches a yolo run on the host (`--yolo --isolate host`), and is skippable per workspace with `isolation.confirm_host_yolo = false`.
+- Optional nudge (off by default, `isolation.suggest_sandbox_for_yolo = true`): a one-line hint in the sidebar "relaunch this in a sandbox?" that restarts the run with the harness's resume argv (e.g. `codex resume <id>`) inside the chosen isolation level. Only offered when the run has the `resume` capability (04 §2.2).
 - Sidebar shows an isolation glyph per pane/agent row: none · `sbx` · `ctr` · `vm` (configurable icons), and network profile when not default.
 - Workspace and repo defaults: `.vibeke/sandbox.toml` (trusted like other repo config, 09) and `[isolation]` in user config.
 - Everything else is unchanged: panes, agent states, Interactions, previews, screenshots, search, events.
@@ -53,6 +65,15 @@ The key design decision: **container and VM runners reuse the remote-machine sta
 | `sandbox` | none needed — holder runs on host, *child* is spawned under the sandbox profile (`sandbox-exec -p … ` / `bwrap …` wrapper in the holder spawn path) | host |
 | `container` | unix socket bind-mounted into the container (`/run/vibeke/bridge.sock`), or `docker exec -i vibeke bridge` stdio | inside |
 | `vm` | vsock (Firecracker, Virtualization.framework) or virtio-serial; fallback SSH over the VM's private network | inside |
+
+### 4.1 The broker: the only Vibeke API inside a box
+
+Contained agents still need to talk to Vibeke (hook shims, the pi/omp extension, `vibeke preview declare`, `vibeke mcp`). They never get the main control socket:
+
+- Inside `sandbox`/`container`/`vm`, `VIBEKE_SOCKET` points to a **per-pane broker socket** (sandbox: an allowlisted path under the pane's private runtime dir; container: bind-mounted; vm: vsock port). The broker exposes only pane scope (09 §5.2): `adapter.*` for its own pane, `preview.declare`, `browser.*` against its own task's previews, read-only `agent.get` for its own run.
+- The broker **cannot** reach: `vibeke.sock`, holder sockets, `state.db`, other panes, `interaction.answer` (for any pane), `pane.send_keys`/`send_text` (for any pane, including its own), plugin APIs, or elevation (`vibeke auth elevate` is unavailable inside a box).
+- The sandbox profile/mount table denies the runtime dir (`$XDG_RUNTIME_DIR/vibeke/`), `~/.local/state/vibeke/`, and `~/.config/vibeke/` to the contained process tree.
+- Self-answering: a contained agent cannot inject approval keystrokes into its own dialog through Vibeke (no input methods on the broker). It *can* still write to its own TTY directly — that only affects its own harness's dialog, and is why approvals *inside* a yolo box are not a security boundary; the boundary is egress/push/credentials (§7–8, §10).
 
 Consequences, all for free from 06/07:
 - Process durability: holders inside the box survive host server restarts.
@@ -92,6 +113,7 @@ A sandboxed agent must not be able to plant code that later runs **on the host**
   - `open` — everything, logged.
 - Harness manifests declare their required endpoints (`[sandbox.network] allow = ["api.anthropic.com", "statsig.anthropic.com", …]`).
 - Every denied connection becomes a `sandbox.egress_denied` event and (rate-limited) an `Interaction{kind: approval}` "agent wants to reach `example.com` — allow once / for task / always". This is the yolo-safe replacement for per-command approvals: **commands are free, the boundary is gated.**
+- Boundary approvals are Vibeke-only enforcement and therefore **fail closed** (04 §2.7): if the server is down or the proxy loses its policy, connections are denied, never passed through. Decisions go through the same delivery transaction as other interactions (04 §7.3); the proxy holds the connection attempt (≤ 30 s) or refuses it and lets the agent retry after approval.
 - Inbound: nothing except the bridge channel; previews go through the bridge forwarder (06).
 
 ## 8. Credentials
@@ -130,32 +152,33 @@ Agents need model credentials inside the box, and should get nothing else.
 
 ## 10. Policy interplay
 
-| Level | Approvals | Vibeke policy engine (02 §4) |
-|---|---|---|
-| `host` (non-yolo) | harness asks, Vibeke can gate natively | full: allow/deny/ask rules |
-| `host` + yolo | none | can't gate (harness doesn't ask); Vibeke shows red badge; `deny` rules still enforced for harnesses with pre-tool hooks (Claude PreToolUse, pi/omp `tool_call`) — "yolo with a seatbelt" |
-| `sandbox`/`container`/`vm` + yolo | none inside | **boundary policy**: egress, push, credential use, port exposure, copying artifacts out |
-| `sandbox`/`container`/`vm` non-yolo | as host | full, plus boundary policy |
+| Level | Approvals inside | Vibeke policy engine (02 §4) | Classification (§2.2) |
+|---|---|---|---|
+| `host` (non-yolo) | harness asks; Vibeke uses `gate`/`answer_native` where the capability matrix allows (04 §2.3) | allow/deny/ask rules | cooperative guardrail |
+| `host` + yolo | none (harness doesn't ask) | `deny` rules still applied for harnesses with pre-tool hooks (Claude `PreToolUse`, Codex `PreToolUse` for Bash, pi/omp `tool_call`) — "yolo with a seatbelt". Fail-closed per 04 §2.7, but bypassable by the agent itself | cooperative guardrail |
+| `sandbox`/`container`/`vm` + yolo | none inside | **boundary policy**: egress, push, credential use, port exposure, copying artifacts out — fail-closed | enforced |
+| `sandbox`/`container`/`vm` non-yolo | as host | in-box rules (guardrail) **plus** boundary policy (enforced) | enforced at the boundary |
 
 ## 11. Resource and lifecycle management
 
 - Limits per box: cpus, memory, disk, pids; defaults from config; shown in the sidebar on hover; `sandbox.resource_pressure` events.
-- Lifecycle tied to the task: `task park` stops (container) or suspends (VM save state) the box; `task resume` restores; `task archive` tears down after syncing the branch. Idle boxes auto-suspend after `isolation.idle_suspend = "30m"` when no agent is `working`.
-- Crash handling: if the box dies, panes show `exited` with reason `runner_lost`; agents with resume handles can be resumed in a fresh box from the template + synced branch.
+- Lifecycle tied to the task: `task park` stops (container) or suspends (VM save state) the box; `task resume` restores; `task archive` tears down after syncing the branch. Idle boxes auto-suspend after `isolation.idle_suspend = "30m"` when no run's execution state is `working` and no interaction is pending.
+- Crash handling: if the box dies, its panes' liveness becomes `exited{reason: runner_lost}` and open interactions are cancelled (04 §2.5 rule 1); runs with the `resume` capability can be resumed in a fresh box from the template + synced branch.
 - `vibeke sandbox list|shell <task>|logs|prune` for debugging; `vibeke doctor` checks providers (Apple `container` version, OrbStack/Docker socket, Lima, KVM access, Seatbelt availability, bwrap/Landlock kernel support).
 
 ## 12. Events and data model additions (02)
 
 - Task gains `execution: { level: host|sandbox|container|vm, provider?, profile, network, yolo: bool, runner_id? }`.
 - Pane gains `execution` (inherited from task or set ad-hoc).
-- Events: `sandbox.created`, `sandbox.started`, `sandbox.suspended`, `sandbox.resumed`, `sandbox.destroyed`, `sandbox.egress_denied {host, port}`, `sandbox.egress_allowed {rule}`, `sandbox.resource_pressure`, `sandbox.boundary_action {kind: push|copy_out|credential_use, approved}`, `task.synced {commits}`.
+- Events: `sandbox.created`, `sandbox.started`, `sandbox.suspended`, `sandbox.resumed`, `sandbox.destroyed`, `sandbox.egress_denied {host, port}`, `sandbox.egress_allowed {rule}`, `sandbox.resource_pressure`, `sandbox.boundary_action {kind: push|copy_out|credential_use, interaction, outcome}` (outcome follows the delivery states of 04 §7.3), `task.synced {commits}`.
+- Run gains `containment: guardrail|enforced` (derived from level, §2.2), exposed with `run.capabilities`.
 
 ## 13. Milestones
 
 | Milestone | Scope |
 |---|---|
-| **M2** | Harness manifests gain `[yolo]` flags, `[sandbox]` fs/network needs and `[auth]` projection (data only). `deny`-rules enforced for yolo-on-host via pre-tool hooks. Red `YOLO·HOST` badge. |
-| **M3** | `sandbox` level (Seatbelt on macOS, bubblewrap+Landlock+seccomp on Linux) + egress proxy + network profiles + egress Interactions. `container` level with Apple `container`, OrbStack/Docker, Podman providers; `clone` code isolation + `task sync`; devcontainer support; credential projection for Claude, Codex, pi, omp. Reuses the M3 bridge. |
+| **M1** | Harness manifests gain `[yolo]` flags/`detect_args`, `[sandbox]` fs/network needs and `[auth]` projection (data only). `deny` rules applied for yolo-on-host via pre-tool hooks (cooperative guardrail). Red `YOLO·HOST` badge; user-typed yolo detection; Codex PATH shim. |
+| **M2** | `sandbox` level (Seatbelt on macOS, bubblewrap+Landlock+seccomp on Linux) + per-pane broker (§4.1) + egress proxy + network profiles + fail-closed egress Interactions. `container` level with Apple `container`, OrbStack/Docker, Podman providers; `clone` code isolation + `task sync`; devcontainer support; credential projection for Claude, Codex, pi, omp. Brings the local bridge transport (06) forward from M3 for containers; SSH machines stay in M3. |
 | **M4** | `vm` level (Lima `vz`/Tart on macOS, Firecracker/Cloud Hypervisor on Linux), template snapshots, warm pool, fork for best-of-N; previews/screenshots verified inside containers and VMs. |
 | **Phase 2** | Cloud runners (E2B, Daytona, Modal, Morph, Docker Cloud Sandboxes) via the same provider trait; move a running task laptop → cloud; snapshot at turn N. |
 
@@ -168,3 +191,6 @@ Agents need model credentials inside the box, and should get nothing else.
 5. Killing the host server while a yolo agent works inside a VM: after restart the pane reattaches with no process loss.
 6. Best-of-3 with `--isolate vm` from a warm template starts all three in ≤ 5 s on an M-series Mac.
 7. `vibeke doctor` reports which levels and providers are available, with a fix hint for each missing one.
+8. From inside a `sandbox`, `container` or `vm` run: connecting to `vibeke.sock` or any holder socket fails; reading `state.db` fails; the broker rejects `interaction.answer` and `pane.send_keys` for every pane; `vibeke auth elevate` is unavailable.
+9. With the Vibeke server stopped, a contained yolo agent's new egress to a non-allowlisted host is denied (fail-closed), while already-allowlisted provider traffic continues.
+10. `codex -a never -s danger-full-access` typed in a host pane runs with exactly those arguments (plus the shim's daemon flag), shows `YOLO·HOST`, and its run is bound to the pane (hooks carry the pane token).

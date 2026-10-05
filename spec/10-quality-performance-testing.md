@@ -2,7 +2,7 @@
 
 Terminal multiplexers for agents tend to suffer from three classes of problems: keyboard/terminal fidelity (Kitty protocol, AltGr, Shift+Enter, undercurl, emoji width), performance with many agents (CPU/fans on macOS, 3.6 GB/h remote bandwidth per animating pane, 570 ms tab close, Windows freezes), and detection fragility. This section makes each of those a **measured budget with a CI gate**, not a hope.
 
-Milestones: **M0** spikes, **M1** local core, **M2** agents/harnesses, **M3** tasks + remote, **M4** preview fabric, **M5** plugins + compat + QUIC, **M6** hardening / Windows / 1.0.
+Milestones (plan in [11](11-milestones.md)): **M0** spikes, **M1** supervision slice, **M2** safe yolo + more harnesses, **M3** remote + preview, **M4** VMs + polish/parity, **M5** compat + plugins, **M6** hardening / Windows / 1.0; **post-1.0** deferred (QUIC, marketplace, …).
 
 ---
 
@@ -17,7 +17,7 @@ All budgets are measured on the two reference machines (§2.1) unless noted. "Ad
 | Keystroke → screen, **added**, local, echo in a shell (p50 / p99) | ≤ 1 ms / **≤ 3 ms** | M1 |
 | Keystroke → screen, added, local, while 30 other panes stream output at 1 MB/s total | p99 ≤ 5 ms | M1 |
 | Keystroke → screen over remote link, added on top of network RTT (p99), SSH transport | ≤ 8 ms | M3 |
-| Remote with **predictive local echo** (QUIC, M5), perceived echo latency for printable chars at 150 ms RTT | ≤ 16 ms for ≥ 90% of keystrokes in a shell / editor | M5 |
+| Remote with **predictive local echo** (QUIC, post-1.0), perceived echo latency for printable chars at 150 ms RTT | ≤ 16 ms for ≥ 90% of keystrokes in a shell / editor | post-1.0 |
 | Pane focus switch, tab switch, workspace switch (input → fully drawn) | ≤ 16 ms p99 | M1 |
 | Tab close with 4 panes | ≤ 50 ms | M1 |
 | Split pane → new shell prompt visible | ≤ 150 ms (dominated by shell startup; Vibeke's share ≤ 20 ms) | M1 |
@@ -36,16 +36,16 @@ All budgets are measured on the two reference machines (§2.1) unless noted. "Ad
 
 | Metric | Budget | Gate |
 |---|---|---|
-| Server idle CPU, 30 panes (20 idle agents at prompt, 10 shells), no client attached | ≤ 0.3% of one core | M1 (M2 with agents) |
-| Server + TUI CPU, 30 panes, 5 agents showing spinners, TUI attached and visible | ≤ 3% of one core | M2 |
-| Same, TUI attached but host terminal occluded/unfocused | ≤ 1% (frame pacing drops to background fps) | M2 |
+| Server idle CPU, 30 panes (20 idle agents at prompt, 10 shells), no client attached | ≤ 0.3% of one core | M1 |
+| Server + TUI CPU, 30 panes, 5 agents showing spinners, TUI attached and visible | ≤ 3% of one core | M1 |
+| Same, TUI attached but host terminal occluded/unfocused | ≤ 1% (frame pacing drops to background fps) | M1 |
 | Holder idle RSS | ≤ 2 MiB + ring (ring is lazily allocated, grows to cap) | M1 |
 | Server RSS per pane (10k lines scrollback, typical TUI agent) | ≤ 6 MiB | M1 |
 | Server RSS baseline (no panes) | ≤ 25 MiB | M1 |
 | TUI client RSS | ≤ 30 MiB | M1 |
 | Wakeups: idle server | ≤ 2/s total (no polling loops; timers coalesced) | M1 |
 | Disk write rate, idle session | ≤ 10 KiB/s (snapshots only on change) | M1 |
-| `state.db` growth, 10 agents working 8h | ≤ 200 MiB (events + items; scrollback archive separate) | M2 |
+| `state.db` growth, 10 agents working 8h | ≤ 200 MiB (events + items; scrollback archive separate) | M1 |
 
 ### 1.4 Startup and recovery
 
@@ -53,10 +53,11 @@ All budgets are measured on the two reference machines (§2.1) unless noted. "Ad
 |---|---|---|
 | Cold start `vibeke` → TUI drawn, no server running, restoring 30-pane layout (shells) | ≤ 300 ms to first frame, ≤ 1.5 s until all shells at prompt | M1 |
 | Attach to running server → first full frame | ≤ 50 ms local, ≤ 1 RTT + 100 ms remote | M1/M3 |
-| **Server restart (kill -9 → new server) with 30 live panes**: time until every pane is reattached and visually identical | ≤ 1 s | M1 |
+| **Server restart (kill -9 → new server) with 30 live panes**: time until every pane is reattached, replayed and (for TUI apps) repainted after the resize nudge | ≤ 1 s | M1 |
+| Inputs applied twice across a server restart | **0** (hard gate) | M1 |
 | Processes lost across server restart / upgrade | **0** (hard gate) | M1 |
 | Server upgrade (`vibeke update`) → back to interactive | ≤ 2 s | M1 |
-| Reboot → layout restored + resumable agents offered | ≤ 3 s after login (excluding agent startup) | M2 |
+| Reboot → layout restored + resumable agents offered | ≤ 3 s after login (excluding agent startup) | M1 |
 
 ### 1.5 Remote bandwidth
 
@@ -67,17 +68,31 @@ All budgets are measured on the two reference machines (§2.1) unless noted. "Ad
 | Agent spinner in focused remote pane | ≤ 8 KiB/s | M3 |
 | Typing in a shell | ≤ 2× the bytes of a plain SSH session | M3 |
 | Full-screen redraw (e.g. `htop` at 1 Hz, 200×60) | ≤ 15 KiB/s | M3 |
-| Reconnect after network change (QUIC) | resume ≤ 1 RTT, no full redraw if state survives | M5 |
+| Reconnect after network change (QUIC) | resume ≤ 1 RTT, no full redraw if state survives | post-1.0 |
 
 ### 1.6 Preview fabric
 
 | Metric | Budget | Gate |
 |---|---|---|
-| Port discovery: dev server starts listening → `preview.discovered` event | ≤ 1 s local, ≤ 2 s remote | M4 |
-| Proxy added latency per request (loopback, local) | ≤ 1 ms p99 | M4 |
-| HMR websocket round-trip over remote link | RTT + ≤ 5 ms | M4 |
-| `browser.screenshot` of a warm preview (browser already running) | ≤ 1.5 s p95 | M4 |
-| Cold screenshot (browser launch) | ≤ 4 s p95 | M4 |
+| Port discovery: dev server starts listening → `preview.discovered` event | ≤ 1 s local, ≤ 2 s remote | M3 |
+| Proxy added latency per request (loopback, local) | ≤ 1 ms p99 | M3 |
+| HMR websocket round-trip over remote link | RTT + ≤ 5 ms | M3 |
+| `browser.screenshot` of a warm preview (browser already running) | ≤ 1.5 s p95 | M3 |
+| Cold screenshot (browser launch) | ≤ 4 s p95 | M3 |
+
+### 1.7 Product metrics (the gate that matters)
+
+Performance budgets prove Vibeke is not worse than a multiplexer. These prove it is better for supervising agents. Measured on the dogfood fleet from the local metrics file (§9), compared against a two-week baseline taken with the previous setup before switching.
+
+| Metric | Definition | Gate |
+|---|---|---|
+| Operator interventions per agent-hour | keystrokes/replies sent to agent panes that were answers to dialogs (not new prompts), per hour of agent `working` time | ≤ 50% of baseline by the end of the first release that includes structured adapters |
+| Blocked time | median and p90 time an agent spends in `needs_approval`/`needs_answer` before it is answered | p90 ≤ 50% of baseline |
+| Approval delivery failures | `delivery_failed` + `delivery_unknown` / all answered Interactions | ≤ 0.5% native channel; ≤ 5% keystroke fallback |
+| Wrong-state rate | detector-disagreement incidents where the shown state was wrong for > 10 s, per agent-hour | ≤ 0.05 |
+| Human review minutes per accepted change | time from task `finished` to merge/accept, active-focus time only | tracked from the first release with tasks; gate set after baseline (Phase 2 north star) |
+
+If these don't improve materially over the baseline, the release does not graduate from preview, regardless of performance numbers.
 
 ---
 
@@ -121,6 +136,8 @@ All budgets are measured on the two reference machines (§2.1) unless noted. "Ad
 | Security | §12 of 09 red-team agent | every PR |
 | Perf | §2 | every PR (subset), nightly (full), release gate (real terminals) |
 
+**Toolchain**: CI builds and tests with the latest stable Rust pinned in `rust-toolchain.toml` (01 §2), bumped within a week of each stable release by an automated PR that must pass the full PR gate; a nightly job also builds with the upcoming beta to catch breakage early. No MSRV older than the pinned stable is tested or supported.
+
 Coverage target: ≥ 80% line coverage on `vk-proto`, `vk-hold`, `vk-store`, `vk-agents` (adapter logic), `vk-compat`; the TUI is covered by snapshot and e2e tests instead.
 
 ---
@@ -159,7 +176,7 @@ The goal: every key and chord the user presses reaches the program in the pane e
 - CLI tests: golden `--json` outputs and exit codes (0/1/2/3/4/5) for representative commands; `vibeke <noun>` with no verb never mutates (asserted by event count).
 - TS client e2e: the generated `@vibeke/client` runs a subset to catch schema/codegen drift.
 
-### 4.4 Harness golden tests [M2+]
+### 4.4 Harness golden tests [M1+]
 
 Agent detection and adapters are where multiplexers break most often; every harness version change must be caught before users do.
 
@@ -175,11 +192,11 @@ Agent detection and adapters are where multiplexers break most often; every harn
 - Two containers (or VMs on macOS runners) with SSH between them; netem profiles from §2.1. Scenarios: attach, type, run TUI agent, network drop for 5/30/120 s with reconnect, client sleep/resume, remote server restart, version skew (remote N-1), port forward + HMR websocket, screenshot round-trip, image upload, clipboard gating prompts.
 - Bandwidth budgets (§1.5) asserted per scenario.
 
-### 4.6 Agent skill test [M2+]
+### 4.6 Agent skill test [M1+]
 
 A headless Claude Code (and pi) session with only `vibeke --skill` as guidance executes scripted user requests ("start a codex reviewer next to you and summarize its findings", "take a screenshot of the dev server you started") against a test session; assertions on events (correct targeting with `@current`, no `@focused`, no forbidden methods, task used for editing delegation). Run nightly with a small model; flaky outcomes are tracked, not gating, until stable.
 
-### 4.7 Preview fabric tests [M4]
+### 4.7 Preview fabric tests [M3]
 
 - Port discovery against fixture servers: Vite, Next.js, Rails, Django, plain `python -m http.server`, servers bound to `0.0.0.0` vs `127.0.0.1` vs `::1`, servers in Docker containers (published ports), servers started by agents in nested process trees.
 - Proxy: HTTP/1.1, HTTP/2 upstreams, websockets (HMR for Vite/Next), SSE, large uploads, cookies with `Domain`/`SameSite`, absolute redirects to `localhost:PORT` rewritten to the preview origin, CSP-sensitive pages.
@@ -194,28 +211,37 @@ The durability promise ("the server is disposable; processes are not") is tested
 
 ### 5.1 `vk-chaos` scenarios
 
+The oracle follows the honest recovery contract in 01 §1.2: processes and input integrity are hard guarantees; screen equality is guaranteed only for apps that repaint on SIGWINCH; raw-shell fidelity is measured, not gated.
+
 | Scenario | Method | Assertions |
 |---|---|---|
-| Kill server mid-output | 30 panes; 10 run `yes`/`seq`-style high-rate output, 10 run alt-screen fixture apps that redraw, 10 idle shells; `kill -9` server at random times (100 iterations) | 0 processes lost; every pane's screen after recovery **equals** a reference VT fed the complete holder byte stream (cell-by-cell, incl. attributes and cursor); no duplicated or missing bytes in replay (holder offsets contiguous) |
-| Kill server mid-input | client streaming pasted input when server dies | input either fully delivered or not at all per chunk; client reconnects automatically; no keystrokes delivered twice |
-| Kill server during VT snapshot write | crash injected (failpoint) inside snapshot persistence | recovery falls back to previous snapshot + longer replay; never corrupt |
-| Ring overflow | server stopped while pane emits > ring size | `pane.recovered {method: ring_only}`; screen equals reference VT fed only the ring bytes after a reset; user notified |
-| Two servers race | start a second server for the same session while first is alive / just killed | lease epochs: exactly one server holds each holder; stale server's writes rejected (fencing test) |
+| Kill server mid-output | 30 panes: 10 high-rate output (`yes`/`seq`-style), 10 alt-screen fixture apps that repaint on SIGWINCH, 10 idle shells; `kill -9` server at random times (100 iterations) | **0 processes lost**; holder offsets contiguous (no lost or duplicated journal bytes); alt-screen panes equal a reference VT cell-for-cell after the resize nudge; raw-shell panes scored by the visual-fidelity metric (§5.2) |
+| Replay side effects | panes emitting bells, OSC 9/777 notifications, OSC 52 writes and DA/DSR queries during the replayed window | **0** duplicate notifications, clipboard writes or query replies after recovery |
+| Server-absent queries | app sends DA1/DA2/XTVERSION and DSR 6 while no server is attached | DA/XTVERSION answered by the holder immediately; DSR 6 answered on reattach if ≤ 5 s old, otherwise dropped and recorded |
+| Resize interleaving | resizes issued between output bursts, then kill -9 | replay applies `Resize` markers in journal order; reference comparison as above |
+| Kill server mid-input | client streaming pasted input (with `input_id`s) when server dies | **no input applied twice** (holder dedupe); un-acked chunks reported to the client as `input_unconfirmed`, never auto-replayed; client reconnects automatically |
+| Kill server with pending approval | Claude (hook shim waiting), Codex (app-server request) and pi (extension gate) each blocked on an Interaction; kill -9 after the decision is recorded but before delivery | on restart the Interaction is reconciled: delivered exactly once or marked `delivery_unknown`; never delivered twice |
+| Headless (pipe mode) run | pi `--mode rpc` / `codex app-server` under a holder in pipe mode; kill -9 server mid-turn | process survives; adapter resumes from the last processed frame offset; turn completes; no duplicated items |
+| Kill server during VT snapshot write | crash injected (failpoint) inside snapshot persistence | recovery uses the previous snapshot + longer replay; never corrupt |
+| Ring overflow | server stopped while pane emits > journal size | `pane.recovered {method: ring_only}`, user notified once; process alive; TUI panes repaint correctly after the nudge |
+| Two servers race | start a second server for the same session while the first is alive / just killed | lease epochs: exactly one server holds each holder; stale server's writes rejected (fencing test) |
 | Upgrade with protocol skew | server N+1 attaching to holders started by N (and N-1) | works; holders never restarted |
 | Holder crash | `kill -9` a holder | pane marked `exited` with reason `holder_lost`; agent resume offered; other panes unaffected |
-| SQLite failure | disk full, read-only FS, corrupt WAL (failpoints / FUSE fault fs) | server stays up in degraded mode (in-memory projections), surfaces error, recovers when disk frees; `doctor --rebuild` restores projections from events |
+| SQLite failure | disk full, read-only FS, corrupt WAL (failpoints / FUSE fault fs) | server enters degraded mode (02 §4a): failed mutations return `storage_unavailable` and emit no events; panes keep running; no Interaction answer is delivered without being recorded; automatic recovery when a probe write succeeds |
+| DB restore | restore `state.db` from backup while clients hold cursors | `log_epoch` rotated; clients get `events.truncated` and resnapshot; no client misinterprets an old cursor |
 | Client death | kill TUI mid-frame; stall client socket (no reads) | server unaffected; stalled client disconnected after 30 s; panes keep running at full speed |
-| Adapter/plugin panic | inject panic in an adapter and a plugin | server stays up; adapter restarted; run falls back to screen detection with `source: screen`; event `agent.adapter_failed` |
-| Clock jumps | system time set back/forward | `seq` ordering unaffected; timers (`stale_after`, timeouts) use monotonic clock |
+| Adapter/plugin panic | inject panic in an adapter and a plugin | server stays up; adapter restarted; run marks `adapter_health: lost` and falls back to screen detection with `source: screen`; event `agent.adapter_failed` |
+| Clock jumps | system time set back/forward | `seq` ordering unaffected; timers use the monotonic clock |
 | Reboot simulation | kill all holders + server, restart | layout restored, resume offered for runs with resume handles, correct resume argv per harness |
 
 Failpoints via the `fail` crate compiled in under `--features chaos` (never in release builds).
 
 ### 5.2 Gate
 
-- Every PR: 10 iterations of "kill server mid-output" and the fencing test.
+- Every PR: 10 iterations of "kill server mid-output", the input-dedupe test, and the fencing test.
 - Nightly: full matrix, 500 iterations of randomized kill points.
-- Release gate: zero failures over the last 7 nightlies.
+- Release gate: zero failures of hard assertions over the last 7 nightlies.
+- **Raw-shell visual fidelity** (tracked, not gated): % of raw-shell panes whose post-recovery screen equals the reference cell-for-cell. Target ≥ 95% without ring overflow; regressions > 2 points between nightlies open a P2.
 
 ---
 
@@ -241,11 +267,11 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 
 ---
 
-## 7. Soak test [M2 weekly, release gate]
+## 7. Soak test [weekly from late M1, release gate]
 
 - **Setup**: one server, 50 panes: 30 fixture "agents" replaying recorded harness sessions in a loop (with real hook/extension traffic through `vibeke hook` shims, generating interactions answered by a scripted client at random delays), 10 real shells running a build/test loop (`cargo test` on a sample repo), 5 alt-screen apps (`htop`, `vim` scripted), 5 panes in task worktrees with preview servers (Vite) and periodic screenshots. A TUI client attached via virtual terminal; a second CLI client polling `session.snapshot` every 2 s and an events subscriber.
 - **Duration**: 24 h.
-- **Assertions**: RSS growth of server ≤ 10% after hour 2 (no leaks); fd count stable; CPU within §1.3 budgets (scaled); all interactions delivered exactly once; event log `seq` gapless; subscriber saw every event; no `overflow` without recovery; scrollback archive and retention compaction run without blocking (p99 input latency during compaction ≤ 5 ms); `state.db` size within §1.3; zero panics in logs.
+- **Assertions**: RSS growth of server ≤ 10% after hour 2 (no leaks); fd count stable; CPU within §1.3 budgets (scaled); no Interaction decision delivered twice, `delivery_unknown` rate ≤ 0.5%; event log `seq` gapless; subscriber saw every event; no `overflow` without recovery; scrollback archive and retention compaction run without blocking (p99 input latency during compaction ≤ 5 ms); `state.db` size within §1.3; zero panics in logs.
 - Variant (nightly, 2 h): same over the `wifi` netem remote profile.
 
 ---
@@ -289,8 +315,9 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 
 ## 9. Dogfooding plan
 
-- **From M1**: the core team runs Vibeke as their only multiplexer (tmux uninstalled from PATH on dogfood machines). the maintainer's setup is the reference workload: 5+ workspaces (samplehub, dashboard, backend, storefront, home), Claude Code + Codex side by side, sibling `*-todo` worktrees → migrated to `vibeke task`.
-- **From M2**: pi and omp with custom extensions are daily drivers on at least one machine (validates "bring your own harness").
+- **From M1**: the core team runs Vibeke as their primary multiplexer. **The previous setup stays installed** as the fallback during dogfooding, and every fall-back use is logged with a reason; uninstalling them is not a quality metric. The two-week baseline for §1.7 is recorded before switching. the maintainer's setup is the reference workload: 5+ workspaces (samplehub, dashboard, backend, storefront, home), Claude Code + Codex side by side, sibling `*-todo` worktrees → migrated to `vibeke task`.
+- **From M1**: pi and omp with custom extensions are daily drivers next to Claude and Codex on at least one machine (validates "bring your own harness").
+- **From M2**: yolo runs default to `sandbox`/`container` in at least two repos; custom manifests (`espi`, Hermes) in daily use.
 - **From M3**: laptop + Linux devbox; at least half of agent work runs remotely; previews used for all web work (samplehub, storefront).
 - **From M5**: existing socket clients running unmodified against the compat socket on the dogfood fleet (the bridge to Phase 2).
 - **Instrumentation for dogfood builds**: opt-in local-only metrics file (`~/.local/state/vibeke/metrics.jsonl`): input latency histograms, CPU, recovery events, detector disagreements (adapter vs screen), interactions answered and channel used, keystroke-fallback failures. Weekly review → issues.
@@ -303,10 +330,10 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 
 | Milestone | Exit gate (in addition to feature completeness) |
 |---|---|
-| **M0 spikes** | VT engine chosen with measured esctest pass rate, throughput ≥ 300 MB/s, snapshot round-trip working; holder prototype survives 100 kill -9 server iterations with zero process loss; key→screen added latency prototype ≤ 3 ms p99 |
-| **M1 local core** | §1.1–1.4 local budgets green; chaos PR gate green; esctest + corpus gate; keyboard tier-1 matrix green; API e2e for all M1 methods; fuzz targets running nightly; dogfooding started |
-| **M2 agents/harnesses** | golden replay for Claude, Codex, pi, omp, OpenCode, Gemini; live drift workflow running; interaction delivery verified natively + keystroke fallback; red-team agent suite green; soak test passing; agent CPU budgets |
-| **M3 tasks + remote** | remote bandwidth/latency budgets on `lan`/`wifi`/`mobile`; reconnect scenarios; task worktree tests incl. async removal; version-skew tests |
-| **M4 preview fabric** | discovery/proxy/screenshot budgets; framework fixture matrix green; preview security tests green |
-| **M5 plugins + compat + QUIC** | socket-client fixture replay + pinned smoke green; plugin capability enforcement tests; QUIC roaming + predictive echo budgets; marketplace index build |
-| **M6 hardening / Windows / 1.0** | full matrix incl. Windows Terminal; 7 consecutive green nightlies; external security review findings closed; reproducible Linux builds; OSS-Fuzz onboarding; 30 days of dogfood with zero P0 |
+| **M0 spikes** | VT engine chosen and passing the C4 hard gate (serialize/restore incl. parser state at arbitrary cut points, 03 §2.3) with measured esctest pass rate and throughput ≥ 300 MB/s; holder prototype survives 100 kill -9 server iterations with zero process loss and zero duplicated input; key→screen added latency prototype ≤ 3 ms p99 |
+| **M1 supervision slice** | §1.1–1.4 local budgets green; chaos PR gate green (incl. pending-approval and duplicate-input scenarios); esctest + corpus gate; keyboard tier-1 matrix green; API e2e for all M1 methods; golden replay for Claude, Codex, pi, omp; interaction delivery verified per tested capability (native where the capability table says native, keystroke fallback otherwise); red-team agent suite green (host = cooperative guardrails); agent CPU budgets; fuzz targets running nightly; **§1.7 product metrics met vs the baseline** |
+| **M2 safe yolo + harnesses** | containment tests for `sandbox`/`container` (09 §12, 13 §14); egress proxy and fail-closed boundary Interactions; golden replay for every harness added (OpenCode, Gemini, ACP, custom manifests); live drift workflow running; soak test passing |
+| **M3 remote + preview** | remote bandwidth/latency budgets on `lan`/`wifi`/`mobile`; reconnect scenarios; version-skew tests; discovery/proxy/screenshot budgets; framework fixture matrix green; preview security tests green; review-minutes metric baselined |
+| **M4 VMs + polish** | VM containment + start-time budgets (13 §14); warm-pool/fork tests; parity features' e2e tests (groups, floating panes, palette, FTS archive search); jj task tests |
+| **M5 compat + plugins** | socket-client fixture replay + pinned smoke green; plugin capability enforcement tests |
+| **M6 hardening / Windows / 1.0** | full matrix incl. Windows Terminal; 7 consecutive green nightlies; external security review findings closed; reproducible Linux builds; OSS-Fuzz onboarding; 30 days of dogfood with zero P0; §1.7 product-metric gates met |

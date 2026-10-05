@@ -292,6 +292,7 @@ osc52_write       = "allow"           # allow | deny
 osc52_read        = "deny"            # deny | ask | allow
 copy_on_select    = false
 primary_selection = false
+remote_write      = "ask_once"        # ask_once (per machine) | allow | deny — OSC 52 writes from remote panes (06 A9, 09 §7)
 
 [keys]
 prefix             = "ctrl+b"
@@ -380,6 +381,7 @@ extra_args = []
 integration = "extension"             # extension | rpc | screen
 [agents.harness.codex]
 shim = true                           # adds --disable daemon_auto_start; user args untouched
+headless_shared = false               # one app-server per Vibeke session multiplexing threads (04 §6.2)
 
 [policy]                              # rules: 02 §4
 [[policy.rule]]
@@ -388,13 +390,28 @@ effect = "allow"
 
 [tasks]                               # see 05
 root              = "~/.vibeke/worktrees"   # or "sibling" → ../<repo>-<slug>
-vcs               = "auto"            # auto | git | jj (jj: M4)
+vcs               = "auto"            # auto | git | jj (jj: M4) — VCS detection
+checkout          = "auto"            # auto (jj workspace if .jj, else worktree) | worktree | jj | clone | none (05 §4; clone is the default for container/vm, 13 §6)
+branch_template   = "{user}/{slug}"
+fetch_before_create = true
 default_agent     = "claude"
-port_block        = 10                # ports per task lease (machine-wide lease file, 05)
+port_pool         = "20000-29999"     # machine-wide pool shared by all sessions (05 §6)
+port_block        = 10                # ports per task lease
 setup_script      = ".vibeke/setup.sh"
 copy_files        = [".env", ".env.local"]
-fetch_before_create = true
-cleanup           = "ask"             # ask | archive_after_merge | never
+[tasks.cleanup]
+on_finish     = "keep"                # keep | archive | remove
+stale_after   = "14d"
+auto_gc       = false
+protect_dirty = true                  # never remove a checkout with uncommitted changes without --force
+[tasks.best_of_n]
+suffix = ""                           # optional per-run prompt suffix for best-of-N runs (05 §12, post-1.0)
+
+[collision]                           # advisory only (05 §10)
+enabled        = true
+window         = "30m"
+fs_attribution = "auto"               # auto | off | aggressive (fanotify)
+enforce_claims = false                # courtesy guardrail for cooperating adapters only
 
 [isolation]                           # see 13
 default             = "host"          # host | sandbox | container | vm — for tasks without --isolate
@@ -411,11 +428,21 @@ memory = "8G"
 disk = "30G"
 
 [preview]                             # see 06
-auto_discover     = true              # listening ports in pane process trees + URLs in output
-auto_forward      = "declared"        # declared | discovered | off — automatic forwarding of discovered ports is opt-in
-access            = "browser-profile" # browser-profile (dedicated profile via SOCKS through the bridge; localhost works as-is) | proxy (authenticated per-preview origins)
-browser           = "chromium"        # remote headless browser for screenshots/automation: chromium | none
+auto_discover     = "suggest"         # suggest | promote | off — discovered ports are suggestions; declared previews are authoritative
+mode              = "profile"         # profile (Vibeke browser profile via SOCKS through the bridge; localhost works as-is, 06 B3) | proxy (authenticated *.vibeke.localhost origins, 06 B4)
+profile_browser   = "auto"            # auto | chrome | chromium | edge | brave | firefox
+profile_scope     = "machine"         # machine | task — one profile per machine, or per task
+profile_route     = "loopback"        # loopback | remote — where non-preview traffic of the profile exits
+local_browser     = "profile"         # profile | default — what `vibeke preview open` launches
+proxy_port        = 47800             # proxy mode listener (loopback only)
+tls_origin        = false             # proxy mode: serve https://*.vibeke.localhost with a local CA
+browser_path      = ""                # remote headless browser binary ("" = auto-detect Chromium)
+browser_idle      = "10m"             # stop the headless browser after this idle time
+browser_external  = "subresources"    # deny | subresources | allow — non-preview destinations for the headless browser
+browser_allow_private = []            # extra CIDRs/hosts the headless browser may reach (default: declared previews only)
+default_viewport  = "1440x900"
 screenshot_format = "png"
+inline_thumbnails = true              # kitty-graphics thumbnails in the TUI where supported
 
 [remote]                              # see 06
 [[remote.machine]]
@@ -423,6 +450,21 @@ label   = "devbox"
 address = "demo@devbox.tailnet"
 transport = "ssh"                     # ssh (quic: post-1.0)
 keybindings = "local"                 # local | server
+auto_connect = true
+auto_upgrade = false                  # upgrade the remote vibeke on connect without asking
+bootstrap   = "push"                  # push (verified artifact from this machine) | remote-download (remote fetches, verified by signature) — 06 A3, 09 §7
+[remote]
+input_when_offline = "drop"           # drop | ask — keystrokes to a pane whose machine is offline
+predictive_echo    = "auto"           # auto | always | never (QUIC only, post-1.0)
+
+[pane]
+size_policy = "latest"                # latest | smallest | pinned — which client holds a pane's geometry lease (03, 07 §3)
+
+[render]
+max_unacked = 2                       # in-flight diffs per pane before the server falls back to a full frame (07 §3)
+
+[security]                            # see 09
+encrypt_state = false                 # encrypt blobs + scrollback segments at rest with a key in the OS keychain (protects backups, not same-UID processes)
 
 [plugins]                             # see 07
 enabled = ["acme.example"]
@@ -432,8 +474,9 @@ herdr_env    = true                   # export HERDR_* aliases in panes
 herdr_socket = false                  # expose the commonly used subset of Herdr's socket API (M5)
 
 [update]
-channel       = "stable"              # stable | preview
-version_check = true
+channel        = "stable"             # stable | preview
+version_check  = true
+manifest_check = true                 # signed harness-manifest channel (04 §13)
 ```
 
 ### 11.1 Repo-local config
@@ -455,7 +498,7 @@ version_check = true
 | `onboarding` | `onboarding` | |
 | `[theme] name/auto_switch/dark_name/light_name/[theme.custom]` | same keys | Built-in theme names are identical. |
 | `[terminal] default_shell/shell_mode/new_cwd` | same | |
-| `[update] channel/version_check` | same | `manifest_check` → `agents.manifest_check` |
+| `[update] channel/version_check` | same | `manifest_check` → `update.manifest_check` |
 | `[keys] prefix` + every action key | same action names | Herdr's legacy `[keys.indexed]` → `switch_tab`/`switch_workspace`/`focus_agent` ranges. Bindings using `cmd`/`super` warn if the host lacks kitty keyboard. |
 | `[[keys.command]]` | same | Windows `cmd.exe` semantics preserved on Windows hosts only. |
 | `[worktrees] directory` | `tasks.root` | |

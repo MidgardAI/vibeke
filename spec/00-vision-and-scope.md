@@ -87,7 +87,7 @@ If M1 misses the first two targets materially, stop and re-evaluate (sidecar fal
 ## Design principles
 
 1. **Structured first, screen last.** If the harness can tell us, ask the harness. Never present a guess as fact: every agent state has a `source` and `confidence`, and the UI shows when it is guessing.
-2. **The server is disposable; processes are not.** Anything the user cares about survives a server restart.
+2. **The server is disposable; processes are not.** Processes, scrollback, state and open interactions survive a server restart; on-screen restoration is best-effort (01 §1.2).
 3. **Every change is observable.** State lives in SQLite; each change also appends an event in the same transaction. Clients subscribe with a cursor and never miss a change.
 4. **One API, many surfaces.** The TUI is just a client. Anything the TUI can do, the CLI and API can do.
 5. **Local feel for remote work.** Latency, previews, images, clipboard and ports should not reveal that the pane is on another machine.

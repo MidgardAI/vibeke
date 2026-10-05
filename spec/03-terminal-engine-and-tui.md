@@ -2,7 +2,7 @@
 
 Scope: how pane bytes become screen state on the server (§1–§4), how that state reaches a TUI client and the host terminal (§5–§6), how input flows the other way (§7), the terminal features we must carry end to end (§8–§10), copy mode and scrollback (§11), and render pacing and CPU budgets (§12). It builds on [01-architecture.md](01-architecture.md) §3.2 (render stream) and §4 (VT snapshots), and on [02-data-model-and-event-log.md](02-data-model-and-event-log.md) (`vt_snapshots`, `scrollback_fts`). Config keys are listed in full in [08-ux-config-and-keybindings.md](08-ux-config-and-keybindings.md).
 
-Design rule: **the server owns screen state, the client owns presentation.** The server parses every pane's bytes once and keeps the authoritative grid. Clients get cell diffs (state sync), never raw pane bytes. That one decision gives us multi-client attach, cheap remote rendering, recovery after a restart, detection on structured screen data, and a per-client re-encoding of features the host terminal may not support.
+Design rule: **the server owns screen state and input encoding, the client owns presentation.** The server parses every pane's bytes once and keeps the authoritative grid. Clients get cell diffs (state sync), never raw pane bytes. That one decision gives us multi-client attach, cheap remote rendering, recovery after a restart, detection on structured screen data, and a per-client re-encoding of features the host terminal may not support.
 
 ---
 
@@ -39,13 +39,18 @@ pub trait VtEngine: Send + 'static {
     fn drain_evicted(&mut self, out: &mut Vec<OwnedRow>);
 
     /// Lossless state serialization for snapshots (01 §4). Must round-trip: modes, palette, charset state,
-    /// tab stops, scroll region, saved cursor, kitty kbd stack, hyperlinks, image placements (by hash).
+    /// tab stops, scroll region, saved cursor, kitty kbd stack, hyperlinks, image placements (by hash),
+    /// AND parser state (a partially received escape sequence or UTF-8 sequence). Hard requirement (§2).
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<SnapshotMeta>;
     fn deserialize(r: &mut dyn std::io::Read, opts: &EngineOptions) -> Result<Self> where Self: Sized;
 
     /// Answer queries the application sends (DA1/DA2, DSR, XTVERSION, kitty kbd query, OSC 10/11 colour queries,
     /// DECRQM). Responses go back to the PTY, not to the client.
     fn take_replies(&mut self, out: &mut Vec<u8>);
+
+    /// While true (journal replay after a restart, 01 §1.2), the engine still updates the grid but
+    /// `take_replies` returns nothing and side-effect EngineEffects are dropped by the pane task.
+    fn set_replaying(&mut self, replaying: bool);
 }
 
 pub enum EngineEffect {
@@ -65,8 +70,8 @@ pub struct Damage { pub rows: SmallBitSet /* visible rows */, pub scrolled: i32 
 
 Rules:
 - `feed` must never block or allocate unboundedly per call. Large outputs are chunked to 64 KiB by the pane task.
-- `serialize` output is versioned by `(engine, engine_version)`. A snapshot from a different engine or version is discarded and recovery falls back to ring-only replay (01 §4).
-- The trait is engine-neutral. Anything an engine lacks is implemented in `vk-term` around it (for example, grapheme width override tables, §10.3).
+- `serialize` output is versioned by `(engine, engine_version)`. A snapshot from a different engine or version is discarded and recovery falls back to ring-only replay (01 §1.2).
+- The trait is an internal seam, not a promise of pluggability. **Exactly one engine ships**, pinned after the M0 spike. Engine gaps are fixed by patching that engine (upstream PR or a fork under our org), not by re-implementing terminal state around it. The only thing `vk-term` owns outside the engine is the shared width table used by both server and client (§10.3).
 
 ## 2. M0 spike: choosing the engine
 
@@ -102,12 +107,13 @@ Score each 0–5, multiply by weight, max 500.
 
 ### 2.3 Decision rubric
 
-- If **libghostty-vt** scores ≥ 400 and its C ABI covers C4 (or we can upstream the missing pieces within the spike), choose it. Pin a commit, vendor the header, and keep a thin `-sys` crate. Zig is a CI-only build dependency; release binaries static-link it.
-- Else, if **wezterm-term** scores ≥ 380, choose it, pinned by git revision, with a fork under our org for patches.
-- Else **alacritty_terminal**, and graphics become our own module in `vk-term` (§9), adding ~3 engineer-weeks to M1.
-- Whatever wins, the other two adapters stay compiling in CI behind `--features vt-alt-*` until M2. That keeps the trait honest and lets us switch if the winner stalls.
+- **Hard gate (C4):** serialize/restore must round-trip the full state *including parser state* across a cut in the middle of escape and UTF-8 sequences (test: cut the corpus at every 4,093rd byte, serialize, restore, continue; screen must equal the uninterrupted run). An engine that fails the gate is out, unless we can close the gap with a patch to that engine inside the spike and the patch is upstreamable or small enough to carry.
+- Among engines passing the gate, pick the highest score (§2.1), with maintenance cost (C8) as tie-breaker.
+- libghostty-vt's current C header still marks VT/UTF-8 continuation handling as unfinished, so it can only win if that is resolved upstream or by our patch during the spike.
+- **One engine.** The losing adapters are deleted after the decision; we don't keep alternates compiling. Switching engines later is a planned project with its own spike, not a feature flag.
+- No effort estimates for engine gaps are made before the spike measures them.
 
-**Acceptance (M0):** a written decision record (`.adr/0001-vt-engine.md`) with the score table, corpus diffs, and the list of gaps we own.
+**Acceptance (M0):** a written decision record (`.adr/0001-vt-engine.md`) with the score table, the C4 gate results, corpus diffs, and the list of gaps we own (with sizes measured during the spike).
 
 ## 3. Server-side screen model
 
@@ -149,58 +155,35 @@ The render server keeps, **per client and per pane**, the last frame acknowledge
 
 **Acceptance:** with 30 panes, 3 of them streaming output at 1 MB/s, server CPU for parsing + damage < 15% of one core on an M2. Idle CPU, see §12.
 
-## 4. Snapshots
+## 4. Snapshots and recovery
 
-Implements 01 §4. `vt_snapshots(pane_id, holder_offset, engine, engine_version, blob_hash, taken_at)`.
+Implements the recovery contract in 01 §1.2. `vt_snapshots(pane_id, holder_offset, engine, engine_version, blob_hash, taken_at)`.
 
-- Trigger: 2 s after output stops, at most every 30 s while busy, and on graceful shutdown.
-- Snapshot = `engine.serialize()` + `PaneScreen` metadata (marks, link table, image hashes), zstd-compressed and stored as a blob.
-- `holder_offset` = the holder's byte offset of the last byte fed before serialization. Recovery: deserialize, then `Attach{from_offset: holder_offset}`, then feed. If the holder's ring starts after `holder_offset`, the bytes in between are gone: reset the screen and replay the whole ring (`pane.recovered{method: ring_only}`).
-- Snapshot work runs on a blocking-pool thread from a cloned engine state if the engine supports cheap clone; otherwise feeding is paused (bounded, < 5 ms for a 200×60 screen with 10k scrollback, else the snapshot is skipped).
+- **Triggers**: 2 s after output stops; at most every 30 s while busy; **when the holder sends `CheckpointWanted`** because 50% of its journal has been written since the last acknowledged checkpoint; on graceful shutdown.
+- **Cut points**: snapshots are taken only at an offset the holder has marked as a safe cut point (not inside UTF-8 or an escape sequence). The pane task feeds up to the cut point, serializes, then continues. Because serialize also captures parser state (§2.3 gate), a cut point is belt-and-braces, not a correctness requirement.
+- Snapshot = `engine.serialize()` + `PaneScreen` metadata (marks, link table, image hashes), zstd-compressed and stored as a blob. `holder_offset` = the cut-point offset.
+- Snapshot work runs on a blocking-pool thread from a cloned engine state if the engine supports cheap clone; otherwise feeding is paused (bounded, < 5 ms for a 200×60 screen with 10k scrollback, else the snapshot is retried at the next cut point).
+- **Recovery** (server start, per live pane):
+  1. Deserialize the latest snapshot; `set_replaying(true)`.
+  2. `Attach{from_offset: holder_offset}`; feed journal bytes and apply journaled `Resize` markers in order. `InputAck` markers update the input-id dedupe window.
+  3. If the journal starts after `holder_offset` (overflow), reset the screen and replay the whole journal from its first cut point: `pane.recovered{method: ring_only}`.
+  4. `set_replaying(false)`. Answer the holder's queued screen-dependent queries (≤ 5 s old) from current state.
+  5. If the foreground process is a TUI (alternate screen active, or a harness manifest marks it), send the **resize nudge** (cols−1 then cols, 50 ms apart) so the app repaints.
+  6. Restore scrollback above the screen from the archive (§11.2), not from the journal.
 
-**Acceptance:** kill -9 the server while 10 agents are mid-output; restarted server shows screens identical (cell-for-cell diff) to a reference uninterrupted engine fed the same bytes, in ≥ 99% of corpus runs; the rest recover via ring-only and are flagged.
+**Acceptance** (matches 10 §5): kill -9 the server while 10 agents and 10 shells are mid-output → zero processes lost, zero inputs applied twice, no replayed side effects (no duplicate notifications, clipboard writes or query replies); agent TUI panes equal a reference run cell-for-cell after the resize nudge in 100% of runs; raw-shell panes are tracked by a separate visual-fidelity metric (10 §5.2), not a gate.
 
 ## 5. Render stream (server → TUI client)
 
-Frames are `postcard`-encoded (01 §3.2). Protocol types live in `vk-proto::render`.
+**The normative wire schema is [07-api-cli-plugins.md](07-api-cli-plugins.md) §3** (`vk-proto::render`). This section only describes the behavior the TUI relies on:
 
-```rust
-enum ServerFrame {
-    Hello { proto: u16, server_version: String, caps: ServerCaps },
-    Layout { tabs: Vec<TabLayout>, focused: PaneId, floating: Vec<FloatRect>, chrome: ChromeModel },  // only on change
-    PaneFrame {
-        pane: PaneId, frame_no: u64,
-        size: GridSize,
-        scroll: Option<i32>,                 // shift the client's copy before applying rows
-        rows: Vec<(u16, RowData)>,           // changed rows only
-        cursor: CursorState,
-        modes: ClientRelevantModes,          // mouse mode, bracketed paste, kitty kbd flags (for input encoding), focus reporting
-        images: Vec<ImagePlacementDelta>,
-    },
-    ImageData { hash: [u8; 32], format: ImgFmt, bytes: Bytes },  // sent once per client, on request or eagerly when small
-    Bell { pane: PaneId }, Notify(NotificationRef), ClipboardSet { data: Vec<u8>, selection: ClipSel },
-    Chrome(ChromeDelta),                     // sidebar rows, tab bar, status segments, interaction badges
-    Ping { t: u64 },
-}
+- **State sync, not byte relay.** Frames carry changed rows (run-length encoded cells, interned styles), scroll shifts, cursor, client-relevant modes, image placement deltas, and chrome deltas (sidebar rows, tab bar, status segments, interaction badges). Image bytes are sent once per client per content hash.
+- **Revisions.** Every pane frame carries `{reset_epoch, base_rev, rev}`. A client applies a frame only if its copy of that pane is at exactly `base_rev` in the same `reset_epoch`; otherwise it drops the frame and asks for a keyframe. With several frames in flight, each is computed against the previous frame's `rev` (a chain), never against the last ack, so scroll and image operations apply in order. A `reset_epoch` bump (recovery, engine reset, resize of the PTY) always comes with a keyframe.
+- **Flow control.** At most `W` unacknowledged frames per pane per client (default 2 local, 1 remote). When the window is full the server stops computing frames for that client and, when it catches up, sends one frame from the client's last acked rev to current state. A slow client gets fewer frames, never stale ones.
+- **Input** goes client → server as logical `InputEvent`s with an `input_id` (§7); the server is the only encoder.
+- `HostCaps` (§6.1) tell the server which image encodings and clipboard paths a client supports. They never change pane semantics (see §10.3, §10.4 for width and theme).
 
-struct RowData { cells: Vec<Cell>, wrapped: bool }      // run-length encoded on the wire
-struct Cell { text: CompactStr /* grapheme */, width: u8, style: StyleId, link: Option<u32> }
-// Styles are interned per connection: StyleTable deltas precede rows that use new ids.
-
-enum ClientFrame {
-    Attach { client_id: Uuid, viewport: GridSize, px: Option<PixelSize>, caps: HostCaps, prefs: ClientPrefs },
-    Ack { pane: PaneId, frame_no: u64 },
-    Input(InputEvent),                       // §7
-    Resize { viewport: GridSize, px: Option<PixelSize> },
-    Focus { gained: bool },
-    WantImage { hash: [u8; 32] },
-    Pong { t: u64 },
-}
-```
-
-`HostCaps` is what the client detected about the host terminal (§6.1). The server uses it to decide image encodings and whether OSC 52 can go to the host. It never changes pane semantics.
-
-Flow control: a client may have at most `W` frames per pane unacknowledged (default 2 local, 1 remote). The server never queues more. It recomputes from current state when the client catches up, so a slow client gets fewer frames, never stale ones.
+**Multi-client geometry.** A PTY has one size. The **geometry controller lease** (01 §1.4) belongs to the most recently active interactive client; the PTY is sized to that client's pane rect. Other clients receive the same grid and present it: letterboxed with a dim border if their rect is larger, or cropped to a window that follows the cursor (with a `⋯ cropped` badge and scroll-to-pan) if smaller. Zoom and sidebar visibility are per-client presentation choices and never resize the PTY unless that client holds the lease. Lease handover is debounced 500 ms.
 
 ## 6. TUI client compositor
 
@@ -208,7 +191,7 @@ Flow control: a client may have at most `W` frames per pane unacknowledged (defa
 
 At attach, before entering the alternate screen:
 - Query DA1, DA2, XTVERSION, kitty keyboard (`CSI ? u`), kitty graphics (`APC G a=q`), DECRQM for 2026 (sync update), 2004, 1004, 1006, 1016, OSC 11 background colour (light/dark), and `CSI 14 t`/`16 t` for pixel size. Timeout 150 ms total, with a DA1 sentinel to detect "no more answers".
-- Merge with `TERM`, `TERM_PROGRAM` and `config.terminal.host_overrides` (escape hatch for terminals that lie).
+- Merge with `TERM`, `TERM_PROGRAM` and `terminal.host_overrides` (escape hatch for terminals that lie).
 - Result: `HostCaps { kitty_kbd, kitty_graphics, sixel, iterm2_images, sync_update, truecolor, undercurl, osc52: Allowed|Unknown, osc8, focus_events, pixel_size, background: Light|Dark|Unknown, notifications: Osc9|Osc777|Osc99|None }`.
 - `vibeke doctor terminal` prints this table with a pass/warn per feature.
 
@@ -252,7 +235,10 @@ enum InputEvent { Key(KeyEvent), Paste(String), Mouse(MouseEvent), FocusIn, Focu
 - Keybinding matching uses `base_layout_key` + mods, so `prefix+shift+t` works on Norwegian and German layouts.
 - **AltGr**: when the host reports associated text, a key with `ctrl+alt` (AltGr on Windows/Linux) and non-empty `text` is **text input, not a chord**. It never matches a keybinding unless the binding explicitly names `altgr+…`. With legacy encodings we can't distinguish them. `keys.altgr_mode = "text" | "chord"` (default `text` on non-US keyboard locales).
 
-### 7.2 Server side: re-encode per pane
+### 7.2 Server side: the one canonical encoder
+
+The server is the **only** place that turns logical key events into bytes for an app. The client sends `InputEvent::Key` with the decoded logical key; it never pre-encodes. `InputEvent::Raw` exists only for explicit raw-byte APIs (`pane.send_bytes`) and is never produced by key handling. Every `InputEvent` carries an `input_id` that the holder acks (01 §1.2).
+
 
 Each pane's app negotiates its own keyboard mode (kitty flags stack via `CSI > flags u`, `modifyOtherKeys` via `CSI > 4 ; n m`, DECCKM, DECKPAM). The VT engine tracks it, and the per-pane encoder emits **exactly what that app asked for**, independent of the host:
 
@@ -280,7 +266,7 @@ Special cases:
 | OSC 7 cwd | Pane `cwd` (used for new splits with `new_cwd = "follow"`, task attribution, preview attribution). Falls back to `/proc/<fg_pid>/cwd` or `proc_pidinfo` on macOS when absent. |
 | OSC 133 A/B/C/D | Prompt and command marks: copy mode `[`/`]` jumps between prompts; "select last command output"; command exit code shown in the pane frame for 5 s on non-zero; `pane.read --source last-command`. Vibeke ships zsh/bash/fish snippets (`vibeke shell-integration zsh`) for shells that don't emit them. |
 | OSC 8 hyperlinks | Stored per pane in `HyperlinkTable`. Rendered to the host as OSC 8 when supported. **Ctrl (Cmd on macOS) hover** underlines the whole link, including wrapped and partially off-screen links. Ctrl+click opens via the host if it handles OSC 8, else via `open`/`xdg-open` on the **client's** machine. For remote panes, `localhost:PORT` URLs are rewritten to their preview-fabric URL (06). Plain-text URLs are detected with a linkifier as a fallback. |
-| OSC 52 clipboard | Set: allowed by default (`clipboard.osc52_write = "allow"`), forwarded to the client, which writes it to the host via OSC 52 or, if the host lacks it, the client OS clipboard (pbcopy, wl-copy, xclip, clip.exe). Works for remote panes because the bytes travel over the render stream. Query (read): denied by default (`osc52_read = "deny" \| "ask" \| "allow"`); "ask" pops an interaction-style prompt naming the pane. |
+| OSC 52 clipboard | Set: allowed by default for local panes (`clipboard.osc52_write = "allow"`; remote panes follow `clipboard.remote_write`, default `ask_once`, 06 A9), forwarded to the client, which writes it to the host via OSC 52 or, if the host lacks it, the client OS clipboard (pbcopy, wl-copy, xclip, clip.exe). Works for remote panes because the bytes travel over the render stream. Query (read): denied by default (`osc52_read = "deny" \| "ask" \| "allow"`); "ask" pops an interaction-style prompt naming the pane. |
 | OSC 9 / OSC 777 / OSC 99 notifications | `EngineEffect::Notify` → `notification.created{kind: osc9\|osc777}` → notification pipeline (08 §7). |
 | OSC 9;4 progress | Shown as a thin progress bar in the pane's sidebar row and tab. |
 | OSC 4/10/11/12 colour set/query | Per-pane palette. Queries are answered from the **current Vibeke theme palette** (§10.4), so apps detect light/dark correctly. |
@@ -312,13 +298,15 @@ SGR 4:0–4:5 (none/single/double/curly/dotted/dashed) and SGR 58/59 underline c
 `vk-term` owns a width function shared by server and client so both always agree:
 - Grapheme segmentation per UAX #29 (`unicode-segmentation`). Width from Unicode 16 East Asian Width + emoji presentation.
 - **VS-16** (U+FE0F) forces width 2 and **VS-15** forces width 1 for emoji that have both presentations. ZWJ sequences count as one cluster of width 2.
-- Mode 2027 (grapheme clustering) is honoured if the app enables it. Otherwise, by default we use the same "legacy wcwidth" behaviour as the host to avoid misalignment (`terminal.grapheme_width = "auto" | "unicode" | "legacy"`; "auto" picks unicode when the host is Ghostty/Kitty/WezTerm and announces 2027).
+- The **pane's** width semantics are per pane and never depend on which client is attached: mode 2027 (grapheme clustering) if the app enables it, else `terminal.grapheme_width = "unicode" | "legacy"` (default `legacy`, matching what most apps' own width calculations assume).
+- Each **client** adapts presentation to its host: if the host's width behaviour differs from the pane's for a cell, the compositor pads or replaces the cluster (e.g. emits an explicit cursor move after a wide emoji) so alignment holds on that host. A host difference never changes the grid other clients see.
 - Test vectors: `tests/unicode/width.txt` (> 2,000 cases), run against both the engine and our renderer.
 
 ### 10.4 Theme and light/dark propagation
 - The Vibeke theme defines the chrome palette **and** the default pane palette (16 ANSI + fg/bg/cursor/selection).
-- `theme.auto_switch = true`: the client watches the host background (OSC 11 query on focus-in, plus kitty/Ghostty colour-scheme notifications via DECSET 2031 where supported) and switches between `dark_name` and `light_name`.
-- On a switch: (1) the chrome re-renders; (2) every pane's default palette is updated; (3) panes that enabled DECSET 2031 receive the colour-scheme-change report `CSI ? 997 ; 1|2 n`; (4) OSC 10/11 queries now answer with the new colours.
+- Chrome theme is per client: `theme.auto_switch = true` makes each client follow its own host background (OSC 11 query on focus-in, plus DECSET 2031 colour-scheme notifications where supported), switching between `dark_name` and `light_name`.
+- The **pane** palette is shared state, so it follows one source: the client holding the geometry controller lease (§5), debounced 2 s, or a fixed choice (`theme.pane_palette = "follow-controller" | "dark" | "light"`).
+- On a pane-palette switch: (1) every pane's default palette is updated; (2) panes that enabled DECSET 2031 receive the colour-scheme-change report `CSI ? 997 ; 1|2 n`; (3) OSC 10/11 queries now answer with the new colours.
 - Per-pane palette overrides that an app set with OSC 4/10/11 are kept until the app resets them.
 
 ## 11. Copy mode, selection and scrollback
@@ -328,7 +316,7 @@ Entered by `prefix+[` (and `prefix+e` for the editor flow below), mouse wheel up
 - **Vi keys** by default (`h j k l w b e 0 $ g G H M L ctrl+u ctrl+d v V ctrl+v y`), emacs set available (`copy_mode.keys = "vi" | "emacs"`). Every key is rebindable.
 - **Search**: `/` forward, `?` backward, `n`/`N`, smart-case, regex toggle `ctrl+r`. Matches are highlighted across the whole scrollback (in-memory rows + archived segments via FTS for "find in older history" prompts) (D#563).
 - Prompt jumps `[`/`]` (OSC 133), "select output of command under cursor" `o`.
-- Yank → OSC 52 to the host and the system clipboard (§8). Optional `copy_mode.copy_on_select = true` copies when a mouse selection ends (D#748). On Linux with X11/Wayland it can also set PRIMARY (`copy_mode.primary_selection = true`).
+- Yank → OSC 52 to the host and the system clipboard (§8). Optional `clipboard.copy_on_select = true` copies when a mouse selection ends (D#748). On Linux with X11/Wayland it can also set PRIMARY (`copy_mode.primary_selection = true`).
 - Selection is rectangular with `ctrl+v`, line-wise with `V`, and unwraps soft wraps when copying.
 
 ### 11.2 Unlimited, searchable scrollback
@@ -356,11 +344,11 @@ Entered by `prefix+[` (and `prefix+e` for the editor flow below), mouse wheel up
 |---|---|
 | Server idle, 30 panes, 15 agents idle | < 0.3% CPU avg over 60 s; 0 wakeups/s from timers we own except a 1 Hz housekeeping tick |
 | Client idle (attached, nothing changing) | < 0.2% CPU; 0 frames |
-| 15 agents "working" with spinners, 1 focused | server < 6% CPU, client < 4% |
-| Keystroke-to-echo added latency (local) | p50 < 2 ms, p99 < 6 ms over the bare terminal |
+| 15 agents "working" with spinners, 1 focused | server + client ≤ 5% of one core combined (10 §1.3 sets ≤ 3% for 5 spinners) |
+| Keystroke-to-echo added latency (local) | p50 ≤ 1 ms, p99 ≤ 3 ms over the bare terminal (same as 10 §1.1) |
 | `cat` 200 MB into a focused pane | completes ≤ 1.3× bare-terminal time; UI stays responsive (input latency p99 < 30 ms) |
 | Close tab with 4 panes | < 50 ms |
-| Memory | < 40 MB server baseline + < 6 MB per pane at 10k scrollback |
+| Memory | ≤ 25 MiB server baseline + ≤ 6 MiB per pane at 10k scrollback (same as 10 §1.3) |
 
 ### 12.3 Spinner and animation throttling
 `ActivityTracker` classifies each pane's recent damage:

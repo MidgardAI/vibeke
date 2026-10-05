@@ -2,7 +2,7 @@
 
 This section specifies every external interface of the server: the control API (JSON-RPC), the event subscription API, the render stream, the holder protocol, the CLI that mirrors the API, the embedded agent skill, the plugin system, and the Herdr compatibility layer. Types referenced here (`Pane`, `AgentRun`, `Interaction`, `Task`, `Preview`, event envelope, …) are defined in [02-data-model-and-event-log.md](02-data-model-and-event-log.md); process roles and transports in [01-architecture.md](01-architecture.md).
 
-Milestone tags: **[M1]** local core, **[M2]** agents/harnesses, **[M3]** tasks + remote, **[M4]** preview fabric, **[M5]** plugins + compat + QUIC, **[M6]** hardening / Windows / 1.0.
+Milestone tags (plan in [11](11-milestones.md)): **[M1]** supervision slice (core runtime + Claude/Codex/pi/omp + interactions + worktree tasks), **[M2]** safe yolo (sandbox/container) + more harnesses, **[M3]** remote + preview, **[M4]** VMs + polish/parity, **[M5]** compatibility + plugins, **[M6]** hardening / Windows / 1.0; **[post-1.0]** deferred.
 
 ---
 
@@ -38,7 +38,7 @@ Methods called with a pane token and no target default to `@current`, never `@fo
 
 ### 1.3 Result shape
 
-Results are plain objects keyed by noun: `{"pane": {...}}`, `{"panes": [...]}`, `{"run": {...}, "interaction": {...}}`. Every mutating result includes `"seq"`: the event-log sequence number after the mutation, so a client can `events.subscribe {after_seq: seq}` with no race.
+Results are plain objects keyed by noun: `{"pane": {...}}`, `{"panes": [...]}`, `{"run": {...}, "interaction": {...}}`. Every mutating result includes `"cursor"` (§2.13 `Cursor`, with `seq` the event-log sequence number after the mutation), so a client can `events.subscribe {after: cursor}` with no race.
 
 ### 1.4 Errors
 
@@ -144,7 +144,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `pane.get` | `{pane}` → `{pane, run?, open_interactions[]}` |
 | `pane.current` | `{}` → `{pane}` (requires pane token / `@current`) |
 | `pane.split` | `{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}` |
-| `pane.float` | `{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M1] |
+| `pane.float` | `{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] |
 | `pane.move` | `{pane, to: {tab} | {workspace} | {new_tab_in: workspace}, position?}` → `{pane, previous_pane_handle}` |
 | `pane.resize` | `{pane, direction, cells?|percent?}` → `{layout}` |
 | `pane.zoom` | `{pane, zoomed?: toggle}` → `{tab}` |
@@ -161,7 +161,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `pane.pin` | `{pane, pinned: bool}` → `{pane}` |
 | `pane.sync_input` | `{panes: [pane], enabled: bool}` → `{group_id}` — synchronized input |
 | `pane.scroll` | `{pane, to: bottom|top|line, line?, delta?}` → `{scroll}` |
-| `pane.screenshot` | `{pane, format?: png|svg|html}` → `{blob}` — renders the pane grid (for bug reports and Phase 2) [M4] |
+| `pane.screenshot` | `{pane, format?: png|svg|html}` → `{blob}` — renders the pane grid (for bug reports and Phase 2) [M3] |
 
 **`pane.read` never scrolls the user's view.** A scrollback read on alt-screen agents can drive the agent's mouse-scroll interface and visibly scrolls the operator's terminal. Vibeke serves history from the VT engine's scrollback plus the scrollback archive (01 §4); for alt-screen agents with structured adapters, transcript history comes from `agent.transcript` (§2.7) instead.
 
@@ -176,7 +176,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 - Encoding is per pane mode: legacy xterm, `modifyOtherKeys`, or kitty keyboard protocol flags as negotiated by the child (03 §keyboard).
 - Literal tmux syntax (`C-c`) is rejected with `invalid_key` and a hint.
 
-### 2.7 `agent.*` [M2]
+### 2.7 `agent.*` [M1]
 
 | Method | Params → Result |
 |---|---|
@@ -185,7 +185,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `agent.start` | `{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise); returns once the adapter (or detector) reports `idle` |
 | `agent.spawn` | `{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — convenience: split/tab + start + optional first prompt |
 | `agent.prompt` | `{target, text, images?: [blob|path], mode?: send|steer|follow_up = send, wait?: bool, until?: [AgentState], timeout_ms?}` → `{run, turn?}` — submits text + Enter atomically via the best channel (RPC `prompt`/`steer` for headless and extension-capable harnesses, bracketed paste + Enter otherwise). If the run is not working and no lifecycle change occurs within 5 s → `stalled` |
-| `agent.wait` | `{target, until?: [AgentState] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` |
+| `agent.wait` | `{target, until?: [WaitCondition] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` — `WaitCondition` = an execution state (04 §2.4) or a derived condition: `needs_approval`/`needs_answer` = an open interaction of that kind, `done` = idle with a turn completed after the wait started (never read state) |
 | `agent.interrupt` | `{target}` → `{run}` — native abort where available (`abort` RPC, Esc for TUIs) |
 | `agent.send_keys` | `{target, keys}` → `{}` |
 | `agent.read` | `{target, source?: visible|recent|transcript, lines?, format?}` → as `pane.read`, plus `transcript` returns the last N turns from the structured log |
@@ -196,21 +196,21 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `agent.report` | adapter-only — see 04 §adapter protocol (`{run?, pane, source, state?, harness_session_id?, transcript_path?, resume?, turn?, item?, seq}`) *(notify ok)* |
 | `agent.harnesses` | `{}` → `{harnesses: [{id, display, version_detected?, integration_installed, capabilities: {native_approval, native_question, steer, transcript, resume, headless}}]}` |
 
-### 2.8 `interaction.*` [M2]
+### 2.8 `interaction.*` [M1]
 
 | Method | Params → Result |
 |---|---|
 | `interaction.list` | `{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1; Phase 2 adds ranking |
 | `interaction.get` | `{interaction}` → `{interaction}` |
-| `interaction.answer` | `{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule}` → `{interaction, delivered: bool, channel: native|keystrokes}` — **forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it (09 §5) |
+| `interaction.answer` | `{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` returns the original result. **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1) |
 | `interaction.cancel` | `{interaction}` → `{interaction}` (user dismisses; adapter delivers deny/escape) |
 | `adapter.interaction.open` | adapter-only `{pane, run?, kind, …payload}` → `{interaction}` |
-| `adapter.interaction.await` | adapter-only `{interaction, timeout_ms}` → `{answer}` or `timeout` — long-poll used by blocking hooks/extensions |
-| `adapter.interaction.resolve` | adapter-only `{interaction, resolution: answered_elsewhere|cancelled|expired}` → `{}` |
+| `adapter.interaction.await` | adapter-only `{interaction, timeout_ms}` → `{answer}` or `timeout` — long-poll used by blocking hooks/extensions. *Retrieving* a decision for the caller's own pane is allowed (09 §5.1.1) |
+| `adapter.interaction.resolve` | adapter-only `{interaction, resolution: resolved_elsewhere|cancelled|expired}` → `{}` |
 
-Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends navigation keys, re-reads the detector screen, and only sends Enter when the highlighted option matches the chosen option (a proven technique, now in the server so every client benefits). On mismatch → `answer_failed {reason: "selection_mismatch"}` and the interaction stays open.
+Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends navigation keys, re-reads the detector screen, and only sends Enter when the highlighted option matches the chosen option (a proven technique, now in the server so every client benefits). On mismatch → `interaction.delivery_failed {reason: "selection_mismatch"}` and the interaction stays open. Keystroke delivery is best-effort (04 §7.3 rule 5).
 
-### 2.9 `policy.*` [M2]
+### 2.9 `policy.*` [M1]
 
 | Method | Params → Result |
 |---|---|
@@ -220,7 +220,7 @@ Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends na
 | `policy.test` | `{action: {tool, command?, paths?, url?}, scope}` → `{effect, rule?}` — dry-run |
 | `policy.trust` | `{path}` → `{trusted: true, digest}` — trust a repo-local `.vibeke/` directory at its current content digest (09 §4) |
 
-### 2.10 `task.*`, `worktree.*` [M3]
+### 2.10 `task.*`, `worktree.*` [M1; remote tasks M3, jj M4]
 
 | Method | Params → Result |
 |---|---|
@@ -237,20 +237,31 @@ Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends na
 | `worktree.remove` | `{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event |
 | `worktree.repo_root` | `{cwd}` → `{repo_root, vcs}` |
 
-### 2.11 `preview.*`, `browser.*` [M4]
+### 2.11 `preview.*`, `browser.*` [M3]
+
+Semantics in [06](06-remote-and-preview.md) Part B.
 
 | Method | Params → Result |
 |---|---|
-| `preview.list` | `{machine?, task?, pane?, status?}` → `{previews}` |
+| `preview.list` | `{machine?, task?, pane?, status?: suggested|up|down|all}` → `{previews}` — suggestions only with `status: suggested|all` |
 | `preview.declare` | `{port, host?: 127.0.0.1, scheme?: http, path?, label?, pane?, task?}` → `{preview}` |
-| `preview.open` | `{preview, client?: "local-browser"|client_id}` → `{local_url}` — ensures forwarding then opens in the client machine's browser |
-| `preview.url` | `{preview}` → `{local_url, remote_url}` — no side effects (for agents: what URL to tell the human) |
+| `preview.promote` / `preview.dismiss` | `{preview}` → `{preview}` — accept or hide a discovered suggestion |
+| `preview.open` | `{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`; proxy mode returns a tokenized `*.vibeke.localhost` URL |
+| `preview.url` | `{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human) |
+| `preview.mirror` / `preview.unmirror` | `{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only |
 | `preview.forget` | `{preview}` → `{}` |
-| `browser.screenshot` | `{preview?|url, path?, viewport?: {w, h, dpr}, full_page?: false, wait_for?: {selector|network_idle|ms}, device?: "iphone-15"|…}` → `{blob, path_on_machine, width, height}` — runs headless Chromium **on the machine where the dev server runs**; result also written to `$TMPDIR/vibeke-shots/<hash>.png` so an agent can read it as a file |
-| `browser.console` | `{preview|url, since_ms?, level?: error|warn|all}` → `{entries: [{ts, level, text, source}]}` |
-| `browser.navigate` | `{session?: browser_session, url}` → `{browser_session, status}` |
+| `preview.profile_list` / `preview.profile_reset` | `{machine?|task?}` → `{profiles}` / `{}` |
+| `browser.session_open` | `{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run |
+| `browser.navigate` | `{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5) |
+| `browser.click` / `browser.type` / `browser.press` | `{browser_session, selector|text|role, text?, key?, submit?}` → `{}` |
+| `browser.wait` | `{browser_session, for: load|networkidle|{selector}|{ms}}` → `{}` |
 | `browser.eval` | `{browser_session, expression}` → `{value}` — gated by capability `browser.script` |
-| `browser.close` | `{browser_session}` → `{}` |
+| `browser.screenshot` | `{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6; file also written to `$TMPDIR/vibeke-shots/<hash>.png` |
+| `browser.console` | `{browser_session|preview, since_ms?, level?: error|warn|all}` → `{entries: [{ts, level, text, source}]}` |
+| `browser.network` | `{browser_session|preview, failed_only?, since_ms?}` → `{entries: [{ts, method, url, status?, error?, blocked_by_policy?}]}` |
+| `browser.dom` | `{browser_session|preview, selector?, format?: text|html|a11y}` → `{content}` |
+| `browser.diff` | `{a: blob, b: blob, threshold?}` → `{blob, changed_ratio, regions}` — refuses different `environment.kind` unless `force` |
+| `browser.session_close` | `{browser_session}` → `{}` |
 | `image.show` | `{blob|path, pane?: @current, max_cols?, max_rows?}` → `{}` — inline display in the TUI via kitty graphics/iTerm2/sixel passthrough; text fallback shows dimensions + `vibeke open` hint |
 | `image.upload` | `{pane, mime, data_b64 | path_on_client}` → `{path_on_machine, blob}` — client→remote image transfer (paste/drag) |
 
@@ -267,18 +278,19 @@ Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends na
 
 | Method | Params → Result |
 |---|---|
-| `events.subscribe` | `{after_seq?: u64, types?: [glob], subjects?: {workspace?, tab?, pane?, run?, task?}, include_snapshot?: false, machine?: label|"*"}` → `{subscription_id, at_seq}` then notifications |
+| `events.subscribe` | `{after?: Cursor, types?: [glob], subjects?: {workspace?, tab?, pane?, run?, task?}, include_snapshot?: false, machine?: label|"*"}` → `{subscription_id, at: Cursor}` then notifications |
 | `events.unsubscribe` | `{subscription_id}` → `{}` |
-| `events.read` | `{after_seq?, before_seq?, types?, subjects?, limit?: 500}` → `{events, next_seq}` — paginated history |
-| `events.wait` | `{types, subjects?, after_seq?, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly) |
+| `events.read` | `{after?: Cursor, before?: Cursor, types?, subjects?, limit?: 500}` → `{events, next: Cursor}` — paginated history (within retention) |
+| `events.wait` | `{types, subjects?, after?: Cursor, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly) |
 
 Server push (JSON-RPC notification):
 ```json
 {"jsonrpc":"2.0","method":"events.event","params":{"subscription_id":"s1","event":{"seq":18342,"ts":1791232838418,"v":1,"type":"agent.state_changed","subject":{…},"actor":{…},"data":{…}}}}
 ```
 - `include_snapshot: true` → first push is `events.snapshot {subscription_id, at_seq, projections}` (same shape as `session.snapshot`), then events with `seq > at_seq`.
-- Ordered, at-least-once per subscription; clients dedupe by `seq` (or `(machine, seq)` for `machine:"*"`).
-- Back-pressure: each subscription has a 10,000-event queue; overflow → `events.overflow {subscription_id, resume_from_seq}` and the subscription is closed; the client resubscribes with `after_seq` (cheap: the log is durable). Never silent loss.
+- **Cursor identity**: `Cursor = {machine_uuid, session_uuid, log_epoch, seq}`. `machine_uuid` is generated once per machine (labels can be renamed), `session_uuid` once per session (named sessions share a machine), and `log_epoch` changes whenever the log's sequence could rewind (restore from backup, DB recreated). A cursor whose `(machine_uuid, session_uuid, log_epoch)` doesn't match the current log is rejected with `cursor_epoch_mismatch {current: Cursor}` and the client must resync from a snapshot. `seq` alone is accepted as shorthand for local single-session scripts.
+- Ordered, at-least-once per subscription; clients dedupe by full cursor (for `machine:"*"` each event carries its machine's cursor).
+- Back-pressure: each subscription has a 10,000-event queue; overflow → `events.overflow {subscription_id, resume_from: Cursor}` and the subscription is closed; the client resubscribes with `after` (cheap while within retention). Never silent loss.
 - Cursor too old → error `truncated {earliest_seq}`.
 - Glob types: `agent.*`, `interaction.opened`, `pane.{created,closed}`.
 
@@ -313,7 +325,7 @@ Server push (JSON-RPC notification):
 | `plugin.kv.get` / `plugin.kv.set` / `plugin.kv.delete` / `plugin.kv.list` | plugin-only, scoped to caller's plugin id |
 | `ui.contribute` | plugin-only — see §7.4 |
 
-### 2.17 `integration.*` [M2]
+### 2.17 `integration.*` [M1]
 
 | Method | Params → Result |
 |---|---|
@@ -326,50 +338,64 @@ Server push (JSON-RPC notification):
 
 ## 3. Render stream protocol [M1]
 
-Opened by `render.attach` on a fresh connection; after the JSON response the connection switches to binary frames. Defined in `vk-proto::render` with `postcard`; frame = `u32 LE length | u8 frame_type | postcard payload`.
+**This section is the single normative definition of the render stream.** 01 §3.2 and 03 describe behaviour and rationale and link here; message names, fields and encodings are defined only in `vk-proto::render` and this table.
+
+Opened by `render.attach` on a fresh connection, authenticated by the same `client.hello` identity rules as control connections (09 §3.2); after the JSON response the connection switches to binary frames. `postcard`; frame = `u32 LE length | u8 frame_type | postcard payload`.
 
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id":"c7","viewport":{"cols":220,"rows":60,"px_w":3520,"px_h":1920},"caps":{"truecolor":true,"kitty_graphics":true,"sixel":false,"iterm2_images":false,"kitty_keyboard":true,"osc52":true,"hyperlinks":true,"max_fps":120,"sync_output":true}}}
 ← {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"frame_types":[…]}}
 ```
 
+### 3.0 Revisions, epochs and geometry
+
+- **Per pane, per client** the server tracks `(epoch, rev)`. `epoch` increments on anything that invalidates incremental state (client attach, pane resize/reflow, alt-screen switch, VT reset, server recovery); `rev` increments per frame within an epoch.
+- Every `PaneDiff` carries `{epoch, base_rev, rev}` and is computed against **`base_rev` = the client's last acked rev**. The client applies a diff only if its current state is exactly `base_rev` in the same `epoch`; otherwise it drops it and sends `Resync{pane}`. The server never sends two in-flight diffs with the same `base_rev`: while a diff is unacked it either waits or sends a `PaneFull` (bounded by `render.max_unacked = 2`). This makes scroll ops and image placements safe to apply in order.
+- **Geometry controller.** A PTY has one size. Per pane, exactly one attached client holds the **geometry lease** (default: the client that most recently sent input to or focused that pane; `pane.size_policy = "latest" | "smallest" | "pinned"`). Other clients render the pane at the controller's size, cropped or letterboxed in their own layout (the TUI shows a `⇲ 180×50 (other client)` hint). Lease changes resize the PTY and start a new epoch.
+- **Client-local presentation never mutates shared terminal semantics.** Host-dependent choices (emoji width tables, theme light/dark, font metrics) are per client; the server's VT state and the PTY see one canonical configuration (03).
+
 ### 3.1 Server → client frames
 
 | Type | Name | Payload |
 |---|---|---|
 | 0x01 | `Hello` | `{protocol, server_version, session, palette, theme}` |
-| 0x02 | `Layout` | full UI model for this client: workspaces/tabs tree, active tab layout rects, floating panes, sidebar model (agent states, unread, pins), status bar segments (incl. plugin segments) |
-| 0x03 | `PaneFull` | `{pane, generation, cols, rows, cells: RLE-encoded rows, cursor, modes}` — on attach, resize, or when the client lost sync |
-| 0x04 | `PaneDiff` | `{pane, generation, base_frame, rows: [(row_idx, RLE cells)], scroll_region_shift?, cursor, modes}` — damage since client's last acked frame; `scroll_region_shift` encodes scrolling as a single op |
+| 0x02 | `Layout` | full UI model for this client: workspaces/tabs tree, active tab layout rects, floating panes, sidebar model (agent states, unread, pins), status bar segments (incl. plugin segments), geometry leases |
+| 0x03 | `PaneFull` | `{pane, epoch, rev, cols, rows, cells: RLE-encoded rows, cursor, modes}` |
+| 0x04 | `PaneDiff` | `{pane, epoch, base_rev, rev, ops: [ScrollUp{top,bottom,n} \| Rows{(row_idx, RLE cells)} \| Clear{rect}], cursor, modes}` |
 | 0x05 | `Image` | `{hash, mime, size, data?}` — data sent once per client; placements reference hash |
-| 0x06 | `ImagePlacement` | `{pane, id, hash, cell_rect, z, crop}` / removal |
+| 0x06 | `ImagePlacement` | `{pane, epoch, rev, id, hash, cell_rect, z, crop}` / removal |
 | 0x07 | `Notify` | `{notification}` (toast) |
 | 0x08 | `Bell` | `{pane}` |
-| 0x09 | `Clipboard` | `{selection: clipboard|primary, data}` — OSC 52 from a pane, delivered to the attached client (policy-gated, 09 §8) |
+| 0x09 | `Clipboard` | `{selection: clipboard|primary, data, origin_machine}` — OSC 52 from a pane, policy-gated (06 A9, 09 §7) |
 | 0x0A | `Title` | `{pane, title}` |
 | 0x0B | `ModeChange` | `{pane, mouse_mode, bracketed_paste, kitty_kbd_flags, focus_events, alt_screen}` |
-| 0x0C | `Popup` | server-driven modal (confirmations, pickers): `{id, kind, model}` |
+| 0x0C | `Popup` | server-driven modal (confirmations, pickers, interaction overlay): `{id, kind, model}` |
 | 0x0D | `Pong` | `{nonce, server_ts}` |
 | 0x0E | `Goodbye` | `{reason}` |
+| 0x0F | `InputAck` | `{input_id, status: written \| rejected{reason} \| dropped_offline}` |
+| 0x10 | `GeometryLease` | `{pane, holder_client, cols, rows}` |
 
-Cell encoding: `{ch: u32 grapheme-id or inline char, width: u8, fg, bg, ul_color, attrs: u16, link_id?}`; graphemes beyond one scalar are interned per stream (`GraphemeTable` updates piggyback on diffs). Hyperlink targets interned similarly.
+Cell encoding: `{ch: u32 grapheme-id or inline char, width: u8, fg, bg, ul_color, attrs: u16, link_id?}`; graphemes beyond one scalar are interned per stream (`GraphemeTable` updates piggyback on diffs, scoped to the epoch). Hyperlink targets interned similarly.
 
 ### 3.2 Client → server frames
 
 | Type | Name | Payload |
 |---|---|---|
-| 0x81 | `Ack` | `{pane, frame}` — per pane; server diffs against the last acked state (SSP semantics) |
-| 0x82 | `Input` | `{pane, bytes}` — already encoded by the client for the pane's negotiated keyboard mode |
-| 0x83 | `Key` | `{pane, key: KeyEvent}` — alternative: server encodes (used by thin clients) |
-| 0x84 | `Mouse` | `{pane, event, cell, px?, mods}` |
-| 0x85 | `Paste` | `{pane, text}` (server applies bracketed paste if enabled) |
+| 0x81 | `Ack` | `{pane, epoch, rev}` |
+| 0x82 | `Key` | `{input_id, pane, key: KeyEvent}` — **the normal input path**: logical key events; the server's single canonical encoder turns them into bytes for the pane's negotiated keyboard mode (03) |
+| 0x83 | `RawInput` | `{input_id, pane, bytes}` — exceptional: raw passthrough (copy of unrecognized host sequences, explicit "send raw" mode); scope-checked like any write |
+| 0x84 | `Mouse` | `{input_id, pane, event, cell, px?, mods}` |
+| 0x85 | `Paste` | `{input_id, pane, text}` (server applies bracketed paste if enabled; large pastes chunked) |
 | 0x86 | `Resize` | `{viewport}` |
 | 0x87 | `Command` | `{rpc: JSON-RPC request}` — UI commands piggyback here to keep ordering with input |
 | 0x88 | `Focus` | `{pane}` |
 | 0x89 | `Ping` | `{nonce, client_ts}` |
-| 0x8A | `ViewHint` | `{visible_panes, fps_cap}` — lets the server skip work for panes not on screen |
+| 0x8A | `ViewHint` | `{visible_panes, fps_cap}` |
+| 0x8B | `Resync` | `{pane}` — request a `PaneFull` |
 
-Pacing: server sends at most `min(client.max_fps, adaptive)` diffs per pane; unfocused panes whose damage is spinner-only are capped at `render.background_fps` (default 4). A pane whose diff rate exceeds bandwidth budget gets frames dropped *between acks* (state-sync makes this lossless in the end state).
+**Input delivery.** `input_id` is a client-generated u64 (monotonic per client). The server writes each input to the holder with the same id (§4) and sends `InputAck` once the holder confirmed the write to the PTY, or `rejected` (scope, `input_locked_open_interaction` per 09 §5.1.4, pane exited) — never silently. On reconnect the client may resend unacked inputs with their original ids; the holder dedupes by `(server epoch, input_id)` within its window, so an input is written at most once. Offline remote panes reply `dropped_offline` (06 A7).
+
+Pacing: server sends at most `min(client.max_fps, adaptive)` frames per pane; unfocused panes whose damage is spinner-only are capped at `ui.background_animation_fps` (default 4, 08 §11). State-sync means dropped intermediate frames are lossless in the end state.
 
 ---
 
@@ -377,28 +403,34 @@ Pacing: server sends at most `min(client.max_fps, adaptive)` diffs per pane; unf
 
 Between server and `vibeke hold`. Kept deliberately small and **separately versioned** (`holder/1`). Lives in `vk-proto::holder`, no dependency on the rest of the server.
 
-Frame: `u32 LE length | u8 type | postcard payload`. Socket: `$RUNTIME/<session>/holders/<pane-ulid>.sock`, 0600.
+Frame: `u32 LE length | u8 type | postcard payload`. Socket: `$RUNTIME/<session>/holders/<pane-ulid>.sock`, 0600, peer-UID checked.
+
+**Authentication.** At spawn the server generates a 32-byte **holder key** and passes it to the holder through the 0600 env file (not the child's env). `HelloOk` carries a random `nonce`; `Acquire` must carry `hmac = HMAC-SHA256(holder_key, nonce ‖ epoch)`. Every later frame from the server is accepted only on the authenticated, acquired connection. The key is persisted (0600) in `state.db` so a restarted server can re-acquire. Pane processes never see it (09 §3.1).
 
 | Dir | Type | Message | Payload |
 |---|---|---|---|
 | S→H | 0x01 | `Hello` | `{proto_min, proto_max, server_pid, server_boot_id}` |
-| H→S | 0x02 | `HelloOk` | `{proto, holder_version, pane_id, child_pid, started_at, ring: {start_offset, end_offset, capacity}, lease: {epoch, holder_token}}` |
-| S→H | 0x03 | `Acquire` | `{epoch: prev+1, server_pid}` — takes the lease; the holder rejects frames carrying an older epoch (**fencing**: an orphaned old server can never write after a new one acquired) |
+| H→S | 0x02 | `HelloOk` | `{proto, holder_version, pane_id, mode: pty|pipe, child_pid, started_at, ring: {start_offset, end_offset, capacity}, last_checkpoint?, nonce}` |
+| S→H | 0x03 | `Acquire` | `{epoch: prev+1, server_pid, hmac}` — takes the lease; frames with an older epoch are rejected (**fencing**) |
 | H→S | 0x04 | `Acquired` | `{epoch}` |
 | S→H | 0x05 | `Attach` | `{epoch, from_offset}` |
-| H→S | 0x06 | `Output` | `{offset, bytes}` — `offset` is absolute byte offset of the first byte; replay then live |
+| H→S | 0x06 | `Output` | `{offset, stream: pty|stdout|stderr, bytes, replay: bool}` — `replay = true` for bytes older than the moment of `Attach`. The server feeds replayed bytes to the VT engine with **side effects suppressed** (no notifications, bells, clipboard writes, query responses, archive appends that already happened); live bytes have `replay = false` |
 | H→S | 0x07 | `Gap` | `{requested, available_from}` — ring overflowed past `from_offset` |
-| S→H | 0x08 | `Input` | `{epoch, bytes}` |
-| S→H | 0x09 | `Resize` | `{epoch, cols, rows, px_w, px_h}` |
+| H→S | 0x12 | `Marker` | `{offset, kind: Resize{cols, rows, px_w, px_h} \| InputWritten{input_id} \| ServerDetached \| ServerAttached{epoch}}` — markers are stored in the ring's side index, so replay interleaves resizes with bytes in the exact order they hit the PTY |
+| S→H | 0x08 | `Input` | `{epoch, input_id, bytes}` |
+| H→S | 0x13 | `InputAck` | `{input_id, offset_at_write, status: written|duplicate|child_exited}` — dedupe window: last 4,096 `input_id`s |
+| S→H | 0x09 | `Resize` | `{epoch, cols, rows, px_w, px_h}` → holder applies `TIOCSWINSZ` and records a `Marker{Resize}` |
 | S→H | 0x0A | `Signal` | `{epoch, sig: INT|TERM|HUP|KILL|WINCH|CONT|STOP, target: fg_pgrp|child}` |
 | S→H | 0x0B | `Status?` | `{}` |
 | H→S | 0x0C | `Status` | `{child_pid, fg_pgid, fg_cmdline, fg_cwd?, exited: bool, exit_code?, signal?, tty_modes: {echo, icanon}}` |
 | H→S | 0x0D | `ChildExited` | `{exit_code?, signal?}` |
 | S→H | 0x0E | `AckExit` | `{epoch}` → holder flushes and exits |
-| S→H | 0x0F | `Checkpoint` | `{epoch, offset}` — server tells the holder which offset is safely captured in a VT snapshot; holder may report it in `HelloOk` |
+| S→H | 0x0F | `Checkpoint` | `{epoch, offset}` — offset safely captured in a VT snapshot; reported back in `HelloOk.last_checkpoint` |
 | either | 0x10 | `Ping` / 0x11 `Pong` | keepalive (10 s) |
 
-- Spawn: server execs `vibeke hold --pane <ulid> --socket <path> --ring 16MiB --cwd <dir> --env-file <tmp 0600, deleted after read> -- <argv>`; holder double-forks, `setsid`, opens the PTY, spawns the child with the PTY as controlling terminal, writes `ready` on an inherited pipe, and closes it.
+**Pipe mode (headless processes).** `vibeke hold --pipe` spawns the child with stdin/stdout/stderr pipes instead of a PTY. Used for headless harness processes (`pi --mode rpc`, `omp --mode rpc`, `codex app-server`, ACP agents, `claude -p --output-format stream-json`) so that **their protocol streams survive a server restart** like PTY panes do: stdout/stderr go into the ring as `Output{stream}`, stdin writes use `Input`. On re-attach, the adapter replays (`replay = true`) only to rebuild its parser state, then reconciles with the harness (e.g. `get_state`, `thread/read`) before acting on any pending request — it never re-sends a request it cannot prove was unanswered. `Resize`/`Signal{WINCH}` are ignored in pipe mode.
+
+- Spawn: server execs `vibeke hold --pane <ulid> --socket <path> --ring 16MiB [--pipe] --cwd <dir> --env-file <tmp 0600, deleted after read> -- <argv>`; holder double-forks, `setsid`, opens the PTY (or pipes), spawns the child, writes `ready` on an inherited pipe, and closes it.
 - Holder never parses terminal output. It *does* track the foreground process group (`tcgetpgrp`) and read its cmdline/cwd (`/proc` or `libproc`), because that is needed by detectors even when no server is attached.
 - No server attached for > `holder.orphan_timeout` (default: never) → keep running. `vibeke doctor` lists orphaned holders; `vibeke hold --list`/`--kill <pane>` exist for recovery.
 - Compatibility rule: server N supports holder protocol `holder/N` and `holder/N-1`; holders are never force-upgraded while their child lives.
@@ -445,8 +477,8 @@ vibeke interaction list|get|answer|cancel   (alias: vibeke ask …)
 vibeke policy    list|add|remove|test|trust
 vibeke task      new|list|get|park|resume|finish|archive|setup-log
 vibeke worktree  list|create|open|remove|repo-root
-vibeke preview   list|declare|open|url|forget
-vibeke browser   screenshot|console|navigate|eval|close
+vibeke preview   list|declare|promote|dismiss|open|url|mirror|unmirror|forget|profile
+vibeke browser   open|navigate|click|type|press|wait|eval|screenshot|console|network|dom|diff|close
 vibeke image     show|upload
 vibeke notification list|send|read
 vibeke events    tail [--types agent.*] [--after-seq N] [--follow] | read | wait
@@ -458,7 +490,7 @@ vibeke plugin    list|install|link|enable|disable|remove|action
 vibeke config    path|get|set|validate|edit|reset-keys
 vibeke import    herdr [--config] [--session] [--dry-run]
 vibeke api       schema|methods|call <method> [json]      # raw access
-vibeke doctor    [--fix] [--rebuild]
+vibeke doctor    [--fix] [--rebuild-index]   # --rebuild-index: rebuild FTS + derived caches (state tables are the source of truth, 02)
 vibeke debug     bundle [--out file] | holders | replay <pane>
 vibeke update    [--check] [--channel stable|preview] [--rollback]
 vibeke channel   get|set <stable|preview>
@@ -515,7 +547,7 @@ Printed from the binary (no network), versioned with the binary, also installabl
 5. **Delegate in isolation (new)**: prefer `vibeke task new` over a sibling pane in the same cwd when the delegated work edits files. Explain collisions and `vibeke task get <k> --collisions`.
 6. **Coordinate agents**: `agent spawn`, `agent prompt --wait`, `agent wait --until needs_answer`, `agent transcript` for structured output (instead of scraping alt-screen output and the "write your answer to a file" workaround, which remains as the fallback for screen-only harnesses).
 7. **Interactions (new)**: you can *see* other agents' open interactions (`vibeke ask list`) but you **cannot answer your own**, and you should not answer other agents' approvals unless the user explicitly delegated that; prefer summarizing them for the user.
-8. **Previews and screenshots (new)**: after starting a dev server, run `vibeke preview list --pane @current` (or `preview declare --port N`), give the user `vibeke preview url <v>`; verify UI work with `vibeke browser screenshot <v> --out /tmp/x.png` and then read the PNG as an image; check `vibeke browser console <v> --level error`. Works identically on remote machines — the screenshot is taken next to the server.
+8. **Previews and screenshots (new)**: after starting a dev server, run `vibeke preview list --pane @current` (or `preview declare --port N`), give the user `vibeke preview url <v>` (the human opens it with `vibeke preview open`, which routes their browser profile to this machine's `localhost`); verify UI work by driving a session (`vibeke browser open <v>` → `click`/`type` → `screenshot --out /tmp/x.png`) and then read the PNG as an image — the screenshot records the commit it shows; check `vibeke browser console <v> --level error`. Works identically on remote machines — the screenshot is taken next to the server.
 9. **Images to the user**: `vibeke image show <path>` displays inline in the user's TUI.
 10. **Ordinary commands**: `pane split` + `pane run --wait` (OSC 133 aware) + `pane read --source recent_unwrapped`.
 11. **Search**: `vibeke search` across scrollback and transcripts instead of asking the user to scroll.
@@ -608,7 +640,7 @@ Updates are debounced to 10 Hz per plugin.
 ### 7.6 Install, marketplace, dev loop
 
 - `vibeke plugin install owner/repo[@ref]`: clone (shallow) → read manifest → show capabilities diff → confirm → run `[[build]]` → enable. Updates show capability *changes* and require re-consent if they widen.
-- Marketplace index: a static JSON index built daily by a GitHub Action from repos tagged topic **`vibeke-plugin`** (and, read-only, `herdr-plugin` repos that pass the compat checker), published to `plugins.vibeke.dev/index.json`; `vibeke plugin search <q>` reads it. No server-side code execution; the index stores repo, ref, manifest summary, capabilities and stars.
+- Marketplace index **[post-1.0; design kept]**: M5 ships install-by-repo (`vibeke plugin install owner/repo`) and `plugin link`; the searchable marketplace follows after 1.0. A static JSON index built daily by a GitHub Action from repos tagged topic **`vibeke-plugin`** (and, read-only, `herdr-plugin` repos that pass the compat checker), published to `plugins.vibeke.dev/index.json`; `vibeke plugin search <q>` reads it. No server-side code execution; the index stores repo, ref, manifest summary, capabilities and stars.
 - Dev loop: `vibeke plugin link <path>` → registers in dev mode; the server watches the manifest and the process command's files (configurable globs) and hot-restarts the plugin process on change; argv actions are re-read each invocation. `vibeke plugin logs <id> -f`.
 - Herdr plugin import: a `herdr-plugin.toml` is parsed into the same model (`[[build]]`, `[[actions]]`, `[[panes]]`, event hooks, link handlers map 1:1). Herdr plugins get the Herdr env aliases and the compat socket path (§8.3) so their `herdr` CLI calls keep working.
 
@@ -649,7 +681,9 @@ With `compat.herdr_env = true` (default on when an import has been done), every 
 - `agent_session` on panes: `{source: "vibeke:<harness>", agent, kind: "id"|"path", value}` derived from `AgentRun.harness_session_id` / `transcript_path` (pi uses `kind:"path"`), and, cleared when the run ends (avoids the stale-ref problem).
 - `revision` is real (pane revision counter). `scroll` provided.
 
-**Method mapping (everything existing socket clients call, plus near neighbours):**
+**Scope rule.** The compat socket implements **the existing-client subset only**: exactly the methods and events exercised by recorded socket-client fixtures and a pinned socket-client smoke test (conformance below). Rows in the table that those fixtures don't exercise are *documented mappings*, implemented only when a fixture requiring them is added; everything else returns `method_not_found` with a hint to the native API. Compat connections are identified and scoped exactly like native connections (09 §3.1) — a pane-scoped caller gets pane scope here too.
+
+**Method mapping (the methods existing socket clients use, plus documented neighbours):**
 
 | Herdr method (params) | Herdr `result.type` | Vibeke implementation |
 |---|---|---|

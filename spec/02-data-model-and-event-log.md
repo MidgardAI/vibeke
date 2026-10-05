@@ -1,6 +1,6 @@
 # 02 — Data model and event log
 
-The event log is the source of truth. Every table in §3 is a projection that can be rebuilt by replaying §2. Phase 2 (mobile/web, inbox, analytics) consumes exactly these types, so they are designed for that now.
+**The SQLite state tables (§3) are the source of truth.** Every mutation commits in one transaction that updates those tables *and* appends the corresponding events to the `events` table (a transactional outbox). Events exist for three jobs: (1) letting clients catch up after a disconnect without polling, (2) per-agent timelines and audit ("what happened while I was away", who answered what), (3) decision history for Phase 2 (learned policy, evidence). Events are **not** replayed to rebuild state, so pruning them never loses state. Phase 2 (mobile/web, inbox, analytics) consumes exactly these types, so they are designed for that now.
 
 ## 1. Entity model
 
@@ -38,30 +38,28 @@ Machine 1─* Session 1─* Group? 1─* Workspace 1─* Tab 1─* Pane ─? Age
   integration: hooks|extension|rpc|app_server|acp|self_report|screen,   # highest-fidelity channel in use
   harness_session_id?, transcript_path?, resume: {argv: [..], cwd}?,
   model?, task_id?, parent_run_id? (subagent/spawned-by),
-  state: AgentState, started_at, ended_at?, end_reason? }
+  state: AgentStateFacets, started_at, ended_at?, end_reason? }
 ```
 
-**AgentState** (one machine for every harness):
+**AgentStateFacets** — mirrors [04](04-harness-adapters.md) §2.4–2.5 exactly (04 is normative). A run's state is five independent facets, each stored as `{ value, since, source: structured|self_report|screen|process|user, confidence: 0..1, detail? }`:
 
-| state | meaning | typical sources |
+| Facet | Values | Authoritative sources |
 |---|---|---|
-| `starting` | process launched, not yet ready for input | process, adapter `session_start` |
-| `working` | model/tool loop active | adapter turn/tool events, screen spinner |
-| `needs_approval` | blocked on a permission/approval Interaction | hook `PermissionRequest`, extension `tool_call` gate, app-server approval request, screen manifest |
-| `needs_answer` | blocked on a question / choice / plan review Interaction | `AskUserQuestion`, `elicitation`, plan-mode review, screen |
-| `idle` | ready for input, user has seen the result | adapter `stop`/`agent_end` + seen |
-| `done` | ready for input, finished while unseen | as idle, before user focuses |
-| `error` | turn failed (API error, rate limit, crash in loop) — process still alive | adapter error events, screen |
-| `rate_limited` | waiting on provider limits; carries `resets_at?` | adapter / transcript |
-| `exited` | process gone | holder |
-| `unknown` | agent present, can't classify | — |
+| **Process liveness** | `starting`, `alive`, `exited{code}` | holder `Status` (always authoritative) |
+| **Execution state** | `starting`, `working`, `idle`, `error`, `rate_limited{resets_at?}`, `exited`, `unknown` | structured transports (hooks/extension/protocol) > self_report > screen > process |
+| **Pending interactions** | list of open `Interaction` ids (approval / question / plan_review) | the `interactions` table; opened/resolved by transports, answered via the delivery transaction below |
+| **Adapter health** | `healthy`, `degraded{reason}`, `disconnected`, `unvalidated_version` | adapter host; stored as `AgentRun.adapter_health` + `last_signal_at` |
+| **Read state** (per client/user) | `seen`, `unseen` (since last execution change) | `pane_reads(client_user, pane_id, seen_rev)` |
 
-Every state value is stored as `{ state, since, source: adapter|self_report|screen|process|user, confidence: 0..1, detail? }`. **Precedence**: adapter > self_report > screen > process. A lower-precedence source may only override a higher one after the higher one has been silent for `stale_after` (per harness, default 20 s while `working`), and the UI marks such states as inferred.
+- `needs_approval` / `needs_answer` are **derived for display** ("≥ 1 open interaction of that kind"), not execution states; a run can be `working` while an approval is open (e.g. a subagent continues).
+- `done` is **not** an execution state: it is the UI rendering of `execution = idle` + `read_state = unseen`. Automation (`agent wait`, API) consumes execution state and pending interactions, never read state. `agent wait --until done` is an alias for "idle, and a turn completed after the wait started".
+
+**Arbitration** (normative text: 04 §2.5): (1) process death overrides immediately and cancels open interactions; (2) open interactions stay authoritative until resolved (answer delivered, native resolution, turn end, process death, user dismissal); (3) silence is not staleness — a lower-precedence source may only *add* information (e.g. a screen-detected dialog opens a provisional, lower-confidence interaction and raises `adapter.disagreement`), never overwrite a healthy structured source; (4) only an explicit structured-transport loss (`adapter_health = disconnected`) downgrades to the next transport, marked inferred; (5) simultaneous fresh signals: structured > self_report > screen > process; (6) `unvalidated_version` caps confidence at 0.8.
 
 **Interaction** — what an agent needs from a human. This is the core Phase 2 object; Phase 1 creates/answers them through TUI and CLI.
 ```
 { id, handle "i42", run_id, pane_id, kind: approval|question|plan_review|notice,
-  status: open|answered|expired|cancelled|answered_elsewhere,
+  status: open|answered|resolved_elsewhere|expired|cancelled,
   opened_at, answered_at?, answered_by?: {client_kind, client_id, user},
   title, body_md?,
   # approval
@@ -70,11 +68,22 @@ Every state value is stored as `{ state, since, source: adapter|self_report|scre
   questions?: [{ id, prompt, multi: bool, options: [{id, label, description?}], allow_free_text: bool }],
   plan_md?,
   # answering
-  answer_channel: native|keystrokes|none,      # native = hook response / extension / rpc; keystrokes = verified key injection
+  answer_channel: native|keystrokes|none,      # native = hook response / extension / rpc; keystrokes = best-effort verified key injection
+  native_ref?: { harness_request_id, transport },   # e.g. Codex approvalId, Claude hook invocation id, pi tool_call id
+  deadline?: ts,                                     # e.g. hook timeout; after it the native channel is gone
+  decision_rev: u32,                                 # increments if a decision is changed before delivery
+  delivery: { state: none|decision_recorded|delivering|delivered|delivery_unknown|failed|superseded|resolved_elsewhere,   # 04 §7.3
+              idempotency_key, lease_holder?, attempts, last_error? },
   answer?: { decision?: allow|allow_always|deny, choices?: {question_id: [option_id]}, text?, scope?: once|session|rule },
   policy_match?: { rule_id, effect } }
 ```
-`answered_elsewhere` covers the user answering directly in the agent's TUI (adapter observes the resolution).
+`resolved_elsewhere` covers the user answering directly in the agent's TUI (adapter observes the resolution).
+
+**Answering is a two-step, recoverable transaction:**
+1. `interaction.answer` records the decision (`status=answered`, `delivery.state=decision_recorded`, new `decision_rev`) in one DB transaction. First writer wins; later answers from other clients get `already_answered` with the winning decision.
+2. A delivery task takes a lease (`delivering`), delivers through the native channel with the `idempotency_key`, and records `delivered` or `failed{reason}`.
+3. If the server crashes between 1 and 3, the state on restart is `delivering` with an expired lease → **reconcile before retry**: ask the harness whether the native request is still pending (Codex: pending server request still open; Claude: the blocked hook shim is still connected and waiting; pi/omp: extension reports its pending gate). Still pending → redeliver (idempotent). Resolved → mark `delivered` or `resolved_elsewhere`. Unknowable → `delivery_unknown`, surfaced to the user; never silently retried.
+4. Keystroke delivery is always best-effort: verified before Enter (04 §8), but the app can change between check and keypress, so the result is `delivered` only when the adapter or screen confirms the dialog closed with the expected outcome; otherwise `delivery_unknown`.
 
 **Turn / Item** (structured adapters only; optional for screen-only harnesses). Modeled after Codex app-server's Thread/Turn/Item and ACP so mapping is lossless:
 ```
@@ -101,13 +110,14 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 
 ### 2.1 Envelope
 ```json
-{ "seq": 18342, "ts": 1791232838418, "v": 1,
-  "type": "agent.state_changed",
-  "subject": { "pane": "01J…", "run": "01J…" },
+{ "seq": 18342, "ts": 1791232838418, "v": 1, "tier": "sync",
+  "type": "interaction.opened",
+  "subject": { "pane": "01J…", "run": "01J…", "interaction": "01J…" },
   "actor": { "kind": "adapter", "id": "claude-hooks" },
-  "data": { "from": "working", "to": "needs_approval", "source": "adapter", "confidence": 1.0, "interaction": "01J…" } }
+  "data": { "kind": "approval", "source": "structured", "confidence": 1.0, "native_ref": { "transport": "claude_hook", "harness_request_id": "toolu_…" } } }
 ```
-- `seq` is a gapless per-session u64 assigned by the state actor.
+- `seq` is a gapless per-session u64 assigned inside the mutation's transaction (outbox), so an event exists iff its state change committed.
+- `tier`: `sync` (catch-up and live UI; pruned after `events.sync_retention`, default 7 days) or `history` (kept `events.history_retention`, default 1 year): `interaction.*`, `policy.*`, `task.status_changed/archived`, `agent.started/exited` + per-run summaries, `sandbox.boundary_action`, `plugin.installed`.
 - `actor.kind`: `user|client|cli|agent|adapter|plugin|system|remote`.
 - Events are immutable. Corrections are new events.
 
@@ -119,8 +129,9 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 | `machine.*` | `added`, `connected`, `disconnected`, `degraded {reason}`, `removed` |
 | `group.*` / `workspace.*` / `tab.*` | `created`, `renamed`, `moved`, `closed`, `focused`, `layout_changed` |
 | `pane.*` | `created`, `closed`, `resized`, `focused`, `title_changed`, `cwd_changed`, `process_changed {fg_cmdline}`, `exited {code}`, `bell`, `marked_unread`, `seen`, `pinned`, `recovered {method: snapshot+replay|ring_only|lost}` |
-| `agent.*` | `detected {harness, via}`, `started`, `identified {harness_session_id, transcript_path}`, `state_changed`, `named`, `turn_started`, `turn_completed {usage}`, `item {kind, summary}` (sampled/compacted), `file_changed {path, op}`, `subagent_started/finished`, `resume_handle {argv}`, `exited`, `released` |
-| `interaction.*` | `opened`, `updated`, `answered {by, answer, channel}`, `answer_delivered`, `answer_failed {reason}`, `expired`, `cancelled`, `resolved_elsewhere` |
+| `adapter.*` | `health_changed {from, to}`, `disagreement {facet, structured, other}` |
+| `agent.*` | `detected {harness, via}`, `started`, `identified {harness_session_id, transcript_path}`, `state_changed {facet, from, to, source, confidence}`, `named`, `turn_started`, `turn_completed {usage}`, `item {kind, summary}` (sampled/compacted), `file_changed {path, op}`, `subagent_started/finished`, `resume_handle {argv}`, `exited`, `released` |
+| `interaction.*` | `opened`, `updated`, `decided {rev, by, answer, channel}`, `delivery_started`, `delivered`, `delivery_unknown`, `delivery_failed {reason}`, `resolved_elsewhere`, `expired`, `cancelled` (names per 04 §7.3) |
 | `policy.*` | `rule_added`, `rule_removed`, `rule_matched {interaction, effect}` |
 | `task.*` | `created`, `setup_started/finished/failed`, `run_attached`, `status_changed`, `archived`, `collision_detected {paths, runs}` |
 | `worktree.*` | `created`, `removed`, `branch_changed` |
@@ -131,19 +142,26 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 
 High-frequency signals (pane output, cursor moves, every streamed token) are **not** events. `agent.item` events are emitted at item granularity (start/end), never per token.
 
-### 2.3 Subscription semantics
+### 2.3 Cursors and subscription semantics
 
-- `events.subscribe { after_seq?: u64, types?: [glob], subjects?: {workspace?, pane?, run?}, include_snapshot?: bool }`
-- If `include_snapshot`, the server first sends `events.snapshot { at_seq, projections }`, then live events with `seq > at_seq` — atomic, no race.
+- **Cursor** = `{ machine_uuid, session_uuid, log_epoch, seq }`.
+  - `machine_uuid` is generated once per machine install (labels like `devbox` can change; the uuid can't).
+  - `session_uuid` is generated when a named session's DB is created (two sessions on one machine never share it).
+  - `log_epoch` is a random u64 stored in the DB; it changes whenever the DB is restored from backup, recreated, or `seq` could otherwise go backwards. A cursor from another epoch is never interpreted.
+- `events.subscribe { cursor?, types?: [glob], subjects?: {workspace?, pane?, run?}, include_snapshot?: bool }`
+- If `include_snapshot`, the server first sends `events.snapshot { at: cursor, state }` (read from the state tables in the same read transaction that determines `at.seq`), then live events with `seq > at.seq` — atomic, no race.
 - Delivery is ordered and at-least-once per connection; clients dedupe by `seq`.
-- Retention: events kept 30 days or 2 M rows (configurable); `agent.item` compacted after 7 days to per-turn summaries. When `after_seq` is older than retention → `events.truncated {earliest_seq}` and the client must use a snapshot.
-- Remote machines: the local server proxies subscriptions; events from a remote session are namespaced by machine and keep the remote `seq` (`{machine:"devbox", seq:…}`), so a client can resume per machine.
+- When the cursor is older than retention, or its `log_epoch`/`session_uuid` doesn't match → `events.truncated { current: cursor }` and the client must take a snapshot. This is normal and cheap; it is the only recovery path clients need.
+- Retention: `sync` tier pruned after 7 days (configurable, also capped at 2 M rows); `history` tier kept 1 year (configurable). `agent.item` events are `sync` tier; per-turn summaries are written to the `turns` table, which is state, not log.
+- Remote machines: the local server proxies subscriptions; each remote session keeps its own cursor (`{machine_uuid, session_uuid, log_epoch, seq}`), so a client resumes per machine independently.
 
 ## 3. SQLite schema (abbreviated)
 
 ```sql
-CREATE TABLE events (seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL,
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);   -- machine_uuid, session_uuid, log_epoch
+CREATE TABLE events (seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, tier TEXT NOT NULL,
   subject_json TEXT, actor_json TEXT, data_json TEXT NOT NULL, v INTEGER NOT NULL);
+CREATE INDEX events_tier_ts ON events(tier, ts);
 CREATE INDEX events_type_ts ON events(type, ts);
 
 CREATE TABLE workspaces (id TEXT PRIMARY KEY, handle TEXT UNIQUE, name TEXT, root_path TEXT, repo_json TEXT,
@@ -167,12 +185,25 @@ CREATE TABLE turns (...); CREATE TABLE items (...);
 CREATE TABLE tasks (...); CREATE TABLE previews (...); CREATE TABLE notifications (...);
 CREATE TABLE policy_rules (id TEXT PRIMARY KEY, scope_json TEXT, matcher_json TEXT, effect TEXT,
   created_by TEXT, created_at INTEGER, hits INTEGER DEFAULT 0, last_hit_at INTEGER);
+CREATE TABLE pane_reads (user TEXT, pane_id TEXT, seen_rev INTEGER, seen_at INTEGER, PRIMARY KEY(user, pane_id));
+CREATE TABLE port_leases (machine_uuid TEXT, port INTEGER, task_id TEXT, session_uuid TEXT, expires_at INTEGER, PRIMARY KEY(machine_uuid, port));  -- see 05; machine-wide leases are also mirrored in a machine-level lock file
 CREATE TABLE plugin_kv (plugin_id TEXT, key TEXT, value BLOB, PRIMARY KEY(plugin_id, key));
 CREATE VIRTUAL TABLE scrollback_fts USING fts5(pane_id UNINDEXED, segment UNINDEXED, line_no UNINDEXED, text);
 CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER);
 ```
 
-Migrations are forward-only, embedded in the binary, run at server start inside a transaction; a pre-migration backup copy of `state.db` is kept (last 3).
+Migrations are forward-only, embedded in the binary, run at server start inside a transaction; a pre-migration backup copy of `state.db` is kept (last 3). Restoring a backup always rotates `log_epoch`.
+
+## 4a. Degraded mode (disk full, I/O errors)
+
+Honest behavior when the DB can't be written:
+
+- A failed commit means the mutation **did not happen**: the API returns `storage_unavailable`, no event is emitted, in-memory projections are not changed.
+- The server enters `degraded` (`session.degraded` is shown in the TUI status bar and returned by every API call's metadata). Panes, holders and PTY I/O keep working: typing, output and rendering never depend on the DB.
+- Mutations that are pure UI convenience (focus, unread marks) are applied in memory and flagged `ephemeral`; they are lost on restart and that is acceptable.
+- Interactions can still be answered **only** if the answer can be persisted; otherwise the answer is refused and the user answers in the agent's own UI. We never deliver a decision we couldn't record.
+- VT snapshots and scrollback archive writes pause; the recovery guarantee degrades to "ring only" and the UI says so.
+- Recovery from degraded is automatic once a probe write succeeds (every 5 s); nothing is replayed from memory.
 
 ## 4. Policy rules (Phase 1 engine, Phase 2 learning)
 
