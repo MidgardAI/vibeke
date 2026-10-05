@@ -10,7 +10,7 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 
 | # | Section |
 |---|---|
-| 00 | [Vision and scope](spec/00-vision-and-scope.md) — landscape and design bets, goals, non-goals, glossary |
+| 00 | [Vision and scope](spec/00-vision-and-scope.md) — landscape and design bets, differentiation, alternatives considered, success metrics, goals, non-goals |
 | 01 | [Architecture](spec/01-architecture.md) — processes (server, per-pane holders, clients), protocols, crates, key decisions |
 | 02 | [Data model and event log](spec/02-data-model-and-event-log.md) — entities, AgentState, Interaction, events, SQLite, policy |
 | 03 | [Terminal engine and TUI](spec/03-terminal-engine-and-tui.md) — VtEngine, M0 engine spike, render stream, input fidelity, graphics, copy mode |
@@ -18,11 +18,11 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 | 05 | [Tasks, isolation and worktrees](spec/05-tasks-isolation-and-worktrees.md) — task workspaces, ports, setup, collision tracking, best-of-N |
 | 06 | [Remote and preview](spec/06-remote-and-preview.md) — machines, SSH/QUIC bridge, port forwarding, preview proxy, remote screenshots |
 | 07 | [API, CLI and plugins](spec/07-api-cli-plugins.md) — JSON-RPC catalog, CLI, holder protocol, plugins, Herdr compatibility |
-| 08 | [UX, config and keybindings](spec/08-ux-config-and-keybindings.md) — sidebar, palette, interaction overlay, config schema |
+| 08 | [UX, config and keybindings](spec/08-ux-config-and-keybindings.md) — sidebar, peek-and-reply, interaction overlay, **canonical config reference** |
 | 09 | [Security and privacy](spec/09-security-and-privacy.md) — threat model, agent containment, plugins, previews, updates |
 | 10 | [Quality, performance and testing](spec/10-quality-performance-testing.md) — budgets, chaos, keyboard matrix, golden tests, release |
-| 11 | [Milestones](spec/11-milestones.md) — M0–M6 build plan and risks |
-| 12 | [Phase 2 outlook](spec/12-phase-2-outlook.md) — inbox, evidence, merge, mobile; what Phase 1 must provide |
+| 11 | [Milestones](spec/11-milestones.md) — value proof first: M0 spikes → M1 supervision slice → M2 safe yolo → M3 remote + preview → M4 VMs + parity → M5 compat + plugins → M6 1.0 |
+| 12 | [Phase 2 outlook](spec/12-phase-2-outlook.md) — EvidenceRecord, inbox, merge, mobile; what Phase 1 must provide |
 | 13 | [Sandboxes and VMs](spec/13-sandboxes-and-vms.md) — host / OS sandbox / container / VM execution, safe yolo, egress proxy, credentials, git boundary |
 
 Also: [integrations/pi-extension/DESIGN.md](integrations/pi-extension/DESIGN.md) · design review · design review
