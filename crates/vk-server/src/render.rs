@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use vk_proto::frame::asyncio;
 use vk_proto::holder::InputStatus;
 use vk_proto::render::*;
-use vk_term::encode::{self, InputModes, MouseMode};
+use vk_term::encode::{self, InputModes};
 
 const MAX_UNACKED: u32 = 2;
 
@@ -49,31 +49,9 @@ pub fn holder_input_id(client: &str, id: u64) -> u64 {
 }
 
 pub fn input_modes(server: &Server, pane: &str) -> InputModes {
-    let Some(rt) = server.pane_rt(pane) else { return InputModes::default() };
-    let sc = rt.screen.lock().unwrap();
-    let m = sc.engine.modes();
-    let bits = sc.engine.term_mode();
-    // alacritty TermMode bits (vendored): MOUSE_REPORT_CLICK 1<<3, SGR 1<<5, MOTION 1<<6, DRAG 1<<13, UTF8 1<<14, APP_KEYPAD 1<<2
-    let mouse = if bits & (1 << 6) != 0 {
-        MouseMode::AnyEvent
-    } else if bits & (1 << 13) != 0 {
-        MouseMode::ButtonEvent
-    } else if bits & (1 << 3) != 0 {
-        MouseMode::Normal
-    } else {
-        MouseMode::Off
-    };
-    InputModes {
-        app_cursor: m.app_cursor,
-        app_keypad: bits & (1 << 2) != 0,
-        bracketed_paste: m.bracketed_paste,
-        focus_events: m.focus_events,
-        kitty_flags: m.kitty_flags,
-        modify_other_keys: sc.engine.modify_other_keys(),
-        mouse,
-        mouse_sgr: bits & (1 << 5) != 0,
-        mouse_utf8: bits & (1 << 14) != 0,
-        shift_enter_lf: false,
+    match server.pane_rt(pane) {
+        Some(rt) => rt.screen.lock().unwrap().engine.input_modes(),
+        None => InputModes::default(),
     }
 }
 

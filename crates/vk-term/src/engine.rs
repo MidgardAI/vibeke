@@ -719,3 +719,32 @@ impl Engine {
         self.term.primary_grid().scrolled_total
     }
 }
+
+impl Engine {
+    /// Input modes negotiated by the app, for the canonical encoder (03 §7.2).
+    pub fn input_modes(&self) -> crate::encode::InputModes {
+        use crate::encode::{InputModes, MouseMode};
+        let m = *self.term.mode();
+        let mouse = if m.contains(TermMode::MOUSE_MOTION) {
+            MouseMode::AnyEvent
+        } else if m.contains(TermMode::MOUSE_DRAG) {
+            MouseMode::ButtonEvent
+        } else if m.contains(TermMode::MOUSE_REPORT_CLICK) {
+            MouseMode::Normal
+        } else {
+            MouseMode::Off
+        };
+        InputModes {
+            app_cursor: m.contains(TermMode::APP_CURSOR),
+            app_keypad: m.contains(TermMode::APP_KEYPAD),
+            bracketed_paste: m.contains(TermMode::BRACKETED_PASTE),
+            focus_events: m.contains(TermMode::FOCUS_IN_OUT),
+            kitty_flags: kitty_flags(m),
+            modify_other_keys: self.extra.modify_other_keys,
+            mouse,
+            mouse_sgr: m.contains(TermMode::SGR_MOUSE),
+            mouse_utf8: m.contains(TermMode::UTF8_MOUSE),
+            shift_enter_lf: false,
+        }
+    }
+}
