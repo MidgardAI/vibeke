@@ -113,10 +113,8 @@ fn main() {
     )
     .expect("libghostty-vt.a missing from zig output");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    // The archive needs only libc/libm symbols (Zig compiles its C++ deps without a C++
+    // runtime dependency); std already links those on every supported target (musl's libm is
+    // part of its libc.a).
     println!("cargo:rustc-link-lib=static=ghostty-vt");
-    if target.contains("-linux-") {
-        // Zig's C++ (simdutf, highway) is compiled into the archive; libm/libc come from the
-        // Rust target's libc.
-        println!("cargo:rustc-link-lib=m");
-    }
 }
