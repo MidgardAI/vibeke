@@ -85,10 +85,10 @@ A **single binary** `vibeke` (symlink `vk`) with subcommands. Roles:
 
 | Concern | Decision | Notes |
 |---|---|---|
-| Language | Rust, **latest stable toolchain** (1.99.0 as of 2026-09-28), edition 2024 (the newest edition; the next one is 2027) | **`mise.toml` is the single toolchain source** (Rust with rustfmt/clippy, cargo-nextest, cargo-deny, bun for the pi extension); `mise install` sets up a dev machine and CI uses `jdx/mise-action`. It pins the current stable Rust and is bumped within a week of each 6-week stable release (Renovate PR + CI). No separate `rust-toolchain.toml`. MSRV = the pinned version; we don't support older compilers since we ship binaries, not a library. Use new language features freely (async closures, let-chains, etc.). Single static binary; good PTY/terminal ecosystem. |
+| Language | Rust, **latest stable toolchain** (1.99.0 as of 2026-09-28), edition 2024 (the newest edition; the next one is 2027) | **`mise.toml` is the single toolchain source** (Rust with rustfmt/clippy, cargo-nextest, cargo-deny, bun for the pi extension); `mise install` sets up a dev machine and CI uses `jdx/mise-action`. It pins the current stable Rust and is bumped within a week of each 6-week stable release (Renovate PR + CI). No separate `rust-toolchain.toml`. MSRV = the pinned version; we don't support older compilers since we ship binaries, not a library. Use new language features freely (async closures, let-chains, etc.). Single static binary; good PTY/terminal ecosystem. The one non-Rust build input is the vendored libghostty-vt (Zig 0.16, also pinned in `mise.toml`), statically linked. |
 | Async | `tokio` in server/clients; `polling` in holder | Holder must stay minimal. |
 | PTY | `rustix` + custom openpty/forkpty on Unix; ConPTY on Windows (M6) | Avoid `portable-pty` in the holder to control fd inheritance and setsid precisely. |
-| VT engine | **One engine, pinned after the M0 spike** (candidates: `libghostty-vt`, `wezterm-term`, `alacritty_terminal`). The `VtEngine` trait stays as an internal seam, but only one implementation ships and is maintained | Hard requirement: serialize/restore of full terminal state **including parser state** (mid-sequence continuation) — the recovery contract (§1.2) depends on it. Other criteria in [03](03-terminal-engine-and-tui.md) §2. If no candidate meets the hard requirement, we fork/patch the best one rather than build workarounds. |
+| VT engine | **libghostty-vt** (Ghostty's VT core), vendored at a pinned commit and built with Zig 0.16 into the static binary; decided 2026-10-06, replacing the M0 `alacritty_terminal` binding. The `VtEngine` trait stays as an internal seam, but only one implementation ships and is maintained | Hard requirement: serialize/restore of full terminal state **including parser state** (mid-sequence continuation) — the recovery contract (§1.2) depends on it. libghostty-vt provides this natively (snapshot API with VT/UTF-8 continuation), plus kitty graphics and OSC 133. Rationale, embedding and gaps in [03](03-terminal-engine-and-tui.md) §2. |
 | TUI rendering | Custom compositor on `crossterm` output + `ratatui` for chrome widgets | Pane contents are blitted from server cell grids, not re-rendered through ratatui widgets. |
 | Storage | SQLite (WAL) via `rusqlite`; zstd-compressed scrollback segment files; FTS5 for search | One DB per session. |
 | Serialization | JSON (control API, events, config interop), `postcard` (render stream, holder protocol) | |
@@ -162,7 +162,7 @@ $XDG_RUNTIME_DIR/vibeke/<session>/   (macOS: $TMPDIR/vibeke-$UID/<session>/)
 crates/
   vk-proto        # API types, JSON-RPC envelopes, event types, render frames, holder protocol; schemars
   vk-hold         # holder (library + bin entry), PTY spawning, ring buffer — minimal deps
-  vk-term         # VtEngine trait + chosen engine binding, screen model, damage tracking, snapshots
+  vk-term         # VtEngine trait + libghostty-vt binding (vendor/libghostty-vt, built via zig), screen model, damage tracking, snapshots
   vk-store        # SQLite schema/migrations, event log, projections, scrollback archive, FTS
   vk-server       # state actor, command bus, API server, render server, notification dispatch
   vk-agents       # harness manifests, adapter trait, built-in adapters, screen detector engine

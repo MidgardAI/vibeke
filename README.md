@@ -4,7 +4,7 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 
 **Status:** specification, Phase 1 (terminal runtime). Phase 2 (mobile/web supervision) follows.
 
-**Language:** Rust on the latest stable toolchain (edition 2024), single static binary. The only non-Rust code is the in-agent integration glue that must live in each harness's ecosystem (e.g. the TypeScript extension for pi/omp, hook config templates).
+**Language:** Rust on the latest stable toolchain (edition 2024), single static binary. The terminal engine is Ghostty's libghostty-vt, vendored and statically linked (built with Zig 0.16, pinned in `mise.toml`). Apart from that, the only non-Rust code is the in-agent integration glue that must live in each harness's ecosystem (e.g. the TypeScript extension for pi/omp, hook config templates).
 
 ## Spec
 

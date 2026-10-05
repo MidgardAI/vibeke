@@ -157,7 +157,7 @@ emit agent.item{kind:user_message, attachments:[blob]}
 - Keybinding `remote_image_paste = "ctrl+v"` is active only when the clipboard holds an image and the focused pane cannot see local files (remote, container, VM, or a sandbox that denies the source); otherwise ctrl+v passes through. Also available as `vibeke attach-file <path> --pane devbox/w3:p5`, which accepts any file type and uploads it. Both use the A11 pipeline.
 
 **Remote → local (show an image produced remotely):**
-- **Kitty graphics** emitted by a remote program are parsed by the remote VT engine (when the engine supports it, an M0 criterion). Images are stored as blobs and placements are sent in render frames by hash. The local client fetches each blob once (cached) and re-emits kitty graphics to the host terminal, or falls back to a `[image 1280×720 — prefix+i to open]` placeholder.
+- **Kitty graphics** emitted by a remote program are parsed by the remote VT engine (libghostty-vt parses kitty graphics natively, 03 §2). Images are stored as blobs and placements are sent in render frames by hash. The local client fetches each blob once (cached) and re-emits kitty graphics to the host terminal, or falls back to a `[image 1280×720 — prefix+i to open]` placeholder.
 - Screenshots and other agent artifacts use the same blob path (B6).
 
 ### A11. Dropped and pasted paths: filesystem namespace translation (M3)
@@ -218,7 +218,9 @@ cmux already ships a scriptable browser pane, per-workspace listening ports, and
 
 Goals:
 - Reach a dev server running on any machine (or inside a container/VM) from the laptop, with `http://localhost:<port>` meaning *the remote's* localhost — no Host/Origin rewriting, no cookie games, HMR and OAuth callbacks unchanged.
-- Agents and humans share one browser service: agents drive a headless browser next to the server (navigate, click, type, eval, screenshot, console, network); humans see the same screenshots.
+- **The browser lives in the terminal.** The default human view of a preview is a live, interactive **browser pane** in the Vibeke layout (B3.2), drawn with kitty graphics: split it next to the agent, zoom it, switch tabs, detach and reattach, like any pane. A normal browser window (B3.3) is one keystroke away for DevTools, extensions or a big screen.
+- **Render near the eyes, network near the server.** The human's browser runs on the machine of the viewing client (the laptop) and only its HTTP traffic crosses the link. Pixels never cross SSH in the recommended topology, so scrolling and typing feel local and HMR costs one RTT.
+- Agents and humans share one browser service: agents drive a headless browser next to the server (navigate, click, type, eval, screenshot, console, network); humans see the same screenshots and can **watch an agent's browser session live** in a pane (B7).
 - Every screenshot says **what environment** produced it and **which code** it shows.
 - Nothing listens beyond loopback; every listener is authenticated or peer-checked.
 
@@ -236,10 +238,15 @@ Priorities: **declared previews first**; automatic discovery produces *suggestio
    - Suggestions become `up` previews automatically only when `preview.auto_discover = "promote"`; default `"suggest"`.
 3. **Lifecycle**: `suggested|declared → up ⇄ down → gone` (gone after 60 s absent + process change, or task removal). Scoped to `(machine, runner, pane, task)`.
 
-### B3. Primary: the Vibeke browser profile over SOCKS5 (M3)
+### B3. Primary: a Vibeke-managed browser routed over SOCKS5, in a pane or a window (M3)
+
+One route, two ways to look at it. The route (B3.1) makes `localhost` mean the remote's localhost. The **browser pane** (B3.2) is the default view; the **external window** (B3.3) uses the same profile and route.
+
+#### B3.1 The route
 
 ```
-local Chrome (profile: ~/.local/state/vibeke/browser-profiles/devbox)
+Vibeke-managed Chromium on the laptop (pane: headless · window: headful)
+   profile: ~/.local/state/vibeke/browser-profiles/devbox
    --proxy-server=socks5://127.0.0.1:<socks_port>  --proxy-bypass-list="<-loopback>"
         │  CONNECT localhost:5173   (SOCKS5, hostname resolved proxy-side)
         ▼
@@ -248,8 +255,42 @@ local server SOCKS5 listener (127.0.0.1, peer-checked) ──► route by profil
         │  otherwise ──► route policy: "direct" (laptop network, default) | "remote" (egress via devbox)
 ```
 
-- `vibeke preview open v4` (or `prefix+o`) launches — or reuses — a **Vibeke-managed browser profile** for the preview's machine (or task, `preview.profile_scope = "machine" | "task"`) and opens `http://localhost:5173/<path>` in it. The URL is exactly what the dev server printed.
-- Browser support:
+#### B3.2 The browser pane (default view)
+
+A **browser pane** is a non-PTY pane kind whose content is a live Chromium viewport. `prefix+o` on a pane with a preview (or clicking a preview chip, or a `localhost` URL printed in a remote pane) opens it as a split next to that pane; `vibeke preview open v4 [--split right|down|tab|float]` does the same from the CLI.
+
+```
+┌ claude · devbox w2:p1 ─────────────────┬ ◉ web :5173 · devbox ──────────────────┐
+│ ● Editing src/routes/login.tsx         │ ← → ⟳  localhost:5173/login          ▢ │
+│ ...                                    │ ┌────────────────────────────────────┐ │
+│ ✓ pnpm test (12 passed)                │ │                                    │ │
+│                                        │ │     (live page, kitty graphics)    │ │
+│ > _                                    │ │                                    │ │
+│                                        │ └────────────────────────────────────┘ │
+└────────────────────────────────────────┴ laptop chromium → devbox loopback ─────┘
+```
+
+- **Where it runs.** A headless Chromium (`--headless=new`) owned by the server **on the viewing client's machine** (the laptop server in the recommended topology), using the machine's or task's persistent profile and the B3.1 route. One browser process per profile; one CDP target (over `--remote-debugging-pipe`) per browser pane. In the plain-SSH topology (no local client) it runs on the remote server instead and frames cross the link under the A7 budgets (adaptive quality and fps, paused when not visible); `vibeke doctor` explains the difference.
+- **Frames.** CDP screencast (`Page.startScreencast`, with per-frame acks for backpressure) produces frames at the pane's pixel size. The server decodes them, diffs against the previous frame in cell-aligned tiles, and publishes only changed tiles on a separate **media channel** of the render stream: latest-wins per pane and lower priority than cell frames, so a busy page never delays text panes. A browser pane not visible on any client gets no frames and its screencast stops.
+- **Drawing on the host.** The client draws tiles with kitty graphics, placed with unicode placeholders so clipping in splits, popups over the pane and chrome stay correct. When the client and the host terminal are on the same machine (always, for the laptop), image data goes via shared memory (`t=s`) or temp files (`t=t`) instead of base64 through the PTY; otherwise chunked, zlib-compressed `t=d`. The browser pane bypasses the VT engine: the server already has the pixels. (Inbound kitty graphics from programs in normal panes are parsed by libghostty-vt, 03 §2.)
+- **Crisp sizing.** The viewport is the pane's cell rect × the host's cell pixel size (`CSI 16 t`, 03 §6.1) at the host's device pixel ratio, applied with `Emulation.setDeviceMetricsOverride`, so text is sharp on Retina screens and CSS breakpoints match the pane width. Resizing or zooming the pane resizes the viewport (debounced 100 ms). `--viewport 390x844` / `--device iphone-15` pins a device size and letterboxes it.
+- **Input.** When the browser pane is focused, keys and mouse go to the page; the prefix key still goes to Vibeke.
+  - Mouse: pixel-precise with SGR-pixels (DECSET 1016) where the host supports it, else cell centres; clicks, drags, hover and wheel → `Input.dispatchMouseEvent` (wheel in pixel deltas for smooth scrolling).
+  - Keys: the kitty keyboard protocol gives full key events (press/repeat/release, modifiers, base layout key) → `Input.dispatchKeyEvent` with correct `key`/`code`, so page shortcuts work on any layout; text → `Input.insertText`; bracketed paste → `insertText`; image paste and file drops reuse A10/A11 as a file-chooser/drop target. IME composition is `[verify M3]`.
+  - Clipboard: page copy → OSC 52 / client clipboard; page clipboard reads follow the OSC 52 read rules (03 §8).
+- **Browser chrome in one row.** The pane's top row shows back/forward/reload, the URL (editable), a loading indicator and an environment label (`laptop chromium → devbox loopback`). Browser actions live in the prefix table (defaults in 08): address bar, back/forward, reload, hard reload, screenshot (B6, `environment = LocalPane`), console/network split, **open in window** (B3.3), close.
+- **Console and network in the terminal.** The console split is a text pane following the page's console and failed requests (`vibeke browser console --follow`, same capture as B5), so errors sit next to the code and the agent. Full DevTools are in the window.
+- **Lifecycle.** Browser panes are persisted like other panes (URL, profile, history), re-created after a server restart or reattach, and closed with their tab. Chromium is not holder-owned, so the page reloads at its last URL after a server restart rather than surviving it.
+- **Fallbacks.** Hosts with full kitty graphics (Ghostty, Kitty, WezTerm): the browser pane is the default. iTerm2: kitty graphics support is partial `[verify M3]`; if it fails the capability probe, the pane uses iTerm2 inline images (OSC 1337) at a lower frame rate, or falls back to the window. Hosts without graphics (Terminal.app): `prefix+o` opens the window.
+- **Performance targets**, checked by a spike before the full UI is built: input→pixel ≤ 50 ms p95 and ≥ 30 fps while scrolling, laptop browser with a remote dev server over a 50 ms link; an idle page costs no frames and < 1% CPU. If CDP screencast misses them, the numbers and the tuning tried (frame size, format, quality, ack pacing) are recorded and the targets or design are revisited in this spec.
+
+#### B3.3 The external window
+
+- **Open in window** (from the browser pane, `vibeke preview open v4 --window`, or `preview.mode = "window"`) hands the same profile to a headful browser: the server closes the headless instance (a profile can be open in only one Chromium process) and opens the window at the same URL with logins intact. Closing the window, or "back to pane", hands it back. Use it for DevTools, extensions, password managers or a second screen.
+#### B3.4 Profiles, routing and authentication (both views)
+
+- Both views use a **Vibeke-managed browser profile** for the preview's machine (or task, `preview.profile_scope = "machine" | "task"`) and open `http://localhost:5173/<path>`: exactly the URL the dev server printed.
+- Browser support (the browser pane always uses Chromium; the window can use any of these):
   - Chromium family (Chrome, Chromium, Edge, Brave, Arc): `--user-data-dir=<profile dir>`, `--proxy-server=socks5://127.0.0.1:<port>`, `--proxy-bypass-list="<-loopback>"` (removes Chrome's implicit loopback bypass so `localhost` goes through the proxy). With `socks5://`, Chrome resolves hostnames proxy-side, so remote-only names (`grafana.internal`) work when routed remote.
   - Firefox: dedicated profile with `network.proxy.type=1`, `socks=127.0.0.1:<port>`, `socks_version=5`, `socks_remote_dns=true`, `network.proxy.allow_hijacking_localhost=true`.
   - Safari has no per-profile proxy → secondary mode (B4) only.
@@ -260,10 +301,10 @@ local server SOCKS5 listener (127.0.0.1, peer-checked) ──► route by profil
 - **Why this is primary:** the app sees `Host: localhost:5173` and its real origin, so Vite `allowedHosts`, hard-coded HMR `clientPort`, `localhost` OAuth redirect URIs, service workers (localhost is a secure context), cookies and CORS all behave exactly as on the remote machine. No mirror listeners and no rewriting.
 - **Authentication of the SOCKS listener.** Chromium does not support SOCKS5 username/password auth, so the listener authenticates by **peer lookup**: for each accepted loopback connection, the server resolves the client socket's owning PID (macOS: libproc socket enumeration matching the 4-tuple; Linux: `/proc/net/tcp` inode → `/proc/<pid>/fd`) and accepts only if the PID belongs to the managed browser's process tree for that profile. Other processes (including other local users) get the SOCKS failure reply. This is a guardrail against other users and stray processes, not against same-UID malware (09 §2).
 - **Isolation between tasks**: per-task profiles (`profile_scope = "task"`) separate cookies and storage when two tasks run the same app. Same-port collisions across machines are impossible because each profile routes to one machine.
-- **Local-machine previews** need no proxy: `preview open` uses the profile without a proxy (or the default browser if `preview.local_browser = "default"`).
+- **Local-machine previews** need no proxy: the browser pane or window uses the profile without a proxy (or the default browser if `preview.local_browser = "default"`).
 - Profiles persist (logins survive), live under Vibeke state, and never touch the user's real browser profile. `vibeke preview profile reset devbox` wipes one.
-- **Opening from the TUI**: a preview chip in the pane frame (`◉ web :5173`) and the sidebar Previews section; click or `prefix+o`. Clicking a `http://localhost:<port>` URL (plain or OSC 8) printed in a **remote** pane opens it in that machine's profile; `open_url` requests from remote panes are routed to the focused attached client (09 §7 open-URL rules apply).
-- `vibeke preview list [--machine m] [--task k7] [--all]` (suggestions included with `--all`), `vibeke preview open|url|forget|mirror|unmirror`, `vibeke preview profile list|reset`.
+- **Opening from the TUI**: a preview chip in the pane frame (`◉ web :5173`) and the sidebar Previews section; click or `prefix+o` opens a browser pane. Clicking a `http://localhost:<port>` URL (plain or OSC 8) printed in a **remote** pane opens it in a browser pane on that machine's profile; `open_url` requests from remote panes are routed to the focused attached client (09 §7 open-URL rules apply).
+- `vibeke preview list [--machine m] [--task k7] [--all]` (suggestions included with `--all`), `vibeke preview open [--split right|down|tab|float | --window]|url|forget|mirror|unmirror`, `vibeke preview profile list|reset`.
 
 ### B4. Secondary: authenticated reverse proxy for the user's normal browser (M3)
 
@@ -336,7 +377,7 @@ struct ScreenshotMeta {
     code: Option<CodeState>,               // None if the preview isn't tied to a task/repo
     viewport: Viewport, full_page: bool, selector: Option<String>,
 }
-enum BrowserEnvKind { RemoteHeadless, LocalProfile, LocalProxy }
+enum BrowserEnvKind { RemoteHeadless, LocalPane, LocalProfile, LocalProxy }   // LocalPane: the human's browser pane (B3.2)
 struct BrowserEnv { kind: BrowserEnvKind, machine: MachineId, runner: RunnerKind,
                     browser: String /* "chrome-headless-shell 141.0…" */, color_scheme: Light|Dark,
                     device: Option<String>, fresh_context: bool }
@@ -345,7 +386,7 @@ struct CodeState { task: TaskId, repo_root: PathBuf, head_sha: String,
                    captured_at: Ms }
 ```
 
-- The UI labels screenshots by environment ("devbox · headless · fresh context" vs "your browser profile"): a remote headless screenshot with a fresh context is **not** proof of what the human sees in their logged-in local profile, and the label says so.
+- The UI labels screenshots by environment ("devbox · headless · fresh context" vs "your browser pane · profile devbox"): a remote headless screenshot with a fresh context is **not** proof of what the human sees in their logged-in local profile, and the label says so.
 - `code` is captured at screenshot time from the preview's task checkout (cheap: `git rev-parse HEAD`, `git status --porcelain=v2 -z`, hashing changed files; cached per fs-watch generation).
 - Phase 2's `EvidenceRecord` will reference screenshots, check runs `{command, env digest, exit_status, log blob}` and `CodeState`; Phase 1 only guarantees screenshots carry `CodeState`.
 - Retention: last 200 per task + anything referenced by an Interaction.
@@ -357,12 +398,13 @@ struct CodeState { task: TaskId, repo_root: PathBuf, head_sha: String,
 - Tools: `preview_list`, `preview_declare {port, path?, label?}`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_press`, `browser_wait`, `browser_eval` (only with capability `browser.script`), `browser_screenshot` (returns MCP image content + `{blob, environment, code}`), `browser_console`, `browser_network`, `browser_dom`, `browser_diff`, `browser_close`.
 - Harnesses without MCP use `vibeke browser … --json`; pi/omp get equivalent tools from `@vibeke/pi-extension` returning `ImageContent`.
 - **The human sees what the agent saw**: agent screenshots show as a 📷 counter on the pane frame, `prefix+i` opens the gallery, optional inline thumbnail in the sidebar row; remote blobs are fetched once over the blob channel.
+- **Watch the agent's browser live**: while an agent has a browser session open, the pane frame shows `◉ browsing`; `vibeke browser watch <session>` (or the action on that chip) opens a browser pane showing the agent's remote headless session via screencast over the link (A7 budgets apply; frames stop when not visible). It is **read-only** by default. **Take over** gives the human input; while taken over, the agent's `browser_*` calls fail with a clear `human_control` error until the human releases it. Screenshots from a watched session keep `environment = RemoteHeadless`.
 
 ### B8. Displaying screenshots in the TUI
 
-- Kitty graphics–capable terminals: `prefix+i` / `vibeke preview show v4` popup (←/→ history, `d` diff, `o` open preview, `c` copy image). A non-PTY **preview pane** can be split into a tab and refreshes on new screenshots.
+- Kitty graphics–capable terminals: `prefix+i` / `vibeke preview show v4` popup (←/→ history, `d` diff, `o` open the live preview in a browser pane, `c` copy image). A screenshot pane can be split into a tab and refreshes on new screenshots.
 - No graphics: metadata + `[o] open image locally` (temp file + `open`/`xdg-open`). Sixel M6.
-- Transmission: kitty `t=f` when the client is local to the terminal, else chunked `t=d`; cached per terminal session.
+- Transmission: kitty `t=s`/`t=t` (shared memory / temp file) when the client is local to the terminal, else chunked `t=d`; cached per terminal session. Same code path as the browser pane's tiles (B3.2).
 
 ### B9. Sequence: agent on devbox verifies its UI change; human reviews from the laptop
 
@@ -419,8 +461,11 @@ remote_write = "ask_once"      # ask_once (per machine) | allow | deny — OSC 5
 
 [preview]
 auto_discover   = "suggest"    # suggest | promote | off
-mode            = "profile"    # profile (B3) | proxy (B4)
-profile_browser = "auto"       # auto | chrome | chromium | edge | brave | firefox
+mode            = "pane"       # pane (B3.2; default when the host has kitty graphics) | window (B3.3) | proxy (B4)
+pane_split      = "right"      # right | down | tab | float
+pane_fps        = 60           # cap for local clients; remote-rendered panes follow A7 budgets
+pane_location   = "client"     # client (render on the viewing machine; recommended) | server
+profile_browser = "auto"       # window only: auto | chrome | chromium | edge | brave | firefox (the pane always uses Chromium)
 profile_scope   = "machine"    # machine | task
 profile_route   = "loopback"   # loopback | remote
 local_browser   = "profile"    # profile | default
@@ -450,7 +495,12 @@ inline_thumbnails = true
 
 **M3 (preview fabric):**
 - Start `pnpm dev` (Vite) in a remote task pane. A suggestion appears in < 3 s; declared previews appear immediately. `vibeke preview open` loads the app on the laptop. Editing a file on devbox triggers HMR in the laptop browser in < 500 ms (+RTT).
-- `vibeke preview open v4` for a remote Vite app opens `http://localhost:<port>` in the Vibeke Chrome profile; HMR works with a project that hard-codes `server.hmr.clientPort`; a `localhost` OAuth callback URL completes; no local port is bound.
+- `prefix+o` on a remote Vite pane opens a browser pane next to it in Ghostty within 1 s, showing `http://localhost:<port>` from the laptop's Chromium over the bridge; clicking, typing (incl. shift/ctrl shortcuts and a Norwegian layout) and smooth scrolling work; input→pixel ≤ 50 ms p95 and ≥ 30 fps scrolling on a 50 ms link; no pixels cross the link (bridge byte counters).
+- The browser pane survives split/zoom/resize with a sharp, correctly sized viewport; it reloads at its last URL after a server restart; an off-screen browser pane produces zero frames.
+- "Open in window" moves the page to a headful window with the same logins, and back.
+- In iTerm2 the browser pane works via kitty graphics or the OSC 1337 fallback; in Terminal.app `prefix+o` opens the window.
+- `vibeke browser watch` shows an agent's remote session live; take-over makes the agent's next `browser_click` fail with `human_control` until released.
+- `vibeke preview open v4 --window` for a remote Vite app opens `http://localhost:<port>` in the Vibeke Chrome profile; HMR works with a project that hard-codes `server.hmr.clientPort`; a `localhost` OAuth callback URL completes; no local port is bound.
 - A non-browser process connecting to the SOCKS listener is rejected (peer check).
 - Proxy mode (B4): two tasks of the same Next.js app open on different `*.vibeke.localhost` hosts with independent login cookies; an upstream `Set-Cookie: x=1; Domain=vibeke.localhost` arrives host-only; the app never sees `vk_token` or `__Host-vk_preview`; `curl` with a forged Host or no credential gets 403/401.
 - Mirror mode is never active unless explicitly enabled per preview.

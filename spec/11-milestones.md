@@ -14,13 +14,15 @@ No calendar estimates are given: the earlier week numbers were unsupported place
 
 The first build goal ([milestones](11-milestones.md)) is a remote daily driver over SSH for the maintainer. It covers **M0 + M1 + the remote-machine half of M3** (06 Part A: machines, bootstrap, bridge, multi-machine view, reconnection, clipboard, image paste, dropped-path translation). M2 (safe yolo, extra harnesses) and the preview half of M3 come after it. Milestone numbering is unchanged; only the order of delivery differs.
 
+**Next goals:** [task outcomes and review](15-task-outcomes-review-and-attention.md) (spec 15 T1–T3, plus pi/omp) and [remote and preview design](06-remote-and-preview.md) (the preview half of M3, with the in-terminal browser pane). M2 isolation follows.
+
 The proposed follow-on product slice is [15 — Task outcomes, review and attention](15-task-outcomes-review-and-attention.md): optional tracking of normally launched CLIs, evidence-backed review, and a ranked decision inbox. Its T1–T4 stages preserve Goal 01's scope; they are not extra prerequisites for the SSH switch-over. The basic M1 inbox is the first version of the same surface, enriched in place by later stages.
 
 ## M0 — Spikes (de-risk the hard bets)
 
 | Spike | Question | Output |
 |---|---|---|
-| VT engine (03 §2) | Which of libghostty-vt / wezterm-term / alacritty_terminal meets the **recovery requirement**: serialize + restore incl. parser mid-sequence state, modes, alt screen; continue from a byte offset; reflow; kitty keyboard; graphics. One engine is chosen and pinned; no second engine is kept compiling. | Scored rubric, chosen engine, `VtEngine` trait v0 |
+| VT engine (03 §2) | **Decided: libghostty-vt** (2026-10-06; replaces the alacritty_terminal binding built first). Remaining work: vendored build via Zig, binding behind `VtEngine`, C4 recovery gate passing on its native snapshot API, throughput and esctest baselines. | `vk-term` on libghostty-vt passing C4, `.adr/0001-vt-engine.md` |
 | Holder durability (01 §1.2) | Do processes survive `kill -9` of the server; how good is screen recovery (checkpoint on ring half-full, safe cut points, forced redraw via resize nudge, holder-answered terminal queries); input with ids/acks so delivery is never duplicated; **pipe mode** so headless adapters (pi `--mode rpc`, Codex app-server) are also owned by a holder and survive server restarts | Holder prototype, chaos loop, measured failure envelope written into 01 §4 |
 | Harness reality check (04 [verify] list) | Run every **[verify]** item against live binaries: Claude `PermissionRequest`/AskUserQuestion via hook and `updatedPermissions` shape; Codex hooks under `--disable daemon_auto_start` and under `-a never`; deterministic Codex thread binding; omp `tool_call` vs approval ordering; pi/omp shared-uiContext wrapper (writable methods, `signal` dismisses the native dialog) per version | Capability matrix (harness version × launch mode × interaction kind) checked into 04 |
 | Approval-delivery transaction | Decision record → delivery lease → native delivery → ack, with idempotency key, `delivery_unknown` and reconciliation, under server kill at every step | Prototype + chaos test; final state machine in 02/04 |
@@ -59,7 +61,7 @@ Tasks:
 ## M3 — Remote + preview
 
 - Saved SSH machines, no-sudo bootstrap with checksum, bridge multiplexing over SSH stdio, unified multi-machine sidebar, `--machine` forwarding (never falls back to local), reconnect/offline states, bandwidth budgets and adaptive frame rate, remote clipboard, image paste local → remote, **dropped/pasted path translation over the bridge** (06 A11).
-- Previews: discovery (process-tree listening sockets + URLs in output + `vibeke preview declare`); **access via a dedicated browser profile over SOCKS through the bridge** so `localhost:5173` on the remote works unmodified (no Host rewriting); authenticated per-preview proxy origins as the alternative mode. Automatic forwarding of discovered ports is opt-in.
+- Previews: discovery (process-tree listening sockets + URLs in output + `vibeke preview declare`); **a live browser pane in the layout** (laptop-side headless Chromium drawn with kitty graphics, 06 B3.2) and a one-key external window, both using a dedicated browser profile over SOCKS through the bridge so `localhost:5173` on the remote works unmodified (no Host rewriting); authenticated per-preview proxy origins as the alternative mode. Automatic forwarding of discovered ports is opt-in. Humans can watch and take over an agent's browser session.
 - Remote **scriptable** headless Chromium over CDP (navigate, click, type, eval, screenshot, console/network logs, DOM snapshot) exposed as CLI + `vibeke mcp`; navigation restricted to declared previews (redirects, subresources and WebSockets included).
 - Screenshots as blobs with `environment_label`; `EvidenceRecord` groundwork (12): base/head sha, checks observed, artifacts.
 - Human review minutes per accepted change baselined.
@@ -98,7 +100,8 @@ QUIC roaming transport + predictive echo (mosh-style) · plugin marketplace · p
 
 | Risk | Mitigation |
 |---|---|
-| VT engine can't meet the recovery requirement | M0 selects by demonstrated recovery behaviour; fallback is a weaker, honestly documented guarantee (process survival + forced redraw) |
+| VT engine can't meet the recovery requirement | libghostty-vt's native snapshot (with parser continuation) is gated by the C4 test; fallback is a weaker, honestly documented guarantee (process survival + forced redraw) |
+| libghostty-vt C API / snapshot format churn | Vendored pinned source, patch log, all FFI behind `vk-term`'s wrapper; pin moves are deliberate and re-run C4 + corpus; snapshot version mismatch only degrades one recovery to ring-only replay |
 | Harness vendors change hooks/UIs often | Structured channels first; capability matrix per version; golden + live drift CI; signed manifest channel |
 | Codex shared daemon and vendor architecture shifts | PATH shim → per-pane embedded server; deterministic thread binding only (heuristic correlation never authorizes writes); screen fallback |
 | The pinned compatibility baseline moves fast (weekly upstream releases) | Pin supported compatibility baselines, diff upstream schemas/CLI/behavior, and require full conformance before advertising an upgrade; preserve native differentiation in interactions, isolation, harnesses and evidence |

@@ -182,7 +182,7 @@ For managed legacy installs, source revision, entrypoint/manifest or trust-mode 
 
 ## 8. Preview fabric and browser (T6, T7) [M3]
 
-- **Browser profile mode (primary, 06 B3)**: the local SOCKS5 listener binds loopback and accepts a connection only if the client socket's owning PID is in the managed browser's process tree (peer lookup — Chromium doesn't support SOCKS auth). It only forwards to the profile's machine/runner loopback; non-loopback follows `preview.profile_route`. The profile is a dedicated Vibeke user-data-dir: no access to the user's real browser profile, cookies or password manager.
+- **Browser profile mode (primary, 06 B3; same for the browser pane and the window)**: the local SOCKS5 listener binds loopback and accepts a connection only if the client socket's owning PID is in the managed browser's process tree (peer lookup — Chromium doesn't support SOCKS auth). It only forwards to the profile's machine/runner loopback; non-loopback follows `preview.profile_route`. The profile is a dedicated Vibeke user-data-dir: no access to the user's real browser profile, cookies or password manager.
 - **Reverse proxy mode (secondary, 06 B4)**:
   - Validates `Host` against allocated `*.vibeke.localhost` names (DNS-rebinding defence) and requires the per-preview credential (one-time `vk_token` → `__Host-vk_preview` cookie).
   - **Strips its own credentials before forwarding** (the `vk_token` query parameter and the `__Host-vk_preview` cookie) and **drops upstream `Set-Cookie` for reserved `vk_` names**, so an app can neither read nor overwrite the proxy credential.

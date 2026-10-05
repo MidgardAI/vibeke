@@ -71,49 +71,47 @@ pub struct Damage { pub rows: SmallBitSet /* visible rows */, pub scrolled: i32 
 Rules:
 - `feed` must never block or allocate unboundedly per call. Large outputs are chunked to 64 KiB by the pane task.
 - `serialize` output is versioned by `(engine, engine_version)`. A snapshot from a different engine or version is discarded and recovery falls back to ring-only replay (01 §1.2).
-- The trait is an internal seam, not a promise of pluggability. **Exactly one engine ships**, pinned after the M0 spike. Engine gaps are fixed by patching that engine (upstream PR or a fork under our org), not by re-implementing terminal state around it. The only thing `vk-term` owns outside the engine is the shared width table used by both server and client (§10.3).
+- The trait is an internal seam, not a promise of pluggability. **Exactly one engine ships**: libghostty-vt (§2). Engine gaps are fixed by patching that engine (upstream PR or a fork under our org), not by re-implementing terminal state around it. The only thing `vk-term` owns outside the engine is the shared width table used by both server and client (§10.3).
 
-## 2. M0 spike: choosing the engine
+## 2. Engine: libghostty-vt (decided 2026-10-06)
 
-Three candidates, each wrapped in a throwaway `VtEngine` implementation in `spikes/vt-<name>`:
+**Decision:** the one engine is **libghostty-vt**, Ghostty's VT core built as a C-ABI library from the Ghostty source tree. It replaces the `alacritty_terminal` binding written during M0. The three-way scored spike originally planned here was not run. The decision rests on the evidence below; the C4 gate (§2.3) is still the acceptance test for the binding.
 
-| Candidate | What it is (Oct 2026) | Expected strengths | Expected risks |
-|---|---|---|---|
-| **libghostty-vt** | Ghostty's VT core extracted as a zero-dependency Zig library with a C ABI (`include/ghostty/vt.h`). Parser API plus terminal-state API (Discussion #11348). Runs on macOS/Linux/Windows/WASM. | Battle-tested conformance from Ghostty, SIMD parsing (>100 MB/s), kitty keyboard + graphics, modern OSCs, reflow. | **API signatures still in flux**. Zig toolchain in our build. FFI surface for row/cell iteration and serialize may be incomplete (we may need to upstream). |
-| **wezterm-term** | WezTerm's terminal model crate (git dependency, not a stable crates.io release) plus `termwiz`. | Pure Rust, mature, kitty graphics + sixel + iTerm2 images, kitty keyboard, hyperlinks, reflow. | Not published as a stable crate. Maintenance pace tied to WezTerm. Some internal APIs not meant for embedding. |
-| **alacritty_terminal** | Alacritty's terminal crate on crates.io. | Pure Rust, stable crate, fast, kitty keyboard protocol, good damage tracking. | **No inline graphics** (kitty/sixel/iTerm2 would be ours to build). Fewer OSCs (no OSC 133, limited OSC 8 metadata). |
+### 2.1 Why
 
-### 2.1 Criteria and weights
+| Concern | libghostty-vt (Oct 2026) | alacritty_terminal (what M0 built) |
+|---|---|---|
+| **C4 recovery (hard gate)** | Native snapshot API (`include/ghostty/vt/snapshot.h`, upstream since 2026-08-03): a CRC-protected record stream with terminal state, every screen, the **unfinished VT/UTF-8 parser continuation**, then history. Incremental restore: the terminal is usable at READY, history pages prepend afterwards. Covers modes (current/saved/default), palette and overrides, PWD, title, tab stops, scroll region, cursor and saved cursor, charsets, kitty keyboard stack, semantic prompts. | Needed a vendored patch to `alacritty_terminal` (snapshot/restore), a vendored fix to `vte` (dropped character after a split UTF-8 codepoint), and our own `Tracker` capturing pending parser bytes. |
+| Graphics | Kitty graphics parsed by the engine (transmit/place/delete, unicode placeholders), with a C API (`kitty_graphics.h`). | None; all inline graphics would be ours to build. |
+| OSCs and shell integration | OSC 7, 8, 52, 133 (semantic prompts), notifications and others parsed by the engine. | OSC 7/9/99/777/133, XTVERSION, DA3, modifyOtherKeys tracked outside the engine by us. |
+| Conformance | Ghostty's own terminal core; SIMD parser. | Good, but narrower. |
+| Embeddable from Rust | libghostty-vt exposes a C ABI that links statically into a Rust binary on macOS, Linux (incl. musl) and Windows. | — |
+| Cost | Zig 0.16 in the build; C API marked work-in-progress (breaking changes possible); snapshot format v1 has no binary-compatibility guarantee. | Pure Rust, stable crate. |
 
-| # | Criterion | Weight | Measurement |
-|---|---|---|---|
-| C1 | Conformance | 20 | `esctest2` pass rate (subset relevant to xterm-compat) + `vttest` menus 1–8 screen-diffed against xterm reference dumps |
-| C2 | Modern input/mode support | 15 | Kitty keyboard protocol flags 1–31 (push/pop/query), modifyOtherKeys 1/2, DECSET 2004/1004/1006/1016/2026, synchronized updates |
-| C3 | Graphics | 15 | Kitty graphics (transmit/place/delete, unicode placeholders), sixel decode, iTerm2 OSC 1337 File |
-| C4 | Serialize/restore | 15 | Round-trip test: feed corpus → serialize → deserialize → feed more → screen equals unbroken run. Missing support counts against the engine, weighted by how much we'd have to write. |
-| C5 | Throughput & memory | 10 | `cat` of 200 MB mixed corpus; MB/s; RSS at 10k-row scrollback × 50 panes; damage computation cost |
-| C6 | Unicode correctness | 10 | Grapheme clusters, ZWJ emoji, VS-15/VS-16, CJK wide, combining marks — against our width table tests (§10.3) |
-| C7 | Reflow on resize | 5 | Shrink/grow corpus with soft-wrapped lines, prompt marks preserved |
-| C8 | Embedding ergonomics & maintenance | 10 | Release cadence, API stability promise, licence (must be MIT/Apache/compatible), build complexity (Zig in CI?), upstream responsiveness to one PR we send during the spike |
+The C4 gate was the reason this spec previously ranked libghostty-vt as risky ("continuation handling unfinished"). Upstream has since built exactly that requirement, and the remaining costs are build-time, not correctness.
 
-Score each 0–5, multiply by weight, max 500.
+### 2.2 How we embed it
 
-### 2.2 Procedure (two weeks, one engineer)
+- **Vendored source, pinned commit.** The Ghostty source subset needed for `zig build -Demit-lib-vt` lives in `vendor/libghostty-vt/` with a `vendor/libghostty-vt.vendor.json` (source commit) and `vendor/libghostty-vt.patches.md` (every local patch: reason, upstream PR, removal condition, verification). Updating the pin is a reviewed change that re-runs the C4 gate and the VT corpus.
+- **Build.** `vk-term`'s `build.rs` runs `zig build -Demit-lib-vt -Doptimize=ReleaseFast -Dtarget=<zig triple>` into `OUT_DIR` and links the static library. Targets: `aarch64-macos`, `x86_64-macos`, `x86_64-linux-musl`, `aarch64-linux-musl` (Windows in M6). The single-static-binary promise (01 §2) holds.
+- **Toolchain.** Zig 0.16.0 is pinned in `mise.toml` next to Rust, so `mise install` and CI (`jdx/mise-action`) provide it. No system Zig is assumed.
+- **Bindings.** Raw FFI generated with `bindgen` from the vendored headers and checked in (regenerated when the pin moves), behind a small safe wrapper in `vk-term`. [libghostty-rs](https://github.com/uzaaft/libghostty-rs) (MIT/Apache, wraps the snapshot API on master) is a reference and may be used directly if it tracks our pin. Third-party bindings that lag Ghostty must not hold back the pin.
+- **Snapshot versioning.** `engine = "libghostty-vt"`, `engine_version = <vendored commit>`. Per §1, a snapshot from another version is discarded and recovery falls back to ring-only replay, so the format's lack of a compatibility guarantee costs at most one degraded recovery across an upgrade.
 
-1. **Corpus** (shared, committed under `tests/vt-corpus/`): asciicasts recorded from Claude Code, Codex, pi, omp, OpenCode, Gemini CLI, vim, htop, lazygit, `git log --graph`, a Next.js dev server, plus `esctest2` and `vttest` captures and a kitty-graphics fixture set.
-2. Implement `feed`, `visible_row`, `take_damage`, `modes`, `resize` for all three. Implement `serialize` as far as each engine allows.
-3. Run the C1–C8 harness (`cargo xtask vt-bench`), producing a Markdown table and an HTML side-by-side screen diff for failures.
-4. Sanity check by hand: run the real agents in a prototype pane for a day per engine.
+### 2.3 Acceptance gate (carried over from M0)
 
-### 2.3 Decision rubric
+- **C4 hard gate:** feed the corpus (`tests/vt-corpus/`), cut at every 4,093rd byte and at every byte of a synthetic stream full of split escape and UTF-8 sequences, snapshot, restore into a fresh terminal, continue; the screen and modes must equal the uninterrupted run. The existing `crates/vk-term/tests/recovery.rs` is ported to the new binding unchanged in intent.
+- Continuation tracking (`GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES`) must be enabled **before** the first byte is fed; the encoder refuses to snapshot a mid-sequence parser otherwise. Restores use `GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION` so the restored terminal can be snapshotted again.
+- Throughput measured against 10 §1 (≥ 300 MB/s target) and recorded; `esctest2`/`vttest` pass rates recorded as the CI baseline (10 §3).
+- Decision record: `.adr/0001-vt-engine.md` summarizing §2.1, the gate results and the gaps below.
 
-- **Hard gate (C4):** serialize/restore must round-trip the full state *including parser state* across a cut in the middle of escape and UTF-8 sequences (test: cut the corpus at every 4,093rd byte, serialize, restore, continue; screen must equal the uninterrupted run). An engine that fails the gate is out, unless we can close the gap with a patch to that engine inside the spike and the patch is upstreamable or small enough to carry.
-- Among engines passing the gate, pick the highest score (§2.1), with maintenance cost (C8) as tie-breaker.
-- libghostty-vt's current C header still marks VT/UTF-8 continuation handling as unfinished, so it can only win if that is resolved upstream or by our patch during the spike.
-- **One engine.** The losing adapters are deleted after the decision; we don't keep alternates compiling. Switching engines later is a planned project with its own spike, not a feature flag.
-- No effort estimates for engine gaps are made before the spike measures them.
+### 2.4 Gaps we own
 
-**Acceptance (M0):** a written decision record (`.adr/0001-vt-engine.md`) with the score table, the C4 gate results, corpus diffs, and the list of gaps we own (with sizes measured during the spike).
+- **Kitty image payloads are not in snapshots.** Placeholder cells survive, but image and placement state does not. `PaneScreen` already keeps images in its own `ImageTable` by content hash (§9); on restore, Vibeke re-transmits the stored images and placements into the engine before replay. Until that is built, images after a server restart are lost (the app's next redraw usually brings them back).
+- **Sixel and iTerm2 `OSC 1337 File=` images** are not decoded by libghostty-vt. Inbound decoding to `ImageEvent` is ours (§9), or deferred if no real app needs it.
+- **Width policy is build-time in the engine.** The shared width function (§10.3) must match the vendored Ghostty's grapheme/width behaviour, so server and client agree; `tests/unicode/width.txt` runs against both.
+- **Unstable C API.** Expect breaking changes when moving the pin; the safe wrapper in `vk-term` is the only code that touches FFI.
+- **Local patches** (if any, e.g. exposing the modifyOtherKeys level) are upstreamed where possible and tracked in the patch log.
 
 ## 3. Server-side screen model
 
@@ -160,11 +158,11 @@ The render server keeps, **per client and per pane**, the last frame acknowledge
 Implements the recovery contract in 01 §1.2. `vt_snapshots(pane_id, holder_offset, engine, engine_version, blob_hash, taken_at)`.
 
 - **Triggers**: 2 s after output stops; at most every 30 s while busy; **when the holder sends `CheckpointWanted`** because 50% of its journal has been written since the last acknowledged checkpoint; on graceful shutdown.
-- **Cut points**: snapshots are taken only at an offset the holder has marked as a safe cut point (not inside UTF-8 or an escape sequence). The pane task feeds up to the cut point, serializes, then continues. Because serialize also captures parser state (§2.3 gate), a cut point is belt-and-braces, not a correctness requirement.
-- Snapshot = `engine.serialize()` + `PaneScreen` metadata (marks, link table, image hashes), zstd-compressed and stored as a blob. `holder_offset` = the cut-point offset.
+- **Cut points**: snapshots are taken only at an offset the holder has marked as a safe cut point (not inside UTF-8 or an escape sequence). The pane task feeds up to the cut point, serializes, then continues. Because the libghostty-vt snapshot also captures the unfinished parser continuation (§2.3 gate), a cut point is belt-and-braces, not a correctness requirement.
+- Snapshot = `engine.serialize()` (the libghostty-vt snapshot stream) + `PaneScreen` metadata (marks, link table, image hashes), zstd-compressed and stored as a blob. Kitty image payloads are not in the engine snapshot (§2.4); they come from the `ImageTable` blobs. `holder_offset` = the cut-point offset.
 - Snapshot work runs on a blocking-pool thread from a cloned engine state if the engine supports cheap clone; otherwise feeding is paused (bounded, < 5 ms for a 200×60 screen with 10k scrollback, else the snapshot is retried at the next cut point).
 - **Recovery** (server start, per live pane):
-  1. Deserialize the latest snapshot; `set_replaying(true)`.
+  1. Deserialize the latest snapshot (the terminal is renderable at READY; history pages may finish restoring in the background); re-transmit stored images and placements (§2.4); `set_replaying(true)`.
   2. `Attach{from_offset: holder_offset}`; feed journal bytes and apply journaled `Resize` markers in order. `InputAck` markers update the input-id dedupe window.
   3. If the journal starts after `holder_offset` (overflow), reset the screen and replay the whole journal from its first cut point: `pane.recovered{method: ring_only}`.
   4. `set_replaying(false)`. Answer the holder's queued screen-dependent queries (≤ 5 s old) from current state.
@@ -177,6 +175,7 @@ Implements the recovery contract in 01 §1.2. `vt_snapshots(pane_id, holder_offs
 
 **The normative wire schema is [07-api-cli-plugins.md](07-api-cli-plugins.md) §3** (`vk-proto::render`). This section only describes the behavior the TUI relies on:
 
+- **Media channel.** Pixel content that is not terminal output (browser panes and watched agent sessions, 06 B3.2/B7) travels as changed image tiles on a separate latest-wins channel per pane, at lower priority than cell frames, and only while the pane is visible on that client.
 - **State sync, not byte relay.** Frames carry changed rows (run-length encoded cells, interned styles), scroll shifts, cursor, client-relevant modes, image placement deltas, and chrome deltas (sidebar rows, tab bar, status segments, interaction badges). Image bytes are sent once per client per content hash.
 - **Revisions.** Every pane frame carries `{reset_epoch, base_rev, rev}`. A client applies a frame only if its copy of that pane is at exactly `base_rev` in the same `reset_epoch`; otherwise it drops the frame and asks for a keyframe. With several frames in flight, each is computed against the previous frame's `rev` (a chain), never against the last ack, so scroll and image operations apply in order. A `reset_epoch` bump (recovery, engine reset, resize of the PTY) always comes with a keyframe.
 - **Flow control.** At most `W` unacknowledged frames per pane per client (default 2 local, 1 remote). When the window is full the server stops computing frames for that client and, when it catches up, sends one frame from the client's last acked rev to current state. A slow client gets fewer frames, never stale ones.
@@ -278,7 +277,7 @@ Special cases:
 
 Normalized internal model: `ImageEvent::{Transmit{hash, w, h, fmt, bytes}, Place{hash, pane_cell_rect, z, crop}, Delete{selector}}`. Every image is stored once in the pane's `ImageTable` keyed by content hash. Images ≥ 256 KiB go to the blob store.
 
-- **Inbound** (app → pane): kitty graphics (direct, file, temp-file and shared-memory transmission; the server reads the file/shm itself, since the client may be remote), unicode placeholders (U+10EEEE), sixel (decoded to RGBA), and iTerm2 `File=` (decoded). All become `ImageEvent`s.
+- **Inbound** (app → pane): kitty graphics (direct, file, temp-file and shared-memory transmission; the server reads the file/shm itself, since the client may be remote) and unicode placeholders (U+10EEEE) are parsed by libghostty-vt and read through its kitty graphics API. Sixel (decoded to RGBA) and iTerm2 `File=` (decoded) are not handled by the engine and are decoded by `vk-term` (§2.4). All become `ImageEvent`s.
 - **Outbound** (client → host), per `HostCaps`: kitty graphics with unicode placeholders (preferred: correct clipping in splits and with scrolling), else sixel (re-encoded and clipped to the pane rect), else iTerm2 inline, else a text placeholder plus `vibeke image open <hash>`.
 - **Remote**: image bytes cross the link once per client per hash (`WantImage`); placements are tiny. A 2 MB screenshot shown in 3 places costs 2 MB once.
 - Limits: `graphics.max_image_bytes` (default 32 MiB), `graphics.max_total_per_pane` (256 MiB, LRU-evicted).

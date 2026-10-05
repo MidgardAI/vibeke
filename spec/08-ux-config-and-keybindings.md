@@ -448,7 +448,7 @@ disk = "30G"
 
 [preview]                             # see 06
 auto_discover     = "suggest"         # suggest | promote | off — discovered ports are suggestions; declared previews are authoritative
-mode              = "profile"         # profile (Vibeke browser profile via SOCKS through the bridge; localhost works as-is, 06 B3) | proxy (authenticated *.vibeke.localhost origins, 06 B4)
+mode              = "pane"            # pane (live browser pane in the layout via kitty graphics, 06 B3.2) | window (Vibeke browser profile window, 06 B3.3); both route via SOCKS through the bridge so localhost works as-is | proxy (authenticated *.vibeke.localhost origins, 06 B4)
 profile_browser   = "auto"            # auto | chrome | chromium | edge | brave | firefox
 profile_scope     = "machine"         # machine | task — one profile per machine, or per task
 profile_route     = "loopback"        # loopback | remote — where non-preview traffic of the profile exits
