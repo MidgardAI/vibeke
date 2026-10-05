@@ -29,7 +29,10 @@ pub async fn start_in_pane(
     _args: &[String],
     _task: Option<&str>,
 ) -> Result<Value, vk_proto::rpc::RpcError> {
-    Err(crate::api::err(vk_proto::rpc::ErrorKind::Unsupported, "agents not available yet"))
+    Err(crate::api::err(
+        vk_proto::rpc::ErrorKind::Unsupported,
+        "agents not available yet",
+    ))
 }
 
 impl Agents {
@@ -40,4 +43,16 @@ impl Agents {
     pub fn on_process(&self, _server: &Arc<Server>, _pane: &str, _st: &ProcStatus) {}
     pub fn end_run(&self, _server: &Server, _run: &str, _reason: &str) {}
     pub fn end_run_tx(&self, _core: &mut Core, _tx: &mut Tx, _run: &AgentRun, _reason: &str) {}
+}
+
+pub mod hook {
+    /// `vibeke hook <harness> <event>` — filled in by the agents stage. Observation fails open.
+    pub fn main(_args: &[String]) -> i32 {
+        0
+    }
+}
+
+/// Write PATH shims (codex → per-pane embedded app-server, 04 §6.2).
+pub fn install_shims(_bin: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }

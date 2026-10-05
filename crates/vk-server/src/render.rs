@@ -55,7 +55,14 @@ pub fn input_modes(server: &Server, pane: &str) -> InputModes {
     }
 }
 
-pub async fn serve<R, W>(server: Arc<Server>, mut rd: R, wr: W, client_id: String, remote: bool, max_fps: u32) -> Result<()>
+pub async fn serve<R, W>(
+    server: Arc<Server>,
+    mut rd: R,
+    wr: W,
+    client_id: String,
+    remote: bool,
+    max_fps: u32,
+) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -77,8 +84,13 @@ where
         st.last_active = Some(Instant::now());
         if st.focus.pane.is_none() {
             // Restore the last focus of any client, else the first pane.
-            let last: Option<vk_proto::model::ClientFocus> =
-                server.with_core(|c| c.store.kv_get("server", "last_focus").ok().flatten().and_then(|s| serde_json::from_str(&s).ok()));
+            let last: Option<vk_proto::model::ClientFocus> = server.with_core(|c| {
+                c.store
+                    .kv_get("server", "last_focus")
+                    .ok()
+                    .flatten()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+            });
             st.focus = last.unwrap_or_default();
         }
     }
@@ -144,7 +156,11 @@ where
     let focus = server.client_focus(&client_id);
     server.with_core(|c| {
         let mut tx = crate::core::Tx::new();
-        tx.m.kv("server", "last_focus", Some(serde_json::to_string(&focus).unwrap_or_default()));
+        tx.m.kv(
+            "server",
+            "last_focus",
+            Some(serde_json::to_string(&focus).unwrap_or_default()),
+        );
         let _ = c.commit(tx);
     });
     server.clients.lock().unwrap().remove(&client_id);
@@ -169,17 +185,36 @@ impl Session {
 
     fn interval(&self, pane: &str) -> Duration {
         let focused = self.focused.as_deref() == Some(pane);
-        let fps = if focused { self.max_fps } else { self.max_fps.min(30) };
+        let fps = if focused {
+            self.max_fps
+        } else {
+            self.max_fps.min(30)
+        };
         Duration::from_millis(1000 / fps as u64)
     }
 
     async fn on_ui<W: AsyncWrite + Unpin>(&mut self, ev: UiEvent, wr: &mut W) -> Result<bool> {
         let f = match ev {
             UiEvent::Bell { pane } => ServerFrame::Bell { pane },
-            UiEvent::Clipboard { pane, primary, data } => {
-                ServerFrame::Clipboard { selection: if primary { ClipSel::Primary } else { ClipSel::Clipboard }, data, pane }
-            }
-            UiEvent::Notify(n) => ServerFrame::Notify { title: n.title, body: n.body, pane: n.pane, urgency: n.urgency },
+            UiEvent::Clipboard {
+                pane,
+                primary,
+                data,
+            } => ServerFrame::Clipboard {
+                selection: if primary {
+                    ClipSel::Primary
+                } else {
+                    ClipSel::Clipboard
+                },
+                data,
+                pane,
+            },
+            UiEvent::Notify(n) => ServerFrame::Notify {
+                title: n.title,
+                body: n.body,
+                pane: n.pane,
+                urgency: n.urgency,
+            },
             UiEvent::Goodbye(reason) => {
                 asyncio::write_frame(wr, &ServerFrame::Goodbye { reason }).await?;
                 return Ok(false);
@@ -192,10 +227,20 @@ impl Session {
     async fn send_model<W: AsyncWrite + Unpin>(&mut self, wr: &mut W) -> Result<()> {
         self.model_rev = *self.server.model_rev.borrow();
         let model = self.server.with_core(|c| c.model.clone());
-        let seen = self.server.with_core(|c| c.store.reads("local").unwrap_or_default());
+        let seen = self
+            .server
+            .with_core(|c| c.store.reads("local").unwrap_or_default());
         let focus = self.server.client_focus(&self.client_id);
         self.focused = focus.pane.clone();
-        asyncio::write_frame(wr, &ServerFrame::Model { model: Box::new(model), focus, seen }).await?;
+        asyncio::write_frame(
+            wr,
+            &ServerFrame::Model {
+                model: Box::new(model),
+                focus,
+                seen,
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -206,7 +251,11 @@ impl Session {
         }
     }
 
-    async fn on_client<W: AsyncWrite + Unpin>(&mut self, f: ClientFrame, wr: &mut W) -> Result<bool> {
+    async fn on_client<W: AsyncWrite + Unpin>(
+        &mut self,
+        f: ClientFrame,
+        wr: &mut W,
+    ) -> Result<bool> {
         match f {
             ClientFrame::Ack { pane, epoch, rev } => {
                 if let Some(v) = self.views.get_mut(&pane)
@@ -216,21 +265,37 @@ impl Session {
                     v.unacked = v.unacked.saturating_sub(1);
                 }
             }
-            ClientFrame::Key { input_id, pane, key } => {
+            ClientFrame::Key {
+                input_id,
+                pane,
+                key,
+            } => {
                 self.touch();
                 let bytes = encode::encode_key(&key, &input_modes(&self.server, &pane));
                 self.write_input(input_id, &pane, bytes, wr).await?;
             }
-            ClientFrame::RawInput { input_id, pane, bytes } => {
+            ClientFrame::RawInput {
+                input_id,
+                pane,
+                bytes,
+            } => {
                 self.touch();
                 self.write_input(input_id, &pane, bytes, wr).await?;
             }
-            ClientFrame::Mouse { input_id, pane, event } => {
+            ClientFrame::Mouse {
+                input_id,
+                pane,
+                event,
+            } => {
                 self.touch();
                 let bytes = encode::encode_mouse(&event, &input_modes(&self.server, &pane));
                 self.write_input(input_id, &pane, bytes, wr).await?;
             }
-            ClientFrame::Paste { input_id, pane, text } => {
+            ClientFrame::Paste {
+                input_id,
+                pane,
+                text,
+            } => {
                 self.touch();
                 let bytes = encode::encode_paste(&text, &input_modes(&self.server, &pane));
                 self.write_input(input_id, &pane, bytes, wr).await?;
@@ -243,13 +308,25 @@ impl Session {
                 if prev.as_deref() != Some(&pane) {
                     if let Some(p) = prev {
                         let b = encode::encode_focus(false, &input_modes(&self.server, &p));
-                        if !b.is_empty() && let Some(rt) = self.server.pane_rt(&p) {
-                            rt.send(crate::pane::PaneCmd::Input { id: self.server.next_internal_input_id(), bytes: b, ack: None });
+                        if !b.is_empty()
+                            && let Some(rt) = self.server.pane_rt(&p)
+                        {
+                            rt.send(crate::pane::PaneCmd::Input {
+                                id: self.server.next_internal_input_id(),
+                                bytes: b,
+                                ack: None,
+                            });
                         }
                     }
                     let b = encode::encode_focus(true, &input_modes(&self.server, &pane));
-                    if !b.is_empty() && let Some(rt) = self.server.pane_rt(&pane) {
-                        rt.send(crate::pane::PaneCmd::Input { id: self.server.next_internal_input_id(), bytes: b, ack: None });
+                    if !b.is_empty()
+                        && let Some(rt) = self.server.pane_rt(&pane)
+                    {
+                        rt.send(crate::pane::PaneCmd::Input {
+                            id: self.server.next_internal_input_id(),
+                            bytes: b,
+                            ack: None,
+                        });
                     }
                 }
                 self.focused = Some(pane);
@@ -271,30 +348,54 @@ impl Session {
                     st.host_focused = active;
                 }
                 self.visible = panes;
-                self.views.retain(|k, _| self.visible.iter().any(|v| &v.pane == k));
+                self.views
+                    .retain(|k, _| self.visible.iter().any(|v| &v.pane == k));
             }
             ClientFrame::Resync { pane } => {
                 self.views.remove(&pane);
             }
-            ClientFrame::FetchHistory { req, pane, start, count } => {
+            ClientFrame::FetchHistory {
+                req,
+                pane,
+                start,
+                count,
+            } => {
                 let f = self.history(req, &pane, start, count);
                 asyncio::write_frame(wr, &f).await?;
             }
             ClientFrame::Command { req, json } => {
-                let ctx = Ctx { client_id: self.client_id.clone(), kind: "tui".into(), pane_scope: None, remote: self.remote };
+                let ctx = Ctx {
+                    client_id: self.client_id.clone(),
+                    kind: "tui".into(),
+                    pane_scope: None,
+                    remote: self.remote,
+                };
                 let resp = api::handle_line(&self.server, &ctx, &json).await;
                 asyncio::write_frame(wr, &ServerFrame::CommandResult { req, json: resp }).await?;
                 self.focused = self.server.client_focus(&self.client_id).pane;
             }
             ClientFrame::Ping { nonce } => {
-                asyncio::write_frame(wr, &ServerFrame::Pong { nonce, server_ts_ms: vk_store::now_ms() }).await?;
+                asyncio::write_frame(
+                    wr,
+                    &ServerFrame::Pong {
+                        nonce,
+                        server_ts_ms: vk_store::now_ms(),
+                    },
+                )
+                .await?;
             }
             ClientFrame::Detach => return Ok(false),
         }
         Ok(true)
     }
 
-    async fn write_input<W: AsyncWrite + Unpin>(&mut self, input_id: u64, pane: &str, bytes: Vec<u8>, wr: &mut W) -> Result<()> {
+    async fn write_input<W: AsyncWrite + Unpin>(
+        &mut self,
+        input_id: u64,
+        pane: &str,
+        bytes: Vec<u8>,
+        wr: &mut W,
+    ) -> Result<()> {
         let status = if bytes.is_empty() {
             AckStatus::Written
         } else if let Some(reason) = self.server.agents.input_blocked(pane) {
@@ -305,7 +406,11 @@ impl Session {
             let id = holder_input_id(&self.client_id, input_id);
             *rt.last_input.lock().unwrap() = Some(Instant::now());
             let (tx, rx) = tokio::sync::oneshot::channel();
-            rt.send(crate::pane::PaneCmd::Input { id, bytes, ack: Some(tx) });
+            rt.send(crate::pane::PaneCmd::Input {
+                id,
+                bytes,
+                ack: Some(tx),
+            });
             drop(rx); // acks are best-effort for TUI clients; CLI paths await them
             AckStatus::Written
         } else {
@@ -319,7 +424,13 @@ impl Session {
 
     fn history(&self, req: u64, pane: &str, start: u32, count: u32) -> ServerFrame {
         let Some(rt) = self.server.pane_rt(pane) else {
-            return ServerFrame::History { pane: pane.into(), req, start, total: 0, lines: vec![] };
+            return ServerFrame::History {
+                pane: pane.into(),
+                req,
+                start,
+                total: 0,
+                lines: vec![],
+            };
         };
         let sc = rt.screen.lock().unwrap();
         let mem = sc.engine.history_len() as u32;
@@ -334,10 +445,28 @@ impl Session {
         let mut lines = Vec::new();
         if start < archived {
             let a_end = end.min(archived);
-            if let Ok(rows) = self.server.archive.lock().unwrap().read(pane, start as u64, a_end as u64) {
+            if let Ok(rows) =
+                self.server
+                    .archive
+                    .lock()
+                    .unwrap()
+                    .read(pane, start as u64, a_end as u64)
+            {
                 let mut map: HashMap<u64, Row> = rows
                     .into_iter()
-                    .map(|r| (r.n, Row { spans: vec![Span { style: Style::default(), cols: unicode_cols(&r.t), text: r.t }], wrapped: r.w }))
+                    .map(|r| {
+                        (
+                            r.n,
+                            Row {
+                                spans: vec![Span {
+                                    style: Style::default(),
+                                    cols: unicode_cols(&r.t),
+                                    text: r.t,
+                                }],
+                                wrapped: r.w,
+                            },
+                        )
+                    })
                     .collect();
                 for n in start..a_end {
                     lines.push(map.remove(&(n as u64)).unwrap_or_default());
@@ -347,19 +476,35 @@ impl Session {
         if end > archived {
             let sc = rt.screen.lock().unwrap();
             for i in start.max(archived)..end {
-                lines.push(sc.engine.history_row((i - archived) as usize).unwrap_or_default());
+                lines.push(
+                    sc.engine
+                        .history_row((i - archived) as usize)
+                        .unwrap_or_default(),
+                );
             }
         }
-        ServerFrame::History { pane: pane.into(), req, start, total, lines }
+        ServerFrame::History {
+            pane: pane.into(),
+            req,
+            start,
+            total,
+            lines,
+        }
     }
 
     async fn send_panes<W: AsyncWrite + Unpin>(&mut self, wr: &mut W) -> Result<()> {
         let now = Instant::now();
         for v in self.visible.clone() {
-            let Some(rt) = self.server.pane_rt(&v.pane) else { continue };
+            let Some(rt) = self.server.pane_rt(&v.pane) else {
+                continue;
+            };
             let screen_rev = rt.rev();
             let focused = self.focused.as_deref() == Some(&v.pane);
-            let echo = rt.last_input.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_millis(50));
+            let echo = rt
+                .last_input
+                .lock()
+                .unwrap()
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(50));
             if let Some(view) = self.views.get(&v.pane) {
                 if view.screen_rev == screen_rev {
                     continue;
@@ -376,14 +521,32 @@ impl Session {
                 if sc.recovering {
                     continue;
                 }
-                (sc.epoch, sc.engine.visible_rows(), sc.engine.cursor(), sc.engine.modes(), sc.engine.title(), sc.engine.cols(), sc.engine.rows(), sc.engine.scrolled_total())
+                (
+                    sc.epoch,
+                    sc.engine.visible_rows(),
+                    sc.engine.cursor(),
+                    sc.engine.modes(),
+                    sc.engine.title(),
+                    sc.engine.cols(),
+                    sc.engine.rows(),
+                    sc.engine.scrolled_total(),
+                )
             };
             match self.views.get_mut(&v.pane) {
                 Some(view) if view.epoch == epoch && view.rows.len() == rows.len() => {
                     // Spinner throttling (03 §12.3): unfocused panes with tiny changes go at bg fps.
-                    let changed: Vec<u16> = (0..rows.len()).filter(|&i| rows[i] != view.rows[i]).map(|i| i as u16).collect();
+                    let changed: Vec<u16> = (0..rows.len())
+                        .filter(|&i| rows[i] != view.rows[i])
+                        .map(|i| i as u16)
+                        .collect();
                     let tiny = changed.len() <= 1 && scrolled == view.scrolled;
-                    if !focused && tiny && !echo && now < view.last_sent + Duration::from_millis(1000 / self.bg_fps.max(1) as u64) {
+                    if !focused
+                        && tiny
+                        && !echo
+                        && now
+                            < view.last_sent
+                                + Duration::from_millis(1000 / self.bg_fps.max(1) as u64)
+                    {
                         continue;
                     }
                     let mut ops = Vec::new();
@@ -391,13 +554,24 @@ impl Session {
                     let mut base = view.rows.clone();
                     if n > 0 && (n as usize) < rows.len() && !modes.alt_screen {
                         let n = n as usize;
-                        if rows[..rows.len() - n] == base[n..] || rows[..rows.len() - n].iter().zip(&base[n..]).filter(|(a, b)| a == b).count() * 2 > rows.len() - n {
+                        if rows[..rows.len() - n] == base[n..]
+                            || rows[..rows.len() - n]
+                                .iter()
+                                .zip(&base[n..])
+                                .filter(|(a, b)| a == b)
+                                .count()
+                                * 2
+                                > rows.len() - n
+                        {
                             ops.push(DiffOp::ScrollUp { n: n as u16 });
                             base.drain(..n);
                             base.extend(std::iter::repeat_n(Row::default(), n));
                         }
                     }
-                    let upd: Vec<(u16, Row)> = (0..rows.len()).filter(|&i| rows[i] != base[i]).map(|i| (i as u16, rows[i].clone())).collect();
+                    let upd: Vec<(u16, Row)> = (0..rows.len())
+                        .filter(|&i| rows[i] != base[i])
+                        .map(|i| (i as u16, rows[i].clone()))
+                        .collect();
                     if !upd.is_empty() {
                         ops.push(DiffOp::Rows(upd));
                     }
@@ -438,7 +612,19 @@ impl Session {
                     };
                     self.views.insert(
                         v.pane.clone(),
-                        PaneView { epoch, rev: 1, rows, cursor, modes, title, unacked: 1, last_sent: now, screen_rev, scrolled, dirty_since_ack: true },
+                        PaneView {
+                            epoch,
+                            rev: 1,
+                            rows,
+                            cursor,
+                            modes,
+                            title,
+                            unacked: 1,
+                            last_sent: now,
+                            screen_rev,
+                            scrolled,
+                            dirty_since_ack: true,
+                        },
                     );
                     asyncio::write_frame(wr, &f).await?;
                 }

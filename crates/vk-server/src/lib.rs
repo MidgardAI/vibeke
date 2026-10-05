@@ -43,8 +43,14 @@ pub struct ServerOpts {
 /// Out-of-band UI events for attached render clients.
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    Bell { pane: String },
-    Clipboard { pane: String, primary: bool, data: Vec<u8> },
+    Bell {
+        pane: String,
+    },
+    Clipboard {
+        pane: String,
+        primary: bool,
+        data: Vec<u8>,
+    },
     Notify(Notification),
     Goodbye(String),
 }
@@ -96,8 +102,11 @@ impl Server {
         paths.ensure()?;
         let store = vk_store::Store::open(&paths.db())?;
         let core = Core::load(store, &opts.session, &opts.machine)?;
-        let tokens: HashMap<String, String> =
-            core.store.kv_get("server", "pane_tokens")?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let tokens: HashMap<String, String> = core
+            .store
+            .kv_get("server", "pane_tokens")?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         let (model_rev, _) = watch::channel(1);
         let (events, _) = broadcast::channel(4096);
         let (ui, _) = broadcast::channel(256);
@@ -168,7 +177,9 @@ impl Server {
         if let Some((tok, _)) = t.iter().find(|(_, p)| *p == pane) {
             return tok.clone();
         }
-        let tok: String = (0..32).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+        let tok: String = (0..32)
+            .map(|_| format!("{:02x}", rand::random::<u8>()))
+            .collect();
         t.insert(tok.clone(), pane.to_string());
         tok
     }
@@ -179,7 +190,11 @@ impl Server {
 
     fn persist_tokens(&self, tx: &mut Tx) {
         let t = self.tokens.lock().unwrap();
-        tx.m.kv("server", "pane_tokens", Some(serde_json::to_string(&*t).unwrap_or_default()));
+        tx.m.kv(
+            "server",
+            "pane_tokens",
+            Some(serde_json::to_string(&*t).unwrap_or_default()),
+        );
     }
 
     // ---- startup / recovery ---------------------------------------------------------------
@@ -193,12 +208,18 @@ impl Server {
         let mut lost = Vec::new();
         for p in &panes {
             let h = holders.iter().find(|h| h.pane == p.id);
-            let alive = h.is_some_and(|h| std::os::unix::net::UnixStream::connect(&h.socket).is_ok());
+            let alive =
+                h.is_some_and(|h| std::os::unix::net::UnixStream::connect(&h.socket).is_ok());
             match (h, alive) {
                 (Some(h), true) => {
                     let (rt, rx) = PaneRt::new(&p.id, p.cols.max(2), p.rows.max(1));
                     self.panes.lock().unwrap().insert(p.id.clone(), rt.clone());
-                    let conn = HolderConn { socket: h.socket.clone(), key: h.key.clone(), epoch: h.epoch, fresh: false };
+                    let conn = HolderConn {
+                        socket: h.socket.clone(),
+                        key: h.key.clone(),
+                        epoch: h.epoch,
+                        fresh: false,
+                    };
                     tokio::spawn(pane::run(self.clone(), rt, rx, conn));
                     recovered += 1;
                 }
@@ -207,7 +228,10 @@ impl Server {
         }
         // Reboot (or holder crash): respawn shells in the old layout positions and offer resume.
         for p in lost {
-            let cwd = p.cwd.clone().unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
+            let cwd = p
+                .cwd
+                .clone()
+                .unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
             let run = self.with_core(|c| c.run_for_pane(&p.id).cloned());
             match self.respawn_pane(&p, &cwd) {
                 Ok(()) => {
@@ -220,14 +244,37 @@ impl Server {
         }
         let mut c = self.core.lock().unwrap();
         let mut tx = Tx::new();
-        tx.event("session.server_restarted", json!({}), json!({"recovered_panes": recovered, "pid": std::process::id()}));
+        tx.event(
+            "session.server_restarted",
+            json!({}),
+            json!({"recovered_panes": recovered, "pid": std::process::id()}),
+        );
         let _ = self.commit(&mut c, tx);
         Ok(recovered)
     }
 
     fn respawn_pane(self: &Arc<Self>, old: &Pane, cwd: &str) -> Result<()> {
         let argv = shell_argv(&self.opts);
-        let (holder_pid, child_pid, socket, key) = self.spawn_holder(&old.id, &old.handle, &old.tab, &old.workspace, &argv, cwd, old.cols, old.rows)?;
+        let (wsh, tabh) = self.with_core(|c| {
+            (
+                c.ws(&old.workspace)
+                    .map(|w| w.handle.clone())
+                    .unwrap_or_default(),
+                c.tab(&old.tab)
+                    .map(|t| t.handle.clone())
+                    .unwrap_or_default(),
+            )
+        });
+        let (holder_pid, child_pid, socket, key) = self.spawn_holder(
+            &old.id,
+            &old.handle,
+            &tabh,
+            &wsh,
+            &argv,
+            cwd,
+            old.cols,
+            old.rows,
+        )?;
         let mut c = self.core.lock().unwrap();
         let mut p = old.clone();
         p.child_pid = Some(child_pid);
@@ -235,7 +282,11 @@ impl Server {
         p.recovered = Some("lost".into());
         let mut tx = Tx::new();
         tx.m.holder(&p.id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
-        tx.event("pane.recovered", subject_pane(&p), json!({"method": "lost"}));
+        tx.event(
+            "pane.recovered",
+            subject_pane(&p),
+            json!({"method": "lost"}),
+        );
         tx.pane(p.clone());
         self.commit(&mut c, tx)?;
         drop(c);
@@ -246,11 +297,29 @@ impl Server {
     // ---- spawning -------------------------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn_holder(&self, pane_id: &str, handle: &str, tab: &str, ws: &str, argv: &[String], cwd: &str, cols: u16, rows: u16) -> Result<(u32, u32, String, Vec<u8>)> {
-        let socket = self.paths.holder_socket(pane_id).to_string_lossy().into_owned();
+    fn spawn_holder(
+        &self,
+        pane_id: &str,
+        handle: &str,
+        tab_handle: &str,
+        ws_handle: &str,
+        argv: &[String],
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(u32, u32, String, Vec<u8>)> {
+        let socket = self
+            .paths
+            .holder_socket(pane_id)
+            .to_string_lossy()
+            .into_owned();
         let key: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
-        let env = self.pane_env(pane_id, handle, tab, ws);
-        let cwd = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { paths::home().to_string_lossy().into_owned() };
+        let env = self.pane_env(pane_id, handle, tab_handle, ws_handle);
+        let cwd = if std::path::Path::new(cwd).is_dir() {
+            cwd.to_string()
+        } else {
+            paths::home().to_string_lossy().into_owned()
+        };
         let spec = SpawnSpec {
             pane_id: pane_id.to_string(),
             socket: socket.clone(),
@@ -264,22 +333,40 @@ impl Server {
         };
         let args: Vec<&str> = self.opts.hold_args.iter().map(String::as_str).collect();
         let log = self.paths.logs().join(format!("holder-{pane_id}.log"));
-        let l = vk_hold::launch(&self.opts.bin, &args, &spec, &self.paths.runtime, Some(&log)).context("launch holder")?;
+        let l = vk_hold::launch(
+            &self.opts.bin,
+            &args,
+            &spec,
+            &self.paths.runtime,
+            Some(&log),
+        )
+        .context("launch holder")?;
         Ok((l.holder_pid, l.child_pid, socket, key))
     }
 
-    fn pane_env(&self, pane_id: &str, handle: &str, tab: &str, ws: &str) -> Vec<(String, String)> {
+    /// Must not lock `core`: callers hold it while spawning.
+    fn pane_env(
+        &self,
+        pane_id: &str,
+        handle: &str,
+        tab_handle: &str,
+        ws_handle: &str,
+    ) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = self
             .opts
             .env
             .iter()
             // Never leak an outer Herdr/Vibeke pane identity into our panes (would make Herdr's
             // hooks report into the real Herdr session).
-            .filter(|(k, _)| !k.starts_with("HERDR_") && !k.starts_with("VIBEKE_") && k != "VIBEKE" && k != "TMUX" && k != "TMUX_PANE")
+            .filter(|(k, _)| {
+                !k.starts_with("HERDR_")
+                    && !k.starts_with("VIBEKE_")
+                    && k != "VIBEKE"
+                    && k != "TMUX"
+                    && k != "TMUX_PANE"
+            })
             .cloned()
             .collect();
-        let (ws_handle, tab_handle) =
-            self.with_core(|c| (c.ws(ws).map(|w| w.handle.clone()).unwrap_or_default(), c.tab(tab).map(|t| t.handle.clone()).unwrap_or_default()));
         let set = |env: &mut Vec<(String, String)>, k: &str, v: String| {
             env.retain(|(x, _)| x != k);
             env.push((k.to_string(), v));
@@ -289,28 +376,61 @@ impl Server {
         set(&mut env, "TERM_PROGRAM", "vibeke".into());
         set(&mut env, "TERM_PROGRAM_VERSION", vk_proto::VERSION.into());
         set(&mut env, "VIBEKE", "1".into());
-        set(&mut env, "VIBEKE_SOCKET", self.paths.socket().to_string_lossy().into_owned());
+        set(
+            &mut env,
+            "VIBEKE_SOCKET",
+            self.paths.socket().to_string_lossy().into_owned(),
+        );
         set(&mut env, "VIBEKE_PANE_ID", handle.into());
         set(&mut env, "VIBEKE_PANE_ULID", pane_id.into());
-        set(&mut env, "VIBEKE_WORKSPACE_ID", ws_handle);
-        set(&mut env, "VIBEKE_TAB_ID", tab_handle);
+        set(&mut env, "VIBEKE_WORKSPACE_ID", ws_handle.to_string());
+        set(&mut env, "VIBEKE_TAB_ID", tab_handle.to_string());
         set(&mut env, "VIBEKE_SESSION", self.opts.session.clone());
-        set(&mut env, "VIBEKE_BIN", self.opts.bin.to_string_lossy().into_owned());
+        set(
+            &mut env,
+            "VIBEKE_BIN",
+            self.opts.bin.to_string_lossy().into_owned(),
+        );
         set(&mut env, "VIBEKE_PANE_TOKEN", self.token_for(pane_id));
         if self.opts.shims {
             let shims = Paths::shims();
             if shims.is_dir() {
-                let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).unwrap_or_default();
+                let path = env
+                    .iter()
+                    .find(|(k, _)| k == "PATH")
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
                 set(&mut env, "PATH", format!("{}:{path}", shims.display()));
             }
         }
         env
     }
 
-    fn start_pane(self: &Arc<Self>, id: &str, cols: u16, rows: u16, socket: String, key: Vec<u8>, fresh: bool) {
+    fn start_pane(
+        self: &Arc<Self>,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        socket: String,
+        key: Vec<u8>,
+        fresh: bool,
+    ) {
         let (rt, rx) = PaneRt::new(id, cols, rows);
-        self.panes.lock().unwrap().insert(id.to_string(), rt.clone());
-        tokio::spawn(pane::run(self.clone(), rt, rx, HolderConn { socket, key, epoch: 0, fresh }));
+        self.panes
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), rt.clone());
+        tokio::spawn(pane::run(
+            self.clone(),
+            rt,
+            rx,
+            HolderConn {
+                socket,
+                key,
+                epoch: 0,
+                fresh,
+            },
+        ));
     }
 
     /// Spawn a pane process in an existing tab (layout insertion is done by the caller).
@@ -321,6 +441,7 @@ impl Server {
         tx: &mut Tx,
         ws: &Workspace,
         tab_id: &str,
+        tab_handle: &str,
         cwd: &str,
         command: Option<Vec<String>>,
         title: Option<String>,
@@ -330,14 +451,18 @@ impl Server {
         let handle = c.next_pane_handle(&ws.handle);
         let (cols, rows) = (80, 24);
         let argv = command.unwrap_or_else(|| shell_argv(&self.opts));
-        let (holder_pid, child_pid, socket, key) = self.spawn_holder(&id, &handle, tab_id, &ws.id, &argv, cwd, cols, rows)?;
+        let (holder_pid, child_pid, socket, key) =
+            self.spawn_holder(&id, &handle, tab_handle, &ws.handle, &argv, cwd, cols, rows)?;
         let pane = Pane {
             id: id.clone(),
             handle,
             tab: tab_id.to_string(),
             workspace: ws.id.clone(),
             title,
-            auto_title: argv.first().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default(),
+            auto_title: argv
+                .first()
+                .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
+                .unwrap_or_default(),
             cwd: Some(cwd.to_string()),
             cols,
             rows,
@@ -352,7 +477,11 @@ impl Server {
             recovered: None,
         };
         tx.m.holder(&id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
-        tx.event("pane.created", subject_pane(&pane), json!({"cwd": cwd, "command": argv}));
+        tx.event(
+            "pane.created",
+            subject_pane(&pane),
+            json!({"cwd": cwd, "command": argv}),
+        );
         tx.counters = true;
         self.persist_tokens(tx);
         tx.pane(pane.clone());
@@ -360,19 +489,52 @@ impl Server {
         Ok(pane)
     }
 
-    pub fn create_workspace(self: &Arc<Self>, cwd: &str, name: Option<String>, command: Option<Vec<String>>, focus_client: Option<&str>) -> Result<(Workspace, Tab, Pane)> {
+    pub fn create_workspace(
+        self: &Arc<Self>,
+        cwd: &str,
+        name: Option<String>,
+        command: Option<Vec<String>>,
+        focus_client: Option<&str>,
+    ) -> Result<(Workspace, Tab, Pane)> {
         let mut c = self.core.lock().unwrap();
         let id = ulid();
         let handle = c.next_ws_handle();
-        let auto = std::path::Path::new(cwd).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| cwd.to_string());
-        let order = c.model.workspaces.iter().map(|w| w.order).fold(0.0, f64::max) + 1.0;
-        let ws = Workspace { id: id.clone(), handle, name, auto_name: auto, root_path: cwd.to_string(), task: None, order, branch: None };
+        let auto = std::path::Path::new(cwd)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cwd.to_string());
+        let order = c
+            .model
+            .workspaces
+            .iter()
+            .map(|w| w.order)
+            .fold(0.0, f64::max)
+            + 1.0;
+        let ws = Workspace {
+            id: id.clone(),
+            handle,
+            name,
+            auto_name: auto,
+            root_path: cwd.to_string(),
+            task: None,
+            order,
+            branch: None,
+        };
         let mut tx = Tx::new();
         tx.ws(ws.clone());
-        tx.event("workspace.created", json!({"workspace": ws.id}), json!({"cwd": cwd}));
+        tx.event(
+            "workspace.created",
+            json!({"workspace": ws.id}),
+            json!({"cwd": cwd}),
+        );
         let tab = self.tab_in(&mut c, &mut tx, &ws, None, cwd, command)?;
         let pane_id = tab.focused_pane.clone().unwrap_or_default();
-        let pane = tx.panes.iter().find(|p| p.id == pane_id).cloned().context("pane")?;
+        let pane = tx
+            .panes
+            .iter()
+            .find(|p| p.id == pane_id)
+            .cloned()
+            .context("pane")?;
         self.commit(&mut c, tx)?;
         drop(c);
         if let Some(client) = focus_client {
@@ -381,34 +543,68 @@ impl Server {
         Ok((ws, tab, pane))
     }
 
-    fn tab_in(self: &Arc<Self>, c: &mut Core, tx: &mut Tx, ws: &Workspace, title: Option<String>, cwd: &str, command: Option<Vec<String>>) -> Result<Tab> {
+    fn tab_in(
+        self: &Arc<Self>,
+        c: &mut Core,
+        tx: &mut Tx,
+        ws: &Workspace,
+        title: Option<String>,
+        cwd: &str,
+        command: Option<Vec<String>>,
+    ) -> Result<Tab> {
         let id = ulid();
         let number = c.next_tab_number(&ws.id);
-        let order = c.tabs_of(&ws.id).iter().map(|t| t.order).fold(0.0, f64::max) + 1.0;
-        let pane = self.new_pane(c, tx, ws, &id, cwd, command, None, "user")?;
+        let order = c
+            .tabs_of(&ws.id)
+            .iter()
+            .map(|t| t.order)
+            .fold(0.0, f64::max)
+            + 1.0;
+        let tab_handle = format!("{}:t{number}", ws.handle);
+        let pane = self.new_pane(c, tx, ws, &id, &tab_handle, cwd, command, None, "user")?;
         let tab = Tab {
             id: id.clone(),
-            handle: format!("{}:t{number}", ws.handle),
+            handle: tab_handle,
             workspace: ws.id.clone(),
             title,
             number,
-            layout: LayoutNode::Leaf { pane: pane.id.clone() },
+            layout: LayoutNode::Leaf {
+                pane: pane.id.clone(),
+            },
             focused_pane: Some(pane.id.clone()),
             zoomed_pane: None,
             order,
         };
-        tx.event("tab.created", json!({"tab": id, "workspace": ws.id}), json!({"number": number}));
+        tx.event(
+            "tab.created",
+            json!({"tab": id, "workspace": ws.id}),
+            json!({"number": number}),
+        );
         tx.tab(tab.clone());
         Ok(tab)
     }
 
-    pub fn create_tab(self: &Arc<Self>, ws_id: &str, cwd: Option<&str>, title: Option<String>, command: Option<Vec<String>>, focus_client: Option<&str>) -> Result<(Tab, Pane)> {
+    pub fn create_tab(
+        self: &Arc<Self>,
+        ws_id: &str,
+        cwd: Option<&str>,
+        title: Option<String>,
+        command: Option<Vec<String>>,
+        focus_client: Option<&str>,
+    ) -> Result<(Tab, Pane)> {
         let mut c = self.core.lock().unwrap();
         let ws = c.ws(ws_id).cloned().context("workspace not found")?;
-        let cwd = cwd.map(str::to_string).unwrap_or_else(|| ws.root_path.clone());
+        let cwd = cwd
+            .map(str::to_string)
+            .unwrap_or_else(|| ws.root_path.clone());
         let mut tx = Tx::new();
         let tab = self.tab_in(&mut c, &mut tx, &ws, title, &cwd, command)?;
-        let pane = tx.panes.iter().find(|p| Some(&p.id) == tab.focused_pane.as_ref()).cloned().context("pane")?;
+        let pane = tx
+            .panes
+            .iter()
+            .find(|p| Some(&p.id) == tab.focused_pane.as_ref())
+            .cloned()
+            .context("pane")?;
         self.commit(&mut c, tx)?;
         drop(c);
         if let Some(client) = focus_client {
@@ -433,9 +629,23 @@ impl Server {
         let tp = c.pane(target).cloned().context("pane not found")?;
         let ws = c.ws(&tp.workspace).cloned().context("workspace")?;
         let mut tab = c.tab(&tp.tab).cloned().context("tab")?;
-        let cwd = cwd.map(str::to_string).or_else(|| self.pane_cwd(&tp.id)).unwrap_or_else(|| ws.root_path.clone());
+        let cwd = cwd
+            .map(str::to_string)
+            .or_else(|| self.pane_cwd(&tp.id))
+            .unwrap_or_else(|| ws.root_path.clone());
         let mut tx = Tx::new();
-        let pane = self.new_pane(&mut c, &mut tx, &ws, &tab.id, &cwd, command, title, created_by)?;
+        let tab_handle = tab.handle.clone();
+        let pane = self.new_pane(
+            &mut c,
+            &mut tx,
+            &ws,
+            &tab.id,
+            &tab_handle,
+            &cwd,
+            command,
+            title,
+            created_by,
+        )?;
         layout::split(&mut tab.layout, &tp.id, &pane.id, dir, ratio);
         tab.zoomed_pane = None;
         tx.event("tab.layout_changed", json!({"tab": tab.id}), json!({}));
@@ -455,7 +665,8 @@ impl Server {
             return Some(c.to_string());
         }
         let st = rt.status.lock().unwrap().clone();
-        st.and_then(|s| s.fg_cwd).or_else(|| self.with_core(|c| c.pane(pane).and_then(|p| p.cwd.clone())))
+        st.and_then(|s| s.fg_cwd)
+            .or_else(|| self.with_core(|c| c.pane(pane).and_then(|p| p.cwd.clone())))
     }
 
     /// Ask a pane's process to exit; the layout updates when the holder reports the exit.
@@ -472,7 +683,9 @@ impl Server {
         self.panes.lock().unwrap().remove(pane_id);
         let _ = self.archive.lock().unwrap().close_pane(pane_id);
         let mut c = self.core.lock().unwrap();
-        let Some(p) = c.pane(pane_id).cloned() else { return };
+        let Some(p) = c.pane(pane_id).cloned() else {
+            return;
+        };
         let mut tx = Tx::new();
         if let Some(r) = c.run_for_pane(pane_id).cloned() {
             self.agents.end_run_tx(&mut c, &mut tx, &r, reason);
@@ -492,9 +705,17 @@ impl Server {
                     tx.tab(tab);
                 }
                 None => {
-                    tx.event("tab.closed", json!({"tab": tab.id, "workspace": tab.workspace}), json!({}));
+                    tx.event(
+                        "tab.closed",
+                        json!({"tab": tab.id, "workspace": tab.workspace}),
+                        json!({}),
+                    );
                     tx.close_tab(&tab);
-                    let others = c.tabs_of(&tab.workspace).iter().filter(|t| t.id != tab.id).count();
+                    let others = c
+                        .tabs_of(&tab.workspace)
+                        .iter()
+                        .filter(|t| t.id != tab.id)
+                        .count();
                     if others == 0
                         && let Some(ws) = c.ws(&tab.workspace).cloned()
                     {
@@ -515,28 +736,54 @@ impl Server {
     pub fn fix_client_focus(&self) {
         let (panes, tabs, wss) = self.with_core(|c| {
             (
-                c.model.panes.iter().map(|p| (p.id.clone(), p.tab.clone(), p.workspace.clone())).collect::<Vec<_>>(),
-                c.model.tabs.iter().map(|t| (t.id.clone(), t.workspace.clone(), t.focused_pane.clone())).collect::<Vec<_>>(),
-                c.model.workspaces.iter().map(|w| w.id.clone()).collect::<Vec<_>>(),
+                c.model
+                    .panes
+                    .iter()
+                    .map(|p| (p.id.clone(), p.tab.clone(), p.workspace.clone()))
+                    .collect::<Vec<_>>(),
+                c.model
+                    .tabs
+                    .iter()
+                    .map(|t| (t.id.clone(), t.workspace.clone(), t.focused_pane.clone()))
+                    .collect::<Vec<_>>(),
+                c.model
+                    .workspaces
+                    .iter()
+                    .map(|w| w.id.clone())
+                    .collect::<Vec<_>>(),
             )
         });
         let mut clients = self.clients.lock().unwrap();
         for st in clients.values_mut() {
             let f = &mut st.focus;
-            if f.pane.as_ref().is_some_and(|p| panes.iter().any(|(id, _, _)| id == p)) {
+            if f.pane
+                .as_ref()
+                .is_some_and(|p| panes.iter().any(|(id, _, _)| id == p))
+            {
                 continue;
             }
             // Prefer the same tab, then the same workspace, then anything.
             let pick = tabs
                 .iter()
                 .find(|(id, _, _)| Some(id) == f.tab.as_ref())
-                .or_else(|| tabs.iter().find(|(_, ws, _)| Some(ws) == f.workspace.as_ref()))
-                .or_else(|| wss.first().and_then(|w| tabs.iter().find(|(_, ws, _)| ws == w)));
+                .or_else(|| {
+                    tabs.iter()
+                        .find(|(_, ws, _)| Some(ws) == f.workspace.as_ref())
+                })
+                .or_else(|| {
+                    wss.first()
+                        .and_then(|w| tabs.iter().find(|(_, ws, _)| ws == w))
+                });
             match pick {
                 Some((tid, wid, fp)) => {
                     f.tab = Some(tid.clone());
                     f.workspace = Some(wid.clone());
-                    f.pane = fp.clone().or_else(|| panes.iter().find(|(_, t, _)| t == tid).map(|(p, _, _)| p.clone()));
+                    f.pane = fp.clone().or_else(|| {
+                        panes
+                            .iter()
+                            .find(|(_, t, _)| t == tid)
+                            .map(|(p, _, _)| p.clone())
+                    });
                 }
                 None => *f = ClientFocus::default(),
             }
@@ -548,12 +795,20 @@ impl Server {
     // ---- focus ----------------------------------------------------------------------------
 
     pub fn focus_pane(&self, client: &str, pane_id: &str) {
-        let Some((p, ws)) = self.with_core(|c| c.pane(pane_id).cloned().map(|p| (p.clone(), p.workspace))) else { return };
+        let Some((p, ws)) =
+            self.with_core(|c| c.pane(pane_id).cloned().map(|p| (p.clone(), p.workspace)))
+        else {
+            return;
+        };
         let prev = {
             let mut clients = self.clients.lock().unwrap();
             let st = clients.entry(client.to_string()).or_default();
             let prev = st.focus.pane.clone();
-            st.focus = ClientFocus { workspace: Some(ws), tab: Some(p.tab.clone()), pane: Some(p.id.clone()) };
+            st.focus = ClientFocus {
+                workspace: Some(ws),
+                tab: Some(p.tab.clone()),
+                pane: Some(p.id.clone()),
+            };
             st.last_active = Some(Instant::now());
             prev
         };
@@ -585,22 +840,39 @@ impl Server {
     }
 
     pub fn client_focus(&self, client: &str) -> ClientFocus {
-        self.clients.lock().unwrap().get(client).map(|s| s.focus.clone()).unwrap_or_default()
+        self.clients
+            .lock()
+            .unwrap()
+            .get(client)
+            .map(|s| s.focus.clone())
+            .unwrap_or_default()
     }
 
     /// The focused pane of the most recently active TUI client (`@focused`).
     pub fn focused_pane(&self) -> Option<String> {
         let clients = self.clients.lock().unwrap();
-        clients.values().filter(|s| s.kind == "tui").max_by_key(|s| s.last_active).and_then(|s| s.focus.pane.clone())
+        clients
+            .values()
+            .filter(|s| s.kind == "tui")
+            .max_by_key(|s| s.last_active)
+            .and_then(|s| s.focus.pane.clone())
     }
 
     /// Whether any attached TUI client has this pane focused (gate-mode decision, 04 §7.2).
     pub fn pane_focused_by_any(&self, pane: &str) -> bool {
-        self.clients.lock().unwrap().values().any(|s| s.kind == "tui" && s.focus.pane.as_deref() == Some(pane))
+        self.clients
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| s.kind == "tui" && s.focus.pane.as_deref() == Some(pane))
     }
 
     pub fn pane_visible(&self, pane: &str) -> bool {
-        self.clients.lock().unwrap().values().any(|s| s.visible.iter().any(|v| v == pane))
+        self.clients
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| s.visible.iter().any(|v| v == pane))
     }
 
     // ---- callbacks from pane tasks --------------------------------------------------------
@@ -652,10 +924,19 @@ impl Server {
                 if p.title.is_none()
                     && let Some(a) = st.fg_cmdline.first()
                 {
-                    p.auto_title = a.rsplit('/').next().unwrap_or(a).trim_start_matches('-').to_string();
+                    p.auto_title = a
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(a)
+                        .trim_start_matches('-')
+                        .to_string();
                 }
                 let mut tx = Tx::new();
-                tx.event("pane.process_changed", subject_pane(&p), json!({"fg_cmdline": st.fg_cmdline}));
+                tx.event(
+                    "pane.process_changed",
+                    subject_pane(&p),
+                    json!({"fg_cmdline": st.fg_cmdline}),
+                );
                 tx.pane(p);
                 let _ = self.commit(&mut c, tx);
             }
@@ -669,7 +950,11 @@ impl Server {
             p.exited = true;
             p.exit_code = code;
             let mut tx = Tx::new();
-            tx.event("pane.exited", subject_pane(&p), json!({"code": code, "signal": signal}));
+            tx.event(
+                "pane.exited",
+                subject_pane(&p),
+                json!({"code": code, "signal": signal}),
+            );
             tx.pane(p);
             let _ = self.commit(&mut c, tx);
         }
@@ -704,11 +989,21 @@ impl Server {
                     NotifyKind::Osc99 => "osc99",
                     NotifyKind::Osc777 => "osc777",
                 };
-                let t = title.unwrap_or_else(|| self.with_core(|c| c.pane(pane).map(|p| p.display_title().to_string()).unwrap_or_default()));
+                let t = title.unwrap_or_else(|| {
+                    self.with_core(|c| {
+                        c.pane(pane)
+                            .map(|p| p.display_title().to_string())
+                            .unwrap_or_default()
+                    })
+                });
                 self.notify(kind, Some(pane), &t, &body, "normal");
             }
             Effect::Clipboard { primary, data } if !replaying => {
-                let _ = self.ui.send(UiEvent::Clipboard { pane: pane.into(), primary, data });
+                let _ = self.ui.send(UiEvent::Clipboard {
+                    pane: pane.into(),
+                    primary,
+                    data,
+                });
             }
             Effect::Cwd(cwd) => {
                 let mut c = self.core.lock().unwrap();
@@ -725,11 +1020,22 @@ impl Server {
         }
     }
 
-    pub fn notify(&self, kind: &str, pane: Option<&str>, title: &str, body: &str, urgency: &str) -> Notification {
+    pub fn notify(
+        &self,
+        kind: &str,
+        pane: Option<&str>,
+        title: &str,
+        body: &str,
+        urgency: &str,
+    ) -> Notification {
         let mut c = self.core.lock().unwrap();
         let n = c.notify(kind, pane, title, body, urgency);
         let mut tx = Tx::new();
-        tx.event("notification.created", json!({"pane": pane}), json!({"id": n.id, "kind": kind, "title": title, "body": body, "urgency": urgency}));
+        tx.event(
+            "notification.created",
+            json!({"pane": pane}),
+            json!({"id": n.id, "kind": kind, "title": title, "body": body, "urgency": urgency}),
+        );
         let _ = self.commit(&mut c, tx);
         drop(c);
         let _ = self.ui.send(UiEvent::Notify(n.clone()));
@@ -739,7 +1045,13 @@ impl Server {
     pub fn store_snapshot(&self, pane: &str, offset: u64, blob: Vec<u8>) -> bool {
         let mut c = self.core.lock().unwrap();
         let mut tx = Tx::new();
-        tx.m.snapshot(pane, offset, vk_term::engine::ENGINE, vk_term::engine::ENGINE_VERSION, blob);
+        tx.m.snapshot(
+            pane,
+            offset,
+            vk_term::engine::ENGINE,
+            vk_term::engine::ENGINE_VERSION,
+            blob,
+        );
         c.commit(tx).is_ok()
     }
 
@@ -747,7 +1059,11 @@ impl Server {
         let ts = now_ms();
         {
             let mut f = self.fts_buf.lock().unwrap();
-            f.extend(rows.iter().filter(|r| !r.t.is_empty()).map(|r| (pane.to_string(), r.n, ts, r.t.clone())));
+            f.extend(
+                rows.iter()
+                    .filter(|r| !r.t.is_empty())
+                    .map(|r| (pane.to_string(), r.n, ts, r.t.clone())),
+            );
         }
         let _ = self.archive.lock().unwrap().append(pane, &rows);
     }

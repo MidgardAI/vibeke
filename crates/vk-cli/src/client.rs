@@ -37,7 +37,12 @@ impl std::error::Error for CallError {}
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     pub fn new(stream: S) -> Self {
         let (rd, wr) = tokio::io::split(stream);
-        Client { rd: BufReader::new(rd), wr, next: 1, notifications: Vec::new() }
+        Client {
+            rd: BufReader::new(rd),
+            wr,
+            next: 1,
+            notifications: Vec::new(),
+        }
     }
 
     pub async fn send(&mut self, method: &str, params: Value) -> Result<u64> {
@@ -103,7 +108,9 @@ pub fn socket_path(session: &str, explicit: Option<&Path>) -> PathBuf {
 }
 
 pub async fn connect(path: &Path) -> Result<UnixStream> {
-    UnixStream::connect(path).await.with_context(|| format!("connect {}", path.display()))
+    UnixStream::connect(path)
+        .await
+        .with_context(|| format!("connect {}", path.display()))
 }
 
 /// Connect, spawning the server in the background if it isn't running (unless `no_spawn`).
@@ -132,10 +139,16 @@ pub async fn connect_or_spawn(session: &str, socket: &Path, no_spawn: bool) -> R
 pub fn spawn_server(session: &str) -> Result<()> {
     let paths = Paths::new(session);
     paths.ensure()?;
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(paths.logs().join("server.log"))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(paths.logs().join("server.log"))?;
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
-    cmd.args(["server", "--session", session]).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    cmd.args(["server", "--session", session])
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
     use std::os::unix::process::CommandExt;
     // SAFETY: setsid between fork and exec is async-signal-safe.
     unsafe {

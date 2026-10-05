@@ -1,7 +1,28 @@
 [package]
 name = "vibeke"
+description = "Vibeke: a terminal workspace for supervising coding agents"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "vibeke"
+path = "src/main.rs"
+
 [dependencies]
+vk-proto = { workspace = true }
+vk-hold = { workspace = true }
+vk-server = { workspace = true }
+vk-cli = { workspace = true }
+vk-tui = { workspace = true }
+vk-config = { workspace = true }
+vk-compat = { workspace = true }
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

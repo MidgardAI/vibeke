@@ -26,7 +26,8 @@ pub fn err(kind: ErrorKind, msg: impl Into<String>) -> RpcError {
 }
 
 pub fn not_found(what: &str, t: &str) -> RpcError {
-    err(ErrorKind::NotFound, format!("{what} not found: {t}")).details(json!({"object": what, "target": t}))
+    err(ErrorKind::NotFound, format!("{what} not found: {t}"))
+        .details(json!({"object": what, "target": t}))
 }
 
 pub fn invalid(msg: impl Into<String>) -> RpcError {
@@ -55,8 +56,14 @@ pub fn req<'a>(p: &'a Value, k: &str) -> Result<&'a str, RpcError> {
 }
 pub fn argv(p: &Value, k: &str) -> Option<Vec<String>> {
     match p.get(k) {
-        Some(Value::Array(a)) => Some(a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()),
-        Some(Value::String(s)) if !s.is_empty() => Some(vec!["/bin/sh".into(), "-c".into(), s.clone()]),
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        ),
+        Some(Value::String(s)) if !s.is_empty() => {
+            Some(vec!["/bin/sh".into(), "-c".into(), s.clone()])
+        }
         _ => None,
     }
 }
@@ -78,12 +85,22 @@ pub fn resolve_pane(server: &Server, ctx: &Ctx, target: Option<&str>) -> Result<
         },
     };
     let id = match t.as_str() {
-        "@current" => ctx.pane_scope.clone().ok_or_else(|| invalid("@current needs a pane token (VIBEKE_PANE_TOKEN)"))?,
-        "@focused" => server.client_focus(&ctx.client_id).pane.or_else(|| server.focused_pane()).ok_or_else(|| not_found("pane", "@focused"))?,
+        "@current" => ctx
+            .pane_scope
+            .clone()
+            .ok_or_else(|| invalid("@current needs a pane token (VIBEKE_PANE_TOKEN)"))?,
+        "@focused" => server
+            .client_focus(&ctx.client_id)
+            .pane
+            .or_else(|| server.focused_pane())
+            .ok_or_else(|| not_found("pane", "@focused"))?,
         other => other.to_string(),
     };
     server.with_core(|c| {
-        c.pane(&id).cloned().or_else(|| c.run(&id).and_then(|r| c.pane(&r.pane).cloned())).ok_or_else(|| not_found("pane", &id))
+        c.pane(&id)
+            .cloned()
+            .or_else(|| c.run(&id).and_then(|r| c.pane(&r.pane).cloned()))
+            .ok_or_else(|| not_found("pane", &id))
     })
 }
 
@@ -94,20 +111,40 @@ pub fn resolve_ws(server: &Server, ctx: &Ctx, target: Option<&str>) -> Result<Wo
             let p = resolve_pane(server, ctx, None).ok();
             match p {
                 Some(p) => p.workspace,
-                None => server.client_focus(&ctx.client_id).workspace.ok_or_else(|| invalid("workspace target required"))?,
+                None => server
+                    .client_focus(&ctx.client_id)
+                    .workspace
+                    .ok_or_else(|| invalid("workspace target required"))?,
             }
         }
     };
-    server.with_core(|c| c.ws(&t).cloned().or_else(|| c.model.workspaces.iter().find(|w| w.display_name() == t).cloned())).ok_or_else(|| not_found("workspace", &t))
+    server
+        .with_core(|c| {
+            c.ws(&t).cloned().or_else(|| {
+                c.model
+                    .workspaces
+                    .iter()
+                    .find(|w| w.display_name() == t)
+                    .cloned()
+            })
+        })
+        .ok_or_else(|| not_found("workspace", &t))
 }
 
 pub fn resolve_tab(server: &Server, ctx: &Ctx, target: Option<&str>) -> Result<Tab, RpcError> {
     match target {
-        Some(t) => server.with_core(|c| c.tab(t).cloned()).ok_or_else(|| not_found("tab", t)),
+        Some(t) => server
+            .with_core(|c| c.tab(t).cloned())
+            .ok_or_else(|| not_found("tab", t)),
         None => {
-            let p = resolve_pane(server, ctx, None).ok().map(|p| p.tab).or_else(|| server.client_focus(&ctx.client_id).tab);
+            let p = resolve_pane(server, ctx, None)
+                .ok()
+                .map(|p| p.tab)
+                .or_else(|| server.client_focus(&ctx.client_id).tab);
             let t = p.ok_or_else(|| invalid("tab target required"))?;
-            server.with_core(|c| c.tab(&t).cloned()).ok_or_else(|| not_found("tab", &t))
+            server
+                .with_core(|c| c.tab(&t).cloned())
+                .ok_or_else(|| not_found("tab", &t))
         }
     }
 }
@@ -117,7 +154,13 @@ pub fn resolve_tab(server: &Server, ctx: &Ctx, target: Option<&str>) -> Result<T
 pub async fn handle_line(server: &Arc<Server>, ctx: &Ctx, line: &str) -> String {
     let req: Request = match serde_json::from_str(line) {
         Ok(r) => r,
-        Err(e) => return serde_json::to_string(&Response::err(Value::Null, err(ErrorKind::ParseError, e.to_string()))).unwrap(),
+        Err(e) => {
+            return serde_json::to_string(&Response::err(
+                Value::Null,
+                err(ErrorKind::ParseError, e.to_string()),
+            ))
+            .unwrap();
+        }
     };
     let id = req.id.clone().unwrap_or(Value::Null);
     let resp = match dispatch(server, ctx, &req.method, &req.params).await {
@@ -207,15 +250,25 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         })),
         "client.list" => {
             let clients = server.clients.lock().unwrap();
-            Ok(json!({"clients": clients.iter().map(|(id, c)| json!({"id": id, "kind": c.kind, "attached_at": c.attached_at_ms, "focused_pane": c.focus.pane})).collect::<Vec<_>>()}))
+            Ok(
+                json!({"clients": clients.iter().map(|(id, c)| json!({"id": id, "kind": c.kind, "attached_at": c.attached_at_ms, "focused_pane": c.focus.pane})).collect::<Vec<_>>()}),
+            )
         }
         "api.methods" => {
-            let mut v: Vec<Value> = METHODS.iter().map(|(n, m)| json!({"name": n, "mutating": m})).collect();
-            v.extend(crate::agents::METHODS.iter().map(|(n, m)| json!({"name": n, "mutating": m})));
+            let mut v: Vec<Value> = METHODS
+                .iter()
+                .map(|(n, m)| json!({"name": n, "mutating": m}))
+                .collect();
+            v.extend(
+                crate::agents::METHODS
+                    .iter()
+                    .map(|(n, m)| json!({"name": n, "mutating": m})),
+            );
             Ok(json!({"methods": v}))
         }
         "server.status" => {
-            let (panes, seq) = server.with_core(|c| (c.model.panes.len(), c.store.last_seq().unwrap_or(0)));
+            let (panes, seq) =
+                server.with_core(|c| (c.model.panes.len(), c.store.last_seq().unwrap_or(0)));
             Ok(json!({
                 "pid": std::process::id(),
                 "version": vk_proto::VERSION,
@@ -232,7 +285,10 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         }
         "server.stop" => {
             if ctx.pane_scope.is_some() {
-                return Err(err(ErrorKind::PermissionDenied, "server.stop is not allowed from a pane token"));
+                return Err(err(
+                    ErrorKind::PermissionDenied,
+                    "server.stop is not allowed from a pane token",
+                ));
             }
             let kill = b(p, "kill_panes").unwrap_or(false);
             if kill {
@@ -250,7 +306,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 srv.housekeeping();
                 srv.shutdown.notify_waiters();
-                let _ = srv.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
+                let _ = srv
+                    .ui
+                    .send(crate::UiEvent::Goodbye("server stopped".into()));
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 std::process::exit(0);
             });
@@ -284,10 +342,23 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         }
         "workspace.get" => Ok(json!({"workspace": resolve_ws(server, ctx, s(p, "workspace"))?})),
         "workspace.create" => {
-            let cwd = s(p, "cwd").map(str::to_string).unwrap_or_else(|| crate::paths::home().to_string_lossy().into_owned());
-            let focus = b(p, "focus").unwrap_or(false).then_some(ctx.client_id.as_str());
-            let (ws, tab, pane) = server.create_workspace(&cwd, s(p, "name").map(Into::into), argv(p, "command"), focus).map_err(internal)?;
-            Ok(json!({"workspace": ws, "tab": tab, "root_pane": pane, "cursor": cursor(server, None)}))
+            let cwd = s(p, "cwd")
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::paths::home().to_string_lossy().into_owned());
+            let focus = b(p, "focus")
+                .unwrap_or(false)
+                .then_some(ctx.client_id.as_str());
+            let (ws, tab, pane) = server
+                .create_workspace(
+                    &cwd,
+                    s(p, "name").map(Into::into),
+                    argv(p, "command"),
+                    focus,
+                )
+                .map_err(internal)?;
+            Ok(
+                json!({"workspace": ws, "tab": tab, "root_pane": pane, "cursor": cursor(server, None)}),
+            )
         }
         "workspace.rename" => {
             let ws = resolve_ws(server, ctx, s(p, "workspace"))?;
@@ -295,7 +366,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let mut w = ws.clone();
             w.name = s(p, "name").map(str::to_string).filter(|s| !s.is_empty());
             let mut tx = Tx::new();
-            tx.event("workspace.renamed", json!({"workspace": w.id}), json!({"name": w.name}));
+            tx.event(
+                "workspace.renamed",
+                json!({"workspace": w.id}),
+                json!({"name": w.name}),
+            );
             tx.ws(w.clone());
             server.commit(&mut c, tx).map_err(internal)?;
             Ok(json!({"workspace": w}))
@@ -314,7 +389,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 w.order = k as f64 + 1.0;
                 tx.ws(w);
             }
-            tx.event("workspace.moved", json!({"workspace": ws.id}), json!({"index": j}));
+            tx.event(
+                "workspace.moved",
+                json!({"workspace": ws.id}),
+                json!({"index": j}),
+            );
             server.commit(&mut c, tx).map_err(internal)?;
             Ok(json!({}))
         }
@@ -323,7 +402,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let pane = server.with_core(|c| {
                 let tabs = c.tabs_of(&ws.id);
                 let cur = server.client_focus(&ctx.client_id);
-                let tab = tabs.iter().find(|t| Some(&t.id) == cur.tab.as_ref()).or(tabs.first()).map(|t| (*t).clone());
+                let tab = tabs
+                    .iter()
+                    .find(|t| Some(&t.id) == cur.tab.as_ref())
+                    .or(tabs.first())
+                    .map(|t| (*t).clone());
                 tab.and_then(|t| t.focused_pane.or_else(|| t.layout.panes().first().cloned()))
             });
             if let Some(pane) = pane {
@@ -333,7 +416,14 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         }
         "workspace.close" => {
             let ws = resolve_ws(server, ctx, s(p, "workspace"))?;
-            let panes: Vec<String> = server.with_core(|c| c.model.panes.iter().filter(|x| x.workspace == ws.id).map(|x| x.id.clone()).collect());
+            let panes: Vec<String> = server.with_core(|c| {
+                c.model
+                    .panes
+                    .iter()
+                    .filter(|x| x.workspace == ws.id)
+                    .map(|x| x.id.clone())
+                    .collect()
+            });
             for pid in panes {
                 server.close_pane(&pid);
             }
@@ -342,15 +432,38 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
 
         // ---- tabs -----------------------------------------------------------------------
         "tab.list" => {
-            let ws = s(p, "workspace").map(|w| resolve_ws(server, ctx, Some(w))).transpose()?;
-            let tabs: Vec<Tab> = server.with_core(|c| c.model.tabs.iter().filter(|t| ws.as_ref().is_none_or(|w| w.id == t.workspace)).cloned().collect());
+            let ws = s(p, "workspace")
+                .map(|w| resolve_ws(server, ctx, Some(w)))
+                .transpose()?;
+            let tabs: Vec<Tab> = server.with_core(|c| {
+                c.model
+                    .tabs
+                    .iter()
+                    .filter(|t| ws.as_ref().is_none_or(|w| w.id == t.workspace))
+                    .cloned()
+                    .collect()
+            });
             Ok(json!({"tabs": tabs}))
         }
         "tab.create" => {
             let ws = resolve_ws(server, ctx, s(p, "workspace"))?;
-            let focus = b(p, "focus").unwrap_or(false).then_some(ctx.client_id.as_str());
-            let cwd = s(p, "cwd").map(str::to_string).or_else(|| resolve_pane(server, ctx, None).ok().and_then(|x| server.pane_cwd(&x.id)));
-            let (tab, pane) = server.create_tab(&ws.id, cwd.as_deref(), s(p, "title").map(Into::into), argv(p, "command"), focus).map_err(internal)?;
+            let focus = b(p, "focus")
+                .unwrap_or(false)
+                .then_some(ctx.client_id.as_str());
+            let cwd = s(p, "cwd").map(str::to_string).or_else(|| {
+                resolve_pane(server, ctx, None)
+                    .ok()
+                    .and_then(|x| server.pane_cwd(&x.id))
+            });
+            let (tab, pane) = server
+                .create_tab(
+                    &ws.id,
+                    cwd.as_deref(),
+                    s(p, "title").map(Into::into),
+                    argv(p, "command"),
+                    focus,
+                )
+                .map_err(internal)?;
             Ok(json!({"tab": tab, "root_pane": pane, "cursor": cursor(server, None)}))
         }
         "tab.rename" => {
@@ -359,14 +472,22 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let mut t = t.clone();
             t.title = s(p, "title").map(str::to_string).filter(|s| !s.is_empty());
             let mut tx = Tx::new();
-            tx.event("tab.renamed", json!({"tab": t.id}), json!({"title": t.title}));
+            tx.event(
+                "tab.renamed",
+                json!({"tab": t.id}),
+                json!({"title": t.title}),
+            );
             tx.tab(t.clone());
             server.commit(&mut c, tx).map_err(internal)?;
             Ok(json!({"tab": t}))
         }
         "tab.focus" => {
             let t = resolve_tab(server, ctx, s(p, "tab"))?;
-            if let Some(pane) = t.focused_pane.clone().or_else(|| t.layout.panes().first().cloned()) {
+            if let Some(pane) = t
+                .focused_pane
+                .clone()
+                .or_else(|| t.layout.panes().first().cloned())
+            {
                 server.focus_pane(&ctx.client_id, &pane);
             }
             Ok(json!({"tab": t}))
@@ -398,8 +519,12 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
 
         // ---- panes ----------------------------------------------------------------------
         "pane.list" => {
-            let ws = s(p, "workspace").map(|w| resolve_ws(server, ctx, Some(w))).transpose()?;
-            let tab = s(p, "tab").map(|t| resolve_tab(server, ctx, Some(t))).transpose()?;
+            let ws = s(p, "workspace")
+                .map(|w| resolve_ws(server, ctx, Some(w)))
+                .transpose()?;
+            let tab = s(p, "tab")
+                .map(|t| resolve_tab(server, ctx, Some(t)))
+                .transpose()?;
             let panes: Vec<Value> = server.with_core(|c| {
                 c.model
                     .panes
@@ -416,20 +541,56 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             Ok(json!({"panes": panes}))
         }
         "pane.get" | "pane.current" => {
-            let pane = resolve_pane(server, ctx, if method == "pane.current" { Some("@current") } else { s(p, "pane") })?;
+            let pane = resolve_pane(
+                server,
+                ctx,
+                if method == "pane.current" {
+                    Some("@current")
+                } else {
+                    s(p, "pane")
+                },
+            )?;
             let (run, ints) = server.with_core(|c| {
-                (c.run_for_pane(&pane.id).cloned(), c.model.interactions.iter().filter(|i| i.pane == pane.id && i.status == InteractionStatus::Open).cloned().collect::<Vec<_>>())
+                (
+                    c.run_for_pane(&pane.id).cloned(),
+                    c.model
+                        .interactions
+                        .iter()
+                        .filter(|i| i.pane == pane.id && i.status == InteractionStatus::Open)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             });
             let rev = server.pane_rt(&pane.id).map(|r| r.rev());
-            Ok(json!({"pane": pane, "run": run, "open_interactions": ints, "revision": rev, "cwd": server.pane_cwd(&pane.id)}))
+            Ok(
+                json!({"pane": pane, "run": run, "open_interactions": ints, "revision": rev, "cwd": server.pane_cwd(&pane.id)}),
+            )
         }
         "pane.split" => {
             let target = resolve_pane(server, ctx, s(p, "pane"))?;
-            let dir = Direction::parse(s(p, "direction").unwrap_or("right")).ok_or_else(|| invalid("direction must be right|down|left|up"))?;
+            let dir = Direction::parse(s(p, "direction").unwrap_or("right"))
+                .ok_or_else(|| invalid("direction must be right|down|left|up"))?;
             let ratio = p.get("ratio").and_then(Value::as_f64).unwrap_or(0.5) as f32;
-            let focus = b(p, "focus").unwrap_or(false).then_some(ctx.client_id.as_str());
-            let by = if ctx.pane_scope.is_some() { "agent" } else { "user" };
-            let pane = server.split_pane(&target.id, dir, ratio, s(p, "cwd"), argv(p, "command"), s(p, "title").map(Into::into), focus, by).map_err(internal)?;
+            let focus = b(p, "focus")
+                .unwrap_or(false)
+                .then_some(ctx.client_id.as_str());
+            let by = if ctx.pane_scope.is_some() {
+                "agent"
+            } else {
+                "user"
+            };
+            let pane = server
+                .split_pane(
+                    &target.id,
+                    dir,
+                    ratio,
+                    s(p, "cwd"),
+                    argv(p, "command"),
+                    s(p, "title").map(Into::into),
+                    focus,
+                    by,
+                )
+                .map_err(internal)?;
             Ok(json!({"pane": pane, "cursor": cursor(server, None)}))
         }
         "pane.focus" => {
@@ -437,10 +598,22 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 (_, Some(d)) => {
                     let cur = resolve_pane(server, ctx, s(p, "pane").or(Some("@focused")))?;
                     let dir = Direction::parse(d).ok_or_else(|| invalid("bad direction"))?;
-                    let tab = server.with_core(|c| c.tab(&cur.tab).cloned()).ok_or_else(|| not_found("tab", &cur.tab))?;
-                    let rects = layout::rects(&tab.layout, layout::Rect { x: 0, y: 0, w: 400, h: 200 });
+                    let tab = server
+                        .with_core(|c| c.tab(&cur.tab).cloned())
+                        .ok_or_else(|| not_found("tab", &cur.tab))?;
+                    let rects = layout::rects(
+                        &tab.layout,
+                        layout::Rect {
+                            x: 0,
+                            y: 0,
+                            w: 400,
+                            h: 200,
+                        },
+                    );
                     match layout::neighbor(&rects, &cur.id, dir) {
-                        Some(n) => server.with_core(|c| c.pane(&n).cloned()).ok_or_else(|| not_found("pane", &n))?,
+                        Some(n) => server
+                            .with_core(|c| c.pane(&n).cloned())
+                            .ok_or_else(|| not_found("pane", &n))?,
                         None => cur,
                     }
                 }
@@ -457,7 +630,10 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         "pane.zoom" => {
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;
             let mut c = server.core.lock().unwrap();
-            let mut tab = c.tab(&pane.tab).cloned().ok_or_else(|| not_found("tab", &pane.tab))?;
+            let mut tab = c
+                .tab(&pane.tab)
+                .cloned()
+                .ok_or_else(|| not_found("tab", &pane.tab))?;
             let on = b(p, "zoomed").unwrap_or(tab.zoomed_pane.as_deref() != Some(&pane.id));
             tab.zoomed_pane = on.then(|| pane.id.clone());
             let mut tx = Tx::new();
@@ -467,10 +643,14 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         }
         "pane.resize" => {
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;
-            let dir = Direction::parse(req(p, "direction")?).ok_or_else(|| invalid("bad direction"))?;
+            let dir =
+                Direction::parse(req(p, "direction")?).ok_or_else(|| invalid("bad direction"))?;
             let amount = p.get("percent").and_then(Value::as_f64).unwrap_or(5.0) as f32 / 100.0;
             let mut c = server.core.lock().unwrap();
-            let mut tab = c.tab(&pane.tab).cloned().ok_or_else(|| not_found("tab", &pane.tab))?;
+            let mut tab = c
+                .tab(&pane.tab)
+                .cloned()
+                .ok_or_else(|| not_found("tab", &pane.tab))?;
             layout::resize(&mut tab.layout, &pane.id, dir, amount);
             let mut tx = Tx::new();
             tx.tab(tab.clone());
@@ -493,7 +673,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let mut x = pane.clone();
             x.title = s(p, "title").map(str::to_string).filter(|s| !s.is_empty());
             let mut tx = Tx::new();
-            tx.event("pane.title_changed", subject_pane(&x), json!({"title": x.title}));
+            tx.event(
+                "pane.title_changed",
+                subject_pane(&x),
+                json!({"title": x.title}),
+            );
             tx.pane(x.clone());
             server.commit(&mut c, tx).map_err(internal)?;
             Ok(json!({"pane": x}))
@@ -525,19 +709,26 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;
             let data = req(p, "data_b64")?;
             use base64::Engine;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| invalid(e.to_string()))?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|e| invalid(e.to_string()))?;
             send(server, ctx, &pane.id, bytes).await?;
             Ok(json!({}))
         }
         "pane.send_keys" => {
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;
-            let keys = p.get("keys").and_then(Value::as_array).ok_or_else(|| invalid("keys must be an array"))?;
+            let keys = p
+                .get("keys")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("keys must be an array"))?;
             let modes = render::input_modes(server, &pane.id);
             // Validate everything before writing a byte (07 §2.6.1).
             let mut bytes = Vec::new();
             for k in keys {
                 let k = k.as_str().unwrap_or_default();
-                let ev = vk_term::keygrammar::parse_key(k).map_err(|e| err(ErrorKind::InvalidKey, e.to_string()).details(json!({"key": k})))?;
+                let ev = vk_term::keygrammar::parse_key(k).map_err(|e| {
+                    err(ErrorKind::InvalidKey, e.to_string()).details(json!({"key": k}))
+                })?;
                 bytes.extend(vk_term::encode::encode_key(&ev, &modes));
             }
             send(server, ctx, &pane.id, bytes).await?;
@@ -552,7 +743,14 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             send(server, ctx, &pane.id, bytes).await?;
             if b(p, "wait").unwrap_or(false) {
                 let timeout = Duration::from_millis(u(p, "timeout_ms").unwrap_or(120_000));
-                wait_idle(server, &pane.id, Duration::from_millis(500), timeout, Some(rev0)).await?;
+                wait_idle(
+                    server,
+                    &pane.id,
+                    Duration::from_millis(500),
+                    timeout,
+                    Some(rev0),
+                )
+                .await?;
                 let text = read_text(server, &pane.id, "recent", 50);
                 return Ok(json!({"output_tail": text}));
             }
@@ -576,7 +774,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let timeout = Duration::from_millis(u(p, "timeout_ms").unwrap_or(30_000));
             let since = u(p, "since_revision");
             let deadline = Instant::now() + timeout;
-            let rt = server.pane_rt(&pane.id).ok_or_else(|| not_found("pane", &pane.id))?;
+            let rt = server
+                .pane_rt(&pane.id)
+                .ok_or_else(|| not_found("pane", &pane.id))?;
             let mut rx = rt.rev_tx.subscribe();
             loop {
                 let rev = rt.rev();
@@ -589,7 +789,8 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() || tokio::time::timeout(left, rx.changed()).await.is_err() {
-                    return Err(err(ErrorKind::Timeout, "pattern not seen").details(json!({"revision": rt.rev()})));
+                    return Err(err(ErrorKind::Timeout, "pattern not seen")
+                        .details(json!({"revision": rt.rev()})));
                 }
             }
         }
@@ -608,7 +809,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             match method {
                 "pane.mark_unread" => {
                     x.marked_unread = b(p, "marked").unwrap_or(!x.marked_unread);
-                    tx.event("pane.marked_unread", subject_pane(&x), json!({"marked": x.marked_unread}));
+                    tx.event(
+                        "pane.marked_unread",
+                        subject_pane(&x),
+                        json!({"marked": x.marked_unread}),
+                    );
                 }
                 "pane.mark_seen" => {
                     x.unread = false;
@@ -630,20 +835,41 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         "pane.can_see_paths" => {
             // Host panes on this machine see every path; remote callers ask the remote server,
             // which can't see the client's files (06 A11.1).
-            let paths = p.get("paths").and_then(Value::as_array).cloned().unwrap_or_default();
-            let visible: Vec<bool> = paths.iter().map(|x| x.as_str().is_some_and(|s| std::path::Path::new(s).exists())).collect();
+            let paths = p
+                .get("paths")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let visible: Vec<bool> = paths
+                .iter()
+                .map(|x| x.as_str().is_some_and(|s| std::path::Path::new(s).exists()))
+                .collect();
             Ok(json!({"visible": visible}))
         }
 
         // ---- notifications ------------------------------------------------------------
         "notification.list" => {
             let unread = b(p, "unread_only").unwrap_or(false);
-            let list: Vec<Notification> = server.with_core(|c| c.notifications.iter().rev().filter(|n| !unread || !n.read).take(u(p, "limit").unwrap_or(50) as usize).cloned().collect());
+            let list: Vec<Notification> = server.with_core(|c| {
+                c.notifications
+                    .iter()
+                    .rev()
+                    .filter(|n| !unread || !n.read)
+                    .take(u(p, "limit").unwrap_or(50) as usize)
+                    .cloned()
+                    .collect()
+            });
             Ok(json!({"notifications": list}))
         }
         "notification.send" => {
             let pane = resolve_pane(server, ctx, s(p, "pane")).ok().map(|x| x.id);
-            let n = server.notify("plugin", pane.as_deref(), req(p, "title")?, s(p, "body").unwrap_or(""), s(p, "urgency").unwrap_or("normal"));
+            let n = server.notify(
+                "plugin",
+                pane.as_deref(),
+                req(p, "title")?,
+                s(p, "body").unwrap_or(""),
+                s(p, "urgency").unwrap_or("normal"),
+            );
             Ok(json!({"notification": n}))
         }
         "notification.read" => {
@@ -664,7 +890,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let after = after_seq(server, p)?;
             let types = types(p);
             let limit = u(p, "limit").unwrap_or(500) as usize;
-            let events = server.with_core(|c| c.store.events_after(after, limit, &types)).map_err(internal)?;
+            let events = server
+                .with_core(|c| c.store.events_after(after, limit, &types))
+                .map_err(internal)?;
             let next = events.last().map(|e| e.seq).unwrap_or(after);
             Ok(json!({"events": events, "next": cursor(server, Some(next))}))
         }
@@ -673,25 +901,43 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let types = types(p);
             let timeout = Duration::from_millis(u(p, "timeout_ms").unwrap_or(60_000));
             let mut rx = server.events.subscribe();
-            if let Some(e) = server.with_core(|c| c.store.events_after(after, 1, &types)).map_err(internal)?.into_iter().next() {
+            if let Some(e) = server
+                .with_core(|c| c.store.events_after(after, 1, &types))
+                .map_err(internal)?
+                .into_iter()
+                .next()
+            {
                 return Ok(json!({"event": e}));
             }
             let deadline = Instant::now() + timeout;
             loop {
                 let left = deadline.saturating_duration_since(Instant::now());
                 match tokio::time::timeout(left, rx.recv()).await {
-                    Ok(Ok(e)) if e.seq > after && (types.is_empty() || types.iter().any(|g| vk_store::glob_match(g, &e.kind))) => return Ok(json!({"event": *e})),
-                    Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                    Ok(Ok(e))
+                        if e.seq > after
+                            && (types.is_empty()
+                                || types.iter().any(|g| vk_store::glob_match(g, &e.kind))) =>
+                    {
+                        return Ok(json!({"event": *e}));
+                    }
+                    Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        continue;
+                    }
                     _ => return Err(err(ErrorKind::Timeout, "no matching event")),
                 }
             }
         }
-        "events.subscribe" => Err(invalid("events.subscribe must be called on a control connection")),
+        "events.subscribe" => Err(invalid(
+            "events.subscribe must be called on a control connection",
+        )),
 
         // ---- search / blobs / layout ----------------------------------------------------
         "search.query" => {
             let q = req(p, "q")?;
-            let pane = s(p, "pane").map(|x| resolve_pane(server, ctx, Some(x))).transpose()?.map(|x| x.id);
+            let pane = s(p, "pane")
+                .map(|x| resolve_pane(server, ctx, Some(x)))
+                .transpose()?
+                .map(|x| x.id);
             let mut hits: Vec<Value> = Vec::new();
             // In-memory scrollback + screen first (newest), then the archive (FTS).
             let panes: Vec<String> = match &pane {
@@ -703,13 +949,22 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 let text = read_text(server, pid, "scrollback", 10_000);
                 for (i, line) in text.lines().enumerate() {
                     if line.to_lowercase().contains(&needle) {
-                        hits.push(json!({"pane": pid, "source": "scrollback", "line": i, "text": line}));
+                        hits.push(
+                            json!({"pane": pid, "source": "scrollback", "line": i, "text": line}),
+                        );
                     }
                 }
             }
-            let fts = server.with_core(|c| c.store.fts_search(q, pane.as_deref(), u(p, "limit").unwrap_or(50) as usize)).map_err(internal)?;
+            let fts = server
+                .with_core(|c| {
+                    c.store
+                        .fts_search(q, pane.as_deref(), u(p, "limit").unwrap_or(50) as usize)
+                })
+                .map_err(internal)?;
             for (pid, line, ts, text) in fts {
-                hits.push(json!({"pane": pid, "source": "archive", "line": line, "ts": ts, "text": text}));
+                hits.push(
+                    json!({"pane": pid, "source": "archive", "line": line, "ts": ts, "text": text}),
+                );
             }
             hits.truncate(u(p, "limit").unwrap_or(200) as usize);
             Ok(json!({"hits": hits}))
@@ -722,13 +977,19 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             });
             Ok(json!({"layout": {"tab": tab, "panes": panes}}))
         }
-        _ => Err(err(ErrorKind::MethodNotFound, format!("unknown method {method}"))),
+        _ => Err(err(
+            ErrorKind::MethodNotFound,
+            format!("unknown method {method}"),
+        )),
     }
 }
 
 fn types(p: &Value) -> Vec<String> {
     match p.get("types") {
-        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
         Some(Value::String(s)) => s.split(',').map(str::to_string).collect(),
         _ => vec![],
     }
@@ -736,17 +997,33 @@ fn types(p: &Value) -> Vec<String> {
 
 /// `after` may be a full cursor (validated against the log identity) or a bare seq.
 pub fn after_seq(server: &Server, p: &Value) -> Result<i64, RpcError> {
-    let Some(a) = p.get("after").or_else(|| p.get("cursor")) else { return Ok(p.get("after_seq").and_then(Value::as_i64).unwrap_or(0)) };
+    let Some(a) = p.get("after").or_else(|| p.get("cursor")) else {
+        return Ok(p.get("after_seq").and_then(Value::as_i64).unwrap_or(0));
+    };
     if let Some(n) = a.as_i64() {
         return Ok(n);
     }
-    let (sess, epoch, earliest) = server.with_core(|c| (c.store.session_uuid.clone(), c.store.log_epoch.clone(), c.store.earliest_seq().unwrap_or(0)));
-    if a.get("session_uuid").and_then(Value::as_str).is_some_and(|x| x != sess) || a.get("log_epoch").and_then(Value::as_str).is_some_and(|x| x != epoch) {
-        return Err(err(ErrorKind::Truncated, "cursor_epoch_mismatch").details(json!({"current": cursor(server, None)})));
+    let (sess, epoch, earliest) = server.with_core(|c| {
+        (
+            c.store.session_uuid.clone(),
+            c.store.log_epoch.clone(),
+            c.store.earliest_seq().unwrap_or(0),
+        )
+    });
+    if a.get("session_uuid")
+        .and_then(Value::as_str)
+        .is_some_and(|x| x != sess)
+        || a.get("log_epoch")
+            .and_then(Value::as_str)
+            .is_some_and(|x| x != epoch)
+    {
+        return Err(err(ErrorKind::Truncated, "cursor_epoch_mismatch")
+            .details(json!({"current": cursor(server, None)})));
     }
     let seq = a.get("seq").and_then(Value::as_i64).unwrap_or(0);
     if seq > 0 && seq + 1 < earliest {
-        return Err(err(ErrorKind::Truncated, "cursor older than retention").details(json!({"earliest_seq": earliest})));
+        return Err(err(ErrorKind::Truncated, "cursor older than retention")
+            .details(json!({"earliest_seq": earliest})));
     }
     Ok(seq)
 }
@@ -761,13 +1038,17 @@ async fn send(server: &Server, ctx: &Ctx, pane: &str, bytes: Vec<u8>) -> Result<
     let _ = ctx;
     let id = server.next_internal_input_id();
     match render::write_and_ack(server, pane, id, bytes).await {
-        vk_proto::holder::InputStatus::ChildExited => Err(err(ErrorKind::Conflict, "pane process exited")),
+        vk_proto::holder::InputStatus::ChildExited => {
+            Err(err(ErrorKind::Conflict, "pane process exited"))
+        }
         _ => Ok(()),
     }
 }
 
 pub fn read_text(server: &Server, pane: &str, source: &str, lines: usize) -> String {
-    let Some(rt) = server.pane_rt(pane) else { return String::new() };
+    let Some(rt) = server.pane_rt(pane) else {
+        return String::new();
+    };
     let sc = rt.screen.lock().unwrap();
     let e = &sc.engine;
     let mut rows: Vec<vk_proto::render::Row> = Vec::new();
@@ -792,7 +1073,11 @@ pub fn read_text(server: &Server, pane: &str, source: &str, lines: usize) -> Str
     let mut out = String::new();
     for (i, r) in rows.iter().enumerate() {
         let t = r.text();
-        out.push_str(if r.wrapped && unwrap { &t } else { t.trim_end() });
+        out.push_str(if r.wrapped && unwrap {
+            &t
+        } else {
+            t.trim_end()
+        });
         if !(r.wrapped && unwrap) && i + 1 < rows.len() {
             out.push('\n');
         }
@@ -801,8 +1086,16 @@ pub fn read_text(server: &Server, pane: &str, source: &str, lines: usize) -> Str
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
-pub async fn wait_idle(server: &Server, pane: &str, quiet: Duration, timeout: Duration, changed_since: Option<u64>) -> Result<u64, RpcError> {
-    let rt = server.pane_rt(pane).ok_or_else(|| not_found("pane", pane))?;
+pub async fn wait_idle(
+    server: &Server,
+    pane: &str,
+    quiet: Duration,
+    timeout: Duration,
+    changed_since: Option<u64>,
+) -> Result<u64, RpcError> {
+    let rt = server
+        .pane_rt(pane)
+        .ok_or_else(|| not_found("pane", pane))?;
     let deadline = Instant::now() + timeout;
     let mut rx = rt.rev_tx.subscribe();
     let mut seen_change = changed_since.is_none();
@@ -830,20 +1123,27 @@ pub fn blob_put(server: &Server, p: &Value) -> R {
     use base64::Engine;
     let _ = server;
     let data = match (s(p, "data_b64"), s(p, "path")) {
-        (Some(d), _) => base64::engine::general_purpose::STANDARD.decode(d).map_err(|e| invalid(e.to_string()))?,
-        (None, Some(path)) => std::fs::read(path).map_err(|e| invalid(format!("read {path}: {e}")))?,
+        (Some(d), _) => base64::engine::general_purpose::STANDARD
+            .decode(d)
+            .map_err(|e| invalid(e.to_string()))?,
+        (None, Some(path)) => {
+            std::fs::read(path).map_err(|e| invalid(format!("read {path}: {e}")))?
+        }
         _ => return Err(invalid("data_b64 or path required")),
     };
     let hash = blake3::hash(&data).to_hex().to_string();
-    let name = s(p, "name").map(|n| n.rsplit('/').next().unwrap_or(n).to_string()).filter(|n| !n.is_empty() && n != "." && n != "..").unwrap_or_else(|| {
-        let ext = match s(p, "mime").unwrap_or("") {
-            "image/png" => "png",
-            "image/jpeg" => "jpg",
-            "image/gif" => "gif",
-            _ => "bin",
-        };
-        format!("clipboard-{}.{ext}", vk_store::now_ms())
-    });
+    let name = s(p, "name")
+        .map(|n| n.rsplit('/').next().unwrap_or(n).to_string())
+        .filter(|n| !n.is_empty() && n != "." && n != "..")
+        .unwrap_or_else(|| {
+            let ext = match s(p, "mime").unwrap_or("") {
+                "image/png" => "png",
+                "image/jpeg" => "jpg",
+                "image/gif" => "gif",
+                _ => "bin",
+            };
+            format!("clipboard-{}.{ext}", vk_store::now_ms())
+        });
     let dir = crate::paths::Paths::inbox().join(&hash[..12]);
     write_private(&dir, &name, &data).map_err(internal)?;
     let path = dir.join(&name);
@@ -861,7 +1161,12 @@ fn write_private(dir: &std::path::Path, name: &str, data: &[u8]) -> std::io::Res
         return Ok(()); // same content-addressed file already present
     }
     let tmp = dir.join(format!(".{name}.tmp"));
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
     std::io::Write::write_all(&mut f, data)?;
     std::fs::rename(tmp, path)
 }

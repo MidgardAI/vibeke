@@ -35,7 +35,10 @@ pub struct Archive {
 
 impl Archive {
     pub fn new(root: &Path) -> Self {
-        Archive { root: root.to_path_buf(), open: HashMap::new() }
+        Archive {
+            root: root.to_path_buf(),
+            open: HashMap::new(),
+        }
     }
 
     fn pane_dir(&self, pane: &str) -> PathBuf {
@@ -55,7 +58,11 @@ impl Archive {
                 }
                 std::fs::create_dir_all(&dir)?;
                 let path = dir.join(format!("{:016}.zst", rows[0].n));
-                self.open.entry(pane.to_string()).or_insert(PaneSeg { path, written: 0, buf: Vec::new() })
+                self.open.entry(pane.to_string()).or_insert(PaneSeg {
+                    path,
+                    written: 0,
+                    buf: Vec::new(),
+                })
             }
         };
         for r in rows {
@@ -91,13 +98,20 @@ impl Archive {
     pub fn last_line(&mut self, pane: &str) -> Result<Option<u64>> {
         self.flush()?;
         let segs = self.segments(pane);
-        let Some(last) = segs.last() else { return Ok(None) };
+        let Some(last) = segs.last() else {
+            return Ok(None);
+        };
         Ok(read_seg(last)?.last().map(|r| r.n))
     }
 
     fn segments(&self, pane: &str) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = std::fs::read_dir(self.pane_dir(pane))
-            .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "zst")).collect())
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|x| x == "zst"))
+                    .collect()
+            })
             .unwrap_or_default();
         v.sort();
         v
@@ -122,7 +136,10 @@ impl Archive {
     /// Delete the oldest segments until the pane's archive is under `max_bytes` (compressed).
     pub fn enforce_retention(&mut self, pane: &str, max_bytes: u64) -> Result<()> {
         let segs = self.segments(pane);
-        let sizes: Vec<u64> = segs.iter().map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).collect();
+        let sizes: Vec<u64> = segs
+            .iter()
+            .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+            .collect();
         let mut total: u64 = sizes.iter().sum();
         for (p, s) in segs.iter().zip(sizes) {
             if total <= max_bytes || self.open.get(pane).is_some_and(|o| &o.path == p) {
@@ -136,7 +153,10 @@ impl Archive {
 }
 
 fn seg_start(p: &Path) -> u64 {
-    p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse().ok()).unwrap_or(0)
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 fn flush_seg(s: &mut PaneSeg) -> Result<()> {
@@ -144,7 +164,10 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
         return Ok(());
     }
     let frame = zstd::encode_all(&s.buf[..], 3)?;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&s.path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&s.path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -158,7 +181,11 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
 fn read_seg(p: &Path) -> Result<Vec<ArchivedRow>> {
     let raw = std::fs::read(p)?;
     let text = zstd::decode_all(&raw[..])?;
-    Ok(text.split(|&b| b == b'\n').filter(|l| !l.is_empty()).filter_map(|l| serde_json::from_slice(l).ok()).collect())
+    Ok(text
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_slice(l).ok())
+        .collect())
 }
 
 #[cfg(test)]
@@ -170,8 +197,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut a = Archive::new(d.path());
         for chunk in 0..30u64 {
-            let rows: Vec<ArchivedRow> =
-                (0..1000).map(|i| ArchivedRow { n: chunk * 1000 + i, t: format!("line {} {}", chunk * 1000 + i, "x".repeat(40)), w: false }).collect();
+            let rows: Vec<ArchivedRow> = (0..1000)
+                .map(|i| ArchivedRow {
+                    n: chunk * 1000 + i,
+                    t: format!("line {} {}", chunk * 1000 + i, "x".repeat(40)),
+                    w: false,
+                })
+                .collect();
             a.append("p1", &rows).unwrap();
             a.flush().unwrap();
         }

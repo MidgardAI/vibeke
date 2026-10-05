@@ -71,7 +71,12 @@ impl Tx {
         self
     }
     pub fn interaction(&mut self, i: Interaction) -> &mut Self {
-        if i.status == InteractionStatus::Open || matches!(i.delivery, DeliveryState::Delivering | DeliveryState::DecisionRecorded) {
+        if i.status == InteractionStatus::Open
+            || matches!(
+                i.delivery,
+                DeliveryState::Delivering | DeliveryState::DecisionRecorded
+            )
+        {
             self.m.put("interaction", &i.id, Some(&i.handle), &i);
         } else {
             self.m.close("interaction", &i.id, Some(&i.handle), &i);
@@ -137,14 +142,26 @@ impl Core {
         model.tasks = store.load("task")?;
         model.workspaces.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
-        let counters = store.kv_get("server", "counters")?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        Ok(Core { store, model, counters, notifications: Vec::new() })
+        let counters = store
+            .kv_get("server", "counters")?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        Ok(Core {
+            store,
+            model,
+            counters,
+            notifications: Vec::new(),
+        })
     }
 
     /// Persist then apply. Returns the committed events.
     pub fn commit(&mut self, mut tx: Tx) -> Result<Vec<Event>> {
         if tx.counters {
-            tx.m.kv("server", "counters", Some(serde_json::to_string(&self.counters)?));
+            tx.m.kv(
+                "server",
+                "counters",
+                Some(serde_json::to_string(&self.counters)?),
+            );
         }
         let events = self.store.commit(std::mem::take(&mut tx.m))?;
         for w in tx.workspaces {
@@ -164,7 +181,12 @@ impl Core {
             }
         }
         for i in tx.interactions {
-            if i.status == InteractionStatus::Open || matches!(i.delivery, DeliveryState::Delivering | DeliveryState::DecisionRecorded) {
+            if i.status == InteractionStatus::Open
+                || matches!(
+                    i.delivery,
+                    DeliveryState::Delivering | DeliveryState::DecisionRecorded
+                )
+            {
                 upsert(&mut self.model.interactions, i, |a, b| a.id == b.id);
             } else {
                 self.model.interactions.retain(|x| x.id != i.id);
@@ -185,7 +207,9 @@ impl Core {
                 _ => {}
             }
         }
-        self.model.workspaces.sort_by(|a, b| a.order.total_cmp(&b.order));
+        self.model
+            .workspaces
+            .sort_by(|a, b| a.order.total_cmp(&b.order));
         self.model.tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
         Ok(events)
     }
@@ -193,28 +217,50 @@ impl Core {
     // ---- lookups ------------------------------------------------------------------------
 
     pub fn ws(&self, id: &str) -> Option<&Workspace> {
-        self.model.workspaces.iter().find(|w| w.id == id || w.handle == id)
+        self.model
+            .workspaces
+            .iter()
+            .find(|w| w.id == id || w.handle == id)
     }
     pub fn tab(&self, id: &str) -> Option<&Tab> {
-        self.model.tabs.iter().find(|t| t.id == id || t.handle == id)
+        self.model
+            .tabs
+            .iter()
+            .find(|t| t.id == id || t.handle == id)
     }
     pub fn pane(&self, id: &str) -> Option<&Pane> {
-        self.model.panes.iter().find(|p| p.id == id || p.handle == id)
+        self.model
+            .panes
+            .iter()
+            .find(|p| p.id == id || p.handle == id)
     }
     pub fn run(&self, id: &str) -> Option<&AgentRun> {
-        self.model.runs.iter().find(|r| r.id == id || r.handle == id || r.name.as_deref() == Some(id))
+        self.model
+            .runs
+            .iter()
+            .find(|r| r.id == id || r.handle == id || r.name.as_deref() == Some(id))
     }
     pub fn run_for_pane(&self, pane: &str) -> Option<&AgentRun> {
         self.model.runs.iter().find(|r| r.pane == pane)
     }
     pub fn interaction(&self, id: &str) -> Option<&Interaction> {
-        self.model.interactions.iter().find(|i| i.id == id || i.handle == id)
+        self.model
+            .interactions
+            .iter()
+            .find(|i| i.id == id || i.handle == id)
     }
     pub fn task(&self, id: &str) -> Option<&Task> {
-        self.model.tasks.iter().find(|t| t.id == id || t.handle == id)
+        self.model
+            .tasks
+            .iter()
+            .find(|t| t.id == id || t.handle == id)
     }
     pub fn tabs_of(&self, ws: &str) -> Vec<&Tab> {
-        self.model.tabs.iter().filter(|t| t.workspace == ws).collect()
+        self.model
+            .tabs
+            .iter()
+            .filter(|t| t.workspace == ws)
+            .collect()
     }
     pub fn panes_of_tab(&self, tab: &str) -> Vec<&Pane> {
         self.model.panes.iter().filter(|p| p.tab == tab).collect()
@@ -248,7 +294,14 @@ impl Core {
         format!("k{}", self.counters.task)
     }
 
-    pub fn notify(&mut self, kind: &str, pane: Option<&str>, title: &str, body: &str, urgency: &str) -> Notification {
+    pub fn notify(
+        &mut self,
+        kind: &str,
+        pane: Option<&str>,
+        title: &str,
+        body: &str,
+        urgency: &str,
+    ) -> Notification {
         self.counters.notification += 1;
         let n = Notification {
             id: format!("n{}", self.counters.notification),

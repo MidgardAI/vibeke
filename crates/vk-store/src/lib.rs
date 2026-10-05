@@ -16,7 +16,10 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 const MIGRATIONS: &[&str] = &[
@@ -77,13 +80,45 @@ pub struct PendingEvent {
 }
 
 enum Write {
-    Put { kind: &'static str, id: String, handle: Option<String>, json: String, closed: bool },
-    Delete { kind: &'static str, id: String },
-    Holder { pane: String, socket: String, key: Vec<u8>, epoch: u64, holder_pid: Option<u32>, child_pid: Option<u32> },
-    HolderDelete { pane: String },
-    Snapshot { pane: String, offset: u64, engine: String, version: String, blob: Vec<u8> },
-    Kv { scope: String, key: String, value: Option<String> },
-    Read { user: String, pane: String, rev: u64 },
+    Put {
+        kind: &'static str,
+        id: String,
+        handle: Option<String>,
+        json: String,
+        closed: bool,
+    },
+    Delete {
+        kind: &'static str,
+        id: String,
+    },
+    Holder {
+        pane: String,
+        socket: String,
+        key: Vec<u8>,
+        epoch: u64,
+        holder_pid: Option<u32>,
+        child_pid: Option<u32>,
+    },
+    HolderDelete {
+        pane: String,
+    },
+    Snapshot {
+        pane: String,
+        offset: u64,
+        engine: String,
+        version: String,
+        blob: Vec<u8>,
+    },
+    Kv {
+        scope: String,
+        key: String,
+        value: Option<String>,
+    },
+    Read {
+        user: String,
+        pane: String,
+        rev: u64,
+    },
 }
 
 /// A set of state writes plus the events describing them, committed atomically.
@@ -100,39 +135,102 @@ impl Mutation {
     pub fn is_empty(&self) -> bool {
         self.writes.is_empty() && self.events.is_empty()
     }
-    pub fn put<T: Serialize>(&mut self, kind: &'static str, id: &str, handle: Option<&str>, value: &T) -> &mut Self {
+    pub fn put<T: Serialize>(
+        &mut self,
+        kind: &'static str,
+        id: &str,
+        handle: Option<&str>,
+        value: &T,
+    ) -> &mut Self {
         let json = serde_json::to_string(value).expect("entity serializes");
-        self.writes.push(Write::Put { kind, id: id.into(), handle: handle.map(Into::into), json, closed: false });
+        self.writes.push(Write::Put {
+            kind,
+            id: id.into(),
+            handle: handle.map(Into::into),
+            json,
+            closed: false,
+        });
         self
     }
     /// Keep the row but mark it closed (history; excluded from `load`).
-    pub fn close<T: Serialize>(&mut self, kind: &'static str, id: &str, handle: Option<&str>, value: &T) -> &mut Self {
+    pub fn close<T: Serialize>(
+        &mut self,
+        kind: &'static str,
+        id: &str,
+        handle: Option<&str>,
+        value: &T,
+    ) -> &mut Self {
         let json = serde_json::to_string(value).expect("entity serializes");
-        self.writes.push(Write::Put { kind, id: id.into(), handle: handle.map(Into::into), json, closed: true });
+        self.writes.push(Write::Put {
+            kind,
+            id: id.into(),
+            handle: handle.map(Into::into),
+            json,
+            closed: true,
+        });
         self
     }
     pub fn delete(&mut self, kind: &'static str, id: &str) -> &mut Self {
-        self.writes.push(Write::Delete { kind, id: id.into() });
+        self.writes.push(Write::Delete {
+            kind,
+            id: id.into(),
+        });
         self
     }
-    pub fn holder(&mut self, pane: &str, socket: &str, key: &[u8], epoch: u64, holder_pid: Option<u32>, child_pid: Option<u32>) -> &mut Self {
-        self.writes.push(Write::Holder { pane: pane.into(), socket: socket.into(), key: key.to_vec(), epoch, holder_pid, child_pid });
+    pub fn holder(
+        &mut self,
+        pane: &str,
+        socket: &str,
+        key: &[u8],
+        epoch: u64,
+        holder_pid: Option<u32>,
+        child_pid: Option<u32>,
+    ) -> &mut Self {
+        self.writes.push(Write::Holder {
+            pane: pane.into(),
+            socket: socket.into(),
+            key: key.to_vec(),
+            epoch,
+            holder_pid,
+            child_pid,
+        });
         self
     }
     pub fn holder_delete(&mut self, pane: &str) -> &mut Self {
         self.writes.push(Write::HolderDelete { pane: pane.into() });
         self
     }
-    pub fn snapshot(&mut self, pane: &str, offset: u64, engine: &str, version: &str, blob: Vec<u8>) -> &mut Self {
-        self.writes.push(Write::Snapshot { pane: pane.into(), offset, engine: engine.into(), version: version.into(), blob });
+    pub fn snapshot(
+        &mut self,
+        pane: &str,
+        offset: u64,
+        engine: &str,
+        version: &str,
+        blob: Vec<u8>,
+    ) -> &mut Self {
+        self.writes.push(Write::Snapshot {
+            pane: pane.into(),
+            offset,
+            engine: engine.into(),
+            version: version.into(),
+            blob,
+        });
         self
     }
     pub fn kv(&mut self, scope: &str, key: &str, value: Option<String>) -> &mut Self {
-        self.writes.push(Write::Kv { scope: scope.into(), key: key.into(), value });
+        self.writes.push(Write::Kv {
+            scope: scope.into(),
+            key: key.into(),
+            value,
+        });
         self
     }
     pub fn read_mark(&mut self, user: &str, pane: &str, rev: u64) -> &mut Self {
-        self.writes.push(Write::Read { user: user.into(), pane: pane.into(), rev });
+        self.writes.push(Write::Read {
+            user: user.into(),
+            pane: pane.into(),
+            rev,
+        });
         self
     }
     pub fn event(&mut self, kind: &str, subject: Value, data: Value) -> &mut Self {
@@ -141,13 +239,21 @@ impl Mutation {
     pub fn event_by(&mut self, kind: &str, subject: Value, actor: Value, data: Value) -> &mut Self {
         let tier = if kind.starts_with("interaction.")
             || kind.starts_with("policy.")
-            || matches!(kind, "agent.started" | "agent.exited" | "task.status_changed" | "task.archived")
-        {
+            || matches!(
+                kind,
+                "agent.started" | "agent.exited" | "task.status_changed" | "task.archived"
+            ) {
             "history"
         } else {
             "sync"
         };
-        self.events.push(PendingEvent { kind: kind.into(), tier, subject, actor, data });
+        self.events.push(PendingEvent {
+            kind: kind.into(),
+            tier,
+            subject,
+            actor,
+            data,
+        });
         self
     }
 }
@@ -196,14 +302,26 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "OFF")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER)")?;
-        let have: i64 = conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
+        let have: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )?;
         for (i, m) in MIGRATIONS.iter().enumerate().skip(have as usize) {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(m)?;
-            tx.execute("INSERT INTO schema_migrations VALUES (?1, ?2)", params![i as i64 + 1, now_ms()])?;
+            tx.execute(
+                "INSERT INTO schema_migrations VALUES (?1, ?2)",
+                params![i as i64 + 1, now_ms()],
+            )?;
             tx.commit()?;
         }
-        let mut s = Store { conn, machine_uuid: String::new(), session_uuid: String::new(), log_epoch: String::new() };
+        let mut s = Store {
+            conn,
+            machine_uuid: String::new(),
+            session_uuid: String::new(),
+            log_epoch: String::new(),
+        };
         s.session_uuid = s.meta_or_init("session_uuid", || ulid::Ulid::new().to_string())?;
         s.log_epoch = s.meta_or_init("log_epoch", || format!("{:016x}", rand::random::<u64>()))?;
         s.machine_uuid = machine_uuid(dir)?;
@@ -211,20 +329,33 @@ impl Store {
     }
 
     fn meta_or_init(&self, key: &str, f: impl FnOnce() -> String) -> Result<String> {
-        if let Some(v) = self.conn.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).optional()? {
+        if let Some(v) = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
+            .optional()?
+        {
             return Ok(v);
         }
         let v = f();
-        self.conn.execute("INSERT INTO meta (key, value) VALUES (?1, ?2)", params![key, v])?;
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+            params![key, v],
+        )?;
         Ok(v)
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
-        Ok(self.conn.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).optional()?)
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
+            .optional()?)
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.execute("INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2", params![key, value])?;
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+            params![key, value],
+        )?;
         Ok(())
     }
 
@@ -234,7 +365,13 @@ impl Store {
         let now = now_ms();
         for w in m.writes {
             match w {
-                Write::Put { kind, id, handle, json, closed } => {
+                Write::Put {
+                    kind,
+                    id,
+                    handle,
+                    json,
+                    closed,
+                } => {
                     tx.execute(
                         "INSERT INTO entities (kind, id, handle, json, closed, updated_at) VALUES (?1,?2,?3,?4,?5,?6)
                          ON CONFLICT(kind, id) DO UPDATE SET handle=?3, json=?4, closed=?5, updated_at=?6",
@@ -242,9 +379,19 @@ impl Store {
                     )?;
                 }
                 Write::Delete { kind, id } => {
-                    tx.execute("DELETE FROM entities WHERE kind=?1 AND id=?2", params![kind, id])?;
+                    tx.execute(
+                        "DELETE FROM entities WHERE kind=?1 AND id=?2",
+                        params![kind, id],
+                    )?;
                 }
-                Write::Holder { pane, socket, key, epoch, holder_pid, child_pid } => {
+                Write::Holder {
+                    pane,
+                    socket,
+                    key,
+                    epoch,
+                    holder_pid,
+                    child_pid,
+                } => {
                     tx.execute(
                         "INSERT INTO holders (pane_id, socket, key, epoch, holder_pid, child_pid, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
                          ON CONFLICT(pane_id) DO UPDATE SET socket=?2, key=?3, epoch=?4, holder_pid=?5, child_pid=?6, updated_at=?7",
@@ -255,7 +402,13 @@ impl Store {
                     tx.execute("DELETE FROM holders WHERE pane_id=?1", [pane.as_str()])?;
                     tx.execute("DELETE FROM vt_snapshots WHERE pane_id=?1", [pane.as_str()])?;
                 }
-                Write::Snapshot { pane, offset, engine, version, blob } => {
+                Write::Snapshot {
+                    pane,
+                    offset,
+                    engine,
+                    version,
+                    blob,
+                } => {
                     let blob = zstd::encode_all(&blob[..], 3)?;
                     tx.execute(
                         "INSERT INTO vt_snapshots (pane_id, holder_offset, engine, engine_version, blob, taken_at) VALUES (?1,?2,?3,?4,?5,?6)
@@ -271,7 +424,10 @@ impl Store {
                         )?;
                     }
                     None => {
-                        tx.execute("DELETE FROM kv WHERE scope=?1 AND key=?2", params![scope, key])?;
+                        tx.execute(
+                            "DELETE FROM kv WHERE scope=?1 AND key=?2",
+                            params![scope, key],
+                        )?;
                     }
                 },
                 Write::Read { user, pane, rev } => {
@@ -290,14 +446,25 @@ impl Store {
                 params![now, e.kind, e.tier, e.subject.to_string(), e.actor.to_string(), e.data.to_string()],
             )?;
             let seq = tx.last_insert_rowid();
-            out.push(Event { seq, ts: now, v: 1, tier: e.tier.into(), kind: e.kind, subject: e.subject, actor: e.actor, data: e.data });
+            out.push(Event {
+                seq,
+                ts: now,
+                v: 1,
+                tier: e.tier.into(),
+                kind: e.kind,
+                subject: e.subject,
+                actor: e.actor,
+                data: e.data,
+            });
         }
         tx.commit()?;
         Ok(out)
     }
 
     pub fn load<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
-        let mut st = self.conn.prepare("SELECT json FROM entities WHERE kind=?1 AND closed=0 ORDER BY rowid")?;
+        let mut st = self
+            .conn
+            .prepare("SELECT json FROM entities WHERE kind=?1 AND closed=0 ORDER BY rowid")?;
         let rows = st.query_map([kind], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for r in rows {
@@ -307,7 +474,14 @@ impl Store {
     }
 
     pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
-        let j: Option<String> = self.conn.query_row("SELECT json FROM entities WHERE kind=?1 AND id=?2", params![kind, id], |r| r.get(0)).optional()?;
+        let j: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT json FROM entities WHERE kind=?1 AND id=?2",
+                params![kind, id],
+                |r| r.get(0),
+            )
+            .optional()?;
         Ok(match j {
             Some(j) => Some(serde_json::from_str(&j)?),
             None => None,
@@ -326,7 +500,9 @@ impl Store {
     }
 
     pub fn holders(&self) -> Result<Vec<HolderRecord>> {
-        let mut st = self.conn.prepare("SELECT pane_id, socket, key, epoch, holder_pid, child_pid FROM holders")?;
+        let mut st = self
+            .conn
+            .prepare("SELECT pane_id, socket, key, epoch, holder_pid, child_pid FROM holders")?;
         let rows = st.query_map([], |r| {
             Ok(HolderRecord {
                 pane: r.get(0)?,
@@ -348,31 +524,56 @@ impl Store {
             })
             .optional()?;
         Ok(match r {
-            Some((offset, engine, version, blob)) => Some(SnapshotRecord { offset, engine, version, blob: zstd::decode_all(&blob[..])? }),
+            Some((offset, engine, version, blob)) => Some(SnapshotRecord {
+                offset,
+                engine,
+                version,
+                blob: zstd::decode_all(&blob[..])?,
+            }),
             None => None,
         })
     }
 
     pub fn kv_get(&self, scope: &str, key: &str) -> Result<Option<String>> {
-        Ok(self.conn.query_row("SELECT value FROM kv WHERE scope=?1 AND key=?2", params![scope, key], |r| r.get(0)).optional()?)
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM kv WHERE scope=?1 AND key=?2",
+                params![scope, key],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     pub fn reads(&self, user: &str) -> Result<Vec<(String, u64)>> {
-        let mut st = self.conn.prepare("SELECT pane_id, seen_rev FROM pane_reads WHERE user=?1")?;
-        let rows = st.query_map([user], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+        let mut st = self
+            .conn
+            .prepare("SELECT pane_id, seen_rev FROM pane_reads WHERE user=?1")?;
+        let rows = st.query_map([user], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     pub fn last_seq(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?)
     }
 
     pub fn earliest_seq(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COALESCE(MIN(seq), 0) FROM events", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MIN(seq), 0) FROM events", [], |r| r.get(0))?)
     }
 
     pub fn cursor(&self, seq: i64) -> Cursor {
-        Cursor { machine_uuid: self.machine_uuid.clone(), session_uuid: self.session_uuid.clone(), log_epoch: self.log_epoch.clone(), seq }
+        Cursor {
+            machine_uuid: self.machine_uuid.clone(),
+            session_uuid: self.session_uuid.clone(),
+            log_epoch: self.log_epoch.clone(),
+            seq,
+        }
     }
 
     /// Events with seq > `after`, oldest first, optionally filtered by type globs.
@@ -410,7 +611,10 @@ impl Store {
         let now = now_ms();
         let n = self.conn.execute(
             "DELETE FROM events WHERE (tier='sync' AND ts < ?1) OR (tier='history' AND ts < ?2)",
-            params![now - sync_days * 86_400_000, now - history_days * 86_400_000],
+            params![
+                now - sync_days * 86_400_000,
+                now - history_days * 86_400_000
+            ],
         )?;
         Ok(n)
     }
@@ -424,7 +628,9 @@ impl Store {
     pub fn fts_insert(&self, rows: &[(String, u64, i64, String)]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
-            let mut st = tx.prepare("INSERT INTO scrollback_fts (pane_id, line_no, ts, text) VALUES (?1,?2,?3,?4)")?;
+            let mut st = tx.prepare(
+                "INSERT INTO scrollback_fts (pane_id, line_no, ts, text) VALUES (?1,?2,?3,?4)",
+            )?;
             for (p, l, ts, t) in rows {
                 st.execute(params![p, *l as i64, ts, t])?;
             }
@@ -434,7 +640,12 @@ impl Store {
     }
 
     /// Full-text search over archived scrollback. Returns (pane, line, ts, text).
-    pub fn fts_search(&self, q: &str, pane: Option<&str>, limit: usize) -> Result<Vec<(String, u64, i64, String)>> {
+    pub fn fts_search(
+        &self,
+        q: &str,
+        pane: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64, i64, String)>> {
         let query = fts_quote(q);
         let sql = if pane.is_some() {
             "SELECT pane_id, line_no, ts, text FROM scrollback_fts WHERE scrollback_fts MATCH ?1 AND pane_id = ?3 ORDER BY rowid DESC LIMIT ?2"
@@ -442,17 +653,31 @@ impl Store {
             "SELECT pane_id, line_no, ts, text FROM scrollback_fts WHERE scrollback_fts MATCH ?1 ORDER BY rowid DESC LIMIT ?2"
         };
         let mut st = self.conn.prepare(sql)?;
-        let map = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)?, r.get::<_, String>(3)?));
+        let map = |r: &rusqlite::Row| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)? as u64,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        };
         let rows: Vec<_> = match pane {
-            Some(p) => st.query_map(params![query, limit as i64, p], map)?.collect::<Result<_, _>>()?,
-            None => st.query_map(params![query, limit as i64], map)?.collect::<Result<_, _>>()?,
+            Some(p) => st
+                .query_map(params![query, limit as i64, p], map)?
+                .collect::<Result<_, _>>()?,
+            None => st
+                .query_map(params![query, limit as i64], map)?
+                .collect::<Result<_, _>>()?,
         };
         Ok(rows)
     }
 }
 
 fn fts_quote(q: &str) -> String {
-    q.split_whitespace().map(|w| format!("\"{}\"", w.replace('"', "\"\""))).collect::<Vec<_>>().join(" ")
+    q.split_whitespace()
+        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn glob_match(glob: &str, s: &str) -> bool {
@@ -469,7 +694,9 @@ pub fn glob_match(glob: &str, s: &str) -> bool {
 /// Machine identity, generated once per machine install (02 §2.3), stored next to the
 /// session directories.
 fn machine_uuid(dir: Option<&Path>) -> Result<String> {
-    let Some(dir) = dir.and_then(|d| d.parent()) else { return Ok(ulid::Ulid::new().to_string()) };
+    let Some(dir) = dir.and_then(|d| d.parent()) else {
+        return Ok(ulid::Ulid::new().to_string());
+    };
     let p = dir.join("machine-uuid");
     if let Ok(s) = std::fs::read_to_string(&p) {
         let s = s.trim().to_string();
@@ -507,8 +734,18 @@ mod tests {
         let panes: Vec<Value> = s.load("pane").unwrap();
         assert_eq!(panes.len(), 2);
         assert_eq!(s.events_after(1, 10, &[]).unwrap().len(), 2);
-        assert_eq!(s.events_after(0, 10, &["interaction.*".into()]).unwrap().len(), 1);
-        assert_eq!(s.events_after(0, 10, &["pane.{created,closed}".into()]).unwrap().len(), 2);
+        assert_eq!(
+            s.events_after(0, 10, &["interaction.*".into()])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            s.events_after(0, 10, &["pane.{created,closed}".into()])
+                .unwrap()
+                .len(),
+            2
+        );
         let uuid = s.session_uuid.clone();
         drop(s);
         let s = Store::open(&d.path().join("s/state.db")).unwrap();
@@ -533,7 +770,11 @@ mod tests {
     #[test]
     fn fts() {
         let s = Store::open_in_memory().unwrap();
-        s.fts_insert(&[("p1".into(), 1, 0, "migration failed: relation users".into()), ("p2".into(), 2, 0, "all good".into())]).unwrap();
+        s.fts_insert(&[
+            ("p1".into(), 1, 0, "migration failed: relation users".into()),
+            ("p2".into(), 2, 0, "all good".into()),
+        ])
+        .unwrap();
         let r = s.fts_search("migration failed", None, 10).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, "p1");

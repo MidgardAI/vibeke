@@ -13,7 +13,9 @@ pub struct Paths {
 }
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 pub fn runtime_root() -> PathBuf {
@@ -25,7 +27,9 @@ pub fn runtime_root() -> PathBuf {
     }
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
-    let tmp = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+    let tmp = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
     tmp.join(format!("vibeke-{uid}"))
 }
 
@@ -48,7 +52,11 @@ pub fn data_root() -> PathBuf {
 
 impl Paths {
     pub fn new(session: &str) -> Self {
-        Paths { session: session.to_string(), runtime: runtime_root().join(session), state: state_root().join(session) }
+        Paths {
+            session: session.to_string(),
+            runtime: runtime_root().join(session),
+            state: state_root().join(session),
+        }
     }
     pub fn socket(&self) -> PathBuf {
         self.runtime.join("vibeke.sock")
@@ -86,7 +94,14 @@ impl Paths {
     /// Create runtime/state dirs with 0700 permissions (09 §3.1).
     pub fn ensure(&self) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
-        for d in [&runtime_root(), &self.runtime, &self.holders(), &state_root(), &self.state, &self.logs()] {
+        for d in [
+            &runtime_root(),
+            &self.runtime,
+            &self.holders(),
+            &state_root(),
+            &self.state,
+            &self.logs(),
+        ] {
             std::fs::create_dir_all(d)?;
             std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
         }

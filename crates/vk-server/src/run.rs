@@ -30,7 +30,8 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
         }
         let _ = std::fs::remove_file(path);
     }
-    let l = std::os::unix::net::UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+    let l = std::os::unix::net::UnixListener::bind(path)
+        .with_context(|| format!("bind {}", path.display()))?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     l.set_nonblocking(true)?;
@@ -58,8 +59,10 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::agents::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("sigterm");
-        let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).expect("sigint");
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("sigterm");
+        let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("sigint");
         tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
         // Graceful stop: holders keep running; snapshot first so the next server replays little.
         for rt in sd.panes.lock().unwrap().values() {
@@ -93,7 +96,12 @@ where
 {
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
-    let mut ctx = Ctx { client_id: format!("c-{}", &ulid()[20..]), kind: "anonymous".into(), pane_scope: None, remote: false };
+    let mut ctx = Ctx {
+        client_id: format!("c-{}", &ulid()[20..]),
+        kind: "anonymous".into(),
+        pane_scope: None,
+        remote: false,
+    };
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     let mut line = String::new();
     // Handle lines until render.attach (which needs the raw stream) or EOF.
@@ -153,15 +161,38 @@ where
     }
     if let Some(req) = attach {
         if ctx.pane_scope.is_some() {
-            let r = Response::err(req.id.unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, "render.attach needs a user client"));
+            let r = Response::err(
+                req.id.unwrap_or(Value::Null),
+                err(
+                    ErrorKind::PermissionDenied,
+                    "render.attach needs a user client",
+                ),
+            );
             wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
             wr.write_all(b"\n").await?;
             return Ok(());
         }
-        let client_id = req.params.get("client_id").and_then(Value::as_str).map(str::to_string).unwrap_or(ctx.client_id.clone());
-        let remote = req.params.get("remote").and_then(Value::as_bool).unwrap_or(false);
-        let max_fps = req.params.get("caps").and_then(|c| c.get("max_fps")).and_then(Value::as_u64).unwrap_or(120) as u32;
-        let r = Response::ok(req.id.unwrap_or(Value::Null), json!({"protocol": vk_proto::render::PROTOCOL, "client_id": client_id}));
+        let client_id = req
+            .params
+            .get("client_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(ctx.client_id.clone());
+        let remote = req
+            .params
+            .get("remote")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let max_fps = req
+            .params
+            .get("caps")
+            .and_then(|c| c.get("max_fps"))
+            .and_then(Value::as_u64)
+            .unwrap_or(120) as u32;
+        let r = Response::ok(
+            req.id.unwrap_or(Value::Null),
+            json!({"protocol": vk_proto::render::PROTOCOL, "client_id": client_id}),
+        );
         wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
         wr.write_all(b"\n").await?;
         wr.flush().await?;
@@ -174,7 +205,11 @@ where
 
 /// `events.subscribe {after?, types?}`: backlog from the outbox, then live events; never silent
 /// loss (overflow closes the subscription with `events.overflow`).
-fn subscribe(server: &Arc<Server>, req: &Request, out: mpsc::UnboundedSender<String>) -> Result<()> {
+fn subscribe(
+    server: &Arc<Server>,
+    req: &Request,
+    out: mpsc::UnboundedSender<String>,
+) -> Result<()> {
     let id = req.id.clone().unwrap_or(Value::Null);
     let p = req.params.clone();
     let after = match api::after_seq(server, &p) {
@@ -185,14 +220,20 @@ fn subscribe(server: &Arc<Server>, req: &Request, out: mpsc::UnboundedSender<Str
         }
     };
     let types: Vec<String> = match p.get("types") {
-        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
         Some(Value::String(s)) => s.split(',').map(str::to_string).collect(),
         _ => vec![],
     };
     let sub_id = format!("s{}", &ulid()[20..]);
     let mut rx = server.events.subscribe();
     let at = api::cursor(server, None);
-    let _ = out.send(serde_json::to_string(&Response::ok(id, json!({"subscription_id": sub_id, "at": at})))?);
+    let _ = out.send(serde_json::to_string(&Response::ok(
+        id,
+        json!({"subscription_id": sub_id, "at": at}),
+    ))?);
     let srv = server.clone();
     tokio::spawn(async move {
         let notify = |e: &vk_store::Event| {
@@ -201,7 +242,9 @@ fn subscribe(server: &Arc<Server>, req: &Request, out: mpsc::UnboundedSender<Str
         let mut last = after;
         if after > 0 || p.get("after").is_some() {
             loop {
-                let batch = srv.with_core(|c| c.store.events_after(last, 500, &types)).unwrap_or_default();
+                let batch = srv
+                    .with_core(|c| c.store.events_after(last, 500, &types))
+                    .unwrap_or_default();
                 if batch.is_empty() {
                     break;
                 }
@@ -222,7 +265,8 @@ fn subscribe(server: &Arc<Server>, req: &Request, out: mpsc::UnboundedSender<Str
                         continue;
                     }
                     last = e.seq;
-                    if !types.is_empty() && !types.iter().any(|g| vk_store::glob_match(g, &e.kind)) {
+                    if !types.is_empty() && !types.iter().any(|g| vk_store::glob_match(g, &e.kind))
+                    {
                         continue;
                     }
                     if out.send(notify(&e)).is_err() {
@@ -270,24 +314,35 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
             };
             match server.with_core(|c| c.task(t).cloned()) {
                 Some(task) => {
-                    let status = task.worktree_path.as_ref().and_then(|w| vk_tasks::branch_status(Path::new(w), task.base_ref.as_deref()).ok());
-                    Ok(json!({"task": task, "branch_status": status.map(|s| json!({"branch": s.branch, "ahead": s.ahead, "behind": s.behind, "dirty_files": s.dirty_files, "upstream": s.upstream, "compared_to": s.compared_to}))}))
+                    let status = task.worktree_path.as_ref().and_then(|w| {
+                        vk_tasks::branch_status(Path::new(w), task.base_ref.as_deref()).ok()
+                    });
+                    Ok(
+                        json!({"task": task, "branch_status": status.map(|s| json!({"branch": s.branch, "ahead": s.ahead, "behind": s.behind, "dirty_files": s.dirty_files, "upstream": s.upstream, "compared_to": s.compared_to}))}),
+                    )
                 }
                 None => Err(not_found("task", t)),
             }
         }
         "task.finish" => task_finish(server, p).await,
         "worktree.list" => {
-            let cwd = s(p, "cwd").or(s(p, "repo")).map(str::to_string).unwrap_or_else(|| ".".into());
+            let cwd = s(p, "cwd")
+                .or(s(p, "repo"))
+                .map(str::to_string)
+                .unwrap_or_else(|| ".".into());
             match vk_tasks::list_worktrees(Path::new(&cwd)) {
-                Ok(w) => Ok(json!({"worktrees": w.iter().map(|e| json!({"path": e.path, "branch": e.branch, "head": e.head, "locked": e.locked, "prunable": e.prunable, "main": e.is_main})).collect::<Vec<_>>()})),
+                Ok(w) => Ok(
+                    json!({"worktrees": w.iter().map(|e| json!({"path": e.path, "branch": e.branch, "head": e.head, "locked": e.locked, "prunable": e.prunable, "main": e.is_main})).collect::<Vec<_>>()}),
+                ),
                 Err(e) => Err(invalid(e.to_string())),
             }
         }
         "worktree.repo_root" => {
             let cwd = s(p, "cwd").unwrap_or(".");
             match vk_tasks::repo_root(Path::new(cwd)) {
-                Some(r) => Ok(json!({"repo_root": r.root, "vcs": "git", "worktree_root": r.worktree_root})),
+                Some(r) => {
+                    Ok(json!({"repo_root": r.root, "vcs": "git", "worktree_root": r.worktree_root}))
+                }
                 None => Err(not_found("repo", cwd)),
             }
         }
@@ -301,11 +356,22 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
             let job_id = format!("j{}", &ulid()[20..]);
             let jid = job_id.clone();
             std::thread::spawn(move || {
-                let job = vk_tasks::start_remove(Path::new(&path), vk_tasks::RemoveOptions { force, protect_dirty: true, ..Default::default() });
+                let job = vk_tasks::start_remove(
+                    Path::new(&path),
+                    vk_tasks::RemoveOptions {
+                        force,
+                        protect_dirty: true,
+                        ..Default::default()
+                    },
+                );
                 let state = job.wait();
                 let mut c = srv.core.lock().unwrap();
                 let mut tx = Tx::new();
-                tx.event("worktree.removed", json!({"path": path}), json!({"job": jid, "state": format!("{state:?}")}));
+                tx.event(
+                    "worktree.removed",
+                    json!({"path": path}),
+                    json!({"job": jid, "state": format!("{state:?}")}),
+                );
                 let _ = srv.commit(&mut c, tx);
             });
             Ok(json!({"job": job_id}))
@@ -316,8 +382,16 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
 
 async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let title = req(p, "title")?.to_string();
-    let repo = s(p, "repo").map(str::to_string).or_else(|| api::resolve_pane(server, ctx, None).ok().and_then(|x| server.pane_cwd(&x.id))).unwrap_or_else(|| ".".into());
-    let info = vk_tasks::repo_root(Path::new(&repo)).ok_or_else(|| invalid(format!("{repo} is not inside a git repository")))?;
+    let repo = s(p, "repo")
+        .map(str::to_string)
+        .or_else(|| {
+            api::resolve_pane(server, ctx, None)
+                .ok()
+                .and_then(|x| server.pane_cwd(&x.id))
+        })
+        .unwrap_or_else(|| ".".into());
+    let info = vk_tasks::repo_root(Path::new(&repo))
+        .ok_or_else(|| invalid(format!("{repo} is not inside a git repository")))?;
     let cfg = task_cfg(p);
     let creq = vk_tasks::CreateRequest {
         repo: info.root.clone(),
@@ -326,16 +400,47 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         branch: s(p, "branch").map(str::to_string),
         slug: s(p, "slug").map(str::to_string),
     };
-    let checkout = tokio::task::spawn_blocking(move || vk_tasks::create_worktree(&creq, &cfg)).await.map_err(internal)?.map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
-    let copy = p.get("copy_files").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_else(vk_tasks::default_copy_files);
+    let checkout = tokio::task::spawn_blocking(move || vk_tasks::create_worktree(&creq, &cfg))
+        .await
+        .map_err(internal)?
+        .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
+    let copy = p
+        .get("copy_files")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_else(vk_tasks::default_copy_files);
     let copied = vk_tasks::copy_files(&info.root, &checkout.path, &copy).unwrap_or_default();
     let id = ulid();
     let handle = server.with_core(|c| c.next_task_handle());
     // Port lease (machine-wide).
-    let leases = vk_tasks::PortLeases::new(&crate::paths::state_root(), vk_tasks::PortPool::parse(s(p, "port_pool").unwrap_or("20000-29999"), 10).map_err(|e| invalid(e.to_string()))?);
-    let lease = leases.lease(&vk_tasks::LeaseRequest { task_id: id.clone(), session: server.opts.session.clone(), owner_pid: None }).ok();
+    let leases = vk_tasks::PortLeases::new(
+        &crate::paths::state_root(),
+        vk_tasks::PortPool::parse(s(p, "port_pool").unwrap_or("20000-29999"), 10)
+            .map_err(|e| invalid(e.to_string()))?,
+    );
+    let lease = leases
+        .lease(&vk_tasks::LeaseRequest {
+            task_id: id.clone(),
+            session: server.opts.session.clone(),
+            owner_pid: None,
+        })
+        .ok();
     let cwd = checkout.path.to_string_lossy().into_owned();
-    let (ws, _tab, pane) = server.create_workspace(&cwd, Some(checkout.slug.clone()), None, p.get("focus").and_then(Value::as_bool).unwrap_or(false).then_some(ctx.client_id.as_str())).map_err(internal)?;
+    let (ws, _tab, pane) = server
+        .create_workspace(
+            &cwd,
+            Some(checkout.slug.clone()),
+            None,
+            p.get("focus")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                .then_some(ctx.client_id.as_str()),
+        )
+        .map_err(internal)?;
     let task = Task {
         id: id.clone(),
         handle,
@@ -360,11 +465,17 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         tx.ws(w);
         tx.task(task.clone());
         tx.counters = true;
-        tx.event("task.created", json!({"task": id, "workspace": ws.id}), json!({"title": title, "branch": checkout.branch, "path": cwd}));
+        tx.event(
+            "task.created",
+            json!({"task": id, "workspace": ws.id}),
+            json!({"title": title, "branch": checkout.branch, "path": cwd}),
+        );
         server.commit(&mut c, tx).map_err(internal)?;
     }
     // Setup script in the background (05 §7).
-    let script = checkout.path.join(s(p, "setup_script").unwrap_or(".vibeke/setup.sh"));
+    let script = checkout
+        .path
+        .join(s(p, "setup_script").unwrap_or(".vibeke/setup.sh"));
     if p.get("setup").and_then(Value::as_bool).unwrap_or(true) && script.exists() {
         let srv = server.clone();
         let task_id = id.clone();
@@ -390,7 +501,11 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             if let Some(mut t) = c.task(&task_id).cloned() {
                 t.setup_status = Some(status.clone());
                 let mut tx = Tx::new();
-                tx.event("task.setup_finished", json!({"task": task_id}), json!({"status": status}));
+                tx.event(
+                    "task.setup_finished",
+                    json!({"task": task_id}),
+                    json!({"status": status}),
+                );
                 tx.task(t);
                 let _ = srv.commit(&mut c, tx);
             }
@@ -403,28 +518,59 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             let harness = a.get("harness").and_then(Value::as_str).unwrap_or("claude");
             let name = a.get("name").and_then(Value::as_str);
             let prompt = a.get("prompt").and_then(Value::as_str);
-            match crate::agents::start_in_pane(server, &pane.id, harness, name, prompt, &[], Some(&id)).await {
+            match crate::agents::start_in_pane(
+                server,
+                &pane.id,
+                harness,
+                name,
+                prompt,
+                &[],
+                Some(&id),
+            )
+            .await
+            {
                 Ok(r) => runs.push(r),
                 Err(e) => return Err(e),
             }
         }
     }
-    let copied: Vec<String> = copied.iter().filter(|c| matches!(c.outcome, vk_tasks::CopyOutcome::Copied)).map(|c| c.rel.clone()).collect();
-    Ok(json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings}))
+    let copied: Vec<String> = copied
+        .iter()
+        .filter(|c| matches!(c.outcome, vk_tasks::CopyOutcome::Copied))
+        .map(|c| c.rel.clone())
+        .collect();
+    Ok(
+        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings}),
+    )
 }
 
 async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
     let t = req(p, "task")?;
-    let task = server.with_core(|c| c.task(t).cloned()).ok_or_else(|| not_found("task", t))?;
-    let remove = p.get("remove_worktree").and_then(Value::as_bool).unwrap_or(false);
+    let task = server
+        .with_core(|c| c.task(t).cloned())
+        .ok_or_else(|| not_found("task", t))?;
+    let remove = p
+        .get("remove_worktree")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
     if let Some(ws) = &task.workspace {
-        let panes: Vec<String> = server.with_core(|c| c.model.panes.iter().filter(|x| &x.workspace == ws).map(|x| x.id.clone()).collect());
+        let panes: Vec<String> = server.with_core(|c| {
+            c.model
+                .panes
+                .iter()
+                .filter(|x| &x.workspace == ws)
+                .map(|x| x.id.clone())
+                .collect()
+        });
         for pid in panes {
             server.close_pane(&pid);
         }
     }
-    let leases = vk_tasks::PortLeases::new(&crate::paths::state_root(), vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?);
+    let leases = vk_tasks::PortLeases::new(
+        &crate::paths::state_root(),
+        vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?,
+    );
     let _ = leases.release(&task.id);
     let mut job = None;
     if remove && let Some(path) = task.worktree_path.clone() {
@@ -432,19 +578,38 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
         let id = task.id.clone();
         job = Some(format!("j{}", &ulid()[20..]));
         std::thread::spawn(move || {
-            let j = vk_tasks::start_remove(Path::new(&path), vk_tasks::RemoveOptions { force, protect_dirty: true, ..Default::default() });
+            let j = vk_tasks::start_remove(
+                Path::new(&path),
+                vk_tasks::RemoveOptions {
+                    force,
+                    protect_dirty: true,
+                    ..Default::default()
+                },
+            );
             let st = j.wait();
             let mut c = srv.core.lock().unwrap();
             let mut tx = Tx::new();
-            tx.event("worktree.removed", json!({"task": id, "path": path}), json!({"state": format!("{st:?}")}));
+            tx.event(
+                "worktree.removed",
+                json!({"task": id, "path": path}),
+                json!({"state": format!("{st:?}")}),
+            );
             let _ = srv.commit(&mut c, tx);
         });
     }
     let mut c = server.core.lock().unwrap();
     let mut t2 = task.clone();
-    t2.status = if p.get("archive").and_then(Value::as_bool).unwrap_or(remove) { "archived".into() } else { "finished".into() };
+    t2.status = if p.get("archive").and_then(Value::as_bool).unwrap_or(remove) {
+        "archived".into()
+    } else {
+        "finished".into()
+    };
     let mut tx = Tx::new();
-    tx.event("task.status_changed", json!({"task": t2.id}), json!({"status": t2.status}));
+    tx.event(
+        "task.status_changed",
+        json!({"task": t2.id}),
+        json!({"status": t2.status}),
+    );
     tx.task(t2.clone());
     server.commit(&mut c, tx).map_err(internal)?;
     Ok(json!({"task": t2, "job": job}))

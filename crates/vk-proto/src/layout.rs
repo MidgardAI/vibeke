@@ -48,31 +48,53 @@ pub fn split(tree: &mut LayoutNode, target: &str, new: &str, dir: Direction, rat
     split_rec(tree, target, new, sdir, new_first, ratio)
 }
 
-fn split_rec(node: &mut LayoutNode, target: &str, new: &str, sdir: SplitDir, new_first: bool, ratio: f32) -> bool {
+fn split_rec(
+    node: &mut LayoutNode,
+    target: &str,
+    new: &str,
+    sdir: SplitDir,
+    new_first: bool,
+    ratio: f32,
+) -> bool {
     match node {
         LayoutNode::Leaf { pane } if pane == target => {
             let old = LayoutNode::Leaf { pane: pane.clone() };
-            let fresh = LayoutNode::Leaf { pane: new.to_string() };
+            let fresh = LayoutNode::Leaf {
+                pane: new.to_string(),
+            };
             // `ratio` is the share of the new pane.
-            let children = if new_first { vec![(fresh, ratio), (old, 1.0 - ratio)] } else { vec![(old, 1.0 - ratio), (fresh, ratio)] };
-            *node = LayoutNode::Split { dir: sdir, children };
+            let children = if new_first {
+                vec![(fresh, ratio), (old, 1.0 - ratio)]
+            } else {
+                vec![(old, 1.0 - ratio), (fresh, ratio)]
+            };
+            *node = LayoutNode::Split {
+                dir: sdir,
+                children,
+            };
             true
         }
         LayoutNode::Leaf { .. } => false,
         LayoutNode::Split { dir, children } => {
             // Same-direction split: insert as a sibling instead of nesting.
             if *dir == sdir
-                && let Some(i) = children.iter().position(|(c, _)| matches!(c, LayoutNode::Leaf { pane } if pane == target))
+                && let Some(i) = children
+                    .iter()
+                    .position(|(c, _)| matches!(c, LayoutNode::Leaf { pane } if pane == target))
             {
                 let share = children[i].1;
                 let new_share = share * ratio;
                 children[i].1 = share - new_share;
-                let leaf = LayoutNode::Leaf { pane: new.to_string() };
+                let leaf = LayoutNode::Leaf {
+                    pane: new.to_string(),
+                };
                 let at = if new_first { i } else { i + 1 };
                 children.insert(at, (leaf, new_share));
                 return true;
             }
-            children.iter_mut().any(|(c, _)| split_rec(c, target, new, sdir, new_first, ratio))
+            children
+                .iter_mut()
+                .any(|(c, _)| split_rec(c, target, new, sdir, new_first, ratio))
         }
     }
 }
@@ -82,13 +104,19 @@ pub fn remove(tree: &LayoutNode, pane: &str) -> Option<LayoutNode> {
     match tree {
         LayoutNode::Leaf { pane: p } => (p != pane).then(|| tree.clone()),
         LayoutNode::Split { dir, children } => {
-            let kept: Vec<(LayoutNode, f32)> = children.iter().filter_map(|(c, r)| remove(c, pane).map(|n| (n, *r))).collect();
+            let kept: Vec<(LayoutNode, f32)> = children
+                .iter()
+                .filter_map(|(c, r)| remove(c, pane).map(|n| (n, *r)))
+                .collect();
             match kept.len() {
                 0 => None,
                 1 => Some(kept.into_iter().next().unwrap().0),
                 _ => {
                     let sum: f32 = kept.iter().map(|(_, r)| r).sum();
-                    Some(LayoutNode::Split { dir: *dir, children: kept.into_iter().map(|(c, r)| (c, r / sum)).collect() })
+                    Some(LayoutNode::Split {
+                        dir: *dir,
+                        children: kept.into_iter().map(|(c, r)| (c, r / sum)).collect(),
+                    })
                 }
             }
         }
@@ -117,13 +145,27 @@ fn rects_rec(node: &LayoutNode, a: Rect, out: &mut Vec<(String, Rect)>) {
             let mut acc = 0f32;
             for (i, (child, r)) in children.iter().enumerate() {
                 acc += r / sum;
-                let end = if i + 1 == children.len() { avail } else { ((acc * avail as f32).round() as u16).min(avail) };
+                let end = if i + 1 == children.len() {
+                    avail
+                } else {
+                    ((acc * avail as f32).round() as u16).min(avail)
+                };
                 let start = pos;
                 let len = end.saturating_sub(start).max(1);
                 let off = start + i as u16; // borders
                 let sub = match dir {
-                    SplitDir::Horizontal => Rect { x: a.x + off, y: a.y, w: len.min(a.w.saturating_sub(off)), h: a.h },
-                    SplitDir::Vertical => Rect { x: a.x, y: a.y + off, w: a.w, h: len.min(a.h.saturating_sub(off)) },
+                    SplitDir::Horizontal => Rect {
+                        x: a.x + off,
+                        y: a.y,
+                        w: len.min(a.w.saturating_sub(off)),
+                        h: a.h,
+                    },
+                    SplitDir::Vertical => Rect {
+                        x: a.x,
+                        y: a.y + off,
+                        w: a.w,
+                        h: len.min(a.h.saturating_sub(off)),
+                    },
                 };
                 rects_rec(child, sub, out);
                 pos = end;
@@ -141,10 +183,22 @@ pub fn neighbor(rects: &[(String, Rect)], from: &str, dir: Direction) -> Option<
             continue;
         }
         let (adjacent, overlap) = match dir {
-            Direction::Left => (r.x + r.w < f.x + 1 && r.x + r.w + 2 >= f.x, ov(r.y, r.h, f.y, f.h)),
-            Direction::Right => (r.x > f.x + f.w.saturating_sub(1) && r.x <= f.x + f.w + 1, ov(r.y, r.h, f.y, f.h)),
-            Direction::Up => (r.y + r.h < f.y + 1 && r.y + r.h + 2 >= f.y, ov(r.x, r.w, f.x, f.w)),
-            Direction::Down => (r.y > f.y + f.h.saturating_sub(1) && r.y <= f.y + f.h + 1, ov(r.x, r.w, f.x, f.w)),
+            Direction::Left => (
+                r.x + r.w < f.x + 1 && r.x + r.w + 2 >= f.x,
+                ov(r.y, r.h, f.y, f.h),
+            ),
+            Direction::Right => (
+                r.x > f.x + f.w.saturating_sub(1) && r.x <= f.x + f.w + 1,
+                ov(r.y, r.h, f.y, f.h),
+            ),
+            Direction::Up => (
+                r.y + r.h < f.y + 1 && r.y + r.h + 2 >= f.y,
+                ov(r.x, r.w, f.x, f.w),
+            ),
+            Direction::Down => (
+                r.y > f.y + f.h.saturating_sub(1) && r.y <= f.y + f.h + 1,
+                ov(r.x, r.w, f.x, f.w),
+            ),
         };
         if adjacent && overlap > 0 && best.as_ref().is_none_or(|(o, _)| overlap > *o) {
             best = Some((overlap, p.clone()));
@@ -168,9 +222,19 @@ pub fn resize(tree: &mut LayoutNode, pane: &str, dir: Direction, delta: f32) -> 
     resize_rec(tree, pane, want, dir, delta)
 }
 
-fn resize_rec(node: &mut LayoutNode, pane: &str, want: SplitDir, dir: Direction, delta: f32) -> bool {
-    let LayoutNode::Split { dir: d, children } = node else { return false };
-    let Some(i) = children.iter().position(|(c, _)| c.contains(pane)) else { return false };
+fn resize_rec(
+    node: &mut LayoutNode,
+    pane: &str,
+    want: SplitDir,
+    dir: Direction,
+    delta: f32,
+) -> bool {
+    let LayoutNode::Split { dir: d, children } = node else {
+        return false;
+    };
+    let Some(i) = children.iter().position(|(c, _)| c.contains(pane)) else {
+        return false;
+    };
     if resize_rec(&mut children[i].0, pane, want, dir, delta) {
         return true;
     }
@@ -212,12 +276,28 @@ mod tests {
         let mut t = leaf("a");
         assert!(split(&mut t, "a", "b", Direction::Right, 0.5));
         assert!(split(&mut t, "b", "c", Direction::Down, 0.5));
-        let rs = rects(&t, Rect { x: 0, y: 0, w: 81, h: 25 });
+        let rs = rects(
+            &t,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 81,
+                h: 25,
+            },
+        );
         assert_eq!(rs.len(), 3);
         let a = rs.iter().find(|(p, _)| p == "a").unwrap().1;
         let b = rs.iter().find(|(p, _)| p == "b").unwrap().1;
         let c = rs.iter().find(|(p, _)| p == "c").unwrap().1;
-        assert_eq!(a, Rect { x: 0, y: 0, w: 40, h: 25 });
+        assert_eq!(
+            a,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 25
+            }
+        );
         assert_eq!(b.x, 41);
         assert_eq!(b.w, 40);
         assert_eq!(b.h + c.h + 1, 25);
@@ -236,7 +316,9 @@ mod tests {
         let mut t = leaf("a");
         split(&mut t, "a", "b", Direction::Right, 0.5);
         split(&mut t, "b", "c", Direction::Right, 0.5);
-        let LayoutNode::Split { children, .. } = &t else { panic!() };
+        let LayoutNode::Split { children, .. } = &t else {
+            panic!()
+        };
         assert_eq!(children.len(), 3);
     }
 }

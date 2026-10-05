@@ -32,9 +32,19 @@ pub struct Screen {
 }
 
 pub enum PaneCmd {
-    Input { id: u64, bytes: Vec<u8>, ack: Option<oneshot::Sender<InputStatus>> },
-    Resize { cols: u16, rows: u16 },
-    Signal { sig: Sig, target: SigTarget },
+    Input {
+        id: u64,
+        bytes: Vec<u8>,
+        ack: Option<oneshot::Sender<InputStatus>>,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    Signal {
+        sig: Sig,
+        target: SigTarget,
+    },
     Status(oneshot::Sender<Option<ProcStatus>>),
     /// Close: SIGHUP the child, then acknowledge its exit.
     Close,
@@ -93,8 +103,16 @@ impl PaneRt {
     pub async fn input(&self, id: u64, bytes: Vec<u8>) -> InputStatus {
         let (tx, rx) = oneshot::channel();
         *self.last_input.lock().unwrap() = Some(Instant::now());
-        self.send(PaneCmd::Input { id, bytes, ack: Some(tx) });
-        tokio::time::timeout(Duration::from_secs(5), rx).await.ok().and_then(|r| r.ok()).unwrap_or(InputStatus::ChildExited)
+        self.send(PaneCmd::Input {
+            id,
+            bytes,
+            ack: Some(tx),
+        });
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or(InputStatus::ChildExited)
     }
 
     pub fn rev(&self) -> u64 {
@@ -119,7 +137,12 @@ pub struct HolderConn {
 }
 
 /// Run a pane until it closes. Recovers from a stored snapshot when not fresh.
-pub async fn run(server: Arc<Server>, rt: Arc<PaneRt>, mut cmd_rx: mpsc::UnboundedReceiver<PaneCmd>, conn: HolderConn) {
+pub async fn run(
+    server: Arc<Server>,
+    rt: Arc<PaneRt>,
+    mut cmd_rx: mpsc::UnboundedReceiver<PaneCmd>,
+    conn: HolderConn,
+) {
     let id = rt.id.clone();
     match run_inner(&server, &rt, &mut cmd_rx, conn).await {
         Ok(reason) => {
@@ -133,18 +156,50 @@ pub async fn run(server: Arc<Server>, rt: Arc<PaneRt>, mut cmd_rx: mpsc::Unbound
     }
 }
 
-async fn run_inner(server: &Arc<Server>, rt: &Arc<PaneRt>, cmd_rx: &mut mpsc::UnboundedReceiver<PaneCmd>, conn: HolderConn) -> Result<String> {
-    let stream = connect_retry(&conn.socket).await.context("connect holder")?;
+async fn run_inner(
+    server: &Arc<Server>,
+    rt: &Arc<PaneRt>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<PaneCmd>,
+    conn: HolderConn,
+) -> Result<String> {
+    let stream = connect_retry(&conn.socket)
+        .await
+        .context("connect holder")?;
     let (rd, wr) = stream.into_split();
     let mut wr = BufWriter::new(wr);
     let mut rd = tokio::io::BufReader::new(rd);
-    asyncio::write_frame(&mut wr, &ToHolder::Hello { proto_min: PROTO_MIN, proto_max: PROTO, server_pid: std::process::id(), server_boot_id: server.boot_id.clone() })
-        .await?;
+    asyncio::write_frame(
+        &mut wr,
+        &ToHolder::Hello {
+            proto_min: PROTO_MIN,
+            proto_max: PROTO,
+            server_pid: std::process::id(),
+            server_boot_id: server.boot_id.clone(),
+        },
+    )
+    .await?;
     wr.flush().await?;
     let hello: FromHolder = asyncio::read_frame(&mut rd).await?;
-    let FromHolder::HelloOk { nonce, epoch: holder_epoch, ring, child_pid, .. } = hello else { bail!("unexpected hello reply: {hello:?}") };
+    let FromHolder::HelloOk {
+        nonce,
+        epoch: holder_epoch,
+        ring,
+        child_pid,
+        ..
+    } = hello
+    else {
+        bail!("unexpected hello reply: {hello:?}")
+    };
     let epoch = conn.epoch.max(holder_epoch) + 1;
-    asyncio::write_frame(&mut wr, &ToHolder::Acquire { epoch, server_pid: std::process::id(), hmac: acquire_hmac(&conn.key, &nonce, epoch) }).await?;
+    asyncio::write_frame(
+        &mut wr,
+        &ToHolder::Acquire {
+            epoch,
+            server_pid: std::process::id(),
+            hmac: acquire_hmac(&conn.key, &nonce, epoch),
+        },
+    )
+    .await?;
     wr.flush().await?;
     match asyncio::read_frame::<_, FromHolder>(&mut rd).await? {
         FromHolder::Acquired { .. } => {}
@@ -157,7 +212,10 @@ async fn run_inner(server: &Arc<Server>, rt: &Arc<PaneRt>, cmd_rx: &mut mpsc::Un
     let mut method = "fresh";
     if !conn.fresh {
         method = "ring_only";
-        let snap = server.with_core(|c| c.store.snapshot_for(&rt.id)).ok().flatten();
+        let snap = server
+            .with_core(|c| c.store.snapshot_for(&rt.id))
+            .ok()
+            .flatten();
         if let Some(s) = snap
             && s.version == vk_term::engine::ENGINE_VERSION
             && s.offset >= ring.start_offset
@@ -177,7 +235,14 @@ async fn run_inner(server: &Arc<Server>, rt: &Arc<PaneRt>, cmd_rx: &mut mpsc::Un
             from = ring.start_offset;
         }
     }
-    asyncio::write_frame(&mut wr, &ToHolder::Attach { epoch, from_offset: from }).await?;
+    asyncio::write_frame(
+        &mut wr,
+        &ToHolder::Attach {
+            epoch,
+            from_offset: from,
+        },
+    )
+    .await?;
     wr.flush().await?;
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<FromHolder>();
@@ -244,7 +309,9 @@ async fn connect_retry(path: &str) -> Result<UnixStream> {
             }
         }
     }
-    Err(last.map(Into::into).unwrap_or_else(|| anyhow::anyhow!("connect failed")))
+    Err(last
+        .map(Into::into)
+        .unwrap_or_else(|| anyhow::anyhow!("connect failed")))
 }
 
 struct PaneLoop {
@@ -272,10 +339,18 @@ impl PaneLoop {
 
     async fn on_frame(&mut self, f: FromHolder) -> Result<Option<String>> {
         match f {
-            FromHolder::Output { offset, bytes, replay, .. } => {
+            FromHolder::Output {
+                offset,
+                bytes,
+                replay,
+                ..
+            } => {
                 self.feed(offset, &bytes, replay).await?;
             }
-            FromHolder::Marker { kind: MarkerKind::Resize { cols, rows, .. }, .. } => {
+            FromHolder::Marker {
+                kind: MarkerKind::Resize { cols, rows, .. },
+                ..
+            } => {
                 let mut sc = self.rt.screen.lock().unwrap();
                 if (sc.engine.cols(), sc.engine.rows()) != (cols, rows) {
                     sc.engine.resize(cols, rows);
@@ -310,11 +385,21 @@ impl PaneLoop {
                     // Answer screen-dependent queries the holder queued while we were away.
                     for q in queued_queries {
                         let mut fx = Vec::new();
-                        self.rt.screen.lock().unwrap().engine.feed(&q.bytes, &mut fx);
+                        self.rt
+                            .screen
+                            .lock()
+                            .unwrap()
+                            .engine
+                            .feed(&q.bytes, &mut fx);
                         for e in fx {
                             if let Effect::Reply(b) = e {
                                 let id = self.server.next_internal_input_id();
-                                self.send(&ToHolder::Input { epoch: self.epoch, input_id: id, bytes: b }).await?;
+                                self.send(&ToHolder::Input {
+                                    epoch: self.epoch,
+                                    input_id: id,
+                                    bytes: b,
+                                })
+                                .await?;
                             }
                         }
                     }
@@ -326,7 +411,9 @@ impl PaneLoop {
                 }
                 let _ = self.send(&ToHolder::StatusQuery).await;
             }
-            FromHolder::InputAck { input_id, status, .. } => {
+            FromHolder::InputAck {
+                input_id, status, ..
+            } => {
                 if let Some(tx) = self.acks.remove(&input_id) {
                     let _ = tx.send(status);
                 }
@@ -342,7 +429,12 @@ impl PaneLoop {
                 self.exited = Some((exit_code, signal));
                 self.server.pane_exited(&self.rt.id, exit_code, signal);
                 self.send(&ToHolder::AckExit { epoch: self.epoch }).await?;
-                return Ok(Some(format!("exited:{}", exit_code.map(|c| c.to_string()).unwrap_or_else(|| format!("sig{}", signal.unwrap_or(0))))));
+                return Ok(Some(format!(
+                    "exited:{}",
+                    exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| format!("sig{}", signal.unwrap_or(0)))
+                )));
             }
             FromHolder::CheckpointWanted { .. } => {
                 self.maybe_snapshot(true).await?;
@@ -381,7 +473,11 @@ impl PaneLoop {
             let from = sc.archived_upto.max(first_in_mem);
             for abs in from..total {
                 if let Some(row) = sc.engine.history_row((abs - first_in_mem) as usize) {
-                    archive.push(ArchivedRow { n: abs, t: row.text().trim_end().to_string(), w: row.wrapped });
+                    archive.push(ArchivedRow {
+                        n: abs,
+                        t: row.text().trim_end().to_string(),
+                        w: row.wrapped,
+                    });
                 }
             }
             sc.archived_upto = sc.archived_upto.max(total);
@@ -401,7 +497,12 @@ impl PaneLoop {
         }
         for b in replies {
             let id = self.server.next_internal_input_id();
-            self.send(&ToHolder::Input { epoch: self.epoch, input_id: id, bytes: b }).await?;
+            self.send(&ToHolder::Input {
+                epoch: self.epoch,
+                input_id: id,
+                bytes: b,
+            })
+            .await?;
         }
         if !replaying {
             self.rt.rev_tx.send_replace(rev);
@@ -415,13 +516,33 @@ impl PaneLoop {
     async fn nudge(&mut self) -> Result<()> {
         let (alt, cols, rows) = {
             let sc = self.rt.screen.lock().unwrap();
-            (sc.engine.modes().alt_screen, sc.engine.cols(), sc.engine.rows())
+            (
+                sc.engine.modes().alt_screen,
+                sc.engine.cols(),
+                sc.engine.rows(),
+            )
         };
-        let agent = self.server.with_core(|c| c.run_for_pane(&self.rt.id).is_some());
+        let agent = self
+            .server
+            .with_core(|c| c.run_for_pane(&self.rt.id).is_some());
         if alt || agent {
-            self.send(&ToHolder::Resize { epoch: self.epoch, cols: cols.saturating_sub(1).max(2), rows, px_w: 0, px_h: 0 }).await?;
+            self.send(&ToHolder::Resize {
+                epoch: self.epoch,
+                cols: cols.saturating_sub(1).max(2),
+                rows,
+                px_w: 0,
+                px_h: 0,
+            })
+            .await?;
             tokio::time::sleep(Duration::from_millis(50)).await;
-            self.send(&ToHolder::Resize { epoch: self.epoch, cols, rows, px_w: 0, px_h: 0 }).await?;
+            self.send(&ToHolder::Resize {
+                epoch: self.epoch,
+                cols,
+                rows,
+                px_w: 0,
+                px_h: 0,
+            })
+            .await?;
         }
         Ok(())
     }
@@ -438,20 +559,49 @@ impl PaneLoop {
                 if let Some(a) = ack {
                     self.acks.insert(id, a);
                 }
-                self.send(&ToHolder::Input { epoch: self.epoch, input_id: id, bytes }).await?;
+                self.send(&ToHolder::Input {
+                    epoch: self.epoch,
+                    input_id: id,
+                    bytes,
+                })
+                .await?;
             }
             PaneCmd::Resize { cols, rows } => {
-                self.send(&ToHolder::Resize { epoch: self.epoch, cols, rows, px_w: 0, px_h: 0 }).await?;
+                self.send(&ToHolder::Resize {
+                    epoch: self.epoch,
+                    cols,
+                    rows,
+                    px_w: 0,
+                    px_h: 0,
+                })
+                .await?;
             }
-            PaneCmd::Signal { sig, target } => self.send(&ToHolder::Signal { epoch: self.epoch, sig, target }).await?,
+            PaneCmd::Signal { sig, target } => {
+                self.send(&ToHolder::Signal {
+                    epoch: self.epoch,
+                    sig,
+                    target,
+                })
+                .await?
+            }
             PaneCmd::Status(tx) => {
                 self.send(&ToHolder::StatusQuery).await?;
                 let _ = tx.send(self.rt.status.lock().unwrap().clone());
             }
             PaneCmd::Close => {
                 self.closing = true;
-                self.send(&ToHolder::Signal { epoch: self.epoch, sig: Sig::Hup, target: SigTarget::Child }).await?;
-                self.send(&ToHolder::Signal { epoch: self.epoch, sig: Sig::Hup, target: SigTarget::FgPgrp }).await?;
+                self.send(&ToHolder::Signal {
+                    epoch: self.epoch,
+                    sig: Sig::Hup,
+                    target: SigTarget::Child,
+                })
+                .await?;
+                self.send(&ToHolder::Signal {
+                    epoch: self.epoch,
+                    sig: Sig::Hup,
+                    target: SigTarget::FgPgrp,
+                })
+                .await?;
                 let pid = self.child_pid;
                 // Escalate if the child ignores SIGHUP.
                 tokio::spawn(async move {
@@ -481,9 +631,15 @@ impl PaneLoop {
         let blob = self.rt.screen.lock().unwrap().engine.snapshot();
         let id = self.rt.id.clone();
         let server = self.server.clone();
-        let ok = tokio::task::spawn_blocking(move || server.store_snapshot(&id, offset, blob)).await.unwrap_or(false);
+        let ok = tokio::task::spawn_blocking(move || server.store_snapshot(&id, offset, blob))
+            .await
+            .unwrap_or(false);
         if ok {
-            self.send(&ToHolder::Checkpoint { epoch: self.epoch, offset }).await?;
+            self.send(&ToHolder::Checkpoint {
+                epoch: self.epoch,
+                offset,
+            })
+            .await?;
         }
         self.last_snapshot = Instant::now();
         self.snapshot_dirty = false;
