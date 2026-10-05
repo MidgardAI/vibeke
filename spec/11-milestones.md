@@ -10,6 +10,10 @@ M0 spikes ─► M1 supervision slice ─► M2 safe yolo + harnesses ─► M3 
 
 No calendar estimates are given: the earlier week numbers were unsupported placeholders. Sizing is tracked per milestone once M0 has produced real measurements. **The previous setup stays installed throughout dogfooding** as the fallback; uninstalling it is not a goal.
 
+## Goal 01 track (current priority)
+
+The first build goal ([milestones](11-milestones.md)) is a remote daily driver over SSH for the maintainer. It covers **M0 + M1 + the remote-machine half of M3** (06 Part A: machines, bootstrap, bridge, multi-machine view, reconnection, clipboard, image paste, dropped-path translation). M2 (safe yolo, extra harnesses) and the preview half of M3 come after it. Milestone numbering is unchanged; only the order of delivery differs.
+
 ## M0 — Spikes (de-risk the hard bets)
 
 | Spike | Question | Output |
