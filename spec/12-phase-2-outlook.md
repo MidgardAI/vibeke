@@ -2,6 +2,8 @@
 
 Phase 1 builds the runtime. This file records what comes next so Phase 1 decisions stay compatible. Nothing here is a Phase 1 requirement **except** the "Phase 1 must provide" column.
 
+[15 — Task outcomes, review and attention](15-task-outcomes-review-and-attention.md) now specifies a proposed desktop/API slice for the attention and evidence capabilities below, including optional tracking of manually launched harnesses. It can follow Goal 01 without waiting for the mobile gateway. Its stronger evidence binding, readiness and acceptance rules extend the groundwork here; the existing M1 interaction list remains a separate, smaller deliverable.
+
 | Phase 2 capability | What it is | Phase 1 must provide |
 |---|---|---|
 | **Vibeke Gateway + mobile/web app** | `vibeke gateway` serves an installable PWA (later native shells) over Tailscale or an end-to-end-encrypted relay (QR key exchange, self-hostable relay, zero-knowledge — vendors' relays are not E2E). | Complete JSON-RPC API; event outbox with cursors; `Interaction` objects with native answer delivery and delivery states; blob store; per-client capability tokens. **May be pulled forward:** a minimal phone decision surface (see attention, answer, peek) by running an existing phone companion against the M5 Herdr-compat subset, before the gateway exists. |

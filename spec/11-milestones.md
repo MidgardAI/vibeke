@@ -14,6 +14,8 @@ No calendar estimates are given: the earlier week numbers were unsupported place
 
 The first build goal ([milestones](11-milestones.md)) is a remote daily driver over SSH for the maintainer. It covers **M0 + M1 + the remote-machine half of M3** (06 Part A: machines, bootstrap, bridge, multi-machine view, reconnection, clipboard, image paste, dropped-path translation). M2 (safe yolo, extra harnesses) and the preview half of M3 come after it. Milestone numbering is unchanged; only the order of delivery differs.
 
+The proposed follow-on product slice is [15 — Task outcomes, review and attention](15-task-outcomes-review-and-attention.md): optional tracking of normally launched CLIs, evidence-backed review, and a ranked decision inbox. Its T1–T4 stages preserve Goal 01's scope; they are not extra prerequisites for the SSH switch-over. The basic M1 inbox remains distinct from the richer task/review inbox.
+
 ## M0 — Spikes (de-risk the hard bets)
 
 | Spike | Question | Output |

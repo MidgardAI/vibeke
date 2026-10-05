@@ -94,6 +94,9 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 `file_change` items carry `{path, op: create|modify|delete|rename, lines_added?, lines_removed?}` — used by the collision tracker (05) and Phase 2 evidence bundles.
 
 **Task** — a unit of work, typically one task workspace.
+
+Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) separates workspace ownership from attached task records, adds versioned intent and historical run bindings, and defines review/acceptance objects. The model below remains the current-goal target until that slice is implemented; a single `task_id` must not be treated as its future historical attribution model.
+
 ```
 { id, handle "k7", title, slug, workspace_id, repo_root, isolation: worktree|jj_workspace|container|none,
   worktree_path?, branch?, base_ref?, port_range?: [start, end], env_file?, setup: {script?, status, log_ref?},

@@ -2,6 +2,8 @@
 
 This section covers the TUI client's user-facing surface: layout chrome, navigation, notifications, interaction cards, the full `config.toml` schema, keybinding syntax and defaults, hot reload, and the Herdr importer. Rendering and input mechanics are in [03-terminal-engine-and-tui.md](03-terminal-engine-and-tui.md). The objects shown here (workspaces, groups, agent runs, interactions, notifications) are defined in [02-data-model-and-event-log.md](02-data-model-and-event-log.md).
 
+Proposed task-aware UX: [15](15-task-outcomes-review-and-attention.md) builds on the focused-pane rule with optional task tracking, review packages and a richer attention inbox. Its task readiness labels and five-minute view are future additions; the current M1 interaction inbox and bindings below remain in scope independently.
+
 **Milestones** used throughout (see [11](11-milestones.md)): **M0** spikes · **M1** supervision slice · **M2** safe yolo + more harnesses · **M3** remote + preview · **M4** VMs + polish/parity · **M5** compatibility + plugins · **M6** hardening/Windows/1.0 · **post-1.0** deferred unless demanded.
 
 UX principles:

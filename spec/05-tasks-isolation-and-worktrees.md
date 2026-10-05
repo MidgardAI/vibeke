@@ -6,6 +6,8 @@ A **task workspace** is the default way to give an agent somewhere to work. One 
 
 Implemented in crate `vk-tasks`. Data model: `Task` in [02](02-data-model-and-event-log.md) §1.1. Milestones (see [11](11-milestones.md)): git worktree tasks, env/setup, port leases, async removal and advisory collision warnings **M1**; jj workspaces **M4**; tasks on remote machines **M3**; best-of-N **post-1.0** (launch may land in M2 together with containers); split-into-task: Phase 2.
 
+Proposed next slice: [15](15-task-outcomes-review-and-attention.md) adds **Track this work** for an already-running CLI, without relocating or restarting it. Its `attached` task records have separate park/archive/remove semantics (§4.3 there); they must not inherit the owned-workspace cleanup below. This does not change Goal 01's current implementation scope.
+
 ## 1. User-facing commands
 
 ```

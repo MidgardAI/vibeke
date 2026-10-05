@@ -6,6 +6,8 @@
 
 Related: [01 architecture](01-architecture.md), [02 state and events](02-data-model-and-event-log.md), [07 API](07-api-cli-plugins.md), [08 UX and configuration](08-ux-config-and-keybindings.md), [09 security and privacy](09-security-and-privacy.md), [12 Phase 2](12-phase-2-outlook.md).
 
+[15 — Task outcomes, review and attention](15-task-outcomes-review-and-attention.md) specifies the task/inbox surfaces that can consume intent suggestions, explanations and review prose from this module. Those surfaces also work without an LLM; generated drafts do not confirm intent, send messages, authorize checks or accept work.
+
 ## 1. Product purpose
 
 Help the user understand, find and supervise work across coding agents. The assistant uses Vibeke's structured state and selected transcript material to reduce the time spent switching panes and reconstructing context.

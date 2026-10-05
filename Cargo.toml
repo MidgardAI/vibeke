@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -63,3 +64,9 @@ panic = "unwind"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# alacritty_terminal with an upstreamable snapshot/restore patch (see vendor/alacritty_terminal,
+# search "Vibeke patch"). Decision record: .adr/0001-vt-engine.md.
+[patch.crates-io]
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
+vte = { path = "vendor/vte" }

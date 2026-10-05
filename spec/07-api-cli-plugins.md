@@ -318,10 +318,12 @@ Server push (JSON-RPC notification):
 | Method | Params → Result |
 |---|---|
 | `plugin.list` | `{}` → `{plugins: [{id, version, enabled, kind: actions|process, capabilities, status}]}` |
-| `plugin.install` | `{source: "owner/repo"|path|url, ref?, accept_capabilities?: [..]}` → `{plugin, requested_capabilities}` — returns `permission_denied:capabilities_not_accepted` until confirmed |
+| `plugin.install` | `{source: "owner/repo[/subdir]"|path|url, ref?, accept_capabilities?: [..], trust?: scoped|herdr_legacy}` → `{plugin, requested_capabilities}` — returns `permission_denied:capabilities_not_accepted` until confirmed; Herdr manifests use the explicit legacy trust grant in §7.7 |
 | `plugin.link` | `{path}` → `{plugin}` (dev mode, hot reload) |
 | `plugin.enable` / `plugin.disable` / `plugin.remove` | `{plugin}` → `{plugin}` |
 | `plugin.action` | `{plugin, action, context?: {workspace?, pane?}}` → `{exit_code, stdout_tail}` |
+| `plugin.action.list` / `plugin.action.invoke` / `plugin.log.list` | native aliases for the asynchronous action/log service; the compat endpoint preserves Herdr's exact params and response shapes (§7.7, §8.3), including returning a running log record before completion |
+| `plugin.pane.open` / `plugin.pane.focus` / `plugin.pane.close` / `popup.close` | managed terminal entrypoints and session-modal popups; Herdr-compatible behavior in §7.7 |
 | `plugin.kv.get` / `plugin.kv.set` / `plugin.kv.delete` / `plugin.kv.list` | plugin-only, scoped to caller's plugin id |
 | `ui.contribute` | plugin-only — see §7.4 |
 
@@ -486,7 +488,7 @@ vibeke search    <query> [--pane p] [--workspace w] [--source scrollback,transcr
 vibeke layout    export|apply
 vibeke machine   list|add|connect|disconnect|remove|status|install
 vibeke integration list|install <harness>|uninstall <harness>|doctor
-vibeke plugin    list|install|link|enable|disable|remove|action
+vibeke plugin    list|install|link|unlink|enable|disable|remove|uninstall|config-dir|action|log|logs|pane
 vibeke config    path|get|set|validate|edit|reset-keys
 vibeke import    herdr [--config] [--session] [--dry-run]
 vibeke api       schema|methods|call <method> [json]      # raw access
@@ -559,6 +561,8 @@ The skill is tested: CI runs a scripted agent (Claude Code headless) through the
 
 ## 7. Plugin system [M5]
 
+**Compatibility requirement:** existing Herdr plugins for the supported baseline (§8.0) must install and run without changes to their manifests, source, commands or callback protocol. Full plugin compatibility includes the public Herdr CLI/socket surface those plugins can call, not just manifest parsing or a handful of methods. This is an M5 delivery requirement, not a claim about the current implementation. Vibeke process plugins, native UI contributions and KV storage are additional facilities; imported plugins do not have to adopt them.
+
 ### 7.1 Two plugin kinds, one manifest
 
 `vibeke-plugin.toml` at the plugin root (Herdr's `herdr-plugin.toml` is also accepted — §7.6):
@@ -605,9 +609,9 @@ storage       = true
 
 ### 7.2 Argv actions (Kind A)
 
-- Executed with argv (no shell), cwd = plugin dir, env: `VIBEKE=1`, `VIBEKE_SOCKET`, `VIBEKE_PLUGIN_ID`, `VIBEKE_PLUGIN_TOKEN` (capability-scoped token), `VIBEKE_PLUGIN_DATA_DIR`, `VIBEKE_PLUGIN_CONFIG_DIR`, `VIBEKE_CONTEXT_WORKSPACE`, `VIBEKE_CONTEXT_PANE`; Herdr aliases (`HERDR_SOCKET_PATH`, `HERDR_PLUGIN_CONFIG_DIR`) when the plugin came from a `herdr-plugin.toml`.
+- Executed with argv (no shell), cwd = plugin dir, env: `VIBEKE=1`, `VIBEKE_SOCKET`, `VIBEKE_PLUGIN_ID`, `VIBEKE_PLUGIN_TOKEN` (capability-scoped token), `VIBEKE_PLUGIN_DATA_DIR`, `VIBEKE_PLUGIN_CONFIG_DIR`, `VIBEKE_CONTEXT_WORKSPACE`, `VIBEKE_CONTEXT_PANE`. Imported Herdr plugins receive the complete environment and compatibility launcher in §7.7.
 - stdout/stderr captured to the plugin log; last 4 KiB returned by `plugin.action`; non-zero exit raises a notification.
-- Event hooks: `[[on]] event = "worktree.created" command = [...]` — the event JSON is passed on stdin.
+- Native event hooks: `[[on]] event = "worktree.created" command = [...]` — the event JSON is passed on stdin. Herdr's `[[events]] on = "worktree.created"` uses its original payload/environment contract (§7.7); importing it must not silently substitute the native hook ABI.
 
 ### 7.3 Process plugins (Kind B)
 
@@ -641,8 +645,43 @@ Updates are debounced to 10 Hz per plugin.
 
 - `vibeke plugin install owner/repo[@ref]`: clone (shallow) → read manifest → show capabilities diff → confirm → run `[[build]]` → enable. Updates show capability *changes* and require re-consent if they widen.
 - Marketplace index **[post-1.0; design kept]**: M5 ships install-by-repo (`vibeke plugin install owner/repo`) and `plugin link`; the searchable marketplace follows after 1.0. A static JSON index built daily by a GitHub Action from repos tagged topic **`vibeke-plugin`** (and, read-only, `herdr-plugin` repos that pass the compat checker), published to `plugins.vibeke.dev/index.json`; `vibeke plugin search <q>` reads it. No server-side code execution; the index stores repo, ref, manifest summary, capabilities and stars.
-- Dev loop: `vibeke plugin link <path>` → registers in dev mode; the server watches the manifest and the process command's files (configurable globs) and hot-restarts the plugin process on change; argv actions are re-read each invocation. `vibeke plugin logs <id> -f`.
-- Herdr plugin import: a `herdr-plugin.toml` is parsed into the same model (`[[build]]`, `[[actions]]`, `[[panes]]`, event hooks, link handlers map 1:1). Herdr plugins get the Herdr env aliases and the compat socket path (§8.3) so their `herdr` CLI calls keep working.
+- Native dev loop: `vibeke plugin link <path>` → registers in dev mode; the server watches the manifest and the process command's files (configurable globs) and hot-restarts the plugin process on change; argv actions are re-read each invocation. `vibeke plugin logs <id> -f`. Herdr links retain upstream reload/startup semantics; native hot restart is an explicit option and never reruns a Herdr startup hook on an ordinary file change.
+- Herdr plugin import: retain the original `herdr-plugin.toml` and source tree and implement §7.7 in full. Do not translate away fields, require new capability declarations, or patch plugin code. Migration copies config/state into Vibeke-owned locations after consent; the running Herdr installation remains untouched.
+
+### 7.7 Full Herdr plugin contract
+
+The baseline is pinned in §8.0. Its manifest schema, CLI implementation and API schema are authoritative when prose examples differ. Platform support is macOS/Linux in M5 and Windows in M6; external runtimes and tools required by a plugin must be installed on its execution machine.
+
+**Manifest and installation**
+
+- Accept all baseline metadata and every field of `[[build]]`, `[[startup]]`, `[[actions]]`, `[[events]]`, `[[panes]]` and `[[link_handlers]]`. Match identifier validation, qualified action resolution, defaults, contexts (`global`, `workspace`, `tab`, `pane`, `selection`), regex handling, warnings and platform inheritance/overrides. Evaluate `min_herdr_version` against the tested Herdr baseline, never Vibeke's version. A missing implementation for a valid baseline field is a release blocker; a manifest requiring a newer baseline receives a clear version error.
+- Support `owner/repo[/subdir]`, `--ref`, `--yes`, local directories and direct manifest paths with Herdr's CLI grammar. A build runs only for an install, after source/build/trust review; linking does not build. Abort registration on build failure or manifest mutation during the build. Preserve origin, requested ref, resolved commit and managed checkout metadata.
+- Keep registrations and enabled state **per user, shared across that machine's sessions**, including installs/links while no server is running. Store them atomically under `~/.config/vibeke/plugins.json`; running sessions observe committed registry changes. Each session maintains its own runtime, focus context, startup invocations and command logs. Reload manifests with upstream warning/error behavior; missing files remain diagnosable through `plugin.list`.
+- Match reinstall, enable/disable, unlink and uninstall behavior: a local link cannot be silently replaced by a managed install; unlink preserves files; uninstall removes only the managed checkout. Preserve plugin-owned config/state. Import never runs code or overwrites the source Herdr registry implicitly.
+
+**Commands, context and callbacks**
+
+- Preserve argv boundaries, cwd, inherited user environment, platform command resolution and build/runtime environment separation. Build steps do not inherit runtime socket credentials, pane context or plugin authority. No implicit shell, dependency installation, or language restriction.
+- Supply `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR` and `HERDR_PLUGIN_CONTEXT_JSON`; supply `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID` only in the contexts where upstream supplies them. Per-entrypoint values include `HERDR_PLUGIN_ACTION_ID`, `HERDR_PLUGIN_EVENT`, `HERDR_PLUGIN_EVENT_JSON`, `HERDR_PLUGIN_ENTRYPOINT_ID`, `HERDR_PLUGIN_CLICKED_URL` and `HERDR_PLUGIN_LINK_HANDLER_ID`. Clear stale inherited context variables before populating the invocation.
+- Match the complete `PluginInvocationContext` schema: workspace/tab identity and labels, working directories, worktree provenance, focused pane/agent/status, selection, invocation source, correlation id, clicked URL and handler id. Preserve omitted-versus-null behavior and Herdr ids throughout. Fill missing context from the correct session/client as upstream does.
+- `HERDR_BIN_PATH` is an absolute path to Vibeke's Herdr-compatible launcher. Prepend a **private invocation PATH directory** containing `herdr` (and the Windows equivalent in M6), so both this variable and bare `herdr` commands reach the same Vibeke session even with real Herdr installed. Do not replace the user's global Herdr executable. Session selection follows Herdr's precedence; it never falls through to a live Herdr server. Remote plugins execute and resolve paths on the target machine.
+- Raw socket callbacks use unchanged Herdr JSON and require no Vibeke-specific `client.hello` or token fields. A broker bound to the invocation's approved identity supplies authorization outside that wire format (§8.3, 09 §6). Both CLI and direct socket calls must work, including callbacks from plugin-owned panes and long-lived children.
+- Provide persistent config/state directories outside replaceable source checkouts. Existing plugin file formats and databases remain plugin-owned; KV storage is optional. Report the actual paths through the environment and `plugin config-dir`; migration is copy-based, reports conflicts and supports rollback to Herdr's untouched data.
+
+**Lifecycle and UI behavior**
+
+- Preserve asynchronous action invocation: return the initial command log and context promptly, then expose running/completed/failed state, timestamps, exit status and separate stdout/stderr through `plugin.log.list`. A successful launch is not a successful action. Native `plugin.action` may wait, but the compat method must not change upstream timing or response shape.
+- Run `[[startup]]` once per enabled plugin per server activation after session restore and API readiness, including takeover/restart. Do not trigger it on attach, link, enable, config reload or a development file change. Record failures without taking down the server; never reinterpret these hooks as supervised process plugins.
+- Deliver `[[events]]` using the baseline event names, payloads, invocation context, dispatch and logging behavior. Match action qualification, disabled/missing-plugin errors, command concurrency/log limits and spawn/exit failures. Reproduce restart/reload behavior rather than silently replaying hooks from Vibeke's durable outbox.
+- Implement `plugin.pane.open/focus/close` for every placement: `overlay`, `popup`, `split`, `tab`, `zoomed`, including all targeting, environment, focus, cwd, direction and size parameters. Preserve plugin ownership through pane moves/swaps and restore prior focus/zoom when an overlay closes.
+- Popups remain session-modal resources: no pane id, pane/agent enumeration, persistence or pane lifecycle events; no `HERDR_PANE_ID` in their process environment. Preserve their underlying focus context, dimension rules, input delivery, busy/error responses and `popup.close` semantics. Do not normalize them into ordinary panes.
+- Preserve `[[keys.command]] type = "plugin_action"` bindings and action contexts. Link handlers use the baseline matching order, modifier, regex and action resolution and receive the original URL/handler context. Public UI APIs called by plugins, including window-title overrides, layouts and agent-view projections, are required in §8.3.
+
+**Trust and revocation**
+
+Herdr plugins have no capability declaration and expect user-level host access. Import therefore requires an explicit **`herdr_legacy` trust grant**, showing source/commit and build/runtime entrypoints and explaining the broad Herdr API, filesystem, environment and network access. This preserves upstream behavior without pretending that a scoped token contains arbitrary host code. Native plugins retain capability-scoped defaults; stricter execution of a legacy plugin is opt-in and labeled restricted, not fully compatible. The unchanged manifest needs no added fields. Consent is stored in Vibeke's registry, outside the plugin source.
+
+Bind all callback paths to that grant; disable/unlink/uninstall or trust revocation disables future execution and revokes its broker access. Legacy callback authority lasts for the authorized invocation/process lifetime, including plugin panes and server recovery, rather than expiring after the native 60-second action token window. A pane-scoped agent or restricted plugin cannot gain broader authority by invoking a trusted legacy plugin: require an authorized operator invocation or enforce the caller's narrower scope (09 §6).
 
 ---
 
