@@ -1,7 +1,18 @@
 [package]
 name = "vk-remote"
+description = "Remote machines: SSH bridge channel multiplexer, bootstrap, transport"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+vk-proto = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
