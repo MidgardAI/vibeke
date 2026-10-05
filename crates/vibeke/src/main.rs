@@ -92,7 +92,9 @@ fn main() {
         let r = vk_hold::main_daemon(&spec, get("--log").as_deref());
         std::process::exit(if r.is_ok() { 0 } else { 1 });
     }
-    if args.first().map(String::as_str) == Some("debug") && args.get(1).map(String::as_str) == Some("ptyshot") {
+    if args.first().map(String::as_str) == Some("debug")
+        && args.get(1).map(String::as_str) == Some("ptyshot")
+    {
         std::process::exit(debug::ptyshot(&args[2..]));
     }
     if args.first().map(String::as_str) == Some("hook") {
@@ -146,6 +148,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("update") => commands::update(&g, &args[1..]).await,
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
+        Some("machine") => remote::machine_cmd(&g, &args[1..]),
         Some("api") if args.get(1).map(String::as_str) == Some("call") => {
             let Some(method) = args.get(2) else {
                 eprintln!("vibeke api call <method> [json]");
@@ -201,15 +204,43 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
     }
 }
 
-/// Connect to the session's server (spawning it unless --no-spawn) and run `f`.
+pub type AnyStream = Box<dyn vk_remote::mux::Stream>;
+
+/// Connect to the session's server (spawning it unless --no-spawn) and run `f`. With
+/// `--machine`, the connection is a channel to that machine's server — never a local fallback
+/// (06 A6).
 pub async fn with_client<F, Fut>(g: &Global, f: F) -> i32
 where
-    F: FnOnce(client::Client<tokio::net::UnixStream>) -> Fut,
+    F: FnOnce(client::Client<AnyStream>) -> Fut,
     Fut: std::future::Future<Output = i32>,
 {
+    if let Some(m) = &g.machine {
+        return match tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            remote::machine_stream(g, m),
+        )
+        .await
+        {
+            Ok(Ok(s)) => f(client::Client::new(Box::new(s) as AnyStream)).await,
+            Ok(Err(e)) => {
+                eprintln!(
+                    "{}",
+                    json!({"error": {"kind": "remote_unavailable", "message": format!("{e:#}"), "details": {"machine": m}, "retryable": true}})
+                );
+                vk_cli::EXIT_API
+            }
+            Err(_) => {
+                eprintln!(
+                    "{}",
+                    json!({"error": {"kind": "remote_unavailable", "message": format!("machine {m} offline"), "details": {"machine": m}, "retryable": true}})
+                );
+                vk_cli::EXIT_API
+            }
+        };
+    }
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     match client::connect_or_spawn(&g.session, &socket, g.no_spawn).await {
-        Ok(s) => f(client::Client::new(s)).await,
+        Ok(s) => f(client::Client::new(Box::new(s) as AnyStream)).await,
         Err(e) => {
             eprintln!(
                 "{}",

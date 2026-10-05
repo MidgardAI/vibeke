@@ -22,16 +22,40 @@ const WINDOW: u32 = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Frame {
-    Hello { proto: u32, version: String, role: String },
-    Open { ch: u32, kind: String },
-    OpenOk { ch: u32 },
-    OpenErr { ch: u32, msg: String },
-    Data { ch: u32, bytes: Vec<u8> },
+    Hello {
+        proto: u32,
+        version: String,
+        role: String,
+    },
+    Open {
+        ch: u32,
+        kind: String,
+    },
+    OpenOk {
+        ch: u32,
+    },
+    OpenErr {
+        ch: u32,
+        msg: String,
+    },
+    Data {
+        ch: u32,
+        bytes: Vec<u8>,
+    },
     /// Receiver consumed `bytes`; sender may send that much more.
-    Window { ch: u32, bytes: u32 },
-    Close { ch: u32 },
-    Ping { ts: u64 },
-    Pong { ts: u64 },
+    Window {
+        ch: u32,
+        bytes: u32,
+    },
+    Close {
+        ch: u32,
+    },
+    Ping {
+        ts: u64,
+    },
+    Pong {
+        ts: u64,
+    },
 }
 
 /// Stats for the status bar and bandwidth budgets (06 A7, 10 §1.5).
@@ -64,7 +88,8 @@ pub struct Mux {
 }
 
 /// Called on the accepting side for each `Open{kind}`; returns the stream to bridge to.
-pub type Acceptor = Arc<dyn Fn(String) -> futures_util::BoxFuture<Result<Box<dyn Stream>>> + Send + Sync>;
+pub type Acceptor =
+    Arc<dyn Fn(String) -> futures_util::BoxFuture<Result<Box<dyn Stream>>> + Send + Sync>;
 pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
@@ -88,8 +113,15 @@ impl Mux {
             stats: Arc::new(Stats::default()),
             closed: Notify::new(),
         });
-        let mux = Mux { shared: shared.clone(), remote_version: Arc::new(Mutex::new(None)) };
-        let _ = shared.out.send(Frame::Hello { proto: PROTO, version: vk_proto::VERSION.into(), role: role.into() });
+        let mux = Mux {
+            shared: shared.clone(),
+            remote_version: Arc::new(Mutex::new(None)),
+        };
+        let _ = shared.out.send(Frame::Hello {
+            proto: PROTO,
+            version: vk_proto::VERSION.into(),
+            role: role.into(),
+        });
         tokio::spawn(writer(wr, out_rx, shared.stats.clone()));
         let m2 = mux.clone();
         tokio::spawn(async move {
@@ -110,7 +142,14 @@ impl Mux {
             let t0 = Instant::now();
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                if m3.shared.out.send(Frame::Ping { ts: t0.elapsed().as_micros() as u64 }).is_err() {
+                if m3
+                    .shared
+                    .out
+                    .send(Frame::Ping {
+                        ts: t0.elapsed().as_micros() as u64,
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -140,7 +179,13 @@ impl Mux {
         self.shared.pending_open.lock().unwrap().insert(ch, tx);
         let (local, remote_end) = tokio::io::duplex(WINDOW as usize);
         attach(&self.shared, ch, remote_end);
-        self.shared.out.send(Frame::Open { ch, kind: kind.into() }).map_err(|_| anyhow!("link closed"))?;
+        self.shared
+            .out
+            .send(Frame::Open {
+                ch,
+                kind: kind.into(),
+            })
+            .map_err(|_| anyhow!("link closed"))?;
         match tokio::time::timeout(Duration::from_secs(10), rx).await {
             Ok(Ok(Ok(()))) => Ok(local),
             Ok(Ok(Err(e))) => {
@@ -161,7 +206,13 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream) {
     let (mut rd, mut wr) = tokio::io::split(end);
     let (to_local, mut from_link) = mpsc::unbounded_channel::<Vec<u8>>();
     let credit = Arc::new((AtomicU32::new(WINDOW), Notify::new()));
-    shared.chans.lock().unwrap().insert(ch, Chan { to_local, credit: credit.clone() });
+    shared.chans.lock().unwrap().insert(
+        ch,
+        Chan {
+            to_local,
+            credit: credit.clone(),
+        },
+    );
     let out = shared.out.clone();
     // link → local
     let out2 = out.clone();
@@ -190,7 +241,13 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream) {
                 Ok(n) => n,
             };
             credit.0.fetch_sub(n as u32, Ordering::AcqRel);
-            if out.send(Frame::Data { ch, bytes: buf[..n].to_vec() }).is_err() {
+            if out
+                .send(Frame::Data {
+                    ch,
+                    bytes: buf[..n].to_vec(),
+                })
+                .is_err()
+            {
                 break;
             }
         }
@@ -199,7 +256,11 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream) {
     });
 }
 
-async fn writer<W: AsyncWrite + Unpin>(wr: W, mut rx: mpsc::UnboundedReceiver<Frame>, stats: Arc<Stats>) {
+async fn writer<W: AsyncWrite + Unpin>(
+    wr: W,
+    mut rx: mpsc::UnboundedReceiver<Frame>,
+    stats: Arc<Stats>,
+) {
     let mut wr = tokio::io::BufWriter::with_capacity(64 * 1024, wr);
     // Round-robin over channels with queued data; control frames go first.
     let mut queues: VecDeque<(u32, VecDeque<Frame>)> = VecDeque::new();
@@ -254,7 +315,9 @@ async fn writer<W: AsyncWrite + Unpin>(wr: W, mut rx: mpsc::UnboundedReceiver<Fr
 
 async fn write_one<W: AsyncWrite + Unpin>(wr: &mut W, f: &Frame, stats: &Stats) -> Result<()> {
     let bytes = vk_proto::frame::encode(f)?;
-    stats.bytes_out.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+    stats
+        .bytes_out
+        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
     wr.write_all(&bytes).await?;
     Ok(())
 }
@@ -264,7 +327,10 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
     let t0 = Instant::now();
     loop {
         let body = asyncio::read_body(&mut rd).await?;
-        mux.shared.stats.bytes_in.fetch_add(body.len() as u64 + 4, Ordering::Relaxed);
+        mux.shared
+            .stats
+            .bytes_in
+            .fetch_add(body.len() as u64 + 4, Ordering::Relaxed);
         let f: Frame = vk_proto::frame::decode(&body)?;
         match f {
             Frame::Hello { version, proto, .. } => {
@@ -275,7 +341,10 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
             }
             Frame::Open { ch, kind } => {
                 let Some(acc) = acceptor.clone() else {
-                    let _ = mux.shared.out.send(Frame::OpenErr { ch, msg: "not accepting channels".into() });
+                    let _ = mux.shared.out.send(Frame::OpenErr {
+                        ch,
+                        msg: "not accepting channels".into(),
+                    });
                     continue;
                 };
                 let m = mux.clone();
@@ -290,7 +359,10 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
                             let _ = tokio::io::copy_bidirectional(&mut a, &mut stream).await;
                         }
                         Err(e) => {
-                            let _ = m.shared.out.send(Frame::OpenErr { ch, msg: format!("{e:#}") });
+                            let _ = m.shared.out.send(Frame::OpenErr {
+                                ch,
+                                msg: format!("{e:#}"),
+                            });
                         }
                     }
                 });
@@ -325,7 +397,10 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
             }
             Frame::Pong { ts } => {
                 let now = t0.elapsed().as_micros() as u64;
-                mux.shared.stats.rtt_us.store(now.saturating_sub(ts), Ordering::Relaxed);
+                mux.shared
+                    .stats
+                    .rtt_us
+                    .store(now.saturating_sub(ts), Ordering::Relaxed);
             }
         }
     }
@@ -368,10 +443,16 @@ mod tests {
         let sender = tokio::spawn(async move { w2.write_all(&big2).await.unwrap() });
         c1.write_all(b"ping").await.unwrap();
         let mut p = [0u8; 4];
-        tokio::time::timeout(Duration::from_secs(2), c1.read_exact(&mut p)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), c1.read_exact(&mut p))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(&p, b"ping");
         let mut got = vec![0u8; big.len()];
-        tokio::time::timeout(Duration::from_secs(10), r2.read_exact(&mut got)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(10), r2.read_exact(&mut got))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got, big);
         sender.await.unwrap();
         assert!(client.stats().bytes_out.load(Ordering::Relaxed) > 2 << 20);

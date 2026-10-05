@@ -75,7 +75,9 @@ pub struct Agents {
 }
 
 pub fn start(server: &Arc<Server>) {
-    let cfg = vk_config::Config::load(vk_config::config_path()).map(|(c, _)| c).unwrap_or_default();
+    let cfg = vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| c)
+        .unwrap_or_default();
     {
         let mut i = server.agents.inner.lock().unwrap();
         i.policy = cfg.policy.rule.clone();
@@ -83,18 +85,36 @@ pub fn start(server: &Arc<Server>) {
     }
     // Interactions left `delivering` by a crashed server: the shim reconnect is the reconcile
     // path for Claude/Codex; anything else is unknowable → delivery_unknown (04 §7.3 rule 2).
-    let stale: Vec<Interaction> = server.with_core(|c| c.model.interactions.iter().filter(|i| i.delivery == DeliveryState::Delivering).cloned().collect());
+    let stale: Vec<Interaction> = server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .filter(|i| i.delivery == DeliveryState::Delivering)
+            .cloned()
+            .collect()
+    });
     for mut it in stale {
         it.delivery = DeliveryState::DeliveryUnknown;
         it.status = InteractionStatus::Answered;
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
-        tx.event("interaction.delivery_unknown", json!({"interaction": it.id, "pane": it.pane}), json!({"reason": "server restarted during delivery"}));
+        tx.event(
+            "interaction.delivery_unknown",
+            json!({"interaction": it.id, "pane": it.pane}),
+            json!({"reason": "server restarted during delivery"}),
+        );
         tx.interaction(it);
         let _ = server.commit(&mut c, tx);
     }
     // Gate waiters died with the old server; their open interactions continue in observe mode.
-    let open: Vec<Interaction> = server.with_core(|c| c.model.interactions.iter().filter(|i| i.status == InteractionStatus::Open && i.gate).cloned().collect());
+    let open: Vec<Interaction> = server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .filter(|i| i.status == InteractionStatus::Open && i.gate)
+            .cloned()
+            .collect()
+    });
     for mut it in open {
         it.gate = false;
         server.with_core(|c| {
@@ -116,7 +136,13 @@ pub fn start(server: &Arc<Server>) {
                 }
             });
         } else {
-            server.notify("system", None, &format!("{} agent(s) can be resumed", resumable.len()), "vibeke agent resumable · vibeke agent resume <run>", "normal");
+            server.notify(
+                "system",
+                None,
+                &format!("{} agent(s) can be resumed", resumable.len()),
+                "vibeke agent resumable · vibeke agent resume <run>",
+                "normal",
+            );
         }
     }
 }
@@ -147,18 +173,36 @@ fn source_of(s: &str) -> StateSource {
 }
 
 fn facet(value: Execution, source: StateSource, confidence: f32) -> Facet<Execution> {
-    Facet { value, since_ms: now_ms(), source, confidence, detail: None }
+    Facet {
+        value,
+        since_ms: now_ms(),
+        source,
+        confidence,
+        detail: None,
+    }
 }
 
 pub fn resumable_runs(server: &Server) -> Vec<AgentRun> {
-    let ended: Vec<AgentRun> = server.with_core(|c| c.store.load_closed("run", 50).unwrap_or_default());
-    let live: Vec<String> = server.with_core(|c| c.model.runs.iter().filter_map(|r| r.harness_session_id.clone()).collect());
+    let ended: Vec<AgentRun> =
+        server.with_core(|c| c.store.load_closed("run", 50).unwrap_or_default());
+    let live: Vec<String> = server.with_core(|c| {
+        c.model
+            .runs
+            .iter()
+            .filter_map(|r| r.harness_session_id.clone())
+            .collect()
+    });
     let mut seen = std::collections::HashSet::new();
     ended
         .into_iter()
         .filter(|r: &AgentRun| r.ended_at_ms.is_some_and(|t| now_ms() - t < 7 * 86_400_000))
         .filter(|r| matches!(r.execution.detail.as_deref(), Some("holder_lost")))
-        .filter(|r| !r.resume_argv.is_empty() && r.harness_session_id.as_ref().is_none_or(|s| !live.contains(s)))
+        .filter(|r| {
+            !r.resume_argv.is_empty()
+                && r.harness_session_id
+                    .as_ref()
+                    .is_none_or(|s| !live.contains(s))
+        })
         .filter(|r| seen.insert(r.harness_session_id.clone().unwrap_or_else(|| r.id.clone())))
         .collect()
 }
@@ -168,7 +212,9 @@ impl Agents {
     pub fn input_blocked(&self, pane: &str) -> Option<&'static str> {
         let i = self.inner.lock().unwrap();
         match i.locks.get(pane) {
-            Some(t) if t.elapsed() < Duration::from_secs(2) => Some("input_locked_open_interaction"),
+            Some(t) if t.elapsed() < Duration::from_secs(2) => {
+                Some("input_locked_open_interaction")
+            }
             _ => None,
         }
     }
@@ -178,8 +224,15 @@ impl Agents {
     pub fn on_focus(&self, server: &Server, pane: &str) {
         let released: Vec<(String, Gate)> = {
             let mut i = self.inner.lock().unwrap();
-            let ids: Vec<String> = i.gates.iter().filter(|(_, g)| g.pane == pane).map(|(k, _)| k.clone()).collect();
-            ids.into_iter().filter_map(|k| i.gates.remove(&k).map(|g| (k, g))).collect()
+            let ids: Vec<String> = i
+                .gates
+                .iter()
+                .filter(|(_, g)| g.pane == pane)
+                .map(|(k, _)| k.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|k| i.gates.remove(&k).map(|g| (k, g)))
+                .collect()
         };
         for (id, g) in released {
             let _ = g.tx.send(GateReply::NoDecision);
@@ -187,7 +240,11 @@ impl Agents {
             if let Some(mut it) = c.interaction(&id).cloned() {
                 it.gate = false;
                 let mut tx = Tx::new();
-                tx.event("interaction.updated", json!({"interaction": it.id, "pane": it.pane}), json!({"gate": false, "reason": "released_on_focus"}));
+                tx.event(
+                    "interaction.updated",
+                    json!({"interaction": it.id, "pane": it.pane}),
+                    json!({"gate": false, "reason": "released_on_focus"}),
+                );
                 tx.interaction(it);
                 let _ = server.commit(&mut c, tx);
             }
@@ -197,7 +254,9 @@ impl Agents {
     /// Process detection (04 §5.2): foreground process tree → harness.
     pub fn on_process(&self, server: &Arc<Server>, pane: &str, st: &ProcStatus) {
         let detected = st.fg_pgid.and_then(|pg| {
-            vk_hold::procinfo::tree(pg, 6).iter().find_map(|p| detect_harness(&p.argv, p.exe.as_deref()).map(|h| (h, p.argv.clone())))
+            vk_hold::procinfo::tree(pg, 6).iter().find_map(|p| {
+                detect_harness(&p.argv, p.exe.as_deref()).map(|h| (h, p.argv.clone()))
+            })
         });
         let current = server.with_core(|c| c.run_for_pane(pane).cloned());
         match (detected, current) {
@@ -209,7 +268,11 @@ impl Agents {
                 let mut run = run;
                 run.yolo = yolo;
                 run.resume_argv = vec![];
-                tx.event("agent.detected", json!({"run": run.id, "pane": pane}), json!({"harness": h.id(), "via": "process", "argv0": argv.first()}));
+                tx.event(
+                    "agent.detected",
+                    json!({"run": run.id, "pane": pane}),
+                    json!({"harness": h.id(), "via": "process", "argv0": argv.first()}),
+                );
                 tx.counters = true;
                 tx.run(run);
                 let _ = server.commit(&mut c, tx);
@@ -226,7 +289,10 @@ impl Agents {
                 }
             }
             (Some((h, argv)), Some(r)) => {
-                let yolo = harness::yolo(h, &argv) || r.permission_mode.as_deref().is_some_and(|m| m == "bypassPermissions");
+                let yolo = harness::yolo(h, &argv)
+                    || r.permission_mode
+                        .as_deref()
+                        .is_some_and(|m| m == "bypassPermissions");
                 if yolo != r.yolo {
                     update_run(server, &r.id, |r, _| r.yolo = yolo);
                 }
@@ -248,17 +314,38 @@ impl Agents {
         let mut r = run.clone();
         r.ended_at_ms = Some(now_ms());
         let prev = r.execution.value.clone();
-        r.execution = Facet { detail: Some(reason.to_string()), ..facet(Execution::Exited, StateSource::Process, 1.0) };
+        r.execution = Facet {
+            detail: Some(reason.to_string()),
+            ..facet(Execution::Exited, StateSource::Process, 1.0)
+        };
         tx.event("agent.state_changed", json!({"run": r.id, "pane": r.pane}), json!({"facet": "execution", "from": prev.as_str(), "to": "exited", "source": "process"}));
-        tx.event("agent.exited", json!({"run": r.id, "pane": r.pane}), json!({"reason": reason, "harness": r.harness}));
-        for it in core.model.interactions.iter().filter(|i| i.run == r.id && i.status == InteractionStatus::Open) {
+        tx.event(
+            "agent.exited",
+            json!({"run": r.id, "pane": r.pane}),
+            json!({"reason": reason, "harness": r.harness}),
+        );
+        for it in core
+            .model
+            .interactions
+            .iter()
+            .filter(|i| i.run == r.id && i.status == InteractionStatus::Open)
+        {
             let mut it = it.clone();
             it.status = InteractionStatus::Cancelled;
-            tx.event("interaction.cancelled", json!({"interaction": it.id, "pane": it.pane}), json!({"reason": "process_exited"}));
+            tx.event(
+                "interaction.cancelled",
+                json!({"interaction": it.id, "pane": it.pane}),
+                json!({"reason": "process_exited"}),
+            );
             tx.interaction(it);
         }
         let mut i = self.inner.lock().unwrap();
-        let ids: Vec<String> = i.gates.iter().filter(|(_, g)| g.pane == r.pane).map(|(k, _)| k.clone()).collect();
+        let ids: Vec<String> = i
+            .gates
+            .iter()
+            .filter(|(_, g)| g.pane == r.pane)
+            .map(|(k, _)| k.clone())
+            .collect();
         for k in ids {
             if let Some(g) = i.gates.remove(&k) {
                 let _ = g.tx.send(GateReply::NoDecision);
@@ -272,21 +359,31 @@ impl Agents {
     pub fn on_screen(&self, server: &Arc<Server>, pane: &str) {
         {
             let mut i = self.inner.lock().unwrap();
-            let last = i.screen_eval.entry(pane.to_string()).or_insert_with(|| Instant::now() - Duration::from_secs(1));
+            let last = i
+                .screen_eval
+                .entry(pane.to_string())
+                .or_insert_with(|| Instant::now() - Duration::from_secs(1));
             if last.elapsed() < Duration::from_millis(100) {
                 return;
             }
             *last = Instant::now();
         }
-        let Some(run) = server.with_core(|c| c.run_for_pane(pane).cloned()) else { return };
-        let Some(h) = Harness::from_id(&run.harness) else { return };
-        let Some(rt) = server.pane_rt(pane) else { return };
+        let Some(run) = server.with_core(|c| c.run_for_pane(pane).cloned()) else {
+            return;
+        };
+        let Some(h) = Harness::from_id(&run.harness) else {
+            return;
+        };
+        let Some(rt) = server.pane_rt(pane) else {
+            return;
+        };
         let text = {
             let sc = rt.screen.lock().unwrap();
             sc.engine.screen_text()
         };
         let m = screen::evaluate(h, &text);
-        let structured = run.execution.source == StateSource::Structured && run.health != AdapterHealth::Disconnected;
+        let structured = run.execution.source == StateSource::Structured
+            && run.health != AdapterHealth::Disconnected;
         // Execution state from the screen only when no structured transport drives the run.
         if !structured
             && let Some((state, conf)) = m.state.clone()
@@ -294,7 +391,13 @@ impl Agents {
         {
             set_execution(server, &run.id, state, StateSource::Screen, conf, None);
         }
-        let open_screen = server.with_core(|c| c.model.interactions.iter().find(|i| i.pane == pane && i.status == InteractionStatus::Open).cloned());
+        let open_screen = server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| i.pane == pane && i.status == InteractionStatus::Open)
+                .cloned()
+        });
         match (&m.dialog, open_screen) {
             (Some(d), None) => {
                 // Provisional interaction from the screen (§2.5 rule 3); raise disagreement if
@@ -317,7 +420,12 @@ impl Agents {
                         paths: vec![],
                         diff: None,
                         risk: harness::risk(d.tool.as_deref().unwrap_or("Bash"), Some(cmd), &[]).0,
-                        risk_reasons: harness::risk(d.tool.as_deref().unwrap_or("Bash"), Some(cmd), &[]).1,
+                        risk_reasons: harness::risk(
+                            d.tool.as_deref().unwrap_or("Bash"),
+                            Some(cmd),
+                            &[],
+                        )
+                        .1,
                     }),
                     questions: d.options_as_question(),
                     plan_md: None,
@@ -347,14 +455,26 @@ impl Agents {
                 notify_interaction(server, &it, &run);
             }
             (None, Some(it)) if it.source == StateSource::Screen => {
-                resolve(server, &it.id, InteractionStatus::ResolvedElsewhere, "dialog closed");
+                resolve(
+                    server,
+                    &it.id,
+                    InteractionStatus::ResolvedElsewhere,
+                    "dialog closed",
+                );
             }
             _ => {}
         }
     }
 }
 
-fn new_run(c: &mut Core, pane: &str, h: Harness, integration: &str, source: StateSource, conf: f32) -> AgentRun {
+fn new_run(
+    c: &mut Core,
+    pane: &str,
+    h: Harness,
+    integration: &str,
+    source: StateSource,
+    conf: f32,
+) -> AgentRun {
     let handle = c.next_run_handle();
     let cwd = c.pane(pane).and_then(|p| p.cwd.clone());
     AgentRun {
@@ -370,7 +490,10 @@ fn new_run(c: &mut Core, pane: &str, h: Harness, integration: &str, source: Stat
         resume_argv: vec![],
         cwd,
         model: None,
-        task: c.pane(pane).and_then(|p| c.ws(&p.workspace)).and_then(|w| w.task.clone()),
+        task: c
+            .pane(pane)
+            .and_then(|p| c.ws(&p.workspace))
+            .and_then(|w| w.task.clone()),
         execution: facet(Execution::Starting, source, conf),
         health: AdapterHealth::Healthy,
         yolo: false,
@@ -387,25 +510,43 @@ fn new_run(c: &mut Core, pane: &str, h: Harness, integration: &str, source: Stat
 
 fn update_run(server: &Server, run: &str, f: impl FnOnce(&mut AgentRun, &mut Tx)) {
     let mut c = server.core.lock().unwrap();
-    let Some(mut r) = c.run(run).cloned() else { return };
+    let Some(mut r) = c.run(run).cloned() else {
+        return;
+    };
     let mut tx = Tx::new();
     f(&mut r, &mut tx);
     tx.run(r);
     let _ = server.commit(&mut c, tx);
 }
 
-fn set_execution(server: &Server, run: &str, to: Execution, source: StateSource, conf: f32, detail: Option<String>) {
+fn set_execution(
+    server: &Server,
+    run: &str,
+    to: Execution,
+    source: StateSource,
+    conf: f32,
+    detail: Option<String>,
+) {
     update_run(server, run, |r, tx| {
         if r.execution.value == to && r.execution.source == source {
             return;
         }
         let from = r.execution.value.clone();
         // Done marker: idle after work bumps done_rev (rendered as ✓ until seen, 08 §2.2).
-        if to == Execution::Idle && matches!(from, Execution::Working | Execution::Starting | Execution::Unknown) && from != Execution::Starting {
+        if to == Execution::Idle
+            && matches!(
+                from,
+                Execution::Working | Execution::Starting | Execution::Unknown
+            )
+            && from != Execution::Starting
+        {
             r.done_rev += 1;
             r.turns_completed += 1;
         }
-        r.execution = Facet { detail, ..facet(to.clone(), source, conf) };
+        r.execution = Facet {
+            detail,
+            ..facet(to.clone(), source, conf)
+        };
         let src = match source {
             StateSource::Structured => "structured",
             StateSource::Screen => "screen",
@@ -429,7 +570,13 @@ fn notify_interaction(server: &Server, it: &Interaction, run: &AgentRun) {
         Some(Risk::High) => "high",
         _ => "normal",
     };
-    server.notify("interaction", Some(&it.pane), &format!("{who} {what}"), &it.title, urgency);
+    server.notify(
+        "interaction",
+        Some(&it.pane),
+        &format!("{who} {what}"),
+        &it.title,
+        urgency,
+    );
 }
 
 /// Close an interaction (resolved elsewhere / cancelled / expired) and drop any held gate.
@@ -438,7 +585,9 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         let _ = g.tx.send(GateReply::NoDecision);
     }
     let mut c = server.core.lock().unwrap();
-    let Some(mut it) = c.interaction(id).cloned() else { return };
+    let Some(mut it) = c.interaction(id).cloned() else {
+        return;
+    };
     if it.status != InteractionStatus::Open && it.delivery != DeliveryState::Delivering {
         return;
     }
@@ -458,7 +607,11 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
         }
     };
     let mut tx = Tx::new();
-    tx.event(event, json!({"interaction": it.id, "pane": it.pane, "run": it.run}), json!({"reason": reason}));
+    tx.event(
+        event,
+        json!({"interaction": it.id, "pane": it.pane, "run": it.run}),
+        json!({"reason": reason}),
+    );
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
 }
@@ -475,7 +628,11 @@ fn bound_run(server: &Server, pane: &str, h: Harness) -> AgentRun {
                 r2.integration = "hooks".into();
                 r2.health = AdapterHealth::Healthy;
                 let mut tx = Tx::new();
-                tx.event("adapter.health_changed", json!({"run": r2.id}), json!({"to": "healthy", "transport": "hooks"}));
+                tx.event(
+                    "adapter.health_changed",
+                    json!({"run": r2.id}),
+                    json!({"to": "healthy", "transport": "hooks"}),
+                );
                 tx.run(r2.clone());
                 let _ = server.commit(&mut c, tx);
                 return r2;
@@ -489,7 +646,11 @@ fn bound_run(server: &Server, pane: &str, h: Harness) -> AgentRun {
     let run = new_run(&mut c, pane, h, "hooks", StateSource::Structured, 1.0);
     let mut tx = Tx::new();
     tx.counters = true;
-    tx.event("agent.started", json!({"run": run.id, "pane": pane}), json!({"harness": h.id(), "via": "hooks"}));
+    tx.event(
+        "agent.started",
+        json!({"run": run.id, "pane": pane}),
+        json!({"harness": h.id(), "via": "hooks"}),
+    );
     tx.run(run.clone());
     let _ = server.commit(&mut c, tx);
     run
@@ -510,7 +671,10 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     }
     match event {
         "SessionStart" => {
-            let transcript = p.get("transcript_path").and_then(Value::as_str).map(str::to_string);
+            let transcript = p
+                .get("transcript_path")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let model = p.get("model").and_then(Value::as_str).map(str::to_string);
             let cwd = p.get("cwd").and_then(Value::as_str).map(str::to_string);
             update_run(server, &run.id, |r, tx| {
@@ -519,31 +683,77 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 {
                     r.harness_session_id = Some(s.to_string());
                     r.resume_argv = h.resume_argv(s);
-                    tx.event("agent.identified", json!({"run": r.id, "pane": r.pane}), json!({"harness_session_id": s, "transcript_path": transcript}));
-                    tx.event("agent.resume_handle", json!({"run": r.id}), json!({"argv": r.resume_argv}));
+                    tx.event(
+                        "agent.identified",
+                        json!({"run": r.id, "pane": r.pane}),
+                        json!({"harness_session_id": s, "transcript_path": transcript}),
+                    );
+                    tx.event(
+                        "agent.resume_handle",
+                        json!({"run": r.id}),
+                        json!({"argv": r.resume_argv}),
+                    );
                 }
                 r.transcript_path = transcript.clone().or(r.transcript_path.take());
                 r.model = model.clone().or(r.model.take());
                 r.cwd = cwd.clone().or(r.cwd.take());
             });
-            set_execution(server, &run.id, Execution::Idle, StateSource::Structured, 1.0, None);
+            set_execution(
+                server,
+                &run.id,
+                Execution::Idle,
+                StateSource::Structured,
+                1.0,
+                None,
+            );
         }
         "UserPromptSubmit" => {
-            set_execution(server, &run.id, Execution::Working, StateSource::Structured, 1.0, None);
-            let prompt = p.get("prompt").and_then(Value::as_str).map(|s| s.chars().take(200).collect::<String>());
+            set_execution(
+                server,
+                &run.id,
+                Execution::Working,
+                StateSource::Structured,
+                1.0,
+                None,
+            );
+            let prompt = p
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(|s| s.chars().take(200).collect::<String>());
             update_run(server, &run.id, |r, tx| {
-                tx.event("agent.turn_started", json!({"run": r.id, "pane": r.pane}), json!({"prompt_preview": prompt}));
+                tx.event(
+                    "agent.turn_started",
+                    json!({"run": r.id, "pane": r.pane}),
+                    json!({"prompt_preview": prompt}),
+                );
             });
         }
         "PreToolUse" => {
-            set_execution(server, &run.id, Execution::Working, StateSource::Structured, 1.0, None);
-            let tool = p.get("tool_name").and_then(Value::as_str).unwrap_or("").to_string();
+            set_execution(
+                server,
+                &run.id,
+                Execution::Working,
+                StateSource::Structured,
+                1.0,
+                None,
+            );
+            let tool = p
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let summary = harness::tool_summary(&tool, p.get("tool_input").unwrap_or(&Value::Null));
             update_run(server, &run.id, |r, _| r.last_tool = Some(summary));
         }
         "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
             if let Some(t) = tool_use {
-                let open = server.with_core(|c| c.model.interactions.iter().find(|i| i.run == run.id && i.native_ref.as_deref() == Some(t)).map(|i| i.id.clone()));
+                let open = server.with_core(|c| {
+                    c.model
+                        .interactions
+                        .iter()
+                        .find(|i| i.run == run.id && i.native_ref.as_deref() == Some(t))
+                        .map(|i| i.id.clone())
+                });
                 if let Some(id) = open {
                     resolve(server, &id, InteractionStatus::ResolvedElsewhere, event);
                 }
@@ -559,51 +769,141 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 }
             }
             // Screen-provisional dialogs are resolved once tools run again.
-            let screen_open: Vec<String> = server.with_core(|c| c.model.interactions.iter().filter(|i| i.run == run.id && i.status == InteractionStatus::Open && i.source == StateSource::Screen).map(|i| i.id.clone()).collect());
+            let screen_open: Vec<String> = server.with_core(|c| {
+                c.model
+                    .interactions
+                    .iter()
+                    .filter(|i| {
+                        i.run == run.id
+                            && i.status == InteractionStatus::Open
+                            && i.source == StateSource::Screen
+                    })
+                    .map(|i| i.id.clone())
+                    .collect()
+            });
             for id in screen_open {
-                resolve(server, &id, InteractionStatus::ResolvedElsewhere, "tool ran");
+                resolve(
+                    server,
+                    &id,
+                    InteractionStatus::ResolvedElsewhere,
+                    "tool ran",
+                );
             }
         }
         "Stop" | "Interrupt" => {
-            let msg = p.get("last_assistant_message").and_then(Value::as_str).map(str::to_string).or_else(|| last_assistant_message(p));
+            let msg = p
+                .get("last_assistant_message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| last_assistant_message(p));
             update_run(server, &run.id, |r, tx| {
                 if let Some(m) = &msg {
                     r.last_message = Some(m.chars().take(2000).collect());
                 }
-                tx.event("agent.turn_completed", json!({"run": r.id, "pane": r.pane}), json!({"stop_reason": event}));
+                tx.event(
+                    "agent.turn_completed",
+                    json!({"run": r.id, "pane": r.pane}),
+                    json!({"stop_reason": event}),
+                );
             });
-            set_execution(server, &run.id, Execution::Idle, StateSource::Structured, 1.0, None);
+            set_execution(
+                server,
+                &run.id,
+                Execution::Idle,
+                StateSource::Structured,
+                1.0,
+                None,
+            );
             // A turn ending resolves its open interactions (§2.5 rule 2).
-            let open: Vec<String> = server.with_core(|c| c.model.interactions.iter().filter(|i| i.run == run.id && i.status == InteractionStatus::Open).map(|i| i.id.clone()).collect());
+            let open: Vec<String> = server.with_core(|c| {
+                c.model
+                    .interactions
+                    .iter()
+                    .filter(|i| i.run == run.id && i.status == InteractionStatus::Open)
+                    .map(|i| i.id.clone())
+                    .collect()
+            });
             for id in open {
-                resolve(server, &id, InteractionStatus::ResolvedElsewhere, "turn ended");
+                resolve(
+                    server,
+                    &id,
+                    InteractionStatus::ResolvedElsewhere,
+                    "turn ended",
+                );
             }
             let who = run.name.clone().unwrap_or_else(|| run.harness.clone());
             if !server.pane_focused_by_any(pane) {
-                server.notify("agent_state", Some(pane), &format!("{who} is done"), msg.as_deref().unwrap_or(""), "low");
+                server.notify(
+                    "agent_state",
+                    Some(pane),
+                    &format!("{who} is done"),
+                    msg.as_deref().unwrap_or(""),
+                    "low",
+                );
             }
         }
         "StopFailure" => {
-            let kind = p.get("error_type").or_else(|| p.get("matcher")).or_else(|| p.get("reason")).and_then(Value::as_str).unwrap_or("error").to_string();
-            let to = if kind.contains("rate") { Execution::RateLimited } else { Execution::Error };
-            set_execution(server, &run.id, to, StateSource::Structured, 1.0, Some(kind));
+            let kind = p
+                .get("error_type")
+                .or_else(|| p.get("matcher"))
+                .or_else(|| p.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or("error")
+                .to_string();
+            let to = if kind.contains("rate") {
+                Execution::RateLimited
+            } else {
+                Execution::Error
+            };
+            set_execution(
+                server,
+                &run.id,
+                to,
+                StateSource::Structured,
+                1.0,
+                Some(kind),
+            );
         }
         "Notification" => {
-            let ty = p.get("notification_type").or_else(|| p.get("matcher")).and_then(Value::as_str).unwrap_or("");
+            let ty = p
+                .get("notification_type")
+                .or_else(|| p.get("matcher"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let message = p.get("message").and_then(Value::as_str).unwrap_or("");
             if ty == "idle_prompt" || message.contains("waiting for your input") {
-                set_execution(server, &run.id, Execution::Idle, StateSource::Structured, 1.0, None);
+                set_execution(
+                    server,
+                    &run.id,
+                    Execution::Idle,
+                    StateSource::Structured,
+                    1.0,
+                    None,
+                );
             } else if ty.starts_with("quota_auto_resume") {
-                set_execution(server, &run.id, Execution::RateLimited, StateSource::Structured, 1.0, None);
+                set_execution(
+                    server,
+                    &run.id,
+                    Execution::RateLimited,
+                    StateSource::Structured,
+                    1.0,
+                    None,
+                );
             }
         }
-        "PreCompact" => update_run(server, &run.id, |r, _| r.execution.detail = Some("compacting".into())),
+        "PreCompact" => update_run(server, &run.id, |r, _| {
+            r.execution.detail = Some("compacting".into())
+        }),
         "PostCompact" => update_run(server, &run.id, |r, _| r.execution.detail = None),
         "SessionEnd" => {
             let reason = p.get("reason").and_then(Value::as_str).unwrap_or("");
             if reason != "clear" {
                 update_run(server, &run.id, |r, tx| {
-                    tx.event("agent.session_ended", json!({"run": r.id, "pane": r.pane}), json!({"reason": reason}));
+                    tx.event(
+                        "agent.session_ended",
+                        json!({"run": r.id, "pane": r.pane}),
+                        json!({"reason": reason}),
+                    );
                 });
             }
         }
@@ -620,24 +920,38 @@ fn last_assistant_message(p: &Value) -> Option<String> {
 /// decides (gate mode), or return at once so the native dialog shows (observe mode).
 async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) -> R {
     let run = bound_run(server, pane, h);
-    let Some(mut it) = harness::interaction_from_hook(h, event, p) else { return Ok(json!({"decision": null})) };
+    let Some(mut it) = harness::interaction_from_hook(h, event, p) else {
+        return Ok(json!({"decision": null}));
+    };
     it.run = run.id.clone();
     it.pane = pane.to_string();
     // Questions are answered natively only where the capability is verified (04 §2.3).
     let native = h.answer_native(it.kind);
     // Policy fast path (02 §4): only for approvals the harness lets us gate.
-    let policy = if it.kind == InteractionKind::Approval && native { match_policy(server, &it) } else { None };
+    let policy = if it.kind == InteractionKind::Approval && native {
+        match_policy(server, &it)
+    } else {
+        None
+    };
     let focused = server.pane_focused_by_any(pane);
     let gate_mode = native && (policy.is_some() || !focused);
     it.gate = gate_mode;
-    it.answer_channel = if native { AnswerChannel::Native } else { AnswerChannel::Keystrokes };
+    it.answer_channel = if native {
+        AnswerChannel::Native
+    } else {
+        AnswerChannel::Keystrokes
+    };
     it.answerable = native || h.keystroke_answers(it.kind);
     let (tx_reply, rx_reply) = oneshot::channel::<GateReply>();
     {
         let mut c = server.core.lock().unwrap();
         it.handle = c.next_interaction_handle();
         // Re-attach by native ref (a hook retried after a dropped connection).
-        if let Some(existing) = c.model.interactions.iter().find(|x| x.native_ref.is_some() && x.native_ref == it.native_ref && x.run == run.id) {
+        if let Some(existing) =
+            c.model.interactions.iter().find(|x| {
+                x.native_ref.is_some() && x.native_ref == it.native_ref && x.run == run.id
+            })
+        {
             it.id = existing.id.clone();
             it.handle = existing.handle.clone();
         }
@@ -652,20 +966,39 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
         server.commit(&mut c, tx).map_err(internal)?;
     }
     if let Some((effect, rule)) = policy {
-        let decision = if effect == "allow" { Decision::Allow } else { Decision::Deny };
-        let answer = Answer { decision: Some(decision), choices: vec![], text: Some(format!("{effect} by policy rule {rule}")) };
-        let (json, key) = record_decision(server, &it.id, answer, "policy", None).map_err(|e| err(ErrorKind::Conflict, e))?;
+        let decision = if effect == "allow" {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
+        let answer = Answer {
+            decision: Some(decision),
+            choices: vec![],
+            text: Some(format!("{effect} by policy rule {rule}")),
+        };
+        let (json, key) = record_decision(server, &it.id, answer, "policy", None)
+            .map_err(|e| err(ErrorKind::Conflict, e))?;
         return Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}));
     }
     notify_interaction(server, &it, &run);
     if !gate_mode {
         return Ok(json!({"decision": null, "interaction": it.id, "mode": "observe"}));
     }
-    server.agents.inner.lock().unwrap().gates.insert(it.id.clone(), Gate { tx: tx_reply, pane: pane.to_string() });
+    server.agents.inner.lock().unwrap().gates.insert(
+        it.id.clone(),
+        Gate {
+            tx: tx_reply,
+            pane: pane.to_string(),
+        },
+    );
     let reply = tokio::time::timeout(GATE_TIMEOUT, rx_reply).await;
     match reply {
-        Ok(Ok(GateReply::Decision { json, key })) => Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key})),
-        Ok(Ok(GateReply::NoDecision)) | Ok(Err(_)) => Ok(json!({"decision": null, "interaction": it.id})),
+        Ok(Ok(GateReply::Decision { json, key })) => {
+            Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}))
+        }
+        Ok(Ok(GateReply::NoDecision)) | Ok(Err(_)) => {
+            Ok(json!({"decision": null, "interaction": it.id}))
+        }
         Err(_) => {
             server.agents.inner.lock().unwrap().gates.remove(&it.id);
             // Harness-backed approval: no decision → the native dialog appears (§2.7).
@@ -673,7 +1006,11 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             if let Some(mut x) = c.interaction(&it.id).cloned() {
                 x.gate = false;
                 let mut tx = Tx::new();
-                tx.event("interaction.updated", json!({"interaction": x.id}), json!({"gate": false, "reason": "gate_timeout"}));
+                tx.event(
+                    "interaction.updated",
+                    json!({"interaction": x.id}),
+                    json!({"gate": false, "reason": "gate_timeout"}),
+                );
                 tx.interaction(x);
                 let _ = server.commit(&mut c, tx);
             }
@@ -709,18 +1046,33 @@ fn match_policy(server: &Server, it: &Interaction) -> Option<(String, String)> {
 
 /// Step 1 of the delivery transaction (02 §1.1): record the decision (first writer wins).
 /// Returns the native hook JSON and the idempotency key.
-fn record_decision(server: &Server, id: &str, answer: Answer, by: &str, idem: Option<&str>) -> Result<(Value, String), String> {
+fn record_decision(
+    server: &Server,
+    id: &str,
+    answer: Answer,
+    by: &str,
+    idem: Option<&str>,
+) -> Result<(Value, String), String> {
     let mut c = server.core.lock().unwrap();
-    let Some(mut it) = c.interaction(id).cloned() else { return Err("interaction not found".into()) };
+    let Some(mut it) = c.interaction(id).cloned() else {
+        return Err("interaction not found".into());
+    };
     let key = format!("{}:{}", it.id, it.decision_rev + 1);
     if it.status != InteractionStatus::Open {
         if idem.is_some() && it.answered_by.as_deref() == idem {
             return Ok((Value::Null, key));
         }
-        return Err(format!("already answered by {}", it.answered_by.clone().unwrap_or_else(|| "someone else".into())));
+        return Err(format!(
+            "already answered by {}",
+            it.answered_by
+                .clone()
+                .unwrap_or_else(|| "someone else".into())
+        ));
     }
     let h = c.run(&it.run).and_then(|r| Harness::from_id(&r.harness));
-    let native = h.map(|h| harness::decision_json(h, &it, &answer)).unwrap_or(Value::Null);
+    let native = h
+        .map(|h| harness::decision_json(h, &it, &answer))
+        .unwrap_or(Value::Null);
     it.status = InteractionStatus::Answered;
     it.decision_rev += 1;
     it.delivery = DeliveryState::DecisionRecorded;
@@ -735,7 +1087,11 @@ fn record_decision(server: &Server, id: &str, answer: Answer, by: &str, idem: Op
         json!({"rev": it.decision_rev, "by": by, "decision": answer.decision.map(|d| format!("{d:?}").to_lowercase()), "channel": format!("{:?}", it.answer_channel).to_lowercase()}),
     );
     if by == "policy" {
-        tx.event("policy.rule_matched", json!({"interaction": it.id}), json!({"effect": answer.decision.map(|d| format!("{d:?}").to_lowercase())}));
+        tx.event(
+            "policy.rule_matched",
+            json!({"interaction": it.id}),
+            json!({"effect": answer.decision.map(|d| format!("{d:?}").to_lowercase())}),
+        );
     }
     tx.interaction(it);
     server.commit(&mut c, tx).map_err(|e| format!("{e:#}"))?;
@@ -744,7 +1100,9 @@ fn record_decision(server: &Server, id: &str, answer: Answer, by: &str, idem: Op
 
 fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<String>) {
     let mut c = server.core.lock().unwrap();
-    let Some(mut it) = c.interaction(id).cloned() else { return };
+    let Some(mut it) = c.interaction(id).cloned() else {
+        return;
+    };
     if it.delivery == state {
         return;
     }
@@ -758,7 +1116,11 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
         _ => "interaction.updated",
     };
     let mut tx = Tx::new();
-    tx.event(ev, json!({"interaction": it.id, "pane": it.pane, "run": it.run}), json!({"reason": error}));
+    tx.event(
+        ev,
+        json!({"interaction": it.id, "pane": it.pane, "run": it.run}),
+        json!({"reason": error}),
+    );
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
 }
@@ -766,13 +1128,20 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
 /// `interaction.answer`: record, then deliver natively (held gate) or by verified keystrokes.
 async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let id = crate::api::req(p, "interaction")?;
-    let it = server.with_core(|c| c.interaction(id).cloned()).ok_or_else(|| not_found("interaction", id))?;
+    let it = server
+        .with_core(|c| c.interaction(id).cloned())
+        .ok_or_else(|| not_found("interaction", id))?;
     // Retrieving vs authorizing (09 §5.1.1): a pane may not answer its own interaction.
     if ctx.pane_scope.as_deref() == Some(it.pane.as_str()) {
-        return Err(err(ErrorKind::PermissionDenied, "self_answer_forbidden").details(json!({"interaction": it.handle})));
+        return Err(err(ErrorKind::PermissionDenied, "self_answer_forbidden")
+            .details(json!({"interaction": it.handle})));
     }
     if !it.answerable {
-        return Err(err(ErrorKind::Unsupported, "this dialog can only be answered in the pane").details(json!({"fallback": "focus the pane"})));
+        return Err(err(
+            ErrorKind::Unsupported,
+            "this dialog can only be answered in the pane",
+        )
+        .details(json!({"fallback": "focus the pane"})));
     }
     let decision = match s(p, "decision") {
         Some("allow") => Some(Decision::Allow),
@@ -785,7 +1154,10 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if let Some(m) = p.get("choices").and_then(Value::as_object) {
         for (q, v) in m {
             let opts: Vec<String> = match v {
-                Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                Value::Array(a) => a
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect(),
                 Value::String(s) => vec![s.clone()],
                 _ => vec![],
             };
@@ -795,17 +1167,30 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if decision.is_none() && choices.is_empty() && s(p, "text").is_none() {
         return Err(invalid("decision, choices or text required"));
     }
-    let answer = Answer { decision, choices, text: s(p, "text").map(str::to_string) };
+    let answer = Answer {
+        decision,
+        choices,
+        text: s(p, "text").map(str::to_string),
+    };
     let by = format!("{}:{}", ctx.kind, ctx.client_id);
     let idem = s(p, "idempotency_key");
-    let (native, key) = record_decision(server, id, answer.clone(), &by, idem).map_err(|e| err(ErrorKind::Conflict, e))?;
+    let (native, key) = record_decision(server, id, answer.clone(), &by, idem)
+        .map_err(|e| err(ErrorKind::Conflict, e))?;
     let gate = server.agents.inner.lock().unwrap().gates.remove(&it.id);
     let channel;
     if let Some(g) = gate {
         channel = "native";
         set_delivery(server, &it.id, DeliveryState::Delivering, None);
-        if g.tx.send(GateReply::Decision { json: native, key }).is_err() {
-            set_delivery(server, &it.id, DeliveryState::DeliveryUnknown, Some("hook disconnected".into()));
+        if g.tx
+            .send(GateReply::Decision { json: native, key })
+            .is_err()
+        {
+            set_delivery(
+                server,
+                &it.id,
+                DeliveryState::DeliveryUnknown,
+                Some("hook disconnected".into()),
+            );
         }
     } else {
         channel = "keystrokes";
@@ -822,14 +1207,33 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 }
 
 /// Verified keystroke delivery (04 §8): best effort; `delivered` only when the dialog closes.
-async fn deliver_keystrokes(server: &Arc<Server>, id: &str, answer: &Answer) -> (DeliveryState, Option<String>) {
-    let Some(it) = server.with_core(|c| c.model.interactions.iter().find(|i| i.id == id).cloned().or_else(|| c.store.find::<Interaction>("interaction", id).ok().flatten())) else {
+async fn deliver_keystrokes(
+    server: &Arc<Server>,
+    id: &str,
+    answer: &Answer,
+) -> (DeliveryState, Option<String>) {
+    let Some(it) = server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .find(|i| i.id == id)
+            .cloned()
+            .or_else(|| {
+                c.store
+                    .find::<Interaction>("interaction", id)
+                    .ok()
+                    .flatten()
+            })
+    }) else {
         return (DeliveryState::Failed, Some("interaction gone".into()));
     };
-    let Some(h) = server.with_core(|c| c.run(&it.run).and_then(|r| Harness::from_id(&r.harness))) else {
+    let Some(h) = server.with_core(|c| c.run(&it.run).and_then(|r| Harness::from_id(&r.harness)))
+    else {
         return (DeliveryState::Failed, Some("run gone".into()));
     };
-    let Some(rt) = server.pane_rt(&it.pane) else { return (DeliveryState::Failed, Some("pane gone".into())) };
+    let Some(rt) = server.pane_rt(&it.pane) else {
+        return (DeliveryState::Failed, Some("pane gone".into()));
+    };
     let screen_text = || rt.screen.lock().unwrap().engine.screen_text();
     let before = screen_text();
     let Some(dialog) = screen::evaluate(h, &before).dialog else {
@@ -838,7 +1242,13 @@ async fn deliver_keystrokes(server: &Arc<Server>, id: &str, answer: &Answer) -> 
     let Some(keys) = screen::keys_for(h, &dialog, &it, answer) else {
         return (DeliveryState::Failed, Some("selection_mismatch".into()));
     };
-    server.agents.inner.lock().unwrap().locks.insert(it.pane.clone(), Instant::now());
+    server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .locks
+        .insert(it.pane.clone(), Instant::now());
     let modes = rt.screen.lock().unwrap().engine.input_modes();
     let mut bytes = Vec::new();
     for k in &keys {
@@ -856,11 +1266,17 @@ async fn deliver_keystrokes(server: &Arc<Server>, id: &str, answer: &Answer) -> 
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let now = screen_text();
-        if screen::evaluate(h, &now).dialog.is_none_or(|d| d.fingerprint != dialog.fingerprint) {
+        if screen::evaluate(h, &now)
+            .dialog
+            .is_none_or(|d| d.fingerprint != dialog.fingerprint)
+        {
             return (DeliveryState::Delivered, None);
         }
     }
-    (DeliveryState::DeliveryUnknown, Some("dialog still visible".into()))
+    (
+        DeliveryState::DeliveryUnknown,
+        Some("dialog still visible".into()),
+    )
 }
 
 // ---- agent.* ------------------------------------------------------------------------------------
@@ -869,27 +1285,61 @@ fn run_json(c: &Core, r: &AgentRun) -> Value {
     let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
     let pane = c.pane(&r.pane);
     v["pane_handle"] = json!(pane.map(|p| p.handle.clone()));
-    v["workspace"] = json!(pane.and_then(|p| c.ws(&p.workspace)).map(|w| w.display_name().to_string()));
-    v["open_interactions"] = json!(c.model.interactions.iter().filter(|i| i.run == r.id && i.status == InteractionStatus::Open).count());
-    let seen = c.store.reads("local").unwrap_or_default().into_iter().find(|(p, _)| p == &r.pane).map(|(_, s)| s).unwrap_or(0);
+    v["workspace"] = json!(
+        pane.and_then(|p| c.ws(&p.workspace))
+            .map(|w| w.display_name().to_string())
+    );
+    v["open_interactions"] = json!(
+        c.model
+            .interactions
+            .iter()
+            .filter(|i| i.run == r.id && i.status == InteractionStatus::Open)
+            .count()
+    );
+    let seen = c
+        .store
+        .reads("local")
+        .unwrap_or_default()
+        .into_iter()
+        .find(|(p, _)| p == &r.pane)
+        .map(|(_, s)| s)
+        .unwrap_or(0);
     v["done"] = json!(r.execution.value == Execution::Idle && r.done_rev > seen);
     v
 }
 
-fn resolve_run(server: &Server, ctx: &Ctx, target: Option<&str>) -> Result<AgentRun, vk_proto::rpc::RpcError> {
+fn resolve_run(
+    server: &Server,
+    ctx: &Ctx,
+    target: Option<&str>,
+) -> Result<AgentRun, vk_proto::rpc::RpcError> {
     if let Some(t) = target
         && let Some(r) = server.with_core(|c| c.run(t).cloned())
     {
         return Ok(r);
     }
     let pane = resolve_pane(server, ctx, target)?;
-    server.with_core(|c| c.run_for_pane(&pane.id).cloned()).ok_or_else(|| not_found("run", target.unwrap_or("@current")))
+    server
+        .with_core(|c| c.run_for_pane(&pane.id).cloned())
+        .ok_or_else(|| not_found("run", target.unwrap_or("@current")))
 }
 
-pub async fn start_in_pane(server: &Arc<Server>, pane: &str, harness: &str, name: Option<&str>, prompt: Option<&str>, args: &[String], task: Option<&str>) -> Result<Value, vk_proto::rpc::RpcError> {
-    let h = Harness::from_id(harness).ok_or_else(|| invalid(format!("unknown harness {harness}")))?;
+pub async fn start_in_pane(
+    server: &Arc<Server>,
+    pane: &str,
+    harness: &str,
+    name: Option<&str>,
+    prompt: Option<&str>,
+    args: &[String],
+    task: Option<&str>,
+) -> Result<Value, vk_proto::rpc::RpcError> {
+    let h =
+        Harness::from_id(harness).ok_or_else(|| invalid(format!("unknown harness {harness}")))?;
     if let Some(n) = name {
-        let valid = n.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && n.len() <= 32 && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        let valid = n.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && n.len() <= 32
+            && n.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
         if !valid {
             return Err(invalid("agent names: [a-z][a-z0-9_-]{0,31}"));
         }
@@ -898,7 +1348,8 @@ pub async fn start_in_pane(server: &Arc<Server>, pane: &str, harness: &str, name
         }
     }
     if server.with_core(|c| c.run_for_pane(pane).is_some()) {
-        return Err(err(ErrorKind::Conflict, "pane_busy").details(json!({"reason": "an agent already runs in this pane"})));
+        return Err(err(ErrorKind::Conflict, "pane_busy")
+            .details(json!({"reason": "an agent already runs in this pane"})));
     }
     let session_id = h.preassign_session_id();
     let argv = h.launch_argv(session_id.as_deref(), args, prompt);
@@ -914,13 +1365,23 @@ pub async fn start_in_pane(server: &Arc<Server>, pane: &str, harness: &str, name
         }
         let mut tx = Tx::new();
         tx.counters = true;
-        tx.event("agent.started", json!({"run": run.id, "pane": pane}), json!({"harness": h.id(), "via": "vibeke", "argv": argv}));
+        tx.event(
+            "agent.started",
+            json!({"run": run.id, "pane": pane}),
+            json!({"harness": h.id(), "via": "vibeke", "argv": argv}),
+        );
         tx.run(run.clone());
         server.commit(&mut c, tx).map_err(internal)?;
         run
     };
     let line = format!("{}\r", harness::shell_join(&argv));
-    crate::render::write_and_ack(server, pane, server.next_internal_input_id(), line.into_bytes()).await;
+    crate::render::write_and_ack(
+        server,
+        pane,
+        server.next_internal_input_id(),
+        line.into_bytes(),
+    )
+    .await;
     // Ready when the harness reports itself (SessionStart) or its input box shows.
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
@@ -940,37 +1401,80 @@ async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let modes = crate::render::input_modes(server, &run.pane);
     let mut m = modes;
     m.bracketed_paste = modes.bracketed_paste;
-    let mut bytes = if modes.bracketed_paste { vk_term::encode::encode_paste(text, &m) } else { text.as_bytes().to_vec() };
+    let mut bytes = if modes.bracketed_paste {
+        vk_term::encode::encode_paste(text, &m)
+    } else {
+        text.as_bytes().to_vec()
+    };
     let was_working = run.execution.value == Execution::Working;
     let rev0 = run.turns_completed;
-    crate::render::write_and_ack(server, &run.pane, server.next_internal_input_id(), std::mem::take(&mut bytes)).await;
+    crate::render::write_and_ack(
+        server,
+        &run.pane,
+        server.next_internal_input_id(),
+        std::mem::take(&mut bytes),
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(80)).await;
-    crate::render::write_and_ack(server, &run.pane, server.next_internal_input_id(), b"\r".to_vec()).await;
+    crate::render::write_and_ack(
+        server,
+        &run.pane,
+        server.next_internal_input_id(),
+        b"\r".to_vec(),
+    )
+    .await;
     // Stall detection (07 §1.4): no lifecycle change within 5 s.
     if !was_working {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut started = false;
         while Instant::now() < deadline {
-            let st = server.with_core(|c| c.run(&run.id).map(|r| (r.execution.value.clone(), r.turns_completed)));
-            if st.as_ref().is_some_and(|(e, t)| *e == Execution::Working || *t > rev0) {
+            let st = server.with_core(|c| {
+                c.run(&run.id)
+                    .map(|r| (r.execution.value.clone(), r.turns_completed))
+            });
+            if st
+                .as_ref()
+                .is_some_and(|(e, t)| *e == Execution::Working || *t > rev0)
+            {
                 started = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         if !started && run.integration == "hooks" {
-            return Err(err(ErrorKind::Stalled, "agent_prompt_stalled").details(json!({"run": run.handle})));
+            return Err(
+                err(ErrorKind::Stalled, "agent_prompt_stalled").details(json!({"run": run.handle}))
+            );
         }
     }
     if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
-        let until = vec!["idle".to_string(), "needs_approval".into(), "needs_answer".into(), "error".into(), "exited".into()];
-        return wait(server, &run, &until, u(p, "timeout_ms").unwrap_or(600_000), Some(rev0)).await;
+        let until = vec![
+            "idle".to_string(),
+            "needs_approval".into(),
+            "needs_answer".into(),
+            "error".into(),
+            "exited".into(),
+        ];
+        return wait(
+            server,
+            &run,
+            &until,
+            u(p, "timeout_ms").unwrap_or(600_000),
+            Some(rev0),
+        )
+        .await;
     }
     let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
     Ok(json!({"run": r}))
 }
 
-async fn wait(server: &Arc<Server>, run: &AgentRun, until: &[String], timeout_ms: u64, turns_at_start: Option<u32>) -> R {
+async fn wait(
+    server: &Arc<Server>,
+    run: &AgentRun,
+    until: &[String],
+    timeout_ms: u64,
+    turns_at_start: Option<u32>,
+) -> R {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let start_turns = turns_at_start.unwrap_or(run.turns_completed);
     let mut rx = server.events.subscribe();
@@ -978,14 +1482,24 @@ async fn wait(server: &Arc<Server>, run: &AgentRun, until: &[String], timeout_ms
         let (state, ints, turns, alive) = server.with_core(|c| match c.run(&run.id) {
             Some(r) => (
                 r.execution.value.clone(),
-                c.model.interactions.iter().filter(|i| i.run == r.id && i.status == InteractionStatus::Open).cloned().collect::<Vec<_>>(),
+                c.model
+                    .interactions
+                    .iter()
+                    .filter(|i| i.run == r.id && i.status == InteractionStatus::Open)
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 r.turns_completed,
                 true,
             ),
             None => (Execution::Exited, vec![], 0, false),
         });
         let hit = until.iter().find(|cond| match cond.as_str() {
-            "needs_approval" => ints.iter().any(|i| matches!(i.kind, InteractionKind::Approval | InteractionKind::PlanReview)),
+            "needs_approval" => ints.iter().any(|i| {
+                matches!(
+                    i.kind,
+                    InteractionKind::Approval | InteractionKind::PlanReview
+                )
+            }),
             "needs_answer" => ints.iter().any(|i| i.kind == InteractionKind::Question),
             "done" => state == Execution::Idle && turns > start_turns,
             "idle" => state == Execution::Idle && (turns > start_turns || turns_at_start.is_none()),
@@ -994,11 +1508,14 @@ async fn wait(server: &Arc<Server>, run: &AgentRun, until: &[String], timeout_ms
         });
         if let Some(h) = hit {
             let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
-            return Ok(json!({"run": r, "state": state.as_str(), "condition": h, "interaction": ints.first()}));
+            return Ok(
+                json!({"run": r, "state": state.as_str(), "condition": h, "interaction": ints.first()}),
+            );
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(err(ErrorKind::Timeout, "condition not reached").details(json!({"last_state": state.as_str()})));
+            return Err(err(ErrorKind::Timeout, "condition not reached")
+                .details(json!({"last_state": state.as_str()})));
         }
         let _ = tokio::time::timeout(left.min(Duration::from_millis(500)), rx.recv()).await;
     }
@@ -1015,12 +1532,20 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
         Some(p) => p,
         None => {
             // Prefer the pane it ran in (respawned after reboot) if it is a free shell.
-            let same = server.with_core(|c| c.pane(&run.pane).filter(|_| c.run_for_pane(&run.pane).is_none()).map(|p| p.id.clone()));
+            let same = server.with_core(|c| {
+                c.pane(&run.pane)
+                    .filter(|_| c.run_for_pane(&run.pane).is_none())
+                    .map(|p| p.id.clone())
+            });
             match same {
                 Some(p) => p,
                 None => {
-                    let ws = server.with_core(|c| c.model.workspaces.first().map(|w| w.id.clone())).ok_or_else(|| invalid("no workspace"))?;
-                    let (_, p) = server.create_tab(&ws, run.cwd.as_deref(), None, None, None).map_err(internal)?;
+                    let ws = server
+                        .with_core(|c| c.model.workspaces.first().map(|w| w.id.clone()))
+                        .ok_or_else(|| invalid("no workspace"))?;
+                    let (_, p) = server
+                        .create_tab(&ws, run.cwd.as_deref(), None, None, None)
+                        .map_err(internal)?;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     p.id
                 }
@@ -1029,7 +1554,13 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
     };
     let h = Harness::from_id(&run.harness).ok_or_else(|| invalid("unknown harness"))?;
     let line = format!("{}\r", harness::shell_join(&run.resume_argv));
-    crate::render::write_and_ack(server, &pane, server.next_internal_input_id(), line.into_bytes()).await;
+    crate::render::write_and_ack(
+        server,
+        &pane,
+        server.next_internal_input_id(),
+        line.into_bytes(),
+    )
+    .await;
     let new = {
         let mut c = server.core.lock().unwrap();
         let mut r = new_run(&mut c, &pane, h, "process", StateSource::Process, 0.6);
@@ -1039,7 +1570,11 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
         r.task = run.task.clone();
         let mut tx = Tx::new();
         tx.counters = true;
-        tx.event("agent.started", json!({"run": r.id, "pane": pane}), json!({"harness": h.id(), "via": "resume", "resumed_from": run.id}));
+        tx.event(
+            "agent.started",
+            json!({"run": r.id, "pane": pane}),
+            json!({"harness": h.id(), "via": "resume", "resumed_from": run.id}),
+        );
         tx.run(r.clone());
         server.commit(&mut c, tx).map_err(internal)?;
         r
@@ -1050,7 +1585,8 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "agent.list" => {
-            let ws = s(p, "workspace").map(|w| crate::api::resolve_ws(server, ctx, Some(w)).map(|w| w.id));
+            let ws = s(p, "workspace")
+                .map(|w| crate::api::resolve_ws(server, ctx, Some(w)).map(|w| w.id));
             let ws = match ws.transpose() {
                 Ok(w) => w,
                 Err(e) => return Some(Err(e)),
@@ -1061,7 +1597,10 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     .runs
                     .iter()
                     .filter(|r| harness.is_none_or(|h| r.harness == h))
-                    .filter(|r| ws.as_ref().is_none_or(|w| c.pane(&r.pane).is_some_and(|p| &p.workspace == w)))
+                    .filter(|r| {
+                        ws.as_ref()
+                            .is_none_or(|w| c.pane(&r.pane).is_some_and(|p| &p.workspace == w))
+                    })
                     .map(|r| run_json(c, r))
                     .collect()
             });
@@ -1069,7 +1608,13 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         }
         "agent.get" => resolve_run(server, ctx, s(p, "target")).map(|r| {
             server.with_core(|c| {
-                let ints: Vec<Interaction> = c.model.interactions.iter().filter(|i| i.run == r.id && i.status == InteractionStatus::Open).cloned().collect();
+                let ints: Vec<Interaction> = c
+                    .model
+                    .interactions
+                    .iter()
+                    .filter(|i| i.run == r.id && i.status == InteractionStatus::Open)
+                    .cloned()
+                    .collect();
                 json!({"run": run_json(c, &r), "pane": c.pane(&r.pane), "open_interactions": ints})
             })
         }),
@@ -1078,30 +1623,86 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            let args: Vec<String> = p.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-            start_in_pane(server, &pane.id, s(p, "harness").unwrap_or("claude"), s(p, "name"), s(p, "prompt"), &args, None).await
+            let args: Vec<String> = p
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            start_in_pane(
+                server,
+                &pane.id,
+                s(p, "harness").unwrap_or("claude"),
+                s(p, "name"),
+                s(p, "prompt"),
+                &args,
+                None,
+            )
+            .await
         }
         "agent.spawn" => {
             let base = match resolve_pane(server, ctx, s(p, "split_of").or(s(p, "pane"))) {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            let dir = vk_proto::layout::Direction::parse(s(p, "direction").unwrap_or("right")).unwrap_or(vk_proto::layout::Direction::Right);
-            let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(false).then_some(ctx.client_id.as_str());
-            let pane = match server.split_pane(&base.id, dir, 0.5, s(p, "cwd"), None, None, focus, if ctx.pane_scope.is_some() { "agent" } else { "user" }) {
+            let dir = vk_proto::layout::Direction::parse(s(p, "direction").unwrap_or("right"))
+                .unwrap_or(vk_proto::layout::Direction::Right);
+            let focus = p
+                .get("focus")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                .then_some(ctx.client_id.as_str());
+            let pane = match server.split_pane(
+                &base.id,
+                dir,
+                0.5,
+                s(p, "cwd"),
+                None,
+                None,
+                focus,
+                if ctx.pane_scope.is_some() {
+                    "agent"
+                } else {
+                    "user"
+                },
+            ) {
                 Ok(p) => p,
                 Err(e) => return Some(Err(internal(e))),
             };
             // Let the shell reach its prompt.
             tokio::time::sleep(Duration::from_millis(400)).await;
-            let args: Vec<String> = p.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-            let r = start_in_pane(server, &pane.id, s(p, "harness").unwrap_or("claude"), s(p, "name"), None, &args, None).await;
+            let args: Vec<String> = p
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let r = start_in_pane(
+                server,
+                &pane.id,
+                s(p, "harness").unwrap_or("claude"),
+                s(p, "name"),
+                None,
+                &args,
+                None,
+            )
+            .await;
             if let (Ok(_), Some(text)) = (&r, s(p, "prompt")) {
                 let mut q = json!({"target": pane.id, "text": text});
                 if let Some(w) = p.get("wait") {
                     q["wait"] = w.clone();
                 }
-                return Some(prompt(server, ctx, &q).await.map(|v| json!({"pane": pane, "run": v["run"]})));
+                return Some(
+                    prompt(server, ctx, &q)
+                        .await
+                        .map(|v| json!({"pane": pane, "run": v["run"]})),
+                );
             }
             r.map(|v| json!({"pane": pane, "run": v["run"]}))
         }
@@ -1109,34 +1710,73 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "agent.wait" => match resolve_run(server, ctx, s(p, "target")) {
             Ok(r) => {
                 let until: Vec<String> = match p.get("until") {
-                    Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                    Some(Value::Array(a)) => a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
                     Some(Value::String(s)) => s.split(',').map(str::to_string).collect(),
-                    _ => ["idle", "done", "needs_approval", "needs_answer", "error", "exited"].iter().map(|s| s.to_string()).collect(),
+                    _ => [
+                        "idle",
+                        "done",
+                        "needs_approval",
+                        "needs_answer",
+                        "error",
+                        "exited",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 };
-                wait(server, &r, &until, u(p, "timeout_ms").unwrap_or(600_000), None).await
+                wait(
+                    server,
+                    &r,
+                    &until,
+                    u(p, "timeout_ms").unwrap_or(600_000),
+                    None,
+                )
+                .await
             }
             Err(e) => Err(e),
         },
         "agent.interrupt" => match resolve_run(server, ctx, s(p, "target")) {
             Ok(r) => {
-                crate::render::write_and_ack(server, &r.pane, server.next_internal_input_id(), b"\x1b".to_vec()).await;
+                crate::render::write_and_ack(
+                    server,
+                    &r.pane,
+                    server.next_internal_input_id(),
+                    b"\x1b".to_vec(),
+                )
+                .await;
                 Ok(json!({"run": r}))
             }
             Err(e) => Err(e),
         },
         "agent.send_keys" => match resolve_run(server, ctx, s(p, "target")) {
             Ok(r) => {
-                let keys = p.get("keys").and_then(Value::as_array).cloned().unwrap_or_default();
+                let keys = p
+                    .get("keys")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 let modes = crate::render::input_modes(server, &r.pane);
                 let mut bytes = Vec::new();
                 for k in &keys {
                     let k = k.as_str().unwrap_or_default();
                     match vk_term::keygrammar::parse_key(k) {
                         Ok(ev) => bytes.extend(vk_term::encode::encode_key(&ev, &modes)),
-                        Err(e) => return Some(Err(err(ErrorKind::InvalidKey, e.to_string()).details(json!({"key": k})))),
+                        Err(e) => {
+                            return Some(Err(err(ErrorKind::InvalidKey, e.to_string())
+                                .details(json!({"key": k}))));
+                        }
                     }
                 }
-                crate::render::write_and_ack(server, &r.pane, server.next_internal_input_id(), bytes).await;
+                crate::render::write_and_ack(
+                    server,
+                    &r.pane,
+                    server.next_internal_input_id(),
+                    bytes,
+                )
+                .await;
                 Ok(json!({}))
             }
             Err(e) => Err(e),
@@ -1145,17 +1785,31 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Ok(r) => {
                 let source = s(p, "source").unwrap_or("recent");
                 if source == "transcript" {
-                    let text = r.transcript_path.as_deref().map(|t| harness::transcript_tail(std::path::Path::new(t), u(p, "lines").unwrap_or(20) as usize)).unwrap_or_default();
+                    let text = r
+                        .transcript_path
+                        .as_deref()
+                        .map(|t| {
+                            harness::transcript_tail(
+                                std::path::Path::new(t),
+                                u(p, "lines").unwrap_or(20) as usize,
+                            )
+                        })
+                        .unwrap_or_default();
                     return Some(Ok(json!({"text": text, "source": "transcript"})));
                 }
-                Ok(json!({"text": crate::api::read_text(server, &r.pane, source, u(p, "lines").unwrap_or(200) as usize), "source": source}))
+                Ok(
+                    json!({"text": crate::api::read_text(server, &r.pane, source, u(p, "lines").unwrap_or(200) as usize), "source": source}),
+                )
             }
             Err(e) => Err(e),
         },
         "agent.transcript" => match resolve_run(server, ctx, s(p, "target")) {
             Ok(r) => match r.transcript_path {
-                Some(t) => Ok(json!({"turns": harness::transcript_turns(std::path::Path::new(&t), u(p, "limit").unwrap_or(20) as usize)})),
-                None => Err(err(ErrorKind::Unsupported, "no transcript for this run").details(json!({"fallback": "agent.read"}))),
+                Some(t) => Ok(
+                    json!({"turns": harness::transcript_turns(std::path::Path::new(&t), u(p, "limit").unwrap_or(20) as usize)}),
+                ),
+                None => Err(err(ErrorKind::Unsupported, "no transcript for this run")
+                    .details(json!({"fallback": "agent.read"}))),
             },
             Err(e) => Err(e),
         },
@@ -1163,7 +1817,12 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Ok(r) => {
                 let name = s(p, "name").map(str::to_string).filter(|n| !n.is_empty());
                 if let Some(n) = &name
-                    && server.with_core(|c| c.model.runs.iter().any(|x| x.id != r.id && x.name.as_deref() == Some(n)))
+                    && server.with_core(|c| {
+                        c.model
+                            .runs
+                            .iter()
+                            .any(|x| x.id != r.id && x.name.as_deref() == Some(n))
+                    })
                 {
                     return Some(Err(err(ErrorKind::Conflict, "name_taken")));
                 }
@@ -1208,18 +1867,28 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            let state = s(p, "state").and_then(Execution::parse).ok_or_else(|| invalid("state: working|idle|error|…"));
+            let state = s(p, "state")
+                .and_then(Execution::parse)
+                .ok_or_else(|| invalid("state: working|idle|error|…"));
             let state = match state {
                 Ok(st) => st,
                 Err(e) => return Some(Err(e)),
             };
-            let h = Harness::from_id(s(p, "harness").unwrap_or("claude")).unwrap_or(Harness::Claude);
+            let h =
+                Harness::from_id(s(p, "harness").unwrap_or("claude")).unwrap_or(Harness::Claude);
             let run = server.with_core(|c| c.run_for_pane(&pane.id).cloned());
             let run = match run {
                 Some(r) => r,
                 None => bound_run(server, &pane.id, h),
             };
-            set_execution(server, &run.id, state, source_of("self_report"), 0.9, s(p, "message").map(str::to_string));
+            set_execution(
+                server,
+                &run.id,
+                state,
+                source_of("self_report"),
+                0.9,
+                s(p, "message").map(str::to_string),
+            );
             Ok(json!({}))
         }
 
@@ -1227,9 +1896,21 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "interaction.list" => {
             let status = s(p, "status").unwrap_or("open");
             let mut list: Vec<Value> = server.with_core(|c| {
-                let mut v: Vec<Interaction> = c.model.interactions.iter().filter(|i| status == "all" || (status == "open" && i.status == InteractionStatus::Open)).cloned().collect();
+                let mut v: Vec<Interaction> = c
+                    .model
+                    .interactions
+                    .iter()
+                    .filter(|i| {
+                        status == "all" || (status == "open" && i.status == InteractionStatus::Open)
+                    })
+                    .cloned()
+                    .collect();
                 if status != "open" {
-                    v.extend(c.store.load_closed::<Interaction>("interaction", 100).unwrap_or_default());
+                    v.extend(
+                        c.store
+                            .load_closed::<Interaction>("interaction", 100)
+                            .unwrap_or_default(),
+                    );
                 }
                 v.sort_by_key(|i| i.opened_at_ms);
                 v.iter()
@@ -1249,7 +1930,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "interaction.get" => {
             let id = s(p, "interaction").unwrap_or("");
             server
-                .with_core(|c| c.interaction(id).cloned().or_else(|| c.store.find::<Interaction>("interaction", id).ok().flatten()))
+                .with_core(|c| {
+                    c.interaction(id).cloned().or_else(|| {
+                        c.store
+                            .find::<Interaction>("interaction", id)
+                            .ok()
+                            .flatten()
+                    })
+                })
                 .map(|i| json!({"interaction": i}))
                 .ok_or_else(|| not_found("interaction", id))
         }
@@ -1268,9 +1956,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         // ---- adapter transport ------------------------------------------------------------
         "adapter.signal" | "adapter.gate" => {
             let Some(pane) = ctx.pane_scope.clone() else {
-                return Some(Err(err(ErrorKind::PermissionDenied, "adapter methods need a pane token")));
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "adapter methods need a pane token",
+                )));
             };
-            let Some(h) = s(p, "harness").and_then(Harness::from_id) else { return Some(Ok(json!({}))) };
+            let Some(h) = s(p, "harness").and_then(Harness::from_id) else {
+                return Some(Ok(json!({})));
+            };
             let event = s(p, "event").unwrap_or("").to_string();
             let payload = p.get("payload").cloned().unwrap_or(Value::Null);
             if method == "adapter.signal" {
@@ -1298,5 +1991,10 @@ fn subject(p: &Pane) -> Value {
 
 #[cfg(test)]
 pub(crate) fn harness_tests_blank() -> Interaction {
-    harness::interaction_from_hook(Harness::Claude, "PermissionRequest", &json!({"tool_name": "Bash", "tool_input": {"command": "x"}})).unwrap()
+    harness::interaction_from_hook(
+        Harness::Claude,
+        "PermissionRequest",
+        &json!({"tool_name": "Bash", "tool_input": {"command": "x"}}),
+    )
+    .unwrap()
 }

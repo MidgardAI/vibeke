@@ -8,17 +8,27 @@ use std::time::{Duration, Instant};
 use vk_term::Engine;
 
 pub fn ptyshot(args: &[String]) -> i32 {
-    let get = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    let get = |k: &str| {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
     let cols: u16 = get("--cols").and_then(|v| v.parse().ok()).unwrap_or(120);
     let rows: u16 = get("--rows").and_then(|v| v.parse().ok()).unwrap_or(36);
     let settle: u64 = get("--settle").and_then(|v| v.parse().ok()).unwrap_or(600);
     let keys = get("--keys").unwrap_or_default();
     let Some(sep) = args.iter().position(|a| a == "--") else {
-        eprintln!("vibeke debug ptyshot [--cols N --rows N --keys SCRIPT --settle MS] -- cmd args…");
+        eprintln!(
+            "vibeke debug ptyshot [--cols N --rows N --keys SCRIPT --settle MS] -- cmd args…"
+        );
         return 2;
     };
     let argv: Vec<String> = args[sep + 1..].to_vec();
-    let env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "VIBEKE" && k != "VIBEKE_SESSION").chain([("TERM".into(), "xterm-256color".into())]).collect();
+    let env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k != "VIBEKE" && k != "VIBEKE_SESSION")
+        .chain([("TERM".into(), "xterm-256color".into())])
+        .collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
     let (pty, mut child) = match vk_hold::pty::spawn(&argv, &cwd, &env, cols, rows) {
         Ok(x) => x,
@@ -64,8 +74,17 @@ pub fn ptyshot(args: &[String]) -> i32 {
                 buf.clear();
                 pump(&mut engine, &mut fx, Duration::from_millis(50));
             }
-            if let Some(ms) = tok.strip_prefix("sleep:") {
-                pump(&mut engine, &mut fx, Duration::from_millis(ms.parse().unwrap_or(100)));
+            if let Some(text) = tok.strip_prefix("paste:") {
+                // What a host terminal sends for a drop/paste when bracketed paste is on.
+                let b = format!("\x1b[200~{text}\x1b[201~");
+                let _ = rustix::io::write(&pty.master, b.as_bytes());
+                pump(&mut engine, &mut fx, Duration::from_millis(100));
+            } else if let Some(ms) = tok.strip_prefix("sleep:") {
+                pump(
+                    &mut engine,
+                    &mut fx,
+                    Duration::from_millis(ms.parse().unwrap_or(100)),
+                );
             } else if let Some(t) = tok.strip_prefix("wait:") {
                 let end = Instant::now() + Duration::from_secs(10);
                 while !engine.screen_text().contains(t) && Instant::now() < end {

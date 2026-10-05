@@ -13,14 +13,23 @@ fn gate_capable(harness: &str, event: &str, payload: &Value) -> bool {
     match (harness, event) {
         ("claude", "PermissionRequest") | ("codex", "PermissionRequest") => true,
         ("claude", "PreToolUse") => {
-            let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or("");
+            let tool = payload
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             tool == "AskUserQuestion"
         }
         _ => false,
     }
 }
 
-fn call(stream: &mut UnixStream, rd: &mut BufReader<UnixStream>, id: u64, method: &str, params: Value) -> Option<Value> {
+fn call(
+    stream: &mut UnixStream,
+    rd: &mut BufReader<UnixStream>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Option<Value> {
     let req = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
     let mut line = serde_json::to_string(&req).ok()?;
     line.push('\n');
@@ -38,24 +47,39 @@ fn call(stream: &mut UnixStream, rd: &mut BufReader<UnixStream>, id: u64, method
 }
 
 pub fn main(args: &[String]) -> i32 {
-    let (Some(harness), Some(event)) = (args.first(), args.get(1)) else { return 0 };
+    let (Some(harness), Some(event)) = (args.first(), args.get(1)) else {
+        return 0;
+    };
     if std::env::var("VIBEKE").as_deref() != Ok("1") {
         return 0;
     }
-    let (Ok(socket), Ok(token)) = (std::env::var("VIBEKE_SOCKET"), std::env::var("VIBEKE_PANE_TOKEN")) else { return 0 };
+    let (Ok(socket), Ok(token)) = (
+        std::env::var("VIBEKE_SOCKET"),
+        std::env::var("VIBEKE_PANE_TOKEN"),
+    ) else {
+        return 0;
+    };
     let mut input = String::new();
     let _ = std::io::stdin().take(MAX_STDIN).read_to_string(&mut input);
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
     if let Some(dir) = std::env::var_os("VIBEKE_HOOK_TEE") {
         // Golden-corpus recording mode (04 §12.1).
         let path = std::path::Path::new(&dir).join(format!("{harness}.jsonl"));
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{}", json!({"event": event, "payload": payload}));
         }
     }
-    let Ok(mut stream) = UnixStream::connect(&socket) else { return 0 };
+    let Ok(mut stream) = UnixStream::connect(&socket) else {
+        return 0;
+    };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let Ok(rd_stream) = stream.try_clone() else { return 0 };
+    let Ok(rd_stream) = stream.try_clone() else {
+        return 0;
+    };
     let mut rd = BufReader::new(rd_stream);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     if call(&mut stream, &mut rd, 1, "client.hello", json!({"client": "vibeke-hook", "kind": "agent", "token": token, "version": vk_proto::VERSION})).is_none() {
@@ -67,12 +91,22 @@ pub fn main(args: &[String]) -> i32 {
         return 0;
     }
     // Gate: may wait up to the hook timeout for a decision (or a release on focus).
-    let _ = rd.get_ref().set_read_timeout(Some(Duration::from_secs(1800)));
-    let Some(result) = call(&mut stream, &mut rd, 2, "adapter.gate", params) else { return 0 };
+    let _ = rd
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(1800)));
+    let Some(result) = call(&mut stream, &mut rd, 2, "adapter.gate", params) else {
+        return 0;
+    };
     if let Some(decision) = result.get("decision").filter(|d| d.is_object()) {
         // Ack first: the server marks delivery once the harness has the decision on stdout.
         if let (Some(i), Some(k)) = (result.get("interaction"), result.get("idempotency_key")) {
-            let _ = call(&mut stream, &mut rd, 3, "adapter.delivery_ack", json!({"interaction": i, "idempotency_key": k, "applied": true}));
+            let _ = call(
+                &mut stream,
+                &mut rd,
+                3,
+                "adapter.delivery_ack",
+                json!({"interaction": i, "idempotency_key": k, "applied": true}),
+            );
         }
         let out = serde_json::to_string(decision).unwrap_or_default();
         let mut stdout = std::io::stdout();

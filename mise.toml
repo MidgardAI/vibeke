@@ -2,10 +2,12 @@
 # Rust is pinned to the latest stable and bumped within a week of each stable release (spec/01 §2).
 
 [tools]
-rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src", profile = "minimal" }
+rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src", profile = "minimal", targets = "aarch64-unknown-linux-musl,x86_64-unknown-linux-musl" }
 "cargo:cargo-nextest" = "latest"
 "cargo:cargo-deny" = "latest"
 bun = "latest"            # integrations/pi-extension (TypeScript) and harness test fixtures
+zig = "0.16.0"            # builds the vendored libghostty-vt (vk-term build.rs, spec/03 §2.2) and links musl release builds
+"cargo:cargo-zigbuild" = "latest"  # cross-builds the Linux (musl) release binaries
 
 [env]
 CARGO_TERM_COLOR = "always"

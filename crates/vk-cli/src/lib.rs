@@ -720,11 +720,6 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     adjust(method, &mut params);
-    if let Some(m) = &g.machine
-        && !method.starts_with("machine.")
-    {
-        params["machine"] = json!(m);
-    }
     if let Err(e) = client.hello("cli").await {
         print_error(&e);
         return exit_code_for(&e);

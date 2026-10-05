@@ -1444,6 +1444,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "vk-cli",
@@ -1451,6 +1452,7 @@ dependencies = [
  "vk-config",
  "vk-hold",
  "vk-proto",
+ "vk-remote",
  "vk-server",
  "vk-term",
  "vk-tui",
@@ -1549,6 +1551,16 @@ dependencies = [
 [[package]]
 name = "vk-remote"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vk-proto",
+]
 
 [[package]]
 name = "vk-server"

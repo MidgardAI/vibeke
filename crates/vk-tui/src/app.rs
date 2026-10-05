@@ -49,6 +49,7 @@ pub struct Machine {
     pub last_hint: Vec<PaneRect>,
     pub clipboard_allowed: Option<bool>,
     pub pending: HashMap<u64, Pending>,
+    pub auto_ws: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +78,7 @@ impl Machine {
             last_hint: Vec::new(),
             clipboard_allowed: None,
             pending: HashMap::new(),
+            auto_ws: false,
         }
     }
     pub fn send(&self, f: ClientFrame) -> bool {
@@ -595,26 +597,22 @@ impl App {
                         }
                     }
                 }
-                if self.machines.iter().all(|m| m.model.workspaces.is_empty())
-                    && self.machines[i].local
+                let empty_here = self.machines[i].model.workspaces.is_empty()
                     && self.machines[i].connected()
-                {
-                    // Fresh session: create the first workspace in the cwd.
-                    let cwd = std::env::current_dir()
-                        .map(|d| d.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if !self.machines[i]
-                        .pending
-                        .values()
-                        .any(|p| matches!(p, Pending::Ignore))
-                    {
-                        self.command_on(
-                            i,
-                            "workspace.create",
-                            json!({"cwd": cwd, "focus": true}),
-                            Pending::Ignore,
-                        );
-                    }
+                    && !self.machines[i].auto_ws;
+                let all_empty = self.machines.iter().all(|m| m.model.workspaces.is_empty());
+                if empty_here && (!self.machines[i].local || all_empty) {
+                    // Fresh session: first workspace in the cwd (local) or the remote home.
+                    self.machines[i].auto_ws = true;
+                    let params = if self.machines[i].local {
+                        let cwd = std::env::current_dir()
+                            .map(|d| d.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        json!({"cwd": cwd, "focus": true})
+                    } else {
+                        json!({"focus": true})
+                    };
+                    self.command_on(i, "workspace.create", params, Pending::Ignore);
                 }
                 if let Mode::Popup(Popup::Card { interaction, .. }) = &self.mode
                     && !self.machines.iter().any(|m| {

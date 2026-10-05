@@ -328,10 +328,7 @@ pub async fn import(g: &Global, args: &[String]) -> i32 {
 
 /// Recreate Herdr workspaces/tabs/splits as Vibeke panes. Agents are offered for resume (the
 /// command is printed and typed into the pane on request), never run automatically.
-async fn recreate_session(
-    c: &mut Client<tokio::net::UnixStream>,
-    plan: vk_compat::SessionPlan,
-) -> i32 {
+async fn recreate_session(c: &mut Client<crate::AnyStream>, plan: vk_compat::SessionPlan) -> i32 {
     use vk_compat::{Layout, Orientation};
     if c.hello("cli").await.is_err() {
         return EXIT_API;
