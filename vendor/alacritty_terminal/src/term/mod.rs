@@ -3480,3 +3480,10 @@ impl<T> Term<T> {
         self.title.as_deref()
     }
 }
+
+impl<T> Term<T> {
+    /// Vibeke patch: the primary-screen grid (holds scrollback) regardless of alt-screen state.
+    pub fn primary_grid(&self) -> &Grid<Cell> {
+        if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid }
+    }
+}

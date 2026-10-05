@@ -2,7 +2,7 @@
 
 This section covers the TUI client's user-facing surface: layout chrome, navigation, notifications, interaction cards, the full `config.toml` schema, keybinding syntax and defaults, hot reload, and the Herdr importer. Rendering and input mechanics are in [03-terminal-engine-and-tui.md](03-terminal-engine-and-tui.md). The objects shown here (workspaces, groups, agent runs, interactions, notifications) are defined in [02-data-model-and-event-log.md](02-data-model-and-event-log.md).
 
-Proposed task-aware UX: [15](15-task-outcomes-review-and-attention.md) builds on the focused-pane rule with optional task tracking, review packages and a richer attention inbox. Its task readiness labels and five-minute view are future additions; the current M1 interaction inbox and bindings below remain in scope independently.
+Proposed task-aware UX: [15](15-task-outcomes-review-and-attention.md) builds on the focused-pane rule with optional task tracking, review packages and a richer attention inbox. The M1 inbox evolves in place on the same `prefix+i` binding; task readiness labels, five-minute view and unified next-attention ordering are staged additions. Current M1 delivery remains independently scoped.
 
 **Milestones** used throughout (see [11](11-milestones.md)): **M0** spikes · **M1** supervision slice · **M2** safe yolo + more harnesses · **M3** remote + preview · **M4** VMs + polish/parity · **M5** compatibility + plugins · **M6** hardening/Windows/1.0 · **post-1.0** deferred unless demanded.
 
@@ -189,7 +189,7 @@ When an agent run has an open `Interaction` (02 §1.1) and **its pane is not foc
 - **Plan review**: rendered markdown of `plan_md`, with `y` approve, `e` request changes with text, `n` reject.
 - **Delivery**: the answer goes out through the interaction's `answer_channel`. `native` → adapter (hook response, extension, RPC). `keystrokes` → the adapter's verified key sequence (04: navigate, re-read the screen, confirm the cursor is on the target option, then press Enter; on mismatch, abort and show "couldn't deliver — answer in pane", jumping focus there). The card shows a delivery spinner, then ✓, or the failure with the reason (`interaction.answer_failed`).
 - If the interaction is resolved elsewhere (in the agent TUI, another client or a rule), the card closes with a toast "answered in pane" or "answered by rule r3".
-- Multiple open interactions: header `1/3`, `]`/`[` cycle. `A` in the card header opens the **batch view**: interactions grouped by fingerprint (same tool + normalized command) with "allow all N" (only for `risk ≤ medium` and only native channels).
+- Multiple open interactions: header `1/3`, `]`/`[` cycle. `A` in the card header opens the **batch view**. Fingerprints nominate candidates only: "allow all N" also requires equivalent effective policy scope, execution environment, operation and resource targets, known `risk ≤ medium`, native channels and live requests revalidated individually. Never batch questions, plan reviews or unknown/high-risk actions. Record and show each delivery independently, including partial failure. The task inbox uses this same rule (15 §8.3).
 
 - **Delivery states** (02/04): the card reflects `decision_recorded → delivering → delivered`, or `delivery_failed` / `delivery_unknown`. `delivery_unknown` (e.g. server crashed mid-delivery) never auto-retries; the card asks the user to check the pane, and the adapter reconciles with the harness before any resend.
 
@@ -368,7 +368,7 @@ right    = ["agents_summary", "clock"]
 [ui.sync_input]
 include_agents = false
 [ui.interactions]
-batch     = true                      # batch view for same-fingerprint approvals (§8)
+batch     = true                      # equivalent native approvals; fingerprint alone is insufficient (§8)
 [ui.fleet]
 tile_view = "terminal"                # terminal (live miniature of the agent's own UI) | timeline
 
@@ -490,7 +490,7 @@ enabled = ["acme.example"]
 
 [compat]
 herdr_env    = true                   # export HERDR_* aliases in panes
-herdr_socket = false                  # expose the commonly used subset of Herdr's socket API (M5)
+herdr_socket = false                  # expose the full public Herdr API for the tested baseline (M5)
 
 [update]
 channel        = "stable"             # stable | preview
@@ -527,7 +527,7 @@ manifest_check = true                 # signed harness-manifest channel (04 §13
 | `session.json` workspaces/tabs/panes/layout/cwd | recreated layout | `--session` only. |
 | `agent_session {agent, value}` per pane | `resume_on_restart` candidates | Offered for resume via harness resume argv (04). |
 | Herdr hook integrations (`~/.claude/hooks/herdr-agent-state.sh`, `~/.codex/hooks.json`) | left untouched | Vibeke's integrations install alongside. `HERDR_*` env aliases keep Herdr's scripts harmless (they report to the compat socket if enabled, else exit 0). |
-| Plugins (`~/.config/herdr/plugins`, `herdr-plugin.toml`) | `vibeke plugin import` | Argv actions are compatible (07); unsupported fields reported. |
+| Plugins (Herdr registry, manifests, config/state) | `vibeke import herdr` inventories; `vibeke plugin install` / `link` activates in M5 | Full unchanged-plugin contract (07 §7.7): legacy trust consent, copy-based state migration, exact hooks/panes/context/API behavior. Missing baseline support blocks compatibility certification. |
 
 The importer prints a report of mapped, defaulted and unsupported keys, and never overwrites an existing Vibeke config without `--force` (it writes `config.imported.toml` instead).
 
@@ -557,7 +557,7 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Remote via SSH, saved machines, `--machine` forwarding | 06 | M3 |
 | Remote image paste | 06 | M3 |
 | Layout export/apply | 07 `layout.*` | M4 |
-| Plugins (argv actions, panes, hooks) | 07 | M5 (marketplace: post-1.0) |
+| Plugins (full Herdr plugin contract + native process/UI/storage additions) | 07 | M5; Windows M6; marketplace post-1.0 |
 | Live handoff on update | normal path via holders | M1 |
 | Update channels | §11 `[update]` | M1 |
 | Windows host | — | M6 |

@@ -2,7 +2,7 @@
 
 Terminal multiplexers for agents tend to suffer from three classes of problems: keyboard/terminal fidelity (Kitty protocol, AltGr, Shift+Enter, undercurl, emoji width), performance with many agents (CPU/fans on macOS, 3.6 GB/h remote bandwidth per animating pane, 570 ms tab close, Windows freezes), and detection fragility. This section makes each of those a **measured budget with a CI gate**, not a hope.
 
-Milestones (plan in [11](11-milestones.md)): **M0** spikes, **M1** supervision slice, **M2** safe yolo + more harnesses, **M3** remote + preview, **M4** VMs + polish/parity, **M5** compat + plugins, **M6** hardening / Windows / 1.0; **post-1.0** deferred (QUIC, marketplace, …).
+Milestones (plan in [11](11-milestones.md)): **M0** spikes, **M1** supervision slice, **M2** safe yolo + more harnesses, **M3** remote + preview, **M4** VMs + polish/parity, **M5** compatibility + plugins, **M6** hardening / Windows / 1.0; **post-1.0** deferred (QUIC, marketplace, …).
 
 ---
 
@@ -132,7 +132,7 @@ If these don't improve materially over the baseline, the release does not gradua
 | Soak | 50 agents, 24 h | weekly + release gate |
 | Fuzzing | `cargo-fuzz` (libFuzzer), OSS-Fuzz application at M6 | continuous (nightly 1 h per target), corpus in repo |
 | Remote | netem profiles, two containers/VMs | every PR (lan), nightly (all profiles) |
-| Compat | socket-client fixture replay + pinned smoke | every PR touching `vk-compat`, nightly |
+| Compat | complete pinned Herdr CLI/socket/manifest differential suite + unchanged plugins + socket-client replay/smoke (07 §8.4) | every PR touching compat/plugins or a covered API; full matrix nightly and release gate from M5 |
 | Security | §12 of 09 red-team agent | every PR |
 | Perf | §2 | every PR (subset), nightly (full), release gate (real terminals) |
 
@@ -202,6 +202,16 @@ A headless Claude Code (and pi) session with only `vibeke --skill` as guidance e
 - Proxy: HTTP/1.1, HTTP/2 upstreams, websockets (HMR for Vite/Next), SSE, large uploads, cookies with `Domain`/`SameSite`, absolute redirects to `localhost:PORT` rewritten to the preview origin, CSP-sensitive pages.
 - Screenshot determinism: fixed fonts in the headless browser image; pixel-diff tolerance tests.
 - Security tests from 09 §12.
+
+### 4.8 Herdr plugin and automation conformance [M5; Windows M6]
+
+The normative contract and baseline are in [07](07-api-cli-plugins.md) §7.7–8.4. Maintain a complete inventory from the pinned binary's API schema, CLI grammar and plugin manifest schema; every baseline entry requires positive/negative coverage. Run the reference Herdr and Vibeke with isolated homes, runtime dirs, repos and session names. Diff observable behavior, normalizing only declared nondeterministic values. Reference binaries, upstream source and real plugin fixtures are pinned by version/SHA/checksum.
+
+- Test the full public surface, including client/UI methods and plugin-owned panes/popups, rather than just a few requests. Assert shapes, omitted fields, error codes, exit codes, async timing, events, ids, focus and process/file side effects.
+- Run original plugin manifests and code unchanged. Cover build/install/link/reinstall/uninstall, startup/event hooks, actions/log polling, all pane placements, link/key actions, runtime context/env, file-based state, shared registration across sessions and offline operation. Stub external services only; fixture success must depend on real Vibeke callbacks.
+- Exercise private PATH/`HERDR_BIN_PATH` routing with real Herdr also installed, raw socket callbacks, explicit session selection and remote execution. Kill/restart the Vibeke server during a long action and a plugin pane; verify identity recovery, expected hook dispatch and revocation. Verify restricted callers cannot acquire legacy authority through invocation or session routing.
+- Retain recorded fixture replay and a pinned smoke test as one consumer regression suite. Native scoped-plugin capability tests also remain required. Neither suite substitutes for the full inventory.
+- M5 blocks on missing or failing macOS/Linux entries; M6 adds Windows named pipes, argv/PATHEXT, paths and terminal behavior. A release exposes only tested baselines/platforms; new upstream versions create a drift report and must pass the same gate before support is advertised. Never waive missing entries by classifying baseline public APIs as private transport.
 
 ---
 
@@ -290,7 +300,7 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 1. All PR gates + last 7 nightlies green (chaos, fuzz no new crashes, soak passed within 7 days).
 2. Keyboard matrix tier-1 green; real-terminal latency gate on the Mac mini.
 3. Harness golden replay green for all supported versions; no open "harness drift" PR older than 7 days for a built-in harness.
-4. Compat suite green (fixture replay + pinned socket-client smoke).
+4. From M5: full Herdr conformance inventory green for every advertised baseline/platform, unchanged plugin fixtures and fixture replay/smoke green; native plugin scopes and legacy trust/revocation tests green (§4.8). Windows joins at M6.
 5. Schema diff: no breaking API changes within major.
 6. Changelog generated from conventional commits + hand-written highlights; `release-notes.json` embedded for the TUI "what's new".
 7. Build artifacts (macOS arm64/x64 universal + notarized helper app bundle, Linux x64/arm64 musl, Windows x64 from M6), minisign signatures, Sigstore provenance, sha256 sums.
@@ -319,7 +329,7 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 - **From M1**: pi and omp with custom extensions are daily drivers next to Claude and Codex on at least one machine (validates "bring your own harness").
 - **From M2**: yolo runs default to `sandbox`/`container` in at least two repos; custom manifests (`espi`, Hermes) in daily use.
 - **From M3**: laptop + Linux devbox; at least half of agent work runs remotely; previews used for all web work (samplehub, storefront).
-- **From M5**: existing socket clients running unmodified against the compat socket on the dogfood fleet (the bridge to Phase 2).
+- **From M5**: a representative set of unchanged Herdr plugins running against the compat layer on the dogfood fleet, including local/remote machines, state migration, restart, hooks and plugin terminal UI. The previous setup remains installed as fallback.
 - **Instrumentation for dogfood builds**: opt-in local-only metrics file (`~/.local/state/vibeke/metrics.jsonl`): input latency histograms, CPU, recovery events, detector disagreements (adapter vs screen), interactions answered and channel used, keystroke-fallback failures. Weekly review → issues.
 - **"Papercut Fridays"**: one day per week reserved for fixing dogfood friction reports; each milestone's exit criteria include "no open dogfood P1s".
 - **Detector disagreement log**: whenever the structured adapter and the screen detector disagree for > 10 s, a redacted screen capture + event trace is saved locally for triage — this is the main source of new golden test cases.
@@ -335,5 +345,5 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 | **M2 safe yolo + harnesses** | containment tests for `sandbox`/`container` (09 §12, 13 §14); egress proxy and fail-closed boundary Interactions; golden replay for every harness added (OpenCode, Gemini, ACP, custom manifests); live drift workflow running; soak test passing |
 | **M3 remote + preview** | remote bandwidth/latency budgets on `lan`/`wifi`/`mobile`; reconnect scenarios; version-skew tests; discovery/proxy/screenshot budgets; framework fixture matrix green; preview security tests green; review-minutes metric baselined |
 | **M4 VMs + polish** | VM containment + start-time budgets (13 §14); warm-pool/fork tests; parity features' e2e tests (groups, floating panes, palette, FTS archive search); jj task tests |
-| **M5 compat + plugins** | socket-client fixture replay + pinned smoke green; plugin capability enforcement tests |
-| **M6 hardening / Windows / 1.0** | full matrix incl. Windows Terminal; 7 consecutive green nightlies; external security review findings closed; reproducible Linux builds; OSS-Fuzz onboarding; 30 days of dogfood with zero P0; §1.7 product-metric gates met |
+| **M5 compatibility + plugins** | full pinned Herdr public contract inventory green on macOS/Linux; unchanged real plugin suite and socket-client replay/smoke green; installation/migration/lifecycle/routing tests; native scopes and legacy trust/revocation/no-escalation tests (§4.8) |
+| **M6 hardening / Windows / 1.0** | full matrix incl. Windows Terminal and Herdr plugin/automation conformance on Windows; 7 consecutive green nightlies; external security review findings closed; reproducible Linux builds; OSS-Fuzz onboarding; 30 days of dogfood with zero P0; §1.7 product-metric gates met |

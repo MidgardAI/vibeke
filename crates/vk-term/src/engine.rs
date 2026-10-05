@@ -459,8 +459,9 @@ impl Engine {
         (0..self.rows()).map(|y| self.row(y)).collect()
     }
 
+    /// Scrollback rows kept in memory (primary screen; the alt screen has none).
     pub fn history_len(&self) -> usize {
-        self.term.grid().history_size()
+        self.term.primary_grid().history_size()
     }
 
     /// Scrollback row `idx` where 0 is the oldest row kept in memory.
@@ -708,5 +709,13 @@ impl Engine {
     #[doc(hidden)]
     pub fn tracker_pending_is_empty(&self) -> bool {
         self.tracker.pending().is_empty()
+    }
+}
+
+impl Engine {
+    /// Absolute number of primary-screen lines ever scrolled into history. Row `i` of
+    /// [`Engine::history_row`] has absolute line number `scrolled_total() - history_len() + i`.
+    pub fn scrolled_total(&self) -> u64 {
+        self.term.primary_grid().scrolled_total
     }
 }

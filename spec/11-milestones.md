@@ -14,7 +14,7 @@ No calendar estimates are given: the earlier week numbers were unsupported place
 
 The first build goal ([milestones](11-milestones.md)) is a remote daily driver over SSH for the maintainer. It covers **M0 + M1 + the remote-machine half of M3** (06 Part A: machines, bootstrap, bridge, multi-machine view, reconnection, clipboard, image paste, dropped-path translation). M2 (safe yolo, extra harnesses) and the preview half of M3 come after it. Milestone numbering is unchanged; only the order of delivery differs.
 
-The proposed follow-on product slice is [15 — Task outcomes, review and attention](15-task-outcomes-review-and-attention.md): optional tracking of normally launched CLIs, evidence-backed review, and a ranked decision inbox. Its T1–T4 stages preserve Goal 01's scope; they are not extra prerequisites for the SSH switch-over. The basic M1 inbox remains distinct from the richer task/review inbox.
+The proposed follow-on product slice is [15 — Task outcomes, review and attention](15-task-outcomes-review-and-attention.md): optional tracking of normally launched CLIs, evidence-backed review, and a ranked decision inbox. Its T1–T4 stages preserve Goal 01's scope; they are not extra prerequisites for the SSH switch-over. The basic M1 inbox is the first version of the same surface, enriched in place by later stages.
 
 ## M0 — Spikes (de-risk the hard bets)
 
@@ -69,19 +69,21 @@ Tasks:
 - `vm` level (Lima `vz`/Tart on macOS, Firecracker/Cloud Hypervisor on Linux), template snapshots, warm pools; previews and screenshots verified inside containers and VMs.
 - Parity polish: groups, floating panes, status bar (built-in segments), command palette, goto improvements, sidebar left/right, bottom tab bar, copy-on-select/PRIMARY, configurable copy-mode keys, archived-scrollback FTS search and edit-scrollback, native OS notifications with click-to-focus, theme auto light/dark + propagation, layout export/apply, jj workspaces.
 
-## M5 — compat subset + plugins
+## M5 — Full Herdr plugin/automation compatibility + plugins
 
-- `vk-compat`: the Herdr socket subset existing clients call → existing socket clients run unmodified, giving an early phone decision surface before the Phase 2 gateway.
-- Plugins: Herdr-compatible argv actions + `herdr-plugin.toml` import; long-running plugin processes with capabilities, UI contributions (status segments, sidebar sections, palette commands), KV storage, install consent, `vibeke plugin link` hot reload.
+- `vk-compat`: full public CLI/socket contract for the pinned Herdr baseline (07 §8.0), including plugin-pane and UI-control APIs, exact result/error/event semantics, a private compatibility launcher and identity-bound callback brokers. Existing socket clients run unmodified, giving an early phone decision surface before the Phase 2 gateway.
+- Unchanged Herdr plugins: complete manifests, build/startup/event hooks, async actions/logs, all terminal placements, link handlers, context/env, global per-user registry, offline installation, config/state migration and explicit legacy trust. No popular-plugin-only coverage shortcut (07 §7.7).
+- Native additions: long-running plugin processes with capabilities, UI contributions (status segments, sidebar sections, palette commands), KV storage and `vibeke plugin link` hot reload.
+- Exit evidence: exhaustive baseline inventory, differential tests against the pinned Herdr binary, unmodified real plugin fixtures and a real socket-client smoke test on macOS/Linux, including lifecycle, routing, trust/revocation and migration. Missing baseline support blocks full compatibility and M5 completion (07 §8.4, 10).
 
 ## M6 — Hardening, Windows, 1.0
 
-- Windows host (ConPTY, named pipes, holder equivalent), Windows Terminal in the keyboard matrix.
+- Windows host (ConPTY, named pipes, holder equivalent), Windows Terminal in the keyboard matrix; the full Herdr plugin/automation suite including Windows argv/PATHEXT and paths.
 - External security review; reproducible Linux builds; OSS-Fuzz; docs site; migration guide from Herdr; 1.0 API freeze (`vibeke/1`).
 
 ## Deferred beyond 1.0 (unless real demand appears)
 
-QUIC roaming transport + predictive echo (mosh-style) · plugin marketplace · full Herdr API compatibility beyond the initial subset · policy learning (rule suggestions) · best-of-N comparison UI · automatic shared-cwd "split into task" migration · synchronized input · multiple graphics fallbacks beyond kitty graphics.
+QUIC roaming transport + predictive echo (mosh-style) · plugin marketplace · policy learning (rule suggestions) · best-of-N comparison UI · automatic shared-cwd "split into task" migration · synchronized input · multiple graphics fallbacks beyond kitty graphics. Herdr's private TUI/binary transport is outside the public compatibility contract; the full public plugin/automation API is required in M5.
 
 ## Suggested first two weeks (M0 kickoff)
 
@@ -99,7 +101,7 @@ QUIC roaming transport + predictive echo (mosh-style) · plugin marketplace · f
 | VT engine can't meet the recovery requirement | M0 selects by demonstrated recovery behaviour; fallback is a weaker, honestly documented guarantee (process survival + forced redraw) |
 | Harness vendors change hooks/UIs often | Structured channels first; capability matrix per version; golden + live drift CI; signed manifest channel |
 | Codex shared daemon and vendor architecture shifts | PATH shim → per-pane embedded server; deterministic thread binding only (heuristic correlation never authorizes writes); screen fallback |
-| The pinned compatibility baseline moves fast (weekly upstream releases) | Don't chase parity; compete on interactions, safe yolo, BYO harnesses and evidence; early compat bounded to a small subset |
+| The pinned compatibility baseline moves fast (weekly upstream releases) | Pin supported compatibility baselines, diff upstream schemas/CLI/behavior, and require full conformance before advertising an upgrade; preserve native differentiation in interactions, isolation, harnesses and evidence |
 | Scope | M1 gate on product metrics; explicit post-1.0 list; sidecar fallback if the value proof fails |
 
 ## Milestone mapping (old → new)
@@ -121,6 +123,6 @@ For reconciling references in other sections written against the earlier plan:
 | M3 (13) sandbox + container levels | execution isolation | **M2** |
 | M4 preview fabric | discovery, browser profile over SOCKS / proxy, remote scriptable browser, screenshots, `vibeke mcp` | **M3** |
 | M4 (13) VM level | VMs, templates, warm pools | **M4** |
-| M5 plugins + compat + QUIC | plugins, compat subset | **M5** |
-| M5 plugins + compat + QUIC | QUIC / predictive echo, marketplace, full Herdr compat | **post-1.0** |
+| M5 plugins + compat + QUIC | plugins, full public Herdr plugin/automation compatibility | **M5** (Windows: M6) |
+| M5 plugins + compat + QUIC | QUIC / predictive echo, marketplace | **post-1.0** |
 | M6 hardening/Windows/1.0 | as before | **M6** |

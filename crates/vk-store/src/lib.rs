@@ -1,1 +1,541 @@
+//! Persistent state for one Vibeke session (02 §3): SQLite (WAL) state tables that are the source
+//! of truth, plus the transactional event outbox. Every [`Mutation`] commits entity writes and
+//! its events in one transaction; a failed commit means the mutation did not happen (02 §4a).
+//!
+//! Entities are stored as JSON documents keyed by kind and id (with a handle column for
+//! lookups). The typed schema of 02 §3 lives in `vk-proto::model`; storing documents keeps
+//! migrations additive while the model is young.
 
+pub mod archive;
+
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+const MIGRATIONS: &[&str] = &[
+    // 1: initial schema
+    r#"
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE events (
+        seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, tier TEXT NOT NULL,
+        subject_json TEXT, actor_json TEXT, data_json TEXT NOT NULL, v INTEGER NOT NULL);
+    CREATE INDEX events_tier_ts ON events(tier, ts);
+    CREATE INDEX events_type_ts ON events(type, ts);
+    CREATE TABLE entities (
+        kind TEXT NOT NULL, id TEXT NOT NULL, handle TEXT, json TEXT NOT NULL,
+        closed INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, id));
+    CREATE INDEX entities_handle ON entities(kind, handle);
+    CREATE TABLE vt_snapshots (
+        pane_id TEXT PRIMARY KEY, holder_offset INTEGER NOT NULL, engine TEXT NOT NULL,
+        engine_version TEXT NOT NULL, blob BLOB NOT NULL, taken_at INTEGER NOT NULL);
+    CREATE TABLE holders (
+        pane_id TEXT PRIMARY KEY, socket TEXT NOT NULL, key BLOB NOT NULL, epoch INTEGER NOT NULL,
+        holder_pid INTEGER, child_pid INTEGER, updated_at INTEGER NOT NULL);
+    CREATE TABLE pane_reads (user TEXT NOT NULL, pane_id TEXT NOT NULL, seen_rev INTEGER NOT NULL,
+        seen_at INTEGER NOT NULL, PRIMARY KEY (user, pane_id));
+    CREATE TABLE kv (scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope, key));
+    CREATE VIRTUAL TABLE scrollback_fts USING fts5(pane_id UNINDEXED, line_no UNINDEXED, ts UNINDEXED, text);
+    "#,
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Cursor {
+    pub machine_uuid: String,
+    pub session_uuid: String,
+    pub log_epoch: String,
+    pub seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Event {
+    pub seq: i64,
+    pub ts: i64,
+    pub v: u32,
+    pub tier: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub subject: Value,
+    pub actor: Value,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingEvent {
+    pub kind: String,
+    pub tier: &'static str,
+    pub subject: Value,
+    pub actor: Value,
+    pub data: Value,
+}
+
+enum Write {
+    Put { kind: &'static str, id: String, handle: Option<String>, json: String, closed: bool },
+    Delete { kind: &'static str, id: String },
+    Holder { pane: String, socket: String, key: Vec<u8>, epoch: u64, holder_pid: Option<u32>, child_pid: Option<u32> },
+    HolderDelete { pane: String },
+    Snapshot { pane: String, offset: u64, engine: String, version: String, blob: Vec<u8> },
+    Kv { scope: String, key: String, value: Option<String> },
+    Read { user: String, pane: String, rev: u64 },
+}
+
+/// A set of state writes plus the events describing them, committed atomically.
+#[derive(Default)]
+pub struct Mutation {
+    writes: Vec<Write>,
+    pub events: Vec<PendingEvent>,
+}
+
+impl Mutation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.writes.is_empty() && self.events.is_empty()
+    }
+    pub fn put<T: Serialize>(&mut self, kind: &'static str, id: &str, handle: Option<&str>, value: &T) -> &mut Self {
+        let json = serde_json::to_string(value).expect("entity serializes");
+        self.writes.push(Write::Put { kind, id: id.into(), handle: handle.map(Into::into), json, closed: false });
+        self
+    }
+    /// Keep the row but mark it closed (history; excluded from `load`).
+    pub fn close<T: Serialize>(&mut self, kind: &'static str, id: &str, handle: Option<&str>, value: &T) -> &mut Self {
+        let json = serde_json::to_string(value).expect("entity serializes");
+        self.writes.push(Write::Put { kind, id: id.into(), handle: handle.map(Into::into), json, closed: true });
+        self
+    }
+    pub fn delete(&mut self, kind: &'static str, id: &str) -> &mut Self {
+        self.writes.push(Write::Delete { kind, id: id.into() });
+        self
+    }
+    pub fn holder(&mut self, pane: &str, socket: &str, key: &[u8], epoch: u64, holder_pid: Option<u32>, child_pid: Option<u32>) -> &mut Self {
+        self.writes.push(Write::Holder { pane: pane.into(), socket: socket.into(), key: key.to_vec(), epoch, holder_pid, child_pid });
+        self
+    }
+    pub fn holder_delete(&mut self, pane: &str) -> &mut Self {
+        self.writes.push(Write::HolderDelete { pane: pane.into() });
+        self
+    }
+    pub fn snapshot(&mut self, pane: &str, offset: u64, engine: &str, version: &str, blob: Vec<u8>) -> &mut Self {
+        self.writes.push(Write::Snapshot { pane: pane.into(), offset, engine: engine.into(), version: version.into(), blob });
+        self
+    }
+    pub fn kv(&mut self, scope: &str, key: &str, value: Option<String>) -> &mut Self {
+        self.writes.push(Write::Kv { scope: scope.into(), key: key.into(), value });
+        self
+    }
+    pub fn read_mark(&mut self, user: &str, pane: &str, rev: u64) -> &mut Self {
+        self.writes.push(Write::Read { user: user.into(), pane: pane.into(), rev });
+        self
+    }
+    pub fn event(&mut self, kind: &str, subject: Value, data: Value) -> &mut Self {
+        self.event_by(kind, subject, serde_json::json!({"kind": "system"}), data)
+    }
+    pub fn event_by(&mut self, kind: &str, subject: Value, actor: Value, data: Value) -> &mut Self {
+        let tier = if kind.starts_with("interaction.")
+            || kind.starts_with("policy.")
+            || matches!(kind, "agent.started" | "agent.exited" | "task.status_changed" | "task.archived")
+        {
+            "history"
+        } else {
+            "sync"
+        };
+        self.events.push(PendingEvent { kind: kind.into(), tier, subject, actor, data });
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HolderRecord {
+    pub pane: String,
+    pub socket: String,
+    pub key: Vec<u8>,
+    pub epoch: u64,
+    pub holder_pid: Option<u32>,
+    pub child_pid: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotRecord {
+    pub offset: u64,
+    pub engine: String,
+    pub version: String,
+    pub blob: Vec<u8>,
+}
+
+pub struct Store {
+    conn: Connection,
+    pub machine_uuid: String,
+    pub session_uuid: String,
+    pub log_epoch: String,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        Self::init(conn, path.parent())
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        Self::init(Connection::open_in_memory()?, None)
+    }
+
+    fn init(conn: Connection, dir: Option<&Path>) -> Result<Self> {
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER)")?;
+        let have: i64 = conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
+        for (i, m) in MIGRATIONS.iter().enumerate().skip(have as usize) {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(m)?;
+            tx.execute("INSERT INTO schema_migrations VALUES (?1, ?2)", params![i as i64 + 1, now_ms()])?;
+            tx.commit()?;
+        }
+        let mut s = Store { conn, machine_uuid: String::new(), session_uuid: String::new(), log_epoch: String::new() };
+        s.session_uuid = s.meta_or_init("session_uuid", || ulid::Ulid::new().to_string())?;
+        s.log_epoch = s.meta_or_init("log_epoch", || format!("{:016x}", rand::random::<u64>()))?;
+        s.machine_uuid = machine_uuid(dir)?;
+        Ok(s)
+    }
+
+    fn meta_or_init(&self, key: &str, f: impl FnOnce() -> String) -> Result<String> {
+        if let Some(v) = self.conn.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).optional()? {
+            return Ok(v);
+        }
+        let v = f();
+        self.conn.execute("INSERT INTO meta (key, value) VALUES (?1, ?2)", params![key, v])?;
+        Ok(v)
+    }
+
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).optional()?)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2", params![key, value])?;
+        Ok(())
+    }
+
+    /// Commit writes and events in one transaction. Returns the committed events (with seq).
+    pub fn commit(&mut self, m: Mutation) -> Result<Vec<Event>> {
+        let tx = self.conn.transaction()?;
+        let now = now_ms();
+        for w in m.writes {
+            match w {
+                Write::Put { kind, id, handle, json, closed } => {
+                    tx.execute(
+                        "INSERT INTO entities (kind, id, handle, json, closed, updated_at) VALUES (?1,?2,?3,?4,?5,?6)
+                         ON CONFLICT(kind, id) DO UPDATE SET handle=?3, json=?4, closed=?5, updated_at=?6",
+                        params![kind, id, handle, json, closed as i64, now],
+                    )?;
+                }
+                Write::Delete { kind, id } => {
+                    tx.execute("DELETE FROM entities WHERE kind=?1 AND id=?2", params![kind, id])?;
+                }
+                Write::Holder { pane, socket, key, epoch, holder_pid, child_pid } => {
+                    tx.execute(
+                        "INSERT INTO holders (pane_id, socket, key, epoch, holder_pid, child_pid, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
+                         ON CONFLICT(pane_id) DO UPDATE SET socket=?2, key=?3, epoch=?4, holder_pid=?5, child_pid=?6, updated_at=?7",
+                        params![pane, socket, key, epoch as i64, holder_pid, child_pid, now],
+                    )?;
+                }
+                Write::HolderDelete { pane } => {
+                    tx.execute("DELETE FROM holders WHERE pane_id=?1", [pane.as_str()])?;
+                    tx.execute("DELETE FROM vt_snapshots WHERE pane_id=?1", [pane.as_str()])?;
+                }
+                Write::Snapshot { pane, offset, engine, version, blob } => {
+                    let blob = zstd::encode_all(&blob[..], 3)?;
+                    tx.execute(
+                        "INSERT INTO vt_snapshots (pane_id, holder_offset, engine, engine_version, blob, taken_at) VALUES (?1,?2,?3,?4,?5,?6)
+                         ON CONFLICT(pane_id) DO UPDATE SET holder_offset=?2, engine=?3, engine_version=?4, blob=?5, taken_at=?6",
+                        params![pane, offset as i64, engine, version, blob, now],
+                    )?;
+                }
+                Write::Kv { scope, key, value } => match value {
+                    Some(v) => {
+                        tx.execute(
+                            "INSERT INTO kv (scope, key, value) VALUES (?1,?2,?3) ON CONFLICT(scope, key) DO UPDATE SET value=?3",
+                            params![scope, key, v],
+                        )?;
+                    }
+                    None => {
+                        tx.execute("DELETE FROM kv WHERE scope=?1 AND key=?2", params![scope, key])?;
+                    }
+                },
+                Write::Read { user, pane, rev } => {
+                    tx.execute(
+                        "INSERT INTO pane_reads (user, pane_id, seen_rev, seen_at) VALUES (?1,?2,?3,?4)
+                         ON CONFLICT(user, pane_id) DO UPDATE SET seen_rev=?3, seen_at=?4",
+                        params![user, pane, rev as i64, now],
+                    )?;
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(m.events.len());
+        for e in m.events {
+            tx.execute(
+                "INSERT INTO events (ts, type, tier, subject_json, actor_json, data_json, v) VALUES (?1,?2,?3,?4,?5,?6,1)",
+                params![now, e.kind, e.tier, e.subject.to_string(), e.actor.to_string(), e.data.to_string()],
+            )?;
+            let seq = tx.last_insert_rowid();
+            out.push(Event { seq, ts: now, v: 1, tier: e.tier.into(), kind: e.kind, subject: e.subject, actor: e.actor, data: e.data });
+        }
+        tx.commit()?;
+        Ok(out)
+    }
+
+    pub fn load<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
+        let mut st = self.conn.prepare("SELECT json FROM entities WHERE kind=?1 AND closed=0 ORDER BY rowid")?;
+        let rows = st.query_map([kind], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(serde_json::from_str(&r?)?);
+        }
+        Ok(out)
+    }
+
+    pub fn get<T: DeserializeOwned>(&self, kind: &str, id: &str) -> Result<Option<T>> {
+        let j: Option<String> = self.conn.query_row("SELECT json FROM entities WHERE kind=?1 AND id=?2", params![kind, id], |r| r.get(0)).optional()?;
+        Ok(match j {
+            Some(j) => Some(serde_json::from_str(&j)?),
+            None => None,
+        })
+    }
+
+    /// Closed (ended) entities of a kind, newest first.
+    pub fn load_closed<T: DeserializeOwned>(&self, kind: &str, limit: usize) -> Result<Vec<T>> {
+        let mut st = self.conn.prepare("SELECT json FROM entities WHERE kind=?1 AND closed=1 ORDER BY updated_at DESC LIMIT ?2")?;
+        let rows = st.query_map(params![kind, limit as i64], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(serde_json::from_str(&r?)?);
+        }
+        Ok(out)
+    }
+
+    pub fn holders(&self) -> Result<Vec<HolderRecord>> {
+        let mut st = self.conn.prepare("SELECT pane_id, socket, key, epoch, holder_pid, child_pid FROM holders")?;
+        let rows = st.query_map([], |r| {
+            Ok(HolderRecord {
+                pane: r.get(0)?,
+                socket: r.get(1)?,
+                key: r.get(2)?,
+                epoch: r.get::<_, i64>(3)? as u64,
+                holder_pid: r.get(4)?,
+                child_pid: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn snapshot_for(&self, pane: &str) -> Result<Option<SnapshotRecord>> {
+        let r = self
+            .conn
+            .query_row("SELECT holder_offset, engine, engine_version, blob FROM vt_snapshots WHERE pane_id=?1", [pane], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Vec<u8>>(3)?))
+            })
+            .optional()?;
+        Ok(match r {
+            Some((offset, engine, version, blob)) => Some(SnapshotRecord { offset, engine, version, blob: zstd::decode_all(&blob[..])? }),
+            None => None,
+        })
+    }
+
+    pub fn kv_get(&self, scope: &str, key: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT value FROM kv WHERE scope=?1 AND key=?2", params![scope, key], |r| r.get(0)).optional()?)
+    }
+
+    pub fn reads(&self, user: &str) -> Result<Vec<(String, u64)>> {
+        let mut st = self.conn.prepare("SELECT pane_id, seen_rev FROM pane_reads WHERE user=?1")?;
+        let rows = st.query_map([user], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn last_seq(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?)
+    }
+
+    pub fn earliest_seq(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE(MIN(seq), 0) FROM events", [], |r| r.get(0))?)
+    }
+
+    pub fn cursor(&self, seq: i64) -> Cursor {
+        Cursor { machine_uuid: self.machine_uuid.clone(), session_uuid: self.session_uuid.clone(), log_epoch: self.log_epoch.clone(), seq }
+    }
+
+    /// Events with seq > `after`, oldest first, optionally filtered by type globs.
+    pub fn events_after(&self, after: i64, limit: usize, types: &[String]) -> Result<Vec<Event>> {
+        let mut st = self.conn.prepare(
+            "SELECT seq, ts, v, tier, type, subject_json, actor_json, data_json FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![after, limit as i64 * 4], |r| {
+            Ok(Event {
+                seq: r.get(0)?,
+                ts: r.get(1)?,
+                v: r.get::<_, i64>(2)? as u32,
+                tier: r.get(3)?,
+                kind: r.get(4)?,
+                subject: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(Value::Null),
+                actor: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or(Value::Null),
+                data: serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or(Value::Null),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let e = r?;
+            if types.is_empty() || types.iter().any(|g| glob_match(g, &e.kind)) {
+                out.push(e);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Retention (02 §2.3): prune `sync` events older than `sync_days`, `history` older than `history_days`.
+    pub fn prune(&self, sync_days: i64, history_days: i64) -> Result<usize> {
+        let now = now_ms();
+        let n = self.conn.execute(
+            "DELETE FROM events WHERE (tier='sync' AND ts < ?1) OR (tier='history' AND ts < ?2)",
+            params![now - sync_days * 86_400_000, now - history_days * 86_400_000],
+        )?;
+        Ok(n)
+    }
+
+    /// Cheap write probe used to leave degraded mode (02 §4a).
+    pub fn probe(&self) -> Result<()> {
+        self.conn.execute("INSERT INTO meta (key, value) VALUES ('probe', ?1) ON CONFLICT(key) DO UPDATE SET value=?1", [now_ms().to_string()])?;
+        Ok(())
+    }
+
+    pub fn fts_insert(&self, rows: &[(String, u64, i64, String)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut st = tx.prepare("INSERT INTO scrollback_fts (pane_id, line_no, ts, text) VALUES (?1,?2,?3,?4)")?;
+            for (p, l, ts, t) in rows {
+                st.execute(params![p, *l as i64, ts, t])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Full-text search over archived scrollback. Returns (pane, line, ts, text).
+    pub fn fts_search(&self, q: &str, pane: Option<&str>, limit: usize) -> Result<Vec<(String, u64, i64, String)>> {
+        let query = fts_quote(q);
+        let sql = if pane.is_some() {
+            "SELECT pane_id, line_no, ts, text FROM scrollback_fts WHERE scrollback_fts MATCH ?1 AND pane_id = ?3 ORDER BY rowid DESC LIMIT ?2"
+        } else {
+            "SELECT pane_id, line_no, ts, text FROM scrollback_fts WHERE scrollback_fts MATCH ?1 ORDER BY rowid DESC LIMIT ?2"
+        };
+        let mut st = self.conn.prepare(sql)?;
+        let map = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)?, r.get::<_, String>(3)?));
+        let rows: Vec<_> = match pane {
+            Some(p) => st.query_map(params![query, limit as i64, p], map)?.collect::<Result<_, _>>()?,
+            None => st.query_map(params![query, limit as i64], map)?.collect::<Result<_, _>>()?,
+        };
+        Ok(rows)
+    }
+}
+
+fn fts_quote(q: &str) -> String {
+    q.split_whitespace().map(|w| format!("\"{}\"", w.replace('"', "\"\""))).collect::<Vec<_>>().join(" ")
+}
+
+pub fn glob_match(glob: &str, s: &str) -> bool {
+    if let Some(p) = glob.strip_suffix('*') {
+        return s.starts_with(p);
+    }
+    if let (Some(a), Some(b)) = (glob.find('{'), glob.find('}')) {
+        let (pre, alts, post) = (&glob[..a], &glob[a + 1..b], &glob[b + 1..]);
+        return alts.split(',').any(|alt| s == format!("{pre}{alt}{post}"));
+    }
+    glob == s
+}
+
+/// Machine identity, generated once per machine install (02 §2.3), stored next to the
+/// session directories.
+fn machine_uuid(dir: Option<&Path>) -> Result<String> {
+    let Some(dir) = dir.and_then(|d| d.parent()) else { return Ok(ulid::Ulid::new().to_string()) };
+    let p = dir.join("machine-uuid");
+    if let Ok(s) = std::fs::read_to_string(&p) {
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            return Ok(s);
+        }
+    }
+    let id = ulid::Ulid::new().to_string();
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(&p, &id)?;
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn outbox_is_transactional_and_ordered() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&d.path().join("s/state.db")).unwrap();
+        let mut m = Mutation::new();
+        m.put("pane", "p1", Some("w1:p1"), &json!({"id":"p1"}));
+        m.event("pane.created", json!({"pane":"p1"}), json!({}));
+        let ev = s.commit(m).unwrap();
+        assert_eq!(ev[0].seq, 1);
+        let mut m = Mutation::new();
+        m.put("pane", "p2", Some("w1:p2"), &json!({"id":"p2"}));
+        m.event("pane.created", json!({"pane":"p2"}), json!({}));
+        m.event("interaction.opened", json!({}), json!({}));
+        let ev = s.commit(m).unwrap();
+        assert_eq!(ev.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(ev[1].tier, "history");
+        let panes: Vec<Value> = s.load("pane").unwrap();
+        assert_eq!(panes.len(), 2);
+        assert_eq!(s.events_after(1, 10, &[]).unwrap().len(), 2);
+        assert_eq!(s.events_after(0, 10, &["interaction.*".into()]).unwrap().len(), 1);
+        assert_eq!(s.events_after(0, 10, &["pane.{created,closed}".into()]).unwrap().len(), 2);
+        let uuid = s.session_uuid.clone();
+        drop(s);
+        let s = Store::open(&d.path().join("s/state.db")).unwrap();
+        assert_eq!(s.session_uuid, uuid);
+        assert_eq!(s.last_seq().unwrap(), 3);
+    }
+
+    #[test]
+    fn snapshots_and_holders() {
+        let mut s = Store::open_in_memory().unwrap();
+        let mut m = Mutation::new();
+        m.holder("p1", "/tmp/x.sock", &[1, 2, 3], 4, Some(10), Some(11));
+        m.snapshot("p1", 99, "e", "1", vec![7; 1000]);
+        s.commit(m).unwrap();
+        let h = s.holders().unwrap();
+        assert_eq!(h[0].epoch, 4);
+        let snap = s.snapshot_for("p1").unwrap().unwrap();
+        assert_eq!(snap.offset, 99);
+        assert_eq!(snap.blob, vec![7; 1000]);
+    }
+
+    #[test]
+    fn fts() {
+        let s = Store::open_in_memory().unwrap();
+        s.fts_insert(&[("p1".into(), 1, 0, "migration failed: relation users".into()), ("p2".into(), 2, 0, "all good".into())]).unwrap();
+        let r = s.fts_search("migration failed", None, 10).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "p1");
+    }
+}

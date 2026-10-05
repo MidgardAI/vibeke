@@ -37,7 +37,7 @@ Milestone tags as in 07: [M1]…[M6], per the plan in [11](11-milestones.md).
 | T1 | Other local user on a shared host | can connect to world-accessible sockets, read world-readable files | yes | §3.1 socket perms + peer credential check; 0700 dirs; state files 0600 |
 | T2 | Malicious repository content | `.vibeke/` config, policy, harness manifests, task setup scripts, `.env` templates, dev server code, prompt-injection text read by agents | yes | §4 trust-on-first-use with content digests; repo files never loosen policy; setup scripts shown before first run |
 | T3 | Prompt-injected / misbehaving agent | runs commands as the user *inside a pane*, can call the `vibeke` CLI | yes — **main novel threat** | host: §5 guardrails (pane tokens, no self-answering incl. via keystrokes, no policy edits, rate limits, audit); boxes: enforced containment (§0, 13) |
-| T4 | Malicious or compromised plugin | runs code as the user; holds a token | partially (code runs as user — cannot be fully contained before M6 sandboxing) | §6 capability consent, scoped tokens, audit, install-time review, M6 OS sandboxing |
+| T4 | Malicious or compromised plugin | runs code as the user; holds a scoped token or an approved Herdr legacy grant | partially (host execution is not contained; full legacy compatibility deliberately grants user-level host access) | §6 capability/legacy trust consent, identity-bound brokers, audit, install-time review; M6 sandboxing for scoped/restricted execution |
 | T5 | Compromised remote machine | controls the remote `vibeke bridge` and everything it sends | yes | §7 remote is untrusted *input*: no local command execution on behalf of remote, clipboard/open-URL/notification gating, render stream sanitization |
 | T6 | Network attacker | on the path between machines, or on LAN reaching forwarded ports | yes | §7 SSH/QUIC authenticated encryption; forwarded ports bind loopback only; Host/Origin checks |
 | T7 | Web content in previews | malicious JS on a dev server page (e.g. dependency compromise) driving the CDP browser or attacking the proxy | yes | §8 isolated browser profiles, CDP never exposed, proxy origin isolation |
@@ -58,11 +58,11 @@ Non-goal: multi-tenant use (several humans sharing one Vibeke session). Phase 2'
 - State dir `~/.local/state/vibeke/` 0700; `state.db`, blobs, scrollback segments, logs 0600. `umask 077` in server and holder.
 - Env files passed to holders are 0600 temp files unlinked immediately after the holder reads them (never secrets in argv — argv is visible in `ps`).
 - **Holder sockets** additionally require a per-holder **server key** (32 bytes, generated at holder spawn, known only to the spawning server and persisted 0600 in `state.db`): `Hello` must carry an HMAC over a holder-issued nonce. Without it, a connection can't attach, write input, resize or kill — only the peer-UID check applies otherwise. Processes inside a pane never see this key (it is not in the pane env). On host this stops *accidental* and *API-level* misuse; same-UID code that reads `state.db` can still obtain it (§0).
-- **Render and compat connections** go through the same `client.hello` identity as control connections (§3.2): a render stream opened with a pane token is read-only for panes outside the token's read scope and can never send input to panes outside its write scope; the Herdr-compat socket (07 §8) maps every connection to an identity the same way and applies identical scopes — it is not a side door.
+- **Render and compat connections** enforce the same identity/scopes as control connections (§3.2). Native render uses `client.hello`; a pane token cannot write outside its scope. Herdr clients retain their original wire format with no added hello/token fields: the public compat listener uses peer identity and pane guardrails; private plugin brokers carry a server-bound approved identity (§6, 07 §8.3). Choosing the compat protocol does not elevate a caller.
 
 ### 3.2 Client identities and tokens
 
-Every connection carries an identity, determined at `client.hello`:
+Every connection carries an identity, determined at native `client.hello` or by the compatibility listener/broker before dispatch:
 
 | Client kind | How identified | Default capabilities |
 |---|---|---|
@@ -70,9 +70,9 @@ Every connection carries an identity, determined at `client.hello`:
 | `cli` (outside any pane) | same as above | `*` |
 | `agent` / `cli` **inside a pane** | presents `VIBEKE_PANE_TOKEN` | **pane scope** — §5.2 |
 | `adapter` | hook shim / extension inside a pane: the same `VIBEKE_PANE_TOKEN` with `kind: adapter` | pane scope + `adapter.*` for its own pane |
-| `plugin` | presents `VIBEKE_PLUGIN_TOKEN` | the plugin's approved capabilities — §6 |
+| `plugin` | native token or compat broker bound to its approved grant | approved native capabilities or explicit `herdr_legacy` host authority — §6 |
 | `remote` | the local server's link to a bridge | §7 |
-| anonymous | no hello | read-only `server.status`, `api.*` (so `vibeke doctor` works) |
+| anonymous | no native hello and no established compat listener/broker identity | read-only `server.status`, `api.*` (so `vibeke doctor` works) |
 
 **One pane token type.** `VIBEKE_PANE_TOKEN` is the only token injected into panes (the name `VIBEKE_RUN_TOKEN` used in earlier drafts of 04 is retired; adapters use the pane token):
 - 256-bit random, generated when the pane is spawned and placed in the holder's spawn env, so the pane process tree inherits it and **it survives server restarts** (the holder and its child keep their env; the server persists only a hash in `state.db`).
@@ -145,11 +145,19 @@ Agents run as the user and can type anything into their own shell, including `vi
 
 - Install shows: source repo + commit, requested capabilities with risk levels (`interactions_answer`, `panes_write`, `agents_control`, `browser.script`, `network: *` in red), build commands. Consent recorded with manifest digest.
 - Updates that widen capabilities require re-consent; narrowing is silent.
-- Each plugin process gets its own token limited to its approved capabilities; argv actions get a short-lived (60 s) token.
+- Native plugin processes get tokens limited to their approved capabilities; native argv actions get a short-lived (60 s) token. Imported Herdr plugins use the separately approved legacy grant below; their normal callbacks cannot break merely because an action has run for more than 60 seconds.
 - Plugin UI contributions are data rendered by Vibeke; plugins cannot inject escape sequences into chrome (all strings sanitized: C0/C1 controls stripped, bidi overrides neutralized).
 - Audit: every plugin API call that mutates state is an event with `actor.kind = plugin`.
-- M6: OS-level sandbox for process plugins — Linux Landlock (fs) + seccomp (no ptrace) + network namespace allowlist via proxy; macOS `sandbox-exec` profile generated from declared capabilities; plugins can opt-in early in M5 via `sandbox = true`.
+- M6: OS-level sandbox for scoped process plugins — Linux Landlock (fs) + seccomp (no ptrace) + network namespace allowlist via proxy; macOS `sandbox-exec` profile generated from declared capabilities; plugins can opt-in early in M5 via `sandbox = true`. Applying restrictions to a Herdr legacy plugin is an explicit restricted mode with compatibility diagnostics; full legacy mode remains trusted host execution.
 - The marketplace index is metadata only; Vibeke never auto-installs or auto-updates plugins without the user running a command (opt-in `plugin.auto_update = "patch"` allowed for non-widening updates).
+
+**Herdr legacy trust (`herdr_legacy`, M5).** Full compatibility (07 §7.7) requires unchanged plugins to use Herdr's public operations and inherited host environment. Installation/linking therefore presents an explicit broad trust grant, covering host execution and the complete public Herdr API, with source/commit, manifest digest and entrypoints recorded in Vibeke's per-user registry. No capability list is guessed from static analysis, and an absent Herdr capability declaration never becomes silent consent. Noninteractive activation requires an explicit accepted grant; compatibility CLI `--yes` accepts the displayed trust terms only for a caller with installation authority. No prompt response means no activation. A grant does not confer access to holder keys, other plugin identities, or native-only administrative APIs. Same-user code can still bypass API guardrails as described in §0.
+
+Each invocation and plugin-owned pane receives a private 0600 compat broker endpoint in a 0700 runtime directory. Its binding to plugin id, session, approved grant and lifetime is server-owned; client JSON/context/env cannot select a stronger identity. Direct raw requests and the private `herdr` launcher use this same identity, without changing the Herdr wire format. Recreate the broker binding after server recovery only for still-approved live invocations; disable, unlink, uninstall and trust revocation close/reject broker access, including existing subscriptions. Check current authorization on every request. Host-side same-UID access to broker paths remains a guardrail limitation; restricted OS sandboxes must not expose another plugin's broker, privileged sockets or registry files.
+
+Legacy authority persists for the invocation/process lifetime, including long-lived children and plugin panes; closed invocations and removed panes lose their bindings. Session routing rechecks the same grant on the destination. An agent or scoped plugin must not escape its scope by invoking a more privileged legacy action, opening its pane, installing/enabling it, or starting it through the native API: deny the elevation or require explicit operator authorization outside the pane. Full compatibility applies after an authorized operator grants legacy execution; a restricted invocation is labeled accordingly.
+
+For managed legacy installs, source revision, entrypoint/manifest or trust-mode changes require review before new code runs, including patch updates; the native non-widening auto-update option does not bypass legacy trust review. Linked development sources are covered by explicit trust in that local directory, revoked when unlinked. Build processes receive no runtime broker/token authority. Preserve inherited host environment for approved legacy runtime commands, while replacing runtime identity/context values with the current invocation's values. Logs and audit records redact credentials. Audit compat mutations with the plugin identity just like native mutations; a copied manifest cannot acquire a grant belonging to another installation.
 
 ---
 

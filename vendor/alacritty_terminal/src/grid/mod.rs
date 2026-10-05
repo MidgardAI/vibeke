@@ -135,6 +135,11 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+
+    /// Vibeke patch: total number of lines ever scrolled from the top of the screen into
+    /// history (monotonic). Lets embedders archive rows before they are evicted.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scrolled_total: u64,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -142,6 +147,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         Grid {
             raw: Storage::with_capacity(lines, columns),
             max_scroll_limit,
+            scrolled_total: 0,
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
@@ -270,6 +276,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if region.start == 0 {
+            self.scrolled_total += positions as u64;
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
 

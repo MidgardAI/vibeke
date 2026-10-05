@@ -170,10 +170,10 @@ crates/
   vk-sandbox      # execution isolation: Seatbelt/bwrap sandboxes, container & VM providers, egress proxy, credential projection (13)
   vk-remote       # machines, SSH bootstrap, bridge, transport (ssh-stdio, quic), forwarding
   vk-preview      # port discovery, HTTP/WS reverse proxy, CDP browser service, screenshot store
-  vk-plugins      # manifest, argv actions, plugin process host, capabilities, KV storage
+  vk-plugins      # native + Herdr manifests, shared registry, actions/hooks/panes/logs, process host, trust, KV
   vk-tui          # TUI client: compositor, input, keymaps, copy mode, popups, command palette
   vk-cli          # CLI command tree (clap), output formatting
-  vk-compat       # Herdr config/session importer, Herdr-compatible socket shim
+  vk-compat       # Herdr importer, versioned full public CLI/socket facade, per-plugin callback brokers
   vibeke          # the binary: dispatches roles
   vk-redact       # secret redaction shared by logs, events, debug bundles (09)
 tools/            # dev/test-only crates (10): vk-chaos, vk-keytest, vk-bench, vk-fixture
@@ -198,4 +198,4 @@ docs/             # user docs (generated site)
 4. **Security**: sockets 0600 in 0700 dirs; peer credential check (`SO_PEERCRED`/`getpeereid`) rejects other UIDs; remote links authenticated by SSH (M3) or by pinned keys (QUIC, post-1.0); plugins get explicit capabilities; known secret patterns are redacted from logs, events and debug bundles (`vk-redact`), and env values are never logged — but operational data (scrollback, snapshots, tool outputs) is stored as-is, locally, with 0600 permissions; see 09 §9 for exactly what is and isn't promised.
 5. **Failure isolation**: an adapter or plugin panic never takes down the server (each runs in its own task with `catch_unwind` boundary or out of process); a wedged client is disconnected after 30 s without write progress.
 6. **Observability**: `vibeke doctor` (install, sockets, integrations, terminal capabilities, harness versions, permissions), `vibeke debug bundle` (redacted logs + state summary for bug reports).
-7. **Herdr compatibility is opt-in and bounded**: importer + env aliases + a compat socket implementing the subset of the Herdr socket API that common plugins use (documented in 07). We do not chase Herdr's API forever.
+7. **Herdr compatibility is opt-in and versioned**: full public plugin/CLI/socket compatibility for an explicitly pinned and tested baseline (07 §7.7–8.4), including unchanged plugins. `vk-plugins` owns plugin lifecycle and the per-user registry; `vk-compat` owns wire/CLI projections and brokers bound to approved identities. Native contracts remain independent. Upstream changes require a reviewed baseline update and conformance evidence before advertising support; private Herdr TUI/transport interoperability is outside this contract.

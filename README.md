@@ -17,7 +17,7 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 | 04 | [Harness adapters](spec/04-harness-adapters.md) — Claude Code, Codex, pi, omp, OpenCode, Gemini, ACP, custom harness manifests, detection, approvals |
 | 05 | [Tasks, isolation and worktrees](spec/05-tasks-isolation-and-worktrees.md) — task workspaces, ports, setup, collision tracking, best-of-N |
 | 06 | [Remote and preview](spec/06-remote-and-preview.md) — machines, SSH/QUIC bridge, port forwarding, preview proxy, remote screenshots |
-| 07 | [API, CLI and plugins](spec/07-api-cli-plugins.md) — JSON-RPC catalog, CLI, holder protocol, plugins, Herdr compatibility |
+| 07 | [API, CLI and plugins](spec/07-api-cli-plugins.md) — JSON-RPC catalog, CLI, holder protocol, plugins, full versioned Herdr plugin/automation compatibility |
 | 08 | [UX, config and keybindings](spec/08-ux-config-and-keybindings.md) — sidebar, peek-and-reply, interaction overlay, **canonical config reference** |
 | 09 | [Security and privacy](spec/09-security-and-privacy.md) — threat model, agent containment, plugins, previews, updates |
 | 10 | [Quality, performance and testing](spec/10-quality-performance-testing.md) — budgets, chaos, keyboard matrix, golden tests, release |

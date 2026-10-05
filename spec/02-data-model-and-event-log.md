@@ -1,6 +1,6 @@
 # 02 — Data model and event log
 
-**The SQLite state tables (§3) are the source of truth.** Every mutation commits in one transaction that updates those tables *and* appends the corresponding events to the `events` table (a transactional outbox). Events exist for three jobs: (1) letting clients catch up after a disconnect without polling, (2) per-agent timelines and audit ("what happened while I was away", who answered what), (3) decision history for Phase 2 (learned policy, evidence). Events are **not** replayed to rebuild state, so pruning them never loses state. Phase 2 (mobile/web, inbox, analytics) consumes exactly these types, so they are designed for that now.
+**The SQLite state tables (§3) are the source of truth for session state.** Every session-state mutation commits in one transaction that updates those tables *and* appends the corresponding events to the `events` table (a transactional outbox). Machine/user-wide resources, including the M5 plugin registry, have separate ownership and reconciliation rules (§3, Plugin state ownership). Events exist for three jobs: (1) letting clients catch up after a disconnect without polling, (2) per-agent timelines and audit ("what happened while I was away", who answered what), (3) decision history for Phase 2 (learned policy, evidence). Events are **not** replayed to rebuild state, so pruning them never loses state. Phase 2 (mobile/web, inbox, analytics) consumes exactly these types, so they are designed for that now.
 
 ## 1. Entity model
 
@@ -95,7 +95,7 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 
 **Task** — a unit of work, typically one task workspace.
 
-Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) separates workspace ownership from attached task records, adds versioned intent and historical run bindings, and defines review/acceptance objects. The model below remains the current-goal target until that slice is implemented; a single `task_id` must not be treated as its future historical attribution model.
+Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) separates workspace ownership from attached task records, adds versioned intent and historical run bindings, and defines review/acceptance objects. Goal 01 needs no model change for this proposal. The model below remains its target; future task-history features will use the binding records specified in 15.
 
 ```
 { id, handle "k7", title, slug, workspace_id, repo_root, isolation: worktree|jj_workspace|container|none,
@@ -140,7 +140,7 @@ Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) 
 | `worktree.*` | `created`, `removed`, `branch_changed` |
 | `preview.*` | `discovered`, `declared`, `up`, `down`, `forwarded {local_url}`, `screenshot_captured {blob}`, `console_error` (sampled) |
 | `notification.*` | `created`, `delivered`, `read` |
-| `plugin.*` | `installed`, `enabled`, `disabled`, `crashed`, `action_invoked` |
+| `plugin.*` | `installed`, `linked`, `unlinked`, `uninstalled`, `enabled`, `disabled`, `trust_changed`, `registry_observed {generation}`, `crashed`, `action_invoked`, `command_finished`, `capability_violation` — native events; Herdr hooks/subscriptions receive only the baseline's event projection (07 §7.7–8.3) |
 | `client.*` | `attached {kind, machine?}`, `detached` |
 
 High-frequency signals (pane output, cursor moves, every streamed token) are **not** events. `agent.item` events are emitted at item granularity (start/end), never per token.
@@ -196,6 +196,14 @@ CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER)
 ```
 
 Migrations are forward-only, embedded in the binary, run at server start inside a transaction; a pre-migration backup copy of `state.db` is kept (last 3). Restoring a backup always rotates `log_epoch`.
+
+### Plugin state ownership [M5]
+
+The per-user `~/.config/vibeke/plugins.json` registry is authoritative for installation source/revision, manifest location/digest, enabled state and approved native capabilities or Herdr legacy trust (07 §7.7, 09 §6). It is available without a running session and updated with a machine-wide lock and atomic replacement. Include a monotonically increasing generation; running sessions reconcile committed generations before dispatching plugin commands and recheck grants before callbacks. Session snapshots must never overwrite or resurrect revoked global grants. Offline changes are picked up at next activation; session event logs record registry observations, not a fictitious cross-session atomic commit.
+
+Each session persists its own command records (invocation id, plugin/install identity, argv, context, start/end, status/exit, log references), plugin-pane ownership, holder/process references and broker bindings in `state.db`. Record invocation mutations with native outbox events; recovery reconnects to still-live held processes and reconciles terminal outcomes without rerunning completed actions. One-shot startup hooks follow the per-activation contract in 07. Compatibility ids and callback bindings survive normal server recovery; authority is revalidated against the current global grant before reuse. Popups retain their upstream transient semantics.
+
+Plugin config and file-based state directories are per user and shared across sessions, separate from replaceable source checkouts. Plugins own file formats, migrations and cross-session coordination. Native `plugin_kv` remains session-scoped, keyed by plugin id; Herdr plugins have no dependency on it. Global registry and plugin-owned files are not reconstructed by replaying a session event log; backup/export includes them explicitly and import reports conflicts without modifying Herdr's source data.
 
 ## 4a. Degraded mode (disk full, I/O errors)
 

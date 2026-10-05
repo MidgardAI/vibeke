@@ -50,7 +50,7 @@ Each item alone can be copied; the bet is the combination, shipped open source a
 4. **Isolation as a choice**: one-command task workspace (worktree + branch + ports + env + agent), with execution isolation (OS sandbox, container, VM) so yolo agents can run contained ([13](13-sandboxes-and-vms.md)).
 5. **Remote + preview**: SSH machines, previews reachable locally (browser profile over SOCKS through the bridge), scriptable remote headless browser and screenshots.
 6. **API + event outbox** that the Phase 2 mobile/web surface can be built on without changing the server.
-7. **Bounded Herdr compatibility**: config importer, env aliases, and the Herdr-socket subset existing clients use (M5).
+7. **Full Herdr plugin and automation compatibility**: config/session importer and env aliases first (M1); unmodified Herdr plugins, the complete public CLI/socket extension contract for a pinned, tested Herdr baseline (M5; Windows M6). Version policy and conformance gates are in 07 §7.7–8.4.
 8. **Quality bars**: measured keyboard fidelity, CPU/bandwidth budgets, golden tests per harness version.
 
 **Toolchain:** Rust, latest stable (edition 2024), pinned in `mise.toml` and bumped each stable release (01 §2).
@@ -71,12 +71,14 @@ If M1 misses the first two targets materially, stop and re-evaluate (sidecar fal
 
 ## Non-goals (Phase 1)
 
-- Mobile/web UI, push notifications, attention inbox UI, evidence bundles, merge queue, planner (Phase 2+). Phase 1 ships the data and APIs for them; a minimal phone decision surface may come early via the Herdr-compat subset (M5).
+The basic M1 interaction list is specified in 08. [15](15-task-outcomes-review-and-attention.md) separately stages the richer desktop task/review/inbox workflow after Goal 01, without making it an SSH daily-driver prerequisite or requiring the mobile gateway first.
+
+- Mobile/web UI, push notifications, attention inbox UI, evidence bundles, merge queue, planner (Phase 2+). Phase 1 ships the data and APIs for them; a minimal phone decision surface may come early via an existing phone companion on the Herdr compatibility layer (M5).
 - Being a terminal emulator application (we run *inside* Ghostty/Kitty/WezTerm/iTerm2/Windows Terminal like tmux does). A native GUI client is a possible Phase 3.
 - Building our own coding agent.
 - Cloud-hosted sandboxes (Phase 2). Local OS sandbox, container and VM levels are Phase 1 ([13](13-sandboxes-and-vms.md)).
 - Windows as a first-class host before M6 (the architecture must not preclude it — ConPTY, named pipes).
-- Before 1.0 unless demanded: QUIC/predictive echo, plugin marketplace, full Herdr API compatibility, policy learning, best-of-N comparison UI, automatic shared-cwd "split into task" migration, synchronized input.
+- Before 1.0 unless demanded: QUIC/predictive echo, plugin marketplace, policy learning, best-of-N comparison UI, automatic shared-cwd "split into task" migration, synchronized input. Herdr's private binary TUI/transport interoperability is outside the public plugin/automation compatibility contract (07 §8.0).
 
 ## Users
 
