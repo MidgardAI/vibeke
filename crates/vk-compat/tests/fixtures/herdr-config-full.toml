@@ -1,0 +1,93 @@
+# Hand-written from Herdr's documented default template, with the settings set.
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+auto_switch = true
+dark_name = "tokyo-night"
+light_name = "catppuccin-latte"
+
+[theme.custom]
+panel_bg = "reset"
+red = "#ff6188"
+
+[terminal]
+default_shell = "/bin/zsh"
+shell_mode = "login"
+new_cwd = "home"
+
+[update]
+channel = "preview"
+version_check = false
+manifest_check = false
+
+[keys]
+prefix = "ctrl+a"
+workspace_picker = "prefix+w"
+new_tab = "prefix+t"
+fullscreen = "prefix+f"
+split_vertical = "prefix+|"
+split_horizontal = "prefix+minus"
+remote_image_paste = "ctrl+shift+v"
+navigate_workspace_up = "up"
+last_pane = "prefix+;"
+open_worktree = "prefix+alt+o"
+quit_everything = "prefix+Q"
+
+[keys.indexed]
+tabs = "alt"
+workspaces = "ctrl+shift"
+agents = ""
+
+[[keys.command]]
+key = "prefix+alt+g"
+type = "popup"
+command = "lazygit"
+width = "80%"
+height = "80%"
+
+[[keys.command]]
+key = "prefix+alt+t"
+type = "shell"
+command = "notify-send done"
+
+[[keys.command]]
+key = "prefix+alt+x"
+type = "teleport"
+command = "nonsense"
+
+[worktrees]
+directory = "~/.herdr/worktrees"
+
+[ui]
+sidebar_width = 30
+sidebar_min_width = 20
+sidebar_max_width = 40
+sidebar_start_collapsed = true
+confirm_close = false
+tab_bar_position = "bottom"
+copy_on_select = false
+accent = "#89b4fa"
+mouse_capture = false
+hide_tab_bar_when_single_tab = true
+
+[ui.sidebar.agents]
+row_gap = 1
+rows = [["state_icon", "workspace", "tab"], ["agent"]]
+
+[ui.toast]
+delivery = "system"
+
+[ui.sound]
+enabled = true
+path = "sounds/notification.mp3"
+done_path = "sounds/done.mp3"
+
+[session]
+resume_agents_on_restore = true
+
+[remote]
+manage_ssh_config = false
+
+[advanced]
+scrollback_limit_bytes = 20000000

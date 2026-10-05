@@ -1,0 +1,342 @@
+{
+  "version": 3,
+  "workspaces": [
+    {
+      "id": "w5",
+      "custom_name": null,
+      "identity_cwd": "/Users/test/code/samplehub",
+      "public_pane_numbers": {
+        "18": 30,
+        "20": 32,
+        "1": 19,
+        "25": 36
+      },
+      "next_public_pane_number": 37,
+      "public_tab_numbers": [
+        19,
+        30,
+        32,
+        36
+      ],
+      "next_public_tab_number": 37,
+      "tabs": [
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 1
+          },
+          "panes": {
+            "1": {
+              "cwd": "/Users/test/code/samplehub",
+              "agent_session": {
+                "source": "herdr:codex",
+                "agent": "codex",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000001"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 1,
+          "root_pane": 1
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 18
+          },
+          "panes": {
+            "18": {
+              "cwd": "/Users/test/code/samplehub",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000002"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 18,
+          "root_pane": 18
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 20
+          },
+          "panes": {
+            "20": {
+              "cwd": "/Users/test/code/samplehub",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000003"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 20,
+          "root_pane": 20
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 25
+          },
+          "panes": {
+            "25": {
+              "cwd": "/Users/test/code/samplehub"
+            }
+          },
+          "zoomed": false,
+          "focused": 25,
+          "root_pane": 25
+        }
+      ],
+      "active_tab": 3
+    },
+    {
+      "id": "w7",
+      "custom_name": null,
+      "identity_cwd": "/Users/test/code/dashboard",
+      "public_pane_numbers": {
+        "10": 1,
+        "15": 15
+      },
+      "next_public_pane_number": 16,
+      "public_tab_numbers": [
+        1,
+        15
+      ],
+      "next_public_tab_number": 16,
+      "tabs": [
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 10
+          },
+          "panes": {
+            "10": {
+              "cwd": "/Users/test/code/dashboard",
+              "agent_session": {
+                "source": "herdr:codex",
+                "agent": "codex",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000004"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 10,
+          "root_pane": 10
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 15
+          },
+          "panes": {
+            "15": {
+              "cwd": "/Users/test/code/dashboard",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000005"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 15,
+          "root_pane": 15
+        }
+      ],
+      "active_tab": 1
+    },
+    {
+      "id": "w9",
+      "custom_name": null,
+      "identity_cwd": "/Users/test",
+      "public_pane_numbers": {
+        "27": 4,
+        "28": 5,
+        "26": 3,
+        "12": 1
+      },
+      "next_public_pane_number": 6,
+      "public_tab_numbers": [
+        1,
+        3,
+        4,
+        5
+      ],
+      "next_public_tab_number": 6,
+      "tabs": [
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 12
+          },
+          "panes": {
+            "12": {
+              "cwd": "/Users/test",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000006"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 12,
+          "root_pane": 12
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 26
+          },
+          "panes": {
+            "26": {
+              "cwd": "/Users/test/code/vibeke",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000007"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 26,
+          "root_pane": 26
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 27
+          },
+          "panes": {
+            "27": {
+              "cwd": "/Users/test/code/vibeke"
+            }
+          },
+          "zoomed": false,
+          "focused": 27,
+          "root_pane": 27
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 28
+          },
+          "panes": {
+            "28": {
+              "cwd": "/Users/test/code/vibeke"
+            }
+          },
+          "zoomed": false,
+          "focused": 28,
+          "root_pane": 28
+        }
+      ],
+      "active_tab": 3
+    },
+    {
+      "id": "wA",
+      "custom_name": null,
+      "identity_cwd": "/Users/test/code/storefront",
+      "public_pane_numbers": {
+        "13": 1,
+        "24": 2
+      },
+      "next_public_pane_number": 3,
+      "public_tab_numbers": [
+        1,
+        2
+      ],
+      "next_public_tab_number": 3,
+      "tabs": [
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 13
+          },
+          "panes": {
+            "13": {
+              "cwd": "/Users/test/code/storefront",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000008"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 13,
+          "root_pane": 13
+        },
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 24
+          },
+          "panes": {
+            "24": {
+              "cwd": "/Users/test/code/storefront"
+            }
+          },
+          "zoomed": false,
+          "focused": 24,
+          "root_pane": 24
+        }
+      ],
+      "active_tab": 1
+    },
+    {
+      "id": "wB",
+      "custom_name": null,
+      "identity_cwd": "/Users/test/code/backend",
+      "public_pane_numbers": {
+        "14": 1
+      },
+      "next_public_pane_number": 2,
+      "public_tab_numbers": [
+        1
+      ],
+      "next_public_tab_number": 2,
+      "tabs": [
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 14
+          },
+          "panes": {
+            "14": {
+              "cwd": "/Users/test/code/backend",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "00000000-0000-4000-8000-000000000009"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 14,
+          "root_pane": 14
+        }
+      ],
+      "active_tab": 0
+    }
+  ],
+  "active": 2,
+  "selected": 2,
+  "sidebar_width": 36,
+  "sidebar_section_split": 0.5,
+  "collapsed_space_keys": []
+}

@@ -1,0 +1,22 @@
+//! Vibeke configuration: typed schema (08 §11), loading with located errors, key-conflict
+//! checks, hot-reload diffing and a debounced file watcher.
+
+mod binding;
+mod keys;
+mod load;
+mod types;
+mod units;
+mod watch;
+
+pub use binding::{Binding, parse_binding, parse_prefix_key};
+pub use keys::{
+    ACTION_ALIASES, Conflict, ConflictReason, DEFAULT_KEYMAP, canonical_action, check_keys,
+    default_bindings, is_known_action,
+};
+pub use load::{
+    ConfigError, Diagnostic, EXTERNAL_SECTIONS, Pos, Warning, config_path, config_path_with,
+    default_config_toml, default_config_toml_uncommented, requires_new_panes,
+};
+pub use types::*;
+pub use units::{ByteSize, Dur, PortRange};
+pub use watch::{ConfigWatcher, ReloadEvent, watch};
