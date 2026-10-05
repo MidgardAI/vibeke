@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 //! The Vibeke server (01 §1.3): one process per (machine, session). It owns the layout and
 //! session state (SQLite + outbox), connects to per-pane holders, runs VT engines, serves the
 //! JSON-RPC control API and per-client render streams, and hosts agent adapters.

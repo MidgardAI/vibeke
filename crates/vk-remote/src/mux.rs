@@ -430,7 +430,7 @@ mod tests {
         let _bridge = Mux::start(br, bw, "bridge", Some(acc));
         let client = Mux::start(ar, aw, "client", None);
         let mut c1 = client.open("socket").await.unwrap();
-        let mut c2 = client.open("blob").await.unwrap();
+        let c2 = client.open("blob").await.unwrap();
         let mut buf = vec![0u8; 13];
         c1.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"hello socket\n");

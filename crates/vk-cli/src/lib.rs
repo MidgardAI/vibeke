@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 //! `vibeke <noun> <verb> …` — the CLI mirrors the API (07 §5). Every noun is an API namespace and
 //! every verb a method; `--flag value` pairs become params (dashes → underscores), with a few
 //! positional arguments per verb. `vibeke <noun>` alone prints help and never executes.
@@ -397,10 +398,10 @@ fn scalar(v: &str) -> Value {
     {
         return j;
     }
-    if !v.starts_with('0') || v == "0" {
-        if let Ok(n) = v.parse::<i64>() {
-            return Value::from(n);
-        }
+    if (!v.starts_with('0') || v == "0")
+        && let Ok(n) = v.parse::<i64>()
+    {
+        return Value::from(n);
     }
     Value::String(v.to_string())
 }

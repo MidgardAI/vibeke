@@ -255,10 +255,8 @@ impl Engine {
                         self.extra.modify_other_keys = ps.get(1).copied().unwrap_or(0).min(2) as u8;
                     }
                 }
-                (Some(b'?'), b'h' | b'l') => {
-                    if params(p).contains(&2026) {
-                        self.extra.sync = *fin == b'h';
-                    }
+                (Some(b'?'), b'h' | b'l') if params(p).contains(&2026) => {
+                    self.extra.sync = *fin == b'h';
                 }
                 _ => {}
             },

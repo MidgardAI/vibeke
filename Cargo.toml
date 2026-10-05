@@ -36,7 +36,7 @@ hmac = "0.12"
 libc = "0.2"
 notify = "8"
 polling = "3"
-postcard = { version = "1", features = ["use-std"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 rand = "0.9"
 regex = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }

@@ -51,7 +51,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
             tick.tick().await;
             hk.housekeeping();
             n += 1;
-            if n % 3600 == 0 {
+            if n.is_multiple_of(3600) {
                 let _ = hk.with_core(|c| c.store.prune(7, 365));
             }
         }
@@ -418,7 +418,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let handle = server.with_core(|c| c.next_task_handle());
     // Port lease (machine-wide).
     let leases = vk_tasks::PortLeases::new(
-        &crate::paths::state_root(),
+        crate::paths::state_root(),
         vk_tasks::PortPool::parse(s(p, "port_pool").unwrap_or("20000-29999"), 10)
             .map_err(|e| invalid(e.to_string()))?,
     );
@@ -568,7 +568,7 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
         }
     }
     let leases = vk_tasks::PortLeases::new(
-        &crate::paths::state_root(),
+        crate::paths::state_root(),
         vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?,
     );
     let _ = leases.release(&task.id);

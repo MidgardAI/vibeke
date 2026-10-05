@@ -355,7 +355,11 @@ impl Holder {
             }
         }
         loop {
-            let msg = match self.conns.get_mut(&key).map(|c| c.rbuf.next::<ToHolder>()) {
+            let msg = match self
+                .conns
+                .get_mut(&key)
+                .map(|c| c.rbuf.next_frame::<ToHolder>())
+            {
                 Some(Ok(Some(m))) => m,
                 Some(Ok(None)) | None => break,
                 Some(Err(_)) => {
@@ -652,7 +656,7 @@ impl Holder {
     }
 
     fn fg(&self) -> Option<u32> {
-        self.master.as_ref().and_then(|m| pty::fg_pgrp(m))
+        self.master.as_ref().and_then(pty::fg_pgrp)
     }
 
     fn status(&self) -> ProcStatus {

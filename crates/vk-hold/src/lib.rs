@@ -10,7 +10,7 @@ pub mod scan;
 
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, BufReader, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use vk_proto::holder::SpawnSpec;
@@ -27,7 +27,7 @@ pub fn main_daemon(spec_path: &Path, log_path: Option<&Path>) -> Result<()> {
     if pid > 0 {
         // Intermediate: relay the readiness line and exit so the server can reap us.
         drop(wr);
-        let f = std::fs::File::from(OwnedFd::from(rd));
+        let f = std::fs::File::from(rd);
         let mut line = String::new();
         BufReader::new(f).read_line(&mut line)?;
         if line.starts_with("ready ") {
@@ -42,7 +42,7 @@ pub fn main_daemon(spec_path: &Path, log_path: Option<&Path>) -> Result<()> {
     // SAFETY: new session so the holder outlives the server's process group and terminal.
     unsafe { libc::setsid() };
     redirect_stdio(log_path);
-    let mut ready = std::fs::File::from(OwnedFd::from(wr));
+    let mut ready = std::fs::File::from(wr);
     let result = (|| -> Result<holder::Holder> {
         let spec = holder::read_spec(spec_path)?;
         let listener = holder::bind_socket(Path::new(&spec.socket))?;

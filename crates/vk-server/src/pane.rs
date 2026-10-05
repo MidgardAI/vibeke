@@ -247,14 +247,9 @@ async fn run_inner(
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<FromHolder>();
     let reader = tokio::spawn(async move {
-        loop {
-            match asyncio::read_frame::<_, FromHolder>(&mut rd).await {
-                Ok(f) => {
-                    if frame_tx.send(f).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(f) = asyncio::read_frame::<_, FromHolder>(&mut rd).await {
+            if frame_tx.send(f).is_err() {
+                break;
             }
         }
     });

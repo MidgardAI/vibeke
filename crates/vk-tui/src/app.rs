@@ -318,7 +318,7 @@ async fn run_inner(
         theme: Theme::named(&opts.config.theme.name),
         keymap: Keymap::from_config(&opts.config),
         sidebar: !opts.config.ui.sidebar.collapsed,
-        sidebar_w: opts.config.ui.sidebar.width.clamp(18, 48) as u16,
+        sidebar_w: opts.config.ui.sidebar.width.clamp(18, 48),
         config: opts.config,
         mode: Mode::Normal,
         toasts: Vec::new(),
@@ -441,14 +441,11 @@ fn spawn_connect(
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
-            match (c)().await {
-                Ok(stream) => {
-                    match attach_stream(i, stream, client_id.clone(), remote, inc.clone()).await {
-                        Ok(()) => return,
-                        Err(_) => {}
-                    }
-                }
-                Err(_) => {}
+            if let Ok(stream) = (c)().await
+                && let Ok(()) =
+                    attach_stream(i, stream, client_id.clone(), remote, inc.clone()).await
+            {
+                return;
             }
             delay = (delay * 2).clamp(Duration::from_millis(500), Duration::from_secs(30));
         }
@@ -586,15 +583,15 @@ impl App {
                 m.seen = seen.into_iter().collect();
                 // The server owns per-client focus; adopt it unless we're mid-switch.
                 m.focus = focus;
-                if m.focus.pane.is_none() {
-                    if let Some(t) = m.model.tabs.first() {
-                        let p = t
-                            .focused_pane
-                            .clone()
-                            .or_else(|| t.layout.panes().first().cloned());
-                        if let Some(p) = p {
-                            m.send(ClientFrame::Focus { pane: p });
-                        }
+                if m.focus.pane.is_none()
+                    && let Some(t) = m.model.tabs.first()
+                {
+                    let p = t
+                        .focused_pane
+                        .clone()
+                        .or_else(|| t.layout.panes().first().cloned());
+                    if let Some(p) = p {
+                        m.send(ClientFrame::Focus { pane: p });
                     }
                 }
                 let empty_here = self.machines[i].model.workspaces.is_empty()

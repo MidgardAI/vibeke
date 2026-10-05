@@ -271,7 +271,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             };
             let open = it.status == InteractionStatus::Open && it.answerable;
             match (it.kind, ev.key) {
-                (_, k) if k == Key::Named(NamedKey::Escape) => {}
+                (_, Key::Named(NamedKey::Escape)) => {}
                 (_, Key::Char('o')) => {
                     app.cur = mi;
                     app.machines[mi].send(vk_proto::render::ClientFrame::Focus {
@@ -551,9 +551,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 b.line("[enter] focus  [a] answer  [r] reply  [esc] close", t.dim());
             }
             Popup::Card { interaction, sel } => {
-                let Some((mi, it)) = find_interaction(app, interaction) else {
-                    return None;
-                };
+                let (mi, it) = find_interaction(app, interaction)?;
                 let m = &app.machines[mi];
                 let run = m.model.runs.iter().find(|r| r.id == it.run);
                 let ws = m

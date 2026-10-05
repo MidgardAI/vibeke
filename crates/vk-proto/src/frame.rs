@@ -76,7 +76,7 @@ impl FrameBuf {
         Ok(Some(body))
     }
 
-    pub fn next<T: DeserializeOwned>(&mut self) -> Result<Option<T>, FrameError> {
+    pub fn next_frame<T: DeserializeOwned>(&mut self) -> Result<Option<T>, FrameError> {
         match self.next_body()? {
             Some(b) => Ok(Some(decode(&b)?)),
             None => Ok(None),
@@ -129,11 +129,11 @@ mod tests {
         for chunk in all.chunks(3) {
             fb.push(chunk);
         }
-        let x: (String, u32) = fb.next().unwrap().unwrap();
-        let y: (String, u32) = fb.next().unwrap().unwrap();
+        let x: (String, u32) = fb.next_frame().unwrap().unwrap();
+        let y: (String, u32) = fb.next_frame().unwrap().unwrap();
         assert_eq!(x, ("hello".into(), 7));
         assert_eq!(y, ("world".into(), 9));
-        assert!(fb.next::<(String, u32)>().unwrap().is_none());
+        assert!(fb.next_frame::<(String, u32)>().unwrap().is_none());
         let z: (String, u32) = read_frame(&mut &a[..]).unwrap();
         assert_eq!(z.1, 7);
     }
