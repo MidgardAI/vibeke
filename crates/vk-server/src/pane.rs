@@ -508,6 +508,7 @@ impl PaneLoop {
             self.rt.rev_tx.send_replace(rev);
             self.server.screen_dirty.notify_waiters();
             self.server.pane_output(&self.rt.id);
+            self.server.agents.on_screen(&self.server, &self.rt.id);
         }
         Ok(())
     }

@@ -1440,6 +1440,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libc",
+ "rustix",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1451,6 +1452,7 @@ dependencies = [
  "vk-hold",
  "vk-proto",
  "vk-server",
+ "vk-term",
  "vk-tui",
 ]
 
@@ -1560,6 +1562,7 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+ "vk-config",
  "vk-hold",
  "vk-proto",
  "vk-redact",

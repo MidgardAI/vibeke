@@ -12,6 +12,7 @@ vk-term = { workspace = true }
 vk-store = { workspace = true }
 vk-tasks = { workspace = true }
 vk-redact = { workspace = true }
+vk-config = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

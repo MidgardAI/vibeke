@@ -23,6 +23,8 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 libc.workspace = true
+rustix.workspace = true
+vk-term = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true

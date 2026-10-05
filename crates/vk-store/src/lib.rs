@@ -488,6 +488,22 @@ impl Store {
         })
     }
 
+    /// Any entity (open or closed) by id or handle.
+    pub fn find<T: DeserializeOwned>(&self, kind: &str, id_or_handle: &str) -> Result<Option<T>> {
+        let j: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT json FROM entities WHERE kind=?1 AND (id=?2 OR handle=?2) ORDER BY updated_at DESC LIMIT 1",
+                params![kind, id_or_handle],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(match j {
+            Some(j) => Some(serde_json::from_str(&j)?),
+            None => None,
+        })
+    }
+
     /// Closed (ended) entities of a kind, newest first.
     pub fn load_closed<T: DeserializeOwned>(&self, kind: &str, limit: usize) -> Result<Vec<T>> {
         let mut st = self.conn.prepare("SELECT json FROM entities WHERE kind=?1 AND closed=1 ORDER BY updated_at DESC LIMIT ?2")?;

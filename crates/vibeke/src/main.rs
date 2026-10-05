@@ -6,6 +6,7 @@ use vk_cli::client;
 use vk_cli::{EXIT_NO_SERVER, EXIT_OK, EXIT_USAGE, Global};
 
 mod commands;
+mod debug;
 mod doctor;
 mod integration;
 mod remote;
@@ -90,6 +91,9 @@ fn main() {
         };
         let r = vk_hold::main_daemon(&spec, get("--log").as_deref());
         std::process::exit(if r.is_ok() { 0 } else { 1 });
+    }
+    if args.first().map(String::as_str) == Some("debug") && args.get(1).map(String::as_str) == Some("ptyshot") {
+        std::process::exit(debug::ptyshot(&args[2..]));
     }
     if args.first().map(String::as_str) == Some("hook") {
         // Sync, no runtime: must stay within the hook latency budget (04 §7.5).

@@ -1,0 +1,494 @@
+//! Built-in harness knowledge for Claude Code and Codex (04 §6.1, §6.2). pi/omp are deferred
+//! to Goal 02; the `Harness` enum is the seam they plug into.
+
+use serde_json::{Value, json};
+use std::path::Path;
+use vk_proto::model::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Harness {
+    Claude,
+    Codex,
+}
+
+/// Capability matrix rows for the validated versions (04 §2.3; verified in the M0 reality check).
+pub mod caps {
+    /// Claude `AskUserQuestion` answered via `PreToolUse` `updatedInput` — unverified until the
+    /// golden corpus proves it, so questions use best-effort keystrokes.
+    pub const CLAUDE_QUESTION_NATIVE: bool = false;
+}
+
+impl Harness {
+    pub fn from_id(s: &str) -> Option<Harness> {
+        match s {
+            "claude" => Some(Harness::Claude),
+            "codex" => Some(Harness::Codex),
+            _ => None,
+        }
+    }
+    pub fn id(&self) -> &'static str {
+        match self {
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+        }
+    }
+    pub fn display(&self) -> &'static str {
+        match self {
+            Harness::Claude => "Claude Code",
+            Harness::Codex => "Codex CLI",
+        }
+    }
+    pub fn capabilities(&self) -> &'static [&'static str] {
+        match self {
+            Harness::Claude => &["observe", "gate", "answer_native:approval", "answer_native:plan_review", "answer_keystroke", "resume", "survive_disconnect"],
+            Harness::Codex => &["observe", "gate", "answer_native:approval", "answer_keystroke", "resume", "survive_disconnect"],
+        }
+    }
+    pub fn answer_native(&self, kind: InteractionKind) -> bool {
+        match (self, kind) {
+            (_, InteractionKind::Approval) => true,
+            (Harness::Claude, InteractionKind::PlanReview) => true,
+            (Harness::Claude, InteractionKind::Question) => caps::CLAUDE_QUESTION_NATIVE,
+            _ => false,
+        }
+    }
+    pub fn keystroke_answers(&self, kind: InteractionKind) -> bool {
+        matches!(kind, InteractionKind::Approval | InteractionKind::Question | InteractionKind::PlanReview)
+    }
+    pub fn preassign_session_id(&self) -> Option<String> {
+        match self {
+            Harness::Claude => Some(uuid_v4()),
+            Harness::Codex => None,
+        }
+    }
+    pub fn launch_argv(&self, session: Option<&str>, args: &[String], prompt: Option<&str>) -> Vec<String> {
+        let mut v = vec![self.id().to_string()];
+        if let (Harness::Claude, Some(s)) = (self, session) {
+            v.push("--session-id".into());
+            v.push(s.into());
+        }
+        v.extend(args.iter().cloned());
+        if let Some(p) = prompt {
+            v.push(p.to_string());
+        }
+        v
+    }
+    pub fn resume_argv(&self, session: &str) -> Vec<String> {
+        match self {
+            Harness::Claude => vec!["claude".into(), "--resume".into(), session.into()],
+            Harness::Codex => vec!["codex".into(), "resume".into(), session.into()],
+        }
+    }
+}
+
+fn uuid_v4() -> String {
+    let b: [u8; 16] = std::array::from_fn(|_| rand::random::<u8>());
+    let mut b = b;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
+/// Match a process (argv, exe) to a harness (04 §5.2): native binaries, node/bun shims, nix
+/// wrappers.
+pub fn detect_harness(argv: &[String], exe: Option<&str>) -> Option<Harness> {
+    let base = |s: &str| s.rsplit('/').next().unwrap_or(s).trim_start_matches('-').to_string();
+    let a0 = argv.first().map(|s| base(s)).unwrap_or_default();
+    let exe_b = exe.map(base).unwrap_or_default();
+    for name in [a0.as_str(), exe_b.as_str()] {
+        match name {
+            "claude" | ".claude-wrapped" => return Some(Harness::Claude),
+            "codex" | ".codex-wrapped" | "codex-aarch64-apple-darwin" | "codex-x86_64-unknown-linux-musl" | "codex-aarch64-unknown-linux-musl" => {
+                return Some(Harness::Codex);
+            }
+            _ => {}
+        }
+    }
+    // Interpreter + script path (node/bun shims).
+    if matches!(a0.as_str(), "node" | "bun" | "deno") {
+        for a in argv.iter().skip(1).take(3) {
+            if a.contains("@anthropic-ai/claude-code") || a.contains("/claude-code/") || a.ends_with("/claude") {
+                return Some(Harness::Claude);
+            }
+            if a.contains("@openai/codex") || a.ends_with("/codex") || a.ends_with("/codex.js") {
+                return Some(Harness::Codex);
+            }
+        }
+    }
+    if let Some(e) = exe {
+        if e.contains("-claude-code-") {
+            return Some(Harness::Claude);
+        }
+        if e.contains("/codex/") && e.ends_with("/codex") {
+            return Some(Harness::Codex);
+        }
+    }
+    None
+}
+
+/// User-typed yolo flags (13 §3.1): informational badge only, never blocked.
+pub fn yolo(h: Harness, argv: &[String]) -> bool {
+    let has = |f: &str| argv.iter().any(|a| a == f);
+    let pair = |a: &str, b: &str| argv.windows(2).any(|w| w[0] == a && w[1] == b) || argv.iter().any(|x| x == &format!("{a}={b}"));
+    match h {
+        Harness::Claude => has("--dangerously-skip-permissions") || pair("--permission-mode", "bypassPermissions"),
+        Harness::Codex => {
+            has("--dangerously-bypass-approvals-and-sandbox")
+                || has("--yolo")
+                || ((pair("-a", "never") || pair("--ask-for-approval", "never")) && (pair("-s", "danger-full-access") || pair("--sandbox", "danger-full-access")))
+        }
+    }
+}
+
+pub fn shell_join(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| {
+            if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c)) {
+                a.clone()
+            } else {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn tool_summary(tool: &str, input: &Value) -> String {
+    let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("");
+    match tool {
+        "Bash" | "shell" | "exec_command" => format!("{tool}: {}", s("command").lines().next().unwrap_or("")),
+        "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => format!("{tool} {}", s("file_path")),
+        "WebFetch" => format!("WebFetch {}", s("url")),
+        "Grep" | "Glob" => format!("{tool} {}", s("pattern")),
+        "Task" | "Agent" => format!("{tool}: {}", s("description")),
+        _ => tool.to_string(),
+    }
+}
+
+/// Phase 1 risk heuristic (04 §7.6).
+pub fn risk(tool: &str, command: Option<&str>, paths: &[String]) -> (Risk, Vec<String>) {
+    let mut reasons = Vec::new();
+    let mut level = 0u8; // 0 unknown, 1 low, 2 medium, 3 high
+    let mut bump = |l: u8, why: &str, reasons: &mut Vec<String>| {
+        if l > level {
+            level = l;
+        }
+        if l >= 2 && !reasons.iter().any(|r| r == why) {
+            reasons.push(why.to_string());
+        }
+    };
+    if let Some(cmd) = command {
+        for seg in cmd.split(['|', ';', '&', '\n']).map(str::trim).filter(|s| !s.is_empty()) {
+            let s = seg.to_lowercase();
+            let w: Vec<&str> = s.split_whitespace().collect();
+            let first = w.first().copied().unwrap_or("");
+            if s.contains("rm -rf") || s.contains("rm -fr") || (first == "rm" && w.iter().any(|x| x.starts_with('-') && x.contains('r'))) {
+                bump(3, "deletes files recursively", &mut reasons);
+            }
+            if s.contains("push --force") || s.contains("push -f") || s.contains("reset --hard") || s.contains("clean -fd") {
+                bump(3, "rewrites git history", &mut reasons);
+            }
+            if first == "sudo" || s.contains("chmod -r") || s.contains("mkfs") || s.contains(" dd ") || s.starts_with("dd ") || s.contains("drop table") || s.contains("kubectl delete") {
+                bump(3, "destructive or privileged", &mut reasons);
+            }
+            if (s.contains("curl") || s.contains("wget")) && cmd.contains('|') && (cmd.contains("sh") || cmd.contains("bash")) {
+                bump(3, "pipes a download into a shell", &mut reasons);
+            }
+            if matches!(first, "npm" | "pnpm" | "yarn" | "bun") && w.get(1).is_some_and(|x| matches!(*x, "add" | "install" | "i" | "remove")) || (first == "pip" || first == "pip3" || first == "brew" || first == "cargo") && w.get(1).is_some_and(|x| matches!(*x, "install" | "add")) {
+                bump(2, "installs packages", &mut reasons);
+            }
+            if s.contains("migrate") {
+                bump(2, "runs a migration", &mut reasons);
+            }
+            if first == "git" && w.get(1).is_some_and(|x| matches!(*x, "commit" | "push" | "merge" | "rebase" | "checkout" | "switch")) {
+                bump(2, "changes git state", &mut reasons);
+            }
+            let readonly = matches!(first, "ls" | "cat" | "rg" | "grep" | "head" | "tail" | "wc" | "pwd" | "echo" | "which" | "find" | "tree" | "less" | "file" | "stat")
+                || (first == "git" && w.get(1).is_some_and(|x| matches!(*x, "status" | "log" | "diff" | "show" | "branch")));
+            let runner = matches!(first, "npm" | "pnpm" | "yarn" | "bun") && w.get(1).is_some_and(|x| matches!(*x, "test" | "run" | "lint" | "build" | "typecheck"))
+                || first == "cargo" && w.get(1).is_some_and(|x| matches!(*x, "test" | "build" | "check" | "clippy" | "fmt" | "nextest"))
+                || matches!(first, "pytest" | "go" | "make" | "just" | "tsc" | "eslint" | "vitest" | "jest");
+            if (readonly && !s.contains("-delete") && !s.contains("-exec")) || runner {
+                bump(1, "", &mut reasons);
+            }
+        }
+    }
+    for p in paths {
+        let l = p.to_lowercase();
+        if l.contains("/.env") || l.ends_with(".pem") || l.contains("id_rsa") || l.contains(".aws/credentials") || l.contains(".ssh/") {
+            bump(3, "edits secrets or credentials", &mut reasons);
+        }
+    }
+    if paths.len() > 5 {
+        bump(2, "edits many files", &mut reasons);
+    }
+    if matches!(tool, "Edit" | "Write" | "MultiEdit") && level == 0 {
+        level = 1;
+    }
+    let r = match level {
+        3 => Risk::High,
+        2 => Risk::Medium,
+        1 => Risk::Low,
+        _ => Risk::Unknown,
+    };
+    (r, reasons)
+}
+
+fn mini_diff(old: &str, new: &str) -> String {
+    let mut out = String::new();
+    for l in old.lines().take(40) {
+        out.push_str(&format!("-{l}\n"));
+    }
+    for l in new.lines().take(40) {
+        out.push_str(&format!("+{l}\n"));
+    }
+    out
+}
+
+fn blank_interaction(kind: InteractionKind, title: String, native_ref: Option<String>) -> Interaction {
+    Interaction {
+        id: crate::core::ulid(),
+        handle: String::new(),
+        run: String::new(),
+        pane: String::new(),
+        kind,
+        status: InteractionStatus::Open,
+        title,
+        body_md: None,
+        action: None,
+        questions: vec![],
+        plan_md: None,
+        answer_channel: AnswerChannel::Native,
+        native_ref,
+        source: StateSource::Structured,
+        confidence: 1.0,
+        answerable: true,
+        gate: false,
+        decision_rev: 0,
+        delivery: DeliveryState::None,
+        delivery_error: None,
+        answer: None,
+        answered_by: None,
+        opened_at_ms: vk_store::now_ms(),
+        answered_at_ms: None,
+    }
+}
+
+/// Map a gate-capable hook payload to an Interaction (04 §6.1.1, §6.1.2, §6.2).
+pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Interaction> {
+    let tool = p.get("tool_name").and_then(Value::as_str).unwrap_or("tool").to_string();
+    let input = p.get("tool_input").cloned().unwrap_or(Value::Null);
+    let native_ref = p.get("tool_use_id").or_else(|| p.get("call_id")).or_else(|| p.get("turn_id")).and_then(Value::as_str).map(str::to_string);
+    let _ = h;
+    if tool == "AskUserQuestion" {
+        let qs = input.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut it = blank_interaction(InteractionKind::Question, qs.first().and_then(|q| q.get("question")).and_then(Value::as_str).unwrap_or("question").to_string(), native_ref);
+        it.questions = qs
+            .iter()
+            .enumerate()
+            .map(|(i, q)| Question {
+                id: q.get("question").and_then(Value::as_str).unwrap_or(&format!("q{i}")).to_string(),
+                prompt: q.get("question").and_then(Value::as_str).unwrap_or("").to_string(),
+                header: q.get("header").and_then(Value::as_str).map(str::to_string),
+                multi: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                options: q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .map(|os| {
+                        os.iter()
+                            .map(|o| {
+                                let label = o.get("label").and_then(Value::as_str).unwrap_or("").to_string();
+                                QuestionOption { id: label.clone(), label, description: o.get("description").and_then(Value::as_str).map(str::to_string) }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                allow_free_text: true,
+            })
+            .collect();
+        return Some(it);
+    }
+    if event == "PreToolUse" {
+        return None;
+    }
+    if tool == "ExitPlanMode" {
+        let mut it = blank_interaction(InteractionKind::PlanReview, "review plan".into(), native_ref);
+        it.plan_md = input.get("plan").and_then(Value::as_str).map(str::to_string);
+        return Some(it);
+    }
+    let command = input.get("command").and_then(|c| c.as_str().map(str::to_string).or_else(|| c.as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
+    let path = input.get("file_path").or_else(|| input.get("path")).and_then(Value::as_str).map(str::to_string);
+    let paths: Vec<String> = path.into_iter().collect();
+    let diff = match (input.get("old_string").and_then(Value::as_str), input.get("new_string").and_then(Value::as_str), input.get("content").and_then(Value::as_str)) {
+        (Some(o), Some(n), _) => Some(mini_diff(o, n)),
+        (_, _, Some(c)) => Some(mini_diff("", c)),
+        _ => None,
+    };
+    let (risk, reasons) = risk(&tool, command.as_deref(), &paths);
+    let summary = tool_summary(&tool, &input);
+    let mut it = blank_interaction(InteractionKind::Approval, summary.clone(), native_ref);
+    it.action = Some(ActionInfo { tool, summary, command, paths, diff, risk, risk_reasons: reasons });
+    Some(it)
+}
+
+/// Hook stdout JSON for a decision (04 §6.1.1, §6.2). Shapes pinned by the M0 reality check.
+pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
+    let deny_msg = a.text.clone().unwrap_or_else(|| "Denied from Vibeke".into());
+    if it.kind == InteractionKind::Question {
+        // Native AskUserQuestion answer (only used when caps::CLAUDE_QUESTION_NATIVE).
+        let mut answers = serde_json::Map::new();
+        for (q, opts) in &a.choices {
+            answers.insert(q.clone(), json!(opts.join(", ")));
+        }
+        return json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": {"answers": answers}}});
+    }
+    let decision = match a.decision {
+        Some(Decision::Allow) => json!({"behavior": "allow"}),
+        Some(Decision::AllowAlways) => match (h, it.action.as_ref()) {
+            (Harness::Claude, Some(act)) => {
+                let rule = act.command.as_ref().and_then(|c| c.split_whitespace().next().map(|w| format!("{w}:*")));
+                json!({"behavior": "allow", "updatedPermissions": [{"type": "addRules", "rules": [{"toolName": act.tool, "ruleContent": rule}], "behavior": "allow", "destination": "session"}]})
+            }
+            _ => json!({"behavior": "allow"}),
+        },
+        Some(Decision::Deny) | None => json!({"behavior": "deny", "message": deny_msg}),
+    };
+    json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}})
+}
+
+// ---- transcripts (04 §10) -----------------------------------------------------------------------
+
+fn tail_lines(path: &Path, max_bytes: u64) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return vec![] };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(max_bytes);
+    let _ = f.seek(SeekFrom::Start(start));
+    let mut s = String::new();
+    let _ = f.read_to_string(&mut s);
+    let mut lines: Vec<String> = s.lines().map(str::to_string).collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    lines
+}
+
+fn message_text(v: &Value) -> Option<String> {
+    let msg = v.get("message")?;
+    match msg.get("content")? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(a) => {
+            let t: Vec<String> = a.iter().filter(|c| c.get("type").and_then(Value::as_str) == Some("text")).filter_map(|c| c.get("text").and_then(Value::as_str).map(str::to_string)).collect();
+            (!t.is_empty()).then(|| t.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+/// Last assistant text from a Claude JSONL transcript (Codex rollouts use `response_item`).
+pub fn transcript_last_message(path: &Path) -> Option<String> {
+    for l in tail_lines(path, 256 * 1024).iter().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        if v.get("type").and_then(Value::as_str) == Some("assistant")
+            && let Some(t) = message_text(&v)
+        {
+            return Some(t);
+        }
+        if v.get("type").and_then(Value::as_str) == Some("response_item")
+            && v.pointer("/payload/role").and_then(Value::as_str) == Some("assistant")
+            && let Some(t) = v.pointer("/payload/content/0/text").and_then(Value::as_str)
+        {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+pub fn transcript_turns(path: &Path, limit: usize) -> Vec<Value> {
+    let mut out = Vec::new();
+    for l in tail_lines(path, 2 << 20) {
+        let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
+        let role = v.get("type").and_then(Value::as_str).unwrap_or("");
+        if (role == "user" || role == "assistant")
+            && let Some(t) = message_text(&v)
+        {
+            out.push(json!({"role": role, "text": t, "ts": v.get("timestamp")}));
+        }
+    }
+    let n = out.len();
+    out.split_off(n.saturating_sub(limit))
+}
+
+pub fn transcript_tail(path: &Path, limit: usize) -> String {
+    transcript_turns(path, limit).iter().map(|t| format!("[{}] {}", t["role"].as_str().unwrap_or(""), t["text"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n\n")
+}
+
+pub fn version(h: Harness) -> Option<String> {
+    let out = std::process::Command::new(h.id()).arg("--version").output().ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.split_whitespace().find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit())).map(str::to_string)
+}
+
+/// The PATH shim for user-typed `codex` (04 §6.2): exec the real codex later in PATH with a
+/// per-pane embedded app-server, all user arguments untouched.
+pub fn codex_shim_script() -> String {
+    r#"#!/bin/sh
+# managed by vibeke: per-pane embedded Codex app-server so hooks carry this pane's identity
+# (spec 04 §6.2). Disable with CODEX_VIBEKE_SHIM=0.
+VIBEKE_CODEX_EXTRA="--disable daemon_auto_start"
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+real=""
+IFS_SAVE=$IFS; IFS=:
+for d in $PATH; do
+  [ "$d" = "$self_dir" ] && continue
+  if [ -x "$d/codex" ] && [ ! -d "$d/codex" ]; then real="$d/codex"; break; fi
+done
+IFS=$IFS_SAVE
+[ -n "$real" ] || { echo "codex: not found in PATH" >&2; exit 127; }
+if [ "${CODEX_VIBEKE_SHIM:-1}" = "0" ]; then exec "$real" "$@"; fi
+for a in "$@"; do
+  case "$a" in daemon_auto_start*|--remote*|app-server|mcp-server|login|logout|completion|--version|-V|--help|-h) exec "$real" "$@";; esac
+done
+exec "$real" $VIBEKE_CODEX_EXTRA "$@"
+"#
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_and_yolo() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(detect_harness(&a(&["claude", "--resume", "x"]), None), Some(Harness::Claude));
+        assert_eq!(detect_harness(&a(&["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"]), None), Some(Harness::Claude));
+        assert_eq!(detect_harness(&a(&["codex", "-a", "never"]), Some("/opt/homebrew/bin/codex")), Some(Harness::Codex));
+        assert_eq!(detect_harness(&a(&["-zsh"]), Some("/bin/zsh")), None);
+        assert!(yolo(Harness::Claude, &a(&["claude", "--dangerously-skip-permissions"])));
+        assert!(yolo(Harness::Codex, &a(&["codex", "-a", "never", "-s", "danger-full-access"])));
+        assert!(!yolo(Harness::Codex, &a(&["codex", "-a", "never"])));
+    }
+
+    #[test]
+    fn hook_mapping_and_decisions() {
+        let p = json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf build && pnpm test"}, "tool_use_id": "toolu_1"});
+        let it = interaction_from_hook(Harness::Claude, "PermissionRequest", &p).unwrap();
+        assert_eq!(it.kind, InteractionKind::Approval);
+        assert_eq!(it.native_ref.as_deref(), Some("toolu_1"));
+        assert_eq!(it.action.as_ref().unwrap().risk, Risk::High);
+        let d = decision_json(Harness::Claude, &it, &Answer { decision: Some(Decision::Deny), choices: vec![], text: Some("no".into()) });
+        assert_eq!(d["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert_eq!(d["hookSpecificOutput"]["decision"]["message"], "no");
+        let d = decision_json(Harness::Claude, &it, &Answer { decision: Some(Decision::AllowAlways), ..Default::default() });
+        assert_eq!(d["hookSpecificOutput"]["decision"]["updatedPermissions"][0]["destination"], "session");
+        let plan = json!({"tool_name": "ExitPlanMode", "tool_input": {"plan": "1. do x"}});
+        assert_eq!(interaction_from_hook(Harness::Claude, "PermissionRequest", &plan).unwrap().kind, InteractionKind::PlanReview);
+        let q = json!({"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}], "multiSelect": false}]}});
+        let it = interaction_from_hook(Harness::Claude, "PreToolUse", &q).unwrap();
+        assert_eq!(it.questions[0].options.len(), 2);
+        assert_eq!(risk("Bash", Some("pnpm test"), &[]).0, Risk::Low);
+        assert_eq!(risk("Bash", Some("pnpm add zod"), &[]).0, Risk::Medium);
+    }
+}
