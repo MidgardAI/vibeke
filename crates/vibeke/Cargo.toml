@@ -18,6 +18,7 @@ vk-tui = { workspace = true }
 vk-config = { workspace = true }
 vk-compat = { workspace = true }
 vk-remote = { workspace = true }
+vk-agents = { workspace = true }
 toml_edit.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

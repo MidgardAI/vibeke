@@ -138,6 +138,7 @@ impl Link {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn rtt_ms(&self) -> Option<u64> {
         let g = self.mux.lock().await;
         g.as_ref()

@@ -223,137 +223,14 @@ pub fn tool_summary(tool: &str, input: &Value) -> String {
     }
 }
 
-/// Phase 1 risk heuristic (04 §7.6).
+/// Phase 1 risk heuristic (04 §7.6), shared with the installers crate.
 pub fn risk(tool: &str, command: Option<&str>, paths: &[String]) -> (Risk, Vec<String>) {
-    let mut reasons = Vec::new();
-    let mut level = 0u8; // 0 unknown, 1 low, 2 medium, 3 high
-    let mut bump = |l: u8, why: &str, reasons: &mut Vec<String>| {
-        if l > level {
-            level = l;
-        }
-        if l >= 2 && !reasons.iter().any(|r| r == why) {
-            reasons.push(why.to_string());
-        }
-    };
-    if let Some(cmd) = command {
-        for seg in cmd
-            .split(['|', ';', '&', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            let s = seg.to_lowercase();
-            let w: Vec<&str> = s.split_whitespace().collect();
-            let first = w.first().copied().unwrap_or("");
-            if s.contains("rm -rf")
-                || s.contains("rm -fr")
-                || (first == "rm" && w.iter().any(|x| x.starts_with('-') && x.contains('r')))
-            {
-                bump(3, "deletes files recursively", &mut reasons);
-            }
-            if s.contains("push --force")
-                || s.contains("push -f")
-                || s.contains("reset --hard")
-                || s.contains("clean -fd")
-            {
-                bump(3, "rewrites git history", &mut reasons);
-            }
-            if first == "sudo"
-                || s.contains("chmod -r")
-                || s.contains("mkfs")
-                || s.contains(" dd ")
-                || s.starts_with("dd ")
-                || s.contains("drop table")
-                || s.contains("kubectl delete")
-            {
-                bump(3, "destructive or privileged", &mut reasons);
-            }
-            if (s.contains("curl") || s.contains("wget"))
-                && cmd.contains('|')
-                && (cmd.contains("sh") || cmd.contains("bash"))
-            {
-                bump(3, "pipes a download into a shell", &mut reasons);
-            }
-            if matches!(first, "npm" | "pnpm" | "yarn" | "bun")
-                && w.get(1)
-                    .is_some_and(|x| matches!(*x, "add" | "install" | "i" | "remove"))
-                || (first == "pip" || first == "pip3" || first == "brew" || first == "cargo")
-                    && w.get(1).is_some_and(|x| matches!(*x, "install" | "add"))
-            {
-                bump(2, "installs packages", &mut reasons);
-            }
-            if s.contains("migrate") {
-                bump(2, "runs a migration", &mut reasons);
-            }
-            if first == "git"
-                && w.get(1).is_some_and(|x| {
-                    matches!(
-                        *x,
-                        "commit" | "push" | "merge" | "rebase" | "checkout" | "switch"
-                    )
-                })
-            {
-                bump(2, "changes git state", &mut reasons);
-            }
-            let readonly = matches!(
-                first,
-                "ls" | "cat"
-                    | "rg"
-                    | "grep"
-                    | "head"
-                    | "tail"
-                    | "wc"
-                    | "pwd"
-                    | "echo"
-                    | "which"
-                    | "find"
-                    | "tree"
-                    | "less"
-                    | "file"
-                    | "stat"
-            ) || (first == "git"
-                && w.get(1)
-                    .is_some_and(|x| matches!(*x, "status" | "log" | "diff" | "show" | "branch")));
-            let runner = matches!(first, "npm" | "pnpm" | "yarn" | "bun")
-                && w.get(1)
-                    .is_some_and(|x| matches!(*x, "test" | "run" | "lint" | "build" | "typecheck"))
-                || first == "cargo"
-                    && w.get(1).is_some_and(|x| {
-                        matches!(
-                            *x,
-                            "test" | "build" | "check" | "clippy" | "fmt" | "nextest"
-                        )
-                    })
-                || matches!(
-                    first,
-                    "pytest" | "go" | "make" | "just" | "tsc" | "eslint" | "vitest" | "jest"
-                );
-            if (readonly && !s.contains("-delete") && !s.contains("-exec")) || runner {
-                bump(1, "", &mut reasons);
-            }
-        }
-    }
-    for p in paths {
-        let l = p.to_lowercase();
-        if l.contains("/.env")
-            || l.ends_with(".pem")
-            || l.contains("id_rsa")
-            || l.contains(".aws/credentials")
-            || l.contains(".ssh/")
-        {
-            bump(3, "edits secrets or credentials", &mut reasons);
-        }
-    }
-    if paths.len() > 5 {
-        bump(2, "edits many files", &mut reasons);
-    }
-    if matches!(tool, "Edit" | "Write" | "MultiEdit") && level == 0 {
-        level = 1;
-    }
-    let r = match level {
-        3 => Risk::High,
-        2 => Risk::Medium,
-        1 => Risk::Low,
-        _ => Risk::Unknown,
+    let (r, reasons) = vk_agents::assess(tool, command, paths, None);
+    let r = match r {
+        vk_agents::Risk::High => Risk::High,
+        vk_agents::Risk::Medium => Risk::Medium,
+        vk_agents::Risk::Low => Risk::Low,
+        vk_agents::Risk::Unknown => Risk::Unknown,
     };
     (r, reasons)
 }
