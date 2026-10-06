@@ -147,6 +147,23 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         g
     };
     segs.push((format!("{glyph} "), t.bold(color)));
+    // A tracked task's review label is its own small marker; it never replaces "done".
+    if let Some(tid) = crate::tasks::task_for_run(app, mi, r) {
+        let label = m
+            .model
+            .tasks
+            .iter()
+            .find(|x| x.id == tid)
+            .and_then(|x| x.review_label.as_deref());
+        let (mark, tone) = crate::tasks::sidebar_marker(label);
+        let c = match tone {
+            1 => t.accent,
+            2 => t.yellow,
+            3 => t.green,
+            _ => t.muted,
+        };
+        segs.push((format!("{mark} "), t.s(c)));
+    }
     segs.push((label, t.dim()));
     let focused = mi == app.cur && app.m().focus.pane.as_deref() == Some(&r.pane);
     SideRow {
@@ -154,6 +171,22 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         target: Some((mi, r.pane.clone())),
         focused,
     }
+}
+
+/// Tests: the text of one agent row.
+#[cfg(test)]
+pub fn agent_row_text(app: &App, mi: usize, run: &str) -> String {
+    let r = app.machines[mi]
+        .model
+        .runs
+        .iter()
+        .find(|r| r.id == run)
+        .expect("run");
+    agent_row(app, mi, r, "")
+        .segs
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect()
 }
 
 pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
@@ -514,6 +547,16 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     " ⎘ {} clipboard request — prefix+y ",
                     truncate(&app.machines[r.machine].label, 16)
                 ),
+                t.bold(t.yellow),
+            ),
+        );
+    }
+    let unknown = app.pending_ops.unknown_count();
+    if unknown > 0 {
+        right.insert(
+            0,
+            (
+                format!(" ⚠ {unknown} outcome(s) unknown — :pending_operations "),
                 t.bold(t.yellow),
             ),
         );

@@ -71,6 +71,60 @@ pub struct Machine {
 pub enum Pending {
     Ignore,
     Toast(String),
+    /// Task surfaces (track form, task view, run → task map).
+    Task(crate::tasks::Reply),
+    /// The attention inbox.
+    Attn(crate::inbox::Reply),
+    /// A durable mutation (persisted in `client-pending.json` before dispatch); `then` handles
+    /// the response once the operation is forgotten.
+    Op {
+        key: String,
+        then: Box<Pending>,
+    },
+    /// `task.operation.get` for a pending operation after a reconnect or restart.
+    Reconcile {
+        key: String,
+    },
+}
+
+/// A JSON-RPC error from a machine (07 canonical errors).
+#[derive(Debug, Clone)]
+pub struct RpcErr {
+    pub kind: String,
+    pub message: String,
+    pub details: Value,
+}
+
+impl RpcErr {
+    pub fn from_value(e: &Value) -> RpcErr {
+        RpcErr {
+            kind: e
+                .pointer("/data/kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            message: e
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("error")
+                .to_string(),
+            details: e.pointer("/data/details").cloned().unwrap_or(Value::Null),
+        }
+    }
+    /// The structured reason (`binding_unverified`, `send_unsafe`, `review_changed`, …).
+    pub fn reason(&self) -> Option<&str> {
+        self.details.get("reason").and_then(Value::as_str)
+    }
+    pub fn is_method_not_found(&self) -> bool {
+        self.kind == "method_not_found"
+    }
+    /// The request may or may not have been applied.
+    pub fn outcome_unknown(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            "timeout" | "remote_unavailable" | "stalled"
+        )
+    }
 }
 
 impl Machine {
@@ -134,9 +188,16 @@ pub enum Popup {
     Peek {
         pane: String,
     },
-    /// Inbox: open interactions on unfocused agents (08 §6.6).
-    Inbox {
+    /// The attention inbox (08 §6.6, 15 §8); state lives in `App::inbox`.
+    Inbox,
+    /// **Track this work** form; state in `App::track`.
+    Track,
+    /// Task detail view (replaces the pane area); state in `App::task_view`.
+    Task,
+    /// Pending client operations with unknown outcomes (15 §10.3).
+    PendingOps {
         sel: usize,
+        confirm: bool,
     },
     Confirm {
         message: String,
@@ -238,6 +299,16 @@ pub struct App {
     pub clip: ClipGate,
     /// Tests only: capture clipboard writes instead of touching the host terminal/clipboard.
     pub clipboard_sink: Option<Vec<(Vec<u8>, bool)>>,
+    pub inbox: crate::inbox::InboxState,
+    pub pending_ops: crate::pending::PendingStore,
+    pub track: Option<crate::tasks::TrackForm>,
+    pub task_view: Option<crate::tasks::TaskView>,
+    /// (machine, run) → tracked task, from `task.detail` bindings (runs don't carry it).
+    pub task_runs: HashMap<(usize, String), String>,
+    pub task_runs_rev: HashMap<(usize, String), u64>,
+    /// Surfaces to return to when a nested one closes (inbox → card/task, peek → track).
+    pub return_to: Vec<Popup>,
+    pub ui_seq: u64,
 }
 
 pub struct Opts {
@@ -365,6 +436,17 @@ async fn run_inner(
         probe.kitty_keyboard,
     );
     app.cur = opts.initial_machine.min(specs.len().saturating_sub(1));
+    app.pending_ops =
+        crate::pending::PendingStore::load(crate::pending::default_path(&opts.session));
+    if let Some(e) = app.pending_ops.load_error.clone() {
+        app.toast(format!("pending operations unreadable: {e}"));
+    }
+    if !app.pending_ops.ops.is_empty() {
+        app.toast(format!(
+            "{} pending operation(s) from a previous session — checking outcomes",
+            app.pending_ops.ops.len()
+        ));
+    }
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
     let connectors: Vec<std::sync::Arc<Connector>> = specs
         .into_iter()
@@ -419,12 +501,14 @@ async fn run_inner(
                         app.machines[i].status = "connected".into();
                         app.machines[i].panes.clear();
                         app.machines[i].last_hint.clear();
+                        app.on_connected(i);
                         app.dirty = true;
                     }
                     Incoming::Frame(i, f) => app.on_frame(i, f),
                     Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                     Incoming::Disconnected(i, why) => {
                         app.machines[i].tx = None;
+                        app.on_disconnected(i);
                         if why.contains("server stopped") {
                             app.machines[i].status = "stopped".into();
                         } else {
@@ -441,9 +525,10 @@ async fn run_inner(
                     match more {
                         Incoming::Frame(i, f) => app.on_frame(i, f),
                         Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
-                        Incoming::Connected(i, tx) => { app.machines[i].tx = Some(tx); app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); }
+                        Incoming::Connected(i, tx) => { app.machines[i].tx = Some(tx); app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
+                            app.on_disconnected(i);
                             app.machines[i].status = "offline".into();
                             spawn_connect(i, connectors[i].clone(), client_id.clone(), !app.machines[i].local, inc_tx.clone(), Duration::from_millis(500));
                         }
@@ -492,6 +577,14 @@ impl App {
             uploads: Default::default(),
             clip: Default::default(),
             clipboard_sink: None,
+            inbox: Default::default(),
+            pending_ops: Default::default(),
+            track: None,
+            task_view: None,
+            task_runs: HashMap::new(),
+            task_runs_rev: HashMap::new(),
+            return_to: Vec::new(),
+            ui_seq: 1,
         }
     }
 }
@@ -573,7 +666,7 @@ impl App {
         layout::rects(&tab.layout, area)
     }
 
-    fn command(&mut self, method: &str, params: Value, pending: Pending) {
+    pub(crate) fn command(&mut self, method: &str, params: Value, pending: Pending) {
         let req = self.next_req;
         self.next_req += 1;
         let json = json!({"jsonrpc":"2.0","id":req,"method":method,"params":params}).to_string();
@@ -582,11 +675,135 @@ impl App {
         m.send(ClientFrame::Command { req, json });
     }
 
-    fn command_on(&mut self, machine: usize, method: &str, params: Value, pending: Pending) {
+    pub(crate) fn command_on(
+        &mut self,
+        machine: usize,
+        method: &str,
+        params: Value,
+        pending: Pending,
+    ) {
         let saved = self.cur;
         self.cur = machine;
         self.command(method, params, pending);
         self.cur = saved;
+    }
+
+    pub(crate) fn next_ui_id(&mut self) -> u64 {
+        self.ui_seq += 1;
+        self.ui_seq
+    }
+
+    /// A fresh caller-scoped idempotency key.
+    pub(crate) fn new_idempotency_key(&mut self, what: &str) -> String {
+        let n = self.next_ui_id();
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}-{what}-{t:x}-{n}", self.client_id)
+    }
+
+    /// Dispatch a task mutation durably: the operation (with its idempotency key) is written to
+    /// the local pending file before anything is sent; returns false (and sends nothing) when it
+    /// can't be persisted or the machine is offline.
+    pub(crate) fn mutate(
+        &mut self,
+        mi: usize,
+        method: &str,
+        mut params: Value,
+        then: Pending,
+    ) -> bool {
+        if !self.machines[mi].connected() {
+            self.toast(format!(
+                "{} offline — nothing sent",
+                self.machines[mi].label
+            ));
+            return false;
+        }
+        let key = match params.get("idempotency_key").and_then(Value::as_str) {
+            Some(k) => k.to_string(),
+            None => {
+                let k = self.new_idempotency_key("op");
+                params["idempotency_key"] = json!(k);
+                k
+            }
+        };
+        let op = crate::pending::PendingOp {
+            key: key.clone(),
+            method: method.into(),
+            params: params.clone(),
+            machine: self.machines[mi].label.clone(),
+            created_at_ms: vk_now_ms(),
+            status: crate::pending::OpStatus::InFlight,
+            note: None,
+        };
+        if let Err(e) = self.pending_ops.add(op) {
+            self.toast(format!(
+                "✗ couldn't record pending operation ({e}); not sent"
+            ));
+            return false;
+        }
+        self.command_on(
+            mi,
+            method,
+            params,
+            Pending::Op {
+                key,
+                then: Box::new(then),
+            },
+        );
+        true
+    }
+
+    /// Ask the owner what happened to operations dispatched before a restart or link drop.
+    /// Never resubmits.
+    pub(crate) fn reconcile(&mut self, mi: usize) {
+        if !self.machines[mi].connected() {
+            return;
+        }
+        let label = self.machines[mi].label.clone();
+        for key in self.pending_ops.needs_reconcile(&label) {
+            self.pending_ops.reconciling.insert(key.clone());
+            self.command_on(
+                mi,
+                "task.operation.get",
+                json!({"idempotency_key": key}),
+                Pending::Reconcile { key },
+            );
+        }
+    }
+
+    pub(crate) fn on_connected(&mut self, i: usize) {
+        crate::inbox::on_connected(self, i);
+        self.reconcile(i);
+    }
+
+    pub(crate) fn on_disconnected(&mut self, i: usize) {
+        let label = self.machines[i].label.clone();
+        self.pending_ops.connection_lost(&label);
+        // Responses to requests on the old connection will never arrive.
+        self.machines[i].pending.clear();
+        self.inbox.outstanding.remove(&i);
+        crate::tasks::on_disconnect(self, i);
+        if self.inbox.outstanding.is_empty()
+            && let Some(f) = self.inbox.next_after.take()
+        {
+            crate::inbox::next_attention(self, f);
+        }
+    }
+
+    /// Close the current surface, returning to the one that opened it (if any).
+    pub(crate) fn restore_return(&mut self) {
+        self.mode = match self.return_to.pop() {
+            Some(Popup::Inbox) => {
+                let v = crate::inbox::view(self);
+                crate::inbox::sync_selection(&mut self.inbox, &v.items);
+                Mode::Popup(Popup::Inbox)
+            }
+            Some(Popup::Task) if self.task_view.is_some() => Mode::Popup(Popup::Task),
+            Some(p @ Popup::Peek { .. }) => Mode::Popup(p),
+            _ => Mode::Normal,
+        };
     }
 
     pub fn toast(&mut self, text: impl Into<String>) {
@@ -623,7 +840,8 @@ impl App {
         });
     }
 
-    fn focus_pane(&mut self, machine: usize, pane: &str) {
+    pub(crate) fn focus_pane(&mut self, machine: usize, pane: &str) {
+        self.return_to.clear();
         self.cur = machine;
         let p = pane.to_string();
         if let Some(pn) = self.machines[machine]
@@ -646,12 +864,13 @@ impl App {
 
     // ---- server frames ------------------------------------------------------------------
 
-    fn on_frame(&mut self, i: usize, f: ServerFrame) {
+    pub(crate) fn on_frame(&mut self, i: usize, f: ServerFrame) {
         self.dirty = true;
         match f {
             ServerFrame::Hello { machine, .. } => {
                 if self.machines[i].local && self.machines[i].label.is_empty() {
                     self.machines[i].label = machine;
+                    self.reconcile(i);
                 }
             }
             ServerFrame::Model { model, focus, seen } => {
@@ -688,6 +907,8 @@ impl App {
                     };
                     self.command_on(i, "workspace.create", params, Pending::Ignore);
                 }
+                crate::tasks::on_model(self, i);
+                crate::inbox::invalidate(self);
                 if let Mode::Popup(Popup::Card { interaction, .. }) = &self.mode
                     && !self.machines.iter().any(|m| {
                         m.model
@@ -696,7 +917,7 @@ impl App {
                             .any(|x| &x.id == interaction && x.status == InteractionStatus::Open)
                     })
                 {
-                    self.mode = Mode::Normal;
+                    self.restore_return();
                     self.toast("interaction resolved");
                 }
             }
@@ -864,14 +1085,96 @@ impl App {
             .remove(&req)
             .unwrap_or(Pending::Ignore);
         let v: Value = serde_json::from_str(json).unwrap_or(Value::Null);
-        if let Some(e) = v.get("error") {
-            let msg = e.get("message").and_then(Value::as_str).unwrap_or("error");
-            self.toast(format!("✗ {msg}"));
-            return;
-        }
+        let res = match v.get("error") {
+            Some(e) => Err(RpcErr::from_value(e)),
+            None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
+        };
+        self.dispatch_result(i, pending, res);
+    }
+
+    fn dispatch_result(&mut self, i: usize, pending: Pending, res: Result<Value, RpcErr>) {
         match pending {
-            Pending::Ignore => {}
-            Pending::Toast(t) => self.toast(t),
+            Pending::Ignore => {
+                if let Err(e) = res {
+                    self.toast(format!("✗ {}", e.message));
+                }
+            }
+            Pending::Toast(t) => match res {
+                Ok(_) => self.toast(t),
+                Err(e) => self.toast(format!("✗ {}", e.message)),
+            },
+            Pending::Task(r) => crate::tasks::on_reply(self, i, r, res),
+            Pending::Attn(r) => crate::inbox::on_reply(self, i, r, res),
+            Pending::Op { key, then } => {
+                if let Err(e) = &res
+                    && e.outcome_unknown()
+                {
+                    // Not a definitive answer: keep the operation and ask the owner later.
+                    self.pending_ops.live.remove(&key);
+                    self.toast(format!(
+                        "⚠ outcome unknown ({}) — will check with {}",
+                        e.message, self.machines[i].label
+                    ));
+                    self.reconcile(i);
+                } else {
+                    self.pending_ops.remove(&key);
+                }
+                self.dispatch_result(i, *then, res);
+            }
+            Pending::Reconcile { key } => self.on_reconciled(i, &key, res),
+        }
+    }
+
+    fn on_reconciled(&mut self, i: usize, key: &str, res: Result<Value, RpcErr>) {
+        let Some(op) = self.pending_ops.get(key).cloned() else {
+            return;
+        };
+        let what = op.describe();
+        match res {
+            Ok(v) if v.get("known").and_then(Value::as_bool) == Some(true) => {
+                let result = v.get("result").cloned().unwrap_or(Value::Null);
+                if op.method == "task.track"
+                    && let (Some(b), Some(t)) = (result.get("binding"), result.get("task"))
+                {
+                    let run = b.get("run_id").and_then(Value::as_str).unwrap_or("");
+                    let tid = t.get("id").and_then(Value::as_str).unwrap_or("");
+                    self.task_runs.insert((i, run.into()), tid.into());
+                }
+                let msg = format!("✓ {what} — it completed (confirmed after reconnect)");
+                self.pending_ops.remove(key);
+                self.pending_ops.push_outcome(msg.clone());
+                self.toast(msg);
+            }
+            Ok(v) => {
+                let note = v
+                    .get("note")
+                    .and_then(Value::as_str)
+                    .unwrap_or("no receipt")
+                    .to_string();
+                let expired = v.get("expired").and_then(Value::as_bool) == Some(true);
+                self.pending_ops.mark_unknown(
+                    key,
+                    if expired {
+                        format!("receipt expired — {note}")
+                    } else {
+                        note
+                    },
+                );
+                self.toast(format!(
+                    "⚠ {what}: outcome unknown — :pending_operations to review"
+                ));
+            }
+            Err(e) => {
+                let note = if e.is_method_not_found() {
+                    "this machine can't report operation outcomes".to_string()
+                } else {
+                    e.message
+                };
+                self.pending_ops.mark_unknown(key, note);
+                self.toast(format!(
+                    "⚠ {what}: outcome unknown — :pending_operations to review"
+                ));
+            }
         }
     }
 
@@ -981,6 +1284,8 @@ impl App {
             self.mode = Mode::Normal;
             self.dirty = true;
         }
+        crate::inbox::tick(self);
+        crate::tasks::tick(self);
         // Keep spinners/ages in the sidebar fresh once a second.
         if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
             self.dirty = true;
@@ -1016,6 +1321,22 @@ impl App {
 
     pub(crate) fn on_key(&mut self, ev: KeyEvent) {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        let from_card = matches!(
+            mode,
+            Mode::Popup(Popup::Card { .. })
+                | Mode::Prompt(Prompt {
+                    kind: PromptKind::CardText { .. },
+                    ..
+                })
+        );
+        self.on_key_mode(ev, mode);
+        // A card opened from the inbox returns there once answered or dismissed.
+        if from_card && matches!(self.mode, Mode::Normal) && !self.return_to.is_empty() {
+            self.restore_return();
+        }
+    }
+
+    fn on_key_mode(&mut self, ev: KeyEvent, mode: Mode) {
         match mode {
             Mode::Normal => {
                 if ev.kind == KeyKind::Release {
@@ -1408,8 +1729,31 @@ impl App {
                     cm.start_search(false);
                 }
             }
-            "next_attention" => self.next_attention(false),
-            "next_attention_focus" => self.next_attention(true),
+            "next_attention" => crate::inbox::next_attention(self, false),
+            "next_attention_focus" => crate::inbox::next_attention(self, true),
+            "track_work" | "track" => match pane {
+                Some(p) => {
+                    let cur = self.cur;
+                    crate::tasks::open_track(self, cur, &p)
+                }
+                None => self.toast("no focused agent to track"),
+            },
+            "task_details" | "task" => {
+                let cur = self.cur;
+                let run = pane
+                    .as_ref()
+                    .and_then(|p| self.m().model.runs.iter().find(|r| &r.pane == p).cloned());
+                match run.and_then(|r| crate::tasks::task_for_run(self, cur, &r)) {
+                    Some(t) => crate::tasks::open_task(self, cur, &t),
+                    None => self.toast("this agent isn't tracked — :track_work"),
+                }
+            }
+            "pending_operations" | "pending" => {
+                self.mode = Mode::Popup(Popup::PendingOps {
+                    sel: 0,
+                    confirm: false,
+                })
+            }
             "mark_unread" => {
                 if let Some(p) = pane {
                     self.command(
@@ -1443,7 +1787,7 @@ impl App {
             }
             "command_palette" => self.prompt(PromptKind::Command, ":", String::new()),
             "new_task" => self.prompt(PromptKind::TaskTitle, "new task title", String::new()),
-            "inbox" => self.mode = Mode::Popup(Popup::Inbox { sel: 0 }),
+            "inbox" => crate::inbox::open(self),
             "paste_buffer" => {}
             a if a.starts_with("command:") => {
                 let i: usize = a[8..].parse().unwrap_or(usize::MAX);
@@ -1534,7 +1878,7 @@ impl App {
 
     /// `prefix+a`: card for the oldest open interaction on an unfocused agent, else focus the
     /// oldest done run (08 §6.5).
-    pub fn next_attention(&mut self, focus_instead: bool) {
+    pub(crate) fn next_attention_m1(&mut self, focus_instead: bool) {
         let focused = self.focused_pane();
         let mut best: Option<(i64, usize, Interaction)> = None;
         for (mi, m) in self.machines.iter().enumerate() {
@@ -1870,6 +2214,102 @@ impl App {
     }
 }
 
+fn vk_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Pending operations popup: unknown outcomes are retried only on an explicit, warned action.
+pub(crate) fn pending_ops_key(app: &mut App, ev: KeyEvent, sel: usize, confirm: bool) {
+    let n = app.pending_ops.ops.len();
+    let stay = |app: &mut App, sel: usize, confirm: bool| {
+        app.mode = Mode::Popup(Popup::PendingOps { sel, confirm })
+    };
+    if confirm {
+        match ev.key {
+            Key::Char('y' | 'Y') => {
+                if let Some(op) = app.pending_ops.ops.get(sel).cloned() {
+                    let mi = app.machines.iter().position(|m| m.label == op.machine);
+                    match mi {
+                        Some(mi) if app.machines[mi].connected() => {
+                            // Same key and payload: if the first attempt did land, the owner
+                            // replays its receipt instead of applying it twice.
+                            app.mutate(
+                                mi,
+                                &op.method,
+                                op.params.clone(),
+                                Pending::Toast(format!("{} — retried", op.describe())),
+                            );
+                        }
+                        _ => app.toast(format!("{} is offline", op.machine)),
+                    }
+                }
+                stay(app, sel, false);
+            }
+            _ => stay(app, sel, false),
+        }
+        return;
+    }
+    match ev.key {
+        Key::Named(NamedKey::Escape) | Key::Char('q') => {}
+        Key::Char('j') | Key::Named(NamedKey::Down) => {
+            stay(app, (sel + 1).min(n.saturating_sub(1)), false)
+        }
+        Key::Char('k') | Key::Named(NamedKey::Up) => stay(app, sel.saturating_sub(1), false),
+        Key::Char('r') if sel < n => stay(app, sel, true),
+        Key::Char('d') if sel < n => {
+            let key = app.pending_ops.ops[sel].key.clone();
+            app.pending_ops.remove(&key);
+            stay(app, sel.min(n.saturating_sub(2)), false);
+        }
+        _ => stay(app, sel, false),
+    }
+}
+
+pub(crate) fn draw_pending_ops(app: &App, g: &mut Grid, sel: usize, confirm: bool) {
+    let t = app.theme;
+    let mut b = crate::popups::frame(app, g, 90, 20, "pending operations");
+    if app.pending_ops.ops.is_empty() {
+        b.line("No operations waiting for an outcome.", t.dim());
+    }
+    let now = vk_now_ms();
+    for (i, op) in app.pending_ops.ops.iter().enumerate() {
+        let status = match op.status {
+            crate::pending::OpStatus::InFlight => "checking…",
+            crate::pending::OpStatus::Unknown => "OUTCOME UNKNOWN",
+        };
+        let st = if i == sel { t.sel(t.fg) } else { t.text() };
+        b.line(
+            &format!(
+                "{status:<16} {} · {} · {} ago",
+                op.describe(),
+                op.machine,
+                crate::inbox::fmt_age(now - op.created_at_ms)
+            ),
+            st,
+        );
+        if let Some(n) = &op.note {
+            b.line(&format!("                 {n}"), t.dim());
+        }
+    }
+    for o in app.pending_ops.outcomes.iter().rev().take(4) {
+        b.line(o, t.s(t.green));
+    }
+    if confirm {
+        b.line(
+            "The earlier request may have taken effect. Retry with the same key? [y] retry  [n] no",
+            t.bold(t.yellow),
+        );
+    } else {
+        b.line(
+            "Never resubmitted automatically · [r] retry (warns)  [d] forget locally  [esc] close",
+            t.dim(),
+        );
+    }
+}
+
 fn btn(b: CtButton) -> MouseButton {
     match b {
         CtButton::Left => MouseButton::Left,
@@ -1904,7 +2344,40 @@ pub(crate) fn test_app(n: usize) -> (App, Vec<mpsc::UnboundedReceiver<ClientFram
     );
     // Never touch the host terminal or the real clipboard from tests.
     app.clipboard_sink = Some(Vec::new());
+    app.size = (120, 40);
     (app, rxs)
+}
+
+#[cfg(test)]
+pub(crate) fn test_run(id: &str, pane: &str, harness: &str) -> AgentRun {
+    serde_json::from_value(json!({
+        "id": id, "handle": "3", "name": null, "pane": pane, "harness": harness,
+        "harness_version": null, "integration": "hooks", "harness_session_id": "sess-1",
+        "transcript_path": null, "resume_argv": [], "cwd": null, "model": null, "task": null,
+        "execution": {"value": "Idle", "since_ms": 0, "source": "Structured", "confidence": 1.0, "detail": null},
+        "health": "Healthy", "yolo": false, "permission_mode": null, "last_message": null,
+        "last_tool": null, "turns_completed": 2, "done_rev": 1, "started_at_ms": 0,
+        "ended_at_ms": null, "capabilities": []
+    }))
+    .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn test_interaction(
+    id: &str,
+    pane: &str,
+    title: &str,
+    opened_at_ms: i64,
+) -> Interaction {
+    serde_json::from_value(json!({
+        "id": id, "handle": "i1", "run": "r1", "pane": pane, "kind": "Approval", "status": "Open",
+        "title": title, "body_md": null, "action": null, "questions": [], "plan_md": null,
+        "answer_channel": "Native", "native_ref": null, "source": "Structured", "confidence": 1.0,
+        "answerable": true, "gate": false, "decision_rev": 0, "delivery": "None",
+        "delivery_error": null, "answer": null, "answered_by": null,
+        "opened_at_ms": opened_at_ms, "answered_at_ms": null
+    }))
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -1978,5 +2451,156 @@ mod clipboard_tests {
         app.config.clipboard.remote_write_min_interval = vk_config::Dur(Duration::ZERO);
         app.on_clipboard(1, "p1".into(), false, b"5".to_vec());
         assert_eq!(app.clip.pending[0].data, b"5");
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    fn commands(rx: &mut mpsc::UnboundedReceiver<ClientFrame>) -> Vec<(u64, Value)> {
+        let mut v = Vec::new();
+        while let Ok(f) = rx.try_recv() {
+            if let ClientFrame::Command { req, json } = f {
+                v.push((req, serde_json::from_str(&json).unwrap()));
+            }
+        }
+        v
+    }
+
+    fn reply(app: &mut App, mi: usize, req: u64, result: Value) {
+        let json = json!({"jsonrpc": "2.0", "id": req, "result": result}).to_string();
+        app.on_frame(mi, ServerFrame::CommandResult { req, json });
+    }
+
+    /// Crash after dispatch: a new client loads the file, asks the owner on connect and shows
+    /// the outcome; an unknown outcome is never resubmitted on its own.
+    #[test]
+    fn restart_reconciles_and_never_auto_resubmits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess/client-pending.json");
+        {
+            let (mut app, mut rxs) = test_app(1);
+            app.pending_ops = crate::pending::PendingStore::load(path.clone());
+            assert!(app.mutate(
+                0,
+                "task.track",
+                json!({"run": "r1", "title": "A", "idempotency_key": "k-a"}),
+                Pending::Ignore
+            ));
+            assert!(app.mutate(
+                0,
+                "task.intent.update",
+                json!({"task": "t1", "expected_revision": 1, "idempotency_key": "k-b"}),
+                Pending::Ignore
+            ));
+            assert_eq!(commands(&mut rxs[0]).len(), 2);
+            // The client dies here: no responses.
+        }
+        let (mut app, mut rxs) = test_app(1);
+        app.pending_ops = crate::pending::PendingStore::load(path.clone());
+        assert_eq!(app.pending_ops.ops.len(), 2);
+        app.on_connected(0);
+        let c = commands(&mut rxs[0]);
+        assert_eq!(c.len(), 2);
+        assert!(c.iter().all(|(_, v)| v["method"] == "task.operation.get"));
+        // Connecting again while those are outstanding doesn't ask twice.
+        app.on_connected(0);
+        assert!(commands(&mut rxs[0]).is_empty());
+        let by_key = |k: &str| {
+            c.iter()
+                .find(|(_, v)| v["params"]["idempotency_key"] == k)
+                .unwrap()
+                .0
+        };
+        reply(
+            &mut app,
+            0,
+            by_key("k-a"),
+            json!({"known": true, "method": "task.track",
+                   "result": {"task": {"id": "t9"}, "binding": {"run_id": "r1"}}}),
+        );
+        reply(
+            &mut app,
+            0,
+            by_key("k-b"),
+            json!({"known": false, "note": "no receipt: this does not mean the operation is safe to repeat"}),
+        );
+        assert_eq!(
+            app.task_runs.get(&(0, "r1".into())).map(String::as_str),
+            Some("t9")
+        );
+        assert_eq!(app.pending_ops.ops.len(), 1);
+        assert_eq!(app.pending_ops.ops[0].key, "k-b");
+        assert_eq!(
+            app.pending_ops.ops[0].status,
+            crate::pending::OpStatus::Unknown
+        );
+        // Nothing was resubmitted, not even after another reconnect.
+        app.on_disconnected(0);
+        app.on_connected(0);
+        assert!(commands(&mut rxs[0]).is_empty());
+        let again = crate::pending::PendingStore::load(path.clone());
+        assert_eq!(again.ops.len(), 1);
+        assert_eq!(again.ops[0].status, crate::pending::OpStatus::Unknown);
+        // The banner points at the review popup; retry needs an explicit, warned confirmation.
+        let mut g = Grid::new(120, 40);
+        draw::compose(&app, &mut g);
+        let text = crate::tasks::grid_text(&g);
+        assert!(text.contains("outcome(s) unknown"), "{text}");
+        app.action("pending_operations", None);
+        app.on_key(KeyEvent::new(Key::Char('r'), Mods::empty()));
+        assert!(commands(&mut rxs[0]).is_empty());
+        assert!(matches!(
+            app.mode,
+            Mode::Popup(Popup::PendingOps { confirm: true, .. })
+        ));
+        let mut g = Grid::new(120, 40);
+        draw::compose(&app, &mut g);
+        assert!(crate::tasks::grid_text(&g).contains("may have taken effect"));
+        app.on_key(KeyEvent::new(Key::Char('y'), Mods::empty()));
+        let c = commands(&mut rxs[0]);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].1["method"], "task.intent.update");
+        // Same key: a landed first attempt is replayed by the owner, not applied twice.
+        assert_eq!(c[0].1["params"]["idempotency_key"], "k-b");
+    }
+
+    /// Link drop mid-request: the response never comes; reconnect asks instead of resending.
+    #[test]
+    fn link_drop_reconciles_on_reconnect() {
+        let (mut app, mut rxs) = test_app(1);
+        assert!(app.mutate(
+            0,
+            "task.bind",
+            json!({"task": "t1", "run": "r1", "idempotency_key": "k-c"}),
+            Pending::Ignore
+        ));
+        commands(&mut rxs[0]);
+        app.on_connected(0);
+        // Still live on this connection: nothing to reconcile yet.
+        assert!(commands(&mut rxs[0]).is_empty());
+        app.on_disconnected(0);
+        app.on_connected(0);
+        let c = commands(&mut rxs[0]);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].1["method"], "task.operation.get");
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"known": true, "method": "task.bind", "result": {}}),
+        );
+        assert!(app.pending_ops.ops.is_empty());
+        assert!(app.pending_ops.outcomes[0].contains("Continue task"));
+    }
+
+    #[test]
+    fn offline_machine_sends_nothing_and_records_nothing() {
+        let (mut app, mut rxs) = test_app(1);
+        app.machines[0].tx = None;
+        assert!(!app.mutate(0, "task.track", json!({"run": "r1"}), Pending::Ignore));
+        assert!(app.pending_ops.ops.is_empty());
+        assert!(commands(&mut rxs[0]).is_empty());
     }
 }

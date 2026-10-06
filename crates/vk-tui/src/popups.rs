@@ -1,21 +1,24 @@
 //! User-invoked popups (08 §6, §8): never opened spontaneously over the focused pane.
 
 use crate::app::{App, Mode, Pending, Popup, PromptKind};
-use crate::draw::{harness_icon, run_state, truncate};
+use crate::draw::{harness_icon, run_state};
 use crate::screen::{Grid, Rect as SRect};
 use serde_json::json;
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::{CursorShape, Style};
 
-struct BoxDraw<'a> {
+pub(crate) struct BoxDraw<'a> {
     g: &'a mut Grid,
     r: SRect,
     y: u16,
 }
 
 impl BoxDraw<'_> {
-    fn line(&mut self, s: &str, st: Style) {
+    pub(crate) fn width(&self) -> u16 {
+        self.r.w
+    }
+    pub(crate) fn line(&mut self, s: &str, st: Style) {
         if self.y + 1 >= self.r.y + self.r.h {
             return;
         }
@@ -25,7 +28,7 @@ impl BoxDraw<'_> {
     }
 }
 
-fn frame<'a>(app: &App, g: &'a mut Grid, w: u16, h: u16, title: &str) -> BoxDraw<'a> {
+pub(crate) fn frame<'a>(app: &App, g: &'a mut Grid, w: u16, h: u16, title: &str) -> BoxDraw<'a> {
     let area = app.pane_area();
     let w = w.min(area.w.saturating_sub(2)).max(20);
     let h = h.min(area.h.saturating_sub(1)).max(5);
@@ -88,8 +91,14 @@ fn find_interaction(app: &App, id: &str) -> Option<(usize, Interaction)> {
     })
 }
 
-/// Goto entries: (label, machine, pane).
-fn goto_entries(app: &App, filter: &str) -> Vec<(String, usize, String)> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum GotoTarget {
+    Pane(String),
+    Task(String),
+}
+
+/// Goto entries: (label, machine, target). Panes/agents first, then tracked tasks (`#task`).
+fn goto_entries(app: &App, filter: &str) -> Vec<(String, usize, GotoTarget)> {
     let f = filter.to_lowercase();
     let mut out = Vec::new();
     for (mi, m) in app.machines.iter().enumerate() {
@@ -134,9 +143,39 @@ fn goto_entries(app: &App, filter: &str) -> Vec<(String, usize, String)> {
                         }
                     });
                     if ok {
-                        out.push((label, mi, pid));
+                        out.push((label, mi, GotoTarget::Pane(pid)));
                     }
                 }
+            }
+        }
+    }
+    let wants_task = f.split_whitespace().any(|t| t.starts_with('#'));
+    for (mi, m) in app.machines.iter().enumerate() {
+        let mprefix = if app.machines.len() > 1 {
+            format!("{}/", m.label)
+        } else {
+            String::new()
+        };
+        for t in m
+            .model
+            .tasks
+            .iter()
+            .filter(|t| t.status != "archived" && (t.intent_revision.is_some() || wants_task))
+        {
+            let label = format!(
+                "{mprefix}#{} {} · {}",
+                t.handle,
+                t.title,
+                t.review_label
+                    .as_deref()
+                    .map(crate::tasks::label_text)
+                    .unwrap_or("task")
+            );
+            let hay = label.to_lowercase();
+            if f.split_whitespace().all(|tok| {
+                !tok.starts_with('!') && hay.contains(tok.trim_start_matches(['@', ':']))
+            }) {
+                out.push((label, mi, GotoTarget::Task(t.id.clone())));
             }
         }
     }
@@ -188,13 +227,14 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             let entries = goto_entries(app, &filter);
             match ev.key {
                 _ if esc => {}
-                Key::Named(NamedKey::Enter) => {
-                    if let Some((_, mi, pane)) = entries.get(sel) {
-                        let (mi, pane) = (*mi, pane.clone());
+                Key::Named(NamedKey::Enter) => match entries.get(sel).cloned() {
+                    Some((_, mi, GotoTarget::Pane(pane))) => {
                         app.cur = mi;
                         app.machines[mi].send(vk_proto::render::ClientFrame::Focus { pane });
                     }
-                }
+                    Some((_, mi, GotoTarget::Task(t))) => crate::tasks::open_task(app, mi, &t),
+                    None => {}
+                },
                 Key::Named(NamedKey::Down) | Key::Char('n')
                     if ev.mods.ctrl() || ev.key == Key::Named(NamedKey::Down) =>
                 {
@@ -218,37 +258,40 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                 _ => app.mode = Mode::Popup(Popup::Goto { filter, sel }),
             }
         }
-        Popup::Inbox { sel } => {
-            let items = inbox(app);
-            match ev.key {
-                _ if esc => {}
-                Key::Char('j') | Key::Named(NamedKey::Down) => {
-                    app.mode = Mode::Popup(Popup::Inbox {
-                        sel: (sel + 1).min(items.len().saturating_sub(1)),
-                    })
-                }
-                Key::Char('k') | Key::Named(NamedKey::Up) => {
-                    app.mode = Mode::Popup(Popup::Inbox {
-                        sel: sel.saturating_sub(1),
-                    })
-                }
-                Key::Named(NamedKey::Enter) | Key::Char('a') => {
-                    if let Some((mi, i)) = items.get(sel) {
-                        app.cur = *mi;
-                        app.mode = Mode::Popup(Popup::Card {
-                            interaction: i.id.clone(),
-                            sel: 0,
-                        });
-                    }
-                }
-                _ => app.mode = Mode::Popup(Popup::Inbox { sel }),
-            }
-        }
+        Popup::Inbox => crate::inbox::key(app, ev),
+        Popup::Track => crate::tasks::track_key(app, ev),
+        Popup::Task => crate::tasks::task_key(app, ev),
+        Popup::PendingOps { sel, confirm } => crate::app::pending_ops_key(app, ev, sel, confirm),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
                 let mi = app.cur;
+                app.return_to.clear();
                 app.machines[mi].send(vk_proto::render::ClientFrame::Focus { pane });
+            }
+            // Track this work, or open the tracked task's details.
+            Key::Char('t') => {
+                let mi = app.cur;
+                let run = app.machines[mi]
+                    .model
+                    .runs
+                    .iter()
+                    .find(|r| r.pane == pane)
+                    .cloned();
+                match run
+                    .as_ref()
+                    .and_then(|r| crate::tasks::task_for_run(app, mi, r))
+                {
+                    Some(t) => {
+                        app.return_to.push(Popup::Peek { pane: pane.clone() });
+                        crate::tasks::open_task(app, mi, &t);
+                    }
+                    None if run.is_some() => {
+                        app.return_to.push(Popup::Peek { pane: pane.clone() });
+                        crate::tasks::open_track(app, mi, &pane);
+                    }
+                    None => app.mode = Mode::Popup(Popup::Peek { pane }),
+                }
             }
             Key::Char('a') => {
                 let int = app
@@ -289,6 +332,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                 (_, Key::Named(NamedKey::Escape)) => {}
                 (_, Key::Char('o')) => {
                     app.cur = mi;
+                    app.return_to.clear();
                     app.machines[mi].send(vk_proto::render::ClientFrame::Focus {
                         pane: it.pane.clone(),
                     });
@@ -426,9 +470,14 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     b.line(&format!("{k:<18} {label}"), t.text());
                 }
                 b.line(
-                    "prefix+i           inbox of open questions/approvals",
+                    "prefix+i           inbox (f 5-minute view, s snooze, e effort)",
                     t.text(),
                 );
+                b.line(
+                    "peek t             track this work / task details",
+                    t.text(),
+                );
+                b.line(":track_work :task_details :pending_operations", t.text());
             }
             Popup::Message { title, body } => {
                 let mut b = frame(app, g, 70, 12, title);
@@ -530,44 +579,11 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     b.line(label, st);
                 }
             }
-            Popup::Inbox { sel } => {
-                let items = inbox(app);
-                let mut b = frame(
-                    app,
-                    g,
-                    90,
-                    24,
-                    &format!("inbox · {} need you · enter answer", items.len()),
-                );
-                if items.is_empty() {
-                    b.line("nothing needs you", t.dim());
-                }
-                for (i, (mi, it)) in items.iter().enumerate() {
-                    let m = &app.machines[*mi];
-                    let run = m.model.runs.iter().find(|r| r.id == it.run);
-                    let who = run
-                        .map(|r| {
-                            format!(
-                                "{} {}",
-                                harness_icon(&r.harness),
-                                r.name.clone().unwrap_or_else(|| r.harness.clone())
-                            )
-                        })
-                        .unwrap_or_default();
-                    let age = (now_ms() - it.opened_at_ms) / 60_000;
-                    let st = if i == *sel { t.sel(t.fg) } else { t.text() };
-                    b.line(
-                        &format!(
-                            "{:<4} {:<10} {:<14} {}m  {}",
-                            it.handle,
-                            it.kind.as_str(),
-                            truncate(&who, 14),
-                            age,
-                            truncate(&it.title, 50)
-                        ),
-                        st,
-                    );
-                }
+            Popup::Inbox => crate::inbox::draw(app, g),
+            Popup::Task => crate::tasks::draw_task(app, g),
+            Popup::Track => crate::tasks::draw_track(app, g),
+            Popup::PendingOps { sel, confirm } => {
+                crate::app::draw_pending_ops(app, g, *sel, *confirm)
             }
             Popup::Peek { pane } => {
                 let m = app.m();
@@ -620,7 +636,15 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                         b.line(l, t.text());
                     }
                 }
-                b.line("[enter] focus  [a] answer  [r] reply  [esc] close", t.dim());
+                let tracked = run.and_then(|r| crate::tasks::task_for_run(app, app.cur, r));
+                b.line(
+                    if tracked.is_some() {
+                        "[enter] focus  [a] answer  [r] reply  [t] task details  [esc] close"
+                    } else {
+                        "[enter] focus  [a] answer  [r] reply  [t] track this work  [esc] close"
+                    },
+                    t.dim(),
+                );
             }
             Popup::Card { interaction, sel } => {
                 let (mi, it) = find_interaction(app, interaction)?;
@@ -650,79 +674,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     22,
                     &format!("{who} · {ws} · {kind} · {}", it.handle),
                 );
-                if let Some(a) = &it.action {
-                    let risk = match a.risk {
-                        Risk::High => ("high", t.red),
-                        Risk::Medium => ("medium", t.yellow),
-                        Risk::Low => ("low", t.green),
-                        Risk::Unknown => ("unknown", t.muted),
-                    };
-                    b.line(&format!("{}   risk: {}", a.tool, risk.0), t.bold(risk.1));
-                    if let Some(c) = &a.command {
-                        for l in c.lines().take(4) {
-                            b.line(&format!("  {l}"), t.text());
-                        }
-                    }
-                    for p in a.paths.iter().take(3) {
-                        b.line(&format!("  {p}"), t.text());
-                    }
-                    if !a.risk_reasons.is_empty() {
-                        b.line(&format!("reasons: {}", a.risk_reasons.join(", ")), t.dim());
-                    }
-                    if let Some(d) = &a.diff {
-                        for l in d.lines().take(8) {
-                            let c = if l.starts_with('+') {
-                                t.green
-                            } else if l.starts_with('-') {
-                                t.red
-                            } else {
-                                t.muted
-                            };
-                            b.line(l, t.s(c));
-                        }
-                    }
-                } else {
-                    b.line(&it.title, t.bold(t.fg));
-                }
-                if let Some(plan) = &it.plan_md {
-                    for l in plan.lines().take(10) {
-                        b.line(l, t.text());
-                    }
-                }
-                for q in &it.questions {
-                    b.line(&q.prompt, t.bold(t.fg));
-                    for (i, o) in q.options.iter().enumerate() {
-                        let st = if i == *sel { t.sel(t.accent) } else { t.text() };
-                        let d = o
-                            .description
-                            .as_ref()
-                            .map(|d| format!(" — {d}"))
-                            .unwrap_or_default();
-                        b.line(&format!("{}. {}{d}", i + 1, o.label), st);
-                    }
-                }
-                if it.source == StateSource::Screen {
-                    b.line(
-                        &format!("inferred from screen ({:.2})", it.confidence),
-                        t.dim(),
-                    );
-                }
-                match it.delivery {
-                    DeliveryState::DecisionRecorded | DeliveryState::Delivering => {
-                        b.line("delivering…", t.s(t.yellow))
-                    }
-                    DeliveryState::Delivered => b.line("✓ delivered", t.s(t.green)),
-                    DeliveryState::DeliveryUnknown => {
-                        b.line("couldn't confirm delivery — check the pane", t.s(t.red))
-                    }
-                    DeliveryState::Failed => b.line(
-                        &format!(
-                            "✗ delivery failed: {}",
-                            it.delivery_error.clone().unwrap_or_default()
-                        ),
-                        t.s(t.red),
-                    ),
-                    _ => {}
+                let mut lines = Vec::new();
+                card_lines(app, mi, &it, *sel, &mut lines);
+                for (s, st) in lines {
+                    b.line(&s, st);
                 }
                 let keys = if !it.answerable {
                     "this dialog can only be answered in the pane · [o] open pane  [esc] later"
@@ -744,9 +699,96 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     None
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+/// The body of an interaction card (shared by the card popup and the inbox detail).
+pub fn card_lines(
+    app: &App,
+    _mi: usize,
+    it: &Interaction,
+    sel: usize,
+    out: &mut Vec<(String, Style)>,
+) {
+    let t = app.theme;
+    let mut b = Lines(out);
+    if let Some(a) = &it.action {
+        let risk = match a.risk {
+            Risk::High => ("high", t.red),
+            Risk::Medium => ("medium", t.yellow),
+            Risk::Low => ("low", t.green),
+            Risk::Unknown => ("unknown", t.muted),
+        };
+        b.line(&format!("{}   risk: {}", a.tool, risk.0), t.bold(risk.1));
+        if let Some(c) = &a.command {
+            for l in c.lines().take(4) {
+                b.line(&format!("  {l}"), t.text());
+            }
+        }
+        for p in a.paths.iter().take(3) {
+            b.line(&format!("  {p}"), t.text());
+        }
+        if !a.risk_reasons.is_empty() {
+            b.line(&format!("reasons: {}", a.risk_reasons.join(", ")), t.dim());
+        }
+        if let Some(d) = &a.diff {
+            for l in d.lines().take(8) {
+                let c = if l.starts_with('+') {
+                    t.green
+                } else if l.starts_with('-') {
+                    t.red
+                } else {
+                    t.muted
+                };
+                b.line(l, t.s(c));
+            }
+        }
+    } else {
+        b.line(&it.title, t.bold(t.fg));
+    }
+    if let Some(plan) = &it.plan_md {
+        for l in plan.lines().take(10) {
+            b.line(l, t.text());
+        }
+    }
+    for q in &it.questions {
+        b.line(&q.prompt, t.bold(t.fg));
+        for (i, o) in q.options.iter().enumerate() {
+            let st = if i == sel { t.sel(t.accent) } else { t.text() };
+            let d = o
+                .description
+                .as_ref()
+                .map(|d| format!(" — {d}"))
+                .unwrap_or_default();
+            b.line(&format!("{}. {}{d}", i + 1, o.label), st);
+        }
+    }
+    if it.source == StateSource::Screen {
+        b.line(
+            &format!("inferred from screen ({:.2})", it.confidence),
+            t.dim(),
+        );
+    }
+    match it.delivery {
+        DeliveryState::DecisionRecorded | DeliveryState::Delivering => {
+            b.line("delivering…", t.s(t.yellow))
+        }
+        DeliveryState::Delivered => b.line("✓ delivered", t.s(t.green)),
+        DeliveryState::DeliveryUnknown => {
+            b.line("couldn't confirm delivery — check the pane", t.s(t.red))
+        }
+        DeliveryState::Failed => b.line(
+            &format!(
+                "✗ delivery failed: {}",
+                it.delivery_error.clone().unwrap_or_default()
+            ),
+            t.s(t.red),
+        ),
+        _ => {}
+    }
+}
+
+struct Lines<'a>(&'a mut Vec<(String, Style)>);
+
+impl Lines<'_> {
+    fn line(&mut self, s: &str, st: Style) {
+        self.0.push((s.to_string(), st));
+    }
 }
