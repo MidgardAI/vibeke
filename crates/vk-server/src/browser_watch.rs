@@ -449,7 +449,8 @@ pub fn decide(
         | BrowserCmd::Reload { .. }
         | BrowserCmd::Stop
         | BrowserCmd::Window(_)
-        | BrowserCmd::Screenshot => Decision::Unsupported,
+        | BrowserCmd::Screenshot
+        | BrowserCmd::DropFiles(_) => Decision::Unsupported,
     }
 }
 

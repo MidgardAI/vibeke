@@ -299,6 +299,9 @@ pub enum Popup {
     PluginLink(Box<crate::plugins::LinkChoice>),
     /// Edit-scrollback viewer; state in `App::scrollback`.
     Scrollback,
+    /// Local files pasted/dropped onto a browser pane: confirm before the page gets them
+    /// (06 B3.2).
+    BrowserDrop(Box<crate::browser_io::DropAsk>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -625,6 +628,14 @@ async fn run_inner(
             let det = crate::appearance::reprobe();
             events = EventStream::new();
             crate::appearance::on_detect(&mut app, det);
+        }
+        // A clipboard image for a browser pane (`prefix+shift+v`): the host terminal answers
+        // OSC 5522 on stdin, so the event reader is stopped while it does.
+        if let Some(pane) = crate::browser_io::take_clip_read(&mut app) {
+            drop(events);
+            let img = crate::browser_io::osc5522_read();
+            events = EventStream::new();
+            crate::browser_io::on_clip_image(&mut app, &pane, img);
         }
         let redraw_in = if app.dirty {
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
@@ -1261,7 +1272,12 @@ impl App {
                 selection,
                 data,
                 pane,
-            } => self.on_clipboard(i, pane, matches!(selection, ClipSel::Primary), data),
+            } => {
+                // A browser pane's page clipboard counts as a write from the pane's owner.
+                if let Some(data) = crate::browser_io::on_clipboard(self, i, &pane, data) {
+                    self.on_clipboard(i, pane, matches!(selection, ClipSel::Primary), data)
+                }
+            }
             ServerFrame::InputAck { status, .. } => {
                 if status == AckStatus::DroppedOffline {
                     self.toast("offline — input not sent");

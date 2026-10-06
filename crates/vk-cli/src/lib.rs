@@ -3,6 +3,7 @@
 //! every verb a method; `--flag value` pairs become params (dashes → underscores), with a few
 //! positional arguments per verb. `vibeke <noun>` alone prints help and never executes.
 
+pub mod browser_console;
 pub mod client;
 pub mod compat;
 pub mod mcp;
@@ -719,7 +720,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "open",
         "preview.open",
         &["preview"],
-        "<v4|devbox/v4|url> [--split right|down|tab|float | --window | --proxy [--no-open]] [--pane p] [--machine m]",
+        "<v4|devbox/v4|url> [--split right|down|tab|float | --window | --proxy [--no-open]] [--pane p] [--machine m] [--viewport WxH | --device iphone-15]",
     ),
     ("preview", "url", "preview.url", &["preview"], ""),
     (
@@ -840,7 +841,21 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "console",
         "browser.console",
         &["session"],
-        "<session> [--level error|warn|all] [--since 5m]",
+        "<session> [--level error|warn|all] [--since 5m] | --pane <browser pane> [--follow] [--console|--network] [--errors] (follow keys: c n e a q)",
+    ),
+    (
+        "browser",
+        "console-split",
+        "browser.pane.console",
+        &["pane"],
+        "<browser pane> toggle the console/network split under it (prefix+alt+c)",
+    ),
+    (
+        "browser",
+        "viewport",
+        "browser.pane.update",
+        &["pane", "viewport"],
+        "<browser pane> <WxH | fit> | --device iphone-15|pixel-8|ipad|desktop-1280|desktop-1440|desktop-1920 — pin the page size (letterboxed)",
     ),
     (
         "browser",
@@ -899,7 +914,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "pane",
         "browser.pane.create",
         &["url"],
-        "<url> [--pane p] [--split right|down|tab]",
+        "<url> [--pane p] [--split right|down|tab] [--viewport WxH | --device iphone-15]",
     ),
     (
         "browser",

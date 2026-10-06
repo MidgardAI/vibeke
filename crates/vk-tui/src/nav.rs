@@ -547,6 +547,10 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ),
     ("browser_console", "Browser: console/network split"),
     (
+        "browser_paste_image",
+        "Browser: paste the clipboard image into the page",
+    ),
+    (
         "browser_take_over",
         "Browser: take over ⇄ release the watched agent session",
     ),

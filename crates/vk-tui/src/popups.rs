@@ -129,6 +129,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             }
         },
         p @ Popup::PasteAsk { .. } => crate::upload::ask_key(app, ev, p),
+        Popup::BrowserDrop(a) => crate::browser_io::drop_key(app, ev, a),
         p @ (Popup::GroupPick { .. } | Popup::Search(_) | Popup::LayoutPick { .. }) => {
             crate::parity::popup_key(app, ev, p)
         }
@@ -495,6 +496,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Drafts => crate::drafts::draw(app, g),
             Popup::Assist => crate::assist::draw(app, g),
             Popup::Scrollback => crate::scrollback::draw(app, g),
+            Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),
             Popup::Peek { pane } => {
                 let m = app.m();
                 let run = m.model.runs.iter().find(|r| &r.pane == pane);

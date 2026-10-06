@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 vk-proto = { workspace = true }
 vk-server = { workspace = true }
+vk-browser = { workspace = true }
 vk-config = { path = "../vk-config" }
 vk-compat = { workspace = true }
 vk-review = { workspace = true }

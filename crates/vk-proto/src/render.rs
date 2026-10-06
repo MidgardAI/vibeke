@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 /// - 1: before Goal 03 (no browser panes).
 /// - 2: `Pane.browser`, media frames (`ServerFrame::Media`/`BrowserState`, sent in parts that
 ///   share a `seq`, only the first with `reset`), `ClientFrame::MediaView`/`MediaAck`/`Browser`.
-pub const PROTOCOL: u32 = 2;
+/// - 3: `BrowserPane.device`/`viewport` (pinned, letterboxed viewports) and
+///   `BrowserCmd::DropFiles` (files into the page, 06 B3.2).
+pub const PROTOCOL: u32 = 3;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";
@@ -402,6 +404,11 @@ pub enum BrowserCmd {
     Screenshot,
     /// Watch mode (06 B7): take the watched agent session over (true) or release it (false).
     TakeOver(bool),
+    /// Files the user confirmed for the page (a dropped/pasted path, a clipboard image saved
+    /// to the server's inbox): paths on the rendering server's machine, each a readable
+    /// regular file ≤ 50 MiB. They go to an open file chooser (`DOM.setFileInputFiles`), else
+    /// are dropped on the page at the last pointer position (`Input.dispatchDragEvent`).
+    DropFiles(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

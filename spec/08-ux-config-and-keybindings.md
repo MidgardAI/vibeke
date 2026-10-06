@@ -340,7 +340,8 @@ Action names: the copy-mode binding is `enter_copy_mode` and the picker is `work
 | ✚ browser_reload / browser_hard_reload | `prefix+.` / `prefix+,` | — |
 | ✚ browser_screenshot | `prefix+shift+s` | sync_input |
 | ✚ browser_window (open in window ⇄ back to pane, 06 B3.3) | `prefix+o` | open_notification_target |
-| ✚ browser_console (console/network split) | `prefix+alt+c` | — (not built yet: Stage 3) |
+| ✚ browser_console (console/network split under the pane; again closes it) | `prefix+alt+c` | — |
+| ✚ browser_paste_image (clipboard image into the page, 06 B3.2) | `prefix+shift+v` | — |
 | ✚ browser_take_over (watch pane: take over ⇄ release the agent session, 06 B7) | `prefix+t` | — (unbound globally) |
 
 All other keys go to the page except the prefix; direct (non-prefix) bindings such as `ctrl+v` don't apply in a browser pane. Mouse: click the chrome's ←/→/⟳ or its URL; Ctrl/Alt+click a `http://localhost:<port>` URL printed in any pane opens it in a browser pane next to that pane.

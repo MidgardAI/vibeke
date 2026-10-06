@@ -54,6 +54,7 @@ pub const DEFAULT_BROWSER_KEYS: &[(&str, &str)] = &[
     ("browser_window", "prefix+o"),
     ("browser_console", "prefix+alt+c"),
     ("browser_take_over", "prefix+t"),
+    ("browser_paste_image", "prefix+shift+v"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +128,9 @@ pub struct BrowserUi {
     /// Hands a URL to the OS opener; `None` = [`os_open`]. Tests substitute a recorder.
     pub opener: Option<fn(&str) -> std::io::Result<()>>,
     mirrors_polled: Option<Instant>,
+    /// A clipboard-image read requested for this browser pane (`prefix+shift+v`); the main
+    /// loop performs it with the event reader stopped (`browser_io`).
+    pub clip_read: Option<String>,
 }
 
 /// One active mirror (`preview.mirror`): a remote preview's port bound on this machine.
@@ -159,6 +163,8 @@ pub enum Reply {
     Unmirror,
     /// `preview.status`: refresh the mirror list.
     Mirrors,
+    /// `browser.pane.console`: the console split opened or closed.
+    ConsoleSplit,
 }
 
 /// Open `url` with the OS opener, detached, output discarded. `VIBEKE_NO_OPEN` disables it.
@@ -404,7 +410,18 @@ pub fn update_views(app: &mut App) {
         // Specs change on every navigation (persisted URL); only geometry/membership matter.
         let key = |v: &[MediaPane]| {
             v.iter()
-                .map(|p| (p.pane.clone(), p.cols, p.rows, p.cell_w, p.cell_h))
+                .map(|p| {
+                    (
+                        p.pane.clone(),
+                        p.cols,
+                        p.rows,
+                        p.cell_w,
+                        p.cell_h,
+                        // A pinned device/viewport change must reach the media host.
+                        p.spec.device.clone(),
+                        p.spec.viewport.clone(),
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         if key(&want) == key(&prev) && !(want.is_empty() && !prev.is_empty()) {
@@ -885,7 +902,8 @@ pub fn draw_pane(app: &App, g: &mut Grid, pane: &str, r: Rect) {
     if let Some(w) = spec.and_then(|s| s.watch.clone()) {
         draw_watch_chrome(app, g, pane, r, &w, url, chrome_style);
     } else {
-        draw_nav_chrome(g, r, url, st, chrome_style);
+        let pin = spec.and_then(|s| s.device.clone().or_else(|| s.viewport.clone()));
+        draw_nav_chrome(g, r, url, st, pin.as_deref(), chrome_style);
     }
     draw_content(app, g, r, url, st, pm);
 }
@@ -966,6 +984,7 @@ fn draw_nav_chrome(
     r: Rect,
     url: &str,
     st: Option<&BrowserStatus>,
+    pin: Option<&str>,
     chrome_style: Style,
 ) {
     let on = |b: bool| {
@@ -990,12 +1009,24 @@ fn draw_nav_chrome(
         on(true),
         r.w.saturating_sub(4),
     );
-    let env = st.map(|s| s.env.clone()).unwrap_or_default();
+    let mut env = st.map(|s| s.env.clone()).unwrap_or_default();
+    let avail = r.w.saturating_sub(8);
+    // A pinned device or viewport (letterboxed) is part of what the pane shows; it wins over
+    // the environment label when both don't fit.
+    if let Some(p) = pin {
+        let both = format!("▯ {p} · {env}");
+        env = if !env.is_empty()
+            && (UnicodeWidthStr::width(both.as_str()) as u16) + 2 < avail.saturating_sub(12)
+        {
+            both
+        } else {
+            format!("▯ {p}")
+        };
+    }
     let env_w = UnicodeWidthStr::width(env.as_str()) as u16;
     let shown = url
         .trim_start_matches("http://")
         .trim_start_matches("https://");
-    let avail = r.w.saturating_sub(8);
     let env_fits = env_w + 2 < avail.saturating_sub(12);
     let url_w = if env_fits { avail - env_w - 2 } else { avail };
     g.put_str(
@@ -1172,6 +1203,10 @@ pub fn on_paste(app: &mut App, text: &str) -> bool {
         return false;
     };
     if read_only(app, &pane) {
+        return true;
+    }
+    // A terminal drop (the paste is only local file paths): ask before the page gets files.
+    if watch_of(app, &pane).is_none() && crate::browser_io::maybe_drop(app, &pane, text) {
         return true;
     }
     send_cmd(app, &pane, BrowserCmd::Text(text.to_string()));
@@ -1666,6 +1701,7 @@ pub fn on_reply(
                 app.toast(format!("stopped mirroring localhost:{port}"));
             }
         }
+        Reply::ConsoleSplit => crate::browser_io::on_console_reply(app, &v),
         Reply::Mirrors => {
             let list: Vec<MirrorInfo> = v["mirrors"]
                 .as_array()
@@ -1837,8 +1873,18 @@ pub fn action_name(app: &mut App, action: &str) -> bool {
             }
             None => app.toast("not watching an agent session (browser watch <session>)"),
         },
-        ("browser_console", Some(_)) => {
-            app.toast("console split: not built yet (arrives with `vibeke browser console`, Goal 03 Stage 3)");
+        ("browser_console", Some(p)) => {
+            if watch_of(app, &p).is_some() {
+                app.toast("a watch pane shows an agent session: vibeke browser console <session>");
+            } else {
+                crate::browser_io::console_split(app, &p);
+            }
+        }
+        ("browser_paste_image", Some(p)) => {
+            if read_only(app, &p) {
+                return true;
+            }
+            crate::browser_io::request_image_paste(app, &p);
         }
         (a, None) if a.starts_with("browser_") => app.toast("no browser pane focused"),
         ("open_preview", None) => match take_target(app) {

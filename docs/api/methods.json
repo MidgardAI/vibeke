@@ -1,12 +1,12 @@
 {
   "api": "vibeke/1",
   "generated_from": "vk-server METHODS tables; signatures from spec/07 §2",
-  "render_protocol": 2,
+  "render_protocol": 3,
   "holder_protocol": {
     "proto": 1,
     "min": 1
   },
-  "method_count": 235,
+  "method_count": 237,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -645,6 +645,30 @@
       "spec": null
     },
     {
+      "name": "browser.pane.console",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{pane, toggle?: true, focus?: false}` → `{pane, pane_handle, browser_pane}` (opened) \\| `{closed, pane_handle, browser_pane}` (toggled off) \\| `{…, existing: true}` (`toggle: false`) — the console/network split: a pane under the browser pane (30 %) running `vibeke browser console --pane <id> --follow`, marked `created_by = \"browser-console:<browser pane id>\"`; closed by the server when its browser pane goes. Not from a pane."
+    },
+    {
+      "name": "browser.pane.console_push",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{pane, entries: [console/network entry]}` → `{pane, stored}` — the media host relaying a page's capture to the owner of a browser pane it renders (≤ 1 batch/s, ≤ 200 entries, only while the page is on a loopback URL); the owner keeps known fields only, re-redacted (8 KiB text cap), in its own ring. Not from a pane."
+    },
+    {
       "name": "browser.pane.create",
       "mutating": true,
       "scope": "pane",
@@ -690,7 +714,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, url?, title?, history?, history_index?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. Not from a pane."
+      "spec": "`{pane, url?, title?, history?, history_index?, device?, viewport?: \"WxH\" \\| \"fit\", fit?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. `device` (a `vk_browser::devices` preset: `iphone-15`, `pixel-8`, `ipad`, `desktop-1280/1440/1920`) or `viewport` (64..=8192 CSS px per edge) pins the page size (06 B3.2, letterboxed); `viewport: \"fit\"` / `fit: true` unpins; both at once or an unknown name → `invalid_params`; event `browser.viewport_changed {device, viewport}`. Not from a pane."
     },
     {
       "name": "browser.press",

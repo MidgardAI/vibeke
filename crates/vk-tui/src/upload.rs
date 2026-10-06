@@ -55,6 +55,9 @@ pub struct Transfer {
     pub sent: u64,
     pub total: u64,
     pub cancel: Arc<AtomicBool>,
+    /// Files for a browser pane's page (06 B3.2): when done, the uploaded paths go to the
+    /// page as `BrowserCmd::DropFiles` instead of being pasted.
+    pub browser: bool,
 }
 
 /// Progress reported by a transfer task back to the UI loop.
@@ -195,6 +198,7 @@ pub fn begin(
             sent: 0,
             total,
             cancel: cancel.clone(),
+            browser: false,
         },
     );
     app.toast(format!(
@@ -206,6 +210,17 @@ pub fn begin(
         && let Some(conn) = w.connectors.get(machine).cloned()
     {
         tokio::spawn(run_transfer(conn, w.inc.clone(), id.clone(), items, cancel));
+    }
+    id
+}
+
+/// Upload files to machine `host`'s inbox for browser pane `pane`'s page (the media host is
+/// another machine, so the page can't open local paths): when done they are dropped into the
+/// page (`BrowserCmd::DropFiles`).
+pub fn begin_browser(app: &mut App, host: usize, pane: &str, items: Vec<Item>) -> TransferId {
+    let id = begin(app, host, pane, String::new(), None, items);
+    if let Some(t) = app.uploads.transfers.get_mut(&id) {
+        t.browser = true;
     }
     id
 }
@@ -354,6 +369,22 @@ pub fn on_event(app: &mut App, ev: UploadEvent) {
             }
             let t = app.uploads.transfers.remove(&id).unwrap();
             let paths: Vec<String> = t.results.into_iter().flatten().collect();
+            if t.browser {
+                let input_id = app.next_input;
+                app.next_input += 1;
+                let sent = app.machines[id.machine].send(ClientFrame::Browser {
+                    input_id,
+                    pane: id.pane.clone(),
+                    cmd: vk_proto::render::BrowserCmd::DropFiles(paths),
+                });
+                if !sent {
+                    app.toast(format!(
+                        "✓ uploaded, but {} is offline — not dropped",
+                        app.machines[id.machine].label
+                    ));
+                }
+                return;
+            }
             let text = match &t.parsed {
                 Some(p) => paste::rewrite(&t.original, p, &paths),
                 // Image paste: TUI harnesses (Claude, Codex) attach image paths pasted as text.
