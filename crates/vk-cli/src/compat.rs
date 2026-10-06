@@ -849,6 +849,8 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
                 | "untrust"
                 | "revoke"
                 | "migrate"
+                | "consent"
+                | "import"
         )
     {
         notify_registry(g).await;
@@ -863,7 +865,31 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
     code
 }
 
+/// A fetched repository turned out to hold a Herdr manifest: install it the Herdr way.
+pub fn install_herdr_fallback(
+    g: &Global,
+    src: &str,
+    git_ref: Option<&str>,
+    args: &[String],
+) -> i32 {
+    if flag(args, "--dry-run") {
+        return install_dry_run(g, src, git_ref);
+    }
+    local(
+        g,
+        Local::PluginInstall {
+            source: src.to_string(),
+            git_ref: git_ref.map(str::to_string),
+            yes: flag(args, "--yes") || flag(args, "-y"),
+        },
+    )
+}
+
 async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
+    // Native plugins (vibeke-plugin.toml) first; Herdr verbs fall through.
+    if let Some(code) = crate::plugin_native::cmd(g, args).await {
+        return code;
+    }
     let verb = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let one = |what: &str| -> Result<String, i32> {
@@ -874,7 +900,7 @@ async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
     };
     match verb {
         "" | "help" | "--help" | "-h" => {
-            println!("{PLUGIN_HELP}");
+            println!("{PLUGIN_HELP}\n\n{}", crate::plugin_native::HELP);
             if verb.is_empty() { EXIT_USAGE } else { EXIT_OK }
         }
         "list" | "ls" => local(g, Local::PluginList),

@@ -290,6 +290,22 @@ pub fn ensure_repo(server: &Server, cwd: &Path) {
     }
 }
 
+/// A native plugin's `harness` contribution (07 §7.4): `root` is a Vibeke-owned copy laid out
+/// like a repository (`<root>/.vibeke/harnesses/*.toml`), loaded with the same restrictions as a
+/// trusted repo's manifests (`repo:<id>`); the plugin's consent is the trust decision.
+pub fn set_plugin_root(root: &Path, on: bool) {
+    let mut r = REG.write().unwrap();
+    let had = r.sources.trusted_repos.iter().any(|x| x == root);
+    if on && !had {
+        r.sources.trusted_repos.push(root.to_path_buf());
+    } else if !on && had {
+        r.sources.trusted_repos.retain(|x| x != root);
+    } else if !on {
+        return;
+    }
+    reload_locked(&mut r);
+}
+
 /// `policy.trust` changed: re-check every repo on its next detection.
 pub fn forget_repo_trust() {
     let mut c = REPOS.lock().unwrap();

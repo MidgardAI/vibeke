@@ -7,6 +7,7 @@ pub mod browser_console;
 pub mod client;
 pub mod compat;
 pub mod mcp;
+pub mod plugin_native;
 pub mod shell_integration;
 pub mod show;
 pub mod verbs;

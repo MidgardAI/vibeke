@@ -105,11 +105,15 @@ pub struct Per {
     pub views: HashMap<String, AgentView>,
     /// `client.window_title.set` override (sanitized), until `client.window_title.clear`.
     pub window_title: Option<String>,
+    /// Native plugin UI contributions (`compat.ui.state.contributions`, `crate::plugin_ui`).
+    pub contrib: Vec<Value>,
 }
 
 #[derive(Debug, Default)]
 pub struct State {
     pub per: HashMap<usize, Per>,
+    /// Collapsed plugin sidebar sections (`<plugin>\u{1f}<section>`).
+    pub collapsed: HashSet<String>,
     /// Last `ScrollView` sent per machine: (pane, offset).
     scroll_sent: HashMap<usize, (String, u32)>,
     scroll_at: Option<Instant>,
@@ -330,6 +334,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             if let Ok(v) = res {
                 set_title(app, mi, v["window_title"].as_str());
                 app.plugins.per_mut(mi).views = parse_views(&v);
+                app.plugins.per_mut(mi).contrib = crate::plugin_ui::parse(&v);
             }
         }
         Reply::Ran(what) => match res {

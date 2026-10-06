@@ -10,6 +10,10 @@ pub mod archive;
 pub mod backup;
 pub mod blobs;
 pub mod conv;
+mod plugin_kv;
+pub use plugin_kv::{
+    DEFAULT_QUOTA as PLUGIN_KV_QUOTA, KvError, MAX_VALUE as PLUGIN_KV_MAX_VALUE, PluginCommand,
+};
 pub mod crypt;
 pub mod keychain;
 mod purge;
@@ -79,6 +83,16 @@ const MIGRATIONS: &[&str] = &[
     r#"
     CREATE TABLE policy_rules (id TEXT PRIMARY KEY, ord INTEGER NOT NULL, rule_json TEXT NOT NULL,
         created_at INTEGER NOT NULL, created_by TEXT);
+    "#,
+    // 6: native plugins (07 §7.5, 02 §3 "Plugin state ownership"): the per-plugin KV namespace and
+    // the session's native plugin command records (`plugin_kv.rs`). Self-contained: no other
+    // migration depends on it.
+    r#"
+    CREATE TABLE IF NOT EXISTS plugin_kv (plugin_id TEXT NOT NULL, key TEXT NOT NULL, value BLOB NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (plugin_id, key));
+    CREATE TABLE IF NOT EXISTS plugin_commands (id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL,
+        status TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, json TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS plugin_commands_plugin ON plugin_commands(plugin_id, started_at);
     "#,
 ];
 

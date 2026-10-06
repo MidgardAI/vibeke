@@ -69,6 +69,7 @@ pub mod user_popup;
 // v1 server/API/CLI remainder: one module per item, hooked with one line each.
 pub mod audit_retention;
 pub mod pane_render;
+pub mod plugin_native;
 pub mod sync_input;
 pub mod tab_renumber;
 pub mod task_lifecycle;

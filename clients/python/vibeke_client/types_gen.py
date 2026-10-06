@@ -2633,6 +2633,7 @@ CompatUiStateResultAgentViewsItem = TypedDict("CompatUiStateResultAgentViewsItem
 CompatUiStateResult = TypedDict("CompatUiStateResult", {
     "window_title": NotRequired[str],
     "popup": NotRequired["CompatUiStateResultPopup"],
+    "contributions": NotRequired[List[Dict[str, Any]]],
     "agent_views": List["CompatUiStateResultAgentViewsItem"],
 })
 
@@ -4140,6 +4141,27 @@ PasteTranslatedResult = TypedDict("PasteTranslatedResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PluginActionParamsContext = TypedDict("PluginActionParamsContext", {
+    "workspace": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "tab": NotRequired["Target"],
+})
+
+PluginActionParams = TypedDict("PluginActionParams", {
+    "plugin": NotRequired[str],
+    "action": str,
+    "context": NotRequired["PluginActionParamsContext"],
+    "source": NotRequired[str],
+})
+
+PluginActionResult = TypedDict("PluginActionResult", {
+    "exit_code": Optional[int],
+    "stdout_tail": Optional[str],
+    "status": str,
+    "log": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
 PluginActionListParams = TypedDict("PluginActionListParams", {
     "plugin": NotRequired[str],
 })
@@ -4223,6 +4245,116 @@ PluginActionRunResult = TypedDict("PluginActionRunResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PluginConsentParams = TypedDict("PluginConsentParams", {
+    "plugin": str,
+    "accept_capabilities": List[str],
+})
+
+PluginConsentResult = TypedDict("PluginConsentResult", {
+    "plugin": str,
+    "consent_id": str,
+    "capabilities": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginDisableParams = TypedDict("PluginDisableParams", {
+    "plugin": str,
+})
+
+PluginDisableResult = TypedDict("PluginDisableResult", {
+    "plugin": str,
+    "enabled": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginEnableParams = TypedDict("PluginEnableParams", {
+    "plugin": str,
+})
+
+PluginEnableResult = TypedDict("PluginEnableResult", {
+    "plugin": str,
+    "enabled": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginInstallParams = TypedDict("PluginInstallParams", {
+    "source": str,
+    "ref": NotRequired[str],
+    "accept_capabilities": NotRequired[List[str]],
+    "trust": NotRequired[Literal["scoped", "herdr_legacy"]],
+})
+
+PluginInstallResult = TypedDict("PluginInstallResult", {
+    "plugin": str,
+    "kind": Literal["native", "herdr"],
+    "requested_capabilities": List[Dict[str, Any]],
+    "entrypoints": NotRequired[List[str]],
+    "status": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginKvDeleteParams = TypedDict("PluginKvDeleteParams", {
+    "key": str,
+})
+
+PluginKvDeleteResult = TypedDict("PluginKvDeleteResult", {
+    "key": str,
+    "deleted": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginKvGetParams = TypedDict("PluginKvGetParams", {
+    "key": str,
+})
+
+PluginKvGetResult = TypedDict("PluginKvGetResult", {
+    "key": str,
+    "found": bool,
+    "value": NotRequired[Any],
+    "value_b64": NotRequired[str],
+})
+
+PluginKvListParams = TypedDict("PluginKvListParams", {
+    "prefix": NotRequired[str],
+    "after": NotRequired[str],
+    "limit": NotRequired[int],
+})
+
+PluginKvListResultKeysItem = TypedDict("PluginKvListResultKeysItem", {
+    "key": str,
+    "bytes": int,
+})
+
+PluginKvListResult = TypedDict("PluginKvListResult", {
+    "keys": List["PluginKvListResultKeysItem"],
+    "next": Optional[str],
+})
+
+PluginKvSetParams = TypedDict("PluginKvSetParams", {
+    "key": str,
+    "value": NotRequired[Any],
+    "value_b64": NotRequired[str],
+})
+
+PluginKvSetResult = TypedDict("PluginKvSetResult", {
+    "key": str,
+    "bytes": int,
+    "used": int,
+    "quota": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginLinkParams = TypedDict("PluginLinkParams", {
+    "path": str,
+})
+
+PluginLinkResult = TypedDict("PluginLinkResult", {
+    "plugin": str,
+    "kind": Literal["native", "herdr"],
+    "requested_capabilities": NotRequired[List[Dict[str, Any]]],
+    "cursor": NotRequired["Cursor"],
+})
+
 PluginLinkOpenParamsContext = TypedDict("PluginLinkOpenParamsContext", {
     "pane_id": NotRequired["Target"],
     "tab_id": NotRequired["Target"],
@@ -4263,9 +4395,11 @@ PluginLinkHandlerListResult = TypedDict("PluginLinkHandlerListResult", {
 PluginListParams: TypeAlias = Dict[str, Any]
 
 PluginListResultPluginsItem = TypedDict("PluginListResultPluginsItem", {
-    "id": str,
-    "version": NotRequired[str],
+    "id": NotRequired[str],
+    "plugin_id": NotRequired[str],
+    "version": NotRequired[Optional[str]],
     "enabled": bool,
+    "native": NotRequired[bool],
     "kind": NotRequired[Union[Literal["actions"], Literal["process"], str]],
     "capabilities": NotRequired[Any],
     "status": NotRequired[Any],
@@ -4288,6 +4422,28 @@ PluginRegistryNotifyParams: TypeAlias = Dict[str, Any]
 
 PluginRegistryNotifyResult = TypedDict("PluginRegistryNotifyResult", {
     "ok": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginRemoveParams = TypedDict("PluginRemoveParams", {
+    "plugin": str,
+    "purge_data": NotRequired[bool],
+})
+
+PluginRemoveResult = TypedDict("PluginRemoveResult", {
+    "plugin": str,
+    "removed": bool,
+    "kind": Literal["native", "herdr"],
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginRestartParams = TypedDict("PluginRestartParams", {
+    "plugin": str,
+})
+
+PluginRestartResult = TypedDict("PluginRestartResult", {
+    "plugin": str,
+    "restarted": bool,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -6573,6 +6729,41 @@ ThemeSetModeResult = TypedDict("ThemeSetModeResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+UiContributeParamsRemoveItem = TypedDict("UiContributeParamsRemoveItem", {
+    "kind": str,
+    "id": str,
+})
+
+UiContributeParams = TypedDict("UiContributeParams", {
+    "contributions": NotRequired[List[Dict[str, Any]]],
+    "replace": NotRequired[bool],
+    "remove": NotRequired[List["UiContributeParamsRemoveItem"]],
+})
+
+UiContributeResult = TypedDict("UiContributeResult", {
+    "plugin": str,
+    "contributions": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+UiContributionsParams: TypeAlias = Dict[str, Any]
+
+UiContributionsResult = TypedDict("UiContributionsResult", {
+    "contributions": List[Dict[str, Any]],
+})
+
+UiPaneOpenParams = TypedDict("UiPaneOpenParams", {
+    "plugin": str,
+    "pane": str,
+    "target": NotRequired["Target"],
+    "direction": NotRequired[Literal["right", "down", "left", "up"]],
+})
+
+UiPaneOpenResult = TypedDict("UiPaneOpenResult", {
+    "pane": "Pane",
+    "cursor": NotRequired["Cursor"],
+})
+
 VmCreateParams = TypedDict("VmCreateParams", {
     "name": NotRequired[str],
     "task": NotRequired[str],
@@ -7091,13 +7282,25 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "paste.translated": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.action": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.action.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.action.run": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "plugin.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.disable": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.enable": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.link": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.link.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "plugin.link_handler.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.log.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.registry.notify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.surface.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.learned.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -7222,6 +7425,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.sync": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "theme.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "theme.set_mode": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "ui.contribute": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "ui.contributions": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "ui.pane.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "vm.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "vm.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "vm.fork": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -8429,6 +8635,175 @@ PasteTranslatedData = TypedDict("PasteTranslatedData", {
     "target_namespace": str,
 })
 
+PluginActionInvokedSubject = TypedDict("PluginActionInvokedSubject", {
+    "plugin": str,
+})
+
+PluginActionInvokedData = TypedDict("PluginActionInvokedData", {
+    "action": str,
+    "log": str,
+    "source": str,
+    "via": Literal["argv", "process"],
+})
+
+PluginApiCallSubject = TypedDict("PluginApiCallSubject", {
+    "plugin": str,
+})
+
+PluginApiCallData = TypedDict("PluginApiCallData", {
+    "method": str,
+    "token": NotRequired[str],
+    "ok": NotRequired[bool],
+    "error_code": NotRequired[Optional[str]],
+})
+
+PluginCapabilityViolationSubject = TypedDict("PluginCapabilityViolationSubject", {
+    "plugin": str,
+})
+
+PluginCapabilityViolationData = TypedDict("PluginCapabilityViolationData", {
+    "method": str,
+    "reason": str,
+    "token": NotRequired[str],
+})
+
+PluginCommandFinishedSubject = TypedDict("PluginCommandFinishedSubject", {
+    "plugin": str,
+})
+
+PluginCommandFinishedData = TypedDict("PluginCommandFinishedData", {
+    "log": str,
+    "what": str,
+    "status": Literal["completed", "failed"],
+    "exit_code": Optional[int],
+})
+
+PluginCrashedSubject = TypedDict("PluginCrashedSubject", {
+    "plugin": str,
+})
+
+PluginCrashedData = TypedDict("PluginCrashedData", {
+    "exit_code": Optional[int],
+    "reason": str,
+    "crashes_in_window": int,
+    "restart": bool,
+    "restart_in_ms": Optional[int],
+    "disabled": bool,
+    "stderr_tail": str,
+})
+
+PluginDisabledSubject = TypedDict("PluginDisabledSubject", {
+    "plugin": str,
+})
+
+PluginDisabledData = TypedDict("PluginDisabledData", {
+    "kind": str,
+})
+
+PluginEnabledSubject = TypedDict("PluginEnabledSubject", {
+    "plugin": str,
+})
+
+PluginEnabledData = TypedDict("PluginEnabledData", {
+    "kind": str,
+})
+
+PluginInstalledSubject = TypedDict("PluginInstalledSubject", {
+    "plugin": str,
+})
+
+PluginInstalledData = TypedDict("PluginInstalledData", {
+    "kind": str,
+    "update": NotRequired[bool],
+})
+
+PluginLaunchFailedSubject = TypedDict("PluginLaunchFailedSubject", {
+    "plugin": str,
+})
+
+PluginLaunchFailedData = TypedDict("PluginLaunchFailedData", {
+    "what": str,
+    "error": str,
+})
+
+PluginLinkedSubject = TypedDict("PluginLinkedSubject", {
+    "plugin": str,
+})
+
+PluginLinkedData = TypedDict("PluginLinkedData", {
+    "kind": str,
+    "update": NotRequired[bool],
+})
+
+PluginPaneOpenedSubject = TypedDict("PluginPaneOpenedSubject", {
+    "plugin": str,
+    "pane": NotRequired[str],
+})
+
+PluginPaneOpenedData = TypedDict("PluginPaneOpenedData", {
+    "entrypoint": NotRequired[str],
+})
+
+PluginProcessStartedSubject = TypedDict("PluginProcessStartedSubject", {
+    "plugin": str,
+})
+
+PluginProcessStartedData = TypedDict("PluginProcessStartedData", {
+    "pid": int,
+    "sandbox": bool,
+    "restarts": int,
+})
+
+PluginProcessStoppedSubject = TypedDict("PluginProcessStoppedSubject", {
+    "plugin": str,
+})
+
+PluginProcessStoppedData = TypedDict("PluginProcessStoppedData", {
+    "exit_code": Optional[int],
+    "signal": Optional[int],
+    "requested": bool,
+})
+
+PluginRegistryObservedSubject: TypeAlias = Dict[str, Any]
+
+PluginRegistryObservedData = TypedDict("PluginRegistryObservedData", {
+    "generation": int,
+    "plugins": int,
+})
+
+PluginReloadedSubject = TypedDict("PluginReloadedSubject", {
+    "plugin": str,
+})
+
+PluginReloadedData = TypedDict("PluginReloadedData", {
+    "reason": str,
+})
+
+PluginTrustChangedSubject = TypedDict("PluginTrustChangedSubject", {
+    "plugin": str,
+})
+
+PluginTrustChangedData = TypedDict("PluginTrustChangedData", {
+    "kind": str,
+    "trusted": bool,
+})
+
+PluginUninstalledSubject = TypedDict("PluginUninstalledSubject", {
+    "plugin": str,
+})
+
+PluginUninstalledData = TypedDict("PluginUninstalledData", {
+    "kind": str,
+})
+
+PluginUnlinkedSubject = TypedDict("PluginUnlinkedSubject", {
+    "plugin": str,
+})
+
+PluginUnlinkedData = TypedDict("PluginUnlinkedData", {
+    "kind": str,
+})
+
 PolicyLearnedAcceptedSubject = TypedDict("PolicyLearnedAcceptedSubject", {
     "suggestion": str,
 })
@@ -9438,6 +9813,14 @@ TombstoneSubject: TypeAlias = Dict[str, Any]
 
 TombstoneData: TypeAlias = Dict[str, Any]
 
+UiContributionsChangedSubject = TypedDict("UiContributionsChangedSubject", {
+    "plugin": str,
+})
+
+UiContributionsChangedData = TypedDict("UiContributionsChangedData", {
+    "contributions": int,
+})
+
 VmCreatedSubject = TypedDict("VmCreatedSubject", {
     "vm": str,
 })
@@ -9704,6 +10087,24 @@ EVENT_TYPES = (
     "pane.sync_input_changed",
     "pane.title_changed",
     "paste.translated",
+    "plugin.action_invoked",
+    "plugin.api_call",
+    "plugin.capability_violation",
+    "plugin.command_finished",
+    "plugin.crashed",
+    "plugin.disabled",
+    "plugin.enabled",
+    "plugin.installed",
+    "plugin.launch_failed",
+    "plugin.linked",
+    "plugin.pane_opened",
+    "plugin.process_started",
+    "plugin.process_stopped",
+    "plugin.registry_observed",
+    "plugin.reloaded",
+    "plugin.trust_changed",
+    "plugin.uninstalled",
+    "plugin.unlinked",
     "policy.learned_accepted",
     "policy.learned_dismissed",
     "policy.repo_trusted",
@@ -9805,6 +10206,7 @@ EVENT_TYPES = (
     "task.updated",
     "theme.changed",
     "tombstone",
+    "ui.contributions_changed",
     "vm.created",
     "vm.destroyed",
     "vm.forked",

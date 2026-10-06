@@ -10152,6 +10152,12 @@
               "entrypoint_id"
             ]
           },
+          "contributions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
           "agent_views": {
             "type": "array",
             "items": {
@@ -15566,6 +15572,82 @@
         ]
       }
     },
+    "plugin.action": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "properties": {
+              "workspace": {
+                "$ref": "#/$defs/Target"
+              },
+              "pane": {
+                "$ref": "#/$defs/Target"
+              },
+              "tab": {
+                "$ref": "#/$defs/Target"
+              }
+            }
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stdout_tail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "log": {
+            "type": "object"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "exit_code",
+          "stdout_tail",
+          "status",
+          "log"
+        ]
+      }
+    },
     "plugin.action.list": {
       "mutating": false,
       "scope": "pane",
@@ -15830,6 +15912,407 @@
         ]
       }
     },
+    "plugin.consent": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "accept_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "plugin",
+          "accept_capabilities"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "consent_id": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "consent_id",
+          "capabilities"
+        ]
+      }
+    },
+    "plugin.disable": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "enabled"
+        ]
+      }
+    },
+    "plugin.enable": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "enabled"
+        ]
+      }
+    },
+    "plugin.install": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "accept_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trust": {
+            "type": "string",
+            "enum": [
+              "scoped",
+              "herdr_legacy"
+            ],
+            "default": "scoped"
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "native",
+              "herdr"
+            ]
+          },
+          "requested_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "entrypoints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "kind",
+          "requested_capabilities",
+          "status"
+        ]
+      }
+    },
+    "plugin.kv.delete": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "key",
+          "deleted"
+        ]
+      }
+    },
+    "plugin.kv.get": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "found": {
+            "type": "boolean"
+          },
+          "value": {},
+          "value_b64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "found"
+        ]
+      }
+    },
+    "plugin.kv.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string"
+          },
+          "after": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 100
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "key",
+                "bytes"
+              ]
+            }
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "keys",
+          "next"
+        ]
+      }
+    },
+    "plugin.kv.set": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {},
+          "value_b64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "used": {
+            "type": "integer"
+          },
+          "quota": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "key",
+          "bytes",
+          "used",
+          "quota"
+        ]
+      }
+    },
+    "plugin.link": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "native",
+              "herdr"
+            ]
+          },
+          "requested_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "kind"
+        ]
+      }
+    },
     "plugin.link.open": {
       "mutating": true,
       "scope": "pane",
@@ -15961,10 +16444,23 @@
                 "id": {
                   "type": "string"
                 },
-                "version": {
+                "plugin_id": {
                   "type": "string"
                 },
+                "version": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "enabled": {
+                  "type": "boolean"
+                },
+                "native": {
                   "type": "boolean"
                 },
                 "kind": {
@@ -15984,7 +16480,6 @@
                 "status": {}
               },
               "required": [
-                "id",
                 "enabled"
               ]
             }
@@ -16044,6 +16539,86 @@
         },
         "required": [
           "ok"
+        ]
+      }
+    },
+    "plugin.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "purge_data": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "native",
+              "herdr"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "removed",
+          "kind"
+        ]
+      }
+    },
+    "plugin.restart": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "restarted": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "restarted"
         ]
       }
     },
@@ -24488,6 +25063,131 @@
         ]
       }
     },
+    "ui.contribute": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "contributions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "replace": {
+            "type": "boolean",
+            "default": false
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ]
+            }
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "contributions": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "plugin",
+          "contributions"
+        ]
+      }
+    },
+    "ui.contributions": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "contributions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "contributions"
+        ]
+      }
+    },
+    "ui.pane.open": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/$defs/Target"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "right",
+              "down",
+              "left",
+              "up"
+            ],
+            "default": "right"
+          }
+        },
+        "required": [
+          "plugin",
+          "pane"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Pane"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      }
+    },
     "vm.create": {
       "mutating": true,
       "scope": "full",
@@ -29523,6 +30223,578 @@
         ]
       }
     },
+    "plugin.action_invoked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "log": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "argv",
+              "process"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "log",
+          "source",
+          "via"
+        ]
+      }
+    },
+    "plugin.api_call": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "method"
+        ]
+      }
+    },
+    "plugin.capability_violation": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "reason"
+        ]
+      }
+    },
+    "plugin.command_finished": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "log": {
+            "type": "string"
+          },
+          "what": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ]
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "log",
+          "what",
+          "status",
+          "exit_code"
+        ]
+      }
+    },
+    "plugin.crashed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "crashes_in_window": {
+            "type": "integer"
+          },
+          "restart": {
+            "type": "boolean"
+          },
+          "restart_in_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "stderr_tail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "reason",
+          "crashes_in_window",
+          "restart",
+          "restart_in_ms",
+          "disabled",
+          "stderr_tail"
+        ]
+      }
+    },
+    "plugin.disabled": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    "plugin.enabled": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    "plugin.installed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "update": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    "plugin.launch_failed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "what": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "what",
+          "error"
+        ]
+      }
+    },
+    "plugin.linked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "update": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    "plugin.pane_opened": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "entrypoint": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "plugin.process_started": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "type": "integer"
+          },
+          "sandbox": {
+            "type": "boolean"
+          },
+          "restarts": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "sandbox",
+          "restarts"
+        ]
+      }
+    },
+    "plugin.process_stopped": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requested": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exit_code",
+          "signal",
+          "requested"
+        ]
+      }
+    },
+    "plugin.registry_observed": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "generation": {
+            "type": "integer"
+          },
+          "plugins": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generation",
+          "plugins"
+        ]
+      }
+    },
+    "plugin.reloaded": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      }
+    },
+    "plugin.trust_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "trusted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "trusted"
+        ]
+      }
+    },
+    "plugin.uninstalled": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    "plugin.unlinked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
     "policy.learned_accepted": {
       "subject": {
         "type": "object",
@@ -33176,6 +34448,30 @@
       },
       "data": {
         "type": "object"
+      }
+    },
+    "ui.contributions_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "plugin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plugin"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "contributions": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "contributions"
+        ]
       }
     },
     "vm.created": {
