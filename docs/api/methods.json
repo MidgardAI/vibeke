@@ -6,7 +6,7 @@
     "proto": 1,
     "min": 1
   },
-  "method_count": 230,
+  "method_count": 233,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -1187,6 +1187,30 @@
       "spec": "`{types, subjects?, after?: Cursor, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly)"
     },
     {
+      "name": "fs.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane, path?: \"\"}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd; directories first, then by name; ≤ 2000 entries. Symlinks are listed, never followed; `.git` is not listed; secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}`"
+    },
+    {
+      "name": "fs.read",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary); `binary` (NUL in the first 8 KiB) returns no text; secret-looking files return `{secret: true}` without content"
+    },
+    {
       "name": "git.diff",
       "mutating": false,
       "scope": "pane",
@@ -1197,6 +1221,18 @@
       ],
       "milestone": "16 G2",
       "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB"
+    },
+    {
+      "name": "git.log",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first; with `base`, only commits in `base..HEAD`"
     },
     {
       "name": "git.status",
