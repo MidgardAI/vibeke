@@ -1,0 +1,584 @@
+// App API types (spec 16 §7.4) and the normalized entity shapes the gateway returns (§7.5).
+// Field names follow crates/vk-proto/src/model.rs. Enums are snake_case: the gateway rewrites
+// interaction enums; `normalize*` below applies the same rewrite defensively to anything
+// still in serde's PascalCase (e.g. AgentRun facets), so the UI only ever sees one form.
+
+export type Risk = 'low' | 'medium' | 'high' | 'unknown';
+export type InteractionKind = 'approval' | 'question' | 'plan_review' | 'notice';
+export type InteractionStatus = 'open' | 'answered' | 'resolved_elsewhere' | 'expired' | 'cancelled';
+export type DeliveryState =
+  | 'none'
+  | 'decision_recorded'
+  | 'delivering'
+  | 'delivered'
+  | 'delivery_unknown'
+  | 'failed'
+  | 'superseded'
+  | 'resolved_elsewhere';
+export type AnswerChannel = 'native' | 'keystrokes' | 'none';
+export type Decision = 'allow' | 'allow_always' | 'deny';
+export type StateSource = 'structured' | 'self_report' | 'screen' | 'process' | 'user';
+export type Execution = 'starting' | 'working' | 'idle' | 'error' | 'rate_limited' | 'exited' | 'unknown';
+export type AdapterHealth = 'healthy' | 'degraded' | 'disconnected' | 'unvalidated_version';
+export type Scope = 'full' | 'approve' | 'view';
+
+export interface ActionInfo {
+  tool: string;
+  summary: string;
+  command: string | null;
+  paths: string[];
+  diff: string | null;
+  risk: Risk;
+  risk_reasons: string[];
+}
+
+export interface QuestionOption {
+  id: string;
+  label: string;
+  description: string | null;
+}
+
+export interface Question {
+  id: string;
+  prompt: string;
+  header: string | null;
+  multi: boolean;
+  options: QuestionOption[];
+  allow_free_text: boolean;
+}
+
+export interface Answer {
+  decision: Decision | null;
+  /** [question id, chosen option ids] pairs (serde tuple form). */
+  choices: [string, string[]][];
+  text: string | null;
+}
+
+export interface Interaction {
+  id: string;
+  handle: string;
+  run: string;
+  pane: string;
+  kind: InteractionKind;
+  status: InteractionStatus;
+  title: string;
+  body_md: string | null;
+  action: ActionInfo | null;
+  questions: Question[];
+  plan_md: string | null;
+  answer_channel: AnswerChannel;
+  native_ref: string | null;
+  source: StateSource;
+  confidence: number;
+  answerable: boolean;
+  gate: boolean;
+  decision_rev: number;
+  delivery: DeliveryState;
+  delivery_error: string | null;
+  answer: Answer | null;
+  answered_by: string | null;
+  opened_at_ms: number;
+  answered_at_ms: number | null;
+  /** Added by the gateway (batch grouping, §7.6). */
+  harness?: string;
+  /** Added by the gateway: repo root of the run's cwd. */
+  repo_root?: string;
+}
+
+export interface Facet<T> {
+  value: T;
+  since_ms: number;
+  source: StateSource;
+  confidence: number;
+  detail: string | null;
+}
+
+export interface AgentRun {
+  id: string;
+  handle: string;
+  name: string | null;
+  pane: string;
+  harness: string;
+  harness_version: string | null;
+  integration: string;
+  harness_session_id: string | null;
+  transcript_path: string | null;
+  resume_argv: string[];
+  cwd: string | null;
+  model: string | null;
+  task: string | null;
+  execution: Facet<Execution>;
+  health: AdapterHealth;
+  yolo: boolean;
+  permission_mode: string | null;
+  last_message: string | null;
+  last_tool: string | null;
+  turns_completed: number;
+  /** Bumped when execution goes idle after work (done vs idle). */
+  done_rev: number;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  capabilities: string[];
+}
+
+export interface Workspace {
+  id: string;
+  handle: string;
+  name: string | null;
+  auto_name: string;
+  root_path: string;
+  task: string | null;
+  order: number;
+  branch: string | null;
+}
+
+/** serde externally tagged enum, passed through untouched. */
+export type LayoutNode =
+  | { Leaf: { pane: string } }
+  | { Split: { dir: 'Horizontal' | 'Vertical'; children: [LayoutNode, number][] } };
+
+export interface Tab {
+  id: string;
+  handle: string;
+  workspace: string;
+  title: string | null;
+  number: number;
+  layout: LayoutNode;
+  focused_pane: string | null;
+  zoomed_pane: string | null;
+  order: number;
+}
+
+export interface Pane {
+  id: string;
+  handle: string;
+  tab: string;
+  workspace: string;
+  title: string | null;
+  auto_title: string;
+  cwd: string | null;
+  cols: number;
+  rows: number;
+  child_pid: number | null;
+  fg_cmdline: string[];
+  exited: boolean;
+  exit_code: number | null;
+  unread: boolean;
+  marked_unread: boolean;
+  pinned: boolean;
+  created_by: string;
+  recovered: string | null;
+}
+
+export interface Task {
+  id: string;
+  handle: string;
+  title: string;
+  slug: string;
+  workspace: string | null;
+  repo_root: string;
+  worktree_path: string | null;
+  branch: string | null;
+  status: string;
+  created_at_ms: number;
+  [k: string]: unknown;
+}
+
+export interface Notification {
+  id: string;
+  kind: string;
+  pane: string | null;
+  title: string;
+  body: string;
+  urgency: string;
+  created_at_ms: number;
+  read: boolean;
+}
+
+export const displayName = (w: Workspace): string => w.name ?? w.auto_name;
+export const paneTitle = (p: Pane): string => p.title ?? p.auto_title;
+
+/** Gateway event (§7.5): `event` notification params. */
+export interface AppEvent {
+  seq: number;
+  ts: number;
+  type: string;
+  subject: Record<string, string | undefined>;
+  data: Record<string, unknown>;
+}
+
+export interface Dashboard {
+  /** Snapshot barrier: subscribe with `after = at`. */
+  at: number;
+  session: string;
+  machine: string;
+  workspaces: Workspace[];
+  tabs: Tab[];
+  panes: Pane[];
+  runs: AgentRun[];
+  interactions: Interaction[];
+  tasks: Task[];
+  notifications_unread: number;
+}
+
+export interface GitFile {
+  path: string;
+  orig_path?: string | null;
+  x: string;
+  y: string;
+  /** `modified` | `added` | `deleted` | `renamed` | `untracked` | `conflicted`. */
+  kind: string;
+  staged?: boolean;
+  adds?: number | null;
+  dels?: number | null;
+  binary: boolean;
+  secret?: boolean;
+}
+
+export interface GitStatus {
+  repo_root: string;
+  branch?: string | null;
+  upstream?: string | null;
+  ahead: number;
+  behind: number;
+  files: GitFile[];
+  clean: boolean;
+  truncated?: boolean;
+}
+
+export interface GitDiff {
+  file?: string;
+  diff: string;
+  truncated: boolean;
+  binary: boolean;
+  untracked: boolean;
+  secret?: boolean;
+}
+
+export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
+
+/** One item of a transcript turn (server gateway_api.rs `line_items`). */
+export interface TranscriptItem {
+  kind: TranscriptItemKind | string;
+  /** `text` items: `user` | `assistant` (others possible). */
+  role?: string | null;
+  text?: string | null;
+  /** `tool_call`: the tool name. */
+  tool?: string | null;
+  /** `tool_call` input / `tool_result` output, one line, ≤ 160 chars. */
+  summary?: string | null;
+  /** Tool call id (pairs a call with its result). */
+  id?: string | null;
+  /** `tool_result`: the tool failed. */
+  error?: boolean | null;
+}
+
+/** One transcript turn (`agent.transcript`): a user prompt and everything up to the next one. */
+export interface TranscriptTurn {
+  /** Stable index from the start of the transcript (1-based). */
+  n: number;
+  ts?: string | number | null;
+  items: TranscriptItem[];
+}
+
+export interface TranscriptPage {
+  run: string;
+  turns: TranscriptTurn[];
+  /** Pass as `before` to load older turns; null/absent = this page reaches the start. */
+  next_before?: number | null;
+}
+
+/** A styled run within a row (`pane.read` source `styled`); plain spans are omitted. */
+export interface StyledRun {
+  /** Start column (terminal cells, not characters: a wide character covers two). */
+  start: number;
+  /** Width in cells. */
+  len: number;
+  /** null = default, 0–255 = palette index, `#rrggbb` = truecolor. */
+  fg: number | string | null;
+  bg: number | string | null;
+  bold: boolean;
+  dim: boolean;
+  italic: boolean;
+  underline: boolean;
+  inverse: boolean;
+}
+
+export interface StyledRow {
+  /** One grapheme per cell; the spacer cell of a wide character is omitted. */
+  text: string;
+  wrapped: boolean;
+  runs: StyledRun[];
+}
+
+export interface StyledScreen {
+  pane: string;
+  cols: number;
+  rows: StyledRow[];
+  cursor: { col: number; row: number; visible: boolean } | null;
+}
+
+export interface PaneText {
+  text: string;
+  revision: number;
+}
+
+export interface HarnessInfo {
+  id: string;
+  display: string;
+  capabilities: string[];
+  version_detected: string | null;
+}
+
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  platform: string;
+  scope: Scope;
+  paired_at: number;
+  fingerprint: string;
+  push: boolean;
+  this: boolean;
+  /** `device` | `share` | `handoff` (spec 16 §15). */
+  kind?: string;
+  /** Unix seconds; shares and handoff invitations expire. */
+  expires_at?: number | null;
+  limit?: { workspace?: string; pane?: string } | null;
+}
+
+/** Handoff bundle manifest (vk-gateway handoff.rs `Manifest`). */
+export interface HandoffManifest {
+  v: number;
+  source_host: string;
+  repo_name: string;
+  origin: string | null;
+  branch: string | null;
+  head: string;
+  /** `thin` | `full` | `none` (HEAD already on a remote). */
+  bundle: string;
+  cwd_rel: string;
+  source_cwd: string;
+  source_root: string;
+  harness: string | null;
+  session_id: string | null;
+  resume_args: string[];
+  transcript_rel: string | null;
+  last_message: string | null;
+  untracked: string[];
+  skipped: { path: string; reason: string }[];
+  redactions: number;
+  created_at: number;
+  [k: string]: unknown;
+}
+
+export interface HandoffFinishResult {
+  workspace?: string | null;
+  pane?: string | null;
+  worktree?: string;
+  branch?: string;
+  resumed?: boolean;
+  skipped?: { path: string; reason: string }[];
+  run?: unknown;
+  /** The import worked but starting the agent failed (JSON-RPC error object). */
+  agent_error?: { code?: number; message?: string; data?: { kind?: string } };
+}
+
+/** Per-device push/notification prefs held by the gateway (`prefs.get/set`). */
+export interface DevicePrefs {
+  privacy: 'full' | 'summary' | 'minimal';
+  notify_input: boolean;
+  notify_done: boolean;
+}
+
+export interface BatchResult {
+  interaction: string;
+  ok: boolean;
+  result?: { interaction: Interaction; delivery: { channel?: string } | DeliveryState };
+  error?: { code: number; message: string; data?: { kind?: string } };
+}
+
+/** Method → params/result map for the app API (spec 16 §7.4). `op_id` is added by RpcClient. */
+export interface AppApi {
+  hello: {
+    params: { client: string; version: string; visible: boolean };
+    result: {
+      host_name: string;
+      host_id?: string;
+      device_id: string;
+      scope: Scope;
+      server_version: string | null;
+      gateway_version?: string;
+      features: string[];
+      /** `device` | `share` | `handoff` (spec 16 §15). */
+      kind?: string;
+      /** Unix seconds; null for an ordinary device. */
+      expires_at?: number | null;
+      limit?: { workspace?: string | null; pane?: string | null } | null;
+    };
+  };
+  'client.visibility': { params: { visible: boolean }; result: Record<string, never> };
+  'dashboard.get': { params: Record<string, never>; result: Dashboard };
+  'pane.read': {
+    /** `styled` returns StyledScreen (servers with the gateway X1 pieces); the others PaneText. */
+    params: { pane: string; source?: 'visible' | 'recent' | 'scrollback' | 'styled' | string; lines?: number };
+    result: PaneText | StyledScreen;
+  };
+  'pane.send_text': { params: { pane: string; text: string; submit?: boolean }; result: Record<string, never> };
+  'pane.send_keys': { params: { pane: string; keys: string[] }; result: Record<string, never> };
+  'pane.rename': { params: { pane: string; title: string | null }; result: { pane: Pane } };
+  'pane.close': { params: { pane: string }; result: unknown };
+  'pane.focus': { params: { pane: string }; result: unknown };
+  'agent.prompt': { params: { target: string; text: string }; result: Record<string, never> };
+  'agent.interrupt': { params: { target: string }; result: Record<string, never> };
+  'agent.transcript': {
+    /** `limit` ≤ 200; `before` = a page's `next_before` (turns with n < before). */
+    params: { target: string; limit?: number; before?: number };
+    result: TranscriptPage;
+  };
+  'agent.start': {
+    params: { workspace: string; cwd?: string; harness: string; prompt?: string };
+    /** `pane` is the new pane id (the gateway returns the server's agent.start result + pane). */
+    result: { run?: AgentRun; pane: string; [k: string]: unknown };
+  };
+  'agent.harnesses': { params: Record<string, never>; result: { harnesses: HarnessInfo[] } };
+  'tab.create': { params: { workspace: string; cwd?: string; title?: string }; result: { tab: Tab; root_pane: Pane } };
+  'interaction.list': { params: Record<string, unknown>; result: { interactions: Interaction[] } };
+  'interaction.get': { params: { interaction: string }; result: { interaction: Interaction } };
+  'interaction.answer': {
+    params: {
+      interaction: string;
+      decision_rev: number;
+      decision?: Decision;
+      /** Map of question id → chosen option ids (the server's `interaction.answer` form). */
+      choices?: Record<string, string[]>;
+      text?: string;
+    };
+    /** `delivery` is `{channel: native|keystrokes|recorded}`; the state is `interaction.delivery`. */
+    result: { interaction: Interaction; delivery: { channel?: string } | DeliveryState; duplicate?: boolean };
+  };
+  'interaction.answer_batch': {
+    params: { items: { interaction: string; decision_rev: number }[]; decision: 'allow' | 'deny' };
+    result: { results: BatchResult[] };
+  };
+  'git.status': { params: { pane: string }; result: GitStatus };
+  'git.diff': { params: { pane: string; file: string; staged?: boolean }; result: GitDiff };
+  /** `data_b64` is standard (padded) base64, as the server's image.upload expects. */
+  'attachment.put': {
+    params: { name: string; mime: string; data_b64: string };
+    result: { path: string; hash?: string; size?: number };
+  };
+  'notification.list': { params: Record<string, unknown>; result: { notifications: Notification[] } };
+  'notification.read': { params: Record<string, unknown>; result: unknown };
+  'events.subscribe': { params: { after?: number }; result: { at: number; reset?: boolean } };
+  /** `dnd_until` is unix seconds; 0 = off. */
+  'prefs.get': { params: Record<string, never>; result: { device: DevicePrefs; host: { dnd_until?: number } } };
+  'prefs.set': { params: { device?: DevicePrefs; host?: { dnd_until: number } }; result: unknown };
+  'push.subscribe': {
+    params: { subscription: { endpoint: string; keys: { p256dh: string; auth: string } }; vapid_private: string };
+    result: Record<string, never>;
+  };
+  'push.unsubscribe': { params: { endpoint?: string }; result: Record<string, never> };
+  'push.test': { params: Record<string, never>; result: { sent?: number } };
+  /** `data_b64` is standard (padded) base64. */
+  'stt.transcribe': { params: { mime: string; data_b64: string }; result: { text: string } };
+  'devices.list': { params: Record<string, never>; result: { devices: DeviceInfo[] } };
+  'devices.revoke': { params: { device: string }; result: unknown };
+  ping: { params: Record<string, never>; result: Record<string, never> };
+  /** Spec 16 §15: a scoped, expiring bearer pairing invitation (share) or a handoff invitation. */
+  'share.create': {
+    params: {
+      kind: 'share' | 'handoff';
+      scope?: 'view' | 'approve';
+      ttl_s?: number;
+      workspace?: string;
+      pane?: string;
+      /** Shown in the host's device list (`name` is accepted as an alias). */
+      label?: string;
+    };
+    /** `open_by`: unix seconds the link must be opened by; `expires_at`: unix seconds access ends. */
+    result: { link: string; pid: string; open_by?: number; expires_after_s?: number; expires_at?: number };
+  };
+  'handoff.export': {
+    params: { pane: string; interrupt?: boolean; full?: boolean };
+    result: { id: string; size: number; sha256: string; manifest: HandoffManifest };
+  };
+  'handoff.read': { params: { id: string; offset: number; len: number }; result: { data_b64: string; eof: boolean; size: number } };
+  'handoff.discard': { params: { id: string }; result: Record<string, never> };
+  'handoff.begin': { params: { manifest: HandoffManifest; size: number; sha256: string }; result: { id: string } };
+  'handoff.write': { params: { id: string; offset: number; data_b64: string }; result: { received: number } };
+  'handoff.finish': { params: { id: string; repo_path?: string; start_agent?: boolean }; result: HandoffFinishResult };
+}
+
+export type AppMethod = keyof AppApi;
+
+/** Methods that carry `op_id` (spec 16 §7.3/§7.4); mirrors vk-gateway api::is_mutating. */
+export const MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'pane.send_text',
+  'pane.send_keys',
+  'pane.rename',
+  'pane.close',
+  'pane.focus',
+  'agent.prompt',
+  'agent.interrupt',
+  'agent.start',
+  'tab.create',
+  'interaction.answer',
+  'interaction.answer_batch',
+  'notification.read',
+  'prefs.set',
+  'devices.revoke',
+  'attachment.put',
+  'push.subscribe',
+  'push.unsubscribe',
+  'push.test',
+  'stt.transcribe',
+  'share.create',
+  'handoff.export',
+  'handoff.read',
+  'handoff.discard',
+  'handoff.begin',
+  'handoff.write',
+  'handoff.finish',
+]);
+
+// ---- normalization ------------------------------------------------------------------------
+
+/** `RateLimited` → `rate_limited`; already-snake strings pass through. */
+export function snake(s: string): string {
+  return s.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+}
+
+const snakeOr = <T>(v: unknown): T => (typeof v === 'string' ? (snake(v) as T) : (v as T));
+
+export function normalizeInteraction(raw: unknown): Interaction {
+  const i = { ...(raw as Record<string, unknown>) } as unknown as Interaction;
+  i.kind = snakeOr(i.kind);
+  i.status = snakeOr(i.status);
+  i.delivery = snakeOr(i.delivery);
+  i.source = snakeOr(i.source);
+  i.answer_channel = snakeOr(i.answer_channel);
+  if (i.action) i.action = { ...i.action, risk: snakeOr(i.action.risk) };
+  if (i.answer) i.answer = { ...i.answer, decision: i.answer.decision === null ? null : snakeOr(i.answer.decision) };
+  return i;
+}
+
+export function normalizeRun(raw: unknown): AgentRun {
+  const r = { ...(raw as Record<string, unknown>) } as unknown as AgentRun;
+  if (r.execution) r.execution = { ...r.execution, value: snakeOr(r.execution.value), source: snakeOr(r.execution.source) };
+  r.health = snakeOr(r.health);
+  return r;
+}
+
+export function normalizeDashboard(raw: unknown): Dashboard {
+  const d = raw as Dashboard;
+  return {
+    ...d,
+    runs: (d.runs ?? []).map(normalizeRun),
+    interactions: (d.interactions ?? []).map(normalizeInteraction),
+    workspaces: d.workspaces ?? [],
+    tabs: d.tabs ?? [],
+    panes: d.panes ?? [],
+    tasks: d.tasks ?? [],
+    notifications_unread: d.notifications_unread ?? 0,
+  };
+}

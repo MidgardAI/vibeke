@@ -1,0 +1,18 @@
+[package]
+name = "vk-e2e"
+description = "Vibeke end-to-end channel (spec 16 §3-§5): Noise IK/IKpsk2, hello/prologue, framing, pairing links, relay auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+blake3.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+snow = "0.10"
+ed25519-dalek = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }

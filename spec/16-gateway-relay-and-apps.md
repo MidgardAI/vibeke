@@ -1,22 +1,24 @@
 # 16 — Gateway, relay and the phone/desktop apps
 
-How a phone (PWA), a desktop app (Electron) and, later, teammates reach a Vibeke host **without Tailscale and without an inbound port**, end-to-end encrypted so that every server we run sees ciphertext and routing metadata only. It also records the staged SaaS shape (accounts, rate limits, push, sync, teams, session share/handoff, preview links) so the first slices stay compatible with it.
+How a phone (PWA), a desktop app (Electron) and, later, teammates reach a Vibeke host **without Tailscale and without an inbound port**, end-to-end encrypted so that the relay sees ciphertext and routing metadata only. Appendix A records the staged SaaS shape (accounts, rate limits, native push, sync, teams, share/handoff, preview links, direct paths) as non-binding design notes so the first slices stay compatible with it.
 
-This section makes the Phase 2 row "Vibeke Gateway + mobile/web app" of [12](12-phase-2-outlook.md) concrete. It changes no Phase 1 requirement: the gateway is an ordinary API client of the unchanged server ([07](07-api-cli-plugins.md)), and nothing in the server, TUI or CLI is modified by the first stages.
+This section makes the Phase 2 row "Vibeke Gateway + mobile/web app" of [12](12-phase-2-outlook.md) concrete. It changes no Phase 1 requirement. The gateway is an API client of the server ([07](07-api-cli-plugins.md)); the only server changes are **additive** methods listed in §7.7 (new read-only git methods and an answer actor label). The TUI and CLI are not modified.
+
+Reviewed by Codex on 2026-10-06 (design review); resolutions are folded in and summarized in §14.
 
 Crates and packages:
 
 | Piece | Where | What |
 |---|---|---|
-| `vk-e2e` | `crates/vk-e2e` | Wire types, Noise channel (`snow`), pairing-link codec, framing. Shared by relay tests, gateway and conformance vectors. |
-| `vk-relay` | `crates/vk-relay`, binary `vibeke-relay` | The dumb, self-hostable relay. Optional static hosting of the web app. |
+| `vk-e2e` | `crates/vk-e2e` | Wire types, Noise channel (`snow`), pairing-link codec, framing, relay auth messages, conformance vectors. |
+| `vk-relay` | `crates/vk-relay`, binary `vibeke-relay` | The dumb, self-hostable relay. Optional static hosting of the web app for self-hosters. |
 | `vk-gateway` | `crates/vk-gateway`, binary `vibeke-gateway` | Runs next to the server on the host: dials the relay, terminates Noise, exposes the app API, sends Web Push. |
-| `@vibeke/core` | `web/packages/core` | TypeScript: Noise (noble), relay transport, app-API client, store. No DOM, no React. |
+| `@vibeke/core` | `web/packages/core` | TypeScript: Noise (noble), channel, app-API client, multi-host manager, inbox logic. No DOM, no React. |
 | `@vibeke/ui` | `web/packages/ui` | React components and screens shared by every client. |
 | `@vibeke/pwa` | `web/apps/pwa` | PWA shell: service worker, Web Push, install, IndexedDB key store. |
-| `@vibeke/desktop` | `web/apps/desktop` | Electron shell (later stage): same UI, native notifications, OS keychain, optional local transport. |
+| `@vibeke/desktop` | `web/apps/desktop` | Electron shell (G4): same UI, native notifications, encrypted key storage, local transport. |
 
-When the gateway proves itself, `vibeke-gateway` and `vibeke-relay` fold into the main binary as `vibeke gateway` / `vibeke relay` (one-line wiring in `crates/vibeke`). Until then they are separate binaries so the Phase 1 code stays untouched.
+When the gateway proves itself, `vibeke-gateway` and `vibeke-relay` fold into the main binary as `vibeke gateway` / `vibeke relay`. Until then they are separate binaries.
 
 ---
 
@@ -24,49 +26,49 @@ When the gateway proves itself, `vibeke-gateway` and `vibeke-relay` fold into th
 
 | Stage | Contents | Status |
 |---|---|---|
-| **G1 relay** | `vibeke-relay`: host registration by key, client→host splice, limits, health, static app hosting. **No accounts.** | build now |
-| **G2 gateway** | `vibeke-gateway`: host keys, QR pairing, Noise channel, device registry/revocation, app API over the server API, git changes, attachments, events, Web Push | build now |
+| **G1 relay** | `vibeke-relay`: host registration by key, client→host splice, limits, health, optional static app hosting. **No accounts.** | build now |
+| **G2 gateway** | `vibeke-gateway`: host keys, QR pairing with host confirmation, Noise channel, device registry/revocation, app API, events, Web Push; server additions §7.7 | build now |
 | **G3 PWA** | React PWA with interaction inbox, quick actions, batch approvals, push | build now |
-| G4 desktop | Electron shell over the same packages; LAN/local transport | next |
-| G5 accounts + SaaS | login (device-code OAuth), host registration under an account, device tickets, plans, metering, billing | later |
-| G6 share + handoff | live share tickets, turn-boundary handoff bundles, move-to-self | later |
-| G7 ZK services | encrypted sync/history, team groups (MLS), signed audit chain, fragment-keyed preview links | later |
-| G8 direct paths | LAN (mDNS), WebRTC for browsers, QUIC hole punching (iroh) for native | later |
-| — | Hosted runners, Slack/Teams integrations | **out of scope for this spec's build**; design notes only (§13) |
+| G4 desktop | Electron shell over the same packages; local transport | next |
+| **G6 share + handoff** | §15: scoped expiring share invitations; turn-boundary handoff via the app between hosts or to a teammate | build now |
+| G5, G7, G8 | accounts/SaaS, zero-knowledge services, direct paths | design notes only (Appendix A) |
+| — | Hosted runners, Slack/Teams integrations | **not built**; design notes only (A.6) |
 
 ---
 
 ## 1. Principles and invariants
 
-1. **No inbound port on the host.** The gateway only makes outbound connections (relay, Web Push endpoints). A direct/LAN listener is opt-in (G8).
-2. **Zero knowledge of content.** The relay and any Vibeke-operated service see ciphertext and routing metadata (host id, connection times, byte counts, client IP). Never keys, terminal content, prompts, code or answers. Where a feature cannot meet this (hosted runners, third-party integrations) it is labelled as an exception and is opt-in.
-3. **Keys live on endpoints.** Host keys on the host, device keys on the device. The relay never issues, stores or can substitute an end-to-end key. Pairing pins keys out-of-band (QR).
-4. **The gateway is a client.** It uses the public JSON-RPC API over the session socket like any CLI, plus read-only local helpers (git, files it is told about). It never reaches into server internals, so the server keeps sole authority over interactions, delivery and policy.
-5. **Least capability per device.** Each paired device carries a scope; revocation is immediate and local to the host.
-6. **One UI codebase.** All product UI lives in `@vibeke/ui`; app shells only provide platform services (storage, notifications, transport, install).
-7. **Fail closed, degrade visibly.** Unknown protocol versions, failed handshakes and revoked devices close the connection with a reason code. The UI shows "host offline / relay unreachable / revoked", never a silent spinner.
+1. **No inbound port on the host.** The gateway only makes outbound connections (relay, push services). A LAN listener is opt-in and later (A.5).
+2. **The relay learns no content.** It sees ciphertext and routing metadata (host id, connection times, byte counts, client IP). Never keys, terminal content, prompts, code or answers.
+3. **Two separate trusts.** *Transport trust* (the relay) is zero: a malicious relay can drop or delay traffic, nothing more. *App-publisher trust* (whoever serves the web app's JavaScript) is real: that code holds the device key. The two are separated (§9.4) and the UI says which origin it trusts.
+4. **Keys live on endpoints and are pinned out-of-band.** Host keys on the host, device keys on the device. Pairing pins the host key from the QR; the host confirms the device key fingerprint.
+5. **The server stays the authority.** The gateway never reaches into server internals; interactions, delivery state and policy are decided by the server. The gateway adds authorization (device scopes), fan-out and push.
+6. **Least capability per device, enforced on the host.** Scopes and batch eligibility are enforced in the gateway, never only in the UI.
+7. **Never replay uncertain input.** Terminal input and answers are not retried automatically after a lost response; the client refetches state and asks the user.
+8. **One UI codebase.** All product UI lives in `@vibeke/ui`; app shells only provide platform services.
+9. **Fail closed, degrade visibly.** Version mismatches, failed handshakes and revoked devices close with an end-to-end reason; the UI shows "host offline / relay unreachable / revoked", never a silent spinner.
 
 ---
 
 ## 2. Topology
 
 ```
- phone (PWA)                     relay (VPS / hosted)                 host (laptop, devbox)
-┌───────────────┐   wss    ┌──────────────────────────┐   wss    ┌─────────────────┐  unix  ┌────────┐
-│ @vibeke/ui    │─────────►│ /v1/connect?host=H       │◄─────────│ vibeke-gateway  │───────►│ vibeke │
-│ @vibeke/core  │◄═════════╪══ opaque Noise frames ═══╪═════════►│  Noise responder│ JSON-  │ server │
-│ Noise initiator│         │ /v1/host (control, auth) │          │  app API, push  │ RPC    └────────┘
-└──────┬────────┘          │ static app at /          │          └───────┬─────────┘
-       │ Web Push (RFC 8291, encrypted to the subscription)              │
-       └◄──────────── Apple / Google / Mozilla push service ◄────────────┘ (host sends directly)
+ phone (PWA from app origin)        relay (VPS / hosted)                  host (laptop, devbox)
+┌────────────────┐   wss    ┌──────────────────────────┐   wss    ┌──────────────────┐  unix  ┌────────┐
+│ @vibeke/ui     │─────────►│ /v1/connect?host=H       │◄─────────│ vibeke-gateway   │───────►│ vibeke │
+│ @vibeke/core   │◄═════════╪══ opaque Noise frames ═══╪═════════►│  Noise responder │ JSON-  │ server │
+│ Noise initiator│          │ /v1/host  (control)      │          │  app API, push   │ RPC    └────────┘
+└───────┬────────┘          │ /v1/accept (data)        │          └────────┬─────────┘
+        │                   └──────────────────────────┘                   │
+        └◄──── Web Push (RFC 8291 encrypted, RFC 8292 VAPID) ◄── push service ◄┘ (host sends directly)
 ```
 
-- The host keeps one **control WebSocket** to the relay. When a client connects for host `H`, the relay notifies the host, the host opens a **data WebSocket** for that connection, and the relay splices the two. Every message after the splice is a Noise message the relay cannot read.
-- Web Push for the PWA goes **host → push service → browser** directly. The payload is encrypted to the browser's subscription keys (RFC 8291) and authenticated with the host's VAPID key. The relay is not involved, so push does not weaken zero knowledge and works for self-hosters. Native apps (later) need APNs/FCM credentials and therefore a push proxy (§10.5).
+- The host keeps one authenticated **control WebSocket** to the relay. When a device connects for host `H`, the relay tells the host, the host opens a **data WebSocket** for that connection, and the relay splices the two. Everything after the splice is Noise ciphertext.
+- Web Push goes **host → push service → browser** directly, encrypted to the browser's subscription keys and signed with the **device's** VAPID key (§8.1). The relay is not involved.
 
 ### 2.1 Where the relay runs
 
-Anything with a public IP and TLS: a €4 VPS (Hetzner, DigitalOcean), Fly.io, or a container behind Caddy. It is stateless apart from in-memory routing, so one small instance serves thousands of hosts; restart only drops live connections, and hosts reconnect with backoff. The **default** relay will be a Vibeke-hosted instance (`relay.vibeke.dev`, G5 adds accounts to it). The relay never runs on the dev host itself: a host that can accept inbound connections doesn't need it (§11).
+Anything with a public IP and TLS: a small VPS (Hetzner, DigitalOcean), Fly.io, or a container behind Caddy. It keeps only in-memory routing state; a restart drops live connections and hosts reconnect with backoff. The default will be a Vibeke-hosted instance; self-hosting is one binary. The relay never runs on the dev host itself (a host that accepts inbound connections uses a direct path, A.5).
 
 ---
 
@@ -74,18 +76,18 @@ Anything with a public IP and TLS: a €4 VPS (Hetzner, DigitalOcean), Fly.io, o
 
 | Key | Algorithm | Owner / storage | Purpose |
 |---|---|---|---|
-| Host static key | X25519 | gateway state dir, file 0600 (OS keychain later) | Noise responder static key; pinned by devices |
-| Host relay key | Ed25519 | same | Proves host-id ownership to the relay |
-| Host id | `base32(blake3(relay_pub))[..26]`, lowercase | derived | Routing address on the relay; not secret |
-| VAPID key | P-256 (ECDSA) | same | Authenticates Web Push requests from this host |
-| Device static key | X25519 | PWA: IndexedDB; Electron: OS keychain | Noise initiator static key; authorized on the host |
-| Pairing secret | 32 random bytes, single use, 5 min TTL | host state dir (hashed) + QR | `psk` for the pairing handshake |
+| Host static key | X25519 | gateway state dir, 0600 | Noise responder static; pinned by devices |
+| Host relay key | Ed25519 | same | Signs relay challenges with its private key to prove host-id ownership |
+| Host id | lowercase base32 of `blake3(relay_pub)[..16]` (26 chars) | derived | Routing address; not secret |
+| Device static key | X25519 | PWA: IndexedDB; Electron: `safeStorage`-encrypted file (§9.3) | Noise initiator static; authorized on the host |
+| Device VAPID key | P-256 ECDSA | generated by the device; private half shared with each paired host over the channel | Signs Web Push to that device's subscription (§8.1) |
+| Pairing secret | 32 random bytes, single use, 10 min TTL | `pairings/<pid>.json` (0600) on the host and the QR | Noise `psk` for pairing |
 
-Gateway state dir: `$VIBEKE_GATEWAY_DIR`, else `<config dir>/vibeke/gateway/` (`~/Library/Application Support/vibeke/gateway` on macOS, `$XDG_CONFIG_HOME/vibeke/gateway` on Linux). Created 0700; files 0600; ownership checked on start (same rule as 09 §3.1).
+The pairing secret is stored **recoverably** (the responder needs the same psk); it is a short-lived credential protected like the host keys and deleted when the pairing completes, is rejected or expires.
 
-Files: `host.json` (keys, base64url), `devices.json` (authorized devices), `pairings/*.json` (pending), `push.json` (subscriptions), `gateway.toml` (config).
+Gateway state dir: `$VIBEKE_GATEWAY_DIR`, else `<config dir>/vibeke/gateway/` (`~/Library/Application Support/vibeke/gateway`, `$XDG_CONFIG_HOME/vibeke/gateway`). Created 0700; files 0600, written atomically (temp + rename); ownership and mode checked on start (09 §3.1). Files: `host.json`, `devices.json`, `pairings/`, `gateway.toml`, `audit.log`.
 
-Key rotation: `vibeke-gateway rotate` creates a new host static key and keeps the old one for 7 days so paired devices re-pin it over an authenticated session (`host.rotate` notification carries the new key, signed with the old channel). Rotating the relay key changes the host id, so devices learn the new id the same way.
+**Rotation (later):** `vibeke-gateway rotate` creates a new host static key; for 7 days the gateway accepts handshakes with either key (it tries the new key, then the old one, on message 1). Connected devices receive `host.key_rotated {hk}` over their authenticated channel and re-pin. Devices offline for longer re-pair. Rotating the relay key changes the host id and is announced the same way.
 
 ---
 
@@ -93,347 +95,532 @@ Key rotation: `vibeke-gateway rotate` creates a new host static key and keeps th
 
 ### 4.1 The link
 
-`vibeke-gateway pair [--name "the maintainer's phone"] [--scope full|approve|view]` creates a pending pairing and prints a QR code plus the same URL as text:
+`vibeke-gateway pair [--name "the maintainer's phone"] [--scope full|approve|view] [--no-confirm]` creates a pending pairing, prints a QR code plus the URL, then **waits** for the claim (§4.3):
 
 ```
-https://<relay>/#/pair?d=<base64url(json)>
-json = {"v":1,"relay":"wss://relay.example.com","host":"<host id>","hk":"<host static pub b64u>",
-        "pid":"<pairing id>","psk":"<pairing secret b64u>","exp":<unix s>,"name":"devbox"}
+<app origin>/#/pair?d=<base64url(json)>
+json = {"v":1,"relay":"wss://relay.example.com","host":"<host id>","hk":"<host static pub>",
+        "pid":"<pairing id>","psk":"<pairing secret>","exp":<unix s>,"name":"devbox"}
 ```
 
-The payload lives in the **URL fragment**, which browsers never send to the server, so the relay serving the app never sees the secret. The app's origin is the relay (or a static origin the user configured; §9.4).
+The payload is in the URL **fragment**, never sent to the app origin's server. `<app origin>` is `gateway.toml: app_url` (§9.4).
 
-### 4.2 The handshake
+### 4.2 Handshake
 
-1. The device generates its static X25519 key (if it has none) and opens `wss://<relay>/v1/connect?host=<host id>`.
-2. It sends a **hello** (plain JSON text frame), which is also the Noise **prologue**:
-   `{"v":1,"proto":"vibeke-e2e/1","mode":"pair","pid":"<pairing id>"}`
-3. Noise `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`, initiator = device, responder = gateway, responder static = `hk` from the QR, `psk` = pairing secret. The gateway looks up `pid`, rejects expired/used/unknown ids, and uses that psk.
-4. First transport message from the device: `pair.complete {name, platform, user_agent}`. The gateway stores `{device_id, name, pub, scope, paired_at}` in `devices.json`, deletes the pairing (single use) and replies `{device_id, host_name, scope}`.
-5. The device stores `{host id, relay, hk, device_id, name}` in its host list. One device can pair with many hosts.
+1. The device generates its static X25519 key if it has none and opens `wss://<relay>/v1/connect?host=<host id>`.
+2. It sends the **hello** text message, whose exact bytes are the Noise **prologue**: `{"v":1,"proto":"vibeke-e2e/1","mode":"pair","pid":"<pid>"}`.
+3. Noise `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`: initiator = device, responder = gateway with static `hk`, `psk` = pairing secret (looked up by `pid`; unknown/expired → close `unauthorized`).
+4. With psk2, the responder only learns that the device **holds the psk** when the device's first transport message decrypts. That message is the request `pair.claim {name, platform}`; until it arrives, nothing is recorded and no app method is available. Its result is `{status: "pending", fingerprint}`; the outcome follows as a notification `pair.done {device_id, host_name, host_id, scope}` or `pair.rejected`. The app compares `fingerprint` with its own key's fingerprint and aborts on mismatch. The pairing connection then closes; later connections use IK.
 
-Pairing fails closed: a wrong psk or host key makes the Noise handshake fail; the gateway records the failure (rate-limited per pairing id; 5 failures burn the pairing).
+### 4.3 Host confirmation (the authorization boundary)
 
-### 4.3 Normal connections
+A photographed QR must not silently grant durable access, so a valid claim is not yet authorization:
 
-Hello `{"v":1,"proto":"vibeke-e2e/1","mode":"device"}`, then `Noise_IK_25519_ChaChaPoly_BLAKE2s`. After message 1 the gateway knows the device static key and checks it against `devices.json`; unknown or revoked keys are closed with reason `unauthorized` before any app data flows.
+1. The gateway marks the pairing `claimed {device_pub fingerprint, name, platform}` and replies `pair.pending {fingerprint}`. The app shows the same fingerprint (`abcd-efgh`, blake3 of the device static key).
+2. The waiting `vibeke-gateway pair` prints `Pair "the maintainer's iPhone" (iOS) fingerprint abcd-efgh? [y/N]`. Only on `y` does the gateway **atomically** consume the pairing, recheck expiry, and persist the device to `devices.json`, then sends `pair.done {device_id, host_name, scope}`.
+3. `N`, timeout (2 min) or closing the pair command → `pair.rejected`; the pairing stays usable until its own expiry so a hijacked claim does not lock the owner out.
+4. `--no-confirm` skips step 2 and makes the QR an explicit **bearer invitation** (documented as such; useful for scripted setups).
 
-### 4.4 Typed-code fallback (later)
+Failures that do not prove psk possession (bad handshakes) never burn a pairing; they are rate-limited per pairing id and per relay connection (10/min). A second valid claim while one is pending is rejected.
 
-When a camera is unavailable, pairing uses a short code (`4-word` or 8 digits) and a balanced PAKE (CPace) to derive the psk, magic-wormhole style. OPAQUE and SPAKE2+ are not used: they are augmented PAKEs for password logins against a server-stored verifier, and Vibeke has neither passwords nor a trusted server.
+### 4.4 Normal connections
 
-### 4.5 Revocation
+Hello `{"v":1,"proto":"vibeke-e2e/1","mode":"device"}`, then `Noise_IK_25519_ChaChaPoly_BLAKE2s`. After message 1 the gateway knows the device static key and checks `devices.json`; unknown or revoked → it completes nothing and closes with a plaintext `{"error":"unauthorized"}` (the relay could forge this, so the app treats it as "maybe revoked", re-tries later, and only shows "revoked" after an authenticated `device.revoked` notification or three consecutive `unauthorized` closes).
 
-`vibeke-gateway devices` lists devices; `vibeke-gateway revoke <device>` removes one and closes its live connections. The app's Settings → Devices does the same for devices other than itself (needs `full` scope). Revocation also deletes the device's push subscriptions.
+One device can pair with many hosts.
+
+### 4.5 Typed-code fallback (later)
+
+Short code + balanced PAKE (CPace) deriving the psk, magic-wormhole style. OPAQUE and SPAKE2+ are not used: they are augmented PAKEs for password logins against a server-stored verifier, and here there is neither a password nor a trusted server.
+
+### 4.6 Revocation
+
+`vibeke-gateway devices` lists devices; `vibeke-gateway revoke <device>` removes it, deletes its VAPID key and subscriptions, sends an authenticated `device.revoked` to its live connections and closes them, and cancels any of its in-flight gateway operations. Revocation does not erase screens already cached on the device or notifications already delivered; the docs say so.
 
 ---
 
-## 5. The secure channel (`vibeke-e2e/1`)
+## 5. Channel (`vibeke-e2e/1`)
 
-- **Transport:** one WebSocket per client connection. Message 0 is the hello (text frame). Every subsequent frame is binary and is exactly one Noise message (handshake or transport).
-- **Hello / prologue:** the exact UTF-8 bytes of the hello frame are the Noise prologue, so tampering by the relay breaks the handshake. Unknown `v`/`proto` → the gateway answers with a plain text frame `{"error":"unsupported_version","supported":[1]}` and closes.
-- **Handshake payloads:** message 1 payload is empty; message 2 payload is `{"v":1,"host_name","server_version","gateway_version"}` (JSON).
-- **Application framing:** Noise caps messages at 65535 bytes. App messages are UTF-8 JSON, split into chunks of ≤ 65000 bytes; each Noise plaintext is `flag:u8 || chunk`, `flag = 0` more follows, `1` final. Max reassembled message: 16 MiB (attachments larger than that are chunked at the API level).
-- **Ordering and replay:** Noise transport nonces are implicit counters, so a reordered, dropped or replayed frame fails decryption and the connection closes. WebSocket over TCP gives order; reconnect creates a new session.
-- **Keepalive:** app-level `ping`/`pong` every 25 s from the client; the relay also pings at the WS layer. Mobile OSes suspend sockets; the client reconnects on visibility change and resumes event streams by cursor (§7.3).
-- **Rekey:** after 2^20 messages or 1 hour per direction, the sender sends `{"t":"rekey"}` and both sides call Noise `rekey` for that direction (later; sessions are short-lived on phones today).
+- **Transport:** one WebSocket per device connection. Message 0 is the hello (**text** message). Every later message is a **binary** WebSocket message carrying exactly one Noise message. A text message after the hello, or a binary message before it, is a protocol error.
+- **Handshake payloads:** message 1: empty. Message 2: `{"v":1,"host_name","gateway_version","server_version"}`.
+- **Framing:** application messages are UTF-8 JSON-RPC 2.0. Each is split into chunks of ≤ 65000 bytes; each Noise plaintext is `flag:u8 ‖ chunk` with `flag = 0x00` (more) or `0x01` (final); any other flag or an empty plaintext is a protocol error. Reassembly limit 16 MiB; a partial message older than 30 s is an error. Errors close the connection.
+- **Replay and order:** Noise nonces are implicit counters; a dropped, reordered or replayed message fails decryption and closes the connection. Reconnect starts a new session.
+- **Liveness:** the app sends `ping` every 20 s; either side closes when nothing authenticated arrives for 60 s. In-flight requests at close are reported to the UI as **unknown outcome**: mutations are not retried (§1.7); the client refetches.
+- **Rekey (later):** after 2^20 messages or 1 h in one direction, the sender sends `{"jsonrpc":"2.0","method":"channel.rekey"}` under the current key, then calls Noise `rekey` for its sending direction only; the receiver rekeys its receiving direction after processing that message. Nonce counters continue. Until rekey ships, the gateway closes sessions older than 12 h and the app reconnects.
 
 ---
 
-## 6. The relay (`vibeke-relay`)
+## 6. Relay (`vibeke-relay`)
 
 ### 6.1 Endpoints
 
 | Endpoint | Who | Behaviour |
 |---|---|---|
-| `GET /v1/host` (WS) | gateway | Control socket. Relay → `{"t":"challenge","nonce"}`; host → `{"t":"auth","host","pub","sig"}` with `sig = Ed25519(relay_pub_key_of_host, "vibeke-relay/1 host-auth" ‖ nonce ‖ relay_origin)`. Relay checks `host == id(pub)` and the signature, then `{"t":"ok"}`. Later: `{"t":"incoming","conn","ip_hash"}` per client. A second auth for the same host id replaces the first (newest wins) after it too proves ownership. |
-| `GET /v1/accept?conn=<id>` (WS) | gateway | Data socket for one client connection. First text frame: `{"t":"accept","host","conn","sig"}` with `sig` over `"vibeke-relay/1 accept" ‖ conn`. Relay splices it with the waiting client. |
-| `GET /v1/connect?host=<id>` (WS) | device | Waits ≤ 10 s for the host to accept; otherwise closes with `4404 host_offline` (no host control socket) or `4408 accept_timeout`. |
-| `GET /v1/status?host=<id>` | device | `{"online":bool}`. Lets the app show host presence without a handshake. Rate-limited. |
+| `GET /v1/host` (WS) | gateway | Control socket (§6.2). |
+| `GET /v1/accept` (WS) | gateway | Data socket for one pending client (§6.3). |
+| `GET /v1/connect?host=<id>` (WS) | device | Waits ≤ 10 s for the host to accept, else closes `4404 host_offline` (no control socket) or `4408 accept_timeout`. |
+| `GET /v1/status?host=<id>` | device | `{"online":bool}`; rate-limited. Untrusted hint only. |
 | `GET /healthz` | ops | `ok` |
-| `GET /` and assets | browser | The web app, when `--app-dir` is given (or embedded at build time later). `Cache-Control` and a strict CSP. |
+| `GET /` + assets | browser | The web app, only when started with `--app-dir` (self-hosters; §9.4). |
 
-Close codes: `4400 bad_request`, `4401 unauthorized`, `4404 host_offline`, `4408 accept_timeout`, `4413 too_large`, `4429 rate_limited`, `4503 draining`.
+Close codes: `4400 bad_request`, `4401 unauthorized`, `4404 host_offline`, `4408 accept_timeout`, `4409 replaced`, `4413 too_large`, `4429 rate_limited`, `4503 draining`. These are relay-originated and untrusted by devices.
 
-### 6.2 Limits (no accounts yet)
+### 6.2 Host control state machine
 
-All configurable via flags/env; defaults:
+1. On upgrade the relay sends `{"t":"challenge","nonce":<32 random bytes>,"origin":<canonical relay origin>}`. The nonce is bound to this socket.
+2. The host checks that `origin` equals the canonical form of the URL **it dialed** (scheme + host + port, lowercase, default ports elided) and replies `{"t":"auth","host":<id>,"pub":<relay pub>,"sig":<Ed25519 signature with the host relay private key>}` over `"vibeke-relay/1 host-auth\0" ‖ origin ‖ "\0" ‖ nonce`.
+3. The relay checks `host == host_id(pub)`, the signature, and that `origin` is one of its configured public origins (`--public-url`, repeatable). Failure → `4401`. Must complete within 10 s.
+4. On success the relay assigns a **generation** (monotonic per host id) and replies `{"t":"ok","host","gen"}`. If a control socket for the same host already exists, the new one replaces it: the old socket gets `4409 replaced`; existing spliced connections are unaffected; pending connects are re-announced on the new control. Cleanup of the old socket is fenced by generation, so it can never remove the replacement's registration.
+5. While registered the relay sends `{"t":"incoming","conn":<128-bit random id>,"gen"}` for each client.
 
-- Max WS message 256 KiB (Noise frames are ≤ 64 KiB; margin for future).
-- Per-IP: 30 new connections/min, 64 concurrent sockets.
-- Per host id: 32 concurrent client connections, 8 pending accepts.
-- Per spliced connection: token bucket 1 MiB/s sustained, 4 MiB burst, each direction; idle timeout 120 s without any frame.
-- Global caps on hosts and connections, `--max-hosts`, `--max-conns`.
-- Unauthenticated control sockets must authenticate within 10 s.
+### 6.3 Accept and splice
 
-The relay only forwards frames between a client and the host that **authenticated** for the requested host id, so it cannot be used as an open tunnel; byte limits keep abuse cheap.
+1. Pending connections live in a map `conn → {host, gen, client socket, deadline}`, state `pending`.
+2. The host opens `/v1/accept` and sends `{"t":"accept","host","conn","gen","sig"}` with `sig` over `"vibeke-relay/1 accept\0" ‖ origin ‖ "\0" ‖ host ‖ "\0" ‖ gen ‖ "\0" ‖ conn`.
+3. The relay atomically moves `pending → spliced` only if `conn` exists, belongs to `host` and `gen`, the signature verifies, and the deadline hasn't passed. Otherwise the accept socket is closed (`4401` / `4408`); a duplicate or late accept never touches an existing splice.
+4. When the deadline passes first, the entry moves `pending → expired` and the client gets `4408`.
+5. Spliced sockets forward WebSocket messages verbatim (text and binary, preserving type). Either side closing closes the other with the same code.
 
-### 6.3 What the relay stores and logs
+### 6.4 Limits
 
-Nothing on disk. Logs (structured, `tracing`): host id prefix (8 chars), event, byte totals at close, close code. Client IPs are logged only as a keyed hash rotated daily (`--log-ip raw` for self-hosters who want it). No frame contents ever.
+Defaults, all configurable:
 
-### 6.4 Extension points for accounts
+| Bound | Default |
+|---|---|
+| WebSocket message | 128 KiB (Noise messages are ≤ 64 KiB + framing) |
+| Per IP | 30 new sockets/min, 64 concurrent |
+| Unauthenticated control / accept sockets | must authenticate in 10 s; ≤ 8 per IP |
+| Per host | 32 spliced, 8 pending; `incoming` announcements ≤ 60/min |
+| Per spliced connection | token bucket 1 MiB/s sustained, 4 MiB burst, ≤ 200 messages/s, each direction; idle 120 s |
+| Queues | each forwarding direction is a bounded channel (64 messages); a slow reader back-pressures the sender's socket instead of buffering; a writer blocked > 30 s closes the pair |
+| Global | `--max-hosts` 10 000, `--max-conns` 50 000 |
 
-`trait Authorizer { fn host_connect(&self, host_id, token: Option<&str>) -> Decision; fn client_connect(&self, host_id, ticket: Option<&str>, ip) -> Decision; fn usage(&self, host_id, bytes_in, bytes_out); }`. G1 ships `OpenAuthorizer` (allow, limits only) and `StaticTokenAuthorizer` (`--host-token` list) for private self-hosting. G5 adds the account-backed implementation (§10).
+The relay only splices a client with the host that authenticated for that host id, so it is not an open tunnel; byte budgets keep abuse cheap. Self-generated host keys do not stop someone from running their own host as a free tunnel endpoint; accounts (A.1) address that for the hosted relay.
 
-### 6.5 Deployment
+The **gateway** also limits independently of the relay: ≤ 16 concurrent devices connections, ≤ 32 in-flight RPCs per connection, ≤ 4 pairing handshakes/min, and it only accepts `incoming` announcements at ≤ 60/min.
 
-`vibeke-relay --listen 0.0.0.0:8443 --app-dir web/apps/pwa/dist` behind Caddy (`reverse_proxy` handles TLS and WS). Graceful shutdown: `SIGTERM` → stop accepting, send `4503 draining` to controls so hosts reconnect elsewhere, wait ≤ 30 s.
+### 6.5 What the relay stores and logs
+
+Nothing on disk. Logs: host id prefix (8 chars), event, byte totals and close code. Client IPs only as a keyed hash rotated daily (`--log-ip raw` for self-hosters). Never message contents.
+
+### 6.6 Extension point for accounts
+
+`trait Authorizer { host_connect(host_id, token) -> Decision; client_connect(host_id, ticket, ip) -> Decision; usage(host_id, bytes_in, bytes_out) }`. G1 ships `Open` (limits only) and `StaticTokens` (`--host-token`, for private self-hosted relays). Accounts later (A.1).
+
+### 6.7 Deployment
+
+`vibeke-relay --listen 127.0.0.1:8787 --public-url https://relay.example.com [--app-dir web/apps/pwa/dist]` behind Caddy for TLS. `SIGTERM` → stop accepting, close controls with `4503` (hosts reconnect with backoff), wait ≤ 30 s for splices.
 
 ---
 
-## 7. The gateway (`vibeke-gateway`)
+## 7. Gateway (`vibeke-gateway`)
 
 ### 7.1 Process
 
 ```
-vibeke-gateway run [--relay wss://…] [--session default] [--socket PATH]   # foreground daemon
-vibeke-gateway pair [--name N] [--scope full|approve|view] [--qr|--no-qr]
-vibeke-gateway devices | revoke <device-id|name> | status | rotate
-vibeke-gateway push test [--device D]
+vibeke-gateway run [--relay wss://…] [--session NAME] [--socket PATH]
+vibeke-gateway pair [--name N] [--scope full|approve|view] [--no-confirm]
+vibeke-gateway devices | revoke <device> | status
 ```
 
-`run` loads/creates keys, connects to the server socket (`$VIBEKE_SOCKET`, else the server's runtime-dir rule from 09 §3.1, else `--socket`), sends `client.hello {client:"vibeke-gateway", kind:"cli"}`, opens the relay control socket with exponential backoff (1 s → 60 s, jitter) and serves connections. It must be started from outside any pane (otherwise the server gives it pane scope and it cannot answer interactions; it checks `capabilities` in the hello result and refuses to run with a clear error).
+Socket precedence: `--socket`, then `$VIBEKE_SOCKET` (only when `$VIBEKE_SESSION` matches `--session`), then the server's runtime-dir rule (`$VIBEKE_RUNTIME_DIR`, `$XDG_RUNTIME_DIR/vibeke`, `$TMPDIR/vibeke-$UID`) + `<session>/vibeke.sock`. The gateway sends `client.hello {client:"vibeke-gateway", kind:"cli"}` and refuses to run unless `capabilities` contains `*` (started inside a pane it would get pane scope).
 
-Pending pairings are files in `pairings/`, so `pair` works while `run` is running (it re-reads the directory on each pairing hello).
+It keeps two server connections: an RPC connection (pipelined requests, matched by id) and an **event connection** dedicated to `events.subscribe` (the server only accepts it on a raw connection). Both reconnect with backoff; while the server is down the app API returns `unavailable`.
+
+`run` reconnects to the relay with exponential backoff (1 s → 60 s, full jitter). `pair` talks to `run` through the state directory: it writes `pairings/<pid>.json` and watches it for `claimed` / `done`, writing `confirmed: true|false` back.
 
 ### 7.2 Device scopes
 
 | Scope | Allows |
 |---|---|
-| `view` | read: dashboard, panes, screens, history, changes, interactions, events, notifications |
-| `approve` | `view` + answer interactions, quick replies to agents, interrupt |
-| `full` | `approve` + raw keys/text to any pane, create tabs/agents/tasks, attachments, device management |
+| `view` | read everything: dashboard, panes, screens, history, changes, interactions, events, notifications |
+| `approve` | `view` + `interaction.answer` (decisions, option choices and free-text answers **to an open interaction**), batch answers, `agent.interrupt` |
+| `full` | `approve` + free-text prompts, raw keys/text to any pane, tabs/agents/tasks, attachments, rename/close, device management |
 
-Enforced in the gateway before any server call. Every mutating call is logged locally with the device id (`audit.log` in the state dir; JSON lines), and the server sees `answered_by = "gateway:<device name>"` via the answer's `idempotency_key` prefix until the server grows a native actor field.
+Default for `pair` is `full` (your own phone); `approve`/`view` are for shared or secondary devices. Enforcement is in the gateway per method before any server call (`forbidden` otherwise). Every mutating call is appended to `audit.log` (`{ts, device_id, method, target, op_id, outcome}`; parameters redacted with `vk-redact`).
 
-### 7.3 App API
+### 7.3 Envelope, operations and retries
 
-JSON-RPC 2.0 over the channel (§5). Requests `{id, method, params}`, responses `{id, result|error}`, notifications `{method, params}`. Errors reuse server codes (`unsupported`, `not_found`, `conflict`, `invalid_params`) plus `forbidden` (scope) and `unavailable` (server down).
+- JSON-RPC 2.0 (`"jsonrpc":"2.0"` on every message). Errors reuse server kinds (`unsupported`, `not_found`, `conflict`, `invalid_params`, `unavailable`) plus `forbidden`, `stale` and `too_large`.
+- Every mutating request carries `op_id` (client-generated UUID). "Mutating" = every `approve`/`full` method plus `prefs.set`, `push.*` and `notification.read`; the gateway rejects them without one. The gateway keeps a per-device map `op_id → (params hash, result)` for 10 min: a retry with the same `op_id` and identical params returns the stored result; different params → `invalid_params`. The **app never auto-retries** a mutation whose response was lost (§1.7); it refetches state and shows the outcome.
+- Answers pass `actor = "gateway:<device name>"` and `idempotency_key = "gw:<device_id>:<op_id>"` to the server (§7.7).
 
-| Method | Params → result | Backed by |
-|---|---|---|
-| `hello` | `{client, version}` → `{host_name, device_id, scope, server_version, features}` | gateway |
-| `dashboard.get` | `{}` → `{at, machine, workspaces[], panes[], runs[], interactions[], notifications_unread}` | `session.snapshot` + `notification.list` |
-| `pane.read` | `{pane, source?, lines?}` → `{text, revision}` | `pane.read` |
-| `pane.send_text` | `{pane, text, submit?}` → `{}` | `pane.send_text` (+ `Enter` key if `submit`) |
-| `pane.send_keys` | `{pane, keys[]}` → `{}` | `pane.send_keys` |
-| `agent.prompt` | `{target, text}` → `{}` | `agent.prompt` |
-| `agent.interrupt` | `{target}` → `{}` | `agent.interrupt` |
-| `agent.transcript` | `{target, limit?}` → `{turns}` | `agent.transcript`; fallback: gateway reads the session JSONL itself |
-| `interaction.list` | `{status?}` → `{interactions}` | `interaction.list` |
-| `interaction.answer` | `{interaction, decision?, choices?, text?}` → `{interaction, delivery}` | `interaction.answer` with `idempotency_key = gw:<device>:<uuid>` |
-| `interaction.answer_batch` | `{interactions[], decision}` → `{results[]}` | gateway loops `interaction.answer`; only same-fingerprint approvals are offered by the UI |
-| `changes.get` | `{pane}` → `{repo, branch, ahead, behind, files[{path,status,adds,dels}]}` | gateway runs `git status --porcelain=v2 -b` + `git diff --numstat` in the pane cwd, read-only |
-| `changes.diff` | `{pane, path}` → `{diff, truncated}` | `git diff -- <path>` (and untracked file contents, capped 256 KiB) |
-| `tab.create` | `{workspace, cwd?, command?}` → `{pane}` | `tab.create` |
-| `agent.start` | `{pane?, workspace?, harness, prompt?}` → `{run}` | `agent.start` |
-| `attachment.put` | `{name, mime, data_b64}` → `{path}` | `image.upload` (server inbox); the UI then inserts the path |
-| `notification.list` / `notification.read` | passthrough | server |
-| `events.subscribe` | `{after?}` → `{at}` then `event` notifications | gateway's single server subscription, fanned out; overflow → `events.reset` (client refetches dashboard) |
-| `push.vapid_key` | `{}` → `{key}` | gateway |
-| `push.subscribe` | `{subscription, prefs}` → `{}` | gateway `push.json` |
-| `push.unsubscribe` / `push.test` | | gateway |
-| `devices.list` / `devices.revoke` | | gateway |
-| `ping` | `{}` → `{}` | gateway |
+### 7.4 App API
 
-The gateway keeps **one** server event subscription and fans events out to all connected devices (filtered by scope), so phones never put load on the server proportional to their count.
+| Method | Params → result | Scope | Backed by |
+|---|---|---|---|
+| `hello` | `{client, version, visible}` → `{host_name, device_id, scope, server_version, features}` | view | gateway |
+| `client.visibility` | `{visible}` → `{}` | view | gateway; a lease that expires 60 s after the last `ping` |
+| `dashboard.get` | `{}` → `{at, session, machine, workspaces, tabs, panes, runs, interactions, tasks, notifications_unread}` | view | `session.snapshot` + `notification.list`; enums normalized (§7.5) |
+| `pane.read` | `{pane, source?, lines?}` → `{text, revision}` | view | `pane.read` (plain text today; a styled/ANSI source is a planned server addition so the mirror can show colour) |
+| `pane.send_text` | `{pane, text, submit?, op_id}` → `{}` | full | `pane.send_text`; `submit` adds `pane.send_keys ["Enter"]` |
+| `pane.send_keys` | `{pane, keys[], op_id}` → `{}` | full | `pane.send_keys` |
+| `pane.rename` / `pane.close` / `pane.focus` | server params + `op_id` | full | server |
+| `agent.prompt` | `{target, text, op_id}` → `{}` | full | `agent.prompt` |
+| `agent.interrupt` | `{target, op_id}` → `{}` | approve | `agent.interrupt` |
+| `agent.transcript` | `{target, limit?, skip?}` → `{turns, has_older}` | view | `agent.transcript`; `skip` = newest turns the client already has; the gateway asks for `skip + limit` and slices until the server pages natively |
+| `agent.start` | `{workspace, cwd?, harness, prompt?, op_id}` → server `agent.start` result + `pane` (id) | full | `tab.create` → `root_pane`, then `agent.start {pane}` |
+| `agent.harnesses` | `{}` → `{harnesses}` | view | server |
+| `tab.create` | `{workspace, cwd?, op_id}` → `{tab, pane}` | full | `tab.create` |
+| `interaction.list` / `interaction.get` | server params | view | server; normalized |
+| `interaction.answer` | `{interaction, decision_rev, decision?, choices?: {question_id: [option_id]}, text?, op_id}` → `{interaction, delivery: {channel}}`; the delivery **state** is `interaction.delivery`, updated by `interaction.delivery_*` events | approve | gateway refetches the interaction; `stale` unless `status == open` and `decision_rev` matches; then `interaction.answer` |
+| `interaction.answer_batch` | `{items[{interaction, decision_rev}], decision, op_id}` → `{results[]}` | approve | eligibility re-checked in the gateway (§7.6); each item answered individually; partial results reported |
+| `git.status` / `git.diff` | §7.7 params | view | new server methods |
+| `attachment.put` | `{name, mime, data_b64, op_id}` → `{path}` (≤ 8 MiB) | full | `image.upload` |
+| `notification.list` / `notification.read` | server params | view / approve | server |
+| `events.subscribe` | `{after?}` → `{at}`; then `event` notifications | view | gateway ring buffer (§7.5) |
+| `prefs.get` / `prefs.set` | `{device: {...}, host: {dnd_until?}}` | view / full | gateway (device prefs per device; DND host-wide) |
+| `push.subscribe` | `{subscription, vapid_private, op_id}` → `{}` | view | gateway (§8.1) |
+| `push.unsubscribe` / `push.test` | `{op_id}` | view | gateway |
+| `stt.transcribe` | `{mime, data_b64, op_id}` → `{text}` | full | gateway, only if `gateway.toml: stt.command` is set (§8.4) |
+| `devices.list` / `devices.revoke` | | view / full | gateway |
+| `ping` | `{}` → `{}` | view | gateway |
 
-### 7.4 Push triggers
+### 7.5 Events and normalization
 
-The gateway turns server events into Web Push when no **foreground** client for that device is connected (the app reports visibility with `client.visibility {visible}`):
+- The gateway keeps **one** server subscription (`events.subscribe {after}` on its event connection) and a ring buffer of the last 5 000 events with their server cursors. Device subscriptions are served from the ring: `events.subscribe {after: seq}` replays from the ring if `after` is inside it, else returns `{reset: true}` and the client calls `dashboard.get` again. Each device has a bounded outbound queue (1 000 events); overflow sends `events.reset` and drops the queue.
+- **Snapshot barrier:** `dashboard.get` returns `at` (= `session.snapshot.at_seq`); the client subscribes with `after = at`, so nothing falls between snapshot and stream.
+- On server `events.overflow`, server restart or cursor epoch change, the gateway resubscribes from its last cursor; on `truncated` it clears the ring and broadcasts `events.reset`.
+- Events are forwarded as `event` notifications carrying the server event `{seq, ts, type, subject, actor, data}`, filtered by scope (all scopes may read all events today). Device cursors are plain `seq` numbers; `events.subscribe {after}` answers `{at}` or `{reset: true}`. Other notifications: `events.reset`, `device.revoked`.
+- `dashboard.get` and `interaction.*` results add `harness` and `repo_root` to each interaction (from its run's cwd) so clients can group batches exactly as §7.6 checks them.
+- **Normalization:** server enums serialize PascalCase (`"Approval"`, `"Open"`, `"Delivered"`) except `interaction.list`'s `kind`. The gateway rewrites every interaction to snake_case (`kind`, `status`, `delivery`, `action.risk`, `answer.decision`) so the app sees one form.
 
-| Event | Push |
+### 7.6 Batch eligibility
+
+The UI only offers a batch the gateway would accept, and the gateway re-checks at answer time. Items are eligible together only if all hold:
+
+- `kind == approval`, `status == open`, `answerable`, and `decision_rev` matches the request;
+- the same **fingerprint**: `(harness, action.tool, normalized command or sorted paths, repo root of the pane cwd)`;
+- `action.risk` is `low` or `medium` (`high` and `unknown` are never batched or swiped);
+- the decision is `allow` or `deny` (never `allow_always` in a batch).
+
+### 7.7 Server additions (additive)
+
+| Method / change | Contract |
 |---|---|
-| `interaction.opened` (approval/question/plan) | "Codex · samplehub wants to run `pnpm test`" with `tag = interaction id` (replaces itself), urgency high |
-| run → `needs_input` without interaction | "Claude · dashboard is waiting" |
-| run → `done` / `error` | "Claude · backend finished" (normal urgency; per-device toggle) |
-| `notification` with urgency ≥ normal | title/body |
-| interaction resolved elsewhere | silent push that closes the notification by `tag` (where supported) |
+| `git.status {pane}` → `{repo_root, branch?, upstream?, ahead, behind, files[{path, x, y, kind, adds?, dels?, binary}], clean}` | Runs in the pane's cwd. Pane-scope callers may only target their own pane; `path` targets are allowed only for full-scope callers. |
+| `git.diff {pane, file, staged?}` → `{diff, truncated, binary, untracked}` | Unified diff against `HEAD` (or the index if `staged`). Untracked files are rendered as additions by reading the file. Output capped at 512 KiB. |
+| `interaction.answer` gains optional `actor` | Full-scope callers may label the answer (`answered_by = actor`); otherwise unchanged. Separates attribution from `idempotency_key`. |
 
-**Payload privacy levels** (per device, default `summary`): `full` (title + redacted command/summary through `vk-redact`), `summary` (harness, workspace, kind; no command), `minimal` ("Vibeke: 1 agent needs you"). Payloads are encrypted (RFC 8291) regardless; the level limits what shows on a lock screen.
+Git execution rules (git can run configured programs):
+- Every git call: `git -c core.fsmonitor=false -c core.untrackedCache=false -c diff.external= -c core.pager=cat -c color.ui=false`, `--no-ext-diff --no-textconv`, `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, stdin closed, 5 s timeout, 4 MiB stdout cap, killed on timeout.
+- `file` must be a relative path listed by `git status` for that repo; it is resolved under `repo_root` with symlinks rejected at every component (`O_NOFOLLOW` walk) before an untracked file is read; files > 1 MiB or binary report `binary/truncated` only.
+- Files matching the secret patterns of 09 §9 (`.env*`, `*.pem`, `id_*`, `*.key`, credentials files) report `{secret: true}` and no content.
 
-Notification actions (Android/desktop Chrome, not iOS): `Approve` / `Deny` for low/medium-risk approvals. The service worker opens the app at `#/i/<id>?do=allow`; the app connects, re-fetches the interaction (so a stale push never answers a superseded prompt) and asks for one confirming tap for high-risk items. Answering directly from the service worker without opening the app is a later improvement.
+### 7.8 Push triggers
 
-### 7.5 Coalescing
+| Server event | Push (when the device has no visible lease) |
+|---|---|
+| `interaction.opened` with `kind ∈ approval, question, plan_review` | "Codex · samplehub wants to run `pnpm test`" (privacy level permitting) |
+| `agent.state_changed` to `idle` with `done_rev` increased, no open interaction | "Claude · backend finished" (default off, per-device toggle; debounced 30 s per pane, dropped if the pane is working again) |
+| `agent.state_changed` to `error` / `rate_limited` | "Claude · dashboard stopped: rate limited" |
+| `notification.created` with urgency ≥ normal and **not** generated for an interaction already pushed | title/body |
 
-Pushes are coalesced per device: at most 1 per interaction, and identical-fingerprint approvals within 10 s are merged ("4 agents want `pnpm test`"). Quiet hours per device (`prefs.quiet`) downgrade to silent.
-
----
-
-## 8. Client features (G3 PWA, reused by G4 desktop)
-
-Parity target: everything an existing phone companion offers today, on Vibeke's structured data, plus the decision-first workflow.
-
-### 8.1 Baseline features
-
-- **Dashboard, needs-input first.** All agents across paired hosts, grouped by host → workspace; sorted by: open interaction (by risk, then wait time) → needs input → working → idle/done. Badges with counts; app badge (`navigator.setAppBadge`) = open interactions.
-- **Agent/pane view.** Live screen text (monospace, ANSI colours stripped or rendered), auto-scroll with "jump to bottom", refresh on events plus 2 s polling while visible (we poll only the open pane).
-- **Prompts → buttons.** Structured interactions render as buttons natively (no screen scraping). For screen-only harnesses the server's keystroke delivery with selection verification applies (07 §2.x); the app just answers the interaction.
-- **Keypad.** Esc, Tab, Shift-Tab, ↑ ↓ ← →, Enter, Ctrl-C, Ctrl-D, y / n, 1-9, Backspace, Space; long-press for repeat. Sends `pane.send_keys`.
-- **Reply composer.** Text box that sends with Enter (`submit`), multi-line toggle, recent-reply history, **quick replies** (configurable chips: "continue", "yes", "run the tests", "commit it", "explain").
-- **Voice input.** Dictation through the Web Speech API where available, else the OS keyboard's dictation; always lands in the composer for review before sending.
-- **Attachments.** Photo/file picker and paste → `attachment.put` → path inserted into the composer.
-- **History.** Agent transcript (user / assistant / tool turns, collapsible tool output) from `agent.transcript`.
-- **Changes.** Read-only git view per pane cwd: branch, ahead/behind, files with +/−, tap for diff.
-- **New tab / new agent.** Pick workspace, harness and an optional first prompt.
-- **Multi-host ("crews").** Pair several hosts; one dashboard aggregates them; per-host online state via `/v1/status`.
-- **Device pairing.** Scan QR or open the link; Settings shows hosts, this device, other devices (revoke), push state.
-- **Web Push** with deep links, **installable PWA**, offline shell (cached app; data views show "offline").
-
-### 8.2 Decisions first
-
-- **Inbox tab** (default when anything is open): every open interaction across hosts as a card with harness, workspace, wait time, risk badge, command/paths/diff preview, and buttons `Allow` / `Allow always` / `Deny` / per-option choices / free text.
-- **Quick actions.** Swipe right = allow, left = deny (low/medium risk only; high risk requires the card's button and a confirm). Haptic feedback (`navigator.vibrate` where supported).
-- **Batch approvals.** Approvals with the same action fingerprint (tool + normalized command) group into one card: "4 agents want `pnpm test`" → `Allow all` / review individually.
-- **Plan review.** Plan markdown rendered; Approve / Request changes (text).
-- **Delivery state.** After answering, the card shows `delivering → delivered`, or `failed / unknown` with "open pane" to fix it by hand. Never silently drops.
-- **Answered elsewhere.** If the TUI answers first, the card animates away with "answered in terminal".
-- **Push → card.** Tapping a notification opens that card directly.
-
-### 8.3 UX rules
-
-- Mobile-first, one-hand reachable primary actions (bottom), safe-area insets, dark/light from the OS.
-- Never render raw terminal escape sequences; never auto-send anything without an explicit tap.
-- Every mutating tap shows progress and the result; errors are actionable ("host offline — retry", "revoked — pair again").
+- One notification per host (`tag = vibeke:<host id>`), merged: one item shows its own text, several show "3 agents need you". `renotify` only when a new item is added.
+- Visible notifications only (WebKit revokes push permission for silent pushes). When items resolve, the app closes stale notifications on its next foreground via `registration.getNotifications()`; no "clear" pushes.
+- **Privacy levels** per device (default `summary`): `full` (command/summary through `vk-redact`), `summary` (harness, workspace, kind), `minimal` ("Vibeke: 1 agent needs you"). Payloads are RFC 8291-encrypted regardless.
+- DND (host-wide, existing phone-companion semantics) **suppresses** pushes; nothing is queued. Quiet devices reconcile on foreground.
+- Delivery: TTL 6 h, urgency `high` for interactions, `normal` otherwise; 404/410 deletes the subscription; 5 consecutive failures disable it and show a banner on next foreground; 429 honours `Retry-After`.
+- Objective (not a guarantee): p50 < 5 s from `interaction.opened` to notification while the host is awake and online. A sleeping laptop sends nothing; the dashboard shows the host offline.
 
 ---
 
-## 9. Web codebase: shared by PWA and Electron
+## 8. Push mechanics
 
-### 9.1 Layout
+### 8.1 One subscription per device, signed by the device's VAPID key
+
+A browser push subscription is bound to one `applicationServerKey`, and an origin's service worker has one subscription. Per-host VAPID keys therefore cannot serve a PWA paired with several hosts. Instead **the device owns the VAPID key pair**: it generates P-256 keys, subscribes once with its public key, and sends `{subscription, vapid_private}` to every paired host in `push.subscribe` over the encrypted channel. Each host signs its pushes with that key. Consequences:
+
+- One subscription, any number of hosts; adding a host needs no resubscribe.
+- Revoking a host from the device: the device rotates its VAPID key, resubscribes, and re-sends to the remaining hosts.
+- A host can only push to devices that chose to give it the key; compromise of a host leaks only that device's push capability.
+
+### 8.2 SSRF guard
+
+The subscription `endpoint` comes from a client, and the gateway makes requests to it, so: `https` only; host must match the allow-list (`*.push.apple.com`, `fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.notify.windows.com`, configurable); resolved addresses must be public (no loopback, private, link-local, CGNAT or multicast); no redirects; 10 s timeout; ≤ 3 subscriptions per device; ≤ 120 sends/hour per device.
+
+### 8.3 Platform notes
+
+- iOS: Web Push only for home-screen PWAs (16.4+); the app shows an install guide first and requests permission only from a user gesture. No notification actions on iOS; tapping opens the deep link.
+- Android/desktop Chrome: actions `Open` and, for low/medium risk approvals, `Approve…`. **No notification action ever answers directly**: `Approve…` opens the card with a confirm sheet; a crafted `#/i/<id>?do=allow` link only pre-selects.
+- Electron: no Web Push; the main process shows native notifications while connected (G4).
+- Subscriptions are refreshed on every app start (`pushManager.getSubscription()`); a changed endpoint is re-sent to all hosts.
+
+### 8.4 Speech to text
+
+- Web Speech API is used only after the user accepts a one-time notice that the browser's recognizer may send audio to Apple/Google. Otherwise, or by choice, the app records audio and calls `stt.transcribe` on the gateway, which runs the configured `stt.command` (e.g. a local whisper.cpp) with a 60 s timeout and 10 MiB input cap, deleting the temp file afterwards.
+- The transcript always lands in the composer; sending requires a tap (no hands-free auto-send).
+
+---
+
+## 9. Client features and codebase
+
+### 9.1 Baseline features
+
+Inventory from an existing phone companion. It scrapes dialogs from pane text in the browser; Vibeke gets them as structured `Interaction`s (with the server's verified keystroke fallback for screen-only harnesses), so the app never parses terminal grids.
+
+| Area | Parity features |
+|---|---|
+| Shell | Status band (connection banner amber ~4 s / red ~15 s with Retry, green flash on recovery); boot splash; busy bar; idle lock after 30 min visible-but-untouched (polling paused, "catching up" on resume); new-build detection and reload |
+| Home | Host switcher and session label; footer tabs **Inbox**, **Panes**, **Focus** (only what needs you) and **Changes**; summary line "N need you" jumping to the first; colour wash on rows that need you; pins (long-press; pinned group on top; stored per device); hold menu: Pin, Rename, Close (double-tap), Focus in terminal; launch strip (harness × workspace); new agent / new tab sheet |
+| Space | Workspaces with "needs you" dots; tabs; panes grouped by tab |
+| Pane | ANSI terminal mirror (colours rendered, escapes never shown raw) with find, copy, wrap and text size; latest-reply card; ⋮ menu (find, history, copy, zen, rename, close, focus, pin); prev/next pane; **card dock** of open interactions above the action belt, collapsible to see the terminal |
+| Action belt | **Keys**: keypad (Esc, Tab, sticky Shift/Ctrl/Alt off → once → locked, arrows, Ctrl-C, Space, Enter, Backspace), chord mode (queue keys as chips, send once), echo + ✓ per press. **Quick**: per-harness quick replies (tapped ✓, others dim). **Agent**: harness slash-command palette. **Display**: wrap, text size |
+| Composer | Text box with clear / undo-clear and "You sent:" preview; destructive commands (`rm -rf`, `git push --force`, `drop table`…) need a second tap; attachments from photos/files/paste as numbered `#N` chips; voice (§8.4); notices for password prompts (no-echo detection), read-only scope, host offline |
+| Zen | Chrome-free pane view; optional auto-zen in landscape |
+| History | Transcript with load-older, find, jump prev/next between own messages; collapsible tool calls |
+| Changes | Read-only git: files grouped by repo, filter by path/status, syntax-highlighted diff, prev/next file, refresh every 5 s while visible |
+| Crew | Paired hosts with online state and "needs you" counts |
+| Settings | Appearance (theme, terminal font size, belt size); Device (haptics, zen in landscape, privacy level); Alerts (push on/off, needs-input / finished, DND 30 m / 1 h / 4 h host-wide); System (hosts, devices with revoke, pair by QR or link, connection info, About with the trusted app origin) |
+| Tour | One-time intro per device; push setup offered after it |
+| Install / offline | `beforeinstallprompt` capture, iOS share-sheet guide; cached shell serves deep links offline; an offline pane shows its last mirror with "last seen" |
+
+Deferred: i18n beyond English (strings in one typed dictionary), in-app self-update (PWA update replaces it), prompt-cache warnings, chat view.
+
+### 9.2 Decisions first
+
+- **Inbox** (default tab when anything is open): every open interaction across hosts as a card: harness, workspace, wait time, risk badge, command/paths/diff preview; `Allow` / `Allow always` / `Deny` / per-option choices / free text; plan markdown with Approve / Request changes.
+- **Quick actions:** swipe right = allow, left = deny for low/medium risk; high/unknown risk require the button plus confirm. Haptics where supported.
+- **Batch approvals:** cards with the same fingerprint (§7.6) group as "4 agents want `pnpm test` in samplehub" → `Allow all` / `Deny all` / expand.
+- **Delivery state:** after answering, the card shows `delivering → delivered`, or `failed / unknown` with "open pane". `stale` → the card refreshes and asks again.
+- **Answered elsewhere:** the card leaves with "answered in terminal".
+- **Push → card:** a notification opens its card directly.
+
+UX rules: mobile-first, primary actions bottom-reachable, safe-area insets, OS dark/light; nothing is ever sent without an explicit tap; every mutating tap shows progress and outcome; errors are actionable.
+
+### 9.3 Codebase shared by PWA and Electron
 
 ```
-web/
-  package.json            # bun workspaces
-  packages/core/          # @vibeke/core — no DOM/React
-    src/noise.ts          # Noise IK / IKpsk2 (25519, ChaChaPoly, BLAKE2s) on @noble/*
-    src/channel.ts        # hello/prologue, framing (§5), reconnect
-    src/transport.ts      # interface Transport + RelayTransport (WebSocket)
-    src/rpc.ts            # JSON-RPC client over a channel; event subscription
-    src/pairing.ts        # link codec, pairing flow
-    src/hosts.ts          # multi-host manager (connect, status, backoff)
-    src/keystore.ts       # interface KeyStore (platform-provided)
-    src/model.ts          # app-API types mirroring §7.3
-    src/inbox.ts          # ranking, fingerprint grouping
-  packages/ui/            # @vibeke/ui — React components + screens; depends on core
-    src/platform.ts       # interface Platform { keystore, notifications, push?, haptics, openExternal }
-    src/screens/*         # Inbox, Dashboard, Pane, History, Changes, Settings, Pair
-  apps/pwa/               # Vite + vite-plugin-pwa; IndexedDB keystore; Web Push; service worker
-  apps/desktop/           # Electron; preload exposes Platform via contextBridge
+web/                         # bun workspaces
+  packages/core/             # @vibeke/core — no DOM/React; deps: @noble/curves, @noble/ciphers, @noble/hashes
+    noise.ts channel.ts rpc.ts pairing.ts hosts.ts inbox.ts model.ts platform.ts
+  packages/ui/               # @vibeke/ui — React 19 screens/components; depends on core
+  apps/pwa/                  # Vite + service worker; IndexedDB KeyStore; Web Push
+  apps/desktop/              # Electron; main-process KeyStore/transport; preload bridge
 ```
 
-### 9.2 Rules
+- `core` receives every platform capability by injection: `interface Platform { keystore: KeyStore; connect(url): Socket; clock: {now, setTimeout, clearTimeout}; random(n); platformName; lifecycle: {isVisible, onVisible, onHidden}; notify?; push? }`. It runs in browsers, service workers, Electron and Bun tests.
+- Product logic lives in `core`/`ui`; shells implement `Platform` and bootstrap only.
+- Stack: React 19, Tailwind v4, hash routing (`#/inbox`, `#/h/<host>/p/<pane>`), `useSyncExternalStore` stores (no server-state library: data comes from RPC + events).
+- Rendering safety: terminal text is rendered through an ANSI → spans converter (no HTML); markdown (plans, transcripts) through a sanitizing renderer with raw HTML disabled; links open externally with `rel=noopener` and only `http(s)`.
+- Electron (G4): `contextIsolation`, `sandbox`, no `nodeIntegration`; navigation and `window.open` denied except the bundled app; the preload exposes a narrow IPC (`keystore.get/set`, `notify`, `connect`) and the main process validates `event.senderFrame` origin on every call; device keys encrypted with `safeStorage` and refused when Linux reports the `basic_text` backend; a `LocalTransport` speaks the same channel to a gateway on the same machine.
 
-- Product UI and logic go in `core`/`ui`. An app shell may only implement `Platform` and bootstrap. Code review rejects feature logic in shells.
-- `core` has zero runtime dependencies besides `@noble/curves`, `@noble/ciphers`, `@noble/hashes`. It runs in browsers, Electron, Bun (tests) and service workers.
-- State: a small store (`zustand`) in `ui`; no server-state library needed (data arrives via RPC + events).
-- Styling: plain CSS modules with CSS variables (no runtime CSS-in-JS), so Electron and PWA share theming.
-- Routing: hash-based (`#/inbox`, `#/p/<host>/<pane>`), so the PWA works from any static origin and Electron loads `file://`.
+### 9.4 Where the app is served from (app-publisher trust)
 
-### 9.3 Electron specifics (G4)
+The JavaScript that runs the app holds the device key and sees plaintext, so whoever serves it is trusted. Rules:
 
-- Same `RelayTransport`. Optional `LocalTransport`: the main process connects to a gateway on the same machine through a local Unix socket (no relay, same Noise channel so code paths match).
-- Keys in the OS keychain (`safeStorage`), notifications via the main process (no Web Push in Electron), tray badge for open interactions.
-- `contextIsolation: true`, `sandbox: true`, no `nodeIntegration`; the preload exposes only `Platform`.
-
-### 9.4 Where the PWA is served from (code-trust)
-
-A browser app is only as trustworthy as whoever serves its JavaScript. Stage G3: the relay serves the app (self-hosters trust their own relay). Hardening path: (1) a fixed static origin separate from the relay's API (`app.vibeke.dev`), (2) reproducible builds with published hashes, (3) SRI for every asset, (4) optional verifier extension. Native/Electron apps avoid the problem by shipping signed code. This caveat is stated in the app's About screen.
-
-### 9.5 iOS constraints
-
-Web Push requires the PWA installed to the home screen (iOS 16.4+); the app detects `standalone` and shows an install guide first. No notification actions on iOS; deep links only. WebSockets die in the background; the app reconnects on `visibilitychange`.
+- The pairing link and the app origin come from `gateway.toml: app_url`, chosen by the host owner. The relay origin is a separate setting.
+- **Self-hosters** may serve the app from their own relay (`--app-dir`): they are the publisher, so nothing is lost.
+- **The hosted service** serves the app from a dedicated static origin (`app.vibeke.dev`) built reproducibly from tagged sources with published asset hashes, **never** from the relay operator's infrastructure.
+- Settings → About shows the app origin and build hash. Native/Electron builds ship signed code and avoid the question.
+- SRI is not claimed as protection against the origin itself.
 
 ---
 
-## 10. Accounts and the SaaS (G5, design)
-
-### 10.1 Separation
-
-Account auth decides **who may use a relay and how much**. End-to-end device keys decide **which device may talk to which host**. The relay never sees the second, so billing and limits never require plaintext.
-
-### 10.2 Flow
-
-1. `vibeke login` → OAuth device-code flow (GitHub/Google/email link); refresh token in the OS keychain.
-2. The gateway registers its relay public key under the account → host id; gets short-lived (1 h) host access tokens for `/v1/host`.
-3. Devices need no account. At pairing the host issues a **device ticket**: `{host, device_pub, scope, exp}` signed by the host relay key. The relay verifies the ticket against the registered host key on `/v1/connect` and attributes usage to the host's account. Revoking = host stops renewing tickets (exp 24 h) + immediate revocation list push.
-4. Self-hosted relays keep `OpenAuthorizer` / static tokens.
-
-### 10.3 Metering and limits
-
-Per account: hosts, paired devices, concurrent connections, bytes/s (token bucket) and GB/month, push sends/day (native proxy). Counters batched from relays to the control plane (Postgres + Stripe); never on the frame path.
-
-### 10.4 Tiers (sketch)
-
-Free: self-hosted, or hosted relay with tight limits. Pro: higher limits, native push, preview links, encrypted sync. Team: shared inbox (MLS), SSO, audit. Usage add-ons: preview bandwidth.
-
-### 10.5 Native push proxy
-
-Native iOS/Android apps can only receive pushes sent with the vendor's APNs/FCM credentials, so the hosted service runs a **push proxy**: the host posts `{device push token handle, ciphertext}`; the proxy wraps it in an APNs/FCM message; the app's Notification Service Extension decrypts it with the device key. The proxy sees "wake device X" plus a padded ciphertext length.
-
----
-
-## 11. Direct paths (G8, design)
-
-- **LAN:** the gateway optionally advertises `_vibeke._tcp` via mDNS and accepts the same `vibeke-e2e/1` WebSocket on a LAN port; the app tries LAN first when on the same network (Electron; browsers cannot do mDNS, so the PWA uses a remembered LAN URL).
-- **Hole punching:** both sides learn their public address from a STUN-like endpoint on the relay, exchange candidates over the relay, and send packets simultaneously so each NAT treats the other's packet as a reply. Works for most NATs; symmetric NATs (some carriers, corporate) fall back to the relay. Browsers can only do this through WebRTC data channels (relay as signalling); native apps can use QUIC via iroh. The same Noise channel runs over every path, so the app API never changes.
-
----
-
-## 12. Share and handoff (G6, design)
-
-1. **Live share:** `vibeke-gateway share <task|pane> --to <device or invite> --scope view|approve --ttl 2h` issues a scoped, time-limited device ticket (one-time invite link for people not yet paired). Session stays on the host; the geometry lease (01 §3) handles multiple viewers.
-2. **Handoff:** at a turn boundary (agent idle or interrupted) the host builds a bundle: git bundle of the task branch + uncommitted changes, agent transcript + resume handle (04), task metadata, event slice, evidence. Transcripts pass through `vk-redact`; the sender reviews "N secrets redacted" before sending. The bundle is encrypted to the recipient's key (HPKE), uploaded to the relay's blob mailbox (or streamed if both are online), and the recipient resumes with their own harness subscription. Credentials never travel; absolute paths are rewritten.
-3. **Move to self:** the same with the user's own other host; no confirmation of recipient identity is needed because devices share the user key (§13.1).
-
----
-
-## 13. Zero-knowledge services (G7, design)
-
-### 13.1 Key hierarchy
-
-User key (per person, generated on first device) → wrapped to each device key at pairing. Team groups use **MLS** (RFC 9420, `openmls`), so removing a member rotates keys. Public-key directory on the service with fingerprint verification ("safety numbers") or admin-signed member keys; key transparency later. Recovery: printed recovery key, passkey PRF-wrapped user key, admin recovery for teams; losing all of these loses data, by design.
-
-### 13.2 Services
-
-| Service | How it stays zero-knowledge |
-|---|---|
-| Push | Payload encrypted to the subscription/device; vendor and proxy see wake-ups only |
-| Sync & history | Client-side encrypted, content-addressed blobs (keyed hash so identical content doesn't link across users); search and dashboards computed on clients |
-| Team inbox | MLS group per team; hosts post encrypted interaction events; clients rank locally; the host is the authority on first valid signed answer |
-| Audit log | Hash chain signed by device keys; the service stores and can prove non-truncation but cannot read |
-| Preview links | `https://p.vibeke.dev/<id>#k=<key>`; a static page installs a service worker that tunnels every request end-to-end to the host over the relay; the fragment never reaches the server. TLS passthrough by SNI is the alternative (certificate transparency makes mis-issuance detectable) |
-| Web dashboard | Static origin, SRI, reproducible builds (§9.4) |
-
-### 13.3 Exceptions (labelled, opt-in)
-
-- **Third-party integrations (Slack/Teams/GitHub):** run from the host with the user's own tokens; inbound buttons carry a host-MAC'd token so our endpoint cannot forge an approval. The third party sees what is sent to it. *Not built in this spec's stages.*
-- **Hosted runners:** computing on code means seeing it. Options: BYO cloud account (we orchestrate only), confidential VMs with attestation, or an explicit "runner sees your code, like CI" label. *Not built in this spec's stages.*
-
----
-
-## 14. Threats (additions to 09)
+## 10. Threats (additions to 09)
 
 | # | Threat | Mitigation |
 |---|---|---|
-| R1 | Malicious or compromised relay reads traffic | Noise E2E with pinned host key; relay sees ciphertext only |
-| R2 | Relay tampers with hello/version | hello is the Noise prologue |
-| R3 | Relay serves malicious PWA JS | §9.4 hardening path; native/Electron signed code; documented caveat |
-| R4 | Host-id squatting / impersonation on relay | Ed25519 challenge; host id = hash of key; E2E still pins the static key, so even a squatter cannot complete a handshake |
-| R5 | QR photographed by someone else | single use, 5 min TTL, burned after 5 failures; host shows newly paired devices in the TUI later and in `devices` now |
-| R6 | Lost phone | `revoke`; scope `approve` by default for phones; high-risk approvals need an explicit confirm; app lock with WebAuthn/biometrics (later) |
-| R7 | Stale push answers a superseded prompt | the app always re-fetches the interaction; server `decision_rev` and delivery states decide |
-| R8 | Push content on lock screen | per-device privacy level; `vk-redact` on payloads |
-| R9 | Relay abuse as free tunnel/DoS | limits §6.2; only host-authenticated splices; accounts later |
-| R10 | Gateway compromise = host API access | gateway is a same-UID process like the CLI (T9 unchanged); device scopes limit what remote devices can do |
+| R1 | Malicious relay reads or alters traffic | Noise with pinned host key; prologue binds the hello; relay close codes untrusted |
+| R2 | Malicious app publisher | §9.4 separation; publisher shown in About; native/Electron signed builds |
+| R3 | Host-id squatting / control hijack | Ed25519 challenge bound to socket and canonical origin; generation-fenced replacement; E2E pins the static key anyway |
+| R4 | Photographed QR | Host-side fingerprint confirmation; atomic consume; failures don't burn; bearer mode is explicit |
+| R5 | Lost phone | `revoke`; `approve` scope for secondary devices; high-risk answers need confirm; app lock (WebAuthn) later |
+| R6 | Stale or crafted approval | `decision_rev` check in the gateway; deep links only pre-select; batches re-validated |
+| R7 | Lock-screen leakage | privacy levels; `vk-redact` on payloads |
+| R8 | SSRF via push endpoints | §8.2 |
+| R9 | Git as a code-execution or file-read vector | §7.7 rules |
+| R10 | Relay/gateway resource exhaustion | §6.4 bounds on both sides |
+| R11 | Gateway compromise | same-UID process like the CLI (T9 unchanged); device scopes bound remote devices |
 
 ---
 
-## 15. Testing and acceptance
+## 11. Testing and acceptance
 
-- **Crypto conformance:** a fixed-key test vector set generated by `vk-e2e` (snow) is checked into `crates/vk-e2e/tests/vectors/` and replayed by `@vibeke/core` tests (Bun), both IK and IKpsk2, including framing/chunking. A live Rust↔TS handshake test runs the gateway's channel against the TS client.
-- **Relay:** integration tests with real WebSockets: auth success/failure, wrong signature, offline host, accept timeout, splice both directions, per-conn byte limit, oversized frame, host replacement, draining.
-- **Gateway:** pairing (valid, expired, reused, wrong psk), unauthorized device, revoked device closes live connection, scope enforcement per method, event fan-out, push trigger mapping and coalescing (with a mock push endpoint), `changes.get` on a temp git repo. Server calls tested against a running `vibeke` server in a temp runtime dir.
-- **PWA:** component tests for inbox ranking/grouping and answer flow; Playwright smoke (pair via link → see dashboard → answer a fixture interaction → delivery shown) against relay + gateway + server.
-- **Acceptance (G1–G3):** from a phone on mobile data, with the laptop behind NAT and no Tailscale: pair by QR in < 30 s; push for a new Claude approval arrives in < 5 s; approve from the inbox and see `delivered`; read screen, send keys, view history and changes; revoke the phone from the terminal and see the app drop to "revoked" immediately; relay logs contain no content.
+- **Crypto conformance:** fixed-key vectors (IK and IKpsk2, payloads, chunked transport messages) generated by `vk-e2e` are checked into `crates/vk-e2e/tests/vectors.json` and replayed by `@vibeke/core`; adversarial cases: wrong psk, wrong host key, altered prologue, replayed/reordered message, bad flag, oversize, truncated reassembly. A live Rust↔TS handshake runs the gateway against the TS client.
+- **Relay:** real-WebSocket tests for auth (good, bad signature, wrong origin, timeout), offline host, accept timeout, late/duplicate accept, host replacement while splices live (old cleanup must not remove the new registration), splice in both directions with message type preserved, byte/rate limits, oversize message, slow reader back-pressure, draining.
+- **Gateway:** pairing (valid + confirm, reject, expired, reused, wrong psk does not burn, concurrent claims, crash between claim and confirm), unauthorized and revoked devices (live connection closed, queued mutations refused), scope matrix per method, `op_id` retry semantics, stale `decision_rev`, batch re-validation, event ring replay/reset/overflow, snapshot barrier, push mapping/coalescing/DND with a mock push service, SSRF guard, two hosts pushing to one subscription (signed with the device VAPID key).
+- **Server additions:** `git.status`/`git.diff` on temp repos incl. symlink escape, secret files, external diff/textconv/fsmonitor configured to run a marker script (must not run), huge files, timeouts; `actor` attribution.
+- **PWA:** unit tests for inbox ranking/grouping and answer flow; Playwright smoke against relay + gateway + server (pair → confirm → dashboard → answer a fixture interaction → delivered); manual matrix on an installed iOS PWA and Android Chrome.
+- **Acceptance (G1–G3):** on mobile data, laptop behind NAT, no Tailscale: pair by QR with confirmation in < 60 s; an approval push arrives (p50 < 5 s over 20 trials, host awake); approve from the inbox and see `delivered`; read the screen, send keys, view history and changes; revoke from the terminal and see the app show "revoked"; relay logs contain no content.
+
+---
+
+## 12. Implementation status (2026-10-06)
+
+| Piece | State |
+|---|---|
+| `vk-e2e` | Noise IK/IKpsk2 over `snow`, framing, hello, link, relay messages; fixed-key vectors in `tests/vectors.json` (incl. fingerprint and host id) replayed byte-for-byte by `@vibeke/core` |
+| `vk-relay` / `vibeke-relay` | §6 complete without accounts: challenge + origin-bound signatures, generations, fenced replacement, atomic accept, limits, static app dir, drain. Integration tests over real WebSockets |
+| `vk-gateway` / `vibeke-gateway` | §4, §7, §8: pairing with host confirmation, device scopes, op_id cache, normalization, event ring, push triggers, RFC 8291/8292 Web Push in pure Rust (RFC test vector), SSRF guard, revocation; `examples/devclient.rs` is a CLI device for testing. End-to-end test with relay + fake server; smoke-tested against a real server |
+| Server additions | `git.status` / `git.diff` (hostile-config test proves fsmonitor/external diff/textconv never run), `interaction.answer {actor}` with `answer_key`, and retried answers no longer re-deliver |
+| `@vibeke/core` | Noise, channel, RPC, pairing, multi-host manager, inbox ranking/grouping |
+| Share + handoff (§15) | `share.create`, limit enforcement on every call and event, handoff export/transfer/import with Claude/Codex resume; end-to-end handoff test (thin bundle, patch, untracked files, secret skipped, transcript rewritten + redacted, resume args); app screens for share, hand off and receiving |
+| `@vibeke/ui`, `@vibeke/pwa` | Baseline screens + inbox/quick actions/batches/push built; 136 tests; headless-Chrome smoke against real server + relay + gateway. Not yet verified on real iOS/Android push or device voice input. Transcript turns are `{role, text, ts}` only, so tool calls are not separated yet (server addition needed). |
+
+## 13. Work in existing code (coordinated with the TUI/server session)
+
+The gateway, relay and web apps live in new crates and `web/`. What they still need from the existing server, CLI and TUI is listed here and owned by the session working on those crates. Hosted runners and Slack/Teams stay out of scope.
+
+| # | Where | Work | Why |
+|---|---|---|---|
+| — | status | X1–X5 landed on main (d3323b7, `vk-server/src/gateway_api.rs`) and are consumed by the gateway; X6 and the TUI confirm overlay are in progress in the TUI session; X7 waits until the new crates are committed; X8 exists (`attention.list`) |
+| X1 | server | `pane.read {source: "styled"}` → rows of `{text, runs: [{start, len, fg, bg, bold, italic, underline, inverse}]}` from the VT engine (or ANSI SGR text) | Colour terminal mirror in the apps |
+| X2 | server | `agent.transcript` turns carry `kind: text|thinking|tool_call|tool_result`, `tool`, `summary`; native paging with `before` | History screen separates tool calls; no gateway-side slicing |
+| X3 | server | `client.list` reports per-client `last_input_ms` and focus (TUI attached, active in the last N s) | Presence-aware push: no phone pushes while the user is typing in the TUI (spec 12 attention inbox) |
+| X4 | server | `client.hello {kind: "gateway"}` recognised in 09 §3.2 with full capabilities, and events/audit attributed `gateway:<device>` for all mutating calls (an optional `actor` param on `pane.send_*`, `agent.prompt`, `agent.interrupt`, like `interaction.answer`) | Audit trail shows which phone did what |
+| X5 | server + TUI | A generic out-of-band confirmation: `client.confirm {title, body, options, timeout_ms}` shown as a TUI overlay (not in a PTY), answered by the user at the terminal | The gateway's pairing fingerprint confirmation (§4.3) and future share invitations without a second terminal running `vibeke-gateway pair` |
+| X6 | TUI | Interaction overlay, inbox and sidebar show `answered_by` (e.g. "answered on the maintainer's iPhone"); a small indicator of connected devices | Visible remote activity |
+| X7 | CLI | `vibeke gateway …` and `vibeke relay …` wired to the new crates (thin wrappers), `vibeke doctor` gateway section (relay reachable, devices, push) | One binary (§ intro) |
+| X8 | server | `attention.list` (spec 15) consumable by the gateway; the app's inbox ranking switches to it when present, falling back to client ranking | One ranking across TUI and phone |
+
+The gateway side of X3, X5 and X8 (calling the new methods) is done by the gateway owner once the server methods exist.
+
+## 14. Resolutions of the Codex reviews
+
+### 14.1 Implementation review (design review)
+
+| Finding | Resolution |
+|---|---|
+| P1 confirmation could authorize a different claimant | Each claim gets a `claim_id` and the full device key; the operator's answer is written with `confirmed_claim` and only counts for that claim; reservation and consumption are atomic under the registry lock |
+| P1 concurrent updates could undo revocation | Cross-process `flock` on `registry.lock` around every read-modify-write (gateway, `pair`, `revoke`); unique temp files (`create_new`) |
+| P1 revocation didn't cancel queued work | Every side-effecting server call re-reads the registry and re-checks the device; a revoked connection aborts its in-flight tasks |
+| P1 `op_id` raced | Atomic reservation of `(device, op_id)` bound to method + params; concurrent duplicates wait for the original result |
+| P1 git clean/process filters ran | Every configured filter driver is overridden with empty commands (reading config runs nothing); test with clean + process filters |
+| P1 untracked read symlink race | `openat` walk with `O_NOFOLLOW` per component, leaf checked with `fstat` |
+| P1 pathspec magic | `git --literal-pathspecs`; rename sources checked for secrets; test with a file named `*` beside `.env` |
+| P1 relay trusted as app publisher | Pairing and share links require an explicit `--app-url`, or `--app-from-relay` as a deliberate self-hosting choice |
+| P1 batch fingerprints merged commands | Exact command bytes (gateway and app); collision test |
+| P2 optional/non-atomic revision | `decision_rev` required; the server compares `expected_decision_rev` under its decision lock; batch items re-checked for eligibility at execution |
+| P2 view devices could set DND | Host-wide preferences need full scope |
+| P2 gateway limits | Capacity reserved before dialing an accept; accept sockets bounded to 128 KiB messages with a 15 s connect deadline; liveness counts authenticated traffic only; 30 s reassembly deadline in `vk-e2e` |
+| P2 relay accounting | The accept socket's admission slot lives as long as the splice; pending connections count against global and per-host caps (test) |
+| P2 event epoch | The gateway resumes with the full server cursor (machine, session, epoch, seq) |
+| P2 stale dashboard after reconnect | App tracks a dirty marker and refetches on resume |
+| P2 push throttling | 120 sends/hour/device, `Retry-After` cooldown, 8 concurrent sends, five consecutive failures clear the subscription |
+| P2 concurrent key creation | Atomic get-or-create (IndexedDB transaction + Web Locks) |
+| P2 devclient key file | Created `0600` with `create_new` |
+| P2 markdown recursion | Nesting and work bounded; error boundary |
+| P3 legacy idempotency fallback | Only for records without `answer_key` |
+
+### 14.2 Share/handoff review (design review)
+
+| Finding | Resolution |
+|---|---|
+| P1 handoff files escaping the worktree | Untracked files created with `create_new` + `O_NOFOLLOW` after a no-symlink component walk; export opens with `O_NOFOLLOW` and checks the file type |
+| P1 sender-controlled launch args / cwd | Resume args rebuilt locally from harness + validated session id; cwd must canonicalize inside the worktree |
+| P1 transcript writes outside the session namespace | Claude: `<session>.jsonl` in the computed project dir; Codex: only `sessions/…/*.jsonl` containing the session id; content must be JSON lines; exclusive no-follow create |
+| P1 extra selectors bypassing share limits | Every selector present (`pane`, `target`, `interaction`, batch items) is authorized independently |
+| P1 handoff devices receiving events | Connection-level methods (`events.subscribe`, `hello`, `client.visibility`) go through the same kind/scope rules |
+| P1 share pushes ignoring scope/expiry | Items carry their pane; share devices only get items inside their limit; expired and handoff devices get none; `push_to` re-checks the registry |
+| P1 decompression bomb | Whole decoded stream budgeted before tar parsing, effective entry sizes, entry count, path length and decoder window capped |
+| P1 git hardening gaps | Handoff uses the same filter overrides and literal pathspecs; submodule recursion and submodule status disabled (server and gateway) |
+| P1 TUI approval overriding a terminal rejection | Both prompts record through one locked, claim-bound, first-answer-wins write; consumption requires that recorded approval |
+| P2 notification.read on shares | Only a notification attached to a shared pane; never `all` |
+| P2 dashboard metadata leak | Allowlisted response (no previews, tasks or global counts); pane-only shares get only their tab with a single-pane layout |
+| P2 workspace shares missing agent events | Event scope resolves pane/run/interaction subjects through a snapshot index refreshed on unknown ids; unresolved subjects stay hidden |
+| P2 cancellation re-enabling duplicates | Interrupted operations leave an `outcome_unknown` tombstone instead of freeing the `op_id` |
+| P2 unlocked reload | Registry reload reads and swaps the cache under the registry lock |
+| P2 reservation gaps | Relay converts a pending reservation into an active-splice slot in one step under the pending lock; the gateway reserves its dial slot before spawning |
+| P2 manifest mismatch | The reviewed manifest must equal the bundled one; `head` must be a full commit id and match the bundle's advertised HEAD |
+| P2 origin normalization | Remotes parsed as URL / scp / local path; host case-insensitive, path exact; ambiguous forms rejected |
+
+### 14.3 Spec review
+
+| Finding | Resolution |
+|---|---|
+| P1-1 relay-served JS | §1.3, §9.4: transport vs app-publisher trust; hosted app on a separate origin; relay-served app only for self-hosters |
+| P1-2 hashed psk | §3: psk stored recoverably, short-lived; §4.2: authorization only after the first transport message |
+| P1-3 photographed QR | §4.3: host-side fingerprint confirmation; atomic consume; failures don't burn; explicit bearer mode |
+| P1-4 relay state machine | §6.2–§6.3: private-key signatures over socket-bound nonce + canonical origin; generations; atomic pending→spliced; fenced cleanup |
+| P1-5 approve scope too strong | §7.2: free-text prompts and raw input require `full` |
+| P1-6 UI-only safeguards | §7.4, §7.6, §8.3: gateway checks `decision_rev`, batch eligibility incl. repo root and risk; deep links only pre-select |
+| P1-7 retries and attribution | §7.3: `op_id` with param binding, no automatic mutation retries; §7.7: `actor` separate from `idempotency_key` |
+| P1-8 per-host VAPID | §8.1: device-owned VAPID key shared with each host |
+| P1-9 SSRF | §8.2 |
+| P1-10 git safety | §7.7 execution and filesystem rules |
+| P2-11 limits | §6.4 incl. gateway-side limits |
+| P2-12 event fan-out | §7.1 dedicated event connection; §7.5 ring, reset, barrier, overflow |
+| P2-13 event names/enums | §7.8 uses implemented events; §7.5 normalization |
+| P2-14 API gaps | §7.4 full method/scope matrix; `agent.start` via `tab.create` → `root_pane` |
+| P2-15 channel lifecycle | §5: message types, flags, deadlines, liveness, rekey rules; §3 rotation key selection |
+| P2-16 silent push / latency | §7.8: visible only, foreground reconciliation, DND suppresses, measured objective |
+| P2-17 platform boundaries | §9.3 injection, sanitization, Electron IPC/navigation/safeStorage rules |
+| P2-18 speech privacy | §8.4 consent, bounded local command, no auto-send |
+| P2-19 acceptance | §11 adversarial and race cases |
+| P3-20 consistency | intro states additive server changes; socket precedence; `jsonrpc` envelope; per-host tags; DND host-wide vs device prefs; G5–G8 moved to Appendix A |
+
+---
+
+## 15. Share and handoff (G6, build now)
+
+Both reuse pairing and the app API; no relay or server changes are needed.
+
+### 15.1 Live share
+
+A share is a **scoped, expiring pairing invitation** for someone else (or another device of yours):
+
+- `share.create {kind: "share", scope: view|approve, ttl_s, workspace?, pane?, name?, op_id}` (full scope) → `{link, pid, expires_at}`; CLI `vibeke-gateway share [--scope view|approve] [--ttl 2h] [--workspace W | --pane P]`.
+- The link is a pairing link (§4.1) with `share: {scope, until, label}` in its payload so the app can say "the maintainer shared *samplehub* with you, view-only, until 16:00". It is a **bearer invitation** (no fingerprint confirmation; the owner created it deliberately), single use, and must be opened within 15 min.
+- The resulting device record carries `kind: "share"`, `expires_at` and `limit {workspace?, pane?}`. The gateway enforces the limit on every call: `dashboard.get`, `interaction.list` and `notification.list` are filtered; any method naming a pane, run or interaction outside the limit returns `forbidden`; events are forwarded only when their subject's pane/workspace is inside it; `tab.create`/`agent.start` only inside the limited workspace; `devices.*`, `share.*` and `handoff.*` are never available to share devices. Expired devices are refused at the handshake and disconnected within 5 s.
+- Shares are listed and revoked like devices (`devices.list` shows `kind`, `expires_at`, `limit`).
+
+### 15.2 Handoff
+
+Moves an agent's work to another host at a **turn boundary**. The app is the courier: it is the user's own trusted device and already holds end-to-end channels to both hosts.
+
+1. **Export** (source host, full scope): `handoff.export {pane, interrupt?: false, op_id}`. The agent must be idle (or `interrupt: true` interrupts and waits ≤ 30 s). The gateway builds a bundle (zstd-compressed tar, ≤ 200 MiB):
+   - `manifest.json`: source host, repo name, `origin` URL, branch, `HEAD`, base commit, harness, session id, resume args (from the run's `resume_argv`), cwd relative to the repo root, last agent message, skipped files, redaction count;
+   - `repo.bundle`: `git bundle` of `HEAD` excluding commits on any remote-tracking ref (thin); full history when the repo has no remotes or `full: true`;
+   - `changes.patch`: `git diff --binary HEAD` (staged + unstaged);
+   - `untracked/…`: untracked, non-ignored files, skipping symlinks, files > 5 MiB and secret-looking files (`.env*`, keys, credential files — listed in the manifest so the recipient brings their own);
+   - `transcript.jsonl`: the harness transcript with each line passed through `vk-redact` (count reported).
+   Result `{id, size, sha256, manifest}`; the app shows the manifest (skipped secrets, redactions) before sending.
+2. **Transfer**: `handoff.read {id, offset, len ≤ 4 MiB}` on the source, `handoff.begin {manifest, size, sha256, op_id}` → `{id}` and `handoff.write {id, offset, data_b64}` on the destination. The destination verifies size and sha256 at `handoff.finish`. Bundles live in the gateway state dir (0700) for ≤ 1 h.
+3. **Import** (destination): `handoff.finish {id, repo_path?, start_agent?: true, op_id}` →
+   - find the repository: `repo_path`, else a workspace on the destination whose repo's `origin` matches the manifest, else `needs_repo` (the app asks for a path);
+   - `git fetch` the bundle (fetching `origin` first if the thin bundle's prerequisites are missing), create a worktree `<repo>-handoff-<branch>` on branch `handoff/<branch>`, apply `changes.patch`, write untracked files (relative paths only, no symlink traversal);
+   - transcript: rewrite the source cwd to the new worktree path and install it where the harness resumes from (Claude: `$CLAUDE_CONFIG_DIR|~/.claude/projects/<cwd with non-alphanumerics as '-'>/<session>.jsonl`; Codex: `$CODEX_HOME|~/.codex/sessions/YYYY/MM/DD/<original file name>`); other harnesses get a fresh agent with a handoff prompt;
+   - `workspace.create {cwd: worktree}` and `agent.start {pane, harness, args: resume args, prompt: "Handed off from <host>…"}`. Result `{workspace, pane, run?, worktree, branch}`.
+4. The source keeps its pane and branch untouched; nothing is deleted.
+
+**To a teammate:** the teammate creates a handoff invitation on *their* host (`share.create {kind: "handoff", ttl_s}`), which pairs the sender's app as a device that may only call `hello`, `ping` and `handoff.begin/write/discard/finish`. Credentials, harness logins and subscriptions never travel. A teammate's import is **staged, not started**: it cannot pass `repo_path` (the repo is found by `origin` among the receiver's workspaces), never starts an agent, and raises a notification for the receiver, who opens the new workspace and resumes when ready.
+
+**Import is hardened against a hostile bundle:** resume arguments are rebuilt locally from the harness and a validated session id (`[A-Za-z0-9_-]{1,128}`), never taken from the manifest; Claude transcripts are written as `<session>.jsonl` under the computed project dir, Codex transcripts only under `sessions/…/*.jsonl`; the manifest cwd must be a relative path inside the worktree; untracked files are created with `create_new` and no symlink in any path component (the patch may have created symlinks); tar entries must be regular files with safe relative paths and bounded total size; manifest text shown to people or agents is stripped of control characters and truncated.
+
+**Move to self:** the same with two of your own paired hosts; the app lists every paired host whose scope is `full` or whose device kind is `handoff` as a destination.
+
+## Appendix A — Design notes (non-binding)
+
+### A.1 Accounts and the SaaS (G5)
+
+- **Separation:** account auth decides who may use a relay and how much; end-to-end device keys decide which device may talk to which host. The relay never sees the second.
+- **Flow:** `vibeke login` (OAuth device-code; refresh token in the OS keychain) → the gateway registers its relay public key under the account → short-lived host tokens for `/v1/host`. Devices need no account: at pairing the host issues a **device ticket** `{host, device_pub, scope, exp}` signed by the host relay key; the relay verifies it on `/v1/connect` and bills the host's account. Revocation: tickets expire in 24 h and the host pushes a revocation list.
+- **Metering:** per account hosts, devices, concurrent connections, bytes/s and GB/month, native pushes/day; counters batched to a control plane (Postgres + Stripe), never on the frame path.
+- **Tiers (sketch):** Free (self-hosted or tight hosted limits) · Pro (limits, native push, preview links, sync) · Team (shared inbox, SSO, audit) · usage add-ons.
+
+### A.2 Native push proxy
+
+Native apps receive pushes only via the vendor's APNs/FCM credentials, so the service runs a proxy: the host posts `{device push handle, padded ciphertext}`; the app's Notification Service Extension decrypts with the device key. The proxy sees "wake device X" and a padded length.
+
+### A.3 Share and handoff
+
+Specified and built in §15. Later: offline delivery through an encrypted relay mailbox (HPKE to the recipient host key) when the destination is not online.
+
+### A.4 Zero-knowledge services (G7)
+
+- Key hierarchy: user key wrapped to each device; teams as MLS groups (RFC 9420, `openmls`); key directory with fingerprint verification or admin-signed member keys; recovery via printed key or passkey-PRF wrapping.
+- Sync/history: client-side encrypted, keyed-hash-addressed blobs; search and dashboards on clients.
+- Team inbox: MLS-encrypted interaction events; host is the authority on the first valid signed answer.
+- Audit: device-signed hash chain stored opaquely.
+- Preview links: `https://p.<domain>/<id>#k=<key>` with a service worker tunnelling requests end-to-end to the host; the fragment never reaches the server.
+- Exceptions are labelled and opt-in.
+
+### A.5 Direct paths (G8)
+
+LAN (mDNS for Electron, remembered LAN URL for the PWA) and hole punching: both sides learn their public address from the relay, exchange candidates over it, and send simultaneously so each NAT treats the other's packet as a reply; symmetric NATs fall back to the relay. Browsers via WebRTC data channels, native via QUIC (iroh). The same Noise channel runs over every path.
+
+### A.6 Not built here
+
+- **Integrations (Slack/Teams/GitHub):** would run from the host with the user's own tokens; inbound buttons carry a host-MAC'd token so the service cannot forge an approval; the third party sees what is sent to it.
+- **Hosted runners:** BYO cloud account, confidential VMs with attestation, or an explicit "runner sees your code" label.

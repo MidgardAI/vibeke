@@ -1,0 +1,43 @@
+[package]
+name = "vk-gateway"
+description = "Vibeke gateway (spec 16 §7): connects a host's server to phone/desktop apps through the relay, end-to-end encrypted"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vibeke-gateway"
+path = "src/main.rs"
+
+[dependencies]
+vk-e2e = { path = "../vk-e2e" }
+vk-proto.workspace = true
+vk-redact.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+blake3.workspace = true
+clap.workspace = true
+futures.workspace = true
+libc.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ulid.workspace = true
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+qrcode = { version = "0.14", default-features = false }
+tar = "0.4"
+zstd.workspace = true
+
+[dev-dependencies]
+vk-relay = { path = "../vk-relay" }
+axum = { version = "0.8", features = ["ws"] }

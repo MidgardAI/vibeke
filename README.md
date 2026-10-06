@@ -26,5 +26,6 @@ A terminal workspace that understands agents **structurally** (hooks, extensions
 | 13 | [Sandboxes and VMs](spec/13-sandboxes-and-vms.md) — host / OS sandbox / container / VM execution, safe yolo, egress proxy, credentials, git boundary |
 | 14 | [LLM assistance](spec/14-llm-assistance.md) — optional genai integration, provider/model selection, grounded briefings, context/privacy boundaries and staged rollout |
 | 15 | [Task outcomes, review and attention](spec/15-task-outcomes-review-and-attention.md) — optional tracking for normally launched CLIs, explicit success criteria, evidence-backed review and a ranked decision inbox; proposed slice after Goal 01 |
+| 16 | [Gateway, relay and apps](spec/16-gateway-relay-and-apps.md) — no-Tailscale E2E relay, QR pairing (Noise), gateway, PWA/Electron apps with inbox, quick approvals and push; staged SaaS, share/handoff and zero-knowledge services |
 
 Also: [integrations/pi-extension/DESIGN.md](integrations/pi-extension/DESIGN.md) · design review · design review

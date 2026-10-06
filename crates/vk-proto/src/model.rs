@@ -316,6 +316,9 @@ pub struct Interaction {
     pub delivery_error: Option<String>,
     pub answer: Option<Answer>,
     pub answered_by: Option<String>,
+    /// Client idempotency key of the recorded answer (kept apart from `answered_by`, spec 16 §7.7).
+    #[serde(default)]
+    pub answer_key: Option<String>,
     pub opened_at_ms: i64,
     pub answered_at_ms: Option<i64>,
 }

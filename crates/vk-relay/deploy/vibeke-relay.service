@@ -1,0 +1,25 @@
+# systemd unit for vibeke-relay. Install the binary at /usr/local/bin/vibeke-relay and the built
+# web app (web/apps/pwa/dist) at /var/lib/vibeke-relay/app if you self-host the app too.
+[Unit]
+Description=Vibeke relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/vibeke-relay --listen 127.0.0.1:8787 --public-url https://relay.example.com --trust-proxy --app-dir /var/lib/vibeke-relay/app
+Restart=always
+RestartSec=2
+DynamicUser=yes
+StateDirectory=vibeke-relay
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+KillSignal=SIGTERM
+TimeoutStopSec=35
+
+[Install]
+WantedBy=multi-user.target

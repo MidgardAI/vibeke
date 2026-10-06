@@ -487,6 +487,7 @@ async fn failed_check_never_ready_then_red_green_and_flake() {
         delivery_error: None,
         answer: None,
         answered_by: None,
+        answer_key: None,
         opened_at_ms: now(),
         answered_at_ms: None,
     };
@@ -1077,6 +1078,7 @@ fn put_interaction(e: &Env, id: &str, run: &str, opened: i64) {
         delivery_error: None,
         answer: None,
         answered_by: None,
+        answer_key: None,
         opened_at_ms: opened,
         answered_at_ms: None,
     };

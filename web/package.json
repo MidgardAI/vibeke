@@ -1,0 +1,21 @@
+{
+  "name": "vibeke-web",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd apps/pwa dev",
+    "build": "bun run --cwd apps/pwa build",
+    "preview": "bun run --cwd apps/pwa preview",
+    "test": "bun test packages apps",
+    "typecheck": "bun run --filter '*' typecheck",
+    "icons": "bun apps/pwa/scripts/gen-icons.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

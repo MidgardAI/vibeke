@@ -7,6 +7,7 @@ pub mod agents;
 pub mod api;
 pub mod core;
 pub mod gateway_api;
+pub mod git_api;
 pub mod pane;
 pub mod paths;
 pub mod preview;

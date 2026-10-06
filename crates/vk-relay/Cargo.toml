@@ -1,0 +1,28 @@
+[package]
+name = "vk-relay"
+description = "Vibeke relay (spec 16 §6): routes end-to-end encrypted WebSocket connections from devices to hosts without seeing content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vibeke-relay"
+path = "src/main.rs"
+
+[dependencies]
+vk-e2e = { path = "../vk-e2e" }
+anyhow.workspace = true
+clap.workspace = true
+futures.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.26"

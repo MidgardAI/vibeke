@@ -460,6 +460,7 @@ impl Agents {
                     delivery_error: None,
                     answer: None,
                     answered_by: None,
+                    answer_key: None,
                     opened_at_ms: now_ms(),
                     answered_at_ms: None,
                 };
@@ -1320,8 +1321,9 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             choices: vec![],
             text: Some(format!("{effect} by policy rule {rule}")),
         };
-        let (json, key) = record_decision(server, &it.id, answer, "policy", None)
-            .map_err(|e| err(ErrorKind::Conflict, e))?;
+        let (json, key) = record_decision(server, &it.id, answer, "policy", None, None, None)
+            .map_err(|e| err(ErrorKind::Conflict, e))?
+            .unwrap_or_default();
         return Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}));
     }
     notify_interaction(server, &it, &run);
@@ -1389,22 +1391,41 @@ fn match_policy(server: &Server, it: &Interaction) -> Option<(String, String)> {
 }
 
 /// Step 1 of the delivery transaction (02 §1.1): record the decision (first writer wins).
-/// Returns the native hook JSON and the idempotency key.
+/// Returns the native hook JSON and the idempotency key, or `None` when this exact answer
+/// (same idempotency key) was already recorded and must not be delivered again.
 fn record_decision(
     server: &Server,
     id: &str,
     answer: Answer,
     by: &str,
+    actor: Option<&str>,
     idem: Option<&str>,
-) -> Result<(Value, String), String> {
+    expected_rev: Option<u32>,
+) -> Result<Option<(Value, String)>, String> {
     let mut c = server.core.lock().unwrap();
     let Some(mut it) = c.interaction(id).cloned() else {
         return Err("interaction not found".into());
     };
+    // Compare-and-set under the core lock: the caller decided on this revision.
+    if it.status == InteractionStatus::Open && expected_rev.is_some_and(|r| r != it.decision_rev) {
+        return Err(format!(
+            "stale: interaction is at revision {}",
+            it.decision_rev
+        ));
+    }
     let key = format!("{}:{}", it.id, it.decision_rev + 1);
     if it.status != InteractionStatus::Open {
-        if idem.is_some() && it.answered_by.as_deref() == idem {
-            return Ok((Value::Null, key));
+        // Records from before `answer_key` kept the key in `answered_by`.
+        let recorded = it.answer_key.as_deref().or(it
+            .answered_by
+            .as_deref()
+            .filter(|_| it.answer_key.is_none()));
+        if idem.is_some() && recorded == idem {
+            return if it.answer.as_ref() == Some(&answer) {
+                Ok(None)
+            } else {
+                Err("idempotency key reused with a different answer".into())
+            };
         }
         return Err(format!(
             "already answered by {}",
@@ -1421,7 +1442,13 @@ fn record_decision(
     it.decision_rev += 1;
     it.delivery = DeliveryState::DecisionRecorded;
     it.answer = Some(answer.clone());
-    it.answered_by = Some(idem.map(str::to_string).unwrap_or_else(|| by.to_string()));
+    it.answered_by = Some(
+        actor
+            .or(idem)
+            .map(str::to_string)
+            .unwrap_or_else(|| by.to_string()),
+    );
+    it.answer_key = idem.map(str::to_string);
     it.answered_at_ms = Some(now_ms());
     let mut tx = Tx::new();
     tx.event_by(
@@ -1439,7 +1466,7 @@ fn record_decision(
     }
     tx.interaction(it);
     server.commit(&mut c, tx).map_err(|e| format!("{e:#}"))?;
-    Ok((native, key))
+    Ok(Some((native, key)))
 }
 
 fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<String>) {
@@ -1518,8 +1545,22 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     let by = format!("{}:{}", ctx.kind, ctx.client_id);
     let idem = s(p, "idempotency_key");
-    let (native, key) = record_decision(server, id, answer.clone(), &by, idem)
-        .map_err(|e| err(ErrorKind::Conflict, e))?;
+    // A display label for the answerer (e.g. "gateway:the maintainer's phone"); full-scope clients only.
+    let actor = s(p, "actor").filter(|_| ctx.pane_scope.is_none());
+    let expected = p
+        .get("expected_decision_rev")
+        .and_then(Value::as_u64)
+        .map(|r| r as u32);
+    let Some((native, key)) =
+        record_decision(server, id, answer.clone(), &by, actor, idem, expected)
+            .map_err(|e| err(ErrorKind::Conflict, e))?
+    else {
+        // Retry of an answer already recorded: report state, never deliver twice.
+        let it = server.with_core(|c| c.interaction(id).cloned());
+        return Ok(
+            json!({"interaction": it, "delivery": {"channel": "recorded"}, "duplicate": true}),
+        );
+    };
     let gate = server.agents.inner.lock().unwrap().gates.remove(&it.id);
     let channel;
     if let Some(g) = gate {

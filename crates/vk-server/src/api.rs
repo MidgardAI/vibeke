@@ -225,6 +225,8 @@ pub const METHODS: &[(&str, bool)] = &[
     ("blob.commit", true),
     ("blob.abort", true),
     ("image.upload", true),
+    ("git.status", false),
+    ("git.diff", false),
     ("layout.export", false),
     ("task.create", true),
     ("task.list", false),
@@ -387,6 +389,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         return r;
     }
     if let Some(r) = crate::preview::api(server, ctx, method, p).await {
+        return r;
+    }
+    if let Some(r) = crate::git_api::api(server, ctx, method, p).await {
         return r;
     }
     match method {

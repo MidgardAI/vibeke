@@ -1,0 +1,386 @@
+//! End to end: relay + gateway + a fake Vibeke server + a device client speaking vibeke-e2e/1.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use futures::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpStream, UnixListener};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use vk_e2e::{DeviceKey, Hello, Initiator, PairingLink, Session};
+use vk_gateway::state::{PairingStatus, Scope, StateDir};
+use vk_gateway::{Gateway, pair, server};
+
+type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+async fn start_relay() -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let relay = vk_relay::Relay::new(
+        vk_relay::Config {
+            public_origins: vec![format!("http://{addr}")],
+            app_dir: None,
+            trust_proxy: false,
+            log_ip_raw: true,
+            limits: Default::default(),
+        },
+        Box::new(vk_relay::Open),
+    )
+    .unwrap();
+    let app = relay
+        .router()
+        .into_make_service_with_connect_info::<SocketAddr>();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// A tiny stand-in for the Vibeke server's NDJSON JSON-RPC socket.
+fn fake_server(path: PathBuf) {
+    let listener = UnixListener::bind(&path).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let (r, mut w) = stream.into_split();
+                let mut lines = BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let id = req["id"].clone();
+                    let p = &req["params"];
+                    let result = match req["method"].as_str().unwrap() {
+                        "client.hello" => json!({"server_version": "test", "capabilities": ["*"]}),
+                        "server.status" => json!({}),
+                        "session.snapshot" => {
+                            json!({"at_seq": 7, "workspaces": [], "panes": [], "runs": [],
+                            "interactions": [{"id": "i1", "kind": "Approval", "status": "Open", "decision_rev": 3, "answerable": true,
+                                              "action": {"tool": "Bash", "command": "pnpm test", "risk": "Low"}}]})
+                        }
+                        "notification.list" => json!({"notifications": []}),
+                        "interaction.get" => {
+                            json!({"interaction": {"id": p["interaction"], "kind": "Approval", "status": "Open", "decision_rev": 3,
+                                                    "answerable": true, "action": {"tool": "Bash", "command": "pnpm test", "risk": "Low"}}})
+                        }
+                        "interaction.answer" => {
+                            json!({"interaction": {"id": p["interaction"], "status": "Answered", "delivery": "Delivering"},
+                                                      "delivery": {"channel": "native"}, "echo": p})
+                        }
+                        "events.subscribe" => json!({"subscription_id": "s", "at": {"seq": 7}}),
+                        _ => json!({}),
+                    };
+                    let line =
+                        json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string() + "\n";
+                    if w.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+}
+
+struct Client {
+    ws: Ws,
+    session: Session,
+    next: u64,
+}
+
+impl Client {
+    async fn open(
+        relay: SocketAddr,
+        host: &str,
+        hello: Hello,
+        dev: &DeviceKey,
+        hk: &[u8; 32],
+        psk: Option<&[u8; 32]>,
+    ) -> Result<Client, String> {
+        let (mut ws, _) = connect_async(format!("ws://{relay}/v1/connect?host={host}"))
+            .await
+            .unwrap();
+        let hb = hello.to_bytes();
+        ws.send(Message::Text(String::from_utf8(hb.clone()).unwrap().into()))
+            .await
+            .unwrap();
+        let mut i = Initiator::new(&hb, &dev.private, hk, psk).unwrap();
+        ws.send(Message::Binary(i.write_first(b"").unwrap().into()))
+            .await
+            .unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+        {
+            Some(Ok(Message::Binary(m2))) => {
+                let (payload, session) = i.read_second(&m2).map_err(|e| e.to_string())?;
+                let info: Value = serde_json::from_slice(&payload).unwrap();
+                assert_eq!(info["v"], 1);
+                Ok(Client {
+                    ws,
+                    session,
+                    next: 1,
+                })
+            }
+            Some(Ok(Message::Text(t))) => Err(t.to_string()),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
+    async fn send(&mut self, v: Value) {
+        for f in self.session.encrypt(v.to_string().as_bytes()).unwrap() {
+            self.ws.send(Message::Binary(f.into())).await.unwrap();
+        }
+    }
+
+    async fn recv(&mut self) -> Value {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), self.ws.next())
+                .await
+                .expect("recv timeout")
+            {
+                Some(Ok(Message::Binary(b))) => {
+                    if let Some(m) = self.session.decrypt(&b).unwrap() {
+                        return serde_json::from_slice(&m).unwrap();
+                    }
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    async fn call(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next;
+        self.next += 1;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .await;
+        loop {
+            let m = self.recv().await;
+            if m["id"] == id {
+                return m;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_confirm_call_and_revoke() {
+    let tmp = tempfile::tempdir().unwrap();
+    let relay = start_relay().await;
+    let sock = tmp.path().join("vibeke.sock");
+    fake_server(sock.clone());
+
+    let state = StateDir::open(tmp.path().join("gw")).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.relay = Some(format!("http://{relay}"));
+    cfg.host_name = Some("devbox".into());
+    state.save_config(&cfg).unwrap();
+    let (pairing, link) = pair::create(
+        &state,
+        &format!("http://{relay}"),
+        "devbox",
+        Scope::Approve,
+        false,
+        Duration::from_secs(300),
+    )
+    .unwrap();
+    let url = link.to_url(&format!("http://{relay}"));
+
+    let gw = Gateway::new(
+        StateDir::open(tmp.path().join("gw")).unwrap(),
+        server::Server::new(sock),
+    )
+    .unwrap();
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    for _ in 0..100 {
+        if reqwest_status(relay, &link.host).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Operator side: confirm once claimed.
+    let st = StateDir::open(tmp.path().join("gw")).unwrap();
+    let pid = pairing.pid.clone();
+    let confirmer = tokio::spawn(async move {
+        loop {
+            if let Some(mut p) = st.pairing(&pid).unwrap()
+                && let PairingStatus::Claimed { claim_id, .. } = p.status.clone()
+            {
+                p.confirmed = Some(true);
+                p.confirmed_claim = Some(claim_id);
+                st.save_pairing(&p).unwrap();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+
+    // Device side: pair.
+    let link = PairingLink::parse(&url).unwrap();
+    let dev = DeviceKey::generate();
+    let hk = link.host_key().unwrap();
+    let psk = link.psk_bytes().unwrap();
+
+    // A wrong psk fails the handshake and does not burn the pairing.
+    let bad = Client::open(
+        relay,
+        &link.host,
+        Hello::pair(&link.pid),
+        &dev,
+        &hk,
+        Some(&[9; 32]),
+    )
+    .await;
+    if let Ok(mut c) = bad {
+        c.send(json!({"jsonrpc": "2.0", "id": 1, "method": "pair.claim", "params": {}}))
+            .await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), c.ws.next())
+                .await
+                .map_or(true, |m| !matches!(m, Some(Ok(Message::Binary(_)))))
+        );
+    }
+    assert_eq!(
+        gw.state.pairing(&link.pid).unwrap().unwrap().status,
+        PairingStatus::Pending
+    );
+
+    let mut c = Client::open(
+        relay,
+        &link.host,
+        Hello::pair(&link.pid),
+        &dev,
+        &hk,
+        Some(&psk),
+    )
+    .await
+    .unwrap();
+    let r = c
+        .call(
+            "pair.claim",
+            json!({"name": "test phone", "platform": "test"}),
+        )
+        .await;
+    assert_eq!(r["result"]["status"], "pending");
+    assert_eq!(
+        r["result"]["fingerprint"],
+        vk_e2e::keys::fingerprint(&dev.public())
+    );
+    let done = c.recv().await;
+    assert_eq!(done["method"], "pair.done", "{done}");
+    assert_eq!(done["params"]["scope"], "approve");
+    confirmer.await.unwrap();
+    let device_id = done["params"]["device_id"].as_str().unwrap().to_string();
+
+    // The pairing is consumed.
+    assert!(
+        Client::open(
+            relay,
+            &link.host,
+            Hello::pair(&link.pid),
+            &DeviceKey::generate(),
+            &hk,
+            Some(&psk)
+        )
+        .await
+        .is_err()
+    );
+
+    // An unknown device is refused.
+    let err = Client::open(
+        relay,
+        &link.host,
+        Hello::device(),
+        &DeviceKey::generate(),
+        &hk,
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(err.contains("unauthorized"), "{err}");
+
+    // Paired device: normal calls.
+    let mut c = Client::open(relay, &link.host, Hello::device(), &dev, &hk, None)
+        .await
+        .unwrap();
+    let h = c
+        .call("hello", json!({"client": "test", "visible": true}))
+        .await;
+    assert_eq!(h["result"]["device_id"], device_id);
+    let d = c.call("dashboard.get", json!({})).await;
+    assert_eq!(d["result"]["at"], 7);
+    assert_eq!(d["result"]["interactions"][0]["kind"], "approval");
+    assert_eq!(d["result"]["interactions"][0]["action"]["risk"], "low");
+
+    // Scope: approve may not type into panes.
+    let f = c
+        .call(
+            "pane.send_keys",
+            json!({"pane": "p1", "keys": ["Enter"], "op_id": "o1"}),
+        )
+        .await;
+    assert_eq!(f["error"]["data"]["kind"], "forbidden");
+    // Mutations need op_id; stale decision_rev is refused.
+    let e = c
+        .call(
+            "interaction.answer",
+            json!({"interaction": "i1", "decision": "allow"}),
+        )
+        .await;
+    assert_eq!(e["error"]["data"]["kind"], "invalid_params");
+    let s = c
+        .call(
+            "interaction.answer",
+            json!({"interaction": "i1", "decision": "allow", "decision_rev": 2, "op_id": "o2"}),
+        )
+        .await;
+    assert_eq!(s["error"]["data"]["kind"], "stale");
+    let ok = c
+        .call(
+            "interaction.answer",
+            json!({"interaction": "i1", "decision": "allow", "decision_rev": 3, "op_id": "o3"}),
+        )
+        .await;
+    assert_eq!(ok["result"]["interaction"]["status"], "answered");
+    assert_eq!(ok["result"]["echo"]["actor"], "gateway:test phone");
+    // Same op_id + same params → same result, no second answer; different params → refused.
+    let again = c
+        .call(
+            "interaction.answer",
+            json!({"interaction": "i1", "decision": "allow", "decision_rev": 3, "op_id": "o3"}),
+        )
+        .await;
+    assert_eq!(again["result"], ok["result"]);
+    let clash = c
+        .call(
+            "interaction.answer",
+            json!({"interaction": "i1", "decision": "deny", "decision_rev": 3, "op_id": "o3"}),
+        )
+        .await;
+    assert_eq!(clash["error"]["data"]["kind"], "invalid_params");
+
+    // Revoke: the live connection is told and closed.
+    gw.revoke(&device_id).await.unwrap();
+    let m = c.recv().await;
+    assert_eq!(m["method"], "device.revoked");
+    let err = Client::open(relay, &link.host, Hello::device(), &dev, &hk, None)
+        .await
+        .err()
+        .unwrap();
+    assert!(err.contains("unauthorized"));
+}
+
+async fn reqwest_status(addr: SocketAddr, host: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+    let Ok(mut s) = TcpStream::connect(addr).await else {
+        return false;
+    };
+    let req =
+        format!("GET /v1/status?host={host} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.unwrap();
+    buf.contains("\"online\":true")
+}

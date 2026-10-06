@@ -202,7 +202,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 |---|---|
 | `interaction.list` | `{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1; Phase 2 adds ranking |
 | `interaction.get` | `{interaction}` → `{interaction}` |
-| `interaction.answer` | `{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` returns the original result. **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1) |
+| `interaction.answer` | `{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again; a different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7); the key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1) |
 | `interaction.cancel` | `{interaction}` → `{interaction}` (user dismisses; adapter delivers deny/escape) |
 | `adapter.interaction.open` | adapter-only `{pane, run?, kind, …payload}` → `{interaction}` |
 | `adapter.interaction.await` | adapter-only `{interaction, timeout_ms}` → `{answer}` or `timeout` — long-poll used by blocking hooks/extensions. *Retrieving* a decision for the caller's own pane is allowed (09 §5.1.1) |
@@ -343,6 +343,15 @@ Server push (JSON-RPC notification):
 | `blob.get` | `{hash, range?}` → `{mime, data_b64}` |
 | `blob.stat` | `{hash}` → `{mime, size, created_at, refs}` |
 | `blob.begin` / `.append` / `.commit` / `.abort` | Chunked upload for drops/pastes into remote panes (06 A11): `{name, size, sha256?}` → `{upload_id}` (size ≤ `paste.max_auto_bytes`); `{upload_id, offset, data_b64}` (≤ 1 MiB decoded, offset must match); `{upload_id}` → `{path}` (inbox `<blake3-12>/<name>`, 0600); bound to the opening connection, ≤ 16 concurrent, idle uploads purged after 10 min |
+
+### 2.15a `git.*` [16 G2]
+
+Read-only views of a pane's working tree, used by the gateway's Changes screen (16 §7.7). Git runs with fsmonitor, external diff and textconv disabled, a 5 s timeout and output caps; untracked files are read without following symlinks; secret-looking files (`.env*`, keys, credential files) are reported without content.
+
+| Method | Params → Result |
+|---|---|
+| `git.status` | `{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository |
+| `git.diff` | `{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB |
 
 ### 2.16 `plugin.*` [M5]
 
