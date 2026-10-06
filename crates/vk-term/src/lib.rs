@@ -6,5 +6,7 @@ pub mod engine;
 mod ghostty_sys;
 pub mod keygrammar;
 pub mod tracker;
+pub mod vt;
 
-pub use engine::{Effect, Engine, NotifyKind};
+pub use engine::{Effect, Engine, LastCommand, NotifyKind};
+pub use vt::{EngineEffect, VtEngine};

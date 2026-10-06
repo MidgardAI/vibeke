@@ -41,6 +41,11 @@ pub enum CopyAction {
     Copy,
     /// Open the scrollback viewer / `$EDITOR` at this position (08 §13, `edit_scrollback`).
     EditScrollback,
+    /// Previous / next OSC 133 prompt (03 §8, §11.1).
+    PromptPrev,
+    PromptNext,
+    /// Select the output of the command under the cursor (OSC 133).
+    SelectOutput,
 }
 
 /// Config name → action (every `vk_config::COPY_MODE_ACTIONS` entry).
@@ -76,6 +81,9 @@ pub fn action_named(name: &str) -> Option<CopyAction> {
         "search_prev" => SearchPrev,
         "copy" => Copy,
         "edit_scrollback" => EditScrollback,
+        "prompt_prev" => PromptPrev,
+        "prompt_next" => PromptNext,
+        "select_output" => SelectOutput,
         _ => return None,
     })
 }
@@ -119,6 +127,9 @@ const VI: &[(&str, &str)] = &[
     ("N", "search_prev"),
     ("y", "copy"),
     ("enter", "copy"),
+    ("[", "prompt_prev"),
+    ("]", "prompt_next"),
+    ("o", "select_output"),
 ];
 
 const EMACS: &[(&str, &str)] = &[
@@ -155,6 +166,9 @@ const EMACS: &[(&str, &str)] = &[
     ("N", "search_prev"),
     ("alt+w", "copy"),
     ("enter", "copy"),
+    ("alt+{", "prompt_prev"),
+    ("alt+}", "prompt_next"),
+    ("alt+o", "select_output"),
 ];
 
 /// Resolved copy-mode keys; the first matching entry wins.

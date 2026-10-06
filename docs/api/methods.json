@@ -3,7 +3,7 @@
   "generated_from": "vk-server METHODS tables; signatures from spec/07 §2; params/result shapes from the schema registry (crates/vk-server/src/api_schema.rs)",
   "schema": "vibeke-1.schema.json",
   "shape_language": "{field, field?: type = default, ...}; [T]; A|B (bare lowercase words are string literals); {*: T} maps; CamelCase names are shared definitions in the schema's $defs",
-  "render_protocol": 3,
+  "render_protocol": 4,
   "holder_protocol": {
     "proto": 1,
     "min": 1
@@ -1947,7 +1947,7 @@
       "milestone": "M1",
       "spec": "`{pane}` → `{pane, run?, open_interactions[]}`",
       "params": "{pane?: Target}",
-      "result": "{pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction]}"
+      "result": "{pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction], live?: PaneLive|null}"
     },
     {
       "name": "pane.list",
@@ -2016,8 +2016,8 @@
       ],
       "milestone": "M1",
       "spec": "`{pane, source: visible|recent|recent_unwrapped|scrollback|detection, lines?: 200, from_line?, format?: text|ansi|cells, include_cursor?}` → `{text|cells, rows, revision, truncated, scroll}`",
-      "params": "{pane?: Target, source?: visible|recent|recent_unwrapped|scrollback|detection = visible, lines?: int = 200, from_line?: int, format?: text|ansi|cells = text, include_cursor?: bool}",
-      "result": "{text?: string, cells?: any, rows?: int, revision?: int, truncated?: bool, scroll?: any, cursor?: any}"
+      "params": "{pane?: Target, source?: visible|recent|recent_unwrapped|scrollback|detection|last-command = visible, lines?: int = 200, from_line?: int, format?: text|ansi|cells = text, include_cursor?: bool}",
+      "result": "{text?: string, cells?: any, rows?: int, revision?: int, truncated?: bool, scroll?: any, cursor?: any, running?: bool, exit_code?: int|null, prompt_line?: int}"
     },
     {
       "name": "pane.rename",

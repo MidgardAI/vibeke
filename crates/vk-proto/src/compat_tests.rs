@@ -198,6 +198,7 @@ fn current_model(browser_on_p2: bool) -> SessionModel {
         previews: v1.previews.clone(),
         groups: v1.groups.clone(),
         appearance: v1.appearance.clone(),
+        pane_live: vec![],
     }
 }
 
@@ -265,4 +266,26 @@ fn negotiation_refuses_mixed_versions() {
             .unwrap_err()
             .contains("version_mismatch")
     );
+}
+
+/// Protocol 4 appended `SessionModel.pane_live` and `Row.mark`/`Row.links`: a protocol-3 peer
+/// would misread a model with live pane state, so the number moved again.
+#[test]
+fn protocol_4_terminal_effects_change_the_shape() {
+    const { assert!(PROTOCOL >= 4) };
+    let mut m = current_model(false);
+    m.pane_live = vec![PaneLive {
+        pane: "p1".into(),
+        progress: Some(Progress {
+            state: ProgressState::Normal,
+            pct: Some(40),
+        }),
+        last_exit: Some(ExitMark { code: 2, at_ms: 5 }),
+        user_vars: vec![("k".into(), "v".into())],
+    }];
+    let back: SessionModel = postcard::from_bytes(&encode(&m)).unwrap();
+    assert_eq!(back, m);
+    assert_eq!(back.live("p1").unwrap().progress.unwrap().pct, Some(40));
+    // Encoded with and without live state, the bytes differ in length (positional tail).
+    assert_ne!(encode(&m).len(), encode(&current_model(false)).len());
 }

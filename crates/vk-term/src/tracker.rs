@@ -3,6 +3,7 @@
 //!
 //! - `CSI > 4 ; Pv m` — the xterm modifyOtherKeys **level** (Ghostty keeps only a level-2 bool).
 //! - `OSC 99` — kitty desktop notifications (Ghostty parses and drops them).
+//! - `OSC 1337 ; SetUserVar=name=base64` — iTerm2 user variables (Ghostty logs "unimplemented").
 //!
 //! Everything else the M0 tracker did (pending parser bytes, OSC 7/9/777/133, XTVERSION, DA3,
 //! sync-update 2026) is now the engine's: parser continuation lives in the native snapshot.
@@ -34,6 +35,17 @@ pub enum Tracked {
     Reset,
     /// Body of an `OSC 99 ; ...` sequence, without the leading `99;`.
     Osc99(Vec<u8>),
+    /// Body of an `OSC 1337 ; SetUserVar=...` sequence, without the leading
+    /// `1337;SetUserVar=` (so `name=base64`).
+    SetUserVar(Vec<u8>),
+}
+
+/// OSC prefixes the scanner keeps (everything else is skipped without buffering).
+const KEEP: [&[u8]; 2] = [b"99;", b"1337;SetUserVar="];
+
+fn keep_prefix(seq: &[u8]) -> bool {
+    KEEP.iter()
+        .any(|k| k.starts_with(seq) || seq.starts_with(k))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -136,8 +148,8 @@ impl Tracker {
                 _ => {
                     if self.osc_keep {
                         self.seq.push(b);
-                        if self.seq.len() <= 3 {
-                            self.osc_keep = b"99;".starts_with(&self.seq);
+                        if self.seq.len() <= 16 {
+                            self.osc_keep = keep_prefix(&self.seq);
                         } else if self.seq.len() > MAX_OSC {
                             self.osc_keep = false;
                         }
@@ -164,8 +176,12 @@ impl Tracker {
     }
 
     fn finish_osc(&mut self, out: &mut Vec<Tracked>) {
-        if self.osc_keep && self.seq.len() >= 3 {
-            out.push(Tracked::Osc99(self.seq[3..].to_vec()));
+        if self.osc_keep {
+            if let Some(b) = self.seq.strip_prefix(KEEP[0]) {
+                out.push(Tracked::Osc99(b.to_vec()));
+            } else if let Some(b) = self.seq.strip_prefix(KEEP[1]) {
+                out.push(Tracked::SetUserVar(b.to_vec()));
+            }
         }
         self.seq.clear();
         self.osc_keep = false;
@@ -225,5 +241,19 @@ mod tests {
         assert_eq!(run(&[b"\x1b[>4\x18;2m"]), vec![]);
         assert_eq!(run(&[b"\x1b[>4m"]), vec![Tracked::ModifyOtherKeys(0)]);
         assert_eq!(run(&[b"\x1b]999;x\x07"]), vec![]);
+        assert_eq!(run(&[b"\x1b]1337;SetMark\x07"]), vec![]);
+    }
+
+    #[test]
+    fn set_user_var_across_splits() {
+        let all: &[u8] = b"\x1b]1337;SetUserVar=foo=YmFy\x07x\x1b]1337;SetUserVar=k=dg==\x1b\\";
+        let want = vec![
+            Tracked::SetUserVar(b"foo=YmFy".to_vec()),
+            Tracked::SetUserVar(b"k=dg==".to_vec()),
+        ];
+        assert_eq!(run(&[all]), want);
+        for cut in 1..all.len() {
+            assert_eq!(run(&[&all[..cut], &all[cut..]]), want, "cut {cut}");
+        }
     }
 }

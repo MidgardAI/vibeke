@@ -11,6 +11,7 @@ use std::ffi::{c_char, c_int, c_void};
 
 pub type GhosttyResult = c_int;
 pub const GHOSTTY_SUCCESS: GhosttyResult = 0;
+pub const GHOSTTY_OUT_OF_SPACE: GhosttyResult = -3;
 pub const GHOSTTY_NO_VALUE: GhosttyResult = -4;
 
 #[repr(C)]
@@ -124,11 +125,23 @@ pub const GHOSTTY_CELL_DATA_CONTENT_TAG: GhosttyCellData = 2;
 pub const GHOSTTY_CELL_DATA_WIDE: GhosttyCellData = 3;
 pub const GHOSTTY_CELL_DATA_HAS_STYLING: GhosttyCellData = 5;
 pub const GHOSTTY_CELL_DATA_STYLE_ID: GhosttyCellData = 6;
+pub const GHOSTTY_CELL_DATA_HAS_HYPERLINK: GhosttyCellData = 7;
+pub const GHOSTTY_CELL_DATA_SEMANTIC_CONTENT: GhosttyCellData = 9;
 pub const GHOSTTY_CELL_DATA_COLOR_PALETTE: GhosttyCellData = 10;
 pub const GHOSTTY_CELL_DATA_COLOR_RGB: GhosttyCellData = 11;
 
 pub type GhosttyRowData = c_int;
 pub const GHOSTTY_ROW_DATA_WRAP: GhosttyRowData = 1;
+pub const GHOSTTY_ROW_DATA_HYPERLINK: GhosttyRowData = 5;
+pub const GHOSTTY_ROW_DATA_SEMANTIC_PROMPT: GhosttyRowData = 6;
+
+pub const GHOSTTY_ROW_SEMANTIC_NONE: c_int = 0;
+pub const GHOSTTY_ROW_SEMANTIC_PROMPT: c_int = 1;
+pub const GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION: c_int = 2;
+
+pub const GHOSTTY_CELL_SEMANTIC_OUTPUT: c_int = 0;
+pub const GHOSTTY_CELL_SEMANTIC_INPUT: c_int = 1;
+pub const GHOSTTY_CELL_SEMANTIC_PROMPT: c_int = 2;
 
 // ---- point.h / grid_ref.h ----
 pub const GHOSTTY_POINT_TAG_ACTIVE: c_int = 0;
@@ -470,6 +483,12 @@ unsafe extern "C" {
         buf_len: usize,
         out_len: *mut usize,
     ) -> GhosttyResult;
+    pub fn ghostty_grid_ref_hyperlink_uri(
+        r: *const GhosttyGridRef,
+        buf: *mut u8,
+        buf_len: usize,
+        out_len: *mut usize,
+    ) -> GhosttyResult;
     pub fn ghostty_grid_ref_style(
         r: *const GhosttyGridRef,
         out_style: *mut GhosttyStyle,
@@ -684,7 +703,7 @@ mod tests {
                 $(check_enum($ty, stringify!($c), $c as i64);)*
             };
         }
-        enums!("GhosttyResult": GHOSTTY_SUCCESS, GHOSTTY_NO_VALUE);
+        enums!("GhosttyResult": GHOSTTY_SUCCESS, GHOSTTY_OUT_OF_SPACE, GHOSTTY_NO_VALUE);
         enums!("GhosttyStyleColorTag": GHOSTTY_STYLE_COLOR_NONE, GHOSTTY_STYLE_COLOR_PALETTE,
             GHOSTTY_STYLE_COLOR_RGB);
         enums!("GhosttySgrUnderline": GHOSTTY_SGR_UNDERLINE_NONE, GHOSTTY_SGR_UNDERLINE_SINGLE,
@@ -697,8 +716,14 @@ mod tests {
             GHOSTTY_CELL_WIDE_SPACER_TAIL, GHOSTTY_CELL_WIDE_SPACER_HEAD);
         enums!("GhosttyCellData": GHOSTTY_CELL_DATA_CODEPOINT, GHOSTTY_CELL_DATA_CONTENT_TAG,
             GHOSTTY_CELL_DATA_WIDE, GHOSTTY_CELL_DATA_HAS_STYLING, GHOSTTY_CELL_DATA_STYLE_ID,
+            GHOSTTY_CELL_DATA_HAS_HYPERLINK, GHOSTTY_CELL_DATA_SEMANTIC_CONTENT,
             GHOSTTY_CELL_DATA_COLOR_PALETTE, GHOSTTY_CELL_DATA_COLOR_RGB);
-        enums!("GhosttyRowData": GHOSTTY_ROW_DATA_WRAP);
+        enums!("GhosttyRowData": GHOSTTY_ROW_DATA_WRAP, GHOSTTY_ROW_DATA_HYPERLINK,
+            GHOSTTY_ROW_DATA_SEMANTIC_PROMPT);
+        enums!("GhosttyRowSemanticPrompt": GHOSTTY_ROW_SEMANTIC_NONE, GHOSTTY_ROW_SEMANTIC_PROMPT,
+            GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION);
+        enums!("GhosttyCellSemanticContent": GHOSTTY_CELL_SEMANTIC_OUTPUT,
+            GHOSTTY_CELL_SEMANTIC_INPUT, GHOSTTY_CELL_SEMANTIC_PROMPT);
         enums!("GhosttyPointTag": GHOSTTY_POINT_TAG_ACTIVE, GHOSTTY_POINT_TAG_VIEWPORT,
             GHOSTTY_POINT_TAG_SCREEN, GHOSTTY_POINT_TAG_HISTORY);
         enums!("GhosttyClipboardLocation": GHOSTTY_CLIPBOARD_LOCATION_STANDARD);

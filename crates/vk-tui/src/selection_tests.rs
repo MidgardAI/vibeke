@@ -23,6 +23,7 @@ fn wrow(s: &str, wrapped: bool) -> Row {
             cols: s.chars().count() as u16,
         }],
         wrapped,
+        ..Default::default()
     }
 }
 

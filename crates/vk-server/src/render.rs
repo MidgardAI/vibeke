@@ -385,6 +385,25 @@ impl Session {
                 asyncio::write_frame(wr, &ServerFrame::Goodbye { reason }).await?;
                 return Ok(false);
             }
+            UiEvent::ClipboardQuery {
+                client,
+                req,
+                pane,
+                primary,
+            } => {
+                if client != self.client_id {
+                    return Ok(true);
+                }
+                ServerFrame::ClipboardQuery {
+                    req,
+                    pane,
+                    selection: if primary {
+                        ClipSel::Primary
+                    } else {
+                        ClipSel::Clipboard
+                    },
+                }
+            }
         };
         asyncio::write_frame(wr, &f).await?;
         Ok(true)
@@ -569,6 +588,15 @@ impl Session {
                 self.media.on_view(&self.server, panes, shm, key_releases);
             }
             ClientFrame::MediaAck { pane, seq } => self.media.on_ack(&pane, seq),
+            ClientFrame::ClipboardReply { req, pane, data } => {
+                let _ = crate::term_effects::clipboard_reply(
+                    &self.server,
+                    &self.client_id,
+                    req,
+                    &pane,
+                    data,
+                );
+            }
             ClientFrame::Browser {
                 input_id,
                 pane,
@@ -661,14 +689,14 @@ impl Session {
                     .map(|r| {
                         (
                             r.n,
-                            Row {
-                                spans: vec![Span {
+                            Row::new(
+                                vec![Span {
                                     style: Style::default(),
                                     cols: unicode_cols(&r.t),
                                     text: r.t,
                                 }],
-                                wrapped: r.w,
-                            },
+                                r.w,
+                            ),
                         )
                     })
                     .collect();

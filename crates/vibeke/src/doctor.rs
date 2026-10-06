@@ -828,6 +828,50 @@ fn check_terminal(r: &mut Report) {
                     "set COLORTERM=truecolor (ssh may need AcceptEnv/SendEnv)",
                     r,
                 );
+                yn(
+                    p.undercurl,
+                    "curly/coloured underlines",
+                    "optional; underlines degrade to single (terminal.host_overrides undercurl = true if it lies)",
+                    r,
+                );
+                yn(
+                    p.osc8,
+                    "OSC 8 hyperlinks",
+                    "optional; links still open with ctrl+click (terminal.host_overrides osc8 = true to force)",
+                    r,
+                );
+                yn(
+                    p.focus_events,
+                    "focus events (DECRQM 1004)",
+                    "optional; apps miss focus-in/out redraws",
+                    r,
+                );
+                yn(
+                    p.bracketed_paste,
+                    "bracketed paste (DECRQM 2004)",
+                    "pastes may be read as typed keys",
+                    r,
+                );
+                yn(
+                    p.sgr_mouse,
+                    "SGR mouse (DECRQM 1006)",
+                    "clicks past column 223 may be lost",
+                    r,
+                );
+                if p.sixel {
+                    r.add(TERMINAL, Level::Info, "sixel graphics: reported (DA1 4)");
+                }
+                let notes = match p.notifications {
+                    vk_tui::caps::Notifications::Osc9 => "OSC 9",
+                    vk_tui::caps::Notifications::Osc777 => "OSC 777",
+                    vk_tui::caps::Notifications::Osc99 => "OSC 99",
+                    vk_tui::caps::Notifications::None => "none known",
+                };
+                r.add(
+                    TERMINAL,
+                    Level::Info,
+                    format!("native notifications: {notes}"),
+                );
                 match p.osc52 {
                     Osc52::Allowed => {
                         r.add(TERMINAL, Level::Pass, "OSC 52 clipboard: assumed allowed")

@@ -74,6 +74,36 @@ pub fn os_copy_primary(data: &[u8]) -> Result<()> {
     Err(last.unwrap_or_else(|| anyhow!("no PRIMARY selection tool available")))
 }
 
+/// Read the OS clipboard (or PRIMARY) as text with the first available tool: `pbpaste` on
+/// macOS, else `wl-paste` / `xclip` / `xsel`. Used for OSC 52 reads the user allowed (03 §8);
+/// never called without a policy decision.
+pub fn os_paste(primary: bool) -> Result<Vec<u8>> {
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        if primary {
+            bail!("no PRIMARY selection on macOS");
+        }
+        &[("pbpaste", &[])]
+    } else if primary {
+        &[
+            ("wl-paste", &["--no-newline", "--primary"]),
+            ("xclip", &["-o", "-selection", "primary"]),
+            ("xsel", &["-o", "-p"]),
+        ]
+    } else {
+        &[
+            ("wl-paste", &["--no-newline"]),
+            ("xclip", &["-o", "-selection", "clipboard"]),
+            ("xsel", &["-o", "-b"]),
+        ]
+    };
+    for (cmd, args) in candidates {
+        if let Some(out) = run_output(cmd, args)? {
+            return Ok(out);
+        }
+    }
+    Err(anyhow!("no clipboard tool available"))
+}
+
 fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

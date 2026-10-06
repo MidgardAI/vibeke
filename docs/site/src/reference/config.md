@@ -140,7 +140,7 @@ The file is `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). It r
 # Actions: exit cancel left right up down half_page_up half_page_down page_up page_down
 # line_start line_end top bottom view_top view_middle view_bottom word_next word_prev word_end
 # select_char select_line select_block search_forward search_backward search_next search_prev
-# copy edit_scrollback
+# copy edit_scrollback prompt_prev prompt_next select_output
 
 # Mode-local keymaps: [keys.navigate], [keys.resize], [keys.card].
 

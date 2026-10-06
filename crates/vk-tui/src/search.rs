@@ -139,6 +139,7 @@ fn plain_row(text: &str, wrapped: bool) -> Row {
             cols: UnicodeWidthStr::width(text) as u16,
         }],
         wrapped,
+        ..Default::default()
     }
 }
 

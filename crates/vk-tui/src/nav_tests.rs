@@ -431,6 +431,7 @@ fn row(s: &str) -> Row {
             cols: s.chars().count() as u16,
         }],
         wrapped: false,
+        ..Default::default()
     }
 }
 

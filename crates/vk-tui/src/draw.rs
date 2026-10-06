@@ -451,6 +451,17 @@ pub(crate) fn workspace_rows(
     if let Some(b) = w.branch.as_deref() {
         segs.push((format!(" ⎇ {b}"), t.dim()));
     }
+    let ws_panes: Vec<&str> = m
+        .model
+        .panes
+        .iter()
+        .filter(|p| p.workspace == w.id)
+        .map(|p| p.id.as_str())
+        .collect();
+    if let Some(p) = crate::osc::progress_in(app, mi, &ws_panes) {
+        let (bar, st) = crate::osc::progress_bar(app, p);
+        segs.push((format!(" {bar}"), st));
+    }
     if !bg.is_empty() {
         let working = runs
             .iter()
@@ -483,6 +494,10 @@ pub(crate) fn workspace_rows(
             let mut segs = vec![(format!("{pad}    {}", p.display_title()), t.dim())];
             if let Some(gl) = isolation_glyph(app, &p.isolation) {
                 segs.push((format!(" {gl}"), t.s(t.accent)));
+            }
+            if let Some(pr) = crate::osc::progress_in(app, mi, &[p.id.as_str()]) {
+                let (bar, st) = crate::osc::progress_bar(app, pr);
+                segs.push((format!(" {bar}"), st));
             }
             rows.push(SideRow {
                 segs,
@@ -561,7 +576,13 @@ fn tab_entries(app: &App) -> Vec<(Tab, String, u16, u16)> {
             }
         };
         let zoom = if t.zoomed_pane.is_some() { " Z" } else { "" };
-        let label = format!(" {}{} {}{zoom} ", glyph, t.number, title);
+        // OSC 9;4 progress of the tab's panes (03 §8).
+        let ids = t.layout.panes();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let prog = crate::osc::progress_in(app, app.cur, &ids)
+            .map(|p| format!(" {}", crate::osc::progress_bar(app, p).0))
+            .unwrap_or_default();
+        let label = format!(" {}{} {}{zoom}{prog} ", glyph, t.number, title);
         let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
         out.push((t.clone(), label, x, x + w));
         x += w + 1;
@@ -764,6 +785,11 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
     if let Some(up) = crate::upload::status(app) {
         right.insert(0, (format!(" {up} "), t.s(t.yellow)));
     }
+    if let Some(p) = app.focused_pane()
+        && let Some(badge) = crate::osc::exit_badge(app, app.cur, &p, std::time::Instant::now())
+    {
+        right.insert(0, (badge, t.bold(t.red)));
+    }
     if let Some(r) = app.clip.pending.first() {
         right.insert(
             0,
@@ -854,6 +880,15 @@ fn draw_pane_at(
         return;
     };
     draw_pane(g, buf, r);
+    crate::osc::draw_hover(app, g, app.cur, pid, r);
+    // A failed command's exit code for 5 s (03 §8): in the corner of unfocused panes; the
+    // focused pane's shows in the tab bar instead (the focused pane is the agent's, 08 §0).
+    if focused != Some(pid)
+        && let Some(badge) = crate::osc::exit_badge(app, app.cur, pid, std::time::Instant::now())
+    {
+        let w = unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16;
+        g.put_str(r.x + r.w.saturating_sub(w), r.y, &badge, t.bold(t.red), w);
+    }
     if focused == Some(pid)
         && buf.cursor.visible
         && matches!(app.mode, Mode::Normal | Mode::Prefix(_))

@@ -297,6 +297,8 @@ pub enum Popup {
     },
     /// Plugin link handlers matching an activated link (07 §7.7).
     PluginLink(Box<crate::plugins::LinkChoice>),
+    /// A pane wants to read the clipboard (OSC 52 read, `clipboard.osc52_read = "ask"`).
+    ClipboardRead(crate::osc::ReadReq),
     /// Edit-scrollback viewer; state in `App::scrollback`.
     Scrollback,
     /// Local files pasted/dropped onto a browser pane: confirm before the page gets them
@@ -376,6 +378,8 @@ pub struct App {
     pub history_reqs: HashMap<u64, String>,
     pub uploads: crate::upload::Uploads,
     pub clip: ClipGate,
+    /// Terminal effects on this client: OSC 52 reads, link hover, exit badges (03 §8).
+    pub osc: crate::osc::State,
     /// Tests only: capture clipboard writes instead of touching the host terminal/clipboard.
     pub clipboard_sink: Option<Vec<(Vec<u8>, bool)>>,
     /// How copies reach the user's clipboard (OSC 52, platform tool, iTerm2 hint).
@@ -524,7 +528,9 @@ pub struct MachineSpec {
 /// Run the TUI until detach or the last machine goes away.
 pub async fn run(opts: Opts, machines: Vec<MachineSpec>) -> Result<String> {
     term::raw()?;
-    let (probe, gcaps) = term::probe();
+    let (mut probe, gcaps) = term::probe();
+    // `terminal.host_overrides` (03 §6.1) before anything uses the probe.
+    let _ = probe.apply_overrides(&opts.config.terminal.host_overrides);
     term::install_panic_hook();
     term::enter(probe.kitty_keyboard)?;
     let result = run_inner(opts, machines, probe, gcaps).await;
@@ -539,6 +545,7 @@ async fn run_inner(
     gcaps: vk_browser::probe::GraphicsCaps,
 ) -> Result<String> {
     let client_id = format!("tui-{}-{}", std::process::id(), rand_suffix());
+    let overrides = opts.config.terminal.host_overrides.clone();
     let (inc_tx, mut inc_rx) = mpsc::unbounded_channel::<Incoming>();
     let mut app = App::new(
         opts.config,
@@ -553,8 +560,15 @@ async fn run_inner(
                 || std::env::var("COLORTERM")
                     .is_ok_and(|c| c.contains("truecolor") || c.contains("24bit")),
             sync_update: probe.sync_update,
-            undercurl: probe.kitty_keyboard,
-            ..crate::browser::host_caps(&gcaps, probe.xtversion.as_deref())
+            undercurl: probe.undercurl,
+            osc8: probe.osc8,
+            focus_events: probe.focus_events,
+            sixel: probe.sixel,
+            notifications: probe.notifications,
+            ..crate::caps::graphics_overrides(
+                crate::browser::host_caps(&gcaps, probe.xtversion.as_deref()),
+                &overrides,
+            )
         },
         matches!(probe.osc52, crate::caps::Osc52::Allowed),
         probe.kitty_keyboard,
@@ -746,6 +760,7 @@ impl App {
             history_reqs: HashMap::new(),
             uploads: Default::default(),
             clip: Default::default(),
+            osc: crate::osc::State::from_env(),
             clipboard_sink: None,
             copyout: crate::copyout::Delivery::from_env(),
             last_copy: None,
@@ -1140,6 +1155,7 @@ impl App {
                     };
                     self.command_on(i, "workspace.create", params, Pending::Ignore);
                 }
+                crate::osc::on_model(self, i);
                 crate::tasks::on_model(self, i);
                 crate::gateway::on_model(self, i);
                 crate::parity::on_model(self, i);
@@ -1290,6 +1306,11 @@ impl App {
             ServerFrame::Events { events, lagged } => {
                 crate::push::on_events(self, i, events, lagged)
             }
+            ServerFrame::ClipboardQuery {
+                req,
+                pane,
+                selection,
+            } => crate::osc::on_query(self, i, req, pane, selection),
             ServerFrame::Goodbye { reason } => {
                 self.machines[i].status = if reason.contains("stop") {
                     "stopped".into()
@@ -1475,6 +1496,10 @@ impl App {
 
     /// `review_clipboard`: open the prompt for the oldest queued request.
     fn review_clipboard(&mut self) {
+        // Pending clipboard reads first: a program is waiting for the answer.
+        if crate::osc::review_read(self) {
+            return;
+        }
         if self.clip.pending.is_empty() {
             self.toast("no clipboard request pending");
             return;
@@ -1614,6 +1639,7 @@ impl App {
         crate::browser::deadlines(self, now, &mut d);
         crate::plugins::deadlines(self, now, &mut d);
         crate::selection::deadlines(self, &mut d);
+        crate::osc::deadlines(self, now, &mut d);
         d
     }
 
@@ -1834,6 +1860,10 @@ impl App {
         }
         // Float frames (move/resize/raise), group rows and drags, the status bar.
         if crate::parity::on_mouse(self, &me) {
+            return;
+        }
+        // OSC 8 links: ctrl/alt hover underlines, ctrl/alt+click opens (03 §8).
+        if crate::osc::on_mouse(self, &me) {
             return;
         }
         if crate::browser::on_mouse(self, &me, px) {
@@ -2803,6 +2833,8 @@ pub(crate) fn test_app(n: usize) -> (App, Vec<mpsc::UnboundedReceiver<ClientFram
     app.clipboard_sink = Some(Vec::new());
     // Deterministic copy delivery whatever the test host's SSH/iTerm2/tmux environment.
     app.copyout = Default::default();
+    // OSC 52 reads see a fixed clipboard, never the host's.
+    app.osc = crate::osc::State::with_test_clipboard(b"(test clipboard)");
     app.size = (120, 40);
     (app, rxs)
 }

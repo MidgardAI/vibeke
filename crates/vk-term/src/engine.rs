@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use vk_proto::render::{Color, Cursor, CursorShape, PaneModes, Row, Span, Style, attr};
+use vk_proto::render::{Color, Cursor, CursorShape, Link, PaneModes, Row, Span, Style, attr, mark};
 
 pub const ENGINE: &str = "libghostty-vt";
 pub const ENGINE_VERSION: &str = concat!("libghostty-vt+", env!("VK_GHOSTTY_SHORT_COMMIT"));
@@ -58,10 +58,37 @@ pub enum Effect {
         kind: char,
         exit: Option<i32>,
     },
+    /// OSC 9;4 progress: `state` 0 = remove, 1 = normal, 2 = error, 3 = indeterminate,
+    /// 4 = paused/warning.
     Progress {
         state: u8,
         pct: Option<u8>,
     },
+    /// OSC 1337 `SetUserVar=name=base64` (iTerm2), decoded. Names are limited to
+    /// [`USER_VAR_NAME_MAX`] bytes of `[A-Za-z0-9_.-]`, values to [`USER_VAR_VALUE_MAX`] bytes;
+    /// anything else is dropped.
+    UserVar {
+        name: String,
+        value: String,
+    },
+}
+
+pub const USER_VAR_NAME_MAX: usize = 64;
+pub const USER_VAR_VALUE_MAX: usize = 4096;
+/// Longest OSC 8 URI kept on a row; longer links render as plain text.
+pub const LINK_URI_MAX: usize = 2048;
+
+/// The output of the last command, from OSC 133 marks (`pane.read --source last-command`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastCommand {
+    /// Absolute line of the command's prompt row.
+    pub prompt_line: u64,
+    /// The command's output rows (prompt and command-line rows excluded).
+    pub rows: Vec<Row>,
+    /// No new prompt yet: the command is still running.
+    pub running: bool,
+    /// Exit code from `OSC 133 ; D ; code` for a finished command, when the shell sent one.
+    pub exit: Option<i32>,
 }
 
 /// Default colours; also what OSC 10/11/12/4 queries answer (unless the app overrode them).
@@ -153,6 +180,9 @@ pub struct Engine {
     scrollback: usize,
     /// Longest single `vt_write`, so no write can scroll past the retained history.
     write_chunk: usize,
+    /// Exit code of the last finished command (`OSC 133 ; D ; code`); cleared when the next
+    /// command's output starts. Not part of snapshots.
+    last_exit: Option<i32>,
 }
 
 // SAFETY: the libghostty-vt handles are plain heap objects without thread affinity; `Engine`
@@ -550,6 +580,7 @@ impl Engine {
             replaying: false,
             scrollback,
             write_chunk: usize::MAX,
+            last_exit: None,
         };
         e.set_line_limit();
         e.set_palette(Palette::default());
@@ -679,6 +710,11 @@ impl Engine {
                 Tracked::ModifyOtherKeys(l) => self.modify_other_keys = l,
                 Tracked::Reset => self.modify_other_keys = 0,
                 Tracked::Osc99(body) => self.cb().effects.push(osc99(&body)),
+                Tracked::SetUserVar(body) => {
+                    if let Some(e) = user_var(&body) {
+                        self.cb().effects.push(e);
+                    }
+                }
             }
         }
         // Each write scrolls at most one line per byte; keeping writes shorter than the history
@@ -689,6 +725,17 @@ impl Engine {
         }
         self.cb().swallow_clip_reply = false;
         self.render.get_mut().stale = true;
+        let mut last_exit = self.last_exit;
+        for e in &self.cb_ref().effects {
+            if let Effect::Mark { kind, exit } = e {
+                match kind {
+                    'D' => last_exit = *exit,
+                    'C' => last_exit = None,
+                    _ => {}
+                }
+            }
+        }
+        self.last_exit = last_exit;
         let replaying = self.replaying;
         out.extend(
             self.cb()
@@ -886,6 +933,8 @@ impl Engine {
             return Row::default();
         }
         let mut wrapped = false;
+        let mut has_links = false;
+        let mut sem = 0i32;
         unsafe {
             let mut raw_row: sys::GhosttyRow = 0;
             sys::ghostty_grid_ref_row(&r, &mut raw_row);
@@ -894,7 +943,19 @@ impl Engine {
                 sys::GHOSTTY_ROW_DATA_WRAP,
                 (&raw mut wrapped).cast(),
             );
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_HYPERLINK,
+                (&raw mut has_links).cast(),
+            );
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_SEMANTIC_PROMPT,
+                (&raw mut sem).cast(),
+            );
         }
+        let mut links: Vec<Link> = Vec::new();
+        let mut ubuf: Vec<u8> = Vec::new();
         let cols = self.cols();
         let mut spans: Vec<Span> = Vec::new();
         let mut last_style: Option<(u16, Style)> = None;
@@ -904,8 +965,8 @@ impl Engine {
             r.x = x;
             let mut cell: sys::GhosttyCell = 0;
             unsafe { sys::ghostty_grid_ref_cell(&r, &mut cell) };
-            let (mut tag_v, mut wide, mut styled, mut cp, mut sid) =
-                (0i32, 0i32, false, 0u32, 0u16);
+            let (mut tag_v, mut wide, mut styled, mut cp, mut sid, mut linked) =
+                (0i32, 0i32, false, 0u32, 0u16, false);
             unsafe {
                 let keys = [
                     sys::GHOSTTY_CELL_DATA_CONTENT_TAG,
@@ -913,17 +974,19 @@ impl Engine {
                     sys::GHOSTTY_CELL_DATA_HAS_STYLING,
                     sys::GHOSTTY_CELL_DATA_CODEPOINT,
                     sys::GHOSTTY_CELL_DATA_STYLE_ID,
+                    sys::GHOSTTY_CELL_DATA_HAS_HYPERLINK,
                 ];
-                let mut vals: [*mut c_void; 5] = [
+                let mut vals: [*mut c_void; 6] = [
                     (&raw mut tag_v).cast(),
                     (&raw mut wide).cast(),
                     (&raw mut styled).cast(),
                     (&raw mut cp).cast(),
                     (&raw mut sid).cast(),
+                    (&raw mut linked).cast(),
                 ];
                 sys::ghostty_cell_get_multi(
                     cell,
-                    5,
+                    if has_links { 6 } else { 5 },
                     keys.as_ptr(),
                     vals.as_mut_ptr(),
                     ptr::null_mut(),
@@ -931,6 +994,23 @@ impl Engine {
             }
             if wide == sys::GHOSTTY_CELL_WIDE_SPACER_TAIL {
                 continue;
+            }
+            if linked {
+                let w = if wide == sys::GHOSTTY_CELL_WIDE_WIDE {
+                    2
+                } else {
+                    1
+                };
+                if let Some(uri) = cell_uri(&r, &mut ubuf) {
+                    match links.last_mut() {
+                        Some(l) if l.col + l.cols == x && l.uri == uri => l.cols += w,
+                        _ => links.push(Link {
+                            col: x,
+                            cols: w,
+                            uri: uri.to_string(),
+                        }),
+                    }
+                }
             }
             let mut style = if !styled {
                 Style::default()
@@ -1035,7 +1115,119 @@ impl Engine {
                 spans.pop();
             }
         }
-        Row { spans, wrapped }
+        Row {
+            spans,
+            wrapped,
+            mark: mark_of(sem),
+            links,
+        }
+    }
+
+    /// OSC 133 semantic-prompt state of one row, without reading its cells.
+    fn row_mark(&self, tag: i32, y: u32) -> u8 {
+        let mut r = sys::GhosttyGridRef {
+            size: size_of::<sys::GhosttyGridRef>(),
+            node: ptr::null_mut(),
+            x: 0,
+            y: 0,
+        };
+        let mut sem = 0i32;
+        unsafe {
+            if sys::ghostty_terminal_grid_ref(self.term, point(tag, 0, y), &mut r)
+                != sys::GHOSTTY_SUCCESS
+            {
+                return mark::NONE;
+            }
+            let mut raw_row: sys::GhosttyRow = 0;
+            sys::ghostty_grid_ref_row(&r, &mut raw_row);
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_SEMANTIC_PROMPT,
+                (&raw mut sem).cast(),
+            );
+        }
+        mark_of(sem)
+    }
+
+    /// Marks of every row the engine exposes: history (oldest first) then the visible screen.
+    fn all_marks(&self) -> Vec<u8> {
+        let all = self.engine_history();
+        let len = all.min(self.scrollback);
+        let mut v: Vec<u8> = (0..len)
+            .map(|i| self.row_mark(sys::GHOSTTY_POINT_TAG_HISTORY, (all - len + i) as u32))
+            .collect();
+        v.extend((0..self.rows()).map(|y| self.row_mark(sys::GHOSTTY_POINT_TAG_ACTIVE, y as u32)));
+        v
+    }
+
+    /// Row `i` of the history-then-screen index space used by [`Engine::all_marks`].
+    fn any_row(&self, i: usize) -> Row {
+        let h = self.history_len();
+        if i < h {
+            self.history_row(i).unwrap_or_default()
+        } else {
+            self.row((i - h) as u16)
+        }
+    }
+
+    /// Absolute line numbers (as in [`Engine::scrolled_total`]) of OSC 133 prompt rows in
+    /// memory (history and screen), oldest first. Empty on the alternate screen.
+    pub fn prompt_lines(&self) -> Vec<u64> {
+        let first = self.scrolled_total - self.history_len() as u64;
+        self.all_marks()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| **m == mark::PROMPT)
+            .map(|(i, _)| first + i as u64)
+            .collect()
+    }
+
+    /// Exit code of the last finished command (`OSC 133 ; D ; code`), if the shell reported
+    /// one and no command has started since.
+    pub fn last_exit(&self) -> Option<i32> {
+        self.last_exit
+    }
+
+    /// The last command's output from OSC 133 marks. At an idle prompt (the cursor is on a
+    /// prompt row) that is the block between the previous prompt and this one; while a
+    /// command runs, the output since the latest prompt. `None` without shell integration.
+    pub fn last_command(&self) -> Option<LastCommand> {
+        if self.alt_screen() {
+            return None;
+        }
+        let marks = self.all_marks();
+        let h = self.history_len();
+        let cur = h + self.cursor().row as usize;
+        let prompts: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| **m == mark::PROMPT && *i <= cur)
+            .map(|(i, _)| i)
+            .collect();
+        let latest = *prompts.last()?;
+        let idle = marks.get(cur).is_some_and(|m| *m != mark::NONE);
+        let (start, end, running) = if idle {
+            let prev = *prompts.iter().rev().nth(1)?;
+            (prev, latest, false)
+        } else {
+            (latest, cur + 1, true)
+        };
+        // Skip the prompt row and its continuation rows (the command line).
+        let mut first = start + 1;
+        while first < end && marks[first] != mark::NONE {
+            first += 1;
+        }
+        let mut rows: Vec<Row> = (first..end).map(|i| self.any_row(i)).collect();
+        while rows.last().is_some_and(|r| r.text().trim().is_empty()) {
+            rows.pop();
+        }
+        let base = self.scrolled_total - h as u64;
+        Some(LastCommand {
+            prompt_line: base + start as u64,
+            rows,
+            running,
+            exit: if running { None } else { self.last_exit },
+        })
     }
 
     /// Lines (visible rows) damaged since the last call; `None` means everything.
@@ -1327,6 +1519,63 @@ fn cwd_from_pwd(raw: &str) -> String {
     percent_decode(path)
 }
 
+fn mark_of(sem: i32) -> u8 {
+    match sem {
+        sys::GHOSTTY_ROW_SEMANTIC_PROMPT => mark::PROMPT,
+        sys::GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION => mark::PROMPT_CONT,
+        _ => mark::NONE,
+    }
+}
+
+/// The OSC 8 URI of the cell at `r`, read into `buf`. `None` without a link, or when the URI is
+/// longer than [`LINK_URI_MAX`] or not UTF-8.
+fn cell_uri<'a>(r: &sys::GhosttyGridRef, buf: &'a mut Vec<u8>) -> Option<&'a str> {
+    let mut n = 0usize;
+    let res = unsafe { sys::ghostty_grid_ref_hyperlink_uri(r, ptr::null_mut(), 0, &mut n) };
+    if !(res == sys::GHOSTTY_SUCCESS || res == sys::GHOSTTY_OUT_OF_SPACE)
+        || n == 0
+        || n > LINK_URI_MAX
+    {
+        return None;
+    }
+    buf.resize(n, 0);
+    let res = unsafe { sys::ghostty_grid_ref_hyperlink_uri(r, buf.as_mut_ptr(), n, &mut n) };
+    if res != sys::GHOSTTY_SUCCESS {
+        return None;
+    }
+    buf.truncate(n);
+    std::str::from_utf8(buf).ok()
+}
+
+/// `name=base64` from `OSC 1337 ; SetUserVar=` -> [`Effect::UserVar`] (bounded, sanitized).
+fn user_var(body: &[u8]) -> Option<Effect> {
+    use base64::Engine as _;
+    let s = std::str::from_utf8(body).ok()?;
+    let (name, b64) = s.split_once('=')?;
+    if name.is_empty()
+        || name.len() > USER_VAR_NAME_MAX
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        return None;
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    if raw.len() > USER_VAR_VALUE_MAX {
+        return None;
+    }
+    let value: String = String::from_utf8_lossy(&raw)
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect();
+    Some(Effect::UserVar {
+        name: name.to_string(),
+        value,
+    })
+}
+
 fn xterm256(i: u8) -> (u8, u8, u8) {
     if i >= 232 {
         let v = 8 + (i - 232) * 10;
@@ -1474,6 +1723,136 @@ mod tests {
         fx(&mut e, b"\r\n0123456789xy");
         assert!(e.row(1).wrapped);
         assert_eq!(e.row(2).text(), "xy");
+    }
+
+    /// A shell-integrated prompt: `A` prompt `B` command line, `C` output, `D;exit`.
+    fn cmd(prompt: &str, line: &str, out: &str, exit: i32) -> String {
+        format!(
+            "\x1b]133;A\x07{prompt}\x1b]133;B\x07{line}\r\n\x1b]133;C\x07{out}\x1b]133;D;{exit}\x07"
+        )
+    }
+
+    #[test]
+    fn prompt_marks_rows_and_last_command() {
+        let mut e = Engine::new(20, 8, 100);
+        assert_eq!(e.last_command(), None);
+        let mut s = cmd("$ ", "echo one", "one\r\n", 0);
+        s += &cmd("$ ", "false", "boom\r\nmore\r\n", 1);
+        s += "\x1b]133;A\x07$ \x1b]133;B\x07";
+        fx(&mut e, s.as_bytes());
+        let rows = e.visible_rows();
+        let marks: Vec<u8> = rows.iter().map(|r| r.mark).collect();
+        assert_eq!(marks[0], mark::PROMPT, "{rows:?}");
+        assert_eq!(marks[1], mark::NONE);
+        assert_eq!(marks[2], mark::PROMPT);
+        assert_eq!(&marks[3..5], &[mark::NONE, mark::NONE]);
+        assert_eq!(marks[5], mark::PROMPT);
+        assert_eq!(e.prompt_lines(), vec![0, 2, 5]);
+        // Idle at a prompt: the previous command's output.
+        let lc = e.last_command().unwrap();
+        assert_eq!(lc.prompt_line, 2);
+        let text: Vec<String> = lc.rows.iter().map(|r| r.text()).collect();
+        assert_eq!(text, vec!["boom", "more"]);
+        assert!(!lc.running);
+        assert_eq!(lc.exit, Some(1));
+        assert_eq!(e.last_exit(), Some(1));
+        // A command running: its output so far.
+        fx(&mut e, b"sleep 9\r\n\x1b]133;C\x07zzz");
+        let lc = e.last_command().unwrap();
+        assert!(lc.running);
+        assert_eq!(lc.prompt_line, 5);
+        assert_eq!(
+            lc.rows.iter().map(|r| r.text()).collect::<Vec<_>>(),
+            vec!["zzz"]
+        );
+        assert_eq!(lc.exit, None);
+        assert_eq!(e.last_exit(), None);
+    }
+
+    #[test]
+    fn prompt_lines_follow_scrolling_and_snapshots() {
+        let mut e = Engine::new(20, 4, 100);
+        let mut s = String::new();
+        for i in 0..10 {
+            s += &cmd("$ ", &format!("c{i}"), &format!("o{i}\r\n"), 0);
+        }
+        fx(&mut e, s.as_bytes());
+        // Each command takes 2 lines: prompts on even absolute lines.
+        let want: Vec<u64> = (0..10).map(|i| 2 * i).collect();
+        assert_eq!(e.prompt_lines(), want);
+        let first = e.scrolled_total() - e.history_len() as u64;
+        let h0 = e.history_row(0).unwrap();
+        assert_eq!(h0.mark, mark::PROMPT, "{first} {h0:?}");
+        let r = Engine::restore(&e.snapshot(), 100).unwrap();
+        assert_eq!(r.prompt_lines(), want);
+    }
+
+    #[test]
+    fn hyperlinks_on_rows() {
+        let mut e = Engine::new(30, 3, 100);
+        fx(
+            &mut e,
+            b"see \x1b]8;;https://example.com/a\x1b\\docs\x1b]8;;\x1b\\ and \x1b]8;id=x;file:///tmp/f\x07f\x1b]8;;\x07",
+        );
+        let r = e.row(0);
+        assert_eq!(r.text(), "see docs and f");
+        assert_eq!(
+            r.links,
+            vec![
+                Link {
+                    col: 4,
+                    cols: 4,
+                    uri: "https://example.com/a".into()
+                },
+                Link {
+                    col: 13,
+                    cols: 1,
+                    uri: "file:///tmp/f".into()
+                },
+            ]
+        );
+        assert_eq!(r.link_at(6).unwrap().uri, "https://example.com/a");
+        // A link wrapping onto the next row is on both rows.
+        let mut e = Engine::new(10, 3, 100);
+        fx(&mut e, b"12345\x1b]8;;https://x.y/\x07abcdefgh\x1b]8;;\x07");
+        assert_eq!(e.row(0).links[0].col, 5);
+        assert_eq!(e.row(0).links[0].cols, 5);
+        assert_eq!(e.row(1).links[0].col, 0);
+        assert_eq!(e.row(1).links[0].cols, 3);
+        // Overlong URIs are dropped (the text stays).
+        let long = format!(
+            "\x1b]8;;https://x/{}\x07L\x1b]8;;\x07",
+            "a".repeat(LINK_URI_MAX)
+        );
+        let mut e = Engine::new(10, 3, 100);
+        fx(&mut e, long.as_bytes());
+        assert_eq!(e.row(0).text(), "L");
+        assert!(e.row(0).links.is_empty());
+    }
+
+    #[test]
+    fn set_user_var() {
+        let mut e = Engine::new(20, 3, 100);
+        assert_eq!(
+            fx(&mut e, b"\x1b]1337;SetUserVar=branch=bWFpbg==\x07"),
+            vec![Effect::UserVar {
+                name: "branch".into(),
+                value: "main".into()
+            }]
+        );
+        // Bad names, bad base64 and control characters.
+        assert_eq!(fx(&mut e, b"\x1b]1337;SetUserVar=a b=eA==\x07"), vec![]);
+        assert_eq!(fx(&mut e, b"\x1b]1337;SetUserVar=k=!!\x07"), vec![]);
+        assert_eq!(
+            fx(&mut e, b"\x1b]1337;SetUserVar=k=YRti\x07"),
+            vec![Effect::UserVar {
+                name: "k".into(),
+                value: "ab".into()
+            }]
+        );
+        // Not replayed.
+        e.set_replaying(true);
+        assert_eq!(fx(&mut e, b"\x1b]1337;SetUserVar=k=YQ==\x07"), vec![]);
     }
 
     #[test]

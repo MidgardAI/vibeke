@@ -1,6 +1,7 @@
 //! Composed host-terminal cell grid and the minimal-diff escape writer (03 §6.2, §10).
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -53,6 +54,8 @@ pub struct Cell {
     pub text: CellText,
     pub width: u8,
     pub style: Style,
+    /// OSC 8 target of a pane cell (03 §8); passed through to hosts with `HostCaps::osc8`.
+    pub link: Option<Arc<str>>,
 }
 
 impl Cell {
@@ -61,6 +64,7 @@ impl Cell {
             text: CellText::new(" "),
             width: 1,
             style,
+            link: None,
         }
     }
 
@@ -73,11 +77,15 @@ impl Cell {
             text: CellText::new(""),
             width: 0,
             style,
+            link: None,
         }
     }
 
     fn is_default_blank(&self) -> bool {
-        self.width == 1 && self.text.as_str() == " " && self.style == Style::default()
+        self.width == 1
+            && self.text.as_str() == " "
+            && self.style == Style::default()
+            && self.link.is_none()
     }
 }
 
@@ -200,6 +208,7 @@ impl Grid {
                     text: CellText::new(g),
                     width: w as u8,
                     style,
+                    link: None,
                 },
             );
             used += w;
@@ -218,6 +227,7 @@ impl Grid {
                     text: CellText::new(text),
                     width: 1,
                     style,
+                    link: None,
                 },
             );
         }
@@ -234,9 +244,65 @@ impl Grid {
             let Some(nx) = x.checked_add(used) else { break };
             used += self.put_str(nx, y, &span.text, span.style, max_cols - used);
         }
+        // OSC 8 links (03 §8) on the cells they cover.
+        for l in &row.links {
+            let uri: Arc<str> = Arc::from(l.uri.as_str());
+            for c in l.col..l.col.saturating_add(l.cols).min(used) {
+                if let Some(cx) = x.checked_add(c)
+                    && cx < self.cols
+                    && y < self.rows
+                {
+                    let i = self.idx(cx, y);
+                    self.cells[i].link = Some(uri.clone());
+                }
+            }
+        }
         used
     }
+
+    /// Add `attrs` to `w` cells from (`x`, `y`), clipped (link hover underline).
+    pub fn add_attrs(&mut self, x: u16, y: u16, w: u16, attrs: u16) {
+        if y >= self.rows {
+            return;
+        }
+        for cx in x..x.saturating_add(w).min(self.cols) {
+            let i = self.idx(cx, y);
+            self.cells[i].style.attrs |= attrs;
+        }
+    }
 }
+
+/// Whether an OSC 8 target may be passed to the host terminal: a bounded, control-free URI
+/// with a scheme hosts open sensibly. Anything else is drawn as plain text.
+pub fn osc8_passthrough_ok(uri: &str) -> bool {
+    if uri.is_empty() || uri.len() > vk_term::engine::LINK_URI_MAX {
+        return false;
+    }
+    if uri
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '\u{1b}')
+    {
+        return false;
+    }
+    let scheme = uri.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
+    matches!(
+        scheme.as_deref(),
+        Some("http" | "https" | "mailto" | "file" | "ftp")
+    )
+}
+
+/// OSC 8 open sequence with a stable `id` per target, so hosts underline every piece of a
+/// wrapped or split link together.
+fn osc8_open(uri: &str) -> String {
+    let h = blake3::hash(uri.as_bytes());
+    let id: String = h.as_bytes()[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("\x1b]8;id=vk{id};{uri}\x1b\\")
+}
+
+const OSC8_CLOSE: &[u8] = b"\x1b]8;;\x1b\\";
 
 /// What the compositor needs to know about the host terminal to emit output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -260,6 +326,14 @@ pub struct HostCaps {
     pub dpr_x100: u16,
     /// SGR-pixels mouse (DECSET 1016) is supported.
     pub sgr_pixels: bool,
+    /// OSC 8 hyperlinks (03 §6.1): pane links are passed through.
+    pub osc8: bool,
+    /// Focus reporting (DECSET 1004).
+    pub focus_events: bool,
+    /// Sixel graphics (DA1 4).
+    pub sixel: bool,
+    /// The host's native notification escape.
+    pub notifications: crate::caps::Notifications,
 }
 
 /// Nearest xterm-256 palette index for an RGB colour.
@@ -363,6 +437,8 @@ struct Writer<'a> {
     cur: Style,
     pos: Option<(u16, u16)>,
     cols: u16,
+    /// The OSC 8 link currently open on the host.
+    link: Option<Arc<str>>,
 }
 
 impl Writer<'_> {
@@ -450,7 +526,23 @@ impl Writer<'_> {
         self.cur = eff;
     }
 
+    fn set_link(&mut self, cell: &Cell) {
+        if !self.caps.osc8 {
+            return;
+        }
+        let want = cell.link.clone().filter(|u| osc8_passthrough_ok(u));
+        if want == self.link {
+            return;
+        }
+        match &want {
+            Some(u) => self.out.extend_from_slice(osc8_open(u).as_bytes()),
+            None => self.out.extend_from_slice(OSC8_CLOSE),
+        }
+        self.link = want;
+    }
+
     fn text(&mut self, cell: &Cell, width: u16, x: u16, y: u16) {
+        self.set_link(cell);
         let t = cell.text.as_str();
         if t.is_empty() || u16::from(cell.width) != width {
             self.out.push(b' ');
@@ -479,6 +571,7 @@ pub fn diff(prev: &Grid, next: &Grid, caps: &HostCaps, out: &mut Vec<u8>) {
         cur: Style::default(),
         pos: None,
         cols,
+        link: None,
     };
     if full {
         w.out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
@@ -526,6 +619,9 @@ pub fn diff(prev: &Grid, next: &Grid, caps: &HostCaps, out: &mut Vec<u8>) {
             w.text(ncell, unit, x, y);
             x += unit;
         }
+    }
+    if w.link.is_some() {
+        w.out.extend_from_slice(OSC8_CLOSE);
     }
     if w.cur != Style::default() {
         w.out.extend_from_slice(b"\x1b[0m");
@@ -581,6 +677,10 @@ mod tests {
         cell_h: 0,
         dpr_x100: 0,
         sgr_pixels: false,
+        osc8: false,
+        focus_events: false,
+        sixel: false,
+        notifications: crate::caps::Notifications::None,
     };
 
     fn st(fg: Color, attrs: u16) -> Style {
@@ -625,6 +725,7 @@ mod tests {
                         text: CellText::new(g),
                         width: w as u8,
                         style: self.cur,
+                        link: None,
                     },
                 );
                 self.x += w;
@@ -866,6 +967,7 @@ mod tests {
                 },
             ],
             wrapped: false,
+            ..Default::default()
         };
         let mut g = Grid::new(10, 2);
         assert_eq!(g.put_row(2, 1, &row, 10), 5);
@@ -900,6 +1002,101 @@ mod tests {
         assert_eq!(g.get(3, 0).unwrap().text.as_str(), " "); // broken wide at 2-3
         g.clear();
         assert_eq!(g, Grid::new(6, 3));
+    }
+
+    fn linked_row() -> Row {
+        Row {
+            spans: vec![Span {
+                style: Style::default(),
+                text: "see docs now".into(),
+                cols: 12,
+            }],
+            wrapped: false,
+            mark: 0,
+            links: vec![vk_proto::render::Link {
+                col: 4,
+                cols: 4,
+                uri: "https://example.com/d".into(),
+            }],
+        }
+    }
+
+    /// OSC 8 pass-through (03 §8): links reach a capable host (checked with Vibeke's own
+    /// engine as the host), never an incapable one, and unsafe targets stay plain text.
+    #[test]
+    fn osc8_links_pass_through_to_capable_hosts() {
+        let prev = Grid::new(20, 2);
+        let mut next = prev.clone();
+        next.put_row(2, 0, &linked_row(), 18);
+        assert_eq!(
+            next.get(6, 0).unwrap().link.as_deref(),
+            Some("https://example.com/d")
+        );
+        assert!(next.get(5, 0).unwrap().link.is_none());
+        assert!(next.get(10, 0).unwrap().link.is_none());
+        let caps = HostCaps { osc8: true, ..ALL };
+        let mut out = Vec::new();
+        diff(&prev, &next, &caps, &mut out);
+        let s = String::from_utf8_lossy(&out).into_owned();
+        assert!(s.contains("\x1b]8;id=vk"), "{s:?}");
+        assert!(s.ends_with("\x1b]8;;\x1b\\") || s.contains("\x1b]8;;\x1b\\"));
+        let mut host = vk_term::Engine::new(20, 2, 0);
+        host.feed(&out, &mut Vec::new());
+        let r = host.row(0);
+        assert_eq!(r.text(), "  see docs now");
+        assert_eq!(
+            r.links,
+            vec![vk_proto::render::Link {
+                col: 6,
+                cols: 4,
+                uri: "https://example.com/d".into()
+            }]
+        );
+        // Without OSC 8 support: plain text only.
+        let mut out = Vec::new();
+        diff(&prev, &next, &ALL, &mut out);
+        assert!(!String::from_utf8_lossy(&out).contains("\x1b]8"));
+        // An unchanged link is not re-sent; a changed target is.
+        let mut out = Vec::new();
+        diff(&next, &next.clone(), &caps, &mut out);
+        assert!(out.is_empty());
+        // Unsafe targets are never passed through.
+        for bad in [
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "https://a.b/\x07x",
+            "https://a.b/ x",
+            "",
+        ] {
+            assert!(!osc8_passthrough_ok(bad), "{bad:?}");
+            let mut row = linked_row();
+            row.links[0].uri = bad.into();
+            let mut g = prev.clone();
+            g.put_row(0, 0, &row, 20);
+            let mut out = Vec::new();
+            diff(&prev, &g, &caps, &mut out);
+            assert!(
+                !String::from_utf8_lossy(&out).contains("\x1b]8;id"),
+                "{bad:?}"
+            );
+        }
+        assert!(osc8_passthrough_ok("file:///tmp/x"));
+        assert!(osc8_passthrough_ok("mailto:a@b.c"));
+        assert!(!osc8_passthrough_ok(&format!(
+            "https://x/{}",
+            "a".repeat(vk_term::engine::LINK_URI_MAX)
+        )));
+    }
+
+    #[test]
+    fn add_attrs_underlines_a_clipped_run() {
+        let mut g = Grid::new(5, 2);
+        g.put_str(0, 0, "abcde", Style::default(), 5);
+        g.add_attrs(3, 0, 10, attr::UNDERLINE);
+        g.add_attrs(0, 9, 3, attr::UNDERLINE);
+        assert_eq!(g.get(2, 0).unwrap().style.attrs, 0);
+        assert_eq!(g.get(3, 0).unwrap().style.attrs, attr::UNDERLINE);
+        assert_eq!(g.get(4, 0).unwrap().style.attrs, attr::UNDERLINE);
     }
 
     #[test]
@@ -990,6 +1187,7 @@ mod tests {
             text: "宽".into(),
             width: 2,
             style: Style::default(),
+            link: None,
         };
         let mut out = Vec::new();
         diff(&a, &b, &ALL, &mut out);
@@ -1053,6 +1251,7 @@ mod tests {
                     })
                     .collect(),
                 wrapped: false,
+                ..Default::default()
             })
             .collect();
         let t = Instant::now();
