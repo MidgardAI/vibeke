@@ -578,6 +578,10 @@ button[data-nav-item][data-selected] {
 :root[data-vibrancy] .app-panel {
   background: var(--bg);
 }
+/* The drawer floats over the app's own content, which vibrancy does not blur: keep it opaque. */
+:root[data-vibrancy] .sidebar.sidebar-drawer {
+  background: var(--sidebar-bg);
+}
 /* The traffic lights sit in the sidebar's top strip. */
 :root[data-titlebar="inset"] .sidebar-top {
   -webkit-app-region: drag;

@@ -146,7 +146,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
   const offline = hosts.filter((h) => h.status !== 'online');
 
   return (
-    <nav aria-label={t.sidebar.label} className={cx('sidebar flex h-full shrink-0 select-none flex-col', mode === 'inline' ? 'w-[280px] border-r border-border' : 'w-full pt-safe')}>
+    <nav aria-label={t.sidebar.label} className={cx('sidebar flex h-full shrink-0 select-none flex-col', mode === 'inline' ? 'w-[280px] border-r border-border' : 'sidebar-drawer w-full pt-safe')}>
       <div className="sidebar-top flex h-11 shrink-0 items-center justify-end gap-0.5 px-2">
         {mode === 'inline' ? (
           <IconButton label={`${t.sidebar.hide} (${keyLabel(mac, 'mod+\\')})`} onClick={() => app.prefs.patch({ sidebarHidden: true })}>
