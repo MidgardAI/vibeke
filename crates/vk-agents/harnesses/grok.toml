@@ -1,0 +1,47 @@
+# Built-in screen manifest: Grok CLI (spec 04 §6.7). Best effort from the CLI's public docs and
+# behaviour: NOT exercised against a live binary and no recording exists ([verify M2]). There is
+# no validated range, so every version runs observe + keystrokes (when a dialog rule exists)
+# until a recorded corpus covers it; drift CI is the intended way to firm this up.
+schema = 1
+id = "grok"
+name = "Grok CLI"
+icon = "✕"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["grok"]
+[[detect.process]]
+interpreter = ["node", "bun", "deno", "python", "python3"]
+script_regex = '(@vibe-kit/grok-cli|grok-cli|/grok$)'
+
+[version]
+command = ["grok", "--version"]
+
+[launch]
+argv = ["grok"]
+session_id_format = "none"
+prompt_arg = "trailing"
+
+[integration]
+transports = ["screen", "process"]
+install = ""
+
+[screen]
+rows = 30
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ["(?i)esc to (interrupt|cancel|stop)", '(?i)\bthinking\.\.\.']
+confidence = 0.7
+
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?m)^\s*[│┃]\s*[>❯]\s']
+confidence = 0.5
+
+[ui]
+interrupt_keys = ["esc"]
+quit_keys = ["ctrl+c", "ctrl+c"]

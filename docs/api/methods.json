@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 291,
+  "method_count": 357,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -67,6 +67,20 @@
       "result": "{}"
     },
     {
+      "name": "agent.drift",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{versions: [{harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number, drifting: bool}]}"
+    },
+    {
       "name": "agent.get",
       "mutating": false,
       "scope": "pane",
@@ -109,6 +123,20 @@
       "result": "{run: AgentRun}"
     },
     {
+      "name": "agent.limits",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{limits: [{harness: string, scope: string|null, limited: bool, used_percent: number|null, resets_at_ms: int|null, message: string|null, observed_at_ms: int}]}"
+    },
+    {
       "name": "agent.list",
       "mutating": false,
       "scope": "pane",
@@ -123,6 +151,20 @@
       "result": "{runs: [AgentRun]}"
     },
     {
+      "name": "agent.manifest_pin",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, version?: string, unpin?: bool = false}",
+      "result": "{id: string, version?: string, pinned_at_ms?: int, unpinned?: bool}"
+    },
+    {
       "name": "agent.manifests",
       "mutating": false,
       "scope": "pane",
@@ -135,6 +177,20 @@
       "spec": null,
       "params": "{}",
       "result": "{manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}], warnings: [string]}"
+    },
+    {
+      "name": "agent.manifests_check",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{url?: string}",
+      "result": "{serial: int, applied: [string], skipped?: [string], unsigned?: bool, warnings?: [string], announced?: int, unchanged?: bool, index_serial?: int}"
     },
     {
       "name": "agent.manifests_reload",
@@ -291,6 +347,20 @@
       "result": "{run: AgentRun}"
     },
     {
+      "name": "agent.turn_usage",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: Target, target?: Target, limit?: int = 200}",
+      "result": "{run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}"
+    },
+    {
       "name": "agent.wait",
       "mutating": false,
       "scope": "pane",
@@ -333,6 +403,20 @@
       "result": "{schema: object}"
     },
     {
+      "name": "assistant.background",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{action?: status\\|tick}` → status of the opt-in background sweeper, or the actions one sweep took or skipped",
+      "params": "{action?: status|tick}",
+      "result": "any"
+    },
+    {
       "name": "assistant.cancel",
       "mutating": true,
       "scope": "full",
@@ -341,10 +425,10 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}` → `{request}`. Aborts the provider call. A canceled active request still counts its reservation against the day's budget",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{request}` → `{request}`. Aborts the provider call. A canceled active request still counts its reservation against the day's budget. A client attached to a coalesced background request (not its creator) only detaches: `{request, detached: true}`",
       "params": "{request: string}",
-      "result": "{request: object}"
+      "result": "{request: object, detached?: bool, note?: string}"
     },
     {
       "name": "assistant.confirm",
@@ -355,7 +439,7 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
       "spec": "`{request, preview_digest}` → `{request}` (state `queued`). Rechecks consent, endpoint, queue, rate and daily budget. Sends exactly the previewed payload",
       "params": "{request: string, preview_digest: string}",
       "result": "{request: object}"
@@ -369,9 +453,9 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`. Default classes exclude `screen`. The grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint",
-      "params": "{workspace?: Target, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]}",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{workspace?\\|remote_workspace?: \"machine:/path\", connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`. Default classes exclude `screen`. The grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint",
+      "params": "{workspace?: Target, remote_workspace?: string, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]}",
       "result": "{consent: object, notice: string}"
     },
     {
@@ -383,10 +467,10 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate, profile?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved. Nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`",
-      "params": "{operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate, profile?: string, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, include_screen?: bool}",
-      "result": "{request: object, preview: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string}, requires_confirmation: bool, confirm_with?: object}"
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate\\|navigate\\|decision_card\\|stall_notice\\|background_summary\\|task_title, profile?, priority?: interactive\\|background, stream?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, interaction?, query?, remote_sources?: [...], include_screen?}}` → `{request, preview?: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice, priority, coverage_notes}, requires_confirmation, confirm_with?, deduplicated?, coalesced?, cached?}`. Consent is checked before content is retrieved. Nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`",
+      "params": "{operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|stall_notice|background_summary|task_title, profile?: string, priority?: interactive|background, stream?: bool, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, interaction?: Target, query?: string, remote_sources?: [object], include_screen?: bool}",
+      "result": "{request: object, preview?: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string, priority?: string, coverage_notes?: [string]}, requires_confirmation?: bool, confirm_with?: object|null, deduplicated?: bool, coalesced?: bool, cached?: bool, note?: string}"
     },
     {
       "name": "assistant.get",
@@ -397,8 +481,8 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}` → `{request: {id, operation, state: awaiting_confirmation\\|queued\\|running\\|done\\|failed\\|cancelled\\|interrupted, workspace, inputs (IDs only), profile, connection, adapter, model, endpoint_host, machine, prompt_version, sources (metadata + digests), omitted, redactions, context_digest, preview_digest, payload_bytes, estimated_input_tokens, max_output_tokens, usage: {input_tokens?, output_tokens?}, attempts, estimated_cost_usd?, finish_reason?, error?: {category, message}, output?: {generated: true, label, ...operation fields}, timestamps}}`",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{request}` → `{request: {id, operation, priority, cached?, structured?: native\\|json_text, streamed, repaired, stale, stale_targets, live_targets, output_withheld?/access?: revoked (consent gone), state: awaiting_confirmation\\|queued\\|running\\|done\\|failed\\|cancelled\\|interrupted, workspace, inputs (IDs only), profile, connection, adapter, model, endpoint_host, machine, prompt_version, sources (metadata + digests), omitted, redactions, context_digest, preview_digest, payload_bytes, estimated_input_tokens, max_output_tokens, usage: {input_tokens?, output_tokens?}, attempts, estimated_cost_usd?, finish_reason?, error?: {category, message}, output?: {generated: true, label, ...operation fields}, timestamps}}`",
       "params": "{request: string}",
       "result": "{request: object}"
     },
@@ -411,10 +495,24 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
       "spec": "`{workspace?, state?, limit?}` → `{requests}` (without outputs)",
       "params": "{workspace?: Target, state?: string, limit?: int}",
       "result": "{requests: [object]}"
+    },
+    {
+      "name": "assistant.models",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{connection?, profile?, refresh?}` → `{connection, adapter, provenance: live\\|cached\\|bundled, refreshed_at_ms, models: [{id, display_name?, created?, capabilities: {text, streaming, json_schema, tools, images: {support: supported\\|unsupported\\|unknown, source: bundled\\|listing\\|user\\|observed, verified_on?, note?}}}], note, endpoint_host, execution_machine, current_model?, current_capabilities?}`. Without `refresh` no network. A refresh needs assistance enabled and a resolvable connection and credential, and counts against the per-minute rate window",
+      "params": "{connection?: string, profile?: string, refresh?: bool}",
+      "result": "{connection: string, adapter: string, provenance: live|cached|bundled, refreshed_at_ms: int|null, models: [{id: string, display_name?: string|null, created?: string|null, capabilities: object}], note: string, endpoint_host?: string, execution_machine?: string, current_model?: string|null, current_capabilities?: object|null, explicit_model?: string}"
     },
     {
       "name": "assistant.providers",
@@ -425,10 +523,10 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{}` → `{connections: [{id, adapter, endpoint, endpoint_error?, credential, verified}], profiles, default_profile}`",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{}` → `{connections: [{id, adapter, endpoint, endpoint_error?, credential, verified}], profiles, default_profile, coordinator_note, targets: [{name, adapter, endpoint}]}` (the six validation targets: anthropic, openai, gemini, openrouter, ollama, custom)",
       "params": "{}",
-      "result": "{connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null}"
+      "result": "{connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null, coordinator_note?: string, targets?: [{name: string, adapter: string, endpoint: string}]}"
     },
     {
       "name": "assistant.purge",
@@ -439,7 +537,7 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
       "spec": "`{request}\\|{workspace}\\|{all: true}` → `{purged}`. Deletes records and generated outputs (cancels unfinished ones first)",
       "params": "{request?: string, workspace?: Target, all?: bool}",
       "result": "{purged: int}"
@@ -453,9 +551,9 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, connection?}` → `{revoked, cancelled_requests}`. Cancels that workspace's unfinished requests",
-      "params": "{workspace?: Target, connection?: string}",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{workspace?\\|remote_workspace?, connection?}` → `{revoked, cancelled_requests}`. Cancels that workspace's unfinished requests",
+      "params": "{workspace?: Target, remote_workspace?: string, connection?: string}",
       "result": "{revoked: int, cancelled_requests: int}"
     },
     {
@@ -467,10 +565,38 @@
       "tables": [
         "assist"
       ],
-      "milestone": "14; as built 2026-10-06",
-      "spec": "`{}` → `{enabled, configured, config_problem?, coordinator: {machine, session}, profile?: {id, connection, adapter, model, endpoint_host, credential: \"env:NAME\"\\|\"file:PATH\"\\|..., limits, pricing_usd_per_mtok?}, limits, today: {utc_day, used, reserved, remaining}, auto_send, consents, requests: {awaiting_confirmation, queued, running, stored}, operations, background: false}` — no secrets, no provider contact",
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{}` → `{enabled, configured, config_problem?, coordinator: {machine, session}, profile?: {id, connection, adapter, model, endpoint_host, credential: \"env:NAME\"\\|\"file:PATH\"\\|\"keychain:ITEM\", limits, pricing_usd_per_mtok?}, limits, today: {utc_day, used, reserved, remaining}, auto_send, consents, requests: {awaiting_confirmation, queued, running, stored}, operations: [{name, classes, label, background_only}], background (both background opt-ins on), background_detail, scheduler: {capacity, running, waiting}, capabilities (the default profile's records), cache: {enabled, entries}, remote_sources, keychain_backend}` — no secrets, no provider contact",
       "params": "{}",
-      "result": "{enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}}"
+      "result": "{enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}, background?: bool, background_detail?: object, scheduler?: {capacity: int, running: int, waiting: int}, capabilities?: object|null, cache?: {enabled: bool, entries: int}, remote_sources?: bool, keychain_backend?: string}"
+    },
+    {
+      "name": "assistant.test",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06, batch 2D extensions the same day",
+      "spec": "`{profile?, probe?: [streaming\\|json_schema]}` → `{ok, id, profile, connection, adapter, model, endpoint_host, execution_machine, latency_ms, attempts, usage, estimated_cost_usd?, counted: true, error?, probes: [{feature, ok, recorded: supported\\|unsupported\\|none, ...}]}`. An explicit small generation counted as usage; probes record observed capabilities. Sends no workspace content",
+      "params": "{profile?: string, probe?: [streaming|json_schema] | string}",
+      "result": "{ok: bool, id: string, profile: string, connection: string, adapter: string, model: string, endpoint_host: string, execution_machine: string, latency_ms: int, attempts: int, usage: object, estimated_cost_usd?: number|null, counted: bool, error?: object|null, probes: [object]}"
+    },
+    {
+      "name": "attention.batch",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{interaction: string}",
+      "result": "{interaction: string, batchable: bool, batch?: string, reason?: string, members: [{interaction: string, handle: string, run: string, pane: string, title: string, decision_rev: int, opened_at_ms: int}], facts?: object | null, note?: string}"
     },
     {
       "name": "attention.list",
@@ -484,7 +610,7 @@
       "milestone": null,
       "spec": null,
       "params": "{budget_ms?: int, effort?: quick|minutes|deep}",
-      "result": "{items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool}], coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int}, five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null}"
+      "result": "{items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool, deadline_ms?: int | null, deadline_source?: native|gate|null, deadline_in_ms?: int | null, batch?: {id: string, size: int} | null}], coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int}, five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null, batches?: [{id: string, members: [{kind: string, id: string}]}], also_working?: [{run: string, pane: string, name: string, harness: string, task: {id: string, handle: string, title: string} | null, since_ms: int, working_for_ms: int}]}"
     },
     {
       "name": "attention.update",
@@ -1623,6 +1749,48 @@
       "result": "{event: Event}"
     },
     {
+      "name": "family.check",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string, child?: string}",
+      "result": "{family: string, results: [{child: string, outcome: object}]}"
+    },
+    {
+      "name": "family.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string}",
+      "result": "{family: object, children: [{handle: string, harness: string, task: Task|null, run: object|null, discarded: bool}]}"
+    },
+    {
+      "name": "family.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{families: [object]}"
+    },
+    {
       "name": "fs.list",
       "mutating": false,
       "scope": "pane",
@@ -1691,6 +1859,146 @@
       "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`. `not_found:not_a_repo` outside a repository",
       "params": "{pane?: Target, path?: string}",
       "result": "{repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}"
+    },
+    {
+      "name": "goal.approve",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, by?: string, start?: bool = true}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.briefing",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{since?: int|string, until?: int}",
+      "result": "{briefing: {since_ms: int, until_ms: int, sections: [{title: string, items: [string]}], counts: object, text: string}}"
+    },
+    {
+      "name": "goal.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, stop_tasks?: bool = false}",
+      "result": "{goal: object, progress: {done: int, total: int}, parked: [string]}"
+    },
+    {
+      "name": "goal.create",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{title: string, text?: string, text_file?: string, repo?: string, base?: string, plan?: bool = true}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{goals: [{goal: object, progress: {done: int, total: int}}]}"
+    },
+    {
+      "name": "goal.plan",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, backend?: heuristic|agent|external}",
+      "result": "{goal: object, progress?: object, backend?: string, prompt?: string, submit_command?: string, plan_file?: string, planning_run?: string|null, agent_error?: string}"
+    },
+    {
+      "name": "goal.plan_submit",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, plan?: object|string, file?: string, planner?: string}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.start",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string}",
+      "result": "{goal: object, progress: {done: int, total: int}, started: [string]}"
+    },
+    {
+      "name": "goal.step_done",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, step: string, ok?: bool = true, error?: string}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
     },
     {
       "name": "group.add",
@@ -1947,6 +2255,90 @@
       "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`. `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
       "params": "{name?: string}",
       "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
+    },
+    {
+      "name": "merge.predict",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{repo?: string, tasks?: [string]}",
+      "result": "{conflicts: [{a: string, b: string, kind: overlap|textual|claim, severity: low|medium|high, paths: [string], detail: string}], tasks: [string], at_ms: int}"
+    },
+    {
+      "name": "merge.queue.add",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, target?: string, priority?: int = 0, note?: string, allow_dirty?: bool = false, run?: bool = false}",
+      "result": "{entry: object, position: int|null, run?: object}"
+    },
+    {
+      "name": "merge.queue.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{entry: string}",
+      "result": "{entry: object|null}"
+    },
+    {
+      "name": "merge.queue.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{all?: bool = false}",
+      "result": "{entries: [object], order: [string]}"
+    },
+    {
+      "name": "merge.queue.requeue",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{entry: string}",
+      "result": "{entry: object|null}"
+    },
+    {
+      "name": "merge.queue.run",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{entry?: string, count?: int = 1, all?: bool = false}",
+      "result": "{ran: int, results: [{entry: object, event: string, detail: object}]}"
     },
     {
       "name": "notes.get",
@@ -2580,6 +2972,48 @@
       "result": "{rule: PolicyRuleInfo}"
     },
     {
+      "name": "policy.learned.accept",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, target?: user|repo = user}",
+      "result": "{accepted: object, result: object}"
+    },
+    {
+      "name": "policy.learned.dismiss",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string}",
+      "result": "{dismissed: string, total: int}"
+    },
+    {
+      "name": "policy.learned.list",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{repo?: string}",
+      "result": "{suggestions: [{id: string, effect: allow|deny, harness: string, tool: string, workspace: string, pattern: string, rule: object, toml: string, approvals: int, denials: int, first_at_ms: int, last_at_ms: int, max_risk: string, samples: [string], reason: string}], stats: {decisions: int, fingerprints: int, min_approvals: int, max_denials: int, window_ms: int, suggest_deny: bool, dismissed: int}}"
+    },
+    {
       "name": "policy.list",
       "mutating": false,
       "scope": "full",
@@ -2606,6 +3040,20 @@
       "spec": "`{rule_id}` → `{}`",
       "params": "{rule_id: string}",
       "result": "{removed: bool, rule: PolicyRuleInfo}"
+    },
+    {
+      "name": "policy.suggest",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}",
+      "result": "{suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}"
     },
     {
       "name": "policy.test",
@@ -2830,6 +3278,62 @@
       "spec": "`{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human)",
       "params": "{preview: Target, machine?: string}",
       "result": "{remote_url: string, profile_url: string, proxy_url: string|null}"
+    },
+    {
+      "name": "quota.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key?: string, task?: string}",
+      "result": "{resumed: string, handle: string}"
+    },
+    {
+      "name": "quota.route",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{harnesses?: [string]}",
+      "result": "{ranking: [{harness: string, headroom: number, account: string}]}"
+    },
+    {
+      "name": "quota.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{enabled: bool, accounts: [object], paused: [object], config: object}"
+    },
+    {
+      "name": "quota.tick",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{dry_run?: bool = false}",
+      "result": "{dry_run: bool, actions: [object]}"
     },
     {
       "name": "sandbox.allow",
@@ -3123,7 +3627,7 @@
       "milestone": "M1",
       "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both. If the scope no longer matches `plan`, the server returns `conflict`. The CLI sends the dry run's `scope` + `plan` to confirm the deletion. This prevents a focus change or relative cutoff from changing the deletion target. Idempotent. `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`.",
       "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}",
-      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int}"
+      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}"
     },
     {
       "name": "search.query",
@@ -3179,7 +3683,7 @@
       "milestone": "M1",
       "spec": "`{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}`",
       "params": "{}",
-      "result": "{pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, preview?: object, timers?: object, db_size?: int, rss?: int}"
+      "result": "{pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}"
     },
     {
       "name": "server.stop",
@@ -3420,6 +3924,20 @@
       "result": "{task: Task, job?: any, stopped?: [any], branch_kept?: string|null, worktree_removed?: bool, archived?: bool}"
     },
     {
+      "name": "task.best_of_n",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{title: string, agents: string|[string|object], repo?: string, base?: string, prompt?: string, prompt_file?: string, suffix?: string, check_command?: string, isolate?: string, yolo?: bool, network?: string, image?: string, setup?: bool, ports?: int, isolation?: string, checkout?: string, root?: string, fetch?: bool}",
+      "result": "{family: object, tasks: [Task|null], runs: [AgentRun], warnings: [any]}"
+    },
+    {
       "name": "task.check.authorize",
       "mutating": true,
       "scope": "full",
@@ -3488,6 +4006,62 @@
       "spec": null,
       "params": "{task: Target, check: string, subject: string, subject_id?: string, definition_digest?: string, idempotency_key?: string, authorize?: bool}",
       "result": "{check_run: object, definition: object, provenance: any}"
+    },
+    {
+      "name": "task.claim",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task?: Target, run?: Target, glob: string, note?: string}",
+      "result": "{claim: {id: string, task: string, glob: string, note: string|null, created_at_ms: int}, conflicts: [object]}"
+    },
+    {
+      "name": "task.claim.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task?: Target}",
+      "result": "{claims: [object]}"
+    },
+    {
+      "name": "task.claim.remove",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{claim: string}",
+      "result": "{removed: string}"
+    },
+    {
+      "name": "task.compare",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string, pair?: [string]}",
+      "result": "{family: string, state: string, picked: string|null, reports: [object], ranking: [{handle: string, score: int, reasons: [string]}], text: string, pair?: {a: string, b: string, summary: object}}"
     },
     {
       "name": "task.create",
@@ -3606,6 +4180,20 @@
       "result": "{task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null}"
     },
     {
+      "name": "task.link.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: string, pane?: Target}",
+      "result": "{run: {id: string, handle: string, harness: string, integration: string, pane: string, session_reported: bool}, verified: bool, reasons: [string], remedies: [{action: string, label: string, command?: string, note?: string}], candidates: [object], note: string}"
+    },
+    {
       "name": "task.list",
       "mutating": false,
       "scope": "pane",
@@ -3632,6 +4220,20 @@
       "spec": "`{task}` → `{task}` — park = stop agents gracefully, keep worktree",
       "params": "{task: Target}",
       "result": "{task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}"
+    },
+    {
+      "name": "task.pick",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string, child: string, merge?: bool, discard?: bool, force?: bool, target?: string}",
+      "result": "{family: object, picked: string, merge: any, discarded: [{child: string, ok: bool, error?: string}]}"
     },
     {
       "name": "task.ports",
@@ -3674,6 +4276,48 @@
       "spec": null,
       "params": "{task: Target, refresh?: bool = false}",
       "result": "{task: string, pr: PrLookup}"
+    },
+    {
+      "name": "task.pr.claim",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "review::pr"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, url: string, text?: string, idempotency_key?: string}",
+      "result": "{claim: PrClaim, label: string, note: string}"
+    },
+    {
+      "name": "task.pr.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::pr"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, subject?: string}",
+      "result": "{task: string, observations: [PrObservation], claims: [PrClaim], provider: string, max_age_secs: int}"
+    },
+    {
+      "name": "task.pr.observe",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "review::pr"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, pr?: string, criteria?: [string], idempotency_key?: string}",
+      "result": "{observation: PrObservation, label: string, note: string}"
     },
     {
       "name": "task.reconcile",
@@ -3760,6 +4404,20 @@
       "result": "{task: Target, subject: string, base_sha: string, head_sha: string, content_sha: string, path: string | null, diff: string, truncated: bool, total_bytes: int, max_bytes: int}"
     },
     {
+      "name": "task.review.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task?: Target, pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false}",
+      "result": "{scope: any, dry_run: bool, purged: ReviewPurge}"
+    },
+    {
       "name": "task.review.get",
       "mutating": false,
       "scope": "pane",
@@ -3771,7 +4429,49 @@
       "milestone": null,
       "spec": null,
       "params": "{task: Target, subject?: string}",
-      "result": "{task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}}"
+      "result": "{task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string, selection?: object}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}, human_reviews?: [object], purged?: any}"
+    },
+    {
+      "name": "task.review.human_review",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, criterion: string, verdict: supported|failed|withdrawn, subject?: string, expected_subject?: string, note?: string, screenshots?: [string], idempotency_key?: string}",
+      "result": "{review: object, note: string}"
+    },
+    {
+      "name": "task.review.interval_status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::interval"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{enabled: bool, watcher: string, settle_ms: int, arm_delay_ms: int, harnesses: [string], checkouts: [object], note: string}"
+    },
+    {
+      "name": "task.review.intervals",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::interval"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, limit?: int}",
+      "result": "{task: string, intervals: [object]}"
     },
     {
       "name": "task.review.note.classify",
@@ -3830,8 +4530,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{task: Target, idempotency_key?: string}",
-      "result": "{subject: object, snapshot: object, label: string, note: string}"
+      "params": "{task: Target, paths?: [string], patch?: string, idempotency_key?: string}",
+      "result": "{subject: object, snapshot: object, selection?: object, label: string, note: string}"
     },
     {
       "name": "task.review.snapshot.gc",
@@ -3860,7 +4560,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, idempotency_key?: string}",
+      "params": "{request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, checkout?: disposable|task, idempotency_key?: string}",
       "result": "{request: object, run: Target, binding: object, note?: string, replayed?: bool}"
     },
     {
@@ -3890,6 +4590,20 @@
       "spec": "`{task}` → `{text}`",
       "params": "{task: Target, max_bytes?: int = 262144}",
       "result": "{task: string, path: string, exists: bool, text: string, size: int, truncated: bool, setup_status: string|null}"
+    },
+    {
+      "name": "task.split",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: string, pane?: Target, workspace?: Target, paths?: [string], title?: string, slug?: string, dry_run?: bool = false, resume?: bool, keep_recovery?: bool}",
+      "result": "{dry_run?: bool, source: string, changes?: [{path: string, staged: bool, unstaged: bool, untracked: bool, deleted: bool}], steps?: [{step: string, detail: string}], blocked_by?: [string]|null, runs: [object], task?: Task|null, moved?: [string], recovery_ref?: string, recovery_kept?: bool}"
     },
     {
       "name": "task.sync",
@@ -3934,6 +4648,216 @@
       "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]",
       "params": "{mode: auto|light|dark|null}",
       "result": "{appearance: Appearance, colorfgbg: string, reports?: any}"
+    },
+    {
+      "name": "vm.create",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{name?: string, task?: string, checkout?: string, template?: bool}",
+      "result": "{vm: object, fork_ms: int|null}"
+    },
+    {
+      "name": "vm.destroy",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.fork",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{snapshot: string, count?: int = 1, prefix?: string, tasks?: [string], checkouts?: [string]}",
+      "result": "{vms: [object], ms: int}"
+    },
+    {
+      "name": "vm.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{vms: [{name: string, task: string|null, template: string|null, created_ms: int, state: string}], snapshots: [object]}"
+    },
+    {
+      "name": "vm.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.snapshot",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string, label?: string}",
+      "result": "{snapshot: object}"
+    },
+    {
+      "name": "vm.snapshot.delete",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{snapshot: string, force?: bool = false}",
+      "result": "{deleted: string}"
+    },
+    {
+      "name": "vm.start",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{enabled: bool, provider: string, available: bool, detail: string, config: object, providers: [{provider: string, status: string, note: string}]}"
+    },
+    {
+      "name": "vm.stop",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.suspend",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.template.build",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{template: object}"
+    },
+    {
+      "name": "vm.template.delete",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key: string}",
+      "result": "{deleted: string}"
+    },
+    {
+      "name": "vm.template.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{templates: [object]}"
+    },
+    {
+      "name": "vm.transport",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, offered: [string], chain: [string], configured: string, link: string}"
     },
     {
       "name": "workspace.close",

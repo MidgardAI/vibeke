@@ -15,6 +15,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 - `vibeke update`: update the binary.
 - `vibeke doctor`: check the installation.
 - `vibeke doctor --rebuild-index`: rebuild the scrollback search index. Stop the server first.
+- `vibeke doctor --list-backups` and `vibeke doctor --restore-backup NAME`: list the pre-migration copies of the state database (the last three) and restore one. Stop the server first. Restoring rotates the event-log epoch and keeps the replaced database as `state.db.pre-restore`.
 - `vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]`: delete archived scrollback through `scrollback.forget`.
 - `vibeke --skill`: print the agent instructions.
 - `vibeke --default-config`: print the configuration template.
@@ -126,6 +127,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `resume` | `<run>` | `agent.resume` | [--pane p] |
 | `resumable` | - | `agent.resumable` | ended runs that can be resumed |
 | `harnesses` | - | `agent.harnesses` |  |
+| `turn-usage` | `<run>` | `agent.turn_usage` | <run> [--limit 200] — per-turn tokens and cost from the transcript |
+| `limits` | - | `agent.limits` | latest rate-limit observation per harness |
+| `drift` | - | `agent.drift` | disagreement/answer-failure counters per harness version |
 
 ## `vibeke interaction`
 
@@ -170,6 +174,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 |---|---|---|---|
 | `new` | `<title>` | `task.create` | [--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree\|jj_workspace\|none\|auto] [--yolo] [--isolate host\|sandbox\|container] [--confirm-host-yolo] [--network none\|harness-apis\|package-registries\|dev\|open] [--image ref] [--code clone\|worktree] [--devcontainer] [--build] |
 | `list` | - | `task.list` |  |
+| `compare` | `<family>` | `task.compare` | <family> [--pair k7.1 --pair k7.2]: side-by-side diff stats, checks and ranking of a best-of-N family (orchestrate.best_of_n) |
+| `pick` | `<family>` `<child>` | `task.pick` | <family> <child> [--merge] [--discard] [--force] [--target branch]: pick the winner of a best-of-N family |
+| `split` | - | `task.split` | [--run a12 \| --pane p] [--paths a,b] [--title t] [--dry-run] [--resume]: move a running agent's uncommitted changes into a new task (orchestrate.split) |
 | `park` | `<task>` | `task.park` | <task> stop its agents gracefully, keep the worktree |
 | `resume` | `<task>` | `task.resume` | <task> restart the parked agents from their sessions |
 | `sync` | `<task>` | `task.sync` | <task> [--direction pull\|push\|both] [--force]: host-side fetch of a container task's commits (push = host commits into the box) |
@@ -192,6 +199,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `depend` | `<task>` `<depends_on>` | `task.dependency.add` | <task> <depends-on> [--kind blocks\|related] — confirm a dependency link (cycles refused) |
 | `undepend` | `<task>` `<depends_on>` | `task.dependency.remove` | <task> <depends-on> [--kind k] \| --edge e |
 | `deps` | `<task>` | `task.dependency.list` | [task] — confirmed links and how many open tasks each blocks |
+| `select` | `<task>` | `task.review.snapshot` | <task> --paths f [--paths g …] \| --patch <unified diff> — capture only these files or hunks as a selected-patch subject (checks on it verify the selection alone) |
+| `human-review` | `<task>` `<criterion>` `<verdict>` | `task.review.human_review` | <task> <criterion> supported\|failed\|withdrawn [--note n] [--subject s] [--screenshots id] — your judgment of a human criterion on the shown revision |
+| `forget` | - | `task.review.forget` | --task t \| --pane p \| --workspace w \| --before t \| --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs) |
+| `link` | - | `task.link.status` | --run r \| --pane p — why a run's identity is not verified, how to verify it, and verified runs to track instead |
 | `message` | `<task>` `<text>` | `task.message.prepare` | [--communicates-intent] — draft only |
 | `send` | `<message>` | `task.message.send` | send a prepared message (refuses with zero bytes when unsafe) |
 | `message-status` | `<message>` | `task.message.get` |  |
@@ -206,6 +217,91 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `recreate` | `<task>` | `task.recreate` | <task> recreate a missing task's worktree at its path from its branch |
 | `forget` | `<task>` | `task.forget` | <task> [--force] drop a missing (or finished) task's record; touches no files |
 | `ports` | `<task>` | `task.ports` | <task> [--re-lease] the leased port block and its env; --re-lease moves to another block |
+
+## `vibeke family`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `list` | - | `family.list` |  |
+| `get` | `<family>` | `family.get` |  |
+| `check` | `<family>` | `family.check` | <family> [--child k7.1]: run the family's check command in each child |
+
+## `vibeke claim`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `add` | `<glob>` | `task.claim` | <glob> --task k7 \| --run a12 [--note text]: claim files for a task (advisory; orchestrate.merge) |
+| `list` | - | `task.claim.list` | [--task k7] |
+| `remove` | `<claim>` | `task.claim.remove` |  |
+
+## `vibeke merge`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `predict` | - | `merge.predict` | [--repo path] [--tasks k1,k2]: predicted conflicts between live worktrees |
+| `add` | `<task>` | `merge.queue.add` | <task> [--target main] [--priority n] [--run] [--allow-dirty]: queue a task branch |
+| `list` | - | `merge.queue.list` | [--all] |
+| `cancel` | `<entry>` | `merge.queue.cancel` |  |
+| `requeue` | `<entry>` | `merge.queue.requeue` |  |
+| `run` | - | `merge.queue.run` | [--entry id] [--count n \| --all]: merge the next queue entries |
+
+## `vibeke goal`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `create` | `<title>` | `goal.create` | <title> [--text t \| --text-file f] [--repo .] [--no-plan] |
+| `list` | - | `goal.list` |  |
+| `get` | `<goal>` | `goal.get` |  |
+| `plan` | `<goal>` | `goal.plan` | <goal> [--backend heuristic\|agent\|external] |
+| `plan-submit` | `<goal>` | `goal.plan_submit` | <goal> --file plan.json \| --plan '<json>' |
+| `approve` | `<goal>` | `goal.approve` | <goal> [--no-start]: approve the plan and start its ready steps |
+| `start` | `<goal>` | `goal.start` |  |
+| `step-done` | `<goal>` `<step>` | `goal.step_done` | <goal> <step> [--no-ok] [--error text] |
+| `cancel` | `<goal>` | `goal.cancel` | <goal> [--stop-tasks] |
+| `briefing` | - | `goal.briefing` | [--since 12h\|epoch-ms]: what happened while you were away |
+
+## `vibeke quota`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `quota.status` |  |
+| `tick` | - | `quota.tick` | [--dry-run] |
+| `route` | - | `quota.route` | [--harnesses claude,codex] |
+| `resume` | `<key>` | `quota.resume` | <task-or-run> resume work the scheduler paused |
+
+## `vibeke vm`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `vm.status` |  |
+| `list` | - | `vm.list` |  |
+| `create` | - | `vm.create` | [--name n] [--task t] [--checkout dir] [--no-template] |
+| `start` | `<vm>` | `vm.start` |  |
+| `stop` | `<vm>` | `vm.stop` |  |
+| `suspend` | `<vm>` | `vm.suspend` |  |
+| `resume` | `<vm>` | `vm.resume` |  |
+| `destroy` | `<vm>` | `vm.destroy` |  |
+| `snapshot` | `<vm>` | `vm.snapshot` | <vm> [--label l] |
+| `snapshot-delete` | `<snapshot>` | `vm.snapshot.delete` | <vm/label> [--force] |
+| `fork` | `<snapshot>` | `vm.fork` | <vm/label> [--count n] [--prefix p] |
+| `transport` | `<vm>` | `vm.transport` |  |
+| `template-list` | - | `vm.template.list` |  |
+| `template-build` | - | `vm.template.build` |  |
+| `template-delete` | `<key>` | `vm.template.delete` |  |
+
+## `vibeke policy`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `learned` | - | `policy.learned.list` | [--repo path]: rule suggestions learned from repeated approvals (orchestrate.learned_policy) |
+| `learned-accept` | `<id>` | `policy.learned.accept` | <id> [--target user\|repo] |
+| `learned-dismiss` | `<id>` | `policy.learned.dismiss` |  |
+| `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
+| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
+| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
+| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
+| `suggest` | - | `policy.suggest` | [--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml |
+| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
 
 ## `vibeke sandbox`
 
@@ -226,16 +322,6 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `copy-out` | `<task>` `<path>` | `sandbox.copy_out` | <task> <path>: copy one file out of the box into the host outbox |
 | `request` | `<kind>` | `sandbox.request` | push\|copy_out [--path p] [--remote r]: from inside a box, ask the host for a boundary action |
 | `setup-token` | - | `sandbox.setup_token` | store `claude setup-token` output read from stdin (projected as CLAUDE_CODE_OAUTH_TOKEN) |
-
-## `vibeke policy`
-
-| Verb | Positionals | Method | Description |
-|---|---|---|---|
-| `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
-| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
-| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
-| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
-| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
 
 ## `vibeke worktree`
 
@@ -404,12 +490,34 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `providers` | - | `assistant.providers` | configured connections and profiles (no secrets) |
 | `consent` | `<workspace>` | `assistant.consent` | [workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...] |
 | `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--connection c] — also cancels unfinished requests there |
-| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — Show the exact payload. Do not send it. |
+| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate\|navigate\|decision_card\|task_title [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it. |
 | `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
 | `show` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources and the generated draft |
 | `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |
 | `cancel` | `<request>` | `assistant.cancel` | <request> |
 | `purge` | `<request>` | `assistant.purge` | <request> \| --workspace w \| --all — forget generated outputs |
+| `models` | `<connection>` | `assistant.models` | [connection] [--profile p] [--refresh] — live\|cached\|bundled model list with capability records; --refresh asks the provider |
+| `test` | - | `assistant.test` | [--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works |
+| `background` | `<action>` | `assistant.background` | [status\|tick] — the opt-in background sweeper (summaries, stall notices) |
+
+## `vibeke assistant`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `assistant.status` | enabled/configured state, coordinator, profile, budgets, consents (no secrets) |
+| `providers` | - | `assistant.providers` | configured connections and verified adapters (no secrets) |
+| `models` | `<connection>` | `assistant.models` | --connection <id> [--refresh] — model list with live\|cached\|bundled provenance and capability records |
+| `test` | - | `assistant.test` | [--profile p] [--probe streaming,json_schema] — explicit small generation, counted as usage |
+| `brief` | `<workspace>` | `assistant.generate` | [workspace] — preview a briefing request for a workspace (then `assistant confirm`) |
+| `generate` | `<operation>` | `assistant.generate` | <operation> [flags] — show the exact payload; nothing is sent |
+| `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
+| `get` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources, staleness and the generated draft |
+| `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |
+| `cancel` | `<request>` | `assistant.cancel` | <request> |
+| `consent` | `<workspace>` | `assistant.consent` | [workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...] |
+| `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--remote-workspace machine:/path] [--connection c] |
+| `purge` | `<request>` | `assistant.purge` | <request> \| --workspace w \| --all — forget generated outputs and cached results |
+| `background` | `<action>` | `assistant.background` | [status\|tick] |
 
 ## `vibeke api`
 

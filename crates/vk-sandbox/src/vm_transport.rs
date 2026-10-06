@@ -91,13 +91,16 @@ pub struct Attempt {
     pub error: String,
 }
 
+/// A connected link: the transport that won, the stream, and the steps that failed first.
+pub type Connected = (VmTransportKind, Box<dyn Duplex>, Vec<Attempt>);
+
 /// Dial `vm` along `chain` (see [`plan`]); the first dialer that connects wins. The attempts
 /// that failed come back with the connection, or all of them as the error text.
 pub fn connect(
     vm: &str,
     chain: &[VmTransportKind],
     dialers: &[&dyn Dialer],
-) -> Result<(VmTransportKind, Box<dyn Duplex>, Vec<Attempt>), String> {
+) -> Result<Connected, String> {
     let mut failed = vec![];
     for k in chain {
         let Some(d) = dialers.iter().find(|d| d.kind() == *k) else {

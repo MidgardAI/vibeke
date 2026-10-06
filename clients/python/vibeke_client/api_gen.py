@@ -26,6 +26,9 @@ class Api:
     async def adapter_signal(self, params: "t.AdapterSignalParams") -> "t.AdapterSignalResult":
         return await self.call("adapter.signal", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_drift(self, params: "Optional[t.AgentDriftParams]" = None) -> "t.AgentDriftResult":
+        return await self.call("agent.drift", params or {})  # type: ignore[arg-type, return-value]
+
     async def agent_get(self, params: "t.AgentGetParams") -> "t.AgentGetResult":
         return await self.call("agent.get", params)  # type: ignore[arg-type, return-value]
 
@@ -35,11 +38,20 @@ class Api:
     async def agent_interrupt(self, params: "t.AgentInterruptParams") -> "t.AgentInterruptResult":
         return await self.call("agent.interrupt", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_limits(self, params: "Optional[t.AgentLimitsParams]" = None) -> "t.AgentLimitsResult":
+        return await self.call("agent.limits", params or {})  # type: ignore[arg-type, return-value]
+
     async def agent_list(self, params: "Optional[t.AgentListParams]" = None) -> "t.AgentListResult":
         return await self.call("agent.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def agent_manifest_pin(self, params: "t.AgentManifestPinParams") -> "t.AgentManifestPinResult":
+        return await self.call("agent.manifest_pin", params)  # type: ignore[arg-type, return-value]
+
     async def agent_manifests(self, params: "Optional[t.AgentManifestsParams]" = None) -> "t.AgentManifestsResult":
         return await self.call("agent.manifests", params or {})  # type: ignore[arg-type, return-value]
+
+    async def agent_manifests_check(self, params: "Optional[t.AgentManifestsCheckParams]" = None) -> "t.AgentManifestsCheckResult":
+        return await self.call("agent.manifests_check", params or {})  # type: ignore[arg-type, return-value]
 
     async def agent_manifests_reload(self, params: "Optional[t.AgentManifestsReloadParams]" = None) -> "t.AgentManifestsReloadResult":
         return await self.call("agent.manifests_reload", params or {})  # type: ignore[arg-type, return-value]
@@ -74,6 +86,9 @@ class Api:
     async def agent_start(self, params: "t.AgentStartParams") -> "t.AgentStartResult":
         return await self.call("agent.start", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_turn_usage(self, params: "Optional[t.AgentTurnUsageParams]" = None) -> "t.AgentTurnUsageResult":
+        return await self.call("agent.turn_usage", params or {})  # type: ignore[arg-type, return-value]
+
     async def agent_wait(self, params: "t.AgentWaitParams") -> "t.AgentWaitResult":
         return await self.call("agent.wait", params)  # type: ignore[arg-type, return-value]
 
@@ -82,6 +97,9 @@ class Api:
 
     async def api_schema(self, params: "Optional[t.ApiSchemaParams]" = None) -> "t.ApiSchemaResult":
         return await self.call("api.schema", params or {})  # type: ignore[arg-type, return-value]
+
+    async def assistant_background(self, params: "Optional[t.AssistantBackgroundParams]" = None) -> "t.AssistantBackgroundResult":
+        return await self.call("assistant.background", params or {})  # type: ignore[arg-type, return-value]
 
     async def assistant_cancel(self, params: "t.AssistantCancelParams") -> "t.AssistantCancelResult":
         return await self.call("assistant.cancel", params)  # type: ignore[arg-type, return-value]
@@ -101,6 +119,9 @@ class Api:
     async def assistant_list(self, params: "Optional[t.AssistantListParams]" = None) -> "t.AssistantListResult":
         return await self.call("assistant.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def assistant_models(self, params: "Optional[t.AssistantModelsParams]" = None) -> "t.AssistantModelsResult":
+        return await self.call("assistant.models", params or {})  # type: ignore[arg-type, return-value]
+
     async def assistant_providers(self, params: "Optional[t.AssistantProvidersParams]" = None) -> "t.AssistantProvidersResult":
         return await self.call("assistant.providers", params or {})  # type: ignore[arg-type, return-value]
 
@@ -112,6 +133,12 @@ class Api:
 
     async def assistant_status(self, params: "Optional[t.AssistantStatusParams]" = None) -> "t.AssistantStatusResult":
         return await self.call("assistant.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def assistant_test(self, params: "Optional[t.AssistantTestParams]" = None) -> "t.AssistantTestResult":
+        return await self.call("assistant.test", params or {})  # type: ignore[arg-type, return-value]
+
+    async def attention_batch(self, params: "t.AttentionBatchParams") -> "t.AttentionBatchResult":
+        return await self.call("attention.batch", params)  # type: ignore[arg-type, return-value]
 
     async def attention_list(self, params: "Optional[t.AttentionListParams]" = None) -> "t.AttentionListResult":
         return await self.call("attention.list", params or {})  # type: ignore[arg-type, return-value]
@@ -359,6 +386,15 @@ class Api:
     async def events_wait(self, params: "Optional[t.EventsWaitParams]" = None) -> "t.EventsWaitResult":
         return await self.call("events.wait", params or {})  # type: ignore[arg-type, return-value]
 
+    async def family_check(self, params: "t.FamilyCheckParams") -> "t.FamilyCheckResult":
+        return await self.call("family.check", params)  # type: ignore[arg-type, return-value]
+
+    async def family_get(self, params: "t.FamilyGetParams") -> "t.FamilyGetResult":
+        return await self.call("family.get", params)  # type: ignore[arg-type, return-value]
+
+    async def family_list(self, params: "Optional[t.FamilyListParams]" = None) -> "t.FamilyListResult":
+        return await self.call("family.list", params or {})  # type: ignore[arg-type, return-value]
+
     async def fs_list(self, params: "Optional[t.FsListParams]" = None) -> "t.FsListResult":
         return await self.call("fs.list", params or {})  # type: ignore[arg-type, return-value]
 
@@ -373,6 +409,36 @@ class Api:
 
     async def git_status(self, params: "Optional[t.GitStatusParams]" = None) -> "t.GitStatusResult":
         return await self.call("git.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def goal_approve(self, params: "t.GoalApproveParams") -> "t.GoalApproveResult":
+        return await self.call("goal.approve", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_briefing(self, params: "Optional[t.GoalBriefingParams]" = None) -> "t.GoalBriefingResult":
+        return await self.call("goal.briefing", params or {})  # type: ignore[arg-type, return-value]
+
+    async def goal_cancel(self, params: "t.GoalCancelParams") -> "t.GoalCancelResult":
+        return await self.call("goal.cancel", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_create(self, params: "t.GoalCreateParams") -> "t.GoalCreateResult":
+        return await self.call("goal.create", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_get(self, params: "t.GoalGetParams") -> "t.GoalGetResult":
+        return await self.call("goal.get", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_list(self, params: "Optional[t.GoalListParams]" = None) -> "t.GoalListResult":
+        return await self.call("goal.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def goal_plan(self, params: "t.GoalPlanParams") -> "t.GoalPlanResult":
+        return await self.call("goal.plan", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_plan_submit(self, params: "t.GoalPlanSubmitParams") -> "t.GoalPlanSubmitResult":
+        return await self.call("goal.plan_submit", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_start(self, params: "t.GoalStartParams") -> "t.GoalStartResult":
+        return await self.call("goal.start", params)  # type: ignore[arg-type, return-value]
+
+    async def goal_step_done(self, params: "t.GoalStepDoneParams") -> "t.GoalStepDoneResult":
+        return await self.call("goal.step_done", params)  # type: ignore[arg-type, return-value]
 
     async def group_add(self, params: "t.GroupAddParams") -> "t.GroupAddResult":
         return await self.call("group.add", params)  # type: ignore[arg-type, return-value]
@@ -427,6 +493,24 @@ class Api:
 
     async def layout_list(self, params: "Optional[t.LayoutListParams]" = None) -> "t.LayoutListResult":
         return await self.call("layout.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def merge_predict(self, params: "Optional[t.MergePredictParams]" = None) -> "t.MergePredictResult":
+        return await self.call("merge.predict", params or {})  # type: ignore[arg-type, return-value]
+
+    async def merge_queue_add(self, params: "t.MergeQueueAddParams") -> "t.MergeQueueAddResult":
+        return await self.call("merge.queue.add", params)  # type: ignore[arg-type, return-value]
+
+    async def merge_queue_cancel(self, params: "t.MergeQueueCancelParams") -> "t.MergeQueueCancelResult":
+        return await self.call("merge.queue.cancel", params)  # type: ignore[arg-type, return-value]
+
+    async def merge_queue_list(self, params: "Optional[t.MergeQueueListParams]" = None) -> "t.MergeQueueListResult":
+        return await self.call("merge.queue.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def merge_queue_requeue(self, params: "t.MergeQueueRequeueParams") -> "t.MergeQueueRequeueResult":
+        return await self.call("merge.queue.requeue", params)  # type: ignore[arg-type, return-value]
+
+    async def merge_queue_run(self, params: "Optional[t.MergeQueueRunParams]" = None) -> "t.MergeQueueRunResult":
+        return await self.call("merge.queue.run", params or {})  # type: ignore[arg-type, return-value]
 
     async def notes_get(self, params: "Optional[t.NotesGetParams]" = None) -> "t.NotesGetResult":
         return await self.call("notes.get", params or {})  # type: ignore[arg-type, return-value]
@@ -563,11 +647,23 @@ class Api:
     async def policy_add(self, params: "Optional[t.PolicyAddParams]" = None) -> "t.PolicyAddResult":
         return await self.call("policy.add", params or {})  # type: ignore[arg-type, return-value]
 
+    async def policy_learned_accept(self, params: "t.PolicyLearnedAcceptParams") -> "t.PolicyLearnedAcceptResult":
+        return await self.call("policy.learned.accept", params)  # type: ignore[arg-type, return-value]
+
+    async def policy_learned_dismiss(self, params: "t.PolicyLearnedDismissParams") -> "t.PolicyLearnedDismissResult":
+        return await self.call("policy.learned.dismiss", params)  # type: ignore[arg-type, return-value]
+
+    async def policy_learned_list(self, params: "Optional[t.PolicyLearnedListParams]" = None) -> "t.PolicyLearnedListResult":
+        return await self.call("policy.learned.list", params or {})  # type: ignore[arg-type, return-value]
+
     async def policy_list(self, params: "Optional[t.PolicyListParams]" = None) -> "t.PolicyListResult":
         return await self.call("policy.list", params or {})  # type: ignore[arg-type, return-value]
 
     async def policy_remove(self, params: "t.PolicyRemoveParams") -> "t.PolicyRemoveResult":
         return await self.call("policy.remove", params)  # type: ignore[arg-type, return-value]
+
+    async def policy_suggest(self, params: "Optional[t.PolicySuggestParams]" = None) -> "t.PolicySuggestResult":
+        return await self.call("policy.suggest", params or {})  # type: ignore[arg-type, return-value]
 
     async def policy_test(self, params: "t.PolicyTestParams") -> "t.PolicyTestResult":
         return await self.call("policy.test", params)  # type: ignore[arg-type, return-value]
@@ -616,6 +712,18 @@ class Api:
 
     async def preview_url(self, params: "t.PreviewUrlParams") -> "t.PreviewUrlResult":
         return await self.call("preview.url", params)  # type: ignore[arg-type, return-value]
+
+    async def quota_resume(self, params: "Optional[t.QuotaResumeParams]" = None) -> "t.QuotaResumeResult":
+        return await self.call("quota.resume", params or {})  # type: ignore[arg-type, return-value]
+
+    async def quota_route(self, params: "Optional[t.QuotaRouteParams]" = None) -> "t.QuotaRouteResult":
+        return await self.call("quota.route", params or {})  # type: ignore[arg-type, return-value]
+
+    async def quota_status(self, params: "Optional[t.QuotaStatusParams]" = None) -> "t.QuotaStatusResult":
+        return await self.call("quota.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def quota_tick(self, params: "Optional[t.QuotaTickParams]" = None) -> "t.QuotaTickResult":
+        return await self.call("quota.tick", params or {})  # type: ignore[arg-type, return-value]
 
     async def sandbox_allow(self, params: "t.SandboxAllowParams") -> "t.SandboxAllowResult":
         return await self.call("sandbox.allow", params)  # type: ignore[arg-type, return-value]
@@ -743,6 +851,9 @@ class Api:
     async def task_archive(self, params: "t.TaskArchiveParams") -> "t.TaskArchiveResult":
         return await self.call("task.archive", params)  # type: ignore[arg-type, return-value]
 
+    async def task_best_of_n(self, params: "t.TaskBestOfNParams") -> "t.TaskBestOfNResult":
+        return await self.call("task.best_of_n", params)  # type: ignore[arg-type, return-value]
+
     async def task_check_authorize(self, params: "t.TaskCheckAuthorizeParams") -> "t.TaskCheckAuthorizeResult":
         return await self.call("task.check.authorize", params)  # type: ignore[arg-type, return-value]
 
@@ -757,6 +868,18 @@ class Api:
 
     async def task_check_run(self, params: "t.TaskCheckRunParams") -> "t.TaskCheckRunResult":
         return await self.call("task.check.run", params)  # type: ignore[arg-type, return-value]
+
+    async def task_claim(self, params: "t.TaskClaimParams") -> "t.TaskClaimResult":
+        return await self.call("task.claim", params)  # type: ignore[arg-type, return-value]
+
+    async def task_claim_list(self, params: "Optional[t.TaskClaimListParams]" = None) -> "t.TaskClaimListResult":
+        return await self.call("task.claim.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_claim_remove(self, params: "t.TaskClaimRemoveParams") -> "t.TaskClaimRemoveResult":
+        return await self.call("task.claim.remove", params)  # type: ignore[arg-type, return-value]
+
+    async def task_compare(self, params: "t.TaskCompareParams") -> "t.TaskCompareResult":
+        return await self.call("task.compare", params)  # type: ignore[arg-type, return-value]
 
     async def task_create(self, params: "t.TaskCreateParams") -> "t.TaskCreateResult":
         return await self.call("task.create", params)  # type: ignore[arg-type, return-value]
@@ -782,11 +905,17 @@ class Api:
     async def task_get(self, params: "t.TaskGetParams") -> "t.TaskGetResult":
         return await self.call("task.get", params)  # type: ignore[arg-type, return-value]
 
+    async def task_link_status(self, params: "Optional[t.TaskLinkStatusParams]" = None) -> "t.TaskLinkStatusResult":
+        return await self.call("task.link.status", params or {})  # type: ignore[arg-type, return-value]
+
     async def task_list(self, params: "Optional[t.TaskListParams]" = None) -> "t.TaskListResult":
         return await self.call("task.list", params or {})  # type: ignore[arg-type, return-value]
 
     async def task_park(self, params: "t.TaskParkParams") -> "t.TaskParkResult":
         return await self.call("task.park", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pick(self, params: "t.TaskPickParams") -> "t.TaskPickResult":
+        return await self.call("task.pick", params)  # type: ignore[arg-type, return-value]
 
     async def task_ports(self, params: "t.TaskPortsParams") -> "t.TaskPortsResult":
         return await self.call("task.ports", params)  # type: ignore[arg-type, return-value]
@@ -796,6 +925,15 @@ class Api:
 
     async def task_pr(self, params: "t.TaskPrParams") -> "t.TaskPrResult":
         return await self.call("task.pr", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_claim(self, params: "t.TaskPrClaimParams") -> "t.TaskPrClaimResult":
+        return await self.call("task.pr.claim", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_list(self, params: "t.TaskPrListParams") -> "t.TaskPrListResult":
+        return await self.call("task.pr.list", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_observe(self, params: "t.TaskPrObserveParams") -> "t.TaskPrObserveResult":
+        return await self.call("task.pr.observe", params)  # type: ignore[arg-type, return-value]
 
     async def task_reconcile(self, params: "Optional[t.TaskReconcileParams]" = None) -> "t.TaskReconcileResult":
         return await self.call("task.reconcile", params or {})  # type: ignore[arg-type, return-value]
@@ -815,8 +953,20 @@ class Api:
     async def task_review_diff(self, params: "t.TaskReviewDiffParams") -> "t.TaskReviewDiffResult":
         return await self.call("task.review.diff", params)  # type: ignore[arg-type, return-value]
 
+    async def task_review_forget(self, params: "Optional[t.TaskReviewForgetParams]" = None) -> "t.TaskReviewForgetResult":
+        return await self.call("task.review.forget", params or {})  # type: ignore[arg-type, return-value]
+
     async def task_review_get(self, params: "t.TaskReviewGetParams") -> "t.TaskReviewGetResult":
         return await self.call("task.review.get", params)  # type: ignore[arg-type, return-value]
+
+    async def task_review_human_review(self, params: "t.TaskReviewHumanReviewParams") -> "t.TaskReviewHumanReviewResult":
+        return await self.call("task.review.human_review", params)  # type: ignore[arg-type, return-value]
+
+    async def task_review_interval_status(self, params: "Optional[t.TaskReviewIntervalStatusParams]" = None) -> "t.TaskReviewIntervalStatusResult":
+        return await self.call("task.review.interval_status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_review_intervals(self, params: "t.TaskReviewIntervalsParams") -> "t.TaskReviewIntervalsResult":
+        return await self.call("task.review.intervals", params)  # type: ignore[arg-type, return-value]
 
     async def task_review_note_classify(self, params: "t.TaskReviewNoteClassifyParams") -> "t.TaskReviewNoteClassifyResult":
         return await self.call("task.review.note.classify", params)  # type: ignore[arg-type, return-value]
@@ -842,6 +992,9 @@ class Api:
     async def task_setup_log(self, params: "t.TaskSetupLogParams") -> "t.TaskSetupLogResult":
         return await self.call("task.setup_log", params)  # type: ignore[arg-type, return-value]
 
+    async def task_split(self, params: "Optional[t.TaskSplitParams]" = None) -> "t.TaskSplitResult":
+        return await self.call("task.split", params or {})  # type: ignore[arg-type, return-value]
+
     async def task_sync(self, params: "t.TaskSyncParams") -> "t.TaskSyncResult":
         return await self.call("task.sync", params)  # type: ignore[arg-type, return-value]
 
@@ -850,6 +1003,51 @@ class Api:
 
     async def theme_set_mode(self, params: "t.ThemeSetModeParams") -> "t.ThemeSetModeResult":
         return await self.call("theme.set_mode", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_create(self, params: "Optional[t.VmCreateParams]" = None) -> "t.VmCreateResult":
+        return await self.call("vm.create", params or {})  # type: ignore[arg-type, return-value]
+
+    async def vm_destroy(self, params: "t.VmDestroyParams") -> "t.VmDestroyResult":
+        return await self.call("vm.destroy", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_fork(self, params: "t.VmForkParams") -> "t.VmForkResult":
+        return await self.call("vm.fork", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_list(self, params: "Optional[t.VmListParams]" = None) -> "t.VmListResult":
+        return await self.call("vm.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def vm_resume(self, params: "t.VmResumeParams") -> "t.VmResumeResult":
+        return await self.call("vm.resume", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_snapshot(self, params: "t.VmSnapshotParams") -> "t.VmSnapshotResult":
+        return await self.call("vm.snapshot", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_snapshot_delete(self, params: "t.VmSnapshotDeleteParams") -> "t.VmSnapshotDeleteResult":
+        return await self.call("vm.snapshot.delete", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_start(self, params: "t.VmStartParams") -> "t.VmStartResult":
+        return await self.call("vm.start", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_status(self, params: "Optional[t.VmStatusParams]" = None) -> "t.VmStatusResult":
+        return await self.call("vm.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def vm_stop(self, params: "t.VmStopParams") -> "t.VmStopResult":
+        return await self.call("vm.stop", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_suspend(self, params: "t.VmSuspendParams") -> "t.VmSuspendResult":
+        return await self.call("vm.suspend", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_template_build(self, params: "Optional[t.VmTemplateBuildParams]" = None) -> "t.VmTemplateBuildResult":
+        return await self.call("vm.template.build", params or {})  # type: ignore[arg-type, return-value]
+
+    async def vm_template_delete(self, params: "t.VmTemplateDeleteParams") -> "t.VmTemplateDeleteResult":
+        return await self.call("vm.template.delete", params)  # type: ignore[arg-type, return-value]
+
+    async def vm_template_list(self, params: "Optional[t.VmTemplateListParams]" = None) -> "t.VmTemplateListResult":
+        return await self.call("vm.template.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def vm_transport(self, params: "t.VmTransportParams") -> "t.VmTransportResult":
+        return await self.call("vm.transport", params)  # type: ignore[arg-type, return-value]
 
     async def workspace_close(self, params: "Optional[t.WorkspaceCloseParams]" = None) -> "t.WorkspaceCloseResult":
         return await self.call("workspace.close", params or {})  # type: ignore[arg-type, return-value]

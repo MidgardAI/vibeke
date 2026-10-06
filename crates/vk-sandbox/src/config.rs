@@ -141,7 +141,7 @@ pub fn parse_size_mb(s: &str) -> Option<u64> {
         (s.as_str(), 1.0)
     };
     let n: f64 = num.trim().parse().ok()?;
-    (n.is_finite() && n > 0.0).then(|| (n * mult) as u64)
+    (n.is_finite() && n > 0.0).then_some((n * mult) as u64)
 }
 
 impl VmConfig {

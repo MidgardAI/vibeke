@@ -16,7 +16,7 @@ use vk_agents::manifest::{self, Loaded, Sources};
 use vk_agents::{Dirs, Harness, InstallState};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 
-const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)";
+const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration list --sources         (where each manifest came from: built-in, remote channel, user, repo)\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)\n       vibeke integration pin <id> [<version>|current]   (freeze a cached remote manifest)\n       vibeke integration unpin <id>";
 
 fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
     match arg {
@@ -106,6 +106,8 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     match verb {
         "doctor" | "capabilities" => return doctor(g, verb, target),
         "update" => return update(g, args),
+        "list" if args.iter().any(|a| a == "--sources") => return sources(g),
+        "pin" | "unpin" => return pin(g, verb == "unpin", args),
         _ => {}
     }
     let Some(hs) = harnesses(target) else {
@@ -339,6 +341,128 @@ fn doctor(g: &Global, verb: &str, target: Option<&str>) -> i32 {
         println!("(run inside a vibeke pane to verify hooks reach the server)");
     }
     EXIT_OK
+}
+
+/// `list --sources` (04 §13): provenance of every manifest: the layers it was built from, the
+/// remote channel's serial/version/verification, and pins.
+fn sources(g: &Global) -> i32 {
+    use vk_server::agents::channel;
+    let set = manifests();
+    let root = channel::root();
+    let state = channel::read_state(&root);
+    let pins = channel::read_pins(&root);
+    let rows: Vec<Value> = set
+        .manifests
+        .iter()
+        .map(|l| {
+            let id = l.m.id.clone();
+            let remote = state.as_ref().and_then(|s| s.sources.get(&id));
+            let mut layers = vec!["builtin".to_string()];
+            if let Some(r) = remote {
+                layers.push(format!("remote@{}", r.serial));
+            }
+            let file = match &l.source {
+                manifest::Source::User(p) => {
+                    layers.push("user".into());
+                    Some(p.display().to_string())
+                }
+                manifest::Source::Repo { file, .. } => {
+                    layers = vec![format!("repo:{}", file.display())];
+                    Some(file.display().to_string())
+                }
+                _ => None,
+            };
+            json!({
+                "id": id,
+                "source": l.source.label(),
+                "layers": layers,
+                "file": file,
+                "remote": remote.map(|r| json!({"version": r.version, "serial": r.serial, "sha256": r.sha256, "fetched_at_ms": r.fetched_at_ms, "verified": state.as_ref().map(|s| s.verified.clone())})),
+                "pinned": pins.get(&id).map(|p| p.version.clone()),
+                "warnings": l.warnings,
+            })
+        })
+        .collect();
+    if is_json(g) {
+        println!(
+            "{}",
+            json!({"manifests": rows, "channel": channel::status_json(&root), "warnings": set.warnings})
+        );
+        return EXIT_OK;
+    }
+    for r in &rows {
+        let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
+        let layers: Vec<String> = serde_json::from_value(r["layers"].clone()).unwrap_or_default();
+        let mut line = format!("{:<14} {:<8} {}", s("id"), s("source"), layers.join(" < "));
+        if let Some(rm) = r["remote"].as_object() {
+            line.push_str(&format!(
+                " · remote v{} ({})",
+                rm.get("version").and_then(Value::as_str).unwrap_or("?"),
+                rm.get("verified").and_then(Value::as_str).unwrap_or("?")
+            ));
+        }
+        if let Some(p) = r["pinned"].as_str() {
+            line.push_str(&format!(" · PINNED at v{p}"));
+        }
+        println!("{line}");
+    }
+    match &state {
+        Some(st) => println!(
+            "\nchannel: serial {} · {} · {}",
+            st.serial, st.verified, st.url
+        ),
+        None => println!("\nchannel: nothing fetched yet (`vibeke integration update`)"),
+    }
+    EXIT_OK
+}
+
+/// `pin <id> [<version>|current]` / `unpin <id>`.
+fn pin(g: &Global, unpin: bool, args: &[String]) -> i32 {
+    use vk_server::agents::channel;
+    let Some(id) = args.get(1).filter(|a| !a.starts_with("--")) else {
+        eprintln!("{USAGE}");
+        return EXIT_USAGE;
+    };
+    let root = channel::root();
+    if unpin {
+        return match channel::unpin(&root, id) {
+            Ok(had) => {
+                if is_json(g) {
+                    println!("{}", json!({"id": id, "unpinned": had}));
+                } else if had {
+                    println!("{id}: unpinned; the next update may replace it");
+                } else {
+                    println!("{id}: was not pinned");
+                }
+                EXIT_OK
+            }
+            Err(e) => {
+                eprintln!("vibeke integration unpin: {e}");
+                EXIT_API
+            }
+        };
+    }
+    let version = args
+        .get(2)
+        .filter(|a| !a.starts_with("--"))
+        .map(String::as_str);
+    match channel::pin(&root, id, version) {
+        Ok(p) => {
+            if is_json(g) {
+                println!(
+                    "{}",
+                    json!({"id": id, "version": p.version, "pinned_at_ms": p.pinned_at_ms})
+                );
+            } else {
+                println!("{id}: pinned at v{}; updates leave it as it is", p.version);
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            eprintln!("vibeke integration pin: {e}");
+            EXIT_API
+        }
+    }
 }
 
 fn update(g: &Global, args: &[String]) -> i32 {

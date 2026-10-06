@@ -345,6 +345,27 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     ("agent", "harnesses", "agent.harnesses", &[], ""),
     (
+        "agent",
+        "turn-usage",
+        "agent.turn_usage",
+        &["run"],
+        "<run> [--limit 200] — per-turn tokens and cost from the transcript",
+    ),
+    (
+        "agent",
+        "limits",
+        "agent.limits",
+        &[],
+        "latest rate-limit observation per harness",
+    ),
+    (
+        "agent",
+        "drift",
+        "agent.drift",
+        &[],
+        "disagreement/answer-failure counters per harness version",
+    ),
+    (
         "interaction",
         "list",
         "interaction.list",
@@ -862,6 +883,35 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "task.dependency.list",
         &["task"],
         "[task] — confirmed links and how many open tasks each blocks",
+    ),
+    // 15 lane 2C.
+    (
+        "task",
+        "select",
+        "task.review.snapshot",
+        &["task"],
+        "<task> --paths f [--paths g …] | --patch <unified diff> — capture only these files or hunks as a selected-patch subject (checks on it verify the selection alone)",
+    ),
+    (
+        "task",
+        "human-review",
+        "task.review.human_review",
+        &["task", "criterion", "verdict"],
+        "<task> <criterion> supported|failed|withdrawn [--note n] [--subject s] [--screenshots id] — your judgment of a human criterion on the shown revision",
+    ),
+    (
+        "task",
+        "forget",
+        "task.review.forget",
+        &[],
+        "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
+    ),
+    (
+        "task",
+        "link",
+        "task.link.status",
+        &[],
+        "--run r | --pane p — why a run's identity is not verified, how to verify it, and verified runs to track instead",
     ),
     (
         "task",
@@ -1573,7 +1623,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — Show the exact payload. Do not send it.",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it.",
     ),
     (
         "assist",
@@ -1610,6 +1660,127 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["request"],
         "<request> | --workspace w | --all — forget generated outputs",
     ),
+    (
+        "assist",
+        "models",
+        "assistant.models",
+        &["connection"],
+        "[connection] [--profile p] [--refresh] — live|cached|bundled model list with capability records; --refresh asks the provider",
+    ),
+    (
+        "assist",
+        "test",
+        "assistant.test",
+        &[],
+        "[--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works",
+    ),
+    (
+        "assist",
+        "background",
+        "assistant.background",
+        &["action"],
+        "[status|tick] — the opt-in background sweeper (summaries, stall notices)",
+    ),
+    // `assistant` is the spec's name for the `assist` noun (14 §9): same methods, plus `brief`
+    // and `get`.
+    (
+        "assistant",
+        "status",
+        "assistant.status",
+        &[],
+        "enabled/configured state, coordinator, profile, budgets, consents (no secrets)",
+    ),
+    (
+        "assistant",
+        "providers",
+        "assistant.providers",
+        &[],
+        "configured connections and verified adapters (no secrets)",
+    ),
+    (
+        "assistant",
+        "models",
+        "assistant.models",
+        &["connection"],
+        "--connection <id> [--refresh] — model list with live|cached|bundled provenance and capability records",
+    ),
+    (
+        "assistant",
+        "test",
+        "assistant.test",
+        &[],
+        "[--profile p] [--probe streaming,json_schema] — explicit small generation, counted as usage",
+    ),
+    (
+        "assistant",
+        "brief",
+        "assistant.generate",
+        &["workspace"],
+        "[workspace] — preview a briefing request for a workspace (then `assistant confirm`)",
+    ),
+    (
+        "assistant",
+        "generate",
+        "assistant.generate",
+        &["operation"],
+        "<operation> [flags] — show the exact payload; nothing is sent",
+    ),
+    (
+        "assistant",
+        "confirm",
+        "assistant.confirm",
+        &["request", "preview_digest"],
+        "<request> <preview-digest> — send the previewed payload",
+    ),
+    (
+        "assistant",
+        "get",
+        "assistant.get",
+        &["request"],
+        "<request> — lifecycle, usage, cost, sources, staleness and the generated draft",
+    ),
+    (
+        "assistant",
+        "list",
+        "assistant.list",
+        &[],
+        "[--workspace w] [--state done] [--limit 50]",
+    ),
+    (
+        "assistant",
+        "cancel",
+        "assistant.cancel",
+        &["request"],
+        "<request>",
+    ),
+    (
+        "assistant",
+        "consent",
+        "assistant.consent",
+        &["workspace"],
+        "[workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...]",
+    ),
+    (
+        "assistant",
+        "revoke",
+        "assistant.revoke",
+        &["workspace"],
+        "[workspace] [--remote-workspace machine:/path] [--connection c]",
+    ),
+    (
+        "assistant",
+        "purge",
+        "assistant.purge",
+        &["request"],
+        "<request> | --workspace w | --all — forget generated outputs and cached results",
+    ),
+    (
+        "assistant",
+        "background",
+        "assistant.background",
+        &["action"],
+        "[status|tick]",
+    ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
     // Server security (09): policy rules, token revocation and elevation, the audit log.
@@ -1633,6 +1804,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "policy.remove",
         &["rule_id"],
         "<rule> — only rules added with `policy add` (p-…)",
+    ),
+    (
+        "policy",
+        "suggest",
+        "policy.suggest",
+        &[],
+        "[--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml",
     ),
     (
         "policy",
@@ -2222,7 +2400,10 @@ pub fn pretty(method: &str, v: &Value) -> String {
             .iter()
             .map(|r| {
                 let src = r["execution"]["source"].as_str().unwrap_or("");
-                let inferred = if src == "Structured" || src == "SelfReport" {
+                let marked = r["execution"]["detail"]
+                    .as_str()
+                    .is_some_and(|d| d == "inferred" || d.starts_with("inferred:"));
+                let inferred = if (src == "Structured" || src == "SelfReport") && !marked {
                     ""
                 } else {
                     "~"
@@ -2288,6 +2469,13 @@ pub fn pretty(method: &str, v: &Value) -> String {
         "assistant.generate" => {
             let pv = &v["preview"];
             let r = &v["request"];
+            if v["coalesced"] == true {
+                return format!(
+                    "{} — attached to an open background request ({}); only its creator can cancel it",
+                    r["id"].as_str().unwrap_or(""),
+                    r["state"].as_str().unwrap_or("")
+                );
+            }
             let mut out = format!(
                 "{} — {} via {} ({}) on {}\n{} bytes, ~{} input tokens, max {} output tokens, {} redaction(s)\n{}\n\n--- system ---\n{}\n--- user ---\n{}\n",
                 r["id"].as_str().unwrap_or(""),
@@ -2303,7 +2491,9 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 pv["system"].as_str().unwrap_or(""),
                 pv["user"].as_str().unwrap_or(""),
             );
-            if v["requires_confirmation"] == true {
+            if v["cached"] == true {
+                out.push_str("\nServed from the result cache: nothing was sent to the provider. See it with `vibeke assist show`.");
+            } else if v["requires_confirmation"] == true {
                 out.push_str(&format!(
                     "\nNothing has been sent. To send exactly this: vibeke assist confirm {} {}",
                     r["id"].as_str().unwrap_or(""),
@@ -2313,6 +2503,68 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 out.push_str(
                     "\nSent automatically (auto_send is enabled for this operation and workspace).",
                 );
+            }
+            out
+        }
+        "assistant.models" => {
+            let mut out = format!(
+                "{} ({}) on {} — {} list{}\n{}\n",
+                v["connection"].as_str().unwrap_or(""),
+                v["adapter"].as_str().unwrap_or(""),
+                v["endpoint_host"].as_str().unwrap_or(""),
+                v["provenance"].as_str().unwrap_or(""),
+                match v["refreshed_at_ms"].as_i64() {
+                    Some(ms) => format!(", refreshed at {ms} ms"),
+                    None => String::new(),
+                },
+                v["note"].as_str().unwrap_or("")
+            );
+            for m in v["models"].as_array().into_iter().flatten() {
+                let caps = ["streaming", "json_schema", "tools", "images"]
+                    .iter()
+                    .map(|f| {
+                        let c = &m["capabilities"][*f];
+                        format!(
+                            "{f}={}({})",
+                            c["support"].as_str().unwrap_or("?"),
+                            c["source"].as_str().unwrap_or("?")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push_str(&format!(
+                    "  {:<40} {}\n",
+                    m["id"].as_str().unwrap_or(""),
+                    caps
+                ));
+            }
+            out
+        }
+        "assistant.test" => {
+            let mut out = format!(
+                "{} via {} ({}) on {}: {} in {} ms, {} attempt(s), counted as usage",
+                v["model"].as_str().unwrap_or(""),
+                v["connection"].as_str().unwrap_or(""),
+                v["endpoint_host"].as_str().unwrap_or(""),
+                v["execution_machine"].as_str().unwrap_or(""),
+                if v["ok"] == true { "ok" } else { "FAILED" },
+                v["latency_ms"],
+                v["attempts"]
+            );
+            if let Some(e) = v["error"].as_object() {
+                out.push_str(&format!(
+                    "\n  error: {} — {}",
+                    e.get("category").and_then(Value::as_str).unwrap_or(""),
+                    e.get("message").and_then(Value::as_str).unwrap_or("")
+                ));
+            }
+            for p in v["probes"].as_array().into_iter().flatten() {
+                out.push_str(&format!(
+                    "\n  probe {}: {} (recorded: {})",
+                    p["feature"].as_str().unwrap_or(""),
+                    if p["ok"] == true { "works" } else { "no" },
+                    p["recorded"].as_str().unwrap_or("none")
+                ));
             }
             out
         }
@@ -2353,6 +2605,42 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 ));
             }
             out
+        }
+        "policy.suggest" => {
+            let list = rows("suggestions");
+            if list.is_empty() {
+                format!(
+                    "no approval was repeated {} times without a denial yet ({} answered approvals seen)",
+                    v["min_count"], v["samples"]
+                )
+            } else {
+                let mut out = String::new();
+                for s in &list {
+                    out.push_str(&format!(
+                        "# {} {} {:?}: approved {}x, denied {}x, risk {}{}\n",
+                        s["harness"].as_str().unwrap_or(""),
+                        s["tool"].as_str().unwrap_or(""),
+                        s["subject"].as_str().unwrap_or(""),
+                        s["approvals"],
+                        s["denials"],
+                        s["risk"].as_str().unwrap_or(""),
+                        if s["covered"].as_bool() == Some(true) {
+                            ", already covered by a rule"
+                        } else {
+                            ""
+                        }
+                    ));
+                    match (s["toml"].as_str(), s["blocked"].as_str()) {
+                        (Some(t), _) => out.push_str(t),
+                        (None, why) => out.push_str(&format!(
+                            "# no rule offered: {}\n",
+                            why.unwrap_or("not expressible")
+                        )),
+                    }
+                    out.push('\n');
+                }
+                out.trim_end().to_string()
+            }
         }
         "preview.mirror" => format!(
             "{}/{} mirrored on {} — {}",
@@ -2879,6 +3167,16 @@ where
     }
     let _ = writeln!(out, "{}", show::describe(&shot, shown));
     EXIT_OK
+}
+
+/// Parameters a verb implies (`assistant brief` is `assistant.generate {operation: briefing}`).
+pub fn preset(noun: &str, verb: &str, params: &mut Value) {
+    if noun == "assistant"
+        && verb == "brief"
+        && let Some(o) = params.as_object_mut()
+    {
+        o.entry("operation").or_insert(json!("briefing"));
+    }
 }
 
 /// Look up `(method, positional)` for `noun verb`.

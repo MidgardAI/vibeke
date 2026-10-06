@@ -24,9 +24,9 @@ use vk_review::intent::{
 };
 use vk_review::{Actor, ActorKind, SourceRef};
 
-const K_TURN: &str = "turn";
-const K_ITEM: &str = "tool_item";
-const K_INTENT: &str = "task_intent";
+pub(crate) const K_TURN: &str = "turn";
+pub(crate) const K_ITEM: &str = "tool_item";
+pub(crate) const K_INTENT: &str = "task_intent";
 pub const K_BINDING: &str = "task_binding";
 const K_RECEIPT: &str = "op_receipt";
 pub const K_MESSAGE: &str = "task_message";
@@ -267,6 +267,7 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     if settled {
         crate::review::on_turn_settled(server, &run.id);
     }
+    crate::review::interval::on_tool_signal(server, run, event, p);
     if matches!(event, "SessionStart" | "UserPromptSubmit") {
         sync_run_tasks(server);
     }
@@ -297,7 +298,7 @@ pub fn sync_run_tasks(server: &Server) {
     }
 }
 
-fn shell_command(tool: &str, input: &Value) -> Option<String> {
+pub(crate) fn shell_command(tool: &str, input: &Value) -> Option<String> {
     let shellish = matches!(
         tool,
         "Bash" | "bash" | "shell" | "Shell" | "exec_command" | "local_shell" | "unified_exec"
@@ -544,7 +545,7 @@ fn apply_pending_switches(
 
 /// A run's identity is deterministic when a structured transport reported its native session
 /// (04 §3); process detection alone is a suggestion.
-fn identity(run: &AgentRun) -> IdentityEvidence {
+pub(crate) fn identity(run: &AgentRun) -> IdentityEvidence {
     IdentityEvidence {
         deterministic: run.harness_session_id.is_some()
             && !matches!(
@@ -672,7 +673,11 @@ fn scope_check(
     Ok(())
 }
 
-fn find_run(server: &Server, ctx: &Ctx, p: &Value) -> Result<AgentRun, vk_proto::rpc::RpcError> {
+pub(crate) fn find_run(
+    server: &Server,
+    ctx: &Ctx,
+    p: &Value,
+) -> Result<AgentRun, vk_proto::rpc::RpcError> {
     if let Some(r) = s(p, "run") {
         return server
             .with_core(|c| c.run(r).cloned())

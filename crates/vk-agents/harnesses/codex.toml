@@ -77,3 +77,14 @@ allow = ["api.openai.com", "chatgpt.com", "auth.openai.com"]
 env = ["OPENAI_API_KEY"]
 files = ["~/.codex/auth.json"]
 home_env = "CODEX_HOME"
+
+[identity]
+sources = ["hook:SessionStart", "transcript_scan"]
+transcript_glob = "~/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl"
+
+[transcript]
+format = "codex_rollout"
+usage = true
+
+[answer]
+keystrokes = "screen:codex"

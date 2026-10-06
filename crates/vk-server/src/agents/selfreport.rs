@@ -192,13 +192,14 @@ pub(super) fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             if structured_live(&run) {
                 // Information only: never overwrite structured state.
                 if run.execution.value != exec {
-                    update_run(server, &run.id, |r, tx| {
-                        tx.event(
-                            "adapter.disagreement",
-                            json!({"run": r.id}),
-                            json!({"facet": "execution", "structured": r.execution.value.as_str(), "other": exec.as_str(), "source": "self_report"}),
-                        );
-                    });
+                    super::arbiter::disagreement(
+                        server,
+                        &run,
+                        "execution",
+                        run.execution.value.as_str(),
+                        exec.as_str(),
+                        "self_report",
+                    );
                 }
                 return Ok(json!({"type": "ok", "applied": false}));
             }

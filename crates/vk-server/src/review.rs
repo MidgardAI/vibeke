@@ -22,7 +22,16 @@
 //! Reads are authorized before retrieval (15 §11): pane-token callers only see tasks, checks
 //! and attention items of their pane's workspace.
 
+pub mod attention_ext;
+pub mod ext;
+pub mod human;
+pub mod interval;
+pub mod link;
+pub mod patch;
+pub mod pr;
+pub mod purge;
 pub mod receipts;
+pub mod scratch;
 pub mod t4;
 
 use crate::Server;
@@ -716,6 +725,8 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
                             }
                             out.current = Some(sn);
                         }
+                        // Lane 2C: a newer selected patch that still matches is current.
+                        patch::apply_current(server, &task.id, &path, &mut out);
                     }
                     DirtyState::Unknown => out
                         .warnings
@@ -729,7 +740,8 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
         out.current = out.ends.iter().rev().find_map(|(_, s)| s.clone());
     }
     for sn in t4::snapshot_subjects(server, &task.id) {
-        out.extra.push((sn, "dirty_snapshot"));
+        let src = patch::source_of(&sn);
+        out.extra.push((sn, src));
     }
     out
 }
@@ -757,6 +769,7 @@ pub fn pin_end_candidate_sync(server: &Server, b: &TaskRunBinding) -> Option<End
         at_ms: now(),
     };
     let mut subj = None;
+    let mut end_snap: Option<t4::SnapRec> = None;
     match checkout_of(&task) {
         None => rec.note = Some("No bound end candidate: checkout unavailable".into()),
         Some(path) => {
@@ -782,6 +795,31 @@ pub fn pin_end_candidate_sync(server: &Server, b: &TaskRunBinding) -> Option<End
                         "No bound end candidate: no commits since the review base; uncommitted work can't be a candidate — choose a committed range later"
                             .into(),
                     )
+                }
+            }
+            // T4 (lane 2C): uncommitted work at the boundary becomes a dirty-snapshot end
+            // candidate (it includes the commits since the base).
+            match patch::dirty_end(server, &task, &path, b) {
+                Ok(Some((s, sr))) => {
+                    rec.subject_id = Some(s.id.clone());
+                    rec.head_sha = Some(s.head_sha.clone());
+                    rec.note = Some(
+                        "Pinned a snapshot of the uncommitted work at the boundary (taken as the binding closed)"
+                            .into(),
+                    );
+                    subj = Some(s);
+                    end_snap = Some(sr);
+                }
+                Ok(None) => {}
+                Err(why) => {
+                    let base_note = if subj.is_some() {
+                        "Pinned the committed candidate"
+                    } else {
+                        "No bound end candidate"
+                    };
+                    rec.note = Some(format!(
+                        "{base_note}: the uncommitted work at the boundary could not be captured ({why})"
+                    ));
                 }
             }
         }
@@ -818,6 +856,14 @@ pub fn pin_end_candidate_sync(server: &Server, b: &TaskRunBinding) -> Option<End
                 json!({"subject": s.id, "head": s.head_sha, "source": "binding_end"}),
             );
         }
+    }
+    if let Some(sr) = &end_snap {
+        tx.m.put(
+            t4::K_SNAP,
+            &format!("{}:{}", task.id, sr.subject_id),
+            None,
+            sr,
+        );
     }
     tx.m.close(K_END, &b.id, None, &rec);
     tx.event(
@@ -1147,6 +1193,9 @@ fn state_token(c: &Core, task_id: &str) -> Option<u64> {
     accs.sort();
     h.update(format!("acceptances {accs:?}\n").as_bytes());
     h.update(t4::token_part(c, task_id).as_bytes());
+    h.update(pr::token_part(c, task_id).as_bytes());
+    h.update(interval::token_part(c, task_id).as_bytes());
+    h.update(human::token_part(c, task_id).as_bytes());
     let snap = live_snap(c);
     let (_, live) = live_from(&snap, task_id, &bs, checkout_of(&task).as_deref());
     h.update(format!("live {live}\n").as_bytes());
@@ -1610,13 +1659,20 @@ pub fn build_package(
         .map(|r| Evidence::from_check_run(&r.run))
         .collect();
     // Reviewer (role `review`) runs contribute notes, never evidence (T4).
-    let (observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
+    let (mut observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
+    // Execution-interval binding (3F): a command is bound to the selected subject only when its
+    // interval was proven stable for exactly that subject.
+    let intervals = interval::apply(server, &mut observed, selected.as_ref());
     for cmd in &observed {
-        let mapped = entries
+        let hit = entries
             .iter()
-            .find(|e| norm(&command_text(&e.def.command)) == norm(&cmd.command))
-            .map(|e| (e.def.id.as_str(), e.def.definition_digest.as_str()));
-        evidence.push(Evidence::from_observed(cmd, mapped));
+            .find(|e| norm(&command_text(&e.def.command)) == norm(&cmd.command));
+        let mapped = hit.map(|e| (e.def.id.as_str(), e.def.definition_digest.as_str()));
+        let mut ev = Evidence::from_observed(cmd, mapped);
+        if let Some(e) = hit {
+            ev.environment_digest = interval::environment_for(&intervals, cmd, &e.def.command);
+        }
+        evidence.push(ev);
     }
     for cl in &claims {
         evidence.push(Evidence::from_observed(cl, None));
@@ -1631,6 +1687,14 @@ pub fn build_package(
         intent.as_ref(),
     );
     evidence.extend(shot_evidence);
+    // PR observations and claims (3F, §6.4): external evidence bound to the exact PR head.
+    let (pr_evidence, pr_section) =
+        pr::review_evidence(server, &task.id, selected.as_ref(), intent.as_ref());
+    evidence.extend(pr_evidence);
+    // Recorded human reviews of human criteria (lane 2C).
+    evidence.extend(human::evidence(server, &task.id));
+    // Evidence whose content `forget` purged counts as unknown (15 §11, lane 2C).
+    purge::degrade_purged(server, &task.id, &mut evidence);
 
     let snap = server.with_core(|c| live_snap(c));
     let (mut live, live_token) = live_from(&snap, &task.id, &bs, cands.checkout.as_deref());
@@ -1662,6 +1726,7 @@ pub fn build_package(
     // revalidated now — the checkout exists and the subject's immutable objects are readable.
     let mut warnings = cands.warnings.clone();
     warnings.extend(env_errors);
+    warnings.extend(patch::notes(selected.as_ref()));
     let diff_stat = match selected.as_ref().filter(|s| s.is_immutable()) {
         Some(s) => match subject::diff_stat(s) {
             Ok(d) => Some(d),
@@ -1930,7 +1995,7 @@ pub fn build_package(
         })
     });
 
-    let json = json!({
+    let mut json = json!({
         "task": task.id,
         "task_title": task.title,
         "package_revision": pkg_rev,
@@ -1982,6 +2047,16 @@ pub fn build_package(
                 "requires_exceptions": requires_exceptions,
             }
         },
+    });
+
+    interval::annotate(&mut json, &intervals);
+    json["pr"] = pr_section;
+    // Lane 2C additions (kept out of the macro above: its recursion limit).
+    json["human_reviews"] = json!(human::list_json(server, &task.id));
+    json["purged"] = purge::package_json(server, &task.id);
+    json["snapshot"]["selection"] = json!({
+        "params": ["paths", "patch"],
+        "note": "Pass paths (whole files) or patch (hunks) to capture only that selection on top of HEAD; checks on it verify the selection alone.",
     });
 
     let projection = (want_subject.is_none() || subject_is_current).then(|| {
@@ -2042,7 +2117,7 @@ pub fn build_package(
             cands
                 .current
                 .as_ref()
-                .filter(|s| s.kind == SubjectKind::DirtySnapshot)
+                .filter(|s| patch::digest_checked(s))
                 .and_then(|s| s.dirty_digest.clone())
         })
         .flatten();
@@ -2441,8 +2516,19 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "task.check.run" => check_run(server, ctx, p).await,
         "task.check.cancel" => check_cancel(server, ctx, p),
         "task.check.get" => check_get(server, ctx, p),
-        m => return t4::api(server, ctx, m, p).await,
+        m => return outcome_api(server, ctx, m, p).await,
     })
+}
+
+/// The methods of the later review stages: T4, then PR evidence and execution intervals (3F).
+async fn outcome_api(server: &Arc<Server>, ctx: &Ctx, m: &str, p: &Value) -> Option<R> {
+    if let Some(r) = t4::api(server, ctx, m, p).await {
+        return Some(r);
+    }
+    if let Some(r) = pr::api(server, ctx, m, p).await {
+        return Some(r);
+    }
+    interval::api(server, ctx, m, p)
 }
 
 async fn package(server: &Arc<Server>, task: &str, subject: Option<&str>) -> Result<Pkg, RpcError> {
@@ -2674,6 +2760,7 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             ));
         }
     }
+    patch::revalidate(&pkg).await?;
     test_hook("accept_before_commit", &pkg.task.id);
     let mut c = server.core.lock().unwrap();
     // A concurrent duplicate of this request may have committed meanwhile.
@@ -3043,6 +3130,8 @@ fn check_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
 /// so queued → interrupted and running → unknown. Never relaunched (15 §6.3).
 pub fn recover(server: &Arc<Server>) {
     ensure_watcher(server);
+    attention_ext::start(server);
+    scratch::recover(server);
     t4::recover(server);
     let stale: Vec<CheckRunRec> =
         server.with_core(|c| c.store.load::<CheckRunRec>(K_CHECK).unwrap_or_default());
@@ -3233,7 +3322,8 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
         }
     };
 
-    // Open interactions.
+    // Open interactions (with native deadlines and batch facts, lane 2C).
+    let afacts = attention_ext::facts(server);
     for i in ints.iter().filter(|i| i.status == InteractionStatus::Open) {
         let run = runs_by_id.get(i.run.as_str());
         let task_id = run.and_then(|r| task_for_run(r));
@@ -3262,6 +3352,7 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
             native_answer: i.answerable,
             approval: None,
         });
+        attention_ext::decorate_item(&afacts, &i.id, &mut it);
         let mut sub = vec![who(run), i.kind.as_str().replace('_', " ")];
         if let Some(t) = task {
             sub.push(t.title.clone());
@@ -3547,7 +3638,7 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
     }
 
     // Per-user preferences: seen, pin, snooze with material wake-ups.
-    let aprefs = att::AttentionPrefs::default();
+    let aprefs = attention_ext::prefs();
     let prefs: HashMap<&str, &Pref> = prefs.iter().map(|p| (p.key.as_str(), p)).collect();
     for it in items.iter_mut() {
         let Some(pf) = prefs.get(it.key.object_id.as_str()) else {
@@ -3629,6 +3720,7 @@ pub async fn attention_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Va
     Some(match method {
         "attention.list" => attention_list(server, ctx, p),
         "attention.update" => attention_update(server, ctx, p),
+        "attention.batch" => attention_ext::batch_api(server, ctx, p),
         _ => return None,
     })
 }
@@ -3662,8 +3754,11 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             ));
         }
     }
-    let aprefs = att::AttentionPrefs::default();
+    let aprefs = attention_ext::prefs();
     let ranked = att::rank(&col.items, now_ms, &aprefs);
+    // Lane 2C: deadlines, batches and the Also working footer.
+    let afacts = attention_ext::facts(server);
+    let batches = attention_ext::batches(&ranked);
     // T4 (§8.2): the deterministic estimate for tasks whose effort the user hasn't set, shown
     // with its source; ranking and the five-minute view keep using the user's value.
     let heuristics: HashMap<String, String> = server.with_core(|c| {
@@ -3678,6 +3773,7 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .iter()
         .filter_map(|r| {
             let m = col.meta.get(&r.item.key.object_id)?;
+            let extras = attention_ext::item_extras(&afacts, m, r, &batches, now_ms);
             let woke = m
                 .woke
                 .clone()
@@ -3703,6 +3799,10 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 "snoozed_until_ms": m.snoozed_until_ms,
                 "woke_from_snooze": woke,
                 "urgent": r.class.is_urgent(),
+                "deadline_ms": extras["deadline_ms"],
+                "deadline_source": extras["deadline_source"],
+                "deadline_in_ms": extras["deadline_in_ms"],
+                "batch": extras["batch"],
             }))
         })
         .collect();
@@ -3750,6 +3850,8 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             "excluded": excluded,
         },
         "five_minute": five,
+        "batches": batches.iter().map(|(id, ms)| json!({"id": id, "members": ms.iter().filter_map(|o| col.meta.get(o).map(key_json)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "also_working": attention_ext::also_working(server, scope.as_deref(), now_ms),
     }))
 }
 

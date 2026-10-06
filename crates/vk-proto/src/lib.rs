@@ -6,6 +6,7 @@
 //! - [`input`]: logical input events (03 §7).
 //! - [`frame`]: `u32 LE length | postcard payload` framing used by holder, render and bridge links.
 
+pub mod entities;
 pub mod frame;
 pub mod holder;
 pub mod input;

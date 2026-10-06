@@ -28,6 +28,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("api", api::METHODS),
         ("agents", agents::METHODS),
         ("review::t4", review::t4::METHODS),
+        ("review::ext", review::ext::METHODS),
         ("preview", preview::METHODS),
         ("sandbox", sandbox::METHODS),
         ("agent_browser", agent_browser::METHODS),
@@ -51,6 +52,8 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("tab_renumber", tab_renumber::METHODS),
         ("task_lifecycle", task_lifecycle::METHODS),
         ("orch", orch::METHODS),
+        ("review::pr", review::pr::METHODS),
+        ("review::interval", review::interval::METHODS),
     ]
 }
 
@@ -111,7 +114,11 @@ fn build() -> Result<Registry, Vec<String>> {
     let mut errs = vec![];
     let mut defs = BTreeMap::new();
     let mut defs_src = BTreeMap::new();
-    for line in DEFS.lines() {
+    for line in DEFS
+        .lines()
+        .chain(BATCH_3D_DEFS.lines())
+        .chain(BATCH_3F_DEFS.lines())
+    {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -163,7 +170,12 @@ fn build() -> Result<Registry, Vec<String>> {
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
     let events = load(
-        &[EVENT_SHAPES, crate::orch_shapes::EVENTS],
+        &[
+            EVENT_SHAPES,
+            BATCH_3D_EVENT_SHAPES,
+            BATCH_3F_EVENT_SHAPES,
+            crate::orch_shapes::EVENTS,
+        ],
         "event",
         &mut errs,
     );
@@ -415,6 +427,7 @@ pub const DEFS: &str = r##"
 # (null when unset), hence `T|null` rather than `?`. Everywhere: `f?: T` may be absent but is
 # never null; a field that can be null says `T|null` (`f?: T|null`: absent or null).
 Target = string
+ReviewPurge = {tasks: int, runs: int, messages: int, intent_excerpts: int, turns: int, tool_items: int, reviewer_prompts: int, notes: int, human_notes: int, check_logs: int, projections: int}
 Cursor = {machine_uuid: string, session_uuid: string, log_epoch: string, seq: int}
 ConfigDiagnostic = {line: int, col: int, message: string}
 ConfigWarning = {key: string, line: int|null, col: int|null, message: string}
@@ -473,6 +486,9 @@ pub const METHOD_SHAPES: &[&str] = &[
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
     crate::orch_shapes::SHAPES,
+    ADAPTER_POLISH_SHAPES,
+    BATCH_3D_SHAPES,
+    BATCH_3F_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -491,7 +507,7 @@ api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: strin
 # the JSON Schema bundle of this binary (07 §1.5); with `method`, only that method's params/result
 api.schema :: {method?: string} => {schema: object}
 server.status :: {}
-  => {pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, preview?: object, timers?: object, db_size?: int, rss?: int}
+  => {pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}
 # re-read config.toml (runtime overrides on top); errors leave the applied config in force; full scope only
 server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
 # with kill_panes false the holders keep running and the next server reattaches; full scope only
@@ -612,7 +628,7 @@ blob.put :: {mime: string, data_b64?: string, path?: string} => {hash: string, s
 image.upload :: {pane: Target, mime: string, data_b64?: string, path_on_client?: string} => {path_on_machine: string, blob?: string}
 search.query :: {q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false} => {hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}
 scrollback.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}
-  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int}
+  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}
 
 # --- fs, git ---
 fs.list :: {pane?: Target, path?: string = ''} => {path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}
@@ -649,14 +665,17 @@ screenshot.delete :: {id: string, force?: bool} => {id: string, handle: string, 
 
 const MORE_SHAPES: &str = r##"
 # --- assistant (14) ---
-assistant.status :: {} => {enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}}
-assistant.providers :: {} => {connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null}
-assistant.consent :: {workspace?: Target, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]} => {consent: object, notice: string}
-assistant.revoke :: {workspace?: Target, connection?: string} => {revoked: int, cancelled_requests: int}
-assistant.generate :: {operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate, profile?: string, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, include_screen?: bool}
-  => {request: object, preview: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string}, requires_confirmation: bool, confirm_with?: object}
+assistant.status :: {} => {enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}, background?: bool, background_detail?: object, scheduler?: {capacity: int, running: int, waiting: int}, capabilities?: object|null, cache?: {enabled: bool, entries: int}, remote_sources?: bool, keychain_backend?: string}
+assistant.providers :: {} => {connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null, coordinator_note?: string, targets?: [{name: string, adapter: string, endpoint: string}]}
+assistant.consent :: {workspace?: Target, remote_workspace?: string, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]} => {consent: object, notice: string}
+assistant.revoke :: {workspace?: Target, remote_workspace?: string, connection?: string} => {revoked: int, cancelled_requests: int}
+assistant.generate :: {operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|stall_notice|background_summary|task_title, profile?: string, priority?: interactive|background, stream?: bool, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, interaction?: Target, query?: string, remote_sources?: [object], include_screen?: bool}
+  => {request: object, preview?: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string, priority?: string, coverage_notes?: [string]}, requires_confirmation?: bool, confirm_with?: object|null, deduplicated?: bool, coalesced?: bool, cached?: bool, note?: string}
 assistant.confirm :: {request: string, preview_digest: string} => {request: object}
-assistant.cancel :: {request: string} => {request: object}
+assistant.cancel :: {request: string} => {request: object, detached?: bool, note?: string}
+assistant.models :: {connection?: string, profile?: string, refresh?: bool} => {connection: string, adapter: string, provenance: live|cached|bundled, refreshed_at_ms: int|null, models: [{id: string, display_name?: string|null, created?: string|null, capabilities: object}], note: string, endpoint_host?: string, execution_machine?: string, current_model?: string|null, current_capabilities?: object|null, explicit_model?: string}
+assistant.test :: {profile?: string, probe?: [streaming|json_schema] | string} => {ok: bool, id: string, profile: string, connection: string, adapter: string, model: string, endpoint_host: string, execution_machine: string, latency_ms: int, attempts: int, usage: object, estimated_cost_usd?: number|null, counted: bool, error?: object|null, probes: [object]}
+assistant.background :: {action?: status|tick} => any
 assistant.get :: {request: string} => {request: object}
 assistant.list :: {workspace?: Target, state?: string, limit?: int} => {requests: [object]}
 assistant.purge :: {request?: string, workspace?: Target, all?: bool} => {purged: int}
@@ -740,9 +759,14 @@ agent.report :: {pane?: Target, state: string, harness?: string = claude, messag
 agent.resumable :: {} => {runs: [AgentRun]}
 # pane-scoped callers only see items in their workspace; coverage.excluded counts the hidden ones
 attention.list :: {budget_ms?: int, effort?: quick|minutes|deep}
-  => {items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool}],
+  => {items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool, deadline_ms?: int | null, deadline_source?: native|gate|null, deadline_in_ms?: int | null, batch?: {id: string, size: int} | null}],
   coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int},
-  five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null}
+  five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null,
+  batches?: [{id: string, members: [{kind: string, id: string}]}],
+  also_working?: [{run: string, pane: string, name: string, harness: string, task: {id: string, handle: string, title: string} | null, since_ms: int, working_for_ms: int}]}
+# equivalent natively answerable approvals (15 §8.3); answer each member with interaction.answer (expected_decision_rev)
+attention.batch :: {interaction: string}
+  => {interaction: string, batchable: bool, batch?: string, reason?: string, members: [{interaction: string, handle: string, run: string, pane: string, title: string, decision_rev: int, opened_at_ms: int}], facts?: object | null, note?: string}
 # key.kind is one of interaction|review|check_failed|send_unknown|finished_turn|binding_suspended; snooze_until_ms: null clears
 attention.update :: {key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool}
   => {key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, warning: string | null}
@@ -774,17 +798,27 @@ task.review.candidates :: {task: Target} => {task: Target, current: string | nul
 task.review.diff :: {task: Target, subject?: string, path?: string, max_bytes?: int} => {task: Target, subject: string, base_sha: string, head_sha: string, content_sha: string, path: string | null, diff: string, truncated: bool, total_bytes: int, max_bytes: int}
 # the review package; flat aliases revision/criteria/observed/blockers added
 task.review.get :: {task: Target, subject?: string}
-  => {task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}}
+  => {task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string, selection?: object}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}, human_reviews?: [object], purged?: any}
 task.review.note.classify :: {note: string, classification: blocking|not_blocking|dismissed, reason?: string, idempotency_key?: string} => {note: object}
 task.review.notes :: {task: Target} => {task: Target, notes: [object], reviewer_runs: [object]}
 task.review.request_reviewer :: {task: Target, harness?: string = claude, subject?: string, expected_subject?: string, prompt?: string, idempotency_key?: string}
   => {request: object, prompt: string, prompt_digest: string, harness: string, subject: string, requires_confirmation: true, label: string, uses_provider: string, confirm_with: {method: string, params: {request: string, prompt_digest: string}}}
-task.review.snapshot :: {task: Target, idempotency_key?: string} => {subject: object, snapshot: object, label: string, note: string}
+# paths (whole files) or patch (a unified diff) capture a selected-patch subject instead of all uncommitted work
+task.review.snapshot :: {task: Target, paths?: [string], patch?: string, idempotency_key?: string} => {subject: object, snapshot: object, selection?: object, label: string, note: string}
+# full scope only; supported | failed (needs a note) | withdrawn; screenshots must be bound to the reviewed subject
+task.review.human_review :: {task: Target, criterion: string, verdict: supported|failed|withdrawn, subject?: string, expected_subject?: string, note?: string, screenshots?: [string], idempotency_key?: string}
+  => {review: object, note: string}
+# full scope only; exactly one of task, pane, workspace, before, all
+task.review.forget :: {task?: Target, pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false}
+  => {scope: any, dry_run: bool, purged: ReviewPurge}
+# why a run's identity is not verified, remedies, and verified runs nearby; never binds or installs
+task.link.status :: {run?: string, pane?: Target}
+  => {run: {id: string, handle: string, harness: string, integration: string, pane: string, session_reported: bool}, verified: bool, reasons: [string], remedies: [{action: string, label: string, command?: string, note?: string}], candidates: [object], note: string}
 # not allowed from a pane scope
 task.review.snapshot.gc :: {task: Target, include_unrecorded?: bool = false, dry_run?: bool = false} | {repo: string, include_unrecorded?: bool = false, dry_run?: bool = false}
   => {repo: string, task: Target | null, dry_run: bool, removed: [object], kept: [object], unrecorded: [object], note: string}
 # replay of an already-started request returns {request, run, binding, replayed: true}
-task.review.start_reviewer :: {request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, idempotency_key?: string}
+task.review.start_reviewer :: {request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, checkout?: disposable|task, idempotency_key?: string}
   => {request: object, run: Target, binding: object, note?: string, replayed?: bool}
 # user client only (pane tokens get PermissionDenied); container sandbox with private clone required
 task.sync :: {task: Target, direction?: pull|push|both = pull, force?: bool = false} => {task: Target | null, synced: [{direction: string, status: string, commits: any, from: any, to: any, ref: any}]}
@@ -931,6 +965,26 @@ task.ports.re_lease :: {task: Target}
   => {task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object, old_lease: {start: int, end: int}|null, note: string}
 "##;
 
+/// Adapter polish (04 §7.7, §10, §12.3, §13; `crate::agents::polish`).
+const ADAPTER_POLISH_SHAPES: &str = r##"
+# --- 2F adapter polish ---
+# fingerprints approved at least min_count times with at most max_denials denials, as ready-to-paste
+# rules (04 §7.7); `rule` is null (and `blocked` says why) for risky or compound commands
+policy.suggest :: {min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}
+  => {suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}
+# compact per-turn records written by the transcript tailer (04 §10); cost_source: harness|price_table|subscription|none
+agent.turn_usage :: {run?: Target, target?: Target, limit?: int = 200}
+  => {run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}
+# the "limits" status segment's data: the latest rate-limit observation per harness
+agent.limits :: {} => {limits: [{harness: string, scope: string|null, limited: bool, used_percent: number|null, resets_at_ms: int|null, message: string|null, observed_at_ms: int}]}
+# drift telemetry (04 §12.3), local only
+agent.drift :: {} => {versions: [{harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number, drifting: bool}]}
+# poll the signed manifest channel now (04 §13); refused unless the index verifies
+agent.manifests_check :: {url?: string} => {serial: int, applied: [string], skipped?: [string], unsigned?: bool, warnings?: [string], announced?: int, unchanged?: bool, index_serial?: int}
+# freeze a cached remote manifest at its version, or release the pin
+agent.manifest_pin :: {id: string, version?: string, unpin?: bool = false} => {id: string, version?: string, pinned_at_ms?: int, unpinned?: bool}
+"##;
+
 /// Server security (09, `crate::security`): policy, auth, audit, integration integrity.
 const SECURITY_SHAPES: &str = r##"
 # --- policy.* (07 §2.9, 09 §4); full scope only ---
@@ -1018,12 +1072,12 @@ pane.scroll_changed :: {pane: string, tab?: string, workspace?: string} => {offs
 pane.output_matched :: {pane: string, tab?: string, workspace?: string} => {matched: any, revision: any}
 pane.isolation_changed :: {pane: string} => {level: string, scope: string, network: string}
 pane.input_unconfirmed :: {pane: string, run?: string} => {input_id: string, reason?: string, preview_chars?: int}
-adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string}
-adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string}
+adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string, reason?: string}
+adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string, source?: string}
 agent.detected :: {run: string, pane: string} => {harness: string, via: string, argv0?: string|null}
 agent.started :: {run: string, pane: string} => {harness: string, via?: string}
 agent.identified :: {run: string, pane: string} => {harness_session_id?: any, transcript_path?: any}
-agent.state_changed :: {run: string, pane: string} => {facet: string, from?: string, to: string, source?: string, confidence?: number}
+agent.state_changed :: {run: string, pane: string} => {facet: string, from?: string, to: string, source?: string, confidence?: number, inferred?: bool}
 agent.named :: {run: string} => {name: string|null}
 agent.turn_started :: {run: string, pane: string} => any
 agent.turn_completed :: {run: string, pane: string} => {stop_reason?: any, usage?: any}
@@ -1033,6 +1087,11 @@ agent.rate_limited :: {run: string, pane: string} => {resets_at_ms: int|null, me
 agent.resume_handle :: {run: string} => {argv: [string]}
 agent.session_ended :: {run: string, pane: string} => {reason: string}
 agent.harness_version_unvalidated :: {run: string, pane: string} => {harness: string, version: any}
+agent.turn_usage :: {run: string, pane: string} => {turn: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, source: string}
+agent.cwd_changed :: {run: string, pane: string} => {cwd: string, old_cwd: string|null}
+agent.tool_blocked :: {run: string, pane: string} => {tool: string, effect: string, rule: string|null, command: string|null}
+agent.drift_detected :: {run: string, pane: string} => {harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number}
+harness.manifest_loaded :: {manifest: string} => {id: string, version: string, source: string, serial: int, verified: string}
 agent.exited :: {run: string, pane: string} => {reason: string, harness: string}
 interaction.opened :: {interaction?: string, pane?: string, run?: string} => any
 interaction.updated :: {interaction: string, pane: string} => {gate?: bool, reason?: string}
@@ -1078,6 +1137,9 @@ review.reviewer_started :: {task: string, request: string, run: string} => {subj
 review.reviewer_unknown :: {task: string, request: string} => {reason: string, subject: string}
 review.snapshot_created :: {task: string, subject: string} => {head: string, content: string, ref: string, attempts: any}
 review.snapshot_refs_removed :: {repo: string, task: any} => any
+review.human_reviewed :: {task: string, criterion: string, subject: string} => {verdict: string, screenshots: int, intent_revision: int}
+review.purged :: {scope: any} => ReviewPurge
+review.reviewer_checkout_removed :: {task: string, request: string} => {run: string | null}
 worktree.created :: {workspace?: string} => any
 worktree.opened :: {workspace: string} => {path: string, branch: string|null, repo_root: string, created_workspace?: any}
 worktree.removed :: {path: string, task?: string} => {job?: string, state: string}
@@ -1105,9 +1167,16 @@ scrollback.forgotten :: {scope: any} => {panes: int, segments: int, bytes: int, 
 layout.applied :: {workspace: string} => {name: string|null, tabs: int, panes: int, new_workspace: any}
 attention.preference_changed :: {key: {kind: string, id: string}} => {seen: bool, snoozed_until_ms: int|null, pinned: bool}
 assistant.consent_granted :: {workspace?: string} => any
-assistant.consent_revoked :: {workspace: string} => {grants: int, cancelled: int}
+assistant.consent_revoked :: {workspace?: string, remote_workspace?: string} => {grants: int, cancelled: int}
 assistant.purged :: {} => {count: int, reason: string}
+assistant.request_created :: {assistant_request: string} => any
+assistant.request_started :: {assistant_request: string} => any
 assistant.request_finished :: {assistant_request: string} => any
+assistant.models_refreshed :: {assistant_connection: string} => {adapter: string, endpoint_host: string, models: int}
+assistant.test_finished :: {assistant_connection: string} => any
+assistant.stall_notice :: {assistant_request: string, run?: any} => {request: string}
+# transient (seq 0, tier "transient"): streamed text of a running request; not outbox history, never replayed, full-scope subscribers only
+assistant.delta :: {assistant_request: string} => {request: string, seq: int, text: string}
 sandbox.created :: {task: string, sandbox: string} => {level: string, provider: string, network: string, yolo: bool, proxy_port?: int|null, credentials?: any}
 sandbox.boundary_action :: {task?: string|null, sandbox: string} => {kind: push|copy_out|credential_use, interaction: string|null, outcome: applied|failed|denied|expired|cancelled, detail?: any, credentials?: [string], harnesses?: [string]}
 sandbox.runner_lost :: {task: string, sandbox: string} => {state: string, runs: [string], resumable: [string]}
@@ -1149,6 +1218,91 @@ pub const NOTIFICATION_SHAPES: &str = r##"
 events.event :: {subscription_id: string, event: Event} => {}
 events.overflow :: {subscription_id: string, resume_from: Cursor} => {}
 events.closed :: {subscription_id: string, reason: string} => {}
+"##;
+
+/// Config and store hardening (02; 3D): Machine/Session entities, Turn/Item stream, storage
+/// status, blob store maintenance.
+const BATCH_3D_DEFS: &str = r##"
+MachineKind = local|ssh|quic
+MachineStatus = connected|connecting|degraded|offline
+Machine = {id: string, label: string, kind: MachineKind, address: string|null, os: string, arch: string, vibeke_version: string, status: MachineStatus, last_seen_ms: int}
+SessionInfo = {id: string, name: string, machine_id: string, created_at_ms: int, server_pid: int, server_version: string}
+TurnUsage = {input_tokens: int, output_tokens: int, cache_read: int, cache_write: int, cost_usd: number|null}
+Turn = {id: string, run_id: string, seq: int, started_at_ms: int, ended_at_ms: int|null, input_summary: string, status: running|completed|interrupted|failed, usage: TurnUsage|null, usage_baseline: TurnUsage|null, item_count: int}
+ItemKind = user_message|assistant_message|reasoning|tool_call|tool_result|file_change|command|plan|subagent|error
+FileChange = {path: string, op: create|modify|delete|rename, lines_added: int|null, lines_removed: int|null}
+Item = {id: string, turn_id: string, run_id: string, seq: int, kind: ItemKind, started_at_ms: int, ended_at_ms: int|null, summary: string, payload_ref: string|null, file_change: FileChange|null, native_id: string|null}
+"##;
+
+const BATCH_3D_SHAPES: &str = r##"
+# --- session.info, machine.* (02 §1.1; remote machines are reported by clients) ---
+session.info :: {} => {session: SessionInfo, machine: Machine|null, cursor: Cursor}
+machine.list :: {} => {machines: [Machine], local: string}
+machine.get :: {machine: Target} => {machine: Machine}
+# registers or updates a remote machine (kind ssh|quic) and emits machine.added/connected/disconnected/degraded; this machine is registered by the server; full scope only
+machine.upsert :: {label: string, kind?: ssh|quic = ssh, id?: string, address?: string, os?: string, arch?: string, vibeke_version?: string, status?: connected|connecting|degraded|offline, reason?: string}
+  => {machine: Machine, created: bool, cursor: Cursor}
+machine.remove :: {machine: Target} => {removed: string, cursor: Cursor}
+
+# --- storage.* (retention, backups, degraded mode; full scope only) ---
+storage.status :: {}
+  => {degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}
+# runs the retention sweep now (events past retention and over the row cap, old turns, unreferenced old blobs); refused while degraded
+storage.prune :: {} => {events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, blobs_removed: int, blob_bytes: int}
+
+# --- blob.stats / blob.gc (the unified blob store; full scope only) ---
+blob.stats :: {} => {count: int, bytes: int, by_source: object, path: string}
+# removes unreferenced upload and payload blobs older than older_than_days; screenshots follow their own retention
+blob.gc :: {dry_run?: bool = false, older_than_days?: int = 30}
+  => {dry_run: bool, older_than_days: int, removed: int, bytes: int, kept_referenced: int, kept_young: int, kept_uncollectable: int, hashes: [string]}
+
+# --- agent.turns / agent.items (Turn/Item stream; full scope only) ---
+agent.turns :: {run: Target, after_seq?: int, limit?: int} => {run: string, turns: [Turn], next_after_seq: int|null}
+agent.items :: {turn?: string, run?: Target, kind?: ItemKind, after_seq?: int, limit?: int} => {items: [Item], next_after_seq: int|null}
+"##;
+
+const BATCH_3D_EVENT_SHAPES: &str = r##"
+session.started :: {} => {pid: int, version: string, machine: string, name: string, prev_pid: int|null, fresh: bool}
+session.stopped :: {} => {pid: int, reason: string}
+machine.added :: {machine: string} => {label: string, kind: string, address: string|null}
+machine.connected :: {machine: string} => {label: string}
+machine.disconnected :: {machine: string} => {label: string, reason: string|null}
+machine.degraded :: {machine: string} => {label: string, reason: string|null}
+machine.removed :: {machine: string} => {label: string}
+agent.item :: {run: string, pane: string} => {kind: ItemKind, summary: string, item: string, turn: string, seq: int, payload_ref: string|null}
+agent.subagent_started :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
+agent.subagent_finished :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
+"##;
+
+/// Evidence and PR integration (15 §6.3, §6.4; 3F).
+const BATCH_3F_DEFS: &str = r##"
+PrObservation = {id: string, task: string, requested?: string, lookup: object, observed_at_ms: int, authorization_scope: string, provider: string, observed_by: object, criterion_ids: [string], current?: bool, assessment?: object}
+PrClaim = {id: string, task: string, url: string, identity?: object, source: pasted_url|agent_statement, claimed_by: object, claimed_at_ms: int, text?: string, label?: string, confirmed?: bool}
+"##;
+
+const BATCH_3F_SHAPES: &str = r##"
+# --- task.pr.* (PR evidence; 15 §6.4) ---
+# an explicit lookup through the user's authenticated gh CLI; a failed or offline lookup is recorded as such (outcome unknown); not allowed from a pane scope
+task.pr.observe :: {task: Target, pr?: string, criteria?: [string], idempotency_key?: string}
+  => {observation: PrObservation, label: string, note: string}
+# a pasted URL or an agent statement: shown with the review, never confirmation
+task.pr.claim :: {task: Target, url: string, text?: string, idempotency_key?: string}
+  => {claim: PrClaim, label: string, note: string}
+# with subject, each observation also carries its assessment for that subject (binding, outcome, summary)
+task.pr.list :: {task: Target, subject?: string}
+  => {task: string, observations: [PrObservation], claims: [PrClaim], provider: string, max_age_secs: int}
+
+# --- execution-interval binding of observed commands (15 §6.3) ---
+task.review.intervals :: {task: Target, limit?: int}
+  => {task: string, intervals: [object]}
+task.review.interval_status :: {}
+  => {enabled: bool, watcher: string, settle_ms: int, arm_delay_ms: int, harnesses: [string], checkouts: [object], note: string}
+"##;
+
+const BATCH_3F_EVENT_SHAPES: &str = r##"
+review.pr_observed :: {task: string} => {observation: string, lookup: observed|no_pr|failed, pr: string|null, head: string|null, state: open|closed|merged|null, draft: bool|null, checks: none|pending|passing|failing|null, reason: string|null}
+review.pr_head_changed :: {task: string} => {pr: string|null, from: string|null, to: string|null, observation: string}
+review.pr_claimed :: {task: string} => {claim: string, url: string, pr: string|null, source: pasted_url|agent_statement}
 "##;
 
 #[cfg(test)]

@@ -2389,3 +2389,11 @@ async fn screenshots_are_browser_evidence_and_never_satisfy_checks() {
 // Spec 15 T4 (snapshots, effort, reviewer runs, dependency links).
 #[path = "t4_tests.rs"]
 mod t4_tests;
+
+// Spec 15 lane 3F (execution-interval binding, pull-request evidence).
+#[path = "evidence_tests.rs"]
+mod evidence_tests;
+// Lane 2C (selected patches, dirty end candidates, human reviews, forget, deadlines, batches,
+// notifications, Link run, disposable reviewer checkouts).
+#[path = "lane2c_tests.rs"]
+mod lane2c_tests;

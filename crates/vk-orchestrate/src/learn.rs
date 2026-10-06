@@ -617,7 +617,7 @@ pub fn suggest(
         }
         let (effect, reason) = if a.approvals >= cfg.min_approvals.max(1)
             && a.denials <= cfg.max_denials
-            && cfg.allow_risk.iter().any(|r| *r == a.max_risk)
+            && cfg.allow_risk.contains(&a.max_risk)
             && a.max_risk != "high"
         {
             (

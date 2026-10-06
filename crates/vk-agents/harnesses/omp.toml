@@ -52,3 +52,12 @@ allow = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.c
 
 [auth]
 env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"]
+
+[identity]
+sources = ["extension", "transcript_scan"]
+transcript_glob = "~/.omp/agent/sessions/--{cwd_slug}--/*_{session_id}.jsonl"
+cwd_slug = "replace:/,-;trim:-"
+
+[transcript]
+format = "omp_jsonl"
+usage = true

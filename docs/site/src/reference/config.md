@@ -217,7 +217,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # include_agents = false
 
 # [ui.interactions]
-# batch = true
+# batch           = true
+# deadline_window = "60s"               # "deadline approaching" in the inbox when this little time is left
+
+# [ui.inbox]
+# also_working = true                   # footer listing busy agents without an open question
 
 # [ui.fleet]
 # tile_view = "terminal"                # terminal | timeline
@@ -238,12 +242,19 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # bell                = false
 # osc                 = true
 # remote_disconnected = true
+# deadline            = true            # an inbox item's native deadline is approaching
+# review              = true            # a tracked task is ready for review, or its check failed
 
 # [agents]
 # auto_detect       = true
 # shims             = true
 # resume_on_restart = "ask"             # ask | always | never
 # name_from_task    = true
+# fail_closed       = true               # policy deny rules on yolo runs fail closed when the server is unreachable
+
+# [agents.approvals.claude]
+# persist_always      = false           # "allow always" edits Claude's settings (off: session-scoped rule)
+# persist_destination = "localSettings" # localSettings | projectSettings | userSettings
 
 # [agents.harness.claude]
 # enabled     = true
@@ -325,6 +336,25 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # [compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/<session>/herdr-compat/herdr.sock
 # enabled = false
 
+# Event log retention (02 §2.3). Read by the running server; changes apply at the next hourly
+# sweep (or `vibeke api call storage.prune`). Durations are `7d`/`36h` or a bare number of days.
+# [events]
+# sync_retention    = "7d"          # catch-up/live-UI events (the `sync` tier)
+# history_retention = "365d"        # interactions, policy, task status, agent start/exit (`history`)
+# blob_retention    = "30d"         # unreferenced uploads and tool-output payloads in the blob store
+# max_rows          = 2000000       # hard cap on event rows; oldest `sync` rows go first; 0 = no cap
+
+# Review evidence (15 §6.3, §6.4). Read by the running server.
+# [review.pr]                       # `vibeke api call task.pr.observe`: an explicit lookup through your `gh` login
+# provider     = "gh"               # gh | off
+# max_age_secs = 900                # an observation older than this is unknown (0 = never stale)
+# [review.interval]                 # binds an observed agent command to the subject only when it provably ran on a stable checkout
+# enabled       = true
+# watcher       = "os"              # os | none (none binds nothing)
+# settle_ms     = 400               # late file events still count this long after a command ends
+# arm_delay_ms  = 500               # a freshly started watcher counts as armed after this delay
+# harnesses     = ["claude"]        # only harnesses whose pre-tool hook runs before the tool
+
 # [update]
 # channel        = "stable"             # stable | preview
 # version_check  = true
@@ -336,6 +366,49 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # [[layouts.dev.tab]]
 # title = "edit"
 # pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
+
+# AI assistance (spec 14). Off by default: nothing is sent anywhere until you enable it, choose a
+# connection and a profile, and grant consent per workspace (`vibeke assist consent`). User config
+# only: a repository's own config cannot redirect assistant traffic. Requests run on the machine
+# where the server runs, which also owns the credentials; `localhost` endpoints mean that machine.
+# [assistant]
+# enabled                     = false
+# default_profile             = "interactive"
+# max_concurrent_requests     = 2           # a change applies immediately
+# max_queued_requests         = 16
+# daily_request_limit         = 100         # provider attempts per UTC day on this machine
+# daily_token_limit           = 200000
+# daily_cost_limit_usd        = 1.0         # optional; needs known pricing for the model
+# requests_per_minute         = 6
+# request_timeout_seconds     = 60
+# result_retention_hours      = 24
+# preview_ttl_seconds         = 600
+# auto_send                   = []          # operations that skip the preview; the workspace consent must list them too
+# result_cache                = false       # reuse a stored result for identical context under the same grants
+# keychain_backend            = "off"       # off | os (the system credential store through its own CLI) | fake (tests)
+# remote_sources              = false       # accept source data a client collected from other machines
+# remote_stale_seconds        = 300
+# background_enabled          = false       # opt-in: background features (each also needs its own switch below)
+# background_summaries        = false
+# stall_notices               = false
+# background_interval_seconds = 300
+# stall_repeat_threshold      = 3
+#
+# [assistant.connections.primary]
+# adapter    = "anthropic"                  # anthropic | openai_compatible | ollama | gemini
+# # endpoint defaults to the adapter's standard endpoint. OpenRouter: adapter = "openai_compatible",
+# # endpoint = "https://openrouter.ai/api". Plain http:// is allowed for loopback endpoints only.
+# credential = { env = "VIBEKE_ASSISTANT_API_KEY" }   # or { file = "~/.config/vibeke/assistant.key" } (mode 0600) or { keychain = "vibeke/assistant/primary" }
+#
+# [assistant.profiles.interactive]
+# connection        = "primary"
+# model             = "<selected-model-id>"  # a placeholder, not a recommendation: `vibeke assist models --connection primary`
+# max_input_tokens  = 12000
+# max_input_bytes   = 65536
+# max_output_tokens = 1024
+# # capabilities = { streaming = "supported", json_schema = "supported" }   # declare what the model supports; unknown otherwise
+# # Optional `background` and `review` profiles serve those features. Without one the default profile
+# # is used only if it meets the feature's requirements.
 
 # Sections owned by other components and documented with them:
 # [collision], [isolation], [preview], [security], [plugins]

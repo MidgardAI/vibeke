@@ -105,6 +105,8 @@ pub const EXTERNAL_SECTIONS: &[&str] = &[
     "security",
     "plugins",
     "desk",
+    "search",
+    "events",
 ];
 
 const BUILTIN_SEGMENTS: &[&str] = &[
@@ -284,6 +286,8 @@ impl Config {
         warn_unknown(&raw, &mut warnings);
         // Typed `[preview]` (06 Part C): bad values and unknown keys are located warnings.
         warnings.extend(crate::preview::Preview::from_value(raw.get("preview")).1);
+        // Typed `[events]` (02 §2.3): bad values are located warnings and keep their defaults.
+        warnings.extend(crate::events::Events::from_value(raw.get("events")).1);
 
         let (problems, mut vwarn) = cfg.validate();
         warnings.append(&mut vwarn);
@@ -708,6 +712,7 @@ fn element_schema(path: &str) -> Option<&'static [&'static str]> {
             "extra_args",
             "shim",
             "headless_shared",
+            "billing",
             "isolated_args",
         ],
         _ => return None,

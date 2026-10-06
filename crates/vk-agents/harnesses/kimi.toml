@@ -1,0 +1,50 @@
+# Built-in screen manifest: Kimi CLI (spec 04 §6.7). Best effort from the CLI's public docs and
+# behaviour: NOT exercised against a live binary and no recording exists ([verify M2]). There is
+# no validated range, so every version runs observe + keystrokes (when a dialog rule exists)
+# until a recorded corpus covers it; drift CI is the intended way to firm this up.
+schema = 1
+id = "kimi"
+name = "Kimi CLI"
+icon = "☾"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["kimi", "kimi-cli"]
+[[detect.process]]
+interpreter = ["node", "bun", "deno", "python", "python3"]
+script_regex = '(kimi_cli|kimi-cli|/kimi$)'
+
+[version]
+command = ["kimi", "--version"]
+
+[launch]
+argv = ["kimi"]
+session_id_format = "none"
+prompt_arg = "trailing"
+
+[resume]
+argv = ["kimi", "--session", "{resume_id}"]
+
+[integration]
+transports = ["screen", "process"]
+install = ""
+
+[screen]
+rows = 30
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ["(?i)ctrl-c to (interrupt|cancel)", '(?i)^\s*[✨⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(Thinking|Working)']
+confidence = 0.7
+
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?m)^\s*[│┃]?\s*(✨|>)\s*$']
+confidence = 0.5
+
+[ui]
+interrupt_keys = ["esc"]
+quit_keys = ["ctrl+c", "ctrl+c"]

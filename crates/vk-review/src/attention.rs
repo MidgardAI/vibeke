@@ -615,6 +615,50 @@ pub fn batch_with<'a>(
     if out.len() == 1 { vec![] } else { out }
 }
 
+/// Partition `items` into batches (§8.3): each group holds indices of items pairwise
+/// [`batchable`] with its first member (in input order), with at least two members; an item
+/// belongs to at most one group. Items in no group are answered one by one.
+pub fn batch_groups(items: &[AttentionItem]) -> Vec<Vec<usize>> {
+    let mut taken = vec![false; items.len()];
+    let mut out = Vec::new();
+    for i in 0..items.len() {
+        if taken[i] {
+            continue;
+        }
+        let mut group = vec![i];
+        for j in (i + 1)..items.len() {
+            if !taken[j] && group.iter().all(|&g| batchable(&items[g], &items[j])) {
+                group.push(j);
+            }
+        }
+        if group.len() > 1 {
+            for &g in &group {
+                taken[g] = true;
+            }
+            out.push(group);
+        }
+    }
+    out
+}
+
+/// A batch's stable id: the sorted object ids of its members, hashed (so clients can refer to
+/// "this batch" and notice when its membership changed).
+pub fn batch_id(members: &[&AttentionItem]) -> String {
+    let mut ids: Vec<&str> = members.iter().map(|m| m.key.object_id.as_str()).collect();
+    ids.sort();
+    let mut h = crate::FieldHasher::new("vk-review/attention-batch/v1");
+    for id in ids {
+        h.str(id);
+    }
+    format!("b_{}", &h.finish()[..16])
+}
+
+/// Whether an interaction's native deadline has passed (§8.1: expired native requests are
+/// reconciled and do not remain answerable because their card is cached).
+pub fn expired(item: &AttentionItem, now_ms: i64) -> bool {
+    item.kind == AttentionKind::Interaction && item.deadline_ms.is_some_and(|d| d <= now_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1059,41 @@ mod tests {
         let got: Vec<&str> = batch.iter().map(|i| i.key.object_id.as_str()).collect();
         assert_eq!(got, vec!["a", "b", "m"]);
         assert!(batch_with(&review, &all).is_empty());
+    }
+
+    #[test]
+    fn batch_groups_partition_equivalent_approvals_only() {
+        let items = vec![
+            approval("a", "cargo test"),
+            approval("c", "cargo build"),
+            approval("b", "cargo test"),
+            item("q", AttentionKind::ReviewCandidate, 0),
+            approval("d", "cargo build"),
+            approval("e", "npm test"),
+        ];
+        let groups = batch_groups(&items);
+        assert_eq!(groups, vec![vec![0, 2], vec![1, 4]]);
+        let members: Vec<&AttentionItem> = groups[0].iter().map(|&i| &items[i]).collect();
+        let id = batch_id(&members);
+        let rev: Vec<&AttentionItem> = members.iter().rev().copied().collect();
+        assert_eq!(id, batch_id(&rev), "order-independent");
+        assert_ne!(id, batch_id(&[&items[1], &items[4]]));
+        assert!(batch_groups(&items[3..4]).is_empty());
+    }
+
+    #[test]
+    fn expired_interactions_are_not_answerable() {
+        let mut a = approval("a", "cargo test");
+        assert!(!expired(&a, NOW));
+        a.deadline_ms = Some(NOW + 1);
+        assert!(!expired(&a, NOW));
+        a.deadline_ms = Some(NOW);
+        assert!(expired(&a, NOW));
+        // Ranking drops it too (reconciled at the source).
+        assert!(rank(&[a], NOW, &p()).is_empty());
+        let mut r = item("r", AttentionKind::ReviewCandidate, 0);
+        r.deadline_ms = Some(NOW - 1);
+        assert!(!expired(&r, NOW));
     }
 
     #[test]

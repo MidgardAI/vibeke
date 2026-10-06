@@ -201,6 +201,13 @@ export type Facet = {
   detail: string | null;
 };
 
+export type FileChange = {
+  path: string;
+  op: "create" | "modify" | "delete" | "rename";
+  lines_added: number | null;
+  lines_removed: number | null;
+};
+
 export type FloatingPane = {
   pane: string;
   x: number;
@@ -259,6 +266,22 @@ export type Isolation = {
 
 export type IsolationLevel = "host" | "sandbox" | "container" | "vm";
 
+export type Item = {
+  id: string;
+  turn_id: string;
+  run_id: string;
+  seq: number;
+  kind: ItemKind;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  summary: string;
+  payload_ref: string | null;
+  file_change: FileChange | null;
+  native_id: string | null;
+};
+
+export type ItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "file_change" | "command" | "plan" | "subagent" | "error";
+
 export type LayoutNode = {
   Leaf: {
     pane: string;
@@ -271,6 +294,22 @@ export type LayoutNode = {
 };
 
 export type LayoutSpec = Record<string, unknown>;
+
+export type Machine = {
+  id: string;
+  label: string;
+  kind: MachineKind;
+  address: string | null;
+  os: string;
+  arch: string;
+  vibeke_version: string;
+  status: MachineStatus;
+  last_seen_ms: number;
+};
+
+export type MachineKind = "local" | "ssh" | "quic";
+
+export type MachineStatus = "connected" | "connecting" | "degraded" | "offline";
 
 export type MaterializedFile = {
   path: string;
@@ -367,6 +406,19 @@ export type PolicyScope = string | {
   run?: Target;
 };
 
+export type PrClaim = {
+  id: string;
+  task: string;
+  url: string;
+  identity?: Record<string, unknown>;
+  source: "pasted_url" | "agent_statement";
+  claimed_by: Record<string, unknown>;
+  claimed_at_ms: number;
+  text?: string;
+  label?: string;
+  confirmed?: boolean;
+};
+
 export type PrLookup = {
   kind: "pr" | "no_pr" | "unavailable";
   pr?: {
@@ -379,6 +431,20 @@ export type PrLookup = {
     label: string;
   };
   reason?: string;
+};
+
+export type PrObservation = {
+  id: string;
+  task: string;
+  requested?: string;
+  lookup: Record<string, unknown>;
+  observed_at_ms: number;
+  authorization_scope: string;
+  provider: string;
+  observed_by: Record<string, unknown>;
+  criterion_ids: string[];
+  current?: boolean;
+  assessment?: Record<string, unknown>;
 };
 
 export type Preview = {
@@ -430,6 +496,20 @@ export type RateLimitInfo = {
   observed_at_ms: number;
 };
 
+export type ReviewPurge = {
+  tasks: number;
+  runs: number;
+  messages: number;
+  intent_excerpts: number;
+  turns: number;
+  tool_items: number;
+  reviewer_prompts: number;
+  notes: number;
+  human_notes: number;
+  check_logs: number;
+  projections: number;
+};
+
 export type RpcError = {
   code: number;
   message: string;
@@ -476,6 +556,15 @@ export type SessionEntry = {
   state: string;
   current: boolean;
   pid?: number;
+};
+
+export type SessionInfo = {
+  id: string;
+  name: string;
+  machine_id: string;
+  created_at_ms: number;
+  server_pid: number;
+  server_version: string;
 };
 
 export type SyncGroup = {
@@ -542,6 +631,27 @@ export type TaskPorts = {
     count: number;
   } | null;
   env: Record<string, unknown>;
+};
+
+export type Turn = {
+  id: string;
+  run_id: string;
+  seq: number;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  input_summary: string;
+  status: "running" | "completed" | "interrupted" | "failed";
+  usage: TurnUsage | null;
+  usage_baseline: TurnUsage | null;
+  item_count: number;
+};
+
+export type TurnUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
 };
 
 export type Workspace = {
@@ -613,6 +723,21 @@ export type AdapterSignalResult = {
   cursor?: Cursor;
 };
 
+export type AgentDriftParams = Record<string, unknown>;
+
+export type AgentDriftResult = {
+  versions: {
+    harness: string;
+    version: string;
+    observations: number;
+    disagreements: number;
+    unknown_resolutions: number;
+    answer_failures: number;
+    rate: number;
+    drifting: boolean;
+  }[];
+};
+
 export type AgentGetParams = {
   target: Target;
 };
@@ -645,6 +770,20 @@ export type AgentInterruptResult = {
   cursor?: Cursor;
 };
 
+export type AgentLimitsParams = Record<string, unknown>;
+
+export type AgentLimitsResult = {
+  limits: {
+    harness: string;
+    scope: string | null;
+    limited: boolean;
+    used_percent: number | null;
+    resets_at_ms: number | null;
+    message: string | null;
+    observed_at_ms: number;
+  }[];
+};
+
 export type AgentListParams = {
   workspace?: Target;
   state?: AgentState[];
@@ -653,6 +792,20 @@ export type AgentListParams = {
 
 export type AgentListResult = {
   runs: AgentRun[];
+};
+
+export type AgentManifestPinParams = {
+  id: string;
+  version?: string;
+  unpin?: boolean;
+};
+
+export type AgentManifestPinResult = {
+  id: string;
+  version?: string;
+  pinned_at_ms?: number;
+  unpinned?: boolean;
+  cursor?: Cursor;
 };
 
 export type AgentManifestsParams = Record<string, unknown>;
@@ -672,6 +825,22 @@ export type AgentManifestsResult = {
     warnings: string[];
   }[];
   warnings: string[];
+};
+
+export type AgentManifestsCheckParams = {
+  url?: string;
+};
+
+export type AgentManifestsCheckResult = {
+  serial: number;
+  applied: string[];
+  skipped?: string[];
+  unsigned?: boolean;
+  warnings?: string[];
+  announced?: number;
+  unchanged?: boolean;
+  index_serial?: number;
+  cursor?: Cursor;
 };
 
 export type AgentManifestsReloadParams = Record<string, unknown>;
@@ -812,6 +981,42 @@ export type AgentStartResult = {
   cursor?: Cursor;
 };
 
+export type AgentTurnUsageParams = {
+  run?: Target;
+  target?: Target;
+  limit?: number;
+};
+
+export type AgentTurnUsageResult = {
+  run: string;
+  turns: {
+    id: string;
+    run: string;
+    harness: string;
+    n: number;
+    native_id: string;
+    model: string | null;
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    cost_usd: number | null;
+    cost_source: string;
+    stop: string | null;
+    ended_at_ms: number | null;
+    source: string;
+  }[];
+  turn_count: number;
+  totals: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    cost_usd: number | null;
+  };
+  usage: unknown;
+};
+
 export type AgentWaitParams = {
   target: Target;
   until?: string[];
@@ -843,12 +1048,20 @@ export type ApiSchemaResult = {
   schema: Record<string, unknown>;
 };
 
+export type AssistantBackgroundParams = {
+  action?: "status" | "tick";
+};
+
+export type AssistantBackgroundResult = unknown;
+
 export type AssistantCancelParams = {
   request: string;
 };
 
 export type AssistantCancelResult = {
   request: Record<string, unknown>;
+  detached?: boolean;
+  note?: string;
   cursor?: Cursor;
 };
 
@@ -864,6 +1077,7 @@ export type AssistantConfirmResult = {
 
 export type AssistantConsentParams = {
   workspace?: Target;
+  remote_workspace?: string;
   connection?: string;
   profile?: string;
   classes?: ("selected_text" | "structured_state" | "review_package" | "screen")[];
@@ -878,8 +1092,10 @@ export type AssistantConsentResult = {
 };
 
 export type AssistantGenerateParams = {
-  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate";
+  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate" | "navigate" | "decision_card" | "stall_notice" | "background_summary" | "task_title";
   profile?: string;
+  priority?: "interactive" | "background";
+  stream?: boolean;
   idempotency_key?: string;
   retry_of?: string;
   inputs?: Record<string, unknown>;
@@ -888,12 +1104,15 @@ export type AssistantGenerateParams = {
   pane?: Target;
   task?: Target;
   workspace?: Target;
+  interaction?: Target;
+  query?: string;
+  remote_sources?: Record<string, unknown>[];
   include_screen?: boolean;
 };
 
 export type AssistantGenerateResult = {
   request: Record<string, unknown>;
-  preview: {
+  preview?: {
     digest: string;
     system?: string;
     user?: string;
@@ -909,9 +1128,15 @@ export type AssistantGenerateResult = {
     omitted?: unknown;
     redactions?: unknown;
     notice?: string;
+    priority?: string;
+    coverage_notes?: string[];
   };
-  requires_confirmation: boolean;
-  confirm_with?: Record<string, unknown>;
+  requires_confirmation?: boolean;
+  confirm_with?: Record<string, unknown> | null;
+  deduplicated?: boolean;
+  coalesced?: boolean;
+  cached?: boolean;
+  note?: string;
   cursor?: Cursor;
 };
 
@@ -933,6 +1158,31 @@ export type AssistantListResult = {
   requests: Record<string, unknown>[];
 };
 
+export type AssistantModelsParams = {
+  connection?: string;
+  profile?: string;
+  refresh?: boolean;
+};
+
+export type AssistantModelsResult = {
+  connection: string;
+  adapter: string;
+  provenance: "live" | "cached" | "bundled";
+  refreshed_at_ms: number | null;
+  models: {
+    id: string;
+    display_name?: string | null;
+    created?: string | null;
+    capabilities: Record<string, unknown>;
+  }[];
+  note: string;
+  endpoint_host?: string;
+  execution_machine?: string;
+  current_model?: string | null;
+  current_capabilities?: Record<string, unknown> | null;
+  explicit_model?: string;
+};
+
 export type AssistantProvidersParams = Record<string, unknown>;
 
 export type AssistantProvidersResult = {
@@ -946,6 +1196,12 @@ export type AssistantProvidersResult = {
   }[];
   profiles: Record<string, unknown>[];
   default_profile?: string | null;
+  coordinator_note?: string;
+  targets?: {
+    name: string;
+    adapter: string;
+    endpoint: string;
+  }[];
 };
 
 export type AssistantPurgeParams = {
@@ -961,6 +1217,7 @@ export type AssistantPurgeResult = {
 
 export type AssistantRevokeParams = {
   workspace?: Target;
+  remote_workspace?: string;
   connection?: string;
 };
 
@@ -988,6 +1245,66 @@ export type AssistantStatusResult = {
     reserved: unknown;
     remaining: unknown;
   };
+  background?: boolean;
+  background_detail?: Record<string, unknown>;
+  scheduler?: {
+    capacity: number;
+    running: number;
+    waiting: number;
+  };
+  capabilities?: Record<string, unknown> | null;
+  cache?: {
+    enabled: boolean;
+    entries: number;
+  };
+  remote_sources?: boolean;
+  keychain_backend?: string;
+};
+
+export type AssistantTestParams = {
+  profile?: string;
+  probe?: ("streaming" | "json_schema")[] | string;
+};
+
+export type AssistantTestResult = {
+  ok: boolean;
+  id: string;
+  profile: string;
+  connection: string;
+  adapter: string;
+  model: string;
+  endpoint_host: string;
+  execution_machine: string;
+  latency_ms: number;
+  attempts: number;
+  usage: Record<string, unknown>;
+  estimated_cost_usd?: number | null;
+  counted: boolean;
+  error?: Record<string, unknown> | null;
+  probes: Record<string, unknown>[];
+  cursor?: Cursor;
+};
+
+export type AttentionBatchParams = {
+  interaction: string;
+};
+
+export type AttentionBatchResult = {
+  interaction: string;
+  batchable: boolean;
+  batch?: string;
+  reason?: string;
+  members: {
+    interaction: string;
+    handle: string;
+    run: string;
+    pane: string;
+    title: string;
+    decision_rev: number;
+    opened_at_ms: number;
+  }[];
+  facts?: Record<string, unknown> | null;
+  note?: string;
 };
 
 export type AttentionListParams = {
@@ -1020,6 +1337,13 @@ export type AttentionListResult = {
     snoozed_until_ms: number | null;
     woke_from_snooze: string | null;
     urgent: boolean;
+    deadline_ms?: number | null;
+    deadline_source?: "native" | "gate" | null;
+    deadline_in_ms?: number | null;
+    batch?: {
+      id: string;
+      size: number;
+    } | null;
   }[];
   coverage: {
     complete: boolean;
@@ -1044,6 +1368,26 @@ export type AttentionListResult = {
       note: string;
     }[];
   } | null;
+  batches?: {
+    id: string;
+    members: {
+      kind: string;
+      id: string;
+    }[];
+  }[];
+  also_working?: {
+    run: string;
+    pane: string;
+    name: string;
+    harness: string;
+    task: {
+      id: string;
+      handle: string;
+      title: string;
+    } | null;
+    since_ms: number;
+    working_for_ms: number;
+  }[];
 };
 
 export type AttentionUpdateParams = {
@@ -2452,6 +2796,41 @@ export type EventsWaitResult = {
   event: VibekeEvent;
 };
 
+export type FamilyCheckParams = {
+  family: string;
+  child?: string;
+};
+
+export type FamilyCheckResult = {
+  family: string;
+  results: {
+    child: string;
+    outcome: Record<string, unknown>;
+  }[];
+  cursor?: Cursor;
+};
+
+export type FamilyGetParams = {
+  family: string;
+};
+
+export type FamilyGetResult = {
+  family: Record<string, unknown>;
+  children: {
+    handle: string;
+    harness: string;
+    task: Task | null;
+    run: Record<string, unknown> | null;
+    discarded: boolean;
+  }[];
+};
+
+export type FamilyListParams = Record<string, unknown>;
+
+export type FamilyListResult = {
+  families: Record<string, unknown>[];
+};
+
 export type FsListParams = {
   pane?: Target;
   path?: string;
@@ -2542,6 +2921,159 @@ export type GitStatusResult = {
     binary: boolean;
     secret: boolean;
   }[];
+};
+
+export type GoalApproveParams = {
+  goal: string;
+  by?: string;
+  start?: boolean;
+};
+
+export type GoalApproveResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+  cursor?: Cursor;
+};
+
+export type GoalBriefingParams = {
+  since?: number | string;
+  until?: number;
+};
+
+export type GoalBriefingResult = {
+  briefing: {
+    since_ms: number;
+    until_ms: number;
+    sections: {
+      title: string;
+      items: string[];
+    }[];
+    counts: Record<string, unknown>;
+    text: string;
+  };
+};
+
+export type GoalCancelParams = {
+  goal: string;
+  stop_tasks?: boolean;
+};
+
+export type GoalCancelResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+  parked: string[];
+  cursor?: Cursor;
+};
+
+export type GoalCreateParams = {
+  title: string;
+  text?: string;
+  text_file?: string;
+  repo?: string;
+  base?: string;
+  plan?: boolean;
+};
+
+export type GoalCreateResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+  cursor?: Cursor;
+};
+
+export type GoalGetParams = {
+  goal: string;
+};
+
+export type GoalGetResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+};
+
+export type GoalListParams = Record<string, unknown>;
+
+export type GoalListResult = {
+  goals: {
+    goal: Record<string, unknown>;
+    progress: {
+      done: number;
+      total: number;
+    };
+  }[];
+};
+
+export type GoalPlanParams = {
+  goal: string;
+  backend?: "heuristic" | "agent" | "external";
+};
+
+export type GoalPlanResult = {
+  goal: Record<string, unknown>;
+  progress?: Record<string, unknown>;
+  backend?: string;
+  prompt?: string;
+  submit_command?: string;
+  plan_file?: string;
+  planning_run?: string | null;
+  agent_error?: string;
+  cursor?: Cursor;
+};
+
+export type GoalPlanSubmitParams = {
+  goal: string;
+  plan?: Record<string, unknown> | string;
+  file?: string;
+  planner?: string;
+};
+
+export type GoalPlanSubmitResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+  cursor?: Cursor;
+};
+
+export type GoalStartParams = {
+  goal: string;
+};
+
+export type GoalStartResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+  started: string[];
+  cursor?: Cursor;
+};
+
+export type GoalStepDoneParams = {
+  goal: string;
+  step: string;
+  ok?: boolean;
+  error?: string;
+};
+
+export type GoalStepDoneResult = {
+  goal: Record<string, unknown>;
+  progress: {
+    done: number;
+    total: number;
+  };
+  cursor?: Cursor;
 };
 
 export type GroupAddParams = {
@@ -2761,6 +3293,83 @@ export type LayoutListResult = {
   }[];
 } | {
   layout: LayoutSpec;
+};
+
+export type MergePredictParams = {
+  repo?: string;
+  tasks?: string[];
+};
+
+export type MergePredictResult = {
+  conflicts: {
+    a: string;
+    b: string;
+    kind: "overlap" | "textual" | "claim";
+    severity: "low" | "medium" | "high";
+    paths: string[];
+    detail: string;
+  }[];
+  tasks: string[];
+  at_ms: number;
+};
+
+export type MergeQueueAddParams = {
+  task: Target;
+  target?: string;
+  priority?: number;
+  note?: string;
+  allow_dirty?: boolean;
+  run?: boolean;
+};
+
+export type MergeQueueAddResult = {
+  entry: Record<string, unknown>;
+  position: number | null;
+  run?: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type MergeQueueCancelParams = {
+  entry: string;
+};
+
+export type MergeQueueCancelResult = {
+  entry: Record<string, unknown> | null;
+  cursor?: Cursor;
+};
+
+export type MergeQueueListParams = {
+  all?: boolean;
+};
+
+export type MergeQueueListResult = {
+  entries: Record<string, unknown>[];
+  order: string[];
+};
+
+export type MergeQueueRequeueParams = {
+  entry: string;
+};
+
+export type MergeQueueRequeueResult = {
+  entry: Record<string, unknown> | null;
+  cursor?: Cursor;
+};
+
+export type MergeQueueRunParams = {
+  entry?: string;
+  count?: number;
+  all?: boolean;
+};
+
+export type MergeQueueRunResult = {
+  ran: number;
+  results: {
+    entry: Record<string, unknown>;
+    event: string;
+    detail: Record<string, unknown>;
+  }[];
+  cursor?: Cursor;
 };
 
 export type NotesGetParams = {
@@ -3409,6 +4018,60 @@ export type PolicyAddResult = {
   cursor?: Cursor;
 };
 
+export type PolicyLearnedAcceptParams = {
+  id: string;
+  target?: "user" | "repo";
+};
+
+export type PolicyLearnedAcceptResult = {
+  accepted: Record<string, unknown>;
+  result: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type PolicyLearnedDismissParams = {
+  id: string;
+};
+
+export type PolicyLearnedDismissResult = {
+  dismissed: string;
+  total: number;
+  cursor?: Cursor;
+};
+
+export type PolicyLearnedListParams = {
+  repo?: string;
+};
+
+export type PolicyLearnedListResult = {
+  suggestions: {
+    id: string;
+    effect: "allow" | "deny";
+    harness: string;
+    tool: string;
+    workspace: string;
+    pattern: string;
+    rule: Record<string, unknown>;
+    toml: string;
+    approvals: number;
+    denials: number;
+    first_at_ms: number;
+    last_at_ms: number;
+    max_risk: string;
+    samples: string[];
+    reason: string;
+  }[];
+  stats: {
+    decisions: number;
+    fingerprints: number;
+    min_approvals: number;
+    max_denials: number;
+    window_ms: number;
+    suggest_deny: boolean;
+    dismissed: number;
+  };
+};
+
 export type PolicyListParams = {
   scope?: PolicyScope;
 };
@@ -3426,6 +4089,35 @@ export type PolicyRemoveResult = {
   removed: boolean;
   rule: PolicyRuleInfo;
   cursor?: Cursor;
+};
+
+export type PolicySuggestParams = {
+  min_count?: number;
+  max_denials?: number;
+  limit?: number;
+  harness?: string;
+  include_covered?: boolean;
+};
+
+export type PolicySuggestResult = {
+  suggestions: {
+    fingerprint: string;
+    harness: string;
+    tool: string;
+    subject: string;
+    workspace: string;
+    approvals: number;
+    denials: number;
+    last_at_ms: number;
+    risk: "low" | "medium" | "high" | "unknown";
+    rule: Record<string, unknown> | null;
+    toml: string | null;
+    blocked: string | null;
+    covered: boolean;
+  }[];
+  min_count: number;
+  max_denials: number;
+  samples: number;
 };
 
 export type PolicyTestParams = {
@@ -3733,6 +4425,48 @@ export type PreviewUrlResult = {
   remote_url: string;
   profile_url: string;
   proxy_url: string | null;
+};
+
+export type QuotaResumeParams = {
+  key?: string;
+  task?: string;
+};
+
+export type QuotaResumeResult = {
+  resumed: string;
+  handle: string;
+  cursor?: Cursor;
+};
+
+export type QuotaRouteParams = {
+  harnesses?: string[];
+};
+
+export type QuotaRouteResult = {
+  ranking: {
+    harness: string;
+    headroom: number;
+    account: string;
+  }[];
+};
+
+export type QuotaStatusParams = Record<string, unknown>;
+
+export type QuotaStatusResult = {
+  enabled: boolean;
+  accounts: Record<string, unknown>[];
+  paused: Record<string, unknown>[];
+  config: Record<string, unknown>;
+};
+
+export type QuotaTickParams = {
+  dry_run?: boolean;
+};
+
+export type QuotaTickResult = {
+  dry_run: boolean;
+  actions: Record<string, unknown>[];
+  cursor?: Cursor;
 };
 
 export type SandboxAllowParams = {
@@ -4054,6 +4788,7 @@ export type ScrollbackForgetResult = {
   bytes_deleted?: number;
   fts_rows_deleted?: number;
   archive_panes_dropped?: number;
+  review?: ReviewPurge;
   cursor?: Cursor;
 };
 
@@ -4117,6 +4852,7 @@ export type ServerStatusResult = {
   event_seq: number;
   socket?: string;
   degraded?: unknown;
+  ephemeral?: number;
   preview?: Record<string, unknown>;
   timers?: Record<string, unknown>;
   db_size?: number;
@@ -4317,6 +5053,35 @@ export type TaskArchiveResult = {
   cursor?: Cursor;
 };
 
+export type TaskBestOfNParams = {
+  title: string;
+  agents: string | (string | Record<string, unknown>)[];
+  repo?: string;
+  base?: string;
+  prompt?: string;
+  prompt_file?: string;
+  suffix?: string;
+  check_command?: string;
+  isolate?: string;
+  yolo?: boolean;
+  network?: string;
+  image?: string;
+  setup?: boolean;
+  ports?: number;
+  isolation?: string;
+  checkout?: string;
+  root?: string;
+  fetch?: boolean;
+};
+
+export type TaskBestOfNResult = {
+  family: Record<string, unknown>;
+  tasks: (Task | null)[];
+  runs: AgentRun[];
+  warnings: unknown[];
+  cursor?: Cursor;
+};
+
 export type TaskCheckAuthorizeParams = {
   task: Target;
   check: string;
@@ -4390,6 +5155,65 @@ export type TaskCheckRunResult = {
   definition: Record<string, unknown>;
   provenance: unknown;
   cursor?: Cursor;
+};
+
+export type TaskClaimParams = {
+  task?: Target;
+  run?: Target;
+  glob: string;
+  note?: string;
+};
+
+export type TaskClaimResult = {
+  claim: {
+    id: string;
+    task: string;
+    glob: string;
+    note: string | null;
+    created_at_ms: number;
+  };
+  conflicts: Record<string, unknown>[];
+  cursor?: Cursor;
+};
+
+export type TaskClaimListParams = {
+  task?: Target;
+};
+
+export type TaskClaimListResult = {
+  claims: Record<string, unknown>[];
+};
+
+export type TaskClaimRemoveParams = {
+  claim: string;
+};
+
+export type TaskClaimRemoveResult = {
+  removed: string;
+  cursor?: Cursor;
+};
+
+export type TaskCompareParams = {
+  family: string;
+  pair?: string[];
+};
+
+export type TaskCompareResult = {
+  family: string;
+  state: string;
+  picked: string | null;
+  reports: Record<string, unknown>[];
+  ranking: {
+    handle: string;
+    score: number;
+    reasons: string[];
+  }[];
+  text: string;
+  pair?: {
+    a: string;
+    b: string;
+    summary: Record<string, unknown>;
+  };
 };
 
 export type TaskCreateParams = {
@@ -4565,6 +5389,32 @@ export type TaskGetResult = {
   pr?: PrLookup | null;
 };
 
+export type TaskLinkStatusParams = {
+  run?: string;
+  pane?: Target;
+};
+
+export type TaskLinkStatusResult = {
+  run: {
+    id: string;
+    handle: string;
+    harness: string;
+    integration: string;
+    pane: string;
+    session_reported: boolean;
+  };
+  verified: boolean;
+  reasons: string[];
+  remedies: {
+    action: string;
+    label: string;
+    command?: string;
+    note?: string;
+  }[];
+  candidates: Record<string, unknown>[];
+  note: string;
+};
+
 export type TaskListParams = {
   status?: string;
   repo?: string;
@@ -4590,6 +5440,27 @@ export type TaskParkResult = {
     resumable: boolean;
   }[];
   note?: string;
+  cursor?: Cursor;
+};
+
+export type TaskPickParams = {
+  family: string;
+  child: string;
+  merge?: boolean;
+  discard?: boolean;
+  force?: boolean;
+  target?: string;
+};
+
+export type TaskPickResult = {
+  family: Record<string, unknown>;
+  picked: string;
+  merge: unknown;
+  discarded: {
+    child: string;
+    ok: boolean;
+    error?: string;
+  }[];
   cursor?: Cursor;
 };
 
@@ -4628,6 +5499,47 @@ export type TaskPrParams = {
 export type TaskPrResult = {
   task: string;
   pr: PrLookup;
+};
+
+export type TaskPrClaimParams = {
+  task: Target;
+  url: string;
+  text?: string;
+  idempotency_key?: string;
+};
+
+export type TaskPrClaimResult = {
+  claim: PrClaim;
+  label: string;
+  note: string;
+  cursor?: Cursor;
+};
+
+export type TaskPrListParams = {
+  task: Target;
+  subject?: string;
+};
+
+export type TaskPrListResult = {
+  task: string;
+  observations: PrObservation[];
+  claims: PrClaim[];
+  provider: string;
+  max_age_secs: number;
+};
+
+export type TaskPrObserveParams = {
+  task: Target;
+  pr?: string;
+  criteria?: string[];
+  idempotency_key?: string;
+};
+
+export type TaskPrObserveResult = {
+  observation: PrObservation;
+  label: string;
+  note: string;
+  cursor?: Cursor;
 };
 
 export type TaskReconcileParams = {
@@ -4741,6 +5653,22 @@ export type TaskReviewDiffResult = {
   max_bytes: number;
 };
 
+export type TaskReviewForgetParams = {
+  task?: Target;
+  pane?: Target;
+  workspace?: Target;
+  before?: string | number;
+  all?: boolean;
+  dry_run?: boolean;
+};
+
+export type TaskReviewForgetResult = {
+  scope: unknown;
+  dry_run: boolean;
+  purged: ReviewPurge;
+  cursor?: Cursor;
+};
+
 export type TaskReviewGetParams = {
   task: Target;
   subject?: string;
@@ -4796,6 +5724,7 @@ export type TaskReviewGetResult = {
     available: boolean;
     method: string;
     note: string;
+    selection?: Record<string, unknown>;
   };
   actions: {
     accept: {
@@ -4804,6 +5733,47 @@ export type TaskReviewGetResult = {
       requires_exceptions: unknown;
     };
   };
+  human_reviews?: Record<string, unknown>[];
+  purged?: unknown;
+};
+
+export type TaskReviewHumanReviewParams = {
+  task: Target;
+  criterion: string;
+  verdict: "supported" | "failed" | "withdrawn";
+  subject?: string;
+  expected_subject?: string;
+  note?: string;
+  screenshots?: string[];
+  idempotency_key?: string;
+};
+
+export type TaskReviewHumanReviewResult = {
+  review: Record<string, unknown>;
+  note: string;
+  cursor?: Cursor;
+};
+
+export type TaskReviewIntervalStatusParams = Record<string, unknown>;
+
+export type TaskReviewIntervalStatusResult = {
+  enabled: boolean;
+  watcher: string;
+  settle_ms: number;
+  arm_delay_ms: number;
+  harnesses: string[];
+  checkouts: Record<string, unknown>[];
+  note: string;
+};
+
+export type TaskReviewIntervalsParams = {
+  task: Target;
+  limit?: number;
+};
+
+export type TaskReviewIntervalsResult = {
+  task: string;
+  intervals: Record<string, unknown>[];
 };
 
 export type TaskReviewNoteClassifyParams = {
@@ -4858,12 +5828,15 @@ export type TaskReviewRequestReviewerResult = {
 
 export type TaskReviewSnapshotParams = {
   task: Target;
+  paths?: string[];
+  patch?: string;
   idempotency_key?: string;
 };
 
 export type TaskReviewSnapshotResult = {
   subject: Record<string, unknown>;
   snapshot: Record<string, unknown>;
+  selection?: Record<string, unknown>;
   label: string;
   note: string;
   cursor?: Cursor;
@@ -4896,6 +5869,7 @@ export type TaskReviewStartReviewerParams = {
   pane?: Target;
   split_of?: Target;
   direction?: string;
+  checkout?: "disposable" | "task";
   idempotency_key?: string;
 };
 
@@ -4941,6 +5915,41 @@ export type TaskSetupLogResult = {
   setup_status: string | null;
 };
 
+export type TaskSplitParams = {
+  run?: string;
+  pane?: Target;
+  workspace?: Target;
+  paths?: string[];
+  title?: string;
+  slug?: string;
+  dry_run?: boolean;
+  resume?: boolean;
+  keep_recovery?: boolean;
+};
+
+export type TaskSplitResult = {
+  dry_run?: boolean;
+  source: string;
+  changes?: {
+    path: string;
+    staged: boolean;
+    unstaged: boolean;
+    untracked: boolean;
+    deleted: boolean;
+  }[];
+  steps?: {
+    step: string;
+    detail: string;
+  }[];
+  blocked_by?: string[] | null;
+  runs: Record<string, unknown>[];
+  task?: Task | null;
+  moved?: string[];
+  recovery_ref?: string;
+  recovery_kept?: boolean;
+  cursor?: Cursor;
+};
+
 export type TaskSyncParams = {
   task: Target;
   direction?: "pull" | "push" | "both";
@@ -4977,6 +5986,165 @@ export type ThemeSetModeResult = {
   colorfgbg: string;
   reports?: unknown;
   cursor?: Cursor;
+};
+
+export type VmCreateParams = {
+  name?: string;
+  task?: string;
+  checkout?: string;
+  template?: boolean;
+};
+
+export type VmCreateResult = {
+  vm: Record<string, unknown>;
+  fork_ms: number | null;
+  cursor?: Cursor;
+};
+
+export type VmDestroyParams = {
+  vm: string;
+};
+
+export type VmDestroyResult = {
+  vm: string;
+  state: string | null;
+  cursor?: Cursor;
+};
+
+export type VmForkParams = {
+  snapshot: string;
+  count?: number;
+  prefix?: string;
+  tasks?: string[];
+  checkouts?: string[];
+};
+
+export type VmForkResult = {
+  vms: Record<string, unknown>[];
+  ms: number;
+  cursor?: Cursor;
+};
+
+export type VmListParams = Record<string, unknown>;
+
+export type VmListResult = {
+  vms: {
+    name: string;
+    task: string | null;
+    template: string | null;
+    created_ms: number;
+    state: string;
+  }[];
+  snapshots: Record<string, unknown>[];
+};
+
+export type VmResumeParams = {
+  vm: string;
+};
+
+export type VmResumeResult = {
+  vm: string;
+  state: string | null;
+  cursor?: Cursor;
+};
+
+export type VmSnapshotParams = {
+  vm: string;
+  label?: string;
+};
+
+export type VmSnapshotResult = {
+  snapshot: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type VmSnapshotDeleteParams = {
+  snapshot: string;
+  force?: boolean;
+};
+
+export type VmSnapshotDeleteResult = {
+  deleted: string;
+  cursor?: Cursor;
+};
+
+export type VmStartParams = {
+  vm: string;
+};
+
+export type VmStartResult = {
+  vm: string;
+  state: string | null;
+  cursor?: Cursor;
+};
+
+export type VmStatusParams = Record<string, unknown>;
+
+export type VmStatusResult = {
+  enabled: boolean;
+  provider: string;
+  available: boolean;
+  detail: string;
+  config: Record<string, unknown>;
+  providers: {
+    provider: string;
+    status: string;
+    note: string;
+  }[];
+};
+
+export type VmStopParams = {
+  vm: string;
+};
+
+export type VmStopResult = {
+  vm: string;
+  state: string | null;
+  cursor?: Cursor;
+};
+
+export type VmSuspendParams = {
+  vm: string;
+};
+
+export type VmSuspendResult = {
+  vm: string;
+  state: string | null;
+  cursor?: Cursor;
+};
+
+export type VmTemplateBuildParams = Record<string, unknown>;
+
+export type VmTemplateBuildResult = {
+  template: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type VmTemplateDeleteParams = {
+  key: string;
+};
+
+export type VmTemplateDeleteResult = {
+  deleted: string;
+  cursor?: Cursor;
+};
+
+export type VmTemplateListParams = Record<string, unknown>;
+
+export type VmTemplateListResult = {
+  templates: Record<string, unknown>[];
+};
+
+export type VmTransportParams = {
+  vm: string;
+};
+
+export type VmTransportResult = {
+  vm: string;
+  offered: string[];
+  chain: string[];
+  configured: string;
+  link: string;
 };
 
 export type WorkspaceCloseParams = {
@@ -5130,11 +6298,15 @@ export interface Methods {
   "adapter.gate": { params: AdapterGateParams; result: AdapterGateResult };
   "adapter.report_self": { params: AdapterReportSelfParams; result: AdapterReportSelfResult };
   "adapter.signal": { params: AdapterSignalParams; result: AdapterSignalResult };
+  "agent.drift": { params: AgentDriftParams; result: AgentDriftResult };
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   "agent.harnesses": { params: AgentHarnessesParams; result: AgentHarnessesResult };
   "agent.interrupt": { params: AgentInterruptParams; result: AgentInterruptResult };
+  "agent.limits": { params: AgentLimitsParams; result: AgentLimitsResult };
   "agent.list": { params: AgentListParams; result: AgentListResult };
+  "agent.manifest_pin": { params: AgentManifestPinParams; result: AgentManifestPinResult };
   "agent.manifests": { params: AgentManifestsParams; result: AgentManifestsResult };
+  "agent.manifests_check": { params: AgentManifestsCheckParams; result: AgentManifestsCheckResult };
   "agent.manifests_reload": { params: AgentManifestsReloadParams; result: AgentManifestsReloadResult };
   "agent.prompt": { params: AgentPromptParams; result: AgentPromptResult };
   "agent.read": { params: AgentReadParams; result: AgentReadResult };
@@ -5146,19 +6318,24 @@ export interface Methods {
   "agent.send_keys": { params: AgentSendKeysParams; result: AgentSendKeysResult };
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
+  "agent.turn_usage": { params: AgentTurnUsageParams; result: AgentTurnUsageResult };
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
   "api.methods": { params: ApiMethodsParams; result: ApiMethodsResult };
   "api.schema": { params: ApiSchemaParams; result: ApiSchemaResult };
+  "assistant.background": { params: AssistantBackgroundParams; result: AssistantBackgroundResult };
   "assistant.cancel": { params: AssistantCancelParams; result: AssistantCancelResult };
   "assistant.confirm": { params: AssistantConfirmParams; result: AssistantConfirmResult };
   "assistant.consent": { params: AssistantConsentParams; result: AssistantConsentResult };
   "assistant.generate": { params: AssistantGenerateParams; result: AssistantGenerateResult };
   "assistant.get": { params: AssistantGetParams; result: AssistantGetResult };
   "assistant.list": { params: AssistantListParams; result: AssistantListResult };
+  "assistant.models": { params: AssistantModelsParams; result: AssistantModelsResult };
   "assistant.providers": { params: AssistantProvidersParams; result: AssistantProvidersResult };
   "assistant.purge": { params: AssistantPurgeParams; result: AssistantPurgeResult };
   "assistant.revoke": { params: AssistantRevokeParams; result: AssistantRevokeResult };
   "assistant.status": { params: AssistantStatusParams; result: AssistantStatusResult };
+  "assistant.test": { params: AssistantTestParams; result: AssistantTestResult };
+  "attention.batch": { params: AttentionBatchParams; result: AttentionBatchResult };
   "attention.list": { params: AttentionListParams; result: AttentionListResult };
   "attention.update": { params: AttentionUpdateParams; result: AttentionUpdateResult };
   "audit.search": { params: AuditSearchParams; result: AuditSearchResult };
@@ -5241,11 +6418,24 @@ export interface Methods {
   "events.subscribe": { params: EventsSubscribeParams; result: EventsSubscribeResult };
   "events.unsubscribe": { params: EventsUnsubscribeParams; result: EventsUnsubscribeResult };
   "events.wait": { params: EventsWaitParams; result: EventsWaitResult };
+  "family.check": { params: FamilyCheckParams; result: FamilyCheckResult };
+  "family.get": { params: FamilyGetParams; result: FamilyGetResult };
+  "family.list": { params: FamilyListParams; result: FamilyListResult };
   "fs.list": { params: FsListParams; result: FsListResult };
   "fs.read": { params: FsReadParams; result: FsReadResult };
   "git.diff": { params: GitDiffParams; result: GitDiffResult };
   "git.log": { params: GitLogParams; result: GitLogResult };
   "git.status": { params: GitStatusParams; result: GitStatusResult };
+  "goal.approve": { params: GoalApproveParams; result: GoalApproveResult };
+  "goal.briefing": { params: GoalBriefingParams; result: GoalBriefingResult };
+  "goal.cancel": { params: GoalCancelParams; result: GoalCancelResult };
+  "goal.create": { params: GoalCreateParams; result: GoalCreateResult };
+  "goal.get": { params: GoalGetParams; result: GoalGetResult };
+  "goal.list": { params: GoalListParams; result: GoalListResult };
+  "goal.plan": { params: GoalPlanParams; result: GoalPlanResult };
+  "goal.plan_submit": { params: GoalPlanSubmitParams; result: GoalPlanSubmitResult };
+  "goal.start": { params: GoalStartParams; result: GoalStartResult };
+  "goal.step_done": { params: GoalStepDoneParams; result: GoalStepDoneResult };
   "group.add": { params: GroupAddParams; result: GroupAddResult };
   "group.collapse": { params: GroupCollapseParams; result: GroupCollapseResult };
   "group.create": { params: GroupCreateParams; result: GroupCreateResult };
@@ -5264,6 +6454,12 @@ export interface Methods {
   "layout.export": { params: LayoutExportParams; result: LayoutExportResult };
   "layout.get": { params: LayoutGetParams; result: LayoutGetResult };
   "layout.list": { params: LayoutListParams; result: LayoutListResult };
+  "merge.predict": { params: MergePredictParams; result: MergePredictResult };
+  "merge.queue.add": { params: MergeQueueAddParams; result: MergeQueueAddResult };
+  "merge.queue.cancel": { params: MergeQueueCancelParams; result: MergeQueueCancelResult };
+  "merge.queue.list": { params: MergeQueueListParams; result: MergeQueueListResult };
+  "merge.queue.requeue": { params: MergeQueueRequeueParams; result: MergeQueueRequeueResult };
+  "merge.queue.run": { params: MergeQueueRunParams; result: MergeQueueRunResult };
   "notes.get": { params: NotesGetParams; result: NotesGetResult };
   "notes.set": { params: NotesSetParams; result: NotesSetResult };
   "notification.config": { params: NotificationConfigParams; result: NotificationConfigResult };
@@ -5309,8 +6505,12 @@ export interface Methods {
   "plugin.registry.notify": { params: PluginRegistryNotifyParams; result: PluginRegistryNotifyResult };
   "plugin.surface.close": { params: PluginSurfaceCloseParams; result: PluginSurfaceCloseResult };
   "policy.add": { params: PolicyAddParams; result: PolicyAddResult };
+  "policy.learned.accept": { params: PolicyLearnedAcceptParams; result: PolicyLearnedAcceptResult };
+  "policy.learned.dismiss": { params: PolicyLearnedDismissParams; result: PolicyLearnedDismissResult };
+  "policy.learned.list": { params: PolicyLearnedListParams; result: PolicyLearnedListResult };
   "policy.list": { params: PolicyListParams; result: PolicyListResult };
   "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
+  "policy.suggest": { params: PolicySuggestParams; result: PolicySuggestResult };
   "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
   "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
@@ -5327,6 +6527,10 @@ export interface Methods {
   "preview.status": { params: PreviewStatusParams; result: PreviewStatusResult };
   "preview.unmirror": { params: PreviewUnmirrorParams; result: PreviewUnmirrorResult };
   "preview.url": { params: PreviewUrlParams; result: PreviewUrlResult };
+  "quota.resume": { params: QuotaResumeParams; result: QuotaResumeResult };
+  "quota.route": { params: QuotaRouteParams; result: QuotaRouteResult };
+  "quota.status": { params: QuotaStatusParams; result: QuotaStatusResult };
+  "quota.tick": { params: QuotaTickParams; result: QuotaTickResult };
   "sandbox.allow": { params: SandboxAllowParams; result: SandboxAllowResult };
   "sandbox.copy_out": { params: SandboxCopyOutParams; result: SandboxCopyOutResult };
   "sandbox.disallow": { params: SandboxDisallowParams; result: SandboxDisallowResult };
@@ -5369,11 +6573,16 @@ export interface Methods {
   "tab.renumber": { params: TabRenumberParams; result: TabRenumberResult };
   "task.adopt": { params: TaskAdoptParams; result: TaskAdoptResult };
   "task.archive": { params: TaskArchiveParams; result: TaskArchiveResult };
+  "task.best_of_n": { params: TaskBestOfNParams; result: TaskBestOfNResult };
   "task.check.authorize": { params: TaskCheckAuthorizeParams; result: TaskCheckAuthorizeResult };
   "task.check.cancel": { params: TaskCheckCancelParams; result: TaskCheckCancelResult };
   "task.check.get": { params: TaskCheckGetParams; result: TaskCheckGetResult };
   "task.check.list": { params: TaskCheckListParams; result: TaskCheckListResult };
   "task.check.run": { params: TaskCheckRunParams; result: TaskCheckRunResult };
+  "task.claim": { params: TaskClaimParams; result: TaskClaimResult };
+  "task.claim.list": { params: TaskClaimListParams; result: TaskClaimListResult };
+  "task.claim.remove": { params: TaskClaimRemoveParams; result: TaskClaimRemoveResult };
+  "task.compare": { params: TaskCompareParams; result: TaskCompareResult };
   "task.create": { params: TaskCreateParams; result: TaskCreateResult };
   "task.dependency.add": { params: TaskDependencyAddParams; result: TaskDependencyAddResult };
   "task.dependency.list": { params: TaskDependencyListParams; result: TaskDependencyListResult };
@@ -5382,18 +6591,27 @@ export interface Methods {
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
   "task.forget": { params: TaskForgetParams; result: TaskForgetResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
+  "task.link.status": { params: TaskLinkStatusParams; result: TaskLinkStatusResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
   "task.park": { params: TaskParkParams; result: TaskParkResult };
+  "task.pick": { params: TaskPickParams; result: TaskPickResult };
   "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
   "task.ports.re_lease": { params: TaskPortsReLeaseParams; result: TaskPortsReLeaseResult };
   "task.pr": { params: TaskPrParams; result: TaskPrResult };
+  "task.pr.claim": { params: TaskPrClaimParams; result: TaskPrClaimResult };
+  "task.pr.list": { params: TaskPrListParams; result: TaskPrListResult };
+  "task.pr.observe": { params: TaskPrObserveParams; result: TaskPrObserveResult };
   "task.reconcile": { params: TaskReconcileParams; result: TaskReconcileResult };
   "task.recreate": { params: TaskRecreateParams; result: TaskRecreateResult };
   "task.resume": { params: TaskResumeParams; result: TaskResumeResult };
   "task.review.accept": { params: TaskReviewAcceptParams; result: TaskReviewAcceptResult };
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
   "task.review.diff": { params: TaskReviewDiffParams; result: TaskReviewDiffResult };
+  "task.review.forget": { params: TaskReviewForgetParams; result: TaskReviewForgetResult };
   "task.review.get": { params: TaskReviewGetParams; result: TaskReviewGetResult };
+  "task.review.human_review": { params: TaskReviewHumanReviewParams; result: TaskReviewHumanReviewResult };
+  "task.review.interval_status": { params: TaskReviewIntervalStatusParams; result: TaskReviewIntervalStatusResult };
+  "task.review.intervals": { params: TaskReviewIntervalsParams; result: TaskReviewIntervalsResult };
   "task.review.note.classify": { params: TaskReviewNoteClassifyParams; result: TaskReviewNoteClassifyResult };
   "task.review.notes": { params: TaskReviewNotesParams; result: TaskReviewNotesResult };
   "task.review.request_reviewer": { params: TaskReviewRequestReviewerParams; result: TaskReviewRequestReviewerResult };
@@ -5402,9 +6620,25 @@ export interface Methods {
   "task.review.start_reviewer": { params: TaskReviewStartReviewerParams; result: TaskReviewStartReviewerResult };
   "task.setup": { params: TaskSetupParams; result: TaskSetupResult };
   "task.setup_log": { params: TaskSetupLogParams; result: TaskSetupLogResult };
+  "task.split": { params: TaskSplitParams; result: TaskSplitResult };
   "task.sync": { params: TaskSyncParams; result: TaskSyncResult };
   "theme.get": { params: ThemeGetParams; result: ThemeGetResult };
   "theme.set_mode": { params: ThemeSetModeParams; result: ThemeSetModeResult };
+  "vm.create": { params: VmCreateParams; result: VmCreateResult };
+  "vm.destroy": { params: VmDestroyParams; result: VmDestroyResult };
+  "vm.fork": { params: VmForkParams; result: VmForkResult };
+  "vm.list": { params: VmListParams; result: VmListResult };
+  "vm.resume": { params: VmResumeParams; result: VmResumeResult };
+  "vm.snapshot": { params: VmSnapshotParams; result: VmSnapshotResult };
+  "vm.snapshot.delete": { params: VmSnapshotDeleteParams; result: VmSnapshotDeleteResult };
+  "vm.start": { params: VmStartParams; result: VmStartResult };
+  "vm.status": { params: VmStatusParams; result: VmStatusResult };
+  "vm.stop": { params: VmStopParams; result: VmStopResult };
+  "vm.suspend": { params: VmSuspendParams; result: VmSuspendResult };
+  "vm.template.build": { params: VmTemplateBuildParams; result: VmTemplateBuildResult };
+  "vm.template.delete": { params: VmTemplateDeleteParams; result: VmTemplateDeleteResult };
+  "vm.template.list": { params: VmTemplateListParams; result: VmTemplateListResult };
+  "vm.transport": { params: VmTransportParams; result: VmTransportResult };
   "workspace.close": { params: WorkspaceCloseParams; result: WorkspaceCloseResult };
   "workspace.create": { params: WorkspaceCreateParams; result: WorkspaceCreateResult };
   "workspace.focus": { params: WorkspaceFocusParams; result: WorkspaceFocusResult };
@@ -5427,11 +6661,15 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "adapter.gate": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.report_self": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.signal": { mutating: true, scope: "pane", paneScope: "open" },
+  "agent.drift": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.get": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.interrupt": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.limits": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.manifest_pin": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.manifests_check": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.read": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5443,19 +6681,24 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
   "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
+  "assistant.background": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.confirm": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.consent": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.generate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.get": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "assistant.models": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.providers": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.purge": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.revoke": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "assistant.test": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "attention.batch": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.list": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.update": { mutating: true, scope: "full", paneScope: "forbidden" },
   "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -5538,11 +6781,24 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "events.subscribe": { mutating: false, scope: "pane", paneScope: "open" },
   "events.unsubscribe": { mutating: false, scope: "pane", paneScope: "open" },
   "events.wait": { mutating: false, scope: "pane", paneScope: "open" },
+  "family.check": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "family.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "family.list": { mutating: false, scope: "pane", paneScope: "open" },
   "fs.list": { mutating: false, scope: "pane", paneScope: "open" },
   "fs.read": { mutating: false, scope: "pane", paneScope: "open" },
   "git.diff": { mutating: false, scope: "pane", paneScope: "open" },
   "git.log": { mutating: false, scope: "pane", paneScope: "open" },
   "git.status": { mutating: false, scope: "pane", paneScope: "open" },
+  "goal.approve": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "goal.briefing": { mutating: false, scope: "pane", paneScope: "open" },
+  "goal.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "goal.create": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "goal.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "goal.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "goal.plan": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "goal.plan_submit": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "goal.start": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "goal.step_done": { mutating: true, scope: "full", paneScope: "forbidden" },
   "group.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "group.collapse": { mutating: true, scope: "full", paneScope: "forbidden" },
   "group.create": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5561,6 +6817,12 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "layout.export": { mutating: false, scope: "pane", paneScope: "open" },
   "layout.get": { mutating: false, scope: "pane", paneScope: "open" },
   "layout.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "merge.predict": { mutating: false, scope: "pane", paneScope: "open" },
+  "merge.queue.add": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "merge.queue.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "merge.queue.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "merge.queue.requeue": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "merge.queue.run": { mutating: true, scope: "full", paneScope: "forbidden" },
   "notes.get": { mutating: false, scope: "pane", paneScope: "open" },
   "notes.set": { mutating: true, scope: "pane", paneScope: "open" },
   "notification.config": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5606,8 +6868,12 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "plugin.registry.notify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.surface.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.learned.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.learned.dismiss": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.learned.list": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.suggest": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
@@ -5624,6 +6890,10 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "preview.status": { mutating: false, scope: "pane", paneScope: "open" },
   "preview.unmirror": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.url": { mutating: false, scope: "pane", paneScope: "open" },
+  "quota.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "quota.route": { mutating: false, scope: "pane", paneScope: "open" },
+  "quota.status": { mutating: false, scope: "pane", paneScope: "open" },
+  "quota.tick": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.allow": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.copy_out": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.disallow": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5666,11 +6936,16 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "tab.renumber": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.adopt": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.archive": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.best_of_n": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.check.authorize": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.check.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.check.get": { mutating: false, scope: "pane", paneScope: "open" },
   "task.check.list": { mutating: false, scope: "pane", paneScope: "open" },
   "task.check.run": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.claim": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.claim.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.claim.remove": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.compare": { mutating: false, scope: "pane", paneScope: "open" },
   "task.create": { mutating: true, scope: "pane", paneScope: "open" },
   "task.dependency.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.dependency.list": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5679,18 +6954,27 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.link.status": { mutating: false, scope: "pane", paneScope: "open" },
   "task.list": { mutating: false, scope: "pane", paneScope: "open" },
   "task.park": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.pick": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
   "task.ports.re_lease": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr.claim": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.pr.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr.observe": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
   "task.recreate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.human_review": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.review.interval_status": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.intervals": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.notes": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.request_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5699,9 +6983,25 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.start_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.setup": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.setup_log": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.split": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.sync": { mutating: true, scope: "full", paneScope: "forbidden" },
   "theme.get": { mutating: false, scope: "pane", paneScope: "open" },
   "theme.set_mode": { mutating: true, scope: "pane", paneScope: "open" },
+  "vm.create": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.destroy": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.fork": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "vm.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.snapshot": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.snapshot.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.start": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.status": { mutating: false, scope: "pane", paneScope: "open" },
+  "vm.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.suspend": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.template.build": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.template.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "vm.template.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "vm.transport": { mutating: false, scope: "pane", paneScope: "open" },
   "workspace.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "workspace.create": { mutating: true, scope: "pane", paneScope: "open" },
   "workspace.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5726,6 +7026,7 @@ export type AdapterDisagreementData = {
   facet: string;
   structured: string;
   other: string;
+  source?: string;
 };
 
 export type AdapterHealthChangedSubject = {
@@ -5736,6 +7037,17 @@ export type AdapterHealthChangedData = {
   to: string;
   from?: string;
   transport?: string;
+  reason?: string;
+};
+
+export type AgentCwdChangedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentCwdChangedData = {
+  cwd: string;
+  old_cwd: string | null;
 };
 
 export type AgentDetectedSubject = {
@@ -5747,6 +7059,21 @@ export type AgentDetectedData = {
   harness: string;
   via: string;
   argv0?: string | null;
+};
+
+export type AgentDriftDetectedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentDriftDetectedData = {
+  harness: string;
+  version: string;
+  observations: number;
+  disagreements: number;
+  unknown_resolutions: number;
+  answer_failures: number;
+  rate: number;
 };
 
 export type AgentExitedSubject = {
@@ -5787,6 +7114,20 @@ export type AgentIdentifiedSubject = {
 export type AgentIdentifiedData = {
   harness_session_id?: unknown;
   transcript_path?: unknown;
+};
+
+export type AgentItemSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentItemData = {
+  kind: ItemKind;
+  summary: string;
+  item: string;
+  turn: string;
+  seq: number;
+  payload_ref: string | null;
 };
 
 export type AgentNamedSubject = {
@@ -5845,6 +7186,39 @@ export type AgentStateChangedData = {
   to: string;
   source?: string;
   confidence?: number;
+  inferred?: boolean;
+};
+
+export type AgentSubagentFinishedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentSubagentFinishedData = {
+  agent_id: string | null;
+  agent_type: string;
+};
+
+export type AgentSubagentStartedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentSubagentStartedData = {
+  agent_id: string | null;
+  agent_type: string;
+};
+
+export type AgentToolBlockedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentToolBlockedData = {
+  tool: string;
+  effect: string;
+  rule: string | null;
+  command: string | null;
 };
 
 export type AgentTurnCompletedSubject = {
@@ -5863,6 +7237,24 @@ export type AgentTurnStartedSubject = {
 };
 
 export type AgentTurnStartedData = unknown;
+
+export type AgentTurnUsageSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentTurnUsageData = {
+  turn: number;
+  native_id: string;
+  model: string | null;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
+  cost_source: string;
+  source: string;
+};
 
 export type AgentUsageSubject = {
   run: string;
@@ -5885,12 +7277,33 @@ export type AssistantConsentGrantedSubject = {
 export type AssistantConsentGrantedData = unknown;
 
 export type AssistantConsentRevokedSubject = {
-  workspace: string;
+  workspace?: string;
+  remote_workspace?: string;
 };
 
 export type AssistantConsentRevokedData = {
   grants: number;
   cancelled: number;
+};
+
+export type AssistantDeltaSubject = {
+  assistant_request: string;
+};
+
+export type AssistantDeltaData = {
+  request: string;
+  seq: number;
+  text: string;
+};
+
+export type AssistantModelsRefreshedSubject = {
+  assistant_connection: string;
+};
+
+export type AssistantModelsRefreshedData = {
+  adapter: string;
+  endpoint_host: string;
+  models: number;
 };
 
 export type AssistantPurgedSubject = Record<string, unknown>;
@@ -5900,11 +7313,38 @@ export type AssistantPurgedData = {
   reason: string;
 };
 
+export type AssistantRequestCreatedSubject = {
+  assistant_request: string;
+};
+
+export type AssistantRequestCreatedData = unknown;
+
 export type AssistantRequestFinishedSubject = {
   assistant_request: string;
 };
 
 export type AssistantRequestFinishedData = unknown;
+
+export type AssistantRequestStartedSubject = {
+  assistant_request: string;
+};
+
+export type AssistantRequestStartedData = unknown;
+
+export type AssistantStallNoticeSubject = {
+  assistant_request: string;
+  run?: unknown;
+};
+
+export type AssistantStallNoticeData = {
+  request: string;
+};
+
+export type AssistantTestFinishedSubject = {
+  assistant_connection: string;
+};
+
+export type AssistantTestFinishedData = unknown;
 
 export type AttentionPreferenceChangedSubject = {
   key: {
@@ -6134,6 +7574,124 @@ export type DraftUpdatedSubject = {
 
 export type DraftUpdatedData = unknown;
 
+export type FamilyCheckedSubject = {
+  family: string;
+  child: string;
+};
+
+export type FamilyCheckedData = {
+  ok: boolean;
+  exit_code: number | null;
+  timed_out: boolean;
+  duration_ms: number;
+};
+
+export type FamilyCreatedSubject = {
+  family: string;
+};
+
+export type FamilyCreatedData = {
+  title: string;
+  children: {
+    handle: string;
+    task: string;
+    harness: string;
+  }[];
+  check_command: string | null;
+};
+
+export type FamilyPickedSubject = {
+  family: string;
+};
+
+export type FamilyPickedData = {
+  picked: string;
+  discarded: number;
+};
+
+export type GoalApprovedSubject = {
+  goal: string;
+};
+
+export type GoalApprovedData = {
+  by: string;
+  rev: number;
+};
+
+export type GoalCancelledSubject = {
+  goal: string;
+};
+
+export type GoalCancelledData = {
+  stop_tasks: boolean;
+};
+
+export type GoalCreatedSubject = {
+  goal: string;
+};
+
+export type GoalCreatedData = {
+  handle: string;
+  title: string;
+};
+
+export type GoalFinishedSubject = {
+  goal: string;
+};
+
+export type GoalFinishedData = {
+  state: string;
+};
+
+export type GoalPlannedSubject = {
+  goal: string;
+};
+
+export type GoalPlannedData = {
+  steps: number;
+  planner: string;
+  rev: number;
+};
+
+export type GoalPlanningStartedSubject = {
+  goal: string;
+};
+
+export type GoalPlanningStartedData = {
+  harness: string;
+  run: string | null;
+};
+
+export type GoalStepFinishedSubject = {
+  goal: string;
+  step: string;
+};
+
+export type GoalStepFinishedData = {
+  status: string;
+  error: string | null;
+};
+
+export type GoalStepStartedSubject = {
+  goal: string;
+  step: string;
+};
+
+export type GoalStepStartedData = {
+  task: string;
+  harness: string;
+  reasons: string[];
+};
+
+export type GoalStepWaitingSubject = {
+  goal: string;
+  step: string;
+};
+
+export type GoalStepWaitingData = {
+  reason: string;
+};
+
 export type GroupClosedSubject = {
   group: string;
 };
@@ -6172,6 +7730,18 @@ export type GroupRenamedSubject = {
 
 export type GroupRenamedData = {
   name: string;
+};
+
+export type HarnessManifestLoadedSubject = {
+  manifest: string;
+};
+
+export type HarnessManifestLoadedData = {
+  id: string;
+  version: string;
+  source: string;
+  serial: number;
+  verified: string;
 };
 
 export type IntegrationTamperedSubject = {
@@ -6249,6 +7819,149 @@ export type LayoutAppliedData = {
   tabs: number;
   panes: number;
   new_workspace: unknown;
+};
+
+export type MachineAddedSubject = {
+  machine: string;
+};
+
+export type MachineAddedData = {
+  label: string;
+  kind: string;
+  address: string | null;
+};
+
+export type MachineConnectedSubject = {
+  machine: string;
+};
+
+export type MachineConnectedData = {
+  label: string;
+};
+
+export type MachineDegradedSubject = {
+  machine: string;
+};
+
+export type MachineDegradedData = {
+  label: string;
+  reason: string | null;
+};
+
+export type MachineDisconnectedSubject = {
+  machine: string;
+};
+
+export type MachineDisconnectedData = {
+  label: string;
+  reason: string | null;
+};
+
+export type MachineRemovedSubject = {
+  machine: string;
+};
+
+export type MachineRemovedData = {
+  label: string;
+};
+
+export type MergeBlockedSubject = {
+  entry: string;
+  task: string;
+};
+
+export type MergeBlockedData = {
+  handle: string;
+  target: string;
+  reason: string;
+};
+
+export type MergeCancelledSubject = {
+  entry?: string | null;
+};
+
+export type MergeCancelledData = {
+  handle: string | null;
+};
+
+export type MergeCheckFailedSubject = {
+  entry: string;
+  task: string;
+};
+
+export type MergeCheckFailedData = {
+  handle: string;
+  target: string;
+  exit_code: number | null;
+  timed_out: boolean;
+};
+
+export type MergeConflictSubject = {
+  entry: string;
+  task: string;
+};
+
+export type MergeConflictData = {
+  handle: string;
+  target: string;
+  paths: string[];
+};
+
+export type MergeConflictPredictedSubject = {
+  a: string;
+  b: string;
+};
+
+export type MergeConflictPredictedData = {
+  a: string;
+  b: string;
+  kind: string;
+  severity: string;
+  paths: string[];
+  detail: string;
+};
+
+export type MergeFailedSubject = {
+  entry: string;
+  task: string;
+};
+
+export type MergeFailedData = {
+  handle: string;
+  target: string;
+  error: string;
+};
+
+export type MergeMergedSubject = {
+  entry: string;
+  task: string;
+};
+
+export type MergeMergedData = {
+  handle: string;
+  target: string;
+  commit: string;
+  already: boolean;
+  via: string;
+};
+
+export type MergeQueuedSubject = {
+  entry: string;
+  task: string;
+};
+
+export type MergeQueuedData = {
+  handle: string;
+  target: string;
+  priority: number;
+};
+
+export type MergeRequeuedSubject = {
+  entry?: string | null;
+};
+
+export type MergeRequeuedData = {
+  handle: string | null;
 };
 
 export type NotesUpdatedSubject = {
@@ -6475,6 +8188,24 @@ export type PasteTranslatedData = {
   target_namespace: string;
 };
 
+export type PolicyLearnedAcceptedSubject = {
+  suggestion: string;
+};
+
+export type PolicyLearnedAcceptedData = {
+  target: string;
+  effect: string;
+  pattern: string;
+  workspace: string;
+  approvals: number;
+};
+
+export type PolicyLearnedDismissedSubject = {
+  suggestion: string;
+};
+
+export type PolicyLearnedDismissedData = unknown;
+
 export type PolicyRepoTrustedSubject = Record<string, unknown>;
 
 export type PolicyRepoTrustedData = {
@@ -6623,6 +8354,28 @@ export type PreviewUpData = {
   preview: Preview;
 };
 
+export type QuotaPausedSubject = {
+  key: string;
+};
+
+export type QuotaPausedData = {
+  handle: string;
+  account: string;
+  reason: string;
+  resumes_at_ms: number | null;
+  task: string | null;
+};
+
+export type QuotaResumedSubject = {
+  key: string;
+};
+
+export type QuotaResumedData = {
+  handle: string;
+  reason: string;
+  task: string | null;
+};
+
 export type ReviewAcceptedSubject = {
   task: string;
 };
@@ -6649,6 +8402,18 @@ export type ReviewEndCandidatePinnedData = {
   subject: string;
   head: string;
   note: unknown;
+};
+
+export type ReviewHumanReviewedSubject = {
+  task: string;
+  criterion: string;
+  subject: string;
+};
+
+export type ReviewHumanReviewedData = {
+  verdict: string;
+  screenshots: number;
+  intent_revision: number;
 };
 
 export type ReviewInvalidatedSubject = {
@@ -6688,6 +8453,58 @@ export type ReviewNotesRecordedData = {
   count: number;
   subject: unknown;
   open_concerns: unknown;
+};
+
+export type ReviewPrClaimedSubject = {
+  task: string;
+};
+
+export type ReviewPrClaimedData = {
+  claim: string;
+  url: string;
+  pr: string | null;
+  source: "pasted_url" | "agent_statement";
+};
+
+export type ReviewPrHeadChangedSubject = {
+  task: string;
+};
+
+export type ReviewPrHeadChangedData = {
+  pr: string | null;
+  from: string | null;
+  to: string | null;
+  observation: string;
+};
+
+export type ReviewPrObservedSubject = {
+  task: string;
+};
+
+export type ReviewPrObservedData = {
+  observation: string;
+  lookup: "observed" | "no_pr" | "failed";
+  pr: string | null;
+  head: string | null;
+  state: "open" | "closed" | "merged" | null;
+  draft: boolean | null;
+  checks: "none" | "pending" | "passing" | "failing" | null;
+  reason: string | null;
+};
+
+export type ReviewPurgedSubject = {
+  scope: unknown;
+};
+
+export type ReviewPurgedData = ReviewPurge;
+
+export type ReviewReviewerCheckoutRemovedSubject = {
+  task: string;
+  request: string;
+};
+
+export type ReviewReviewerCheckoutRemovedData = {
+  run: string | null;
 };
 
 export type ReviewReviewerRequestedSubject = {
@@ -6961,6 +8778,24 @@ export type SessionServerRestartedData = {
   prev_pid?: number;
 };
 
+export type SessionStartedSubject = Record<string, unknown>;
+
+export type SessionStartedData = {
+  pid: number;
+  version: string;
+  machine: string;
+  name: string;
+  prev_pid: number | null;
+  fresh: boolean;
+};
+
+export type SessionStoppedSubject = Record<string, unknown>;
+
+export type SessionStoppedData = {
+  pid: number;
+  reason: string;
+};
+
 export type TabClosedSubject = {
   tab: string;
   workspace: string;
@@ -7068,6 +8903,25 @@ export type TaskBranchChangedData = {
   path: string;
   expected: string | null;
   actual: string | null;
+};
+
+export type TaskClaimAddedSubject = {
+  task: string;
+  claim: string;
+};
+
+export type TaskClaimAddedData = {
+  glob: string;
+  note: string | null;
+};
+
+export type TaskClaimRemovedSubject = {
+  task: string;
+  claim: string;
+};
+
+export type TaskClaimRemovedData = {
+  glob: string;
 };
 
 export type TaskCleanupSuggestedSubject = {
@@ -7272,6 +9126,18 @@ export type TaskSetupUntrustedData = {
   }[];
 };
 
+export type TaskSplitSubject = {
+  task: string;
+};
+
+export type TaskSplitData = {
+  source: string;
+  moved: number;
+  recovery_ref: string;
+  recovery_kept: boolean;
+  runs: number;
+};
+
 export type TaskStatusChangedSubject = {
   task: string;
 };
@@ -7304,6 +9170,83 @@ export type TaskUpdatedData = {
 export type ThemeChangedSubject = Record<string, unknown>;
 
 export type ThemeChangedData = unknown;
+
+export type VmCreatedSubject = {
+  vm: string;
+};
+
+export type VmCreatedData = {
+  provider: string;
+  template: boolean;
+  fork_ms: number | null;
+};
+
+export type VmDestroyedSubject = {
+  vm: string;
+};
+
+export type VmDestroyedData = {
+  state: string | null;
+};
+
+export type VmForkedSubject = {
+  snapshot: string;
+};
+
+export type VmForkedData = {
+  vms: string[];
+  ms: number;
+};
+
+export type VmResumedSubject = {
+  vm: string;
+};
+
+export type VmResumedData = {
+  state: string | null;
+};
+
+export type VmSnapshotCreatedSubject = {
+  vm: string;
+};
+
+export type VmSnapshotCreatedData = {
+  snapshot: string;
+  memory: boolean;
+};
+
+export type VmStartedSubject = {
+  vm: string;
+};
+
+export type VmStartedData = {
+  state: string | null;
+};
+
+export type VmStoppedSubject = {
+  vm: string;
+};
+
+export type VmStoppedData = {
+  state: string | null;
+};
+
+export type VmSuspendedSubject = {
+  vm: string;
+};
+
+export type VmSuspendedData = {
+  state: string | null;
+};
+
+export type VmTemplateBuiltSubject = {
+  template: string;
+};
+
+export type VmTemplateBuiltData = {
+  snapshot: string;
+  setup_digest: string;
+};
 
 export type WorkspaceClosedSubject = {
   workspace: string;
@@ -7377,24 +9320,37 @@ export type WorktreeRemovedData = {
 export interface EventMap {
   "adapter.disagreement": { subject: AdapterDisagreementSubject; data: AdapterDisagreementData };
   "adapter.health_changed": { subject: AdapterHealthChangedSubject; data: AdapterHealthChangedData };
+  "agent.cwd_changed": { subject: AgentCwdChangedSubject; data: AgentCwdChangedData };
   "agent.detected": { subject: AgentDetectedSubject; data: AgentDetectedData };
+  "agent.drift_detected": { subject: AgentDriftDetectedSubject; data: AgentDriftDetectedData };
   "agent.exited": { subject: AgentExitedSubject; data: AgentExitedData };
   "agent.file_changed": { subject: AgentFileChangedSubject; data: AgentFileChangedData };
   "agent.harness_version_unvalidated": { subject: AgentHarnessVersionUnvalidatedSubject; data: AgentHarnessVersionUnvalidatedData };
   "agent.identified": { subject: AgentIdentifiedSubject; data: AgentIdentifiedData };
+  "agent.item": { subject: AgentItemSubject; data: AgentItemData };
   "agent.named": { subject: AgentNamedSubject; data: AgentNamedData };
   "agent.rate_limited": { subject: AgentRateLimitedSubject; data: AgentRateLimitedData };
   "agent.resume_handle": { subject: AgentResumeHandleSubject; data: AgentResumeHandleData };
   "agent.session_ended": { subject: AgentSessionEndedSubject; data: AgentSessionEndedData };
   "agent.started": { subject: AgentStartedSubject; data: AgentStartedData };
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
+  "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
+  "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
+  "agent.tool_blocked": { subject: AgentToolBlockedSubject; data: AgentToolBlockedData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
+  "agent.turn_usage": { subject: AgentTurnUsageSubject; data: AgentTurnUsageData };
   "agent.usage": { subject: AgentUsageSubject; data: AgentUsageData };
   "assistant.consent_granted": { subject: AssistantConsentGrantedSubject; data: AssistantConsentGrantedData };
   "assistant.consent_revoked": { subject: AssistantConsentRevokedSubject; data: AssistantConsentRevokedData };
+  "assistant.delta": { subject: AssistantDeltaSubject; data: AssistantDeltaData };
+  "assistant.models_refreshed": { subject: AssistantModelsRefreshedSubject; data: AssistantModelsRefreshedData };
   "assistant.purged": { subject: AssistantPurgedSubject; data: AssistantPurgedData };
+  "assistant.request_created": { subject: AssistantRequestCreatedSubject; data: AssistantRequestCreatedData };
   "assistant.request_finished": { subject: AssistantRequestFinishedSubject; data: AssistantRequestFinishedData };
+  "assistant.request_started": { subject: AssistantRequestStartedSubject; data: AssistantRequestStartedData };
+  "assistant.stall_notice": { subject: AssistantStallNoticeSubject; data: AssistantStallNoticeData };
+  "assistant.test_finished": { subject: AssistantTestFinishedSubject; data: AssistantTestFinishedData };
   "attention.preference_changed": { subject: AttentionPreferenceChangedSubject; data: AttentionPreferenceChangedData };
   "audit.recorded": { subject: AuditRecordedSubject; data: AuditRecordedData };
   "auth.elevate_denied": { subject: AuthElevateDeniedSubject; data: AuthElevateDeniedData };
@@ -7420,11 +9376,24 @@ export interface EventMap {
   "draft.reordered": { subject: DraftReorderedSubject; data: DraftReorderedData };
   "draft.sending": { subject: DraftSendingSubject; data: DraftSendingData };
   "draft.updated": { subject: DraftUpdatedSubject; data: DraftUpdatedData };
+  "family.checked": { subject: FamilyCheckedSubject; data: FamilyCheckedData };
+  "family.created": { subject: FamilyCreatedSubject; data: FamilyCreatedData };
+  "family.picked": { subject: FamilyPickedSubject; data: FamilyPickedData };
+  "goal.approved": { subject: GoalApprovedSubject; data: GoalApprovedData };
+  "goal.cancelled": { subject: GoalCancelledSubject; data: GoalCancelledData };
+  "goal.created": { subject: GoalCreatedSubject; data: GoalCreatedData };
+  "goal.finished": { subject: GoalFinishedSubject; data: GoalFinishedData };
+  "goal.planned": { subject: GoalPlannedSubject; data: GoalPlannedData };
+  "goal.planning_started": { subject: GoalPlanningStartedSubject; data: GoalPlanningStartedData };
+  "goal.step_finished": { subject: GoalStepFinishedSubject; data: GoalStepFinishedData };
+  "goal.step_started": { subject: GoalStepStartedSubject; data: GoalStepStartedData };
+  "goal.step_waiting": { subject: GoalStepWaitingSubject; data: GoalStepWaitingData };
   "group.closed": { subject: GroupClosedSubject; data: GroupClosedData };
   "group.collapsed": { subject: GroupCollapsedSubject; data: GroupCollapsedData };
   "group.created": { subject: GroupCreatedSubject; data: GroupCreatedData };
   "group.moved": { subject: GroupMovedSubject; data: GroupMovedData };
   "group.renamed": { subject: GroupRenamedSubject; data: GroupRenamedData };
+  "harness.manifest_loaded": { subject: HarnessManifestLoadedSubject; data: HarnessManifestLoadedData };
   "integration.tampered": { subject: IntegrationTamperedSubject; data: IntegrationTamperedData };
   "interaction.cancelled": { subject: InteractionCancelledSubject; data: InteractionCancelledData };
   "interaction.decided": { subject: InteractionDecidedSubject; data: InteractionDecidedData };
@@ -7433,6 +9402,20 @@ export interface EventMap {
   "interaction.opened": { subject: InteractionOpenedSubject; data: InteractionOpenedData };
   "interaction.updated": { subject: InteractionUpdatedSubject; data: InteractionUpdatedData };
   "layout.applied": { subject: LayoutAppliedSubject; data: LayoutAppliedData };
+  "machine.added": { subject: MachineAddedSubject; data: MachineAddedData };
+  "machine.connected": { subject: MachineConnectedSubject; data: MachineConnectedData };
+  "machine.degraded": { subject: MachineDegradedSubject; data: MachineDegradedData };
+  "machine.disconnected": { subject: MachineDisconnectedSubject; data: MachineDisconnectedData };
+  "machine.removed": { subject: MachineRemovedSubject; data: MachineRemovedData };
+  "merge.blocked": { subject: MergeBlockedSubject; data: MergeBlockedData };
+  "merge.cancelled": { subject: MergeCancelledSubject; data: MergeCancelledData };
+  "merge.check_failed": { subject: MergeCheckFailedSubject; data: MergeCheckFailedData };
+  "merge.conflict": { subject: MergeConflictSubject; data: MergeConflictData };
+  "merge.conflict_predicted": { subject: MergeConflictPredictedSubject; data: MergeConflictPredictedData };
+  "merge.failed": { subject: MergeFailedSubject; data: MergeFailedData };
+  "merge.merged": { subject: MergeMergedSubject; data: MergeMergedData };
+  "merge.queued": { subject: MergeQueuedSubject; data: MergeQueuedData };
+  "merge.requeued": { subject: MergeRequeuedSubject; data: MergeRequeuedData };
   "notes.updated": { subject: NotesUpdatedSubject; data: NotesUpdatedData };
   "notification.created": { subject: NotificationCreatedSubject; data: NotificationCreatedData };
   "pane.closed": { subject: PaneClosedSubject; data: PaneClosedData };
@@ -7454,6 +9437,8 @@ export interface EventMap {
   "pane.sync_input_changed": { subject: PaneSyncInputChangedSubject; data: PaneSyncInputChangedData };
   "pane.title_changed": { subject: PaneTitleChangedSubject; data: PaneTitleChangedData };
   "paste.translated": { subject: PasteTranslatedSubject; data: PasteTranslatedData };
+  "policy.learned_accepted": { subject: PolicyLearnedAcceptedSubject; data: PolicyLearnedAcceptedData };
+  "policy.learned_dismissed": { subject: PolicyLearnedDismissedSubject; data: PolicyLearnedDismissedData };
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
   "policy.rule_added": { subject: PolicyRuleAddedSubject; data: PolicyRuleAddedData };
   "policy.rule_matched": { subject: PolicyRuleMatchedSubject; data: PolicyRuleMatchedData };
@@ -7467,13 +9452,21 @@ export interface EventMap {
   "preview.opened": { subject: PreviewOpenedSubject; data: PreviewOpenedData };
   "preview.unmirrored": { subject: PreviewUnmirroredSubject; data: PreviewUnmirroredData };
   "preview.up": { subject: PreviewUpSubject; data: PreviewUpData };
+  "quota.paused": { subject: QuotaPausedSubject; data: QuotaPausedData };
+  "quota.resumed": { subject: QuotaResumedSubject; data: QuotaResumedData };
   "review.accepted": { subject: ReviewAcceptedSubject; data: ReviewAcceptedData };
   "review.candidate_created": { subject: ReviewCandidateCreatedSubject; data: ReviewCandidateCreatedData };
   "review.end_candidate_pinned": { subject: ReviewEndCandidatePinnedSubject; data: ReviewEndCandidatePinnedData };
+  "review.human_reviewed": { subject: ReviewHumanReviewedSubject; data: ReviewHumanReviewedData };
   "review.invalidated": { subject: ReviewInvalidatedSubject; data: ReviewInvalidatedData };
   "review.label_changed": { subject: ReviewLabelChangedSubject; data: ReviewLabelChangedData };
   "review.note_classified": { subject: ReviewNoteClassifiedSubject; data: ReviewNoteClassifiedData };
   "review.notes_recorded": { subject: ReviewNotesRecordedSubject; data: ReviewNotesRecordedData };
+  "review.pr_claimed": { subject: ReviewPrClaimedSubject; data: ReviewPrClaimedData };
+  "review.pr_head_changed": { subject: ReviewPrHeadChangedSubject; data: ReviewPrHeadChangedData };
+  "review.pr_observed": { subject: ReviewPrObservedSubject; data: ReviewPrObservedData };
+  "review.purged": { subject: ReviewPurgedSubject; data: ReviewPurgedData };
+  "review.reviewer_checkout_removed": { subject: ReviewReviewerCheckoutRemovedSubject; data: ReviewReviewerCheckoutRemovedData };
   "review.reviewer_requested": { subject: ReviewReviewerRequestedSubject; data: ReviewReviewerRequestedData };
   "review.reviewer_started": { subject: ReviewReviewerStartedSubject; data: ReviewReviewerStartedData };
   "review.reviewer_unknown": { subject: ReviewReviewerUnknownSubject; data: ReviewReviewerUnknownData };
@@ -7502,6 +9495,8 @@ export interface EventMap {
   "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
   "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
+  "session.started": { subject: SessionStartedSubject; data: SessionStartedData };
+  "session.stopped": { subject: SessionStoppedSubject; data: SessionStoppedData };
   "tab.closed": { subject: TabClosedSubject; data: TabClosedData };
   "tab.created": { subject: TabCreatedSubject; data: TabCreatedData };
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };
@@ -7513,6 +9508,8 @@ export interface EventMap {
   "task.archived": { subject: TaskArchivedSubject; data: TaskArchivedData };
   "task.binding_changed": { subject: TaskBindingChangedSubject; data: TaskBindingChangedData };
   "task.branch_changed": { subject: TaskBranchChangedSubject; data: TaskBranchChangedData };
+  "task.claim_added": { subject: TaskClaimAddedSubject; data: TaskClaimAddedData };
+  "task.claim_removed": { subject: TaskClaimRemovedSubject; data: TaskClaimRemovedData };
   "task.cleanup_suggested": { subject: TaskCleanupSuggestedSubject; data: TaskCleanupSuggestedData };
   "task.created": { subject: TaskCreatedSubject; data: TaskCreatedData };
   "task.dependency_changed": { subject: TaskDependencyChangedSubject; data: TaskDependencyChangedData };
@@ -7533,10 +9530,20 @@ export interface EventMap {
   "task.setup_finished": { subject: TaskSetupFinishedSubject; data: TaskSetupFinishedData };
   "task.setup_started": { subject: TaskSetupStartedSubject; data: TaskSetupStartedData };
   "task.setup_untrusted": { subject: TaskSetupUntrustedSubject; data: TaskSetupUntrustedData };
+  "task.split": { subject: TaskSplitSubject; data: TaskSplitData };
   "task.status_changed": { subject: TaskStatusChangedSubject; data: TaskStatusChangedData };
   "task.tracked": { subject: TaskTrackedSubject; data: TaskTrackedData };
   "task.updated": { subject: TaskUpdatedSubject; data: TaskUpdatedData };
   "theme.changed": { subject: ThemeChangedSubject; data: ThemeChangedData };
+  "vm.created": { subject: VmCreatedSubject; data: VmCreatedData };
+  "vm.destroyed": { subject: VmDestroyedSubject; data: VmDestroyedData };
+  "vm.forked": { subject: VmForkedSubject; data: VmForkedData };
+  "vm.resumed": { subject: VmResumedSubject; data: VmResumedData };
+  "vm.snapshot_created": { subject: VmSnapshotCreatedSubject; data: VmSnapshotCreatedData };
+  "vm.started": { subject: VmStartedSubject; data: VmStartedData };
+  "vm.stopped": { subject: VmStoppedSubject; data: VmStoppedData };
+  "vm.suspended": { subject: VmSuspendedSubject; data: VmSuspendedData };
+  "vm.template_built": { subject: VmTemplateBuiltSubject; data: VmTemplateBuiltData };
   "workspace.closed": { subject: WorkspaceClosedSubject; data: WorkspaceClosedData };
   "workspace.created": { subject: WorkspaceCreatedSubject; data: WorkspaceCreatedData };
   "workspace.moved": { subject: WorkspaceMovedSubject; data: WorkspaceMovedData };

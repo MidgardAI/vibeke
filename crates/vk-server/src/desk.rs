@@ -82,11 +82,18 @@ impl Default for DeskConfig {
 
 impl DeskConfig {
     pub fn from_config(cfg: &vk_config::Config) -> Self {
-        cfg.extra
+        let mut c: DeskConfig = cfg
+            .extra
             .get("desk")
             .and_then(|t| serde_json::to_value(t).ok())
             .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // `search.index_transcripts = false` (04 §10) turns transcript indexing off wholesale.
+        if !crate::agents::tailer::index_enabled(cfg) {
+            c.index = false;
+            c.roots.clear();
+        }
+        c
     }
 }
 
@@ -1404,6 +1411,9 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
         json!({"rows": rows, "sessions": tombstoned.len()}),
     );
     server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    // Derived assistant results and cached excerpts for this scope go too (14 §8).
+    crate::assist::forget_scope(server, &scope);
     Ok(json!({"rows_deleted": rows, "sessions_forgotten": tombstoned}))
 }
 
