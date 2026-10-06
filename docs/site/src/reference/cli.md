@@ -247,8 +247,10 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `declare` | `<port>` | `preview.declare` | --port N [--path /p] [--label l] [--pane p] [--task k] |
 | `list` | - | `preview.list` | [--machine m] [--task k] [--pane p] [--all] (suggestions with --all) |
 | `get` | `<preview>` | `preview.get` |  |
-| `open` | `<preview>` | `preview.open` | <v4\|devbox/v4\|url> [--split right\|down\|tab\|float \| --window] [--pane p] [--machine m] |
+| `open` | `<preview>` | `preview.open` | <v4\|devbox/v4\|url> [--split right\|down\|tab\|float \| --window \| --proxy [--no-open]] [--pane p] [--machine m] |
 | `url` | `<preview>` | `preview.url` |  |
+| `mirror` | `<preview>` | `preview.mirror` | <devbox/v4> bind the remote port number on this machine's loopback (unauthenticated; explicit) |
+| `unmirror` | `<preview>` | `preview.unmirror` | <devbox/v4 \| port> stop a mirror |
 | `promote` | `<preview>` | `preview.promote` | accept a suggestion |
 | `forget` | `<preview>` | `preview.forget` |  |
 | `profile` | `<action>` `<profile>` | `preview.profile` | list \| reset <profile> |

@@ -6,7 +6,7 @@
     "proto": 1,
     "min": 1
   },
-  "method_count": 227,
+  "method_count": 229,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -1936,6 +1936,18 @@
       "spec": "`{machine?, task?, pane?, status?: suggested|up|down|all}` → `{previews}` — suggestions only with `status: suggested|all`"
     },
     {
+      "name": "preview.mirror",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only"
+    },
+    {
       "name": "preview.open",
       "mutating": true,
       "scope": "pane",
@@ -2006,6 +2018,18 @@
       ],
       "milestone": "M3",
       "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`."
+    },
+    {
+      "name": "preview.unmirror",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only"
     },
     {
       "name": "preview.url",

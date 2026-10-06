@@ -135,7 +135,11 @@ The file is `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). It r
 
 # [keys.copy_mode]
 # mode = "vi"                           # vi | emacs
-# per-key overrides, e.g. y = "copy"
+# per-key overrides (key = "action", "" unbinds), e.g. y = "copy", "ctrl+e" = "edit_scrollback".
+# Actions: exit cancel left right up down half_page_up half_page_down page_up page_down
+# line_start line_end top bottom view_top view_middle view_bottom word_next word_prev word_end
+# select_char select_line select_block search_forward search_backward search_next search_prev
+# copy edit_scrollback
 
 # Mode-local keymaps: [keys.navigate], [keys.resize], [keys.card].
 
