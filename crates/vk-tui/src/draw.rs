@@ -199,6 +199,10 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs.push((format!("{mark} "), t.s(c)));
     }
     segs.push((label, t.dim()));
+    // Screenshots captured since the gallery was last opened for this agent (06 B7/B8).
+    if let Some(n) = crate::gallery::badge(app, mi, &r.pane) {
+        segs.push((format!(" 📷{n}"), t.s(t.accent)));
+    }
     let focused = mi == app.cur && app.m().focus.pane.as_deref() == Some(&r.pane);
     SideRow {
         segs,
@@ -711,6 +715,14 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             let badge = " recovered (ring only) ";
             let w = badge.len() as u16;
             g.put_str(r.x + r.w.saturating_sub(w), r.y, badge, t.dim(), w);
+        }
+        // 📷 counter in the corner of unfocused panes only (never over the focused agent).
+        if focused.as_deref() != Some(pid.as_str())
+            && let Some(n) = crate::gallery::badge(app, app.cur, pid)
+        {
+            let badge = format!(" 📷{n} ");
+            let w = unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16;
+            g.put_str(r.x + r.w.saturating_sub(w), r.y, &badge, t.s(t.accent), w);
         }
     }
     if !matches!(

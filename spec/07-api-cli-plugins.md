@@ -474,7 +474,7 @@ rect = { x = 15, y = 15, w = 70, h = 70 }
 
 Read scope (09 §5.1 rule 4) applies to `pane.read`, `pane.wait_output` and `search.query` for pane-scoped callers. `security.pane_scope.read = "workspace"` (default) \| `session` \| `self`.
 
-### 2.14a `desk.*`, `draft.*`, `notes.*` [research R2/R3; server + CLI built, TUI not yet]
+### 2.14a `desk.*`, `draft.*`, `notes.*` [research R2/R3; server + CLI built; TUI built, 08 §6.7]
 
 **Session desk** (R2 "Find and reopen previous work"). A conversation index separate from `search.query`/scrollback FTS: a background indexer reads the native transcripts of runs Vibeke has seen (`AgentRun.transcript_path`; Claude JSONL and Codex rollouts via the same parser as `agent.transcript`, so turn `n` matches) and, only when the user opts in, extra transcript directories per harness (`[desk] roots`). Rows are (machine, harness, native session id, repo/cwd, turn `n`, role/kind, text, timestamp, source byte offset) in an FTS5 table in `<state>/<session>/desk.db` — a derived, rebuildable file with its own connection, never written under the state lock. Indexing is incremental (size, mtime, byte offset of the last complete line, turns seen; a shrunk file is re-indexed), bounded per pass (`pass_bytes`, at most 4 MiB per file per pass) and runs every `interval_s`; a search first indexes up to 2 MiB so a just-finished turn is findable. Model reasoning is not indexed; items are capped at 8 KiB.
 

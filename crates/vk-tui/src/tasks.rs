@@ -217,6 +217,8 @@ pub struct TrackForm {
     pub objective: String,
     pub field: TrackField,
     pub error: Option<String>,
+    /// Fields were filled from an assistant suggestion (14; still unsaved and editable).
+    pub assisted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -253,6 +255,7 @@ impl TrackForm {
             objective: String::new(),
             field: TrackField::Source,
             error: None,
+            assisted: false,
         }
     }
 
@@ -494,6 +497,12 @@ pub fn track_key(app: &mut App, ev: KeyEvent) {
     let Some(mut f) = app.track.take() else {
         return;
     };
+    // Suggest task details (15 §2.2 via 14): preview → confirm → fills this form, unsaved.
+    if ev.mods.ctrl() && ev.key == Key::Char('g') && f.phase == TrackPhase::Ready {
+        app.track = Some(f);
+        crate::assist::suggest_task_details(app);
+        return;
+    }
     match f.key(&ev) {
         FormOutcome::Stay => {
             app.track = Some(f);
@@ -1425,6 +1434,23 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
                     _ => v.sub = TaskSub::CheckPick { sel: 0 },
                 }
             }
+        }
+        // Summarize review (14): preview → confirm → editable text.
+        Key::Char('S') => {
+            app.task_view = Some(v);
+            crate::assist::summarize_review(app, mi, &task);
+            return;
+        }
+        // Drafts for this task (08 §6.7).
+        Key::Char('D') => {
+            let title = detail
+                .pointer("/task/title")
+                .and_then(Value::as_str)
+                .unwrap_or(&task)
+                .to_string();
+            app.task_view = Some(v);
+            crate::drafts::open_task(app, mi, &task, &title);
+            return;
         }
         Key::Char('m') => match package(&v) {
             None => {
@@ -2884,7 +2910,13 @@ fn task_keys(v: &TaskView) -> String {
         k.push("v run check");
         k.push("m mark reviewed");
     }
-    k.extend(["o open pane", "r refresh", "esc close"]);
+    k.extend([
+        "S summarize review",
+        "D drafts",
+        "o open pane",
+        "r refresh",
+        "esc close",
+    ]);
     k.join(" · ")
 }
 
@@ -3045,12 +3077,18 @@ pub fn draw_track(app: &App, g: &mut Grid) {
     if let Some(e) = &f.error {
         b.line(e, t.s(t.red));
     }
+    if f.assisted {
+        b.line(
+            "Suggested by the assistant — review and edit; nothing is saved until Track task.",
+            t.s(t.accent),
+        );
+    }
     b.line(
         "Records the task and binds this run. Sends nothing, runs nothing, moves no files.",
         t.dim(),
     );
     b.line(
-        "tab/↑↓ move · ←/→ stop point · ctrl+s track · esc cancel",
+        "tab/↑↓ move · ←/→ stop point · ctrl+s track · ctrl+g Suggest task details · esc cancel",
         t.dim(),
     );
 }

@@ -81,6 +81,14 @@ pub enum Pending {
     Gateway(crate::gateway::Reply),
     /// Navigation (agent browser sessions for the palette and peek).
     Nav(crate::nav::Reply),
+    /// Screenshot gallery / screenshot pane.
+    Gallery(crate::gallery::Reply),
+    /// Session desk.
+    Desk(crate::desk::Reply),
+    /// Drafts composer and notes.
+    Drafts(crate::drafts::Reply),
+    /// Assist actions (spec 14).
+    Assist(crate::assist::Reply),
     /// A durable mutation (persisted in `client-pending.json` before dispatch); `then` handles
     /// the response once the operation is forgotten.
     Op {
@@ -216,6 +224,14 @@ pub enum Popup {
     Track,
     /// Task detail view (replaces the pane area); state in `App::task_view`.
     Task,
+    /// Screenshot gallery / screenshot pane (06 B8); state in `App::gallery`.
+    Gallery,
+    /// Session desk (08 §6.7); state in `App::desk`.
+    Desk,
+    /// Drafts composer and notes (08 §6.7); state in `App::drafts`.
+    Drafts,
+    /// Assist preview → confirm → editable draft (14); state in `App::assist`.
+    Assist,
     /// Pending client operations with unknown outcomes (15 §10.3).
     PendingOps {
         sel: usize,
@@ -338,6 +354,11 @@ pub struct App {
     pub push: crate::push::State,
     /// Palette/goto history, last workspace, agent browser sessions, title sync.
     pub nav: crate::nav::Nav,
+    /// Screenshot gallery, 📷 counters and the gallery's kitty image.
+    pub gallery: crate::gallery::GalleryState,
+    pub desk: Option<crate::desk::Desk>,
+    pub drafts: Option<crate::drafts::DraftsView>,
+    pub assist: Option<crate::assist::Flow>,
 }
 
 pub struct Opts {
@@ -637,6 +658,10 @@ impl App {
             browser: Default::default(),
             push: Default::default(),
             nav: Default::default(),
+            gallery: Default::default(),
+            desk: None,
+            drafts: None,
+            assist: None,
         }
     }
 }
@@ -1182,6 +1207,10 @@ impl App {
             Pending::Attn(r) => crate::inbox::on_reply(self, i, r, res),
             Pending::Gateway(r) => crate::gateway::on_reply(self, i, r, res),
             Pending::Nav(r) => crate::nav::on_reply(self, i, r, res),
+            Pending::Gallery(r) => crate::gallery::on_reply(self, i, r, res),
+            Pending::Desk(r) => crate::desk::on_reply(self, i, r, res),
+            Pending::Drafts(r) => crate::drafts::on_reply(self, i, r, res),
+            Pending::Assist(r) => crate::assist::on_reply(self, i, r, res),
             Pending::Op { key, then } => {
                 if let Err(e) = &res
                     && e.outcome_unknown()
@@ -1364,6 +1393,7 @@ impl App {
         crate::inbox::tick(self);
         crate::tasks::tick(self);
         crate::gateway::tick(self);
+        crate::assist::tick(self);
         // Keep spinners/ages in the sidebar fresh once a second.
         if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
             self.dirty = true;
@@ -1530,6 +1560,11 @@ impl App {
                 return;
             }
             Mode::Normal => {}
+            Mode::Popup(_) => {
+                // Editors in the drafts, desk and assist views.
+                crate::drafts::on_paste(self, &text);
+                return;
+            }
             _ => return,
         }
         if crate::browser::on_paste(self, &text) {
@@ -1661,6 +1696,14 @@ impl App {
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
         if crate::browser::action_name(self, action) {
+            return;
+        }
+        // Gallery, desk, drafts/notes and assist palette commands (08 §6.7, 06 B8, 14).
+        if crate::gallery::action(self, action)
+            || crate::desk::action(self, action)
+            || crate::drafts::action(self, action)
+            || crate::assist::action(self, action)
+        {
             return;
         }
         let pane = self.focused_pane();
@@ -2190,6 +2233,14 @@ impl App {
                 p.input.clear();
                 self.mode = Mode::Prompt(p);
             }
+            // Peek reply box: Save as draft (08 §6.7).
+            Key::Char('d') if ev.mods.ctrl() && matches!(p.kind, PromptKind::AgentReply { .. }) => {
+                if let PromptKind::AgentReply { pane } = &p.kind {
+                    let pane = pane.clone();
+                    crate::drafts::save_reply_as_draft(self, &pane, &p.input);
+                    self.mode = Mode::Popup(Popup::Peek { pane });
+                }
+            }
             Key::Char(c) if !ev.mods.ctrl() && !ev.mods.alt() => {
                 p.input.push(c);
                 self.mode = Mode::Prompt(p);
@@ -2329,6 +2380,7 @@ impl App {
         self.dirty = false;
         self.send_view_hints(false);
         crate::browser::update_views(self);
+        crate::gallery::before_draw(self);
         crate::nav::observe(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);

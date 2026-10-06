@@ -136,6 +136,10 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Track => crate::tasks::track_key(app, ev),
         Popup::Task => crate::tasks::task_key(app, ev),
         Popup::PendingOps { sel, confirm } => crate::app::pending_ops_key(app, ev, sel, confirm),
+        Popup::Gallery => crate::gallery::key(app, ev),
+        Popup::Desk => crate::desk::key(app, ev),
+        Popup::Drafts => crate::drafts::key(app, ev),
+        Popup::Assist => crate::assist::key(app, ev),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -194,9 +198,22 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             Key::Char('r') | Key::Char('i') => {
                 app.mode = Mode::Prompt(crate::app::Prompt {
                     kind: PromptKind::AgentReply { pane },
-                    label: "reply".into(),
+                    label: "reply (enter send · ctrl+d save as draft)".into(),
                     input: String::new(),
                 });
+            }
+            // Drafts for this agent's workspace, its screenshots, a suggested title (08 §6.7,
+            // 06 B8, 14).
+            Key::Char('d') => crate::drafts::open_from_peek(app, &pane),
+            Key::Char('p') => crate::gallery::open_from_peek(app, &pane),
+            Key::Char('s') => {
+                let mi = app.cur;
+                crate::assist::suggest_title(
+                    app,
+                    mi,
+                    &pane,
+                    crate::assist::Origin::Peek(pane.clone()),
+                );
             }
             _ => app.mode = Mode::Popup(Popup::Peek { pane }),
         },
@@ -364,6 +381,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     t.text(),
                 );
                 b.line(":track_work :task_details :pending_operations", t.text());
+                b.line(
+                    ":desk :drafts :notes :screenshots :screenshot_pane :assist_briefing",
+                    t.text(),
+                );
             }
             Popup::Message { title, body } => {
                 let mut b = frame(app, g, 70, 12, title);
@@ -460,6 +481,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::PendingOps { sel, confirm } => {
                 crate::app::draw_pending_ops(app, g, *sel, *confirm)
             }
+            Popup::Gallery => crate::gallery::draw(app, g),
+            Popup::Desk => crate::desk::draw(app, g),
+            Popup::Drafts => crate::drafts::draw(app, g),
+            Popup::Assist => crate::assist::draw(app, g),
             Popup::Peek { pane } => {
                 let m = app.m();
                 let run = m.model.runs.iter().find(|r| &r.pane == pane);
@@ -530,12 +555,22 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                         t.s(t.accent),
                     );
                 }
+                if let Some(n) = crate::gallery::badge(app, app.cur, pane) {
+                    b.line(
+                        &format!("📷 {n} new screenshot(s)  [p] screenshots"),
+                        t.s(t.accent),
+                    );
+                }
                 b.line(
                     if tracked.is_some() {
                         "[enter] focus  [a] answer  [r] reply  [t] task details  [w] watch browser  [esc] close"
                     } else {
                         "[enter] focus  [a] answer  [r] reply  [t] track this work  [w] watch browser  [esc] close"
                     },
+                    t.dim(),
+                );
+                b.line(
+                    "[d] drafts  [p] screenshots  [s] suggest title (assistant)",
                     t.dim(),
                 );
             }

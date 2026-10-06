@@ -54,6 +54,7 @@ impl PendingOp {
             "task.message.send" => "Send message",
             "task.review.accept" => "Mark reviewed",
             "task.check.run" => "Run check",
+            "draft.send" => "Send draft",
             other => other,
         };
         format!("{what}{title}")

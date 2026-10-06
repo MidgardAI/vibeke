@@ -1,11 +1,15 @@
 //! Vibeke TUI client (03 §5–§7, §11; 08).
 
 pub mod app;
+pub mod assist;
 pub mod browser;
 pub mod caps;
 pub mod clipboard;
 pub mod copy;
+pub mod desk;
+pub mod drafts;
 pub mod draw;
+pub mod gallery;
 pub mod gateway;
 pub mod inbox;
 pub mod keymap;
