@@ -28,8 +28,6 @@ fn pane(id: &str, tab: &str, ws: &str, title: &str) -> Pane {
         "recovered": null
     }))
     .unwrap()
-    isolation: Default::default(),
-    browser: None,
 }
 
 fn ws(id: &str, name: &str, root: &str, branch: Option<&str>) -> Workspace {

@@ -22,8 +22,6 @@ fn watch_pane(id: &str, tab: &str) -> Pane {
                     "title": "", "watch": "b3"}
     }))
     .unwrap()
-    isolation: Default::default(),
-    browser: None,
 }
 
 /// Machine 0 is local; machine 1 (the devbox) runs the agent and owns a tab with the agent's
