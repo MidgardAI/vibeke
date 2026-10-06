@@ -9,6 +9,7 @@ pub mod core;
 pub mod pane;
 pub mod paths;
 pub mod render;
+pub mod review;
 pub mod run;
 pub mod tracking;
 
@@ -229,6 +230,7 @@ impl Server {
     /// closed. Returns the number of recovered panes.
     pub fn recover(self: &Arc<Self>) -> Result<usize> {
         tracking::recover(self);
+        review::recover(self);
         let holders = self.with_core(|c| c.store.holders())?;
         let panes: Vec<Pane> = self.with_core(|c| c.model.panes.clone());
         let mut recovered = 0;

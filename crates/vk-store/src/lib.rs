@@ -260,7 +260,18 @@ impl Mutation {
             || kind.starts_with("policy.")
             || matches!(
                 kind,
-                "agent.started" | "agent.exited" | "task.status_changed" | "task.archived"
+                "agent.started"
+                    | "agent.exited"
+                    | "task.status_changed"
+                    | "task.archived"
+                    // 15 §10.3: terminal check outcomes, acceptance and invalidation are history.
+                    | "review.accepted"
+                    | "review.invalidated"
+                    | "check.passed"
+                    | "check.failed"
+                    | "check.cancelled"
+                    | "check.interrupted"
+                    | "check.unknown"
             ) {
             "history"
         } else {

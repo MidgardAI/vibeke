@@ -230,6 +230,16 @@ pub const METHODS: &[(&str, bool)] = &[
     ("task.list", false),
     ("task.get", false),
     ("task.finish", true),
+    ("task.review.candidates", false),
+    ("task.review.get", false),
+    ("task.review.accept", true),
+    ("task.check.list", false),
+    ("task.check.authorize", true),
+    ("task.check.run", true),
+    ("task.check.cancel", true),
+    ("task.check.get", false),
+    ("attention.list", false),
+    ("attention.update", true),
     ("worktree.list", false),
     ("worktree.remove", true),
     ("worktree.repo_root", false),
@@ -278,6 +288,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         "task.message.send",
         "task.message.cancel",
         "task.review.accept",
+        "task.check.authorize",
         "task.check.run",
         "task.check.cancel",
         "attention.update",
@@ -364,6 +375,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         return r;
     }
     if let Some(r) = crate::run::tasks_api(server, ctx, method, p).await {
+        return r;
+    }
+    if method.starts_with("attention.")
+        && let Some(r) = crate::review::attention_api(server, ctx, method, p).await
+    {
         return r;
     }
     match method {

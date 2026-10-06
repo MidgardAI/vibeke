@@ -27,9 +27,9 @@ use vk_review::{Actor, ActorKind, SourceRef};
 const K_TURN: &str = "turn";
 const K_ITEM: &str = "tool_item";
 const K_INTENT: &str = "task_intent";
-const K_BINDING: &str = "task_binding";
+pub const K_BINDING: &str = "task_binding";
 const K_RECEIPT: &str = "op_receipt";
-const K_MESSAGE: &str = "task_message";
+pub const K_MESSAGE: &str = "task_message";
 const K_BASELINE: &str = "task_baseline";
 const K_COMM: &str = "task_comm";
 
@@ -100,7 +100,7 @@ fn now() -> i64 {
     vk_store::now_ms()
 }
 
-fn user(ctx: &Ctx) -> Actor {
+pub fn user(ctx: &Ctx) -> Actor {
     Actor {
         kind: ActorKind::User,
         id: if ctx.client_id.is_empty() {
@@ -111,7 +111,7 @@ fn user(ctx: &Ctx) -> Actor {
     }
 }
 
-fn conflict(reason: &str, msg: impl Into<String>) -> vk_proto::rpc::RpcError {
+pub fn conflict(reason: &str, msg: impl Into<String>) -> vk_proto::rpc::RpcError {
     err(ErrorKind::Conflict, msg).details(json!({"reason": reason}))
 }
 
@@ -135,6 +135,10 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     let turn_id = format!("{}:{n}", run.id);
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
+    // Bindings closed at this boundary and whether a turn settled: spec 15 T2 review hooks run
+    // after the commit, off the state path.
+    let mut closed: Vec<TaskRunBinding> = vec![];
+    let mut settled = false;
     match event {
         "SessionStart" => {
             let new_sid = p.get("session_id").and_then(Value::as_str);
@@ -179,7 +183,7 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
             t.prompt_truncated |= cut;
             tx.m.put(K_TURN, &t.id, None, &t);
             // A queued binding switch takes effect at this boundary.
-            apply_pending_switches(&c, &mut tx, run, n);
+            closed.extend(apply_pending_switches(&c, &mut tx, run, n));
         }
         "Stop" | "StopFailure" => {
             if let Some(mut t) = c.store.find::<TurnRecord>(K_TURN, &turn_id).ok().flatten() {
@@ -189,6 +193,7 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
                     .and_then(Value::as_str)
                     .map(|m| truncate(m, 2000).0);
                 tx.m.close(K_TURN, &t.id, None, &t);
+                settled = true;
             }
         }
         "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
@@ -247,6 +252,13 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     }
     if !tx.m.is_empty() {
         let _ = server.commit(&mut c, tx);
+    }
+    drop(c);
+    if !closed.is_empty() {
+        crate::review::on_bindings_closed(server, closed);
+    }
+    if settled {
+        crate::review::on_turn_settled(server, &run.id);
     }
 }
 
@@ -321,7 +333,7 @@ pub fn items_of(server: &Server, run: &str) -> Vec<vk_review::checks::ToolRecord
 
 // ---- bindings -----------------------------------------------------------------------------------
 
-fn bindings(c: &crate::core::Core) -> Vec<TaskRunBinding> {
+pub fn bindings(c: &crate::core::Core) -> Vec<TaskRunBinding> {
     let mut v: Vec<TaskRunBinding> = c.store.load(K_BINDING).unwrap_or_default();
     v.extend(
         c.store
@@ -361,26 +373,28 @@ fn conversation_changed(c: &crate::core::Core, tx: &mut Tx, run: &AgentRun, new_
     }
 }
 
-fn pending_key(run: &str) -> String {
+pub fn pending_key(run: &str) -> String {
     format!("pending_switch:{run}")
 }
 
-fn apply_pending_switches(c: &crate::core::Core, tx: &mut Tx, run: &AgentRun, n: u32) {
-    let Some(p) = c
+fn apply_pending_switches(
+    c: &crate::core::Core,
+    tx: &mut Tx,
+    run: &AgentRun,
+    n: u32,
+) -> Option<TaskRunBinding> {
+    let p = c
         .store
         .kv_get("tracking", &pending_key(&run.id))
         .ok()
         .flatten()
-        .and_then(|s| serde_json::from_str::<binding::PendingSwitch>(&s).ok())
-    else {
-        return;
-    };
+        .and_then(|s| serde_json::from_str::<binding::PendingSwitch>(&s).ok())?;
     let Some(cur) = bindings(c)
         .into_iter()
         .find(|b| b.id == p.from_binding && b.state == BindingState::Active)
     else {
         tx.m.kv("tracking", &pending_key(&run.id), None);
-        return;
+        return None;
     };
     let (closed, opened) = binding::complete_switch(&p, &cur, n, now());
     put_binding(tx, &closed);
@@ -391,6 +405,7 @@ fn apply_pending_switches(c: &crate::core::Core, tx: &mut Tx, run: &AgentRun, n:
         json!({"task": opened.task_id, "run": run.id, "binding": opened.id}),
         json!({"state": "active", "from": closed.id, "at_turn": opened.start_turn}),
     );
+    Some(closed)
 }
 
 /// A run's identity is deterministic when a structured transport reported its native session
@@ -413,7 +428,7 @@ fn digest(method: &str, p: &Value) -> String {
 }
 
 /// A previous outcome for this key, or a conflict when the key was used for something else.
-fn replay(server: &Server, method: &str, p: &Value) -> Option<R> {
+pub fn replay(server: &Server, method: &str, p: &Value) -> Option<R> {
     let key = s(p, "idempotency_key")?;
     let r = server.with_core(|c| c.store.find::<Receipt>(K_RECEIPT, key).ok().flatten())?;
     if r.method != method || r.payload_digest != digest(method, p) {
@@ -427,7 +442,7 @@ fn replay(server: &Server, method: &str, p: &Value) -> Option<R> {
     Some(Ok(v))
 }
 
-fn record(tx: &mut Tx, method: &str, p: &Value, result: &Value) {
+pub fn record(tx: &mut Tx, method: &str, p: &Value, result: &Value) {
     if let Some(key) = s(p, "idempotency_key") {
         let r = Receipt {
             key: key.into(),
@@ -473,7 +488,7 @@ fn find_run(server: &Server, ctx: &Ctx, p: &Value) -> Result<AgentRun, vk_proto:
         .ok_or_else(|| err(ErrorKind::NotFound, "no agent run in that pane"))
 }
 
-fn find_task(server: &Server, t: &str) -> Result<Task, vk_proto::rpc::RpcError> {
+pub fn find_task(server: &Server, t: &str) -> Result<Task, vk_proto::rpc::RpcError> {
     server
         .with_core(|c| {
             c.task(t)
@@ -797,13 +812,18 @@ async fn track(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(result)
 }
 
-fn intent_at(server: &Server, task: &str, rev: u32) -> Option<TaskIntent> {
+pub fn intent_at(server: &Server, task: &str, rev: u32) -> Option<TaskIntent> {
     server.with_core(|c| {
         c.store
             .find::<TaskIntent>(K_INTENT, &format!("{task}:{rev}"))
             .ok()
             .flatten()
     })
+}
+
+/// The observation baseline and proposed review base stored by `task.track` (15 §5).
+pub fn baseline_of(server: &Server, task: &str) -> Option<Value> {
+    server.with_core(|c| c.store.find::<Value>(K_BASELINE, task).ok().flatten())
 }
 
 fn comm_of(server: &Server, task: &str) -> Vec<CommunicationRecord> {
@@ -817,7 +837,7 @@ fn comm_of(server: &Server, task: &str) -> Vec<CommunicationRecord> {
         .unwrap_or_default()
 }
 
-fn task_bindings(server: &Server, task: &str) -> Vec<TaskRunBinding> {
+pub fn task_bindings(server: &Server, task: &str) -> Vec<TaskRunBinding> {
     server.with_core(|c| {
         bindings(c)
             .into_iter()
@@ -826,7 +846,7 @@ fn task_bindings(server: &Server, task: &str) -> Vec<TaskRunBinding> {
     })
 }
 
-fn messages_of(server: &Server, task: &str) -> Vec<TaskMessage> {
+pub fn messages_of(server: &Server, task: &str) -> Vec<TaskMessage> {
     server.with_core(|c| {
         let mut v: Vec<TaskMessage> = c.store.load(K_MESSAGE).unwrap_or_default();
         v.extend(
@@ -867,7 +887,7 @@ fn intent_get(server: &Server, p: &Value) -> R {
 }
 
 /// Record-only: a new immutable revision. Never sends (15 §2.3).
-fn intent_update(server: &Server, ctx: &Ctx, p: &Value) -> R {
+fn intent_update(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if let Some(r) = replay(server, "task.intent.update", p) {
         return r;
     }
@@ -940,6 +960,9 @@ fn intent_update(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let result = json!({"task": t2, "intent": next, "uncommunicated": uncomm, "note": if uncomm.is_empty() { Value::Null } else { json!(format!("Agent has not been told about revision {}", next.revision)) }});
     record(&mut tx, "task.intent.update", p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    // A new intent revision can outdate an acceptance and change readiness (15 §7).
+    crate::review::spawn_refresh(server, &task.id);
     Ok(result)
 }
 
@@ -964,6 +987,7 @@ fn bind(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let mut c = server.core.lock().unwrap();
     let all = bindings(&c);
     let mut tx = Tx::new();
+    let mut newly_closed = vec![];
     let current = all
         .iter()
         .find(|b| b.run_id == run.id && b.state == BindingState::Active && b.role == role);
@@ -986,6 +1010,7 @@ fn bind(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                     json!({"task": task.id, "run": run.id, "binding": opened.id}),
                     json!({"state": "active", "from": closed.id}),
                 );
+                newly_closed.push(closed.clone());
                 json!({"binding": opened, "closed": closed, "pending": false})
             }
             binding::SwitchPlan::Pending(ps) => {
@@ -1052,10 +1077,14 @@ fn bind(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     record(&mut tx, "task.bind", p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    if !newly_closed.is_empty() {
+        crate::review::on_bindings_closed(server, newly_closed);
+    }
     Ok(result)
 }
 
-fn unbind(server: &Server, p: &Value) -> R {
+fn unbind(server: &Arc<Server>, p: &Value) -> R {
     if let Some(r) = replay(server, "task.unbind", p) {
         return r;
     }
@@ -1085,6 +1114,8 @@ fn unbind(server: &Server, p: &Value) -> R {
     let result = json!({"closed": closed});
     record(&mut tx, "task.unbind", p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    crate::review::on_bindings_closed(server, closed);
     Ok(result)
 }
 

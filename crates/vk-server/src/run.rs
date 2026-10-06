@@ -433,6 +433,11 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
         {
             r
         }
+        m if m.starts_with("task.")
+            && let Some(r) = crate::review::api(server, ctx, m, p).await =>
+        {
+            r
+        }
         "task.create" => task_create(server, ctx, p).await,
         "policy.trust" => policy_trust(server, p),
         "task.list" => Ok(json!({"tasks": server.with_core(|c| c.model.tasks.clone())})),
