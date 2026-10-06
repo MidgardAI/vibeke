@@ -766,6 +766,9 @@ pub fn card_lines(
             t.dim(),
         );
     }
+    if let Some(t) = crate::gateway::interaction_answered_text(it) {
+        b.line(&format!("📱 {t}"), app.theme.s(app.theme.accent));
+    }
     match it.delivery {
         DeliveryState::DecisionRecorded | DeliveryState::Delivering => {
             b.line("delivering…", t.s(t.yellow))

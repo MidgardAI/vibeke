@@ -5,6 +5,7 @@ pub mod caps;
 pub mod clipboard;
 pub mod copy;
 pub mod draw;
+pub mod gateway;
 pub mod inbox;
 pub mod keymap;
 pub mod paste;

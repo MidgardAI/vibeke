@@ -579,6 +579,9 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             ),
         );
     }
+    if let Some(dev) = crate::gateway::devices_label(app) {
+        right.push((format!(" {dev} "), t.s(t.accent)));
+    }
     let rw: u16 = right
         .iter()
         .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
@@ -650,6 +653,10 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     }
     if let Some(c) = crate::popups::draw(app, g) {
         cursor = Some(c);
+    }
+    if app.gateway.modal() {
+        crate::gateway::draw_overlay(app, g);
+        cursor = None;
     }
     cursor
 }
