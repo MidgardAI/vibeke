@@ -14,6 +14,7 @@ pub mod layout_spec;
 pub mod model;
 pub mod render;
 pub mod rpc;
+pub mod text;
 
 #[cfg(test)]
 mod compat_tests;

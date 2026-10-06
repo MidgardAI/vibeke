@@ -2383,6 +2383,80 @@ mod tests {
         }
     }
 
+    /// Review finding 9: page-controlled metadata (an escape-bearing build id inside
+    /// `binding_reason`, the page's URL) is printed escaped in text and image modes, while the
+    /// intentional image-protocol sequences stay intact.
+    #[tokio::test]
+    async fn preview_show_escapes_page_controlled_metadata() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let evil = "\x1b]52;c;cHduZWQ=\x07\x1b[2J\u{9b}31m";
+        let spawn = || {
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            tokio::spawn(async move {
+                let (rd, mut wr) = tokio::io::split(theirs);
+                let mut lines = BufReader::new(rd).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&l).unwrap();
+                    let result = match req["method"].as_str().unwrap() {
+                        "screenshot.list" => json!({"screenshots": [{"id": "S9"}], "count": 1}),
+                        "screenshot.get" => json!({"id": "S9", "handle": "s9",
+                            "label": format!("devbox{evil}"),
+                            "url": format!("http://localhost:5173/{evil}"),
+                            "binding": "illustrative",
+                            "binding_reason": format!("Build not verified: build id {evil} is not tied to a checkout state"),
+                            "created_at_ms": 0, "path_on_machine": format!("/state/blobs/{evil}.png"),
+                            "data_b64": "iVBORw0KGgo="}),
+                        _ => json!({}),
+                    };
+                    let mut s = serde_json::to_string(
+                        &json!({"jsonrpc": "2.0", "id": req["id"], "result": result}),
+                    )
+                    .unwrap();
+                    s.push('\n');
+                    wr.write_all(s.as_bytes()).await.unwrap();
+                }
+            });
+            Client::new(ours)
+        };
+        let g = Global {
+            session: "t".into(),
+            machine: None,
+            socket: None,
+            json: Some(false),
+            quiet: false,
+            no_spawn: true,
+            timeout_ms: None,
+        };
+        for mode in [show::Mode::Kitty, show::Mode::Iterm, show::Mode::Text] {
+            let mut c = spawn();
+            let mut out = Vec::new();
+            let code =
+                preview_show_to(&mut c, &g, json!({"preview": "v4"}), mode, true, &mut out).await;
+            assert_eq!(code, EXIT_OK);
+            let text = String::from_utf8_lossy(&out).to_string();
+            // The image protocol's own escapes come first (graphics modes) and are intact.
+            let meta = match mode {
+                show::Mode::Kitty => {
+                    assert!(text.starts_with("\x1b_Ga=T,"), "{text:?}");
+                    let end = text.find("\x1b\\\n").unwrap() + 3;
+                    &text[end..]
+                }
+                show::Mode::Iterm => {
+                    assert!(text.starts_with("\x1b]1337;File=inline=1;"), "{text:?}");
+                    let end = text.find("\x07\n").unwrap() + 2;
+                    &text[end..]
+                }
+                show::Mode::Text => text.as_str(),
+            };
+            assert!(
+                !meta.chars().any(|c| c.is_control() && c != '\n'),
+                "{mode:?}: {meta:?}"
+            );
+            assert!(meta.contains("build id \\x1b]52;c;"), "{meta}");
+            assert!(meta.contains("\\u{9b}31m"), "{meta}");
+        }
+    }
+
     /// `preview show`: newest screenshot of the preview, drawn inline for graphics terminals,
     /// path + metadata otherwise; `--json`/pipes get the record.
     #[tokio::test]

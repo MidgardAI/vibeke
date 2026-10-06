@@ -90,6 +90,41 @@ fn navigate_and_labels() {
     assert!(matches!(app.mode, Mode::Normal));
 }
 
+/// Review finding 9: metadata the page supplied (title, final URL, the build id inside
+/// `binding_reason`) reaches the gallery escaped, never as control sequences.
+#[test]
+fn page_controlled_metadata_is_escaped() {
+    let evil = "\x1b]52;c;cHduZWQ=\x07\u{9b}2J";
+    let mut v = shot(
+        "S9",
+        "s9",
+        "remote_headless",
+        "devbox",
+        "illustrative",
+        "/x.png",
+        1,
+    );
+    v["binding_reason"] = json!(format!("Build not verified: build id {evil} is not tied"));
+    v["title"] = json!(format!("Login{evil}"));
+    v["final_url"] = json!(format!("http://localhost:5173/{evil}"));
+    let s = Shot::parse(&v).unwrap();
+    let clean = |t: &str| !t.chars().any(char::is_control);
+    for t in [&s.binding_text(), &s.title, &s.url, &s.code_text()] {
+        assert!(clean(t), "{t:?}");
+    }
+    assert!(
+        s.binding_text().contains("build id \\x1b]52;c;"),
+        "{}",
+        s.binding_text()
+    );
+    let (mut app, mut rxs) = fleet();
+    app.action("screenshots", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "screenshot.list");
+    reply(&mut app, 0, req, json!({"screenshots": [v], "count": 1}));
+    let text = screen(&app);
+    assert!(text.contains("build id \\x1b]52;c;"), "{text}");
+}
+
 #[test]
 fn open_locally_is_explicit() {
     let (mut app, mut rxs) = fleet();

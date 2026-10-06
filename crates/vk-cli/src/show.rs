@@ -11,6 +11,7 @@
 
 use base64::Engine as _;
 use serde_json::Value;
+use vk_proto::text::escape_controls;
 
 /// How the image is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,17 +107,22 @@ fn age(ms: i64) -> String {
     }
 }
 
-/// The metadata line(s) printed with (or instead of) the image.
+/// The metadata line(s) printed with (or instead of) the image. Every value is escaped
+/// ([`vk_proto::text::escape_controls`]): labels, URLs and the binding reason can carry text the
+/// page supplied (its reported build id, for one), which must not reach the terminal as control
+/// sequences.
 pub fn describe(shot: &Value, image_shown: bool) -> String {
-    let st = |k: &str| shot[k].as_str().unwrap_or("");
-    let binding = match st("binding") {
+    let st = |k: &str| escape_controls(shot[k].as_str().unwrap_or("")).into_owned();
+    let binding = match st("binding").as_str() {
         "bound" => "bound to this code".to_string(),
         "" => String::new(),
         other => format!(
             "{other}: {}",
-            shot["binding_reason"]
-                .as_str()
-                .unwrap_or("no reason recorded")
+            escape_controls(
+                shot["binding_reason"]
+                    .as_str()
+                    .unwrap_or("no reason recorded")
+            )
         ),
     };
     let mut lines = vec![format!(
@@ -133,7 +139,7 @@ pub fn describe(shot: &Value, image_shown: bool) -> String {
         lines.push(
             shot["path_on_machine"]
                 .as_str()
-                .map(|p| format!("image: {p}"))
+                .map(|p| format!("image: {}", escape_controls(p)))
                 .unwrap_or_else(|| {
                     "image: (not on this machine; use `vibeke screenshot open`)".into()
                 }),
