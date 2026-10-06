@@ -184,6 +184,7 @@ fn req(level: IsolationLevel, network: NetworkProfile, harnesses: &[&str]) -> Is
         local_ports: vec![],
         image: None,
         proxy_port: None,
+        ..Default::default()
     }
 }
 
@@ -461,6 +462,23 @@ fn iso_request_params() {
     assert_eq!(r.network, NetworkProfile::Dev);
     assert!(IsoRequest::from_params(&json!({"isolate": "jail"}), &cfg).is_err());
     assert!(IsoRequest::from_params(&json!({"network": "lan"}), &cfg).is_err());
+    // Container code isolation (13 §6).
+    let r = IsoRequest::from_params(
+        &json!({"isolate": "container", "code": "clone", "image": "alpine:3.20", "devcontainer": ".devcontainer/x.json", "build": true}),
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(r.code.as_deref(), Some("clone"));
+    assert_eq!(r.image.as_deref(), Some("alpine:3.20"));
+    assert_eq!(r.devcontainer.as_deref(), Some(".devcontainer/x.json"));
+    assert!(r.build);
+    assert!(
+        IsoRequest::from_params(&json!({"isolate": "sandbox", "checkout": "clone"}), &cfg).is_err()
+    );
+    assert!(IsoRequest::from_params(&json!({"isolate": "container", "code": "jj"}), &cfg).is_err());
     assert_eq!(yolo_args("claude"), ["--dangerously-skip-permissions"]);
     assert!(yolo_args("pi").is_empty());
 }
+
+#[path = "sandbox_container_tests.rs"]
+mod container_tests;

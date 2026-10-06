@@ -1,0 +1,870 @@
+//! Server side of the `container` level (13 §4–§11): building a task's box from config, the
+//! repo's `.vibeke/sandbox.toml` and its devcontainer; creating it (with the private `clone`,
+//! 13 §6) on the first pane; trusted lifecycle commands inside the box; `task sync`;
+//! stop/start/remove and teardown that never throws away unsynced work.
+
+use super::{TaskBox, emit, sbx_root};
+use crate::Server;
+use crate::api::{R, err, internal, invalid};
+use crate::paths;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use vk_proto::rpc::{ErrorKind, RpcError};
+use vk_sandbox::config::{IsolationConfig, RepoSandbox, cache_volume, expand};
+use vk_sandbox::container::{
+    BOX_BIN, BOX_CREDS, BOX_HOME, BOX_INBOX, BOX_WORKSPACE, BoxMount, BoxNet, BoxSpec, BoxState,
+    ContainerBox, ContainerRunner, Limits, Provider,
+};
+use vk_sandbox::creds::Projection;
+use vk_sandbox::devcontainer::{self, DevContainer, MountKind};
+use vk_sandbox::net::NetworkProfile;
+use vk_tasks::sync::{self, BoxRemote, SyncOutcome, SyncStatus};
+
+/// The task's private clone inside the box (13 §6).
+#[derive(Debug, Clone)]
+pub struct CloneInfo {
+    /// Host repo (main checkout root) that sync fetches into.
+    pub repo: PathBuf,
+    /// Host worktree of the task (review surface; never mounted into the box).
+    pub worktree: PathBuf,
+    pub branch: String,
+    pub base: String,
+    /// Host `<common-dir>/objects`, mounted read-only at the same path.
+    pub objects: PathBuf,
+    /// Host dir holding the box's repo (bind-mounted at `/workspace`).
+    pub dir: PathBuf,
+}
+
+/// Everything the server keeps per container box.
+pub struct CtrBox {
+    pub runner: ContainerRunner,
+    pub clone: Option<CloneInfo>,
+    /// Trusted lifecycle commands to run once after creation (name, script).
+    pub lifecycle: Vec<(String, String)>,
+    pub root: PathBuf,
+    pub image: String,
+    pub code: &'static str,
+    pub warnings: Vec<String>,
+    pub devcontainer: Option<PathBuf>,
+}
+
+impl CtrBox {
+    pub fn b(&self) -> &ContainerBox {
+        &self.runner.b
+    }
+}
+
+/// Code isolation for a container box: `clone` (default, tasks) or `worktree` (bind mount).
+pub fn code_mode(req_code: Option<&str>, cfg: &IsolationConfig, task: bool) -> &'static str {
+    match req_code.unwrap_or(cfg.container.code.as_str()) {
+        "worktree" | "bind" => "worktree",
+        // Ad-hoc (run-scoped) boxes have no task branch to sync: they bind the checkout.
+        _ if !task => "worktree",
+        _ => "clone",
+    }
+}
+
+/// In-box working directory for the box.
+pub fn workdir(code: &str, checkout: &Path, dc: Option<&DevContainer>) -> String {
+    if code == "clone" {
+        dc.and_then(|d| d.workspace_folder.clone())
+            .filter(|w| !w.contains("${"))
+            .unwrap_or_else(|| BOX_WORKSPACE.into())
+    } else {
+        checkout.to_string_lossy().into_owned()
+    }
+}
+
+/// The static Linux `vibeke` for the box: config, then `$VIBEKE_ARTIFACT_DIR` /
+/// `~/.cache/vibeke/releases/<version>/vibeke-linux-<arch>`, then the running binary when it
+/// is itself a Linux build.
+pub fn linux_vibeke(cfg: &IsolationConfig, home: &Path) -> Option<PathBuf> {
+    if let Some(p) = &cfg.container.vibeke_linux {
+        let p = expand(home, p);
+        return p.is_file().then_some(p);
+    }
+    let name = format!("vibeke-linux-{}", std::env::consts::ARCH);
+    let mut dirs = Vec::new();
+    if let Some(d) = std::env::var_os("VIBEKE_ARTIFACT_DIR") {
+        dirs.push(PathBuf::from(d));
+    }
+    dirs.push(home.join(".cache/vibeke/releases").join(vk_proto::VERSION));
+    if let Some(p) = dirs
+        .into_iter()
+        .map(|d| d.join(&name))
+        .find(|p| p.is_file())
+    {
+        return Some(p);
+    }
+    if cfg!(target_os = "linux") && cfg!(target_env = "musl") {
+        return std::env::current_exe().ok();
+    }
+    None
+}
+
+/// Host dir of a box's per-pane broker sockets (reached from the box through its link).
+/// `<sbx>/run` unless that would exceed the unix socket path limit (~104 bytes),
+/// then a short private dir under `/tmp`.
+pub fn run_dir(key: &str) -> PathBuf {
+    let d = sbx_root(key).join("run");
+    if d.join("egress.sock").as_os_str().len() <= 100 {
+        return d;
+    }
+    PathBuf::from(format!("/tmp/vibeke-{}-bx", unsafe { libc::getuid() }))
+        .join(vk_sandbox::runner::short_id(key))
+}
+
+/// Env values are passed literally (`--env K=V` does no expansion): entries that still reference
+/// a variable (`${containerEnv:PATH}:/x` → `${PATH}:/x`) would break the box, so they are dropped.
+fn literal_env(env: &[(String, String)], warnings: &mut Vec<String>) -> Vec<(String, String)> {
+    env.iter()
+        .filter(|(k, v)| {
+            let ok = !v.contains("${");
+            if !ok {
+                warnings.push(format!(
+                    "devcontainer env {k} references a variable and was skipped"
+                ));
+            }
+            ok
+        })
+        .cloned()
+        .collect()
+}
+
+fn mkdir_private(p: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(p)?;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Inputs for [`build`].
+pub struct BuildIn<'a> {
+    pub server: &'a Arc<Server>,
+    pub key: &'a str,
+    pub task: Option<&'a str>,
+    pub checkout: &'a Path,
+    pub cfg: &'a IsolationConfig,
+    pub network: NetworkProfile,
+    pub image: Option<String>,
+    pub code: &'static str,
+    pub devcontainer: Option<String>,
+    pub build_image: bool,
+    pub projection: &'a Projection,
+    pub home: &'a Path,
+}
+
+/// Assemble the box (pure-ish: reads repo files and config, runs `git rev-parse`; never starts
+/// anything except an explicitly requested, trusted devcontainer image build).
+pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
+    let BuildIn {
+        server,
+        key,
+        task,
+        checkout,
+        cfg,
+        network,
+        image,
+        code,
+        devcontainer: dc_rel,
+        build_image,
+        projection,
+        home,
+    } = i;
+    let unsupported = |m: String| err(ErrorKind::Unsupported, m);
+    let override_rt = server.sandbox.container_runtime();
+    let provider = match override_rt
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .or(cfg.container.runtime.clone())
+    {
+        Some(r) => Provider::from_config(&r)
+            .ok_or_else(|| unsupported(format!("container runtime {r} not found")))?,
+        None => vk_sandbox::container::select(None, network).ok_or_else(|| {
+            unsupported(
+                "no container runtime found (Apple container, OrbStack, Docker, Podman)".into(),
+            )
+        })?,
+    };
+    let mut warnings = Vec::new();
+    let repo_cfg = RepoSandbox::load(checkout).unwrap_or_else(|e| {
+        warnings.push(e);
+        RepoSandbox::default()
+    });
+    let dc = devcontainer::load(
+        checkout,
+        dc_rel.as_deref().or(repo_cfg.devcontainer.as_deref()),
+    )
+    .map_err(invalid)?;
+    let repo_root = vk_tasks::repo_root(checkout).map(|r| r.root);
+    let dc_trusted = match (&dc, &repo_root) {
+        (Some(d), Some(r)) => crate::run::devcontainer_trusted(server, r, &devcontainer::digest(d)),
+        _ => false,
+    };
+    if let Some(d) = &dc {
+        warnings.extend(d.warnings.iter().cloned());
+    }
+    // Image: explicit > repo sandbox.toml > devcontainer (image, or a trusted explicit build) >
+    // user config.
+    let mut image = image.or(repo_cfg.image.clone());
+    if image.is_none()
+        && let Some(d) = &dc
+    {
+        image = d.image.clone();
+        if image.is_none() && d.build.is_some() {
+            if !(build_image || cfg.container.build) {
+                return Err(invalid(format!(
+                    "{} builds its image from a Dockerfile; pass --build (or [isolation.container] build = true) after reviewing it, or --image",
+                    d.path.display()
+                )));
+            }
+            if !dc_trusted {
+                return Err(err(
+                    ErrorKind::PermissionDenied,
+                    format!(
+                        "building the devcontainer image needs repo trust: review {} then run `vibeke policy trust {}`",
+                        d.path.display(),
+                        repo_root.as_deref().unwrap_or(checkout).display()
+                    ),
+                ));
+            }
+            let argv = d.build_argv(provider.cli()).unwrap_or_default();
+            let out = vk_sandbox::container::run_cmd(
+                &argv,
+                &vk_sandbox::container::cli_env(&server.opts.env),
+                None,
+                Duration::from_secs(1800),
+            )
+            .map_err(internal)?;
+            if !out.ok {
+                return Err(unsupported(format!(
+                    "devcontainer build failed: {}",
+                    out.stderr.trim()
+                )));
+            }
+            image = d.build_tag();
+        }
+    }
+    let image = image.or(cfg.container.image.clone()).ok_or_else(|| {
+        invalid("container isolation needs an image (--image, .vibeke/sandbox.toml, a devcontainer, or [isolation.container] image)")
+    })?;
+    let root = sbx_root(key);
+    let run_dir = run_dir(key);
+    let creds = root.join("shared");
+    if let Some(parent) = run_dir.parent().filter(|p| p.starts_with("/tmp")) {
+        mkdir_private(parent).map_err(internal)?;
+    }
+    for d in [&root, &run_dir, &creds] {
+        mkdir_private(d).map_err(internal)?;
+    }
+    let wd = workdir(code, checkout, dc.as_ref());
+    let user = dc.as_ref().and_then(|d| d.user().map(str::to_string));
+    let host_ids = format!("{}:{}", unsafe { libc::getuid() }, unsafe {
+        libc::getgid()
+    });
+    let mut mounts = vec![
+        BoxMount::Bind {
+            host: paths::Paths::inbox(),
+            target: BOX_INBOX.into(),
+            read_only: true,
+        },
+        BoxMount::Bind {
+            host: creds.clone(),
+            target: BOX_CREDS.into(),
+            read_only: false,
+        },
+    ];
+    let _ = std::fs::create_dir_all(paths::Paths::inbox());
+    let mut env: Vec<(String, String)> = vec![
+        ("VIBEKE_ISOLATION".into(), "container".into()),
+        ("VIBEKE_NETWORK".into(), network.as_str().into()),
+    ];
+    if user.is_none() {
+        let h = root.join("home");
+        mkdir_private(&h).map_err(internal)?;
+        mounts.push(BoxMount::Bind {
+            host: h,
+            target: BOX_HOME.into(),
+            read_only: false,
+        });
+        env.push(("HOME".into(), BOX_HOME.into()));
+    }
+    let mut clone = None;
+    if code == "clone" {
+        let layout = vk_sandbox::GitLayout::detect(checkout)
+            .ok_or_else(|| invalid(format!("{} is not a git checkout", checkout.display())))?;
+        let branch = layout
+            .branch
+            .clone()
+            .filter(|b| b != "HEAD")
+            .ok_or_else(|| invalid("clone isolation needs a task branch (detached HEAD)"))?;
+        let base = git_out(checkout, &["rev-parse", "HEAD"])
+            .ok_or_else(|| invalid("cannot resolve the checkout's HEAD"))?;
+        let objects = layout.common_dir.join("objects");
+        let dir = root.join("workspace");
+        mkdir_private(&dir).map_err(internal)?;
+        mounts.push(BoxMount::Bind {
+            host: dir.clone(),
+            target: wd.clone(),
+            read_only: false,
+        });
+        mounts.push(BoxMount::Bind {
+            host: objects.clone(),
+            target: objects.to_string_lossy().into_owned(),
+            read_only: true,
+        });
+        clone = Some(CloneInfo {
+            repo: repo_root
+                .clone()
+                .unwrap_or_else(|| layout.common_dir.parent().unwrap_or(checkout).to_path_buf()),
+            worktree: checkout.to_path_buf(),
+            branch,
+            base,
+            objects,
+            dir,
+        });
+    } else {
+        mounts.push(BoxMount::Bind {
+            host: checkout.to_path_buf(),
+            target: wd.clone(),
+            read_only: false,
+        });
+        warnings.push(
+            "worktree mode: the host checkout is bind-mounted; its .git file points at the host repo, which is not mounted, so git does not work inside the box".into(),
+        );
+    }
+    let bin = linux_vibeke(cfg, home);
+    if let Some(b) = &bin {
+        mounts.push(BoxMount::Bind {
+            host: b.clone(),
+            target: BOX_BIN.into(),
+            read_only: true,
+        });
+        env.push(("VIBEKE_BIN".into(), BOX_BIN.into()));
+        // Hook configs copied from the host name the host binary's absolute path.
+        let host_bin = &server.opts.bin;
+        if host_bin.is_absolute() && host_bin.is_file() && !host_bin.starts_with("/bin") {
+            mounts.push(BoxMount::Bind {
+                host: b.clone(),
+                target: host_bin.to_string_lossy().into_owned(),
+                read_only: true,
+            });
+        }
+    }
+    for c in &cfg.container.caches {
+        match cache_volume(c) {
+            Some((vol, target, var)) => {
+                mounts.push(BoxMount::Volume {
+                    name: vol.into(),
+                    target: target.into(),
+                });
+                env.push((var.into(), target.into()));
+            }
+            None => warnings.push(format!("unknown cache volume {c}")),
+        }
+    }
+    let canon_checkout = checkout
+        .canonicalize()
+        .unwrap_or_else(|_| checkout.to_path_buf());
+    if let Some(d) = &dc {
+        for m in &d.mounts {
+            match m.kind {
+                MountKind::Volume => mounts.push(BoxMount::Volume {
+                    name: m.source.clone(),
+                    target: m.target.clone(),
+                }),
+                MountKind::Tmpfs => mounts.push(BoxMount::Tmpfs {
+                    target: m.target.clone(),
+                }),
+                MountKind::Bind => {
+                    let src = Path::new(&m.source)
+                        .canonicalize()
+                        .unwrap_or_else(|_| PathBuf::from(&m.source));
+                    if dc_trusted && code == "worktree" && src.starts_with(&canon_checkout) {
+                        mounts.push(BoxMount::Bind {
+                            host: src,
+                            target: m.target.clone(),
+                            read_only: m.read_only,
+                        });
+                    } else {
+                        warnings.push(format!(
+                            "devcontainer bind mount {} → {} ignored (only sources inside the checkout of a trusted repo, worktree mode)",
+                            m.source, m.target
+                        ));
+                    }
+                }
+            }
+        }
+        env.extend(literal_env(&d.container_env, &mut warnings));
+    }
+    // Credentials: path-valued projection env is rewritten to the box mount; everything else is
+    // a secret passed by name per exec (13 §8).
+    let creds_prefix = creds.to_string_lossy().into_owned();
+    let mut exec_env = Vec::new();
+    let mut secrets = Vec::new();
+    for (k, v) in &projection.env {
+        match v.strip_prefix(&creds_prefix) {
+            Some(rest) => exec_env.push((k.clone(), format!("{BOX_CREDS}{rest}"))),
+            None => secrets.push((k.clone(), v.clone())),
+        }
+    }
+    if let Some(d) = &dc {
+        exec_env.extend(literal_env(&d.remote_env, &mut warnings));
+    }
+    let limits = Limits {
+        cpus: repo_cfg.cpus.clone().or(cfg.container.cpus.clone()),
+        memory: repo_cfg.memory.clone().or(cfg.container.memory.clone()),
+        pids: cfg.container.pids,
+    };
+    let spec = BoxSpec {
+        provider,
+        name: format!("vk-{}", vk_sandbox::runner::short_id(key)),
+        image: image.clone(),
+        labels: vec![
+            ("vibeke.box".into(), "1".into()),
+            ("vibeke.session".into(), server.opts.session.clone()),
+            ("vibeke.key".into(), key.to_string()),
+        ],
+        net: BoxNet::for_profile(network),
+        workdir: wd,
+        mounts,
+        env,
+        user: Some(user.clone().unwrap_or(host_ids)),
+        limits,
+        in_box_vibeke: bin.is_some(),
+        cap_add: cfg.container.cap_add.clone(),
+    };
+    // Lifecycle (trusted only, 09 §4): devcontainer commands, then `.vibeke/setup.sh`.
+    let mut lifecycle = Vec::new();
+    if let Some(d) = &dc {
+        if dc_trusted {
+            lifecycle.extend(d.lifecycle.iter().map(|(n, c)| (n.clone(), c.script())));
+        } else if !d.lifecycle.is_empty() {
+            warnings.push(format!(
+                "devcontainer lifecycle commands skipped: repo not trusted (review {} then `vibeke policy trust`)",
+                d.path.display()
+            ));
+        }
+    }
+    if task.is_some() && checkout.join(".vibeke/setup.sh").is_file() {
+        let trusted = repo_root.as_deref().is_some_and(|r| {
+            crate::run::vibeke_dir_digest(checkout)
+                .is_some_and(|dg| crate::run::repo_trusted(server, r, &dg))
+        });
+        if trusted {
+            lifecycle.push(("setup".into(), "sh .vibeke/setup.sh".into()));
+        } else {
+            warnings.push("`.vibeke/setup.sh` skipped: repo not trusted".into());
+        }
+    }
+    let b = ContainerBox {
+        spec,
+        cli_env: vk_sandbox::container::cli_env(&server.opts.env),
+        secrets,
+        exec_env,
+        run_dir,
+        visible_roots: if code == "clone" {
+            vec![]
+        } else {
+            vec![checkout.to_string_lossy().into_owned()]
+        },
+        shell: cfg.container.shell.clone(),
+    };
+    Ok(CtrBox {
+        runner: ContainerRunner { b },
+        clone,
+        lifecycle,
+        root,
+        image,
+        code,
+        warnings,
+        devcontainer: dc.map(|d| d.path),
+    })
+}
+
+/// Create/start the box; on creation, make the private clone and kick off lifecycle commands
+/// in the background. Blocking: call from `spawn_blocking`.
+pub fn ensure(
+    server: &Arc<Server>,
+    key: &str,
+    task: Option<&str>,
+    c: &CtrBox,
+) -> Result<bool, RpcError> {
+    let created = c
+        .b()
+        .ensure_running()
+        .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
+    if let Some(cl) = &c.clone {
+        let name = git_out(&cl.worktree, &["config", "user.name"]);
+        let email = git_out(&cl.worktree, &["config", "user.email"]);
+        let script = sync::box_clone_script(
+            &cl.objects,
+            &c.b().spec.workdir,
+            &cl.branch,
+            &cl.base,
+            name.as_deref(),
+            email.as_deref(),
+        );
+        let out = c
+            .b()
+            .exec_script(&script, None, Duration::from_secs(300))
+            .map_err(internal)?;
+        if !out.ok {
+            if created {
+                let _ = c.b().remove();
+            }
+            return Err(err(
+                ErrorKind::Unsupported,
+                format!(
+                    "could not create the box's private clone (does the image have git?): {}",
+                    out.stderr.trim()
+                ),
+            ));
+        }
+    }
+    if created {
+        emit(
+            server,
+            "sandbox.started",
+            json!({"task": task, "sandbox": key}),
+            json!({"container": c.b().spec.name, "image": c.image, "created": true}),
+        );
+        if !c.lifecycle.is_empty() {
+            let srv = server.clone();
+            let (b, steps, log) = (c.b().clone(), c.lifecycle.clone(), c.root.join("setup.log"));
+            let (key, task) = (key.to_string(), task.map(str::to_string));
+            std::thread::spawn(move || {
+                let mut status = "ok".to_string();
+                let mut text = String::new();
+                for (name, script) in steps {
+                    text.push_str(&format!("$ {name}: {script}\n"));
+                    match b.exec_script(&script, None, Duration::from_secs(1800)) {
+                        Ok(o) => {
+                            text.push_str(&o.stdout);
+                            text.push_str(&o.stderr);
+                            if !o.ok {
+                                status = format!("failed: {name}");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            status = format!("failed: {name}: {e}");
+                            break;
+                        }
+                    }
+                }
+                let _ = std::fs::write(&log, text);
+                emit(
+                    &srv,
+                    "sandbox.setup_finished",
+                    json!({"task": task, "sandbox": key}),
+                    json!({"status": status, "log": log}),
+                );
+            });
+        }
+    }
+    Ok(created)
+}
+
+fn remote_for(c: &CtrBox, cl: &CloneInfo) -> (BoxRemote, bool) {
+    if c.b().state() == BoxState::Running {
+        (
+            BoxRemote {
+                url: c.b().spec.workdir.clone(),
+                upload_pack: c.b().git_service("upload-pack"),
+                receive_pack: c.b().git_service("receive-pack"),
+            },
+            true,
+        )
+    } else {
+        // Stopped box: the same repo on the host, with every repo-controlled hook disabled.
+        (BoxRemote::local(&cl.dir), false)
+    }
+}
+
+/// `task.sync` (blocking).
+pub fn sync_task(c: &CtrBox, direction: &str, force: bool) -> Result<Vec<SyncOutcome>, RpcError> {
+    let cl = c
+        .clone
+        .as_ref()
+        .ok_or_else(|| invalid("this task's box has no private clone (code isolation `clone`)"))?;
+    let (remote, running) = remote_for(c, cl);
+    let ns = vk_sandbox::runner::short_id(&c.b().spec.name);
+    let mut out = Vec::new();
+    if matches!(direction, "push" | "both") {
+        let o = sync::sync_push(&cl.repo, &remote, &cl.branch, &cl.branch)
+            .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
+        out.push(o);
+        if running {
+            let ff = c
+                .b()
+                .exec_script(
+                    &sync::box_ff_script(&c.b().spec.workdir, &cl.branch),
+                    None,
+                    Duration::from_secs(120),
+                )
+                .map_err(internal)?;
+            if !ff.ok {
+                tracing::info!(stderr = %ff.stderr.trim(), "box did not fast-forward after push");
+            }
+        }
+    }
+    if matches!(direction, "pull" | "both") {
+        let o = sync::sync_pull(&cl.repo, &remote, &cl.branch, &cl.branch, &ns, force)
+            .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
+        out.push(o);
+    }
+    if out.is_empty() {
+        return Err(invalid("direction is pull | push | both"));
+    }
+    Ok(out)
+}
+
+/// What happened to a box at task end (blocking): pull unsynced work first; remove only when
+/// the box's branch is fully on the host, else stop and keep it.
+pub fn finish(server: &Server, tb: &TaskBox, c: &CtrBox, policy: &str) -> Value {
+    let mut synced = Value::Null;
+    let mut safe = c.clone.is_none();
+    if c.clone.is_some() && c.b().state() != BoxState::Missing {
+        match sync_task(c, "pull", false) {
+            Ok(o) => {
+                safe = o
+                    .iter()
+                    .all(|x| matches!(x.status, SyncStatus::UpToDate | SyncStatus::FastForwarded));
+                synced = serde_json::to_value(&o).unwrap_or_default();
+                record_sync(server, tb, &o);
+            }
+            Err(e) => synced = json!({"error": e.message}),
+        }
+    }
+    let action = match policy {
+        "keep" => "kept",
+        "stop" => "stopped",
+        _ if !safe => "stopped",
+        _ => "removed",
+    };
+    let res = match action {
+        "removed" => c.b().remove(),
+        "stopped" => c.b().stop(),
+        _ => Ok(()),
+    };
+    if action == "removed" && res.is_ok() {
+        let _ = std::fs::remove_dir_all(&c.root);
+        let _ = std::fs::remove_dir_all(&c.runner.b.run_dir);
+    }
+    json!({"container": c.b().spec.name, "action": action, "sync": synced, "error": res.err().map(|e| e.to_string()), "unsynced_kept": action != "removed" && !safe})
+}
+
+pub fn record_sync(server: &Server, tb: &TaskBox, o: &[SyncOutcome]) {
+    for x in o {
+        emit(
+            server,
+            "task.synced",
+            json!({"task": tb.task, "sandbox": tb.key}),
+            json!({"direction": x.direction, "status": x.status, "commits": x.commits, "from": x.from, "to": x.to, "ref": x.reference}),
+        );
+    }
+}
+
+// ---- the box link (egress + brokers over `exec -i` stdio, vk_remote::boxlink) ------------------
+
+/// One box's link: the current mux (while the in-box end runs) and the panes whose broker
+/// sockets the box should serve. Listen channels are reopened after every reconnect.
+#[derive(Default)]
+pub struct BoxLink {
+    mux: std::sync::Mutex<Option<vk_remote::Mux>>,
+    panes: std::sync::Mutex<std::collections::HashMap<String, Option<tokio::io::DuplexStream>>>,
+    pub connected: std::sync::atomic::AtomicBool,
+}
+
+impl BoxLink {
+    fn open_listen(self: &Arc<Self>, m: vk_remote::Mux, short: String) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            match m.open(&format!("listen:{short}")).await {
+                Ok(ctl) => {
+                    me.panes.lock().unwrap().insert(short, Some(ctl));
+                }
+                Err(e) => tracing::warn!(error = %e, "box link: broker listen failed"),
+            }
+        });
+    }
+    /// Serve `pane`'s broker inside the box (now, and after every reconnect).
+    pub fn add_pane(self: &Arc<Self>, pane: &str) {
+        let short = vk_sandbox::runner::short_id(pane);
+        self.panes.lock().unwrap().insert(short.clone(), None);
+        if let Some(m) = self.mux.lock().unwrap().clone() {
+            self.open_listen(m, short);
+        }
+    }
+    pub fn remove_pane(&self, pane: &str) {
+        self.panes
+            .lock()
+            .unwrap()
+            .remove(&vk_sandbox::runner::short_id(pane));
+    }
+}
+
+/// Keep the link to a running box up: `<runtime> exec -i <box> vibeke sandbox bridge`, the host
+/// end bridging `egress` to the proxy and `broker:<pane>` to the host broker sockets. Waits while
+/// the box is stopped; reconnects after the exec ends. Abort the handle to stop.
+pub fn start_link(
+    b: ContainerBox,
+    proxy_port: Option<u16>,
+) -> (Arc<BoxLink>, tokio::task::JoinHandle<()>) {
+    let link = Arc::new(BoxLink::default());
+    let l2 = link.clone();
+    let h = tokio::spawn(async move {
+        loop {
+            let b2 = b.clone();
+            let running = tokio::task::spawn_blocking(move || b2.state())
+                .await
+                .map(|s| s == BoxState::Running)
+                .unwrap_or(false);
+            if running {
+                let argv = b.link_argv();
+                let child = tokio::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .env_clear()
+                    .envs(b.cli_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .spawn();
+                if let Ok(mut child) = child
+                    && let (Some(si), Some(so)) = (child.stdin.take(), child.stdout.take())
+                {
+                    let m = vk_remote::Mux::start(
+                        so,
+                        si,
+                        "bridge",
+                        Some(vk_remote::boxlink::host_acceptor(
+                            proxy_port,
+                            b.run_dir.clone(),
+                        )),
+                    );
+                    *l2.mux.lock().unwrap() = Some(m.clone());
+                    l2.connected
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    let shorts: Vec<String> = l2.panes.lock().unwrap().keys().cloned().collect();
+                    for s in shorts {
+                        l2.open_listen(m.clone(), s);
+                    }
+                    tokio::select! {
+                        _ = m.closed() => {}
+                        _ = child.wait() => {}
+                    }
+                    *l2.mux.lock().unwrap() = None;
+                    l2.connected
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    for v in l2.panes.lock().unwrap().values_mut() {
+                        *v = None;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+    (link, h)
+}
+
+/// Container-specific fields for `sandbox.list` (blocking: inspects the box).
+pub fn describe(c: &CtrBox) -> Value {
+    json!({
+        "container": c.b().spec.name,
+        "state": c.b().state().as_str(),
+        "image": c.image,
+        "code": c.code,
+        "workdir": c.b().spec.workdir,
+        "clone": c.clone.as_ref().map(|cl| json!({"branch": cl.branch, "base": cl.base})),
+        "devcontainer": c.devcontainer,
+        "warnings": c.warnings,
+        "in_box_vibeke": c.b().spec.in_box_vibeke,
+    })
+}
+
+/// `sandbox.start|stop|remove` and `task.sync`.
+pub async fn api(server: &Arc<Server>, method: &str, p: &Value) -> R {
+    let t = crate::api::req(p, "task")?;
+    let key = server
+        .with_core(|c| c.task(t).map(|x| x.id.clone()))
+        .unwrap_or_else(|| t.to_string());
+    let tb = server
+        .sandbox
+        .get(&key)
+        .ok_or_else(|| crate::api::not_found("sandbox", t))?;
+    if !matches!(tb.runner, super::BoxRunner::Container(_)) {
+        return Err(invalid("not a container box"));
+    }
+    let srv = server.clone();
+    let method = method.to_string();
+    let p = p.clone();
+    tokio::task::spawn_blocking(move || {
+        let super::BoxRunner::Container(c) = &tb.runner else {
+            unreachable!()
+        };
+        let subject = json!({"task": tb.task, "sandbox": tb.key});
+        match method.as_str() {
+            "sandbox.start" => {
+                let created = ensure(&srv, &tb.key, tb.task.as_deref(), c)?;
+                emit(
+                    &srv,
+                    "sandbox.resumed",
+                    subject,
+                    json!({"created": created}),
+                );
+                Ok(json!({"state": c.b().state().as_str(), "created": created}))
+            }
+            "sandbox.stop" => {
+                c.b()
+                    .stop()
+                    .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
+                emit(&srv, "sandbox.suspended", subject, json!({}));
+                Ok(json!({"state": c.b().state().as_str()}))
+            }
+            "sandbox.remove" => {
+                let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+                let r = finish(&srv, &tb, c, if force { "remove-force" } else { "remove" });
+                if force && r["action"] != "removed" {
+                    c.b()
+                        .remove()
+                        .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
+                    let _ = std::fs::remove_dir_all(&c.root);
+                    let _ = std::fs::remove_dir_all(&c.runner.b.run_dir);
+                }
+                emit(&srv, "sandbox.destroyed", subject, r.clone());
+                Ok(r)
+            }
+            "task.sync" => {
+                let dir = p
+                    .get("direction")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pull")
+                    .to_string();
+                let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+                let o = sync_task(c, &dir, force)?;
+                record_sync(&srv, &tb, &o);
+                Ok(json!({"task": tb.task, "synced": o}))
+            }
+            _ => Err(invalid("unknown method")),
+        }
+    })
+    .await
+    .map_err(internal)?
+}

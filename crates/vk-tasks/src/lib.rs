@@ -42,7 +42,8 @@
 //!   delete in background) and falls back to `git worktree remove` when the
 //!   rename fails. Reaping does not lower IO priority yet.
 //! * Only worktree/none backends, git, `copy` files and `setup.script` are
-//!   implemented (no `link`/`clone`/deps/jj/containers).
+//!   implemented (no `link`/deps/jj). `clone` for container boxes lives in [`sync`]:
+//!   the in-box clone script plus host-side fetch/push (`vibeke task sync`).
 
 mod error;
 mod files;
@@ -54,6 +55,7 @@ mod remove;
 mod repo;
 mod setup;
 mod status;
+pub mod sync;
 mod worktree;
 
 pub use error::{Error, Result};

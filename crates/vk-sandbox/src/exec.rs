@@ -7,6 +7,8 @@
 //!   so credentials never appear on screen, in scrollback or in shell history.
 //! * Linux only: `vibeke sandbox bwrap …` (outer: seccomp program on a pipe fd, then `bwrap`) and
 //!   `vibeke sandbox inner …` (inside the namespace: Landlock, egress forwarder, exec).
+//! * `vibeke sandbox box-init …`: PID 1 of a container box (static Linux binary mounted into
+//!   the box): the egress forwarder plus zombie reaping.
 
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
@@ -139,6 +141,7 @@ pub fn main(args: &[String]) -> i32 {
             eprintln!("vibeke sandbox exec: {}: {e}", argv[0]);
             127
         }
+        Some("box-init") => box_init(args),
         #[cfg(target_os = "linux")]
         Some("bwrap") => linux_outer(args),
         #[cfg(target_os = "linux")]
@@ -248,7 +251,7 @@ fn linux_inner(args: &[String]) -> i32 {
     if let Some(port) = get("--proxy-port").and_then(|p| p.parse::<u16>().ok()) {
         // SAFETY: single-threaded here (no runtime yet); the child only runs the forwarder.
         if unsafe { libc::fork() } == 0 {
-            forwarder(port);
+            forwarder(("127.0.0.1", port), crate::linux::EGRESS_SOCKET_IN_BOX);
             std::process::exit(0);
         }
     }
@@ -258,17 +261,57 @@ fn linux_inner(args: &[String]) -> i32 {
     127
 }
 
-/// 127.0.0.1:<port> inside the net namespace → the host proxy's unix socket.
-#[cfg(target_os = "linux")]
-fn forwarder(port: u16) {
-    use std::io::copy;
-    use std::net::TcpListener;
-    use std::os::unix::net::UnixStream;
-    let Ok(l) = TcpListener::bind(("127.0.0.1", port)) else {
+/// `<addr>` inside the box's net namespace → the host proxy's unix socket (Linux sandbox and
+/// the container box). Blocks forever accepting connections.
+pub fn forwarder(addr: impl std::net::ToSocketAddrs, sock: &str) {
+    let Ok(l) = std::net::TcpListener::bind(addr) else {
         return;
     };
+    serve_forwarder(l, sock.to_string());
+}
+
+extern "C" fn box_init_term(_: libc::c_int) {
+    // SAFETY: async-signal-safe exit.
+    unsafe { libc::_exit(0) }
+}
+
+/// `vibeke sandbox box-init [--proxy-port P --egress SOCK]`: PID 1 of a container box (13 §4,
+/// §7). Reaps orphaned children and exits on SIGTERM/SIGINT; with `--proxy-port P --egress SOCK`
+/// it also forwards `127.0.0.1:P` to a unix socket (the box link does not need this).
+fn box_init(args: &[String]) -> i32 {
+    let get = |k: &str| {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let handler = box_init_term as extern "C" fn(libc::c_int);
+    // SAFETY: installing a handler that only calls _exit.
+    unsafe {
+        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler as libc::sighandler_t);
+    }
+    if let (Some(port), Some(sock)) = (
+        get("--proxy-port").and_then(|p| p.parse::<u16>().ok()),
+        get("--egress"),
+    ) {
+        std::thread::spawn(move || forwarder(("127.0.0.1", port), &sock));
+    }
+    loop {
+        let mut st = 0;
+        // SAFETY: plain waitpid on any child.
+        if unsafe { libc::waitpid(-1, &mut st, 0) } < 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+}
+
+/// Accept loop of [`forwarder`] (split out so tests can bind an ephemeral port first).
+pub fn serve_forwarder(l: std::net::TcpListener, sock: String) {
+    use std::io::copy;
+    use std::os::unix::net::UnixStream;
     for c in l.incoming().flatten() {
-        let Ok(u) = UnixStream::connect(crate::linux::EGRESS_SOCKET_IN_BOX) else {
+        let Ok(u) = UnixStream::connect(&sock) else {
             continue;
         };
         let (mut c2, mut u2) = match (c.try_clone(), u.try_clone()) {
@@ -318,6 +361,31 @@ mod tests {
             env,
             [("CLAUDE_CODE_OAUTH_TOKEN".to_string(), "FAKE".to_string())]
         );
+    }
+
+    #[test]
+    fn forwarder_relays_to_the_unix_socket() {
+        use std::io::{Read, Write};
+        let t = tempfile::tempdir().unwrap();
+        let sock = t.path().join("egress.sock");
+        let ul = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            for mut s in ul.incoming().flatten() {
+                let mut b = [0u8; 4];
+                s.read_exact(&mut b).unwrap();
+                s.write_all(&b).unwrap();
+                s.write_all(b"!").unwrap();
+            }
+        });
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let sp = sock.to_string_lossy().into_owned();
+        std::thread::spawn(move || serve_forwarder(l, sp));
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.write_all(b"ping").unwrap();
+        let mut out = [0u8; 5];
+        c.read_exact(&mut out).unwrap();
+        assert_eq!(&out, b"ping!");
     }
 
     #[test]

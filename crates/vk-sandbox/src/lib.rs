@@ -1,7 +1,7 @@
 //! Execution isolation for Vibeke (spec 13): the `sandbox` level (macOS Seatbelt; Linux
 //! bubblewrap + Landlock + seccomp), the host-side egress proxy with network profiles,
-//! credential projection, the [`runner::Runner`] abstraction (05 §14) and `container`
-//! groundwork.
+//! credential projection, the [`runner::Runner`] abstraction (05 §14), the `container` level
+//! (per-task boxes, devcontainers) and the in-box helpers.
 //!
 //! The crate is server-agnostic: `vk-server` owns task/pane state, Interactions and the per-pane
 //! broker; this crate generates profiles, wraps spawn commands and enforces egress.
@@ -9,6 +9,7 @@
 pub mod config;
 pub mod container;
 pub mod creds;
+pub mod devcontainer;
 pub mod env;
 pub mod exec;
 pub mod linux;

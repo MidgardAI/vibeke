@@ -389,6 +389,18 @@ pub(crate) fn repo_trusted(server: &Server, repo: &std::path::Path, digest: &str
     trust_map(server).get(&key).is_some_and(|d| d == digest)
 }
 
+/// Devcontainer lifecycle commands and image builds (13 §9) run only for the exact
+/// `devcontainer.json` content the user trusted with `policy.trust` (09 §4).
+pub(crate) fn devcontainer_trusted(server: &Server, repo: &std::path::Path, digest: &str) -> bool {
+    let key = format!(
+        "{}#devcontainer",
+        repo.canonicalize()
+            .unwrap_or_else(|_| repo.to_path_buf())
+            .to_string_lossy()
+    );
+    trust_map(server).get(&key).is_some_and(|d| d == digest)
+}
+
 /// `policy.trust {path}` (full scope only): record the digest of the repo's `.vibeke/` tree and
 /// return what was trusted, including the setup script's content.
 pub fn policy_trust(server: &Server, p: &Value) -> R {
@@ -397,21 +409,50 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
     let repo = repo
         .canonicalize()
         .map_err(|e| invalid(format!("{}: {e}", repo.display())))?;
-    let Some(digest) = vibeke_dir_digest(&repo) else {
+    let digest = vibeke_dir_digest(&repo);
+    // A devcontainer's lifecycle commands/image build are repo automation too (13 §9).
+    let dc = vk_sandbox::devcontainer::load(&repo, None).ok().flatten();
+    let dc_digest = dc.as_ref().map(vk_sandbox::devcontainer::digest);
+    if digest.is_none() && dc_digest.is_none() {
         return Err(invalid(format!(
-            "{} has no .vibeke/ directory",
+            "{} has no .vibeke/ directory or devcontainer",
             repo.display()
         )));
-    };
-    if let Some(want) = s(p, "digest").filter(|d| *d != digest) {
+    }
+    if let Some(want) = s(p, "digest").filter(|d| Some(*d) != digest.as_deref()) {
         return Err(err(
             ErrorKind::Conflict,
-            format!(".vibeke/ changed since review (expected {want}, now {digest})"),
+            format!(
+                ".vibeke/ changed since review (expected {want}, now {})",
+                digest.as_deref().unwrap_or("none")
+            ),
+        ));
+    }
+    if let Some(want) = s(p, "devcontainer_digest").filter(|d| Some(*d) != dc_digest.as_deref()) {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!("devcontainer changed since review (expected {want})"),
         ));
     }
     let mut map = trust_map(server);
-    map.insert(repo.to_string_lossy().into_owned(), digest.clone());
+    if let Some(d) = &digest {
+        map.insert(repo.to_string_lossy().into_owned(), d.clone());
+    }
+    if let Some(d) = &dc_digest {
+        map.insert(
+            format!("{}#devcontainer", repo.to_string_lossy()),
+            d.clone(),
+        );
+    }
     let script = std::fs::read_to_string(repo.join(".vibeke/setup.sh")).ok();
+    let devcontainer = dc.as_ref().map(|d| {
+        json!({
+            "file": d.path, "digest": dc_digest, "image": d.image,
+            "build": d.build.as_ref().map(|b| json!({"dockerfile": b.dockerfile, "context": b.context})),
+            "lifecycle": d.lifecycle.iter().map(|(n, c)| json!({"name": n, "command": c.script()})).collect::<Vec<_>>(),
+            "warnings": d.warnings,
+        })
+    });
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     tx.m.kv(
@@ -422,14 +463,14 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
     tx.event(
         "policy.repo_trusted",
         json!({}),
-        json!({"repo": repo, "digest": digest}),
+        json!({"repo": repo, "digest": digest, "devcontainer_digest": dc_digest}),
     );
     server.commit(&mut c, tx).map_err(internal)?;
     drop(c);
     // Repo harness manifests (04 §5) are re-evaluated on the next detection.
     crate::agents::manifests::forget_repo_trust();
     Ok(
-        json!({"repo": repo, "digest": digest, "setup_script": script, "harness_manifests": repo_manifest_argv(&repo)}),
+        json!({"repo": repo, "digest": digest, "setup_script": script, "devcontainer": devcontainer, "harness_manifests": repo_manifest_argv(&repo)}),
     )
 }
 
@@ -473,7 +514,7 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
             r
         }
         "task.create" => task_create(server, ctx, p).await,
-        m if m.starts_with("sandbox.")
+        m if (m.starts_with("sandbox.") || m == "task.sync")
             && let Some(r) = crate::sandbox::api(server, ctx, m, p).await =>
         {
             r
@@ -692,7 +733,10 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let trusted = digest
         .as_ref()
         .is_some_and(|d| repo_trusted(server, &info.root, d));
-    let wants_setup = p.get("setup").and_then(Value::as_bool).unwrap_or(true) && script.exists();
+    // A container task runs its setup inside the box after trust (13 §9, sandbox_container.rs).
+    let wants_setup = p.get("setup").and_then(Value::as_bool).unwrap_or(true)
+        && script.exists()
+        && iso_req.level != vk_proto::model::IsolationLevel::Container;
     if wants_setup && !trusted {
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();

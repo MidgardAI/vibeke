@@ -4,7 +4,9 @@
 //! after a server restart and `pane.can_see_paths` for sandboxed panes (06 A11).
 //!
 //! Holders keep owning the PTY on the host; for the `sandbox` level the holder's child is
-//! `sandbox-exec -f <profile> $SHELL -l` (macOS) or the bubblewrap helper chain (Linux).
+//! `sandbox-exec -f <profile> $SHELL -l` (macOS) or the bubblewrap helper chain (Linux); for
+//! the `container` level it is `<runtime> exec -it <box> …` into the task's long-lived box
+//! (see `sandbox_container.rs`).
 
 use crate::api::{Ctx, R, err, internal, invalid, s};
 use crate::core::{Tx, ulid};
@@ -21,16 +23,22 @@ use tokio::task::JoinHandle;
 use vk_proto::model::*;
 use vk_proto::rpc::{ErrorKind, Request, Response};
 use vk_sandbox::config::{IsolationConfig, expand};
-use vk_sandbox::container::{ContainerRunner, Provider};
 use vk_sandbox::creds::{self, HarnessAuth, Projection, ProjectionInput};
 use vk_sandbox::net::{EgressPolicy, NetworkProfile};
 use vk_sandbox::proxy::{AskDecision, Asker, BoxFut, EgressEvent, EgressProxy, ProxyConfig};
 use vk_sandbox::runner::{Runner, SandboxRunner, SandboxSetup, SpawnRequest};
 
+#[path = "sandbox_container.rs"]
+pub mod container;
+
 pub const METHODS: &[(&str, bool)] = &[
     ("sandbox.status", false),
     ("sandbox.list", false),
     ("sandbox.allow", true),
+    ("sandbox.start", true),
+    ("sandbox.stop", true),
+    ("sandbox.remove", true),
+    ("task.sync", true),
 ];
 
 /// Methods a contained process may call through its broker (13 §4.1): its own adapter
@@ -65,6 +73,15 @@ pub struct IsoRequest {
     /// Port the proxy listened on (restored after a server restart when possible).
     #[serde(default)]
     pub proxy_port: Option<u16>,
+    /// Container code isolation: `clone` (default) or `worktree` (13 §6).
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Devcontainer file relative to the checkout (default `.devcontainer/devcontainer.json`).
+    #[serde(default)]
+    pub devcontainer: Option<String>,
+    /// Build the devcontainer image (explicit; still needs repo trust).
+    #[serde(default)]
+    pub build: bool,
 }
 
 impl IsoRequest {
@@ -92,30 +109,47 @@ impl IsoRequest {
             })?,
             None => cfg.network_profile(),
         };
+        let code = s(p, "code").or(s(p, "checkout"));
+        match code {
+            None | Some("worktree") => {}
+            Some("clone") if level == IsolationLevel::Container => {}
+            Some("clone") => {
+                return Err(invalid(
+                    "clone code isolation needs --isolate container (13 §6)",
+                ));
+            }
+            Some(c) => {
+                return Err(invalid(format!(
+                    "unknown code isolation {c} (worktree|clone)"
+                )));
+            }
+        }
         Ok(IsoRequest {
             level,
             network,
             yolo,
             harnesses: vec![],
             local_ports: cfg.sandbox.local_ports.clone(),
-            image: s(p, "image")
-                .map(str::to_string)
-                .or(cfg.container.image.clone()),
+            // Explicit only: repo config and devcontainers come before the user default.
+            image: s(p, "image").map(str::to_string),
             proxy_port: None,
+            code: code.map(str::to_string),
+            devcontainer: s(p, "devcontainer").map(str::to_string),
+            build: p.get("build").and_then(Value::as_bool).unwrap_or(false),
         })
     }
 }
 
 pub enum BoxRunner {
     Sandbox(Box<SandboxRunner>),
-    Container(ContainerRunner),
+    Container(Box<container::CtrBox>),
 }
 
 impl BoxRunner {
     fn runner(&self) -> &dyn Runner {
         match self {
             BoxRunner::Sandbox(r) => r.as_ref(),
-            BoxRunner::Container(r) => r,
+            BoxRunner::Container(c) => &c.runner,
         }
     }
 }
@@ -143,6 +177,10 @@ struct Inner {
     denied: HashMap<(String, String), Instant>,
     /// Test override for the host home directory.
     home: Option<PathBuf>,
+    /// Test override for the container runtime CLI (a fake script in tests).
+    runtime: Option<PathBuf>,
+    /// Container box links (egress + brokers over `exec -i`), per box key.
+    links: HashMap<String, (Arc<container::BoxLink>, JoinHandle<()>)>,
     ticking: bool,
 }
 
@@ -155,6 +193,13 @@ impl State {
     /// Use `home` instead of `$HOME` for allowlists and credential projection (tests).
     pub fn set_home(&self, home: PathBuf) {
         self.inner.lock().unwrap().home = Some(home);
+    }
+    /// Use `cli` as the container runtime (tests: a fake docker-compatible script).
+    pub fn set_container_runtime(&self, cli: PathBuf) {
+        self.inner.lock().unwrap().runtime = Some(cli);
+    }
+    pub fn container_runtime(&self) -> Option<PathBuf> {
+        self.inner.lock().unwrap().runtime.clone()
     }
     pub fn get(&self, key: &str) -> Option<Arc<TaskBox>> {
         self.inner.lock().unwrap().boxes.get(key).cloned()
@@ -274,12 +319,31 @@ pub async fn prepare_box(
     key: &str,
     task: Option<&str>,
     checkout: &Path,
+    req: IsoRequest,
+) -> Result<Arc<TaskBox>, vk_proto::rpc::RpcError> {
+    prepare_box_opts(server, key, task, checkout, req, true).await
+}
+
+/// [`prepare_box`]; `start = false` (restore after a server restart) rebuilds the context
+/// without creating or starting a container box.
+pub async fn prepare_box_opts(
+    server: &Arc<Server>,
+    key: &str,
+    task: Option<&str>,
+    checkout: &Path,
     mut req: IsoRequest,
+    start: bool,
 ) -> Result<Arc<TaskBox>, vk_proto::rpc::RpcError> {
     if let Some(b) = server.sandbox.get(key) {
         return Ok(b);
     }
     let cfg = load_cfg();
+    if req.level == IsolationLevel::Container {
+        // A repo's `.vibeke/sandbox.toml` may only narrow the network (09).
+        req.network = vk_sandbox::config::RepoSandbox::load(checkout)
+            .unwrap_or_default()
+            .narrow_network(req.network);
+    }
     let home = server.sandbox.home();
     let root = sbx_root(key);
     std::fs::create_dir_all(&root).map_err(internal)?;
@@ -344,7 +408,9 @@ pub async fn prepare_box(
                 }
             }
         }));
-        let unix = cfg!(target_os = "linux").then(|| root.join("egress.sock"));
+        // Linux sandboxes reach the proxy over a unix socket; container boxes over their link.
+        let unix = (cfg!(target_os = "linux") && req.level == IsolationLevel::Sandbox)
+            .then(|| root.join("egress.sock"));
         let p =
             match EgressProxy::start(pc.clone(), req.proxy_port.unwrap_or(0), unix.clone()).await {
                 Ok(p) => p,
@@ -356,7 +422,16 @@ pub async fn prepare_box(
         req.proxy_port = Some(p.port);
         proxy = Some(p);
     }
-    let trust = req.yolo.then_some(checkout.as_path());
+    // Container boxes see the code at their own workdir; the trust dialog is pre-accepted there.
+    let code = container::code_mode(req.code.as_deref(), &cfg, task.is_some());
+    let box_wd = PathBuf::from(container::workdir(code, &checkout, None));
+    let trust = req
+        .yolo
+        .then_some(if req.level == IsolationLevel::Container {
+            box_wd.as_path()
+        } else {
+            checkout.as_path()
+        });
     let projection =
         project_all(server, &req.harnesses, &root.join("shared"), trust).map_err(internal)?;
     let projection_names = projection.summary();
@@ -388,46 +463,45 @@ pub async fn prepare_box(
             (BoxRunner::Sandbox(Box::new(r)), prov)
         }
         IsolationLevel::Container => {
-            let provider = vk_sandbox::container::detect().ok_or_else(|| {
-                err(
-                    ErrorKind::Unsupported,
-                    "no container runtime found (Apple container, OrbStack, Docker, Podman)",
-                )
-            })?;
-            let image = req.image.clone().ok_or_else(|| {
-                invalid(
-                    "container isolation needs an image (--image or [isolation.container] image)",
-                )
-            })?;
-            let r = ContainerRunner {
-                provider: provider.clone(),
-                image,
-                network: req.network,
-                checkout: checkout.clone(),
-                mounts: vec![vk_sandbox::runner::Mount {
-                    host: paths::Paths::inbox(),
-                    target: "/vibeke/inbox".into(),
-                    read_only: true,
-                }],
-                pass_env: projection
-                    .env
-                    .iter()
-                    .filter(|(k, _)| !k.ends_with("_DIR") && k != "CODEX_HOME")
-                    .map(|(k, _)| k.clone())
-                    .collect(),
-                cpus: cfg.container.cpus.clone(),
-                memory: cfg.container.memory.clone(),
-            };
-            // Validate the network profile up front (proxy profiles are refused for now).
-            r.run_argv("vk-check", &checkout, &[])
-                .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
-            let name = match provider {
-                Provider::AppleContainer(_) => "apple-container",
-                Provider::OrbStack(_) => "orbstack",
-                Provider::Docker(_) => "docker",
-                Provider::Podman(_) => "podman",
-            };
-            (BoxRunner::Container(r), name)
+            let srv = server.clone();
+            let (k, t, co) = (key.to_string(), task.map(str::to_string), checkout.clone());
+            let (cfg2, net, image, dc, build, home2) = (
+                cfg.clone(),
+                req.network,
+                req.image.clone(),
+                req.devcontainer.clone(),
+                req.build,
+                home.clone(),
+            );
+            // Building the box may run `git` and (explicit, trusted) image builds; creating it
+            // runs the runtime CLI: keep both off the async executor.
+            let c = tokio::task::spawn_blocking(move || {
+                let c = container::build(container::BuildIn {
+                    server: &srv,
+                    key: &k,
+                    task: t.as_deref(),
+                    checkout: &co,
+                    cfg: &cfg2,
+                    network: net,
+                    image,
+                    code,
+                    devcontainer: dc,
+                    build_image: build,
+                    projection: &projection,
+                    home: &home2,
+                })?;
+                c.runner
+                    .check()
+                    .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
+                if start {
+                    container::ensure(&srv, &k, t.as_deref(), &c)?;
+                }
+                Ok::<_, vk_proto::rpc::RpcError>(c)
+            })
+            .await
+            .map_err(internal)??;
+            let prov = c.runner.provider();
+            (BoxRunner::Container(Box::new(c)), prov)
         }
         IsolationLevel::Vm => {
             return Err(err(
@@ -488,8 +562,43 @@ pub async fn prepare_box(
         );
         let _ = server.commit(&mut c, tx);
     }
+    if let BoxRunner::Container(c) = &b.runner
+        && c.b().spec.in_box_vibeke
+        && tokio::runtime::Handle::try_current().is_ok()
+    {
+        let port = b.proxy.as_ref().map(|p| p.port);
+        let (link, h) = container::start_link(c.b().clone(), port);
+        if let Some((_, old)) = server
+            .sandbox
+            .inner
+            .lock()
+            .unwrap()
+            .links
+            .insert(key.to_string(), (link, h))
+        {
+            old.abort();
+        }
+    }
     ensure_tick(server);
     Ok(b)
+}
+
+/// The link of container box `key`, if it has one.
+pub fn link(server: &Server, key: &str) -> Option<Arc<container::BoxLink>> {
+    server
+        .sandbox
+        .inner
+        .lock()
+        .unwrap()
+        .links
+        .get(key)
+        .map(|(l, _)| l.clone())
+}
+
+fn stop_link(server: &Server, key: &str) {
+    if let Some((_, h)) = server.sandbox.inner.lock().unwrap().links.remove(key) {
+        h.abort();
+    }
 }
 
 /// The box whose panes include a pane spawned in `cwd` (for workspace `ws_task`).
@@ -534,6 +643,10 @@ pub fn wrap_spawn(
     })?;
     if let Some(sock) = &prepared.broker_socket {
         start_broker(server, pane_id, sock);
+        // Container panes reach their broker through the box link.
+        if let Some(l) = link(server, &b.key) {
+            l.add_pane(pane_id);
+        }
     }
     let mut iso = b.isolation.clone();
     iso.scope = "pane".into();
@@ -998,6 +1111,7 @@ pub async fn prepare_agent(
         local_ports: cfg.sandbox.local_ports.clone(),
         image: cfg.container.image.clone(),
         proxy_port: None,
+        ..Default::default()
     };
     let key = format!("pane:{pane_id}");
     // A fresh launch replaces an earlier ad-hoc context for this pane.
@@ -1029,6 +1143,9 @@ pub async fn prepare_agent(
         .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
     if let Some(sock) = &prepared.broker_socket {
         start_broker(server, pane_id, sock);
+        if let Some(l) = link(server, &key) {
+            l.add_pane(pane_id);
+        }
     }
     let private = prepared
         .profile
@@ -1081,13 +1198,54 @@ fn set_pane_isolation(server: &Server, pane_id: &str, iso: Isolation) {
 
 // ---- lifecycle --------------------------------------------------------------------------------
 
-/// Tear down a task's context (task finish/archive): proxy, brokers, private dirs.
-pub fn teardown(server: &Server, key: &str) {
+/// Tear down a task's context (task finish/archive): proxy, brokers, private dirs. A container
+/// box first syncs its clone back; it is removed only when nothing would be lost
+/// (`[isolation.container] on_finish`), otherwise stopped and kept.
+pub fn teardown(server: &Arc<Server>, key: &str) {
+    stop_link(server, key);
     let removed = {
         let mut i = server.sandbox.inner.lock().unwrap();
         i.by_checkout.retain(|(_, k)| k != key);
         i.boxes.remove(key)
     };
+    if let Some(b) = removed.clone()
+        && matches!(b.runner, BoxRunner::Container(_))
+    {
+        let srv = server.clone();
+        let key = key.to_string();
+        let policy = if b.task.is_some() {
+            load_cfg().container.on_finish
+        } else {
+            "remove".to_string()
+        };
+        std::thread::spawn(move || {
+            let BoxRunner::Container(c) = &b.runner else {
+                return;
+            };
+            let r = container::finish(&srv, &b, c, &policy);
+            emit(
+                &srv,
+                "sandbox.destroyed",
+                json!({"task": b.task, "sandbox": key}),
+                r.clone(),
+            );
+            if r["action"] == "removed" {
+                let mut core = srv.core.lock().unwrap();
+                let mut tx = Tx::new();
+                tx.m.kv("sandbox", &key, None);
+                let _ = srv.commit(&mut core, tx);
+            } else {
+                // Kept (unsynced work or policy): stays listed for `task sync` / `sandbox remove`.
+                srv.sandbox
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .boxes
+                    .insert(key, b.clone());
+            }
+        });
+        return;
+    }
     if let Some(b) = removed {
         emit(
             server,
@@ -1206,35 +1364,53 @@ pub async fn restore(server: &Arc<Server>) {
         tx.interaction(it);
         let _ = server.commit(&mut c, tx);
     }
-    let records: Vec<(String, Value)> = server.with_core(|c| {
+    let records: Vec<(String, Value, bool)> = server.with_core(|c| {
         c.model
             .tasks
             .iter()
-            .filter(|t| t.isolation.is_contained() && t.status == "active")
+            .filter(|t| {
+                t.isolation.is_contained()
+                    && (t.status == "active" || t.isolation.level == IsolationLevel::Container)
+            })
             .filter_map(|t| {
                 c.store
                     .kv_get("sandbox", &t.id)
                     .ok()
                     .flatten()
                     .and_then(|s| serde_json::from_str(&s).ok())
-                    .map(|v| (t.id.clone(), v))
+                    .map(|v| (t.id.clone(), v, t.status == "active"))
             })
             .collect()
     });
-    for (task, rec) in records {
+    for (task, rec, active) in records {
         let Ok(req) = serde_json::from_value::<IsoRequest>(rec["request"].clone()) else {
             continue;
         };
         let checkout = PathBuf::from(rec["checkout"].as_str().unwrap_or_default());
-        if let Err(e) = prepare_box(server, &task, Some(&task), &checkout, req).await {
+        if let Err(e) = prepare_box_opts(server, &task, Some(&task), &checkout, req, false).await {
             tracing::warn!(task, error = %e.message, "sandbox restore failed");
+        }
+        if !active {
+            // A finished task's kept box: listed and syncable, but new panes never join it.
+            server
+                .sandbox
+                .inner
+                .lock()
+                .unwrap()
+                .by_checkout
+                .retain(|(_, k)| k != &task);
         }
     }
     let panes: Vec<(String, String, String)> = server.with_core(|c| {
         c.model
             .panes
             .iter()
-            .filter(|p| p.isolation.level == IsolationLevel::Sandbox && p.isolation.scope == "pane")
+            .filter(|p| {
+                matches!(
+                    p.isolation.level,
+                    IsolationLevel::Sandbox | IsolationLevel::Container
+                ) && p.isolation.scope == "pane"
+            })
             .map(|p| {
                 (
                     p.id.clone(),
@@ -1247,17 +1423,41 @@ pub async fn restore(server: &Arc<Server>) {
             .collect()
     });
     for (pane, task, cwd) in panes {
-        if let Some(b) = box_for_spawn(server, Some(&task), &cwd)
-            && let BoxRunner::Sandbox(r) = &b.runner
-            && r.setup.broker
-        {
-            start_broker(server, &pane, &r.pane_dir(&pane).join("b.sock"));
+        let Some(b) = box_for_spawn(server, Some(&task), &cwd) else {
+            continue;
+        };
+        match &b.runner {
+            BoxRunner::Sandbox(r) if r.setup.broker => {
+                start_broker(server, &pane, &r.pane_dir(&pane).join("b.sock"));
+            }
+            BoxRunner::Container(c) => {
+                let sock = c
+                    .b()
+                    .run_dir
+                    .join(format!("{}.sock", vk_sandbox::runner::short_id(&pane)));
+                start_broker(server, &pane, &sock);
+                if let Some(l) = link(server, &b.key) {
+                    l.add_pane(&pane);
+                }
+            }
+            _ => {}
         }
     }
     ensure_tick(server);
 }
 
 // ---- queries ----------------------------------------------------------------------------------
+
+/// Pasted text for `pane`: in a container pane, host inbox paths (where the client put a
+/// translated drop) become the box's read-only `/vibeke/inbox` mount (06 A11.4).
+pub fn paste_text(server: &Server, pane: &str, text: String) -> String {
+    let level = server.with_core(|c| c.pane(pane).map(|p| p.isolation.level));
+    if level == Some(IsolationLevel::Container) {
+        vk_sandbox::container::translate_inbox_paths(&text, &paths::Paths::inbox())
+    } else {
+        text
+    }
+}
 
 /// Visibility of `path` from inside `pane` (06 A11.1). `None` when the pane is not contained.
 pub fn can_see(server: &Server, pane: &str, path: &str) -> Option<bool> {
@@ -1313,25 +1513,58 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     Err(h) => json!({"level": l.as_str(), "available": false, "hint": h}),
                 })
                 .collect();
-            Ok(json!({"levels": levels, "config": load_cfg()}))
+            let cfg = load_cfg();
+            let home = server.sandbox.home();
+            let container = json!({
+                "runtime": server.sandbox.container_runtime().map(|p| p.to_string_lossy().into_owned()).or(cfg.container.runtime.clone()),
+                "docker_sandboxes": vk_sandbox::container::detect_docker_sandboxes(&home)
+                    .map(|p| json!({"plugin": p, "note": "detected only; not used as a provider yet"})),
+                "vibeke_linux": container::linux_vibeke(&cfg, &home),
+                "vibeke_linux_hint": "proxy network profiles need the static Linux vibeke binary inside the box ([isolation.container] vibeke_linux or VIBEKE_ARTIFACT_DIR)",
+            });
+            Ok(json!({"levels": levels, "config": cfg, "container": container}))
         }
         "sandbox.list" => {
-            let i = server.sandbox.inner.lock().unwrap();
-            let list: Vec<Value> = i
+            let boxes: Vec<Arc<TaskBox>> = server
+                .sandbox
+                .inner
+                .lock()
+                .unwrap()
                 .boxes
                 .values()
-                .map(|b| {
-                    json!({
-                        "sandbox": b.key, "task": b.task, "checkout": b.checkout,
-                        "level": b.isolation.level.as_str(), "provider": b.isolation.provider,
-                        "network": b.isolation.network, "yolo": b.isolation.yolo,
-                        "proxy_port": b.proxy.as_ref().map(|p| p.port),
-                        "task_allow": b.proxy.as_ref().and_then(|p| p.policy.read().ok().map(|x| x.task_allow.clone())),
-                        "credentials": b.projection_names,
-                    })
-                })
+                .cloned()
                 .collect();
+            let list = tokio::task::spawn_blocking(move || {
+                boxes
+                    .iter()
+                    .map(|b| {
+                        let mut v = json!({
+                            "sandbox": b.key, "task": b.task, "checkout": b.checkout,
+                            "level": b.isolation.level.as_str(), "provider": b.isolation.provider,
+                            "network": b.isolation.network, "yolo": b.isolation.yolo,
+                            "proxy_port": b.proxy.as_ref().map(|p| p.port),
+                            "task_allow": b.proxy.as_ref().and_then(|p| p.policy.read().ok().map(|x| x.task_allow.clone())),
+                            "credentials": b.projection_names,
+                        });
+                        if let BoxRunner::Container(c) = &b.runner {
+                            v["container"] = container::describe(c);
+                        }
+                        v
+                    })
+                    .collect::<Vec<Value>>()
+            })
+            .await
+            .unwrap_or_default();
             Ok(json!({"sandboxes": list}))
+        }
+        "sandbox.start" | "sandbox.stop" | "sandbox.remove" | "task.sync" => {
+            if ctx.pane_scope.is_some() {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    format!("{method} needs a user client"),
+                )));
+            }
+            container::api(server, method, p).await
         }
         "sandbox.allow" => {
             if ctx.pane_scope.is_some() {

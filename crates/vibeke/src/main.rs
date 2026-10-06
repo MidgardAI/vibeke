@@ -106,7 +106,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("sandbox")
         && matches!(
             args.get(1).map(String::as_str),
-            Some("exec" | "bwrap" | "inner")
+            Some("exec" | "bwrap" | "inner" | "box-init")
         )
     {
         std::process::exit(vk_sandbox::exec::main(&args[1..]));
@@ -178,6 +178,9 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         }
         Some("server") => commands::server(&g, &args[1..]).await,
         Some("bridge") => commands::bridge(&g, &args[1..]).await,
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("bridge") => {
+            remote::box_bridge(&args[2..]).await
+        }
         Some("ssh") => commands::ssh(&g, &args[1..]).await,
         Some("notify") => commands::notify(&g, &args[1..]).await,
         Some("import") => commands::import(&g, &args[1..]).await,

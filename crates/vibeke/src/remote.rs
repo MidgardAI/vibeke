@@ -35,6 +35,37 @@ pub async fn bridge(g: &Global, _args: &[String]) -> i32 {
     }
 }
 
+/// In-box end of a container box's link (13 §4/§7, `vk_remote::boxlink`):
+/// `vibeke sandbox bridge [--listen 127.0.0.1:3128] [--brokers DIR]` over stdin/stdout.
+pub async fn box_bridge(args: &[String]) -> i32 {
+    let get = |k: &str| {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let tcp = match get("--listen") {
+        Some(addr) => match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("vibeke sandbox bridge: listen {addr}: {e}");
+                return EXIT_API;
+            }
+        },
+        None => None,
+    };
+    let dir = get("--brokers")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| vk_remote::boxlink::default_broker_dir().to_path_buf());
+    match vk_remote::boxlink::box_side(tokio::io::stdin(), tokio::io::stdout(), tcp, dir).await {
+        Ok(()) => EXIT_OK,
+        Err(e) => {
+            eprintln!("vibeke sandbox bridge: {e:#}");
+            EXIT_API
+        }
+    }
+}
+
 /// `[preview] allow_remote_egress` on this (remote) machine; default true (06 B3.4).
 fn allow_remote_egress(cfg: &vk_config::Config) -> bool {
     cfg.extra

@@ -3,6 +3,7 @@
 //! (`vibeke bridge`).
 
 pub mod bootstrap;
+pub mod boxlink;
 pub mod link;
 pub mod mux;
 pub mod ssh;
