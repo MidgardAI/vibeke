@@ -54,6 +54,8 @@ Tasks:
 
 ## M2 — Safe yolo + more harnesses
 
+**Status (2026-10-06):** built: the `sandbox` level on macOS (Seatbelt, real-`sandbox-exec` tests); the Linux bubblewrap/Landlock/seccomp chain (generated and unit-tested, not yet run on Linux); the egress proxy with `none`/`harness-apis`/`package-registries`/`dev`/`open` profiles and fail-closed egress Interactions; the per-pane broker; credential projection for Claude, Codex, pi and omp; `--yolo` / `--isolate` / `--network`; and local paste translation into the inbox for sandboxed panes. `container` is groundwork: provider detection and `run` wrapping, network `none`/`open` only. Still open: `clone` + `task sync`, devcontainers, egress-enforced containers, the in-box bridge, and the harness and usage bullets below. Details: 13 §15.
+
 - Execution isolation per [13](13-sandboxes-and-vms.md): `sandbox` level (Seatbelt on macOS; bubblewrap + Landlock + seccomp on Linux), `container` level (Apple `container`, OrbStack/Docker, Podman, Docker Sandboxes), host-side egress proxy with network profiles and egress Interactions, credential projection (Claude token, Codex auth, pi/omp env), `clone` code isolation + `task sync` via host-side fetch, devcontainer support, `--yolo` / `--isolate`. Dropped/pasted path translation into sandbox/container inboxes (06 A11, local namespaces; remote follows in M3).
 - Harnesses: OpenCode, Gemini CLI, ACP-generic, custom harness manifests (`espi`, Hermes), Herdr-compatible self-report; screen detector manifests with golden corpus and nightly drift detection; signed manifest channel.
 - Turns/items/usage/rate-limit extraction from adapters and transcripts.
