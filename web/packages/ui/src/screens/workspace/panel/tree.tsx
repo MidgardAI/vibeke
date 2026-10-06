@@ -61,6 +61,12 @@ export function TreeList({
     if (focus && !items.some((i) => i.key === focus)) setFocus(null);
   }, [items, focus]);
 
+  // Back from a diff or viewer: the tree remounts; put focus on its current row if it was lost.
+  useEffect(() => {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    ref.current?.querySelector<HTMLElement>('[tabindex="0"]')?.focus({ preventScroll: true });
+  }, []);
+
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || !current) return;
     const at = items.indexOf(current);

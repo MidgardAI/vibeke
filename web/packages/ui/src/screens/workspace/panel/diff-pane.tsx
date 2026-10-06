@@ -54,6 +54,11 @@ export function DiffPane({
   const [diff, setDiff] = useState<GitDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const shown = useRef<string | null>(null);
+  const root = useRef<HTMLDivElement>(null);
+  // Opening from the tree unmounts the clicked row: keep focus inside (Escape, keys keep working).
+  useEffect(() => {
+    if (!centre && (!document.activeElement || document.activeElement === document.body)) root.current?.focus({ preventScroll: true });
+  }, []);
   const i = files.findIndex((f) => f.path === path);
   const file = files[i];
   const srcKey = src.kind === 'commit' ? `c:${src.range}` : src.kind === 'base' ? `b:${src.base}` : 'w';
@@ -87,10 +92,10 @@ export function DiffPane({
   const secret = !!(diff?.secret || file?.secret);
 
   return (
-    <div className={cx('flex min-h-0 flex-1 flex-col', centre && 'bg-bg')}>
+    <div ref={root} tabIndex={-1} className={cx('flex min-h-0 flex-1 flex-col outline-none', centre && 'bg-bg')}>
       <div className={cx('sticky top-0 z-10 flex h-9 shrink-0 items-center gap-1.5 border-b border-border bg-bg pr-1', onBack ? 'pl-1' : 'pl-3', centre && 'h-11')}>
         {onBack && (
-          <IconButton label={t.panel.backToChanges} onClick={onBack} className="size-7">
+          <IconButton label={t.back} onClick={onBack} className="size-7">
             <ArrowLeft className="size-4" />
           </IconButton>
         )}
