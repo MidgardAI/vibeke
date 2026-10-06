@@ -127,7 +127,7 @@ fn url_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b(https?)://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::(\d{1,5}))?(/[^\s"'<>`]*)?"#,
+            r#"(?i)\b(https?)://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\])(?::(\d{1,5}))?(/[^\s"'<>`]*)?"#,
         )
         .expect("url regex")
     })
@@ -247,6 +247,10 @@ mod tests {
         assert_eq!((f[1].port, f[1].scheme.as_str()), (443, "https"));
         assert!(parse_line(b"see https://example.com:8080/").is_empty());
         assert!(parse_line(b"http://localhost:99999/").is_empty());
+        // Python's http.server banner binds the IPv6 wildcard.
+        let py = parse_line(b"Serving HTTP on :: port 8119 (http://[::]:8119/) ...");
+        assert_eq!(py.len(), 1);
+        assert_eq!(py[0].host, "[::]");
         let f = parse_line(b"listening on http://0.0.0.0:8080");
         assert_eq!(f[0].port, 8080);
     }
