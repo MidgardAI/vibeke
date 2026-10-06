@@ -29,6 +29,19 @@ pub enum Operation {
     /// Coarse review-effort estimate for a task (15 §8.2, T4): a labelled estimate the user
     /// applies explicitly with `task.set effort`; never applied automatically.
     EffortEstimate,
+    /// 14 §2 / A2 semantic navigation: rank authorized candidates for a free-text query.
+    /// Resolves to existing objects the client opens; never opens or changes anything.
+    Navigate,
+    /// 14 §2 / A2 contextual decision card: explain an open interaction, cite earlier
+    /// decisions and draft an editable reply. The user's Send goes through the existing
+    /// `interaction.answer` path with its live preconditions.
+    DecisionCard,
+    /// 14 §2 / A3 possible-stall notice for a run (background, opt-in).
+    StallNotice,
+    /// 14 §2 / A3 coalesced background summary of a workspace (background, opt-in).
+    BackgroundSummary,
+    /// 14 §2 automatic task titles: an editable suggestion, never applied.
+    TaskTitle,
 }
 
 pub const ALL: &[Operation] = &[
@@ -38,6 +51,11 @@ pub const ALL: &[Operation] = &[
     Operation::Briefing,
     Operation::Handoff,
     Operation::EffortEstimate,
+    Operation::Navigate,
+    Operation::DecisionCard,
+    Operation::StallNotice,
+    Operation::BackgroundSummary,
+    Operation::TaskTitle,
 ];
 
 /// Context classes a workspace consent can grant (14 §6, §7.1).
@@ -63,7 +81,28 @@ impl Operation {
             Operation::Briefing => "briefing",
             Operation::Handoff => "handoff",
             Operation::EffortEstimate => "effort_estimate",
+            Operation::Navigate => "navigate",
+            Operation::DecisionCard => "decision_card",
+            Operation::StallNotice => "stall_notice",
+            Operation::BackgroundSummary => "background_summary",
+            Operation::TaskTitle => "task_title",
         }
+    }
+
+    /// Which profile family serves the operation by default (14 §5.3): review prose uses
+    /// the `review` profile when one exists; everything else the interactive default.
+    /// Background requests always use the `background` family (see the coordinator).
+    pub fn purpose(self) -> crate::config::Purpose {
+        match self {
+            Operation::ReviewSummary => crate::config::Purpose::Review,
+            _ => crate::config::Purpose::Interactive,
+        }
+    }
+
+    /// Operations that exist only as opt-in background features (A3): they are refused
+    /// unless `[assistant] background_enabled` and the feature's own switch are on.
+    pub fn background_only(self) -> bool {
+        matches!(self, Operation::StallNotice | Operation::BackgroundSummary)
     }
 
     /// Context classes the operation sends (before optional extras such as `screen`).
@@ -74,6 +113,11 @@ impl Operation {
             Operation::Briefing => &["structured_state"],
             Operation::Handoff => &["selected_text", "review_package"],
             Operation::EffortEstimate => &["review_package"],
+            Operation::Navigate | Operation::DecisionCard | Operation::StallNotice => {
+                &["structured_state", "selected_text"]
+            }
+            Operation::BackgroundSummary => &["structured_state"],
+            Operation::TaskTitle => &["selected_text"],
         }
     }
 
@@ -89,6 +133,17 @@ impl Operation {
             Operation::EffortEstimate => {
                 "Estimated review effort (generated estimate — not applied; set it with task.set)"
             }
+            Operation::Navigate => {
+                "Suggested matches (generated ranking — open an item to check it)"
+            }
+            Operation::DecisionCard => {
+                "Decision card (generated explanation and draft reply — not sent; check the live request first)"
+            }
+            Operation::StallNotice => "Possible stall (generated — inspect the run before acting)",
+            Operation::BackgroundSummary => {
+                "Background summary (generated — check the linked items)"
+            }
+            Operation::TaskTitle => "Suggested task title (generated — not applied)",
         }
     }
 
@@ -121,6 +176,21 @@ impl Operation {
             Operation::Handoff => {
                 "Prepare a handoff package for another agent: objective, decisions made, attempts so far, remaining work and supporting evidence. It will be reviewed and sent by the user, if at all."
             }
+            Operation::Navigate => {
+                "Rank the candidate items (listed as sources, each with a target id) by how well they match the user's query. Return only target ids that appear in the valid list, best first, with a one-line reason for each. If nothing matches, return an empty list and say so in coverage."
+            }
+            Operation::DecisionCard => {
+                "Explain why the agent is asking for this decision, citing earlier decisions or requests from the sources when they are relevant, and draft a reply the user can edit. The reply is a draft: you cannot answer the request, and you must not claim it was answered or that it is safe to approve. Name any risk the sources show."
+            }
+            Operation::StallNotice => {
+                "Decide whether the agent looks stalled (the same action failing repeatedly, or no progress toward the objective) using the recorded repetition signals and the task objective. Set stalled=false unless the sources show a clear loop. If stalled, say what is repeating and suggest what the user could inspect."
+            }
+            Operation::BackgroundSummary => {
+                "Summarize what changed in this workspace and what needs attention, most urgent first, briefly. Link each item to the target ids it is about. It will be shown passively; do not address the user directly."
+            }
+            Operation::TaskTitle => {
+                "Suggest a short, specific title (at most 80 characters) for this task from its objective or the selected request. Prefer the user's own words."
+            }
             Operation::EffortEstimate => {
                 "Estimate how much of the user's attention reviewing this task's current change needs: quick (about a minute), minutes (a few minutes) or deep (a careful review). Base it on the diff size, the files touched, failing or missing checks and criteria needing human judgment. It is a coarse estimate, not a promise; give a short rationale citing the sources."
             }
@@ -146,6 +216,103 @@ impl Operation {
             Operation::EffortEstimate => {
                 r#"{"effort": "quick"|"minutes"|"deep", "rationale": string (<=400 chars), "source_refs": [source id]}"#
             }
+            Operation::Navigate => {
+                r#"{"matches": [{"target": target id, "kind": "pane"|"run"|"task"|"interaction"|"workspace", "reason": string, "confidence": "high"|"medium"|"low", "source_refs": [source id]}], "coverage": string}"#
+            }
+            Operation::DecisionCard => {
+                r#"{"explanation": string, "earlier_decisions": [{"text": string, "source_refs": [source id]}], "reply_draft": {"decision": "allow"|"deny"|"none", "text": string}, "cautions": [string]}"#
+            }
+            Operation::StallNotice => {
+                r#"{"stalled": boolean, "summary": string, "evidence": [{"text": string, "source_refs": [source id]}], "suggestion": string}"#
+            }
+            Operation::BackgroundSummary => {
+                r#"{"items": [{"text": string, "kind": "observed"|"agent_claim"|"suggestion", "urgency": "now"|"soon"|"fyi", "targets": [target id], "source_refs": [source id]}], "coverage": string}"#
+            }
+            Operation::TaskTitle => {
+                r#"{"title": string (<=80 chars), "rationale": string (<=300 chars)}"#
+            }
+        }
+    }
+
+    /// The same reply schema as JSON Schema, for providers' native structured-output modes
+    /// (used only for a `supported` `json_schema` capability). Vibeke validates every reply
+    /// regardless (`validate`): the schema only steers the model.
+    pub fn json_schema(self) -> Value {
+        fn s() -> Value {
+            json!({"type": "string"})
+        }
+        fn list(item: Value) -> Value {
+            json!({"type": "array", "items": item})
+        }
+        fn en(v: &[&str]) -> Value {
+            json!({"type": "string", "enum": v})
+        }
+        fn obj(props: Value, required: &[&str]) -> Value {
+            json!({"type": "object", "properties": props, "required": required})
+        }
+        let refs = || list(s());
+        let cited = || obj(json!({"text": s(), "source_refs": refs()}), &["text"]);
+        match self {
+            Operation::SuggestTaskDetails => obj(
+                json!({
+                    "title": s(), "objective": s(),
+                    "constraints": list(cited()),
+                    "criteria": list(obj(json!({"text": s(), "evaluation": en(&["check", "human", "external"]), "source_refs": refs()}), &["text"])),
+                    "suggested_checks": list(obj(json!({"text": s()}), &["text"])),
+                    "stop_at": en(&["unspecified", "implementation", "draft_pr", "reviewed_pr", "merge", "verified_deployment"]),
+                    "questions": list(s()),
+                }),
+                &["title"],
+            ),
+            Operation::ReviewSummary => obj(
+                json!({
+                    "summary": s(), "changes": list(s()),
+                    "validation": list(obj(json!({"text": s(), "basis": en(&["recorded_check", "observed_command", "agent_claim", "unverified"]), "source_refs": refs()}), &["text"])),
+                    "outstanding": list(s()), "risks": list(s()),
+                }),
+                &["summary"],
+            ),
+            Operation::PaneTitle => obj(json!({"title": s()}), &["title"]),
+            Operation::Briefing | Operation::BackgroundSummary => obj(
+                json!({
+                    "items": list(obj(json!({"text": s(), "kind": en(&["observed", "agent_claim", "suggestion"]), "urgency": en(&["now", "soon", "fyi"]), "targets": refs(), "source_refs": refs()}), &["text"])),
+                    "coverage": s(),
+                }),
+                &["items"],
+            ),
+            Operation::Handoff => obj(
+                json!({
+                    "objective": s(), "decisions": list(cited()), "attempts": list(cited()),
+                    "remaining": list(s()),
+                    "evidence": list(obj(json!({"text": s(), "kind": en(&["observed", "agent_claim"]), "source_refs": refs()}), &["text"])),
+                    "open_questions": list(s()),
+                }),
+                &["objective"],
+            ),
+            Operation::EffortEstimate => obj(
+                json!({"effort": en(&["quick", "minutes", "deep"]), "rationale": s(), "source_refs": refs()}),
+                &["effort", "rationale"],
+            ),
+            Operation::Navigate => obj(
+                json!({
+                    "matches": list(obj(json!({"target": s(), "kind": en(&["pane", "run", "task", "interaction", "workspace"]), "reason": s(), "confidence": en(&["high", "medium", "low"]), "source_refs": refs()}), &["target", "reason"])),
+                    "coverage": s(),
+                }),
+                &["matches"],
+            ),
+            Operation::DecisionCard => obj(
+                json!({
+                    "explanation": s(), "earlier_decisions": list(cited()),
+                    "reply_draft": obj(json!({"decision": en(&["allow", "deny", "none"]), "text": s()}), &[]),
+                    "cautions": list(s()),
+                }),
+                &["explanation"],
+            ),
+            Operation::StallNotice => obj(
+                json!({"stalled": {"type": "boolean"}, "summary": s(), "evidence": list(cited()), "suggestion": s()}),
+                &["stalled"],
+            ),
+            Operation::TaskTitle => obj(json!({"title": s(), "rationale": s()}), &["title"]),
         }
     }
 
@@ -177,6 +344,39 @@ pub fn parse_json(text: &str) -> Result<Value> {
         return Err(bad("reply is not a JSON object"));
     }
     Ok(v)
+}
+
+/// Set each navigation match's `kind` from Vibeke's own record of the candidate (the model's
+/// guess is overwritten) and attach the `open` hint a client resolves to a live object.
+pub fn annotate_targets(
+    op: Operation,
+    out: &mut Value,
+    kinds: &std::collections::HashMap<String, String>,
+) {
+    if op != Operation::Navigate {
+        return;
+    }
+    let Some(ms) = out.get_mut("matches").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for m in ms {
+        let id = m["target"].as_str().unwrap_or("").to_string();
+        if let Some(k) = kinds.get(&id) {
+            m["kind"] = json!(k);
+        }
+        let kind = m["kind"].clone();
+        m["open"] = json!({"kind": kind, "id": id, "live": true});
+    }
+}
+
+/// The follow-up message of the one bounded repair attempt (14 §8): the original request,
+/// the rejected reply and the content-free reason it was rejected.
+pub fn repair_user_message(original_user: &str, previous_reply: &str, problem: &str) -> String {
+    let (prev, _) = clip(&sanitize(previous_reply), 4000);
+    let prev = prev.replace("</previous_reply", "<\\/previous_reply");
+    format!(
+        "{original_user}\n<previous_reply>\n{prev}\n</previous_reply>\nThe previous reply was rejected: {problem}. Reply again with exactly one JSON object that matches the schema above and cites only the given ids. Nothing else."
+    )
 }
 
 struct V<'a> {
@@ -229,6 +429,19 @@ impl V<'_> {
             out.push(r.to_string());
         }
         Ok(out)
+    }
+    /// A required single id that must belong to `set`.
+    fn one_ref(&self, v: &Value, k: &str, set: &HashSet<&str>) -> Result<String> {
+        let r = v
+            .get(k)
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid(format!("field `{k}` missing or not a string")))?;
+        if !set.contains(r) {
+            return Err(invalid(format!(
+                "field `{k}` cites an id that is not part of this request"
+            )));
+        }
+        Ok(r.to_string())
     }
     fn strings(&self, v: &Value, k: &str, max_items: usize, max_len: usize) -> Result<Vec<String>> {
         let Some(a) = v.get(k) else {
@@ -356,7 +569,7 @@ pub fn validate(
             let t: String = t.lines().next().unwrap_or("").to_string();
             out.insert("title".into(), json!(t));
         }
-        Operation::Briefing => {
+        Operation::Briefing | Operation::BackgroundSummary => {
             out.insert(
                 "items".into(),
                 json!(v.list(&raw, "items", 20, |c| Ok(json!({
@@ -373,6 +586,97 @@ pub fn validate(
             );
         }
         Operation::EffortEstimate => {}
+        Operation::Navigate => {
+            out.insert(
+                "matches".into(),
+                json!(v.list(&raw, "matches", 20, |c| Ok(json!({
+                    "target": v.one_ref(c, "target", &v.targets)?,
+                    "kind": v.one_of(c, "kind", &["pane", "run", "task", "interaction", "workspace"], "pane")?,
+                    "reason": v.text(c, "reason", 400, true)?,
+                    "confidence": v.one_of(c, "confidence", &["high", "medium", "low"], "low")?,
+                    "source_refs": v.refs(c, "source_refs", src)?,
+                })))?),
+            );
+            out.insert(
+                "coverage".into(),
+                json!(v.text(&raw, "coverage", 500, false)?),
+            );
+        }
+        Operation::DecisionCard => {
+            // Exactly one live target: the interaction the card is about.
+            let Some(interaction) = targets.first() else {
+                return Err(invalid(
+                    "a decision card needs its interaction as the target",
+                ));
+            };
+            out.insert("interaction".into(), json!(interaction));
+            out.insert(
+                "explanation".into(),
+                json!(v.text(&raw, "explanation", 1500, true)?),
+            );
+            out.insert(
+                "earlier_decisions".into(),
+                json!(v.list(&raw, "earlier_decisions", 10, |c| Ok(json!({
+                    "text": v.text(c, "text", 400, true)?,
+                    "source_refs": v.refs(c, "source_refs", src)?,
+                })))?),
+            );
+            let draft = raw.get("reply_draft").cloned().unwrap_or(Value::Null);
+            out.insert(
+                "reply_draft".into(),
+                json!({
+                    "decision": v.one_of(&draft, "decision", &["allow", "deny", "none"], "none")?,
+                    "text": v.text(&draft, "text", 1000, false)?,
+                }),
+            );
+            out.insert(
+                "cautions".into(),
+                json!(v.strings(&raw, "cautions", 10, 300)?),
+            );
+            // A draft only: the user edits it and sends it through `interaction.answer`,
+            // which re-checks the live interaction (14 §9).
+            out.insert("draft_only".into(), json!(true));
+            out.insert("revalidate_before_use".into(), json!(true));
+            out.insert(
+                "send_with".into(),
+                json!({"method": "interaction.answer", "params": {"interaction": interaction}}),
+            );
+        }
+        Operation::StallNotice => {
+            let stalled = match raw.get("stalled") {
+                Some(Value::Bool(b)) => *b,
+                _ => return Err(invalid("field `stalled` missing or not a boolean")),
+            };
+            out.insert("stalled".into(), json!(stalled));
+            out.insert(
+                "summary".into(),
+                json!(v.text(&raw, "summary", 600, stalled)?),
+            );
+            out.insert(
+                "evidence".into(),
+                json!(v.list(&raw, "evidence", 10, |c| Ok(json!({
+                    "text": v.text(c, "text", 400, true)?,
+                    "source_refs": v.refs(c, "source_refs", src)?,
+                })))?),
+            );
+            out.insert(
+                "suggestion".into(),
+                json!(v.text(&raw, "suggestion", 500, false)?),
+            );
+            out.insert("applied".into(), json!(false));
+        }
+        Operation::TaskTitle => {
+            let t = v.text(&raw, "title", 80, true)?.unwrap_or_default();
+            let t: String = t.lines().next().unwrap_or("").to_string();
+            out.insert("title".into(), json!(t));
+            out.insert(
+                "rationale".into(),
+                json!(v.text(&raw, "rationale", 300, false)?),
+            );
+            // Never applied: a user-assigned name is kept unless the user accepts this.
+            out.insert("applied".into(), json!(false));
+            out.insert("preserves_user_title".into(), json!(true));
+        }
         Operation::Handoff => {
             let cited = |k: &str| {
                 v.list(&raw, k, 20, |c| {
@@ -535,6 +839,150 @@ mod tests {
             assert!(!e.message.contains("SENTINEL"), "{}", e.message);
             assert!(!e.message.contains('\u{1b}'), "{}", e.message);
         }
+    }
+
+    #[test]
+    fn navigate_validates_targets_and_overwrites_kinds() {
+        let targets = ids(&["r1", "t1"]);
+        let reply = r#"{"matches":[{"target":"r1","kind":"task","reason":"fixing the login redirect","confidence":"high","source_refs":["s1"],"method":"pane.focus"}],"coverage":"2 candidates"}"#;
+        let mut out = validate(Operation::Navigate, reply, &ids(&["s1"]), &targets).unwrap();
+        assert!(out["matches"][0].get("method").is_none());
+        let kinds = std::collections::HashMap::from([("r1".to_string(), "run".to_string())]);
+        annotate_targets(Operation::Navigate, &mut out, &kinds);
+        assert_eq!(out["matches"][0]["kind"], "run");
+        assert_eq!(out["matches"][0]["open"]["id"], "r1");
+        for bad in [
+            r#"{"matches":[{"target":"r9","reason":"x"}]}"#,
+            r#"{"matches":[{"reason":"x"}]}"#,
+            r#"{"matches":[{"target":"r1"}]}"#,
+            r#"{"matches":[{"target":"r1","reason":"x","confidence":"certain"}]}"#,
+        ] {
+            assert!(
+                validate(Operation::Navigate, bad, &ids(&["s1"]), &targets).is_err(),
+                "{bad}"
+            );
+        }
+        let empty = validate(
+            Operation::Navigate,
+            r#"{"matches":[],"coverage":"nothing matched"}"#,
+            &[],
+            &targets,
+        )
+        .unwrap();
+        assert!(empty["matches"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn decision_card_is_an_editable_draft_bound_to_its_interaction() {
+        let reply = r#"{"explanation":"The agent wants to run a migration.","earlier_decisions":[{"text":"You allowed a dry run earlier.","source_refs":["s2"]}],"reply_draft":{"decision":"allow","text":"Yes, but only on staging.","method":"interaction.answer"},"cautions":["touches the database"],"params":{"x":1}}"#;
+        let out = validate(
+            Operation::DecisionCard,
+            reply,
+            &ids(&["s1", "s2"]),
+            &ids(&["i7"]),
+        )
+        .unwrap();
+        assert_eq!(out["interaction"], "i7");
+        assert_eq!(out["draft_only"], true);
+        assert_eq!(out["revalidate_before_use"], true);
+        assert_eq!(out["send_with"]["method"], "interaction.answer");
+        assert_eq!(out["reply_draft"]["decision"], "allow");
+        assert!(out.get("params").is_none());
+        assert!(out["reply_draft"].get("method").is_none());
+        assert!(out["label"].as_str().unwrap().contains("not sent"));
+        // A card without an interaction, or citing an invented source, never validates.
+        assert!(validate(Operation::DecisionCard, reply, &ids(&["s1", "s2"]), &[]).is_err());
+        assert!(validate(Operation::DecisionCard, reply, &ids(&["s1"]), &ids(&["i7"])).is_err());
+        // An unknown decision value is rejected, not coerced.
+        let bad = r#"{"explanation":"x","reply_draft":{"decision":"approve_all","text":"y"}}"#;
+        assert!(validate(Operation::DecisionCard, bad, &[], &ids(&["i7"])).is_err());
+    }
+
+    #[test]
+    fn stall_notice_needs_an_explicit_verdict_and_applies_nothing() {
+        let yes = r#"{"stalled":true,"summary":"npm install failed four times with the same 401","evidence":[{"text":"same exit code 1","source_refs":["s1"]}],"suggestion":"check registry authentication"}"#;
+        let out = validate(Operation::StallNotice, yes, &ids(&["s1"]), &[]).unwrap();
+        assert_eq!(out["stalled"], true);
+        assert_eq!(out["applied"], false);
+        let no = validate(Operation::StallNotice, r#"{"stalled":false}"#, &[], &[]).unwrap();
+        assert_eq!(no["stalled"], false);
+        // A stall claim without a summary, or a verdict that is not a boolean, is invalid.
+        assert!(validate(Operation::StallNotice, r#"{"stalled":true}"#, &[], &[]).is_err());
+        assert!(
+            validate(
+                Operation::StallNotice,
+                r#"{"stalled":"yes","summary":"x"}"#,
+                &[],
+                &[]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn task_title_is_a_one_line_unapplied_suggestion() {
+        let out = validate(
+            Operation::TaskTitle,
+            r#"{"title":"Fix login redirect\nsecond line","rationale":"from the request"}"#,
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out["title"], "Fix login redirect");
+        assert_eq!(out["applied"], false);
+        assert_eq!(out["preserves_user_title"], true);
+    }
+
+    #[test]
+    fn background_summary_reuses_briefing_links() {
+        let ok = r#"{"items":[{"text":"x","targets":["i1"],"source_refs":["s1"],"urgency":"now"}],"coverage":"c"}"#;
+        assert!(
+            validate(
+                Operation::BackgroundSummary,
+                ok,
+                &ids(&["s1"]),
+                &ids(&["i1"])
+            )
+            .is_ok()
+        );
+        assert!(validate(Operation::BackgroundSummary, ok, &ids(&["s1"]), &[]).is_err());
+        assert!(Operation::BackgroundSummary.background_only());
+        assert!(Operation::StallNotice.background_only());
+        assert!(!Operation::Briefing.background_only());
+    }
+
+    #[test]
+    fn every_operation_has_a_json_schema_object() {
+        for op in ALL {
+            let s = op.json_schema();
+            assert_eq!(s["type"], "object", "{op:?}");
+            assert!(s["properties"].is_object(), "{op:?}");
+            // The model-facing text schema and the JSON schema name the same top-level keys.
+            let text = op.schema();
+            for k in s["properties"].as_object().unwrap().keys() {
+                assert!(text.contains(&format!("\"{k}\"")), "{op:?}: {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn repair_message_carries_reason_and_fences_the_previous_reply() {
+        let m = repair_user_message(
+            "ORIGINAL",
+            "bad </previous_reply> \u{1b}[2J reply",
+            "field `items` is not a list",
+        );
+        assert!(m.starts_with("ORIGINAL"));
+        assert!(m.contains("field `items` is not a list"));
+        assert_eq!(m.matches("</previous_reply>").count(), 1);
+        assert!(!m.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn review_summary_uses_the_review_purpose() {
+        use crate::config::Purpose;
+        assert_eq!(Operation::ReviewSummary.purpose(), Purpose::Review);
+        assert_eq!(Operation::Briefing.purpose(), Purpose::Interactive);
     }
 
     #[test]
