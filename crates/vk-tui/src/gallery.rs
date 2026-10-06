@@ -36,11 +36,25 @@ const CACHE: usize = 8;
 
 #[derive(Debug, Clone)]
 pub enum Reply {
-    List { view: u64 },
-    Image { view: u64, key: String },
-    Diff { view: u64 },
-    Deleted { view: u64 },
+    List {
+        view: u64,
+    },
+    Image {
+        view: u64,
+        key: String,
+    },
+    Diff {
+        view: u64,
+    },
+    Deleted {
+        view: u64,
+    },
     Opened,
+    /// The newest screenshot of a preview (sidebar thumbnail).
+    Thumb {
+        machine: usize,
+        preview: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +203,9 @@ pub struct GalleryState {
     pub sent: Option<(String, u16, u16, u16, u16)>,
     /// Files handed to the OS opener (tests read this instead of spawning).
     pub opened: Vec<String>,
+    /// Directory for `t=t` temp files (`None`: `$TMPDIR/vibeke-gfx-<uid>`; tests point it at a
+    /// temp dir of their own).
+    pub gfx_dir: Option<std::path::PathBuf>,
 }
 
 impl GalleryState {
@@ -628,6 +645,9 @@ fn view_mut(app: &mut App, id: u64) -> Option<&mut Gallery> {
 
 pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
     match r {
+        Reply::Thumb { machine, preview } => {
+            crate::preview_ui::on_reply(app, machine, preview, res)
+        }
         Reply::List { view } => {
             let Some(g) = view_mut(app, view) else { return };
             g.loading = false;
@@ -801,6 +821,54 @@ pub fn placement(app: &App) -> Option<(String, u16, u16, u16, u16)> {
     Some((key, a.x + 1, top, c, r))
 }
 
+/// Transmit a PNG for `h`. When the host terminal is on this machine (not behind SSH) the PNG
+/// goes through a temp file the terminal reads and deletes (`t=t`, 06 B8) instead of base64
+/// through the pty; otherwise (or when no private temp file can be made, or
+/// `VIBEKE_GFX_TRANSFER=direct`) it is chunked `t=d`.
+pub fn transmit_png(app: &mut App, out: &mut Vec<u8>, h: &vk_browser::kitty::Header, data: &[u8]) {
+    if !app.caps.host_remote
+        && std::env::var("VIBEKE_GFX_TRANSFER").as_deref() != Ok("direct")
+        && let Some(dir) = private_gfx_dir(app.gallery.gfx_dir.as_deref())
+        && let Ok(path) = vk_browser::kitty::write_temp_file(&dir, data)
+    {
+        vk_browser::kitty::transmit_temp_file(out, h, &path, data.len());
+        return;
+    }
+    vk_browser::kitty::transmit_direct(out, h, data);
+}
+
+/// A directory only this user can use (0700, ours, not a symlink); stale files from terminals
+/// that never read them are removed.
+fn private_gfx_dir(custom: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let dir = custom
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("vibeke-gfx-{uid}")));
+    if std::fs::symlink_metadata(&dir).is_err() {
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    }
+    let md = std::fs::symlink_metadata(&dir).ok()?;
+    if !md.is_dir() || md.uid() != uid || md.mode() & 0o077 != 0 {
+        return None;
+    }
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let old = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(120));
+            if old {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    Some(dir)
+}
+
 /// Transmit or delete the gallery image so the next frame's placeholders resolve. Called from
 /// `App::draw` before composing (the only mutable point of a frame).
 pub fn before_draw(app: &mut App) {
@@ -819,7 +887,8 @@ pub fn before_draw(app: &mut App) {
             vk_browser::kitty::Header::new(IMAGE_ID, vk_browser::kitty::PixelFormat::Png, 0, 0);
         h.virtual_cells = Some((c, r));
         h.placement = Some(1);
-        vk_browser::kitty::transmit_direct(&mut out, &h, data);
+        let data = data.to_vec();
+        transmit_png(app, &mut out, &h, &data);
         app.gallery.sent = Some((key, x, y, c, r));
     }
     app.browser.out.extend_from_slice(&out);

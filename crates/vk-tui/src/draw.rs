@@ -634,6 +634,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 x += g.put_str(sx + x, y, s, st, w.saturating_sub(x));
             }
         }
+        crate::preview_ui::draw_thumbs(app, g, sx, w);
         for y in 0..rows {
             g.put_str(bx, y, "│", t.border(false), 1);
         }

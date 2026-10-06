@@ -901,3 +901,370 @@ async fn disconnected_screencast_client_releases_the_session() {
     let closed = e.events("browser.session_closed");
     assert_eq!(closed.last().unwrap().data["reason"], "idle");
 }
+
+// ---- device presets, one-shot screenshots, console errors, preview scope --------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn device_preset_emulates_and_is_recorded() {
+    let e = Env::new();
+    let a = ctx_pane("pane-a");
+    // Unknown presets are refused before anything starts, naming the known ones.
+    let err = e
+        .call(
+            &a,
+            "browser.open",
+            json!({"preview": "v1", "device": "nokia"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "invalid_params");
+    assert!(err.message.contains("iphone-15"), "{err}");
+    assert!(e.fake.lock().unwrap().is_none());
+
+    let r = e
+        .call(
+            &a,
+            "browser.open",
+            json!({"preview": "v1", "device": "iphone-15"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["device"], "iphone-15");
+    assert_eq!(r["viewport"], json!({"width": 393, "height": 852}));
+    assert_eq!(r["environment"]["device"], "iphone-15");
+    let f = e.fake();
+    let m = f.calls_of("Emulation.setDeviceMetricsOverride");
+    assert_eq!(
+        (m[0].1["width"].as_u64(), m[0].1["height"].as_u64()),
+        (Some(393), Some(852))
+    );
+    assert_eq!(m[0].1["deviceScaleFactor"], 3.0);
+    assert_eq!(m[0].1["mobile"], true);
+    assert!(
+        f.calls_of("Emulation.setUserAgentOverride")[0].1["userAgent"]
+            .as_str()
+            .unwrap()
+            .contains("iPhone")
+    );
+    assert_eq!(
+        f.calls_of("Emulation.setTouchEmulationEnabled")[0].1["enabled"],
+        true
+    );
+    let shot = e
+        .call(&a, "browser.screenshot", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    let env = &shot["meta"]["environment"];
+    assert_eq!(env["device"], "iphone-15");
+    assert_eq!(env["dpr"], 3.0);
+    assert_eq!(env["viewport"]["width"], 393);
+    assert!(
+        shot["meta"]["label"]
+            .as_str()
+            .unwrap()
+            .contains("iphone-15")
+    );
+
+    // Explicit viewport/dpr override the preset's size and ratio; desktop presets aren't mobile.
+    let r2 = e
+        .call(
+            &a,
+            "browser.open",
+            json!({"device": "desktop-1280", "viewport": "800x600", "dpr": 2}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r2["viewport"], json!({"width": 800, "height": 600}));
+    let m = f.calls_of("Emulation.setDeviceMetricsOverride");
+    assert_eq!(m[1].1["deviceScaleFactor"], 2.0);
+    assert_eq!(m[1].1["mobile"], false);
+    assert_eq!(f.calls_of("Emulation.setTouchEmulationEnabled").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_shot_screenshot_needs_no_session() {
+    let e = Env::new();
+    let a = ctx_pane("pane-a");
+    let r = e
+        .call(
+            &a,
+            "browser.screenshot",
+            json!({"preview": "v1", "device": "pixel-8", "full_page": true, "inline": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["one_shot"], true);
+    assert_eq!(r["session"], Value::Null);
+    assert_eq!(r["meta"]["environment"]["device"], "pixel-8");
+    assert_eq!(r["meta"]["preview"], "v1");
+    assert_eq!(r["meta"]["taken_by"]["kind"], "agent");
+    assert!(r["data_b64"].as_str().is_some());
+    let f = e.fake();
+    assert_eq!(
+        f.calls_of("Page.navigate")[0].1["url"],
+        "http://localhost:5173/"
+    );
+    assert_eq!(
+        f.calls_of("Page.captureScreenshot").last().unwrap().1["captureBeyondViewport"],
+        true
+    );
+    // The context is gone again.
+    assert_eq!(f.calls_of("Target.disposeBrowserContext").len(), 1);
+    let l = e.call(&a, "browser.list", json!({})).await.unwrap();
+    assert_eq!(l["sessions"].as_array().unwrap().len(), 0);
+    assert_eq!(e.events("browser.session_closed").len(), 1);
+    assert_eq!(e.events("screenshot.captured").len(), 1);
+
+    // Same destination policy as browser.open; nothing to capture is an error.
+    let err = e
+        .call(
+            &a,
+            "browser.screenshot",
+            json!({"url": "http://127.0.0.1:5432/"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "destination_denied");
+    let err = e
+        .call(
+            &a,
+            "browser.screenshot",
+            json!({"url": "file:///etc/passwd"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "scheme_not_allowed");
+    let err = e
+        .call(&a, "browser.screenshot", json!({"full_page": true}))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "invalid_params");
+    // The user can do it too.
+    let u = e
+        .call(&ctx_full(), "browser.screenshot", json!({"preview": "v1"}))
+        .await
+        .unwrap();
+    assert_eq!(u["meta"]["taken_by"]["kind"], "user");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn console_errors_become_rate_limited_redacted_events() {
+    let e = Env::new();
+    let a = ctx_pane("pane-a");
+    e.call(&a, "browser.open", json!({"preview": "v1"}))
+        .await
+        .unwrap();
+    let f = e.fake();
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    let cs = Some(sess.cdp_session.as_str());
+    // Plain logs and warnings don't count.
+    f.emitter.emit(
+        "Runtime.consoleAPICalled",
+        json!({"type": "warning", "args": [{"value": "careful"}]}),
+        cs,
+    );
+    f.emitter.emit(
+        "Runtime.exceptionThrown",
+        json!({"exceptionDetails": {"text": "Uncaught", "exception": {"description": "TypeError: x is undefined password=hunter2hunter2"}, "url": "http://localhost:5173/app.js", "lineNumber": 3}}),
+        cs,
+    );
+    for i in 0..9 {
+        f.emitter.emit(
+            "Runtime.consoleAPICalled",
+            json!({"type": "error", "args": [{"value": format!("boom {i}")}]}),
+            cs,
+        );
+    }
+    until("console entries", || {
+        sess.console.lock().unwrap().len() == 11
+    })
+    .await;
+    let evs = e.events("preview.console_error");
+    assert_eq!(
+        evs.len(),
+        crate::preview_console::BUDGET as usize,
+        "{evs:?}"
+    );
+    let first = &evs[0];
+    assert_eq!(first.subject["preview"], "v1");
+    assert_eq!(first.subject["pane"], "pane-a");
+    assert!(first.subject.get("task").is_some());
+    assert_eq!(first.data["source"], "exception");
+    let text = first.data["text"].as_str().unwrap();
+    assert!(
+        text.contains("TypeError") && !text.contains("hunter2"),
+        "{text}"
+    );
+    assert_eq!(first.data["count"], 1);
+    assert_eq!(first.data["session"], "b1");
+}
+
+fn put_task_workspace(e: &Env, ws: &str, task: &str) {
+    e.server.with_core(|c| {
+        c.model.workspaces.push(vk_proto::model::Workspace {
+            id: ws.into(),
+            handle: ws.into(),
+            name: None,
+            auto_name: ws.into(),
+            root_path: "/tmp".into(),
+            task: Some(task.into()),
+            order: 0.0,
+            branch: None,
+        });
+        for p in c.model.panes.iter_mut().filter(|p| p.id == "pane-b") {
+            p.workspace = ws.into();
+        }
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_reach_only_their_own_previews() {
+    let e = Env::new();
+    // v1 (:5173) belongs to pane-a; v2 (:6000) to pane-b, whose workspace is task T1; v3 (:6100)
+    // is the same task's, declared without a pane.
+    e.put_preview("v2", 6000);
+    e.put_preview("v3", 6100);
+    put_task_workspace(&e, "ws-t1", "T1");
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut() {
+            match p.handle.as_str() {
+                "v2" => p.pane = Some("pane-b".into()),
+                "v3" => {
+                    p.pane = None;
+                    p.task = Some("T1".into());
+                }
+                _ => {}
+            }
+        }
+    });
+    let a = ctx_pane("pane-a");
+    let b = ctx_pane("pane-b");
+
+    // Opening someone else's preview by handle or URL: foreign_preview, nothing started.
+    let err = e
+        .call(&a, "browser.open", json!({"preview": "v2"}))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "destination_denied");
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    assert!(e.fake.lock().unwrap().is_none());
+    let err = e
+        .call(&a, "browser.open", json!({"url": "http://localhost:6000/"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    // A port that is no preview at all keeps its own reason.
+    let err = e
+        .call(&a, "browser.open", json!({"url": "http://127.0.0.1:5432/"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "loopback_port_not_a_preview");
+
+    // Own preview works; navigating on to another task's preview is refused and logged.
+    e.call(&a, "browser.open", json!({"preview": "v1"}))
+        .await
+        .unwrap();
+    let err = e
+        .call(
+            &a,
+            "browser.navigate",
+            json!({"session": "b1", "url": "http://localhost:6000/x"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    let net = e
+        .call(&a, "browser.network", json!({"session": "b1"}))
+        .await
+        .unwrap();
+    assert_eq!(net["entries"][0]["blocked_by_policy"], "foreign_preview");
+    let denied = e.events("browser.request_denied");
+    assert_eq!(denied.len(), 1);
+    assert_eq!(denied[0].data["reason"], "foreign_preview");
+    // The Fetch layer says the same for IP-literal subresources.
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    assert_eq!(
+        fetch_decision(
+            &e.server,
+            sess.scope.as_ref(),
+            "http://127.0.0.1:6000/a.js",
+            "Script",
+            false
+        )
+        .await,
+        Some("foreign_preview")
+    );
+    assert_eq!(
+        fetch_decision(
+            &e.server,
+            sess.scope.as_ref(),
+            "http://127.0.0.1:5173/a.js",
+            "Script",
+            false
+        )
+        .await,
+        None
+    );
+
+    // The task's previews are reachable from the task's pane, with or without a pane of their own.
+    assert!(
+        e.call(&b, "browser.open", json!({"preview": "v2"}))
+            .await
+            .is_ok()
+    );
+    assert!(
+        e.call(&b, "browser.open", json!({"preview": "v3"}))
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        e.call(&b, "browser.open", json!({"preview": "v1"}))
+            .await
+            .unwrap_err()
+            .data
+            .details["reason"],
+        "foreign_preview"
+    );
+    // Full-scope callers are unchanged.
+    assert!(
+        e.call(&ctx_full(), "browser.open", json!({"preview": "v2"}))
+            .await
+            .is_ok()
+    );
+
+    // `[browser] session_previews = "machine"` restores machine-wide reach.
+    let mut cfg = AgentBrowserConfig::default();
+    assert!(cfg.own_previews_only());
+    cfg.session_previews = "machine".into();
+    *e.server.agent_browser.cfg_cache.lock().unwrap() = Some((Instant::now(), cfg));
+    assert!(
+        e.call(&a, "browser.open", json!({"preview": "v2"}))
+            .await
+            .is_ok()
+    );
+    let l = e.call(&a, "browser.list", json!({})).await.unwrap();
+    assert!(
+        l["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["previews"] == "machine")
+    );
+}
+
+#[test]
+fn browser_config_section_parses() {
+    let parse = |src: &str| {
+        let (c, _) = vk_config::Config::parse(src, std::path::Path::new("t.toml")).unwrap();
+        AgentBrowserConfig::from_config(&c)
+    };
+    assert_eq!(
+        parse("[browser]\nsession_previews = \"machine\"\n").session_previews,
+        "machine"
+    );
+    assert_eq!(
+        parse("[browser]\nsession_previews = \"bogus\"\n").session_previews,
+        "own"
+    );
+    assert!(parse("").own_previews_only());
+}

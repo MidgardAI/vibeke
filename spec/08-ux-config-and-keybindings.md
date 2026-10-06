@@ -329,7 +329,7 @@ Vibeke additions beyond the base set are marked ✚.
 
 Action names: the copy-mode binding is `enter_copy_mode` and the picker is `workspace_picker`, because `[keys.copy_mode]`/`[keys.navigate]` are tables (Goal 01 deviation).
 
-**Previews and browser panes (06 B2/B3.2; Goal 03 Stage 2).** `prefix+o` (`open_notification_target`) keeps its usual meaning while a toast with a target is showing; otherwise it opens the focused pane's preview as a browser pane next to it (a window when the host has no graphics); `open_preview` is the same action without the toast rule. **Preview chips and sidebar rows (as built):** left click opens the preview as a pane; right click targets it for the palette (filter `preview_`): `preview_window`, `preview_proxy` (opens the one-time proxy URL in your normal browser, only on that action), `preview_mirror` / `preview_unmirror` for remote previews. A mirrored preview shows the warning badge `⇄ :5173 mirrored` (bold yellow, replacing the port/label) in its row and chip until unmirrored (06 B4). While a **browser pane is focused**, a browser table is consulted before the global one; it overrides keys that mean nothing in a browser pane (copy mode, scrollback editing, sync input). Rebind with `[keys] browser_back = "…"` etc.
+**Previews and browser panes (06 B2/B3.2; Goal 03 Stage 2).** A preview whose page threw an uncaught exception or called `console.error` (in an agent's headless session or in a browser pane on it) shows a red ` !N` after its label on the tab-bar chip and the sidebar row until it is opened (`preview.console_error`, 06 B5). With `ui.sidebar.preview_thumbnails = true` and kitty graphics, local previews' rows also show a tiny 4x1-cell thumbnail of their newest screenshot (06 B8). `prefix+o` (`open_notification_target`) keeps its meaning while a toast with a target is showing; otherwise it opens the focused pane's preview as a browser pane next to it (a window when the host has no graphics); `open_preview` is the same action without the toast rule. **Preview chips and sidebar rows (as built):** left click opens the preview as a pane; right click targets it for the palette (filter `preview_`): `preview_window`, `preview_proxy` (opens the one-time proxy URL in your normal browser, only on that action), `preview_mirror` / `preview_unmirror` for remote previews. A mirrored preview shows the warning badge `⇄ :5173 mirrored` (bold yellow, replacing the port/label) in its row and chip until unmirrored (06 B4). While a **browser pane is focused**, a browser table is consulted before the global one; it overrides keys that mean nothing in a browser pane (copy mode, scrollback editing, sync input). Rebind with `[keys] browser_back = "…"` etc.
 
 | Action (browser pane focused) | Default | Overrides |
 |---|---|---|
@@ -437,6 +437,7 @@ auto_width        = true
 collapsed         = false
 show_shell_panes  = false
 nest_tasks        = true
+preview_thumbnails = false             # tiny latest-screenshot thumbnail per preview row (kitty graphics; 06 B8)
 show_state_source = "inferred-only"   # inferred-only | always | never
 [ui.sidebar.isolation_glyphs]
 host = ""

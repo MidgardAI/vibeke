@@ -396,6 +396,8 @@ pub struct App {
     pub parity: crate::parity::State,
     /// Screenshot gallery, 📷 counters and the gallery's kitty image.
     pub gallery: crate::gallery::GalleryState,
+    /// `!N` console-error badges and sidebar preview thumbnails.
+    pub previews_ui: crate::preview_ui::State,
     pub desk: Option<crate::desk::Desk>,
     pub drafts: Option<crate::drafts::DraftsView>,
     pub assist: Option<crate::assist::Flow>,
@@ -751,6 +753,7 @@ impl App {
             nav: Default::default(),
             parity: Default::default(),
             gallery: Default::default(),
+            previews_ui: Default::default(),
             desk: None,
             drafts: None,
             assist: None,
@@ -2595,6 +2598,7 @@ impl App {
         self.send_view_hints(false);
         crate::browser::update_views(self);
         crate::gallery::before_draw(self);
+        crate::preview_ui::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);
         let (cols, rows) = self.size;

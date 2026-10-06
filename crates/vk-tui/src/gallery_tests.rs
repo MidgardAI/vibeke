@@ -254,6 +254,7 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     app.caps.kitty_graphics = true;
     app.caps.cell_w = 10;
     app.caps.cell_h = 20;
+    app.gallery.gfx_dir = Some(dir.path().join("gfx"));
     // Local machine: the file is read directly; nothing is fetched.
     open_list(&mut app, &mut rxs[0]);
     if let Some(g) = &mut app.gallery.view {
@@ -266,6 +267,8 @@ fn kitty_local_reads_file_remote_waits_for_v() {
     let out = String::from_utf8_lossy(&app.browser.out).to_string();
     assert!(out.contains(&format!("a=T,i={IMAGE_ID},f=100")), "{out}");
     assert!(out.contains("U=1"), "{out}");
+    // The host terminal is local: the PNG goes through a temp file (`t=t`), not base64.
+    assert!(out.contains("t=t"), "{out}");
     // Placeholders for the image are drawn in the grid.
     let s = screen(&app);
     assert!(s.contains('\u{10EEEE}'));
@@ -306,4 +309,65 @@ fn fit_keeps_aspect() {
     assert_eq!(fit_cells(&app, 100, 50, 40, 40), (40, 10));
     assert_eq!(png_size(&tiny_png()), Some((100, 50)));
     assert_eq!(png_size(b"nope"), None);
+}
+
+#[test]
+fn png_goes_through_a_private_temp_file_unless_ssh() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let gfx = dir.path().join("gfx");
+    let png = tiny_png();
+    let (mut app, _rxs) = fleet();
+    app.caps.kitty_graphics = true;
+    app.gallery.gfx_dir = Some(gfx.clone());
+    let h = vk_browser::kitty::Header::new(IMAGE_ID, vk_browser::kitty::PixelFormat::Png, 0, 0);
+    // Local: `t=t` with the path of a file kitty will accept (and delete) — 0700 dir, the
+    // `tty-graphics-protocol` marker in the name, our bytes inside.
+    let mut out = Vec::new();
+    transmit_png(&mut app, &mut out, &h, &png);
+    let o = String::from_utf8_lossy(&out).to_string();
+    assert!(o.starts_with("\x1b_Ga=T,i="), "{o}");
+    assert!(o.contains("t=t") && !o.contains("t=d"), "{o}");
+    assert_eq!(
+        std::fs::metadata(&gfx).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let files: Vec<_> = std::fs::read_dir(&gfx).unwrap().flatten().collect();
+    assert_eq!(files.len(), 1);
+    let name = files[0].file_name().to_string_lossy().into_owned();
+    assert!(name.contains("tty-graphics-protocol"), "{name}");
+    assert_eq!(std::fs::read(files[0].path()).unwrap(), png);
+    // The payload is that path (base64), not the image.
+    let payload = o.split(';').nth(1).unwrap().trim_end_matches("\x1b\\");
+    let path = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(path, files[0].path().to_string_lossy());
+    // Over ssh the terminal can't read this machine's files: chunked direct transmission.
+    app.caps.host_remote = true;
+    let mut out = Vec::new();
+    transmit_png(&mut app, &mut out, &h, &png);
+    let o = String::from_utf8_lossy(&out).to_string();
+    assert!(o.contains("t=d") && !o.contains("t=t"), "{o}");
+    assert_eq!(std::fs::read_dir(&gfx).unwrap().count(), 1, "no new file");
+    // A directory that isn't private (or isn't ours) is refused: direct again.
+    app.caps.host_remote = false;
+    std::fs::set_permissions(&gfx, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut out = Vec::new();
+    transmit_png(&mut app, &mut out, &h, &png);
+    assert!(String::from_utf8_lossy(&out).contains("t=d"));
+    // A symlink in place of the directory is refused too.
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    app.gallery.gfx_dir = Some(link);
+    let mut out = Vec::new();
+    transmit_png(&mut app, &mut out, &h, &png);
+    assert!(String::from_utf8_lossy(&out).contains("t=d"));
+    assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
 }

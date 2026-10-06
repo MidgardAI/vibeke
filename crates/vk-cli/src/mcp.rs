@@ -108,7 +108,7 @@ pub fn tools() -> Vec<Value> {
                "annotations": {"readOnlyHint": true}}),
         json!({"name": "browser_open", "title": "Open a browser session",
                "description": "Open an isolated headless browser session (fresh cookies) on this machine, optionally loading a preview (handle like \"v1\") or a URL. Only this machine's declared previews (and configured allowed hosts) are reachable; other loopback ports, private and metadata addresses are refused. Returns the session id.",
-               "inputSchema": obj(json!({"preview": {"type": "string"}, "url": {"type": "string"}, "viewport": {"type": "string", "description": "WxH in CSS px, e.g. 390x844"}, "color_scheme": {"type": "string", "enum": ["light", "dark"]}}), &[])}),
+               "inputSchema": obj(json!({"preview": {"type": "string"}, "url": {"type": "string"}, "viewport": {"type": "string", "description": "WxH in CSS px, e.g. 390x844"}, "device": {"type": "string", "description": "Device preset: iphone-15, pixel-8, ipad, desktop-1280, desktop-1440, desktop-1920 (viewport, pixel ratio, touch, user agent). An explicit viewport overrides its size."}, "color_scheme": {"type": "string", "enum": ["light", "dark"]}}), &[])}),
         json!({"name": "browser_navigate", "title": "Navigate",
                "description": "Load a URL or a path (\"/settings\", relative to the current origin) and wait for the load event.",
                "inputSchema": obj(json!({"session": s(), "url": {"type": "string"}}), &["session", "url"])}),
@@ -128,8 +128,8 @@ pub fn tools() -> Vec<Value> {
                "description": "Evaluate a JavaScript expression in the page and return its JSON value (size-limited). Requires the browser.script capability (preview.browser_script = true).",
                "inputSchema": obj(json!({"session": s(), "expression": {"type": "string"}}), &["session", "expression"])}),
         json!({"name": "browser_screenshot", "title": "Screenshot",
-               "description": "Take a PNG screenshot (viewport, full page, or one element). Returns the image plus metadata: blob id, path on this machine, environment (headless, machine).",
-               "inputSchema": obj(json!({"session": s(), "full_page": {"type": "boolean"}, "selector": {"type": "string"}}), &["session"])}),
+               "description": "Take a PNG screenshot (viewport, full page, or one element). Pass `session` for an open session, or `url` / `preview` (with optional `device`, `viewport`) for a one-shot capture in a fresh context that is closed again. Returns the image plus metadata: blob id, path on this machine, environment (headless, machine, device).",
+               "inputSchema": obj(json!({"session": s(), "url": {"type": "string", "description": "One-shot: page to capture (same destination rules as browser_open)."}, "preview": {"type": "string", "description": "One-shot: preview handle such as \"v1\"."}, "device": {"type": "string", "description": "One-shot: device preset, e.g. iphone-15."}, "viewport": {"type": "string", "description": "One-shot: WxH in CSS px."}, "full_page": {"type": "boolean"}, "selector": {"type": "string"}}), &[])}),
         json!({"name": "browser_snapshot", "title": "Page snapshot",
                "description": "A text snapshot of the page: the accessibility tree (default, best for finding things to click), visible text, or HTML.",
                "inputSchema": obj(json!({"session": s(), "format": {"type": "string", "enum": ["a11y", "text", "html"]}, "selector": {"type": "string"}}), &["session"]),
@@ -550,5 +550,39 @@ mod tests {
             .unwrap();
         assert_eq!(v["session"], "b1");
         assert_eq!(*connects.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn device_and_one_shot_screenshot_tools() {
+        let tools = tools();
+        let get = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+        let open = get("browser_open");
+        assert!(open["inputSchema"]["properties"]["device"].is_object());
+        let shot = get("browser_screenshot");
+        let props = &shot["inputSchema"]["properties"];
+        for k in ["url", "preview", "device", "viewport", "session"] {
+            assert!(props[k].is_object(), "{k}");
+        }
+        // `session` is optional now: a URL or preview alone is a one-shot capture.
+        assert!(
+            shot["inputSchema"]
+                .get("required")
+                .is_none_or(|r| r.as_array().is_some_and(|a| a.is_empty()))
+        );
+        let (m, a) = map_tool(
+            "browser_screenshot",
+            &json!({"preview": "v1", "device": "iphone-15", "full_page": true}),
+        )
+        .unwrap();
+        assert_eq!(m, "browser.screenshot");
+        assert_eq!(
+            (
+                a["preview"].as_str(),
+                a["device"].as_str(),
+                a["inline"].as_bool()
+            ),
+            (Some("v1"), Some("iphone-15"), Some(true))
+        );
+        assert!(a.get("session").is_none());
     }
 }

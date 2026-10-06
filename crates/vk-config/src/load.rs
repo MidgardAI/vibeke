@@ -100,6 +100,7 @@ pub const EXTERNAL_SECTIONS: &[&str] = &[
     "collision",
     "isolation",
     "preview",
+    "browser",
     "screenshots",
     "security",
     "plugins",

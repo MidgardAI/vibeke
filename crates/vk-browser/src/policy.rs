@@ -299,6 +299,8 @@ pub enum Reason {
     Scheme,
     Unresolvable,
     BadTarget,
+    /// A loopback port of a preview that belongs to another task (`[browser] session_previews = "own"`).
+    ForeignPreview,
 }
 
 impl Reason {
@@ -317,6 +319,7 @@ impl Reason {
             Reason::Scheme => "scheme_not_allowed",
             Reason::Unresolvable => "unresolvable",
             Reason::BadTarget => "bad_target",
+            Reason::ForeignPreview => "foreign_preview",
         }
     }
 }
@@ -353,6 +356,10 @@ impl Decision {
 pub struct Policy {
     /// Loopback ports that belong to this machine's declared previews.
     pub preview_ports: BTreeSet<u16>,
+    /// Loopback ports of this machine's previews that this policy refuses *as someone else's*
+    /// (denied with `foreign_preview` instead of `loopback_port_not_a_preview`; an explicit
+    /// allow rule still wins). Empty for machine-wide sessions.
+    pub foreign_ports: BTreeSet<u16>,
     pub allow: Vec<AllowRule>,
     pub external: External,
 }
@@ -373,6 +380,9 @@ impl Policy {
             IpClass::Reserved => Decision::deny(Reason::Reserved, Some(class)),
             IpClass::Loopback | IpClass::LinkLocal | IpClass::Private if ip_rule || host_rule => {
                 Decision::allow(Reason::AllowListed, class)
+            }
+            IpClass::Loopback if self.foreign_ports.contains(&port) => {
+                Decision::deny(Reason::ForeignPreview, Some(class))
             }
             IpClass::Loopback => Decision::deny(Reason::LoopbackPort, Some(class)),
             IpClass::LinkLocal => Decision::deny(Reason::LinkLocal, Some(class)),
@@ -702,6 +712,24 @@ mod tests {
         );
         p.external = External::Allow;
         assert!(p.decide("example.com", 443, &pubip, Kind::Navigation).allow);
+    }
+
+    #[test]
+    fn foreign_previews_are_named_and_allow_rules_still_win() {
+        let mut p = policy(&[3000]);
+        p.foreign_ports = [4000u16].into();
+        let lo = [ip("127.0.0.1")];
+        assert!(p.decide("localhost", 3000, &lo, Kind::Navigation).allow);
+        let d = p.decide("localhost", 4000, &lo, Kind::Navigation);
+        assert!(!d.allow);
+        assert_eq!(d.reason.as_str(), "foreign_preview");
+        // Not a preview at all keeps its own reason.
+        assert_eq!(
+            p.decide("localhost", 5432, &lo, Kind::Navigation).reason,
+            Reason::LoopbackPort
+        );
+        p.allow = vec![AllowRule::parse("127.0.0.1:4000").unwrap()];
+        assert!(p.decide("localhost", 4000, &lo, Kind::Navigation).allow);
     }
 
     #[test]

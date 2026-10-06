@@ -131,7 +131,7 @@ Agents run as the user and can type anything into their own shell, including `vi
 | `agent.start/spawn` | ✔ (rate-limited, depth-limited) | |
 | `task.create`, `worktree.create` | ✔ | worktree removal of non-descendant tasks ✘ |
 | `interaction.list/get` | ✔ (workspace) | answering ✘ (§5.1) |
-| `preview.*`, `browser.open/navigate/click/type/press/wait/screenshot/snapshot/console/network/dom/close/list` | ✔ (own machine's previews; own sessions only) | `browser.eval` ✘ unless `browser.script` granted (as built: `preview.browser_script = true`); `browser.install`, `take_over/release`, screencast ✘ |
+| `preview.*`, `browser.open/navigate/click/type/press/wait/screenshot/snapshot/console/network/dom/close/list` | ✔ (own sessions only; previews of the pane's own task only, `[browser] session_previews = "own"` default — other previews are denied `foreign_preview`, 06 B5; `device` presets and one-shot screenshots obey the same destination policy) | `browser.eval` ✘ unless `browser.script` granted (as built: `preview.browser_script = true`); `browser.install`, `take_over/release`, screencast ✘ |
 | `image.show`, `notification.send` | ✔ | notifications from agents are labelled with the agent name, rate-limited 6/min |
 | `desk.search/sessions/context`, `draft.create/update/get/list/reorder/delete/combine/check`, `notes.get/set` | ✔ (own workspace only) | desk results only for sessions whose run was in the caller's workspace; opted-in transcript roots are invisible to panes; `draft.send/reconcile`, `desk.open/resume/forget/index/status` ✘ |
 | `events.subscribe` | ✔ (workspace subjects) | |

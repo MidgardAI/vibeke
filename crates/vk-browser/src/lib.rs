@@ -21,6 +21,8 @@
 //! - [`diff`]: visual diff of two screenshots (Stage 4, 06 B6).
 
 pub mod cdp;
+/// Device presets (`--device iphone-15`): viewport, DPR, mobile, user agent.
+pub mod devices;
 pub mod diff;
 pub mod fake;
 /// Fake Chromium speaking CDP over the pipe (browser-pane tests, `vibeke debug fake-chromium`).
