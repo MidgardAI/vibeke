@@ -679,10 +679,12 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
     let mut c = server.core.lock().unwrap();
     if let Some(r) = c.run_for_pane(pane).cloned() {
         if r.harness == h.id() {
-            if r.integration != "hooks" || r.health != AdapterHealth::Healthy {
+            // A structured transport proves health, but never lifts version gating (04 §12.3).
+            let want = if r.health == AdapterHealth::UnvalidatedVersion { AdapterHealth::UnvalidatedVersion } else { AdapterHealth::Healthy };
+            if r.integration != "hooks" || r.health != want {
                 let mut r2 = r.clone();
                 r2.integration = "hooks".into();
-                r2.health = AdapterHealth::Healthy;
+                r2.health = want;
                 let mut tx = Tx::new();
                 tx.event(
                     "adapter.health_changed",
@@ -1001,16 +1003,11 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 1.0,
                 None,
             );
-            let prompt = p
-                .get("prompt")
-                .and_then(Value::as_str)
-                .map(|s| s.chars().take(200).collect::<String>());
+            // Events carry metadata only (15 §10.3, 09): never prompt text, which may hold secrets.
+            let prompt = p.get("prompt").and_then(Value::as_str).unwrap_or("");
+            let meta = json!({"prompt_bytes": prompt.len(), "prompt_digest": blake3::hash(prompt.as_bytes()).to_hex()[..16].to_string()});
             update_run(server, &run.id, |r, tx| {
-                tx.event(
-                    "agent.turn_started",
-                    json!({"run": r.id, "pane": r.pane}),
-                    json!({"prompt_preview": prompt}),
-                );
+                tx.event("agent.turn_started", json!({"run": r.id, "pane": r.pane}), meta.clone());
             });
         }
         "PreToolUse" => {
