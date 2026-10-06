@@ -18,7 +18,7 @@ use vk_sandbox::container::{
     ContainerBox, ContainerRunner, Limits, Provider,
 };
 use vk_sandbox::creds::Projection;
-use vk_sandbox::devcontainer::{self, DevContainer, MountKind};
+use vk_sandbox::devcontainer::{self, DevContainer};
 use vk_sandbox::net::NetworkProfile;
 use vk_tasks::sync::{self, BoxRemote, SyncOutcome, SyncStatus};
 
@@ -140,9 +140,12 @@ fn mkdir_private(p: &Path) -> std::io::Result<()> {
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
+    // Hardened when the checkout is box-writable (worktree mode, restored boxes).
+    let safety = vk_tasks::safety_args(dir).ok()?;
     let o = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
+        .args(safety)
         .args(args)
         .stderr(std::process::Stdio::null())
         .output()
@@ -167,6 +170,8 @@ pub struct BuildIn<'a> {
     pub build_image: bool,
     pub projection: &'a Projection,
     pub home: &'a Path,
+    /// Git-executed files inside the checkout (worktree mode mounts them read-only).
+    pub protected: &'a [PathBuf],
 }
 
 /// Assemble the box (pure-ish: reads repo files and config, runs `git rev-parse`; never starts
@@ -185,6 +190,7 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
         build_image,
         projection,
         home,
+        protected,
     } = i;
     let unsupported = |m: String| err(ErrorKind::Unsupported, m);
     let override_rt = server.sandbox.container_runtime();
@@ -344,8 +350,31 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
             target: wd.clone(),
             read_only: false,
         });
+        // Host git trusts `<checkout>/.git`: never writable from the box (13 §6). A regular
+        // checkout's `.git` dir and a linked worktree's `.git` file are both re-mounted
+        // read-only on top (a mount point can't be replaced or renamed), as is every file
+        // host git would execute or read as config from inside the checkout.
+        let dot = checkout.join(".git");
+        if std::fs::symlink_metadata(&dot).is_ok() {
+            mounts.push(BoxMount::Bind {
+                host: dot.clone(),
+                target: Path::new(&wd).join(".git").to_string_lossy().into_owned(),
+                read_only: true,
+            });
+        }
+        for p in protected {
+            if p.exists()
+                && let Ok(rel) = p.strip_prefix(checkout)
+            {
+                mounts.push(BoxMount::Bind {
+                    host: p.clone(),
+                    target: Path::new(&wd).join(rel).to_string_lossy().into_owned(),
+                    read_only: true,
+                });
+            }
+        }
         warnings.push(
-            "worktree mode: the host checkout is bind-mounted; its .git file points at the host repo, which is not mounted, so git does not work inside the box".into(),
+            "worktree mode: the host checkout is bind-mounted with its .git read-only; a linked worktree's .git file points at the host repo, which is not mounted, so git does not work inside the box".into(),
         );
     }
     let bin = linux_vibeke(cfg, home);
@@ -378,43 +407,41 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
             None => warnings.push(format!("unknown cache volume {c}")),
         }
     }
-    let canon_checkout = checkout
-        .canonicalize()
-        .unwrap_or_else(|_| checkout.to_path_buf());
     if let Some(d) = &dc {
-        for m in &d.mounts {
-            match m.kind {
-                MountKind::Volume => mounts.push(BoxMount::Volume {
-                    name: m.source.clone(),
-                    target: m.target.clone(),
-                }),
-                MountKind::Tmpfs => mounts.push(BoxMount::Tmpfs {
-                    target: m.target.clone(),
-                }),
-                MountKind::Bind => {
-                    let src = Path::new(&m.source)
-                        .canonicalize()
-                        .unwrap_or_else(|_| PathBuf::from(&m.source));
-                    if dc_trusted && code == "worktree" && src.starts_with(&canon_checkout) {
-                        mounts.push(BoxMount::Bind {
-                            host: src,
-                            target: m.target.clone(),
-                            read_only: m.read_only,
-                        });
-                    } else {
-                        warnings.push(format!(
-                            "devcontainer bind mount {} → {} ignored (only sources inside the checkout of a trusted repo, worktree mode)",
-                            m.source, m.target
-                        ));
-                    }
-                }
-            }
-        }
+        // Repo-controlled: plain per-task volume names, binds only from inside a trusted
+        // checkout in worktree mode, never sockets or a writable view of `.git` (13 §9).
+        let ns = format!("vk-{}", vk_sandbox::runner::short_id(key));
+        let (m, w) = devcontainer::police_mounts(
+            &d.mounts,
+            &devcontainer::MountPolicy {
+                checkout,
+                trusted: dc_trusted,
+                worktree: code == "worktree",
+                namespace: &ns,
+                protected,
+            },
+        );
+        mounts.extend(m);
+        warnings.extend(w);
         env.extend(literal_env(&d.container_env, &mut warnings));
     }
     // Credentials: path-valued projection env is rewritten to the box mount; everything else is
     // a secret passed by name per exec (13 §8).
     let creds_prefix = creds.to_string_lossy().into_owned();
+    // The projected homes are writable (sessions, caches); the credential files in them are
+    // re-mounted read-only on top, so the box can neither modify nor replace them.
+    for f in &projection.read_only_files {
+        if let Ok(rel) = f.strip_prefix(&creds) {
+            mounts.push(BoxMount::Bind {
+                host: f.clone(),
+                target: Path::new(BOX_CREDS)
+                    .join(rel)
+                    .to_string_lossy()
+                    .into_owned(),
+                read_only: true,
+            });
+        }
+    }
     let mut exec_env = Vec::new();
     let mut secrets = Vec::new();
     for (k, v) in &projection.env {
@@ -588,11 +615,13 @@ fn remote_for(c: &CtrBox, cl: &CloneInfo) -> (BoxRemote, bool) {
                 url: c.b().spec.workdir.clone(),
                 upload_pack: c.b().git_service("upload-pack"),
                 receive_pack: c.b().git_service("receive-pack"),
+                local: None,
             },
             true,
         )
     } else {
-        // Stopped box: the same repo on the host, with every repo-controlled hook disabled.
+        // Stopped box: the same repo on the host. Pulls run a hardened `upload-pack`; pushes
+        // only write the side ref (no `receive-pack` on the host, `vk_tasks::sync`).
         (BoxRemote::local(&cl.dir), false)
     }
 }
@@ -635,8 +664,11 @@ pub fn sync_task(c: &CtrBox, direction: &str, force: bool) -> Result<Vec<SyncOut
     Ok(out)
 }
 
-/// What happened to a box at task end (blocking): pull unsynced work first; remove only when
-/// the box's branch is fully on the host, else stop and keep it.
+/// What happened to a box at task end (blocking): pull unsynced work first, then **stop** the
+/// box (so nothing can write while it is checked) and inspect its repo from the host
+/// ([`sync::box_leftovers`]: index, worktree, untracked files, other branches, detached HEAD,
+/// stashes, commits made after the pull). Remove only when everything is on the host, else
+/// keep it stopped.
 pub fn finish(server: &Server, tb: &TaskBox, c: &CtrBox, policy: &str) -> Value {
     let mut synced = Value::Null;
     let mut safe = c.clone.is_none();
@@ -652,22 +684,37 @@ pub fn finish(server: &Server, tb: &TaskBox, c: &CtrBox, policy: &str) -> Value 
             Err(e) => synced = json!({"error": e.message}),
         }
     }
+    let mut leftovers: Vec<String> = Vec::new();
+    let mut res = Ok(());
     let action = match policy {
         "keep" => "kept",
-        "stop" => "stopped",
-        _ if !safe => "stopped",
-        _ => "removed",
-    };
-    let res = match action {
-        "removed" => c.b().remove(),
-        "stopped" => c.b().stop(),
-        _ => Ok(()),
+        "stop" => {
+            res = c.b().stop();
+            "stopped"
+        }
+        _ => {
+            // Stop first: writes racing the check are impossible once the box is down.
+            res = c.b().stop();
+            if safe
+                && res.is_ok()
+                && let Some(cl) = &c.clone
+            {
+                leftovers = sync::box_leftovers(&cl.dir, &cl.repo, &cl.branch);
+                safe = leftovers.is_empty();
+            }
+            if safe && res.is_ok() {
+                res = c.b().remove();
+                "removed"
+            } else {
+                "stopped"
+            }
+        }
     };
     if action == "removed" && res.is_ok() {
         let _ = std::fs::remove_dir_all(&c.root);
         let _ = std::fs::remove_dir_all(&c.runner.b.run_dir);
     }
-    json!({"container": c.b().spec.name, "action": action, "sync": synced, "error": res.err().map(|e| e.to_string()), "unsynced_kept": action != "removed" && !safe})
+    json!({"container": c.b().spec.name, "action": action, "sync": synced, "leftovers": leftovers, "error": res.err().map(|e| e.to_string()), "unsynced_kept": action != "removed" && !safe})
 }
 
 pub fn record_sync(server: &Server, tb: &TaskBox, o: &[SyncOutcome]) {

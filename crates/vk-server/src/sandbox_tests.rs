@@ -240,7 +240,10 @@ async fn egress_interaction_allow_for_task_and_deny() {
     assert_eq!(it.pane, pane);
     assert_eq!(it.kind, InteractionKind::Approval);
     assert!(it.title.contains("npmjs.org:443"));
-    assert_eq!(it.native_ref.as_deref(), Some("egress:task-eg:npmjs.org"));
+    assert_eq!(
+        it.native_ref.as_deref(),
+        Some("egress:task-eg:npmjs.org:443")
+    );
 
     // The sandboxed pane itself may not answer (and its broker could not even ask).
     let agent_ctx = Ctx {
@@ -262,7 +265,8 @@ async fn egress_interaction_allow_for_task_and_deny() {
     assert_eq!(a1.await.unwrap(), AskDecision::AllowTask);
     assert_eq!(a2.await.unwrap(), AskDecision::AllowTask);
     let pol = b.proxy.as_ref().unwrap().policy.read().unwrap().clone();
-    assert!(pol.task_allow.contains("npmjs.org"));
+    assert!(pol.task_allow.contains("npmjs.org:443"));
+    assert!(!pol.task_allow.contains("npmjs.org"));
     // Closed interactions leave the live model; the outbox records the delivery.
     assert!(e.server.with_core(|c| c.interaction(&it.id).is_none()));
     let events = e.all_events_json();
@@ -479,6 +483,268 @@ fn iso_request_params() {
     assert!(IsoRequest::from_params(&json!({"isolate": "container", "code": "jj"}), &cfg).is_err());
     assert_eq!(yolo_args("claude"), ["--dangerously-skip-permissions"]);
     assert!(yolo_args("pi").is_empty());
+}
+
+async fn answer(e: &Env, id: &str, decision: &str) {
+    let line = json!({"jsonrpc": "2.0", "id": 9, "method": "interaction.answer", "params": {"interaction": id, "decision": decision}}).to_string();
+    let r = crate::api::handle_line(&e.server, &e.user_ctx(), &line).await;
+    assert!(r.contains("\"result\""), "{r}");
+}
+
+async fn wait_open_interaction_for(server: &Server, needle: &str) -> Interaction {
+    for _ in 0..300 {
+        if let Some(it) = server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| i.status == InteractionStatus::Open && i.title.contains(needle))
+                .cloned()
+        }) {
+            return it;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no open interaction for {needle}");
+}
+
+/// Review finding 12: an approval covers exactly the endpoint it displayed, and "allow" covers
+/// one connection.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn egress_approvals_are_per_endpoint_and_single_attempt() {
+    let e = Env::new();
+    let b = prepare_box(
+        &e.server,
+        "task-ep",
+        Some("task-ep"),
+        &e.checkout,
+        req(IsolationLevel::Sandbox, NetworkProfile::HarnessApis, &[]),
+    )
+    .await
+    .unwrap();
+    e.task_with_pane("task-ep", b.isolation.clone());
+    // The attacker opens example.com:443 and queues example.com:22 while it is pending.
+    let s1 = e.server.clone();
+    let https =
+        tokio::spawn(async move { egress_ask(&s1, "task-ep", "example.com".into(), 443).await });
+    let it443 = wait_open_interaction_for(&e.server, "example.com:443").await;
+    let s2 = e.server.clone();
+    let ssh =
+        tokio::spawn(async move { egress_ask(&s2, "task-ep", "example.com".into(), 22).await });
+    let it22 = wait_open_interaction_for(&e.server, "example.com:22").await;
+    assert_ne!(it443.id, it22.id, "each port gets its own Interaction");
+    // Approving the displayed HTTPS destination authorizes that endpoint only.
+    answer(&e, &it443.id, "allow_always").await;
+    assert_eq!(https.await.unwrap(), AskDecision::AllowTask);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !ssh.is_finished(),
+        "port 22 rode along with the 443 approval"
+    );
+    let pol = b.proxy.as_ref().unwrap().policy.read().unwrap().clone();
+    assert!(pol.task_allow.contains("example.com:443"));
+    assert!(matches!(
+        pol.check_host("example.com", 22),
+        vk_sandbox::net::HostVerdict::Ask
+    ));
+    answer(&e, &it22.id, "deny").await;
+    assert_eq!(ssh.await.unwrap(), AskDecision::Deny);
+
+    // "allow" = this connection: a second attempt that joined the pending Interaction is asked
+    // again instead of being admitted too.
+    let s3 = e.server.clone();
+    let first =
+        tokio::spawn(async move { egress_ask(&s3, "task-ep", "once.test".into(), 443).await });
+    let it = wait_open_interaction_for(&e.server, "once.test:443").await;
+    let s4 = e.server.clone();
+    let second =
+        tokio::spawn(async move { egress_ask(&s4, "task-ep", "once.test".into(), 443).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    answer(&e, &it.id, "allow").await;
+    assert_eq!(first.await.unwrap(), AskDecision::AllowOnce);
+    let again = wait_open_interaction_for(&e.server, "once.test:443").await;
+    assert_ne!(again.id, it.id);
+    assert!(!second.is_finished());
+    answer(&e, &again.id, "deny").await;
+    assert_eq!(second.await.unwrap(), AskDecision::Deny);
+    teardown(&e.server, "task-ep");
+}
+
+/// Review finding 6: a contained task whose context can't be restored never gets host panes.
+#[tokio::test]
+async fn failed_restore_keeps_the_task_contained() {
+    let e = Env::new();
+    let iso = Isolation {
+        level: IsolationLevel::Sandbox,
+        provider: "seatbelt".into(),
+        network: "dev".into(),
+        yolo: true,
+        scope: "pane".into(),
+        visible_roots: vec![],
+    };
+    e.task_with_pane("task-rf", iso.clone());
+    {
+        // A record whose context can't be built here (vm is unavailable), as after a runtime
+        // or projection failure.
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.kv(
+            "sandbox",
+            "task-rf",
+            Some(
+                json!({"task": "task-rf", "checkout": e.checkout, "request": req(IsolationLevel::Vm, NetworkProfile::Dev, &[])})
+                    .to_string(),
+            ),
+        );
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    restore(&e.server).await;
+    assert!(e.server.sandbox.get("task-rf").is_none());
+    assert!(e.server.sandbox.failure("task-rf").is_some());
+    let argv = ["/bin/zsh".to_string(), "-l".to_string()];
+    // A split/respawn in the task's workspace …
+    let r = wrap_spawn(
+        &e.server,
+        "pane-rf-2",
+        &e.checkout.to_string_lossy(),
+        &argv,
+        vec![],
+        Some("task-rf"),
+    );
+    let msg = r.expect_err("host fallback").to_string();
+    assert!(msg.contains("sandbox is unavailable"), "{msg}");
+    // … and a pane elsewhere whose cwd is the task checkout both fail closed.
+    let r = wrap_spawn(
+        &e.server,
+        "pane-rf-3",
+        &e.checkout.join("src").to_string_lossy(),
+        &argv,
+        vec![],
+        None,
+    );
+    assert!(r.is_err());
+    // Unrelated host panes are unaffected.
+    let r = wrap_spawn(&e.server, "pane-x", "/", &argv, vec![], None).unwrap();
+    assert_eq!(r.0, argv);
+    assert!(e.all_events_json().contains("sandbox.unavailable"));
+
+    // A contained task without any readable record fails closed too.
+    let e2 = Env::new();
+    e2.task_with_pane("task-nr", iso);
+    {
+        let mut c = e2.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.kv("sandbox", "task-nr", Some("{not json".into()));
+        e2.server.commit(&mut c, tx).unwrap();
+    }
+    restore(&e2.server).await;
+    assert!(
+        wrap_spawn(
+            &e2.server,
+            "pane-nr-2",
+            &e2.checkout.to_string_lossy(),
+            &argv,
+            vec![],
+            Some("task-nr"),
+        )
+        .is_err()
+    );
+}
+
+/// Review finding 8: a contained process never gets `$HOME`, `/` or a directory holding
+/// protected state as its writable checkout.
+#[tokio::test]
+async fn isolation_refuses_home_root_and_protected_checkouts() {
+    let e = Env::new();
+    let home = e.root.join("home");
+    for (co, level) in [
+        (home.clone(), IsolationLevel::Sandbox),
+        (e.root.clone(), IsolationLevel::Sandbox),
+        (PathBuf::from("/"), IsolationLevel::Sandbox),
+        (home.join(".config"), IsolationLevel::Sandbox),
+        (home.clone(), IsolationLevel::Container),
+    ] {
+        let r = prepare_box(
+            &e.server,
+            "task-home",
+            Some("task-home"),
+            &co,
+            req(level, NetworkProfile::None, &[]),
+        )
+        .await;
+        let er = r
+            .err()
+            .unwrap_or_else(|| panic!("{} accepted", co.display()));
+        assert_eq!(er.data.kind, "permission_denied", "{}", er.message);
+        assert!(er.message.contains("refusing"), "{}", er.message);
+    }
+    assert!(e.server.sandbox.get("task-home").is_none());
+}
+
+/// Review finding 10: the broker serves only allowlisted methods *and* only for its own pane:
+/// foreign pane/task/preview targets are refused.
+#[tokio::test]
+async fn broker_enforces_ownership_of_explicit_targets() {
+    let e = Env::new();
+    let mine = e.task_with_pane("task-ba", Isolation::default());
+    let theirs = e.task_with_pane("task-bb", Isolation::default());
+    // The other task already has a preview on port 41999.
+    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "preview.declare", "params": {"port": 41999, "pane": theirs}}).to_string();
+    let r = crate::api::handle_line(&e.server, &e.user_ctx(), &line).await;
+    assert!(r.contains("\"result\""), "{r}");
+    let (client, server_side) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(broker_connection(
+        e.server.clone(),
+        server_side,
+        mine.clone(),
+    ));
+    let (rd, mut wr) = tokio::io::split(client);
+    let mut rd = BufReader::new(rd);
+    let mut call = async |id: u64, method: &str, params: Value| -> Value {
+        let l = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
+        wr.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+        let mut line = String::new();
+        rd.read_line(&mut line).await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    for (i, (m, params)) in [
+        ("agent.get", json!({"target": theirs})),
+        ("agent.get", json!({"target": "01NOSUCHRUN"})),
+        ("agent.report", json!({"pane": theirs, "state": "idle"})),
+        ("preview.declare", json!({"port": 41998, "pane": theirs})),
+        ("preview.declare", json!({"port": 41998, "task": "task-bb"})),
+        ("preview.declare", json!({"port": 41999})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = call(10 + i as u64, m, params.clone()).await;
+        assert_eq!(
+            r["error"]["data"]["kind"], "permission_denied",
+            "{m} {params}: {r}"
+        );
+    }
+    // The other pane's preview kept its owner.
+    let owner = e.server.with_core(|c| {
+        c.model
+            .previews
+            .iter()
+            .find(|p| p.port == 41999)
+            .and_then(|p| p.pane.clone())
+    });
+    assert_eq!(owner.as_deref(), Some(theirs.as_str()));
+    // Its own pane is fine.
+    let r = call(30, "agent.report", json!({"pane": mine, "state": "idle"})).await;
+    assert!(r.get("error").is_none(), "{r}");
+    let r = call(31, "preview.declare", json!({"port": 41997})).await;
+    assert!(r.get("error").is_none(), "{r}");
+    let r = call(
+        32,
+        "preview.declare",
+        json!({"port": 41996, "task": "task-ba"}),
+    )
+    .await;
+    assert!(r.get("error").is_none(), "{r}");
 }
 
 #[path = "sandbox_container_tests.rs"]

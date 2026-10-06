@@ -62,6 +62,10 @@ mod worktree;
 pub use error::{Error, Result};
 pub use files::{CopyOutcome, CopyResult, copy_files, default_copy_files};
 pub use finish::{DiffStat, archive_worktree, diff_stat, is_merged, merged_branches};
+pub use git::{
+    HOST_HARDEN, is_contained, register_contained_checkout, safety_args,
+    unregister_contained_checkout,
+};
 pub use jj::{Jj, JjStatus, JjWorkspace, find_root as jj_root, is_colocated as jj_colocated};
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};
 pub use ports::{Lease, LeaseRequest, PortLeases, PortPool};

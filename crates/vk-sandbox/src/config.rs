@@ -12,6 +12,7 @@
 //! allow_domains = ["example.com"] # added to every profile except none
 //! deny_domains = []
 //! local_ports = [5432]            # loopback services reachable through the proxy
+//! ports = [443, 80]               # ports allowlisted domains may use (default 80/443)
 //! allow_private = false
 //! broker = true                   # per-pane broker socket (hooks inside the box)
 //!
@@ -66,6 +67,8 @@ pub struct SandboxConfig {
     pub allow_domains: Vec<String>,
     pub deny_domains: Vec<String>,
     pub local_ports: Vec<u16>,
+    /// Ports allowlisted domains may be reached on (empty = 80 and 443, 13 §7).
+    pub ports: Vec<u16>,
     pub allow_private: bool,
     pub broker: bool,
 }
@@ -78,6 +81,7 @@ impl Default for SandboxConfig {
             allow_domains: vec![],
             deny_domains: vec![],
             local_ports: vec![],
+            ports: vec![],
             allow_private: false,
             broker: true,
         }

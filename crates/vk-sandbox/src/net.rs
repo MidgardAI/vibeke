@@ -257,6 +257,26 @@ pub struct EgressPolicy {
     pub local_ports: BTreeSet<u16>,
     /// Allow RFC 1918 / ULA destinations (off by default).
     pub allow_private: bool,
+    /// Ports listed domains may be reached on; empty = [`DEFAULT_PORTS`] (80/443). A CONNECT
+    /// tunnel carries arbitrary bytes, so an allowlisted name must not mean "any service on that
+    /// host" (ssh on 22, a database, …).
+    #[serde(default)]
+    pub ports: BTreeSet<u16>,
+}
+
+/// Ports allowlisted domains are reachable on unless the config lists others.
+pub const DEFAULT_PORTS: &[u16] = &[80, 443];
+
+/// A `task_allow` entry: `host` (default ports) or `host:port` (exactly that endpoint, what an
+/// egress Interaction approved).
+pub fn split_allow_entry(e: &str) -> (&str, Option<u16>) {
+    match e.rsplit_once(':') {
+        Some((h, p)) if !h.contains(':') => match p.parse() {
+            Ok(port) => (h, Some(port)),
+            Err(_) => (e, None),
+        },
+        _ => (e, None),
+    }
 }
 
 impl EgressPolicy {
@@ -317,25 +337,31 @@ impl EgressPolicy {
                 }
             };
         }
-        if let Some(d) = self.task_allow.iter().find(|d| domain_matches(d, &host)) {
+        let port_ok = self.port_allowed(port);
+        if let Some(d) = self.task_allow.iter().find(|d| {
+            let (pat, p) = split_allow_entry(d);
+            domain_matches(pat, &host) && p.map_or(port_ok, |p| p == port)
+        }) {
             return HostVerdict::Allow {
                 rule: format!("task:{d}"),
             };
         }
-        if let Some(d) = self.extra_allow.iter().find(|d| domain_matches(d, &host)) {
-            return HostVerdict::Allow {
-                rule: format!("extra:{d}"),
-            };
-        }
-        if let Some(d) = self
-            .profile
-            .base_domains()
-            .into_iter()
-            .find(|d| domain_matches(d, &host))
-        {
-            return HostVerdict::Allow {
-                rule: format!("{}:{d}", self.profile.as_str()),
-            };
+        if port_ok {
+            if let Some(d) = self.extra_allow.iter().find(|d| domain_matches(d, &host)) {
+                return HostVerdict::Allow {
+                    rule: format!("extra:{d}"),
+                };
+            }
+            if let Some(d) = self
+                .profile
+                .base_domains()
+                .into_iter()
+                .find(|d| domain_matches(d, &host))
+            {
+                return HostVerdict::Allow {
+                    rule: format!("{}:{d}", self.profile.as_str()),
+                };
+            }
         }
         if self.profile == NetworkProfile::Open {
             return HostVerdict::Allow {
@@ -343,6 +369,15 @@ impl EgressPolicy {
             };
         }
         HostVerdict::Ask
+    }
+
+    /// Is `port` one listed domains may use ([`EgressPolicy::ports`], default 80/443)?
+    pub fn port_allowed(&self, port: u16) -> bool {
+        if self.ports.is_empty() {
+            DEFAULT_PORTS.contains(&port)
+        } else {
+            self.ports.contains(&port)
+        }
     }
 
     /// May the proxy connect to `ip` for a request that passed [`check_host`]? Loopback only
@@ -457,6 +492,56 @@ mod tests {
         t.task_allow.insert("npmjs.org".into());
         assert!(matches!(
             t.check_host("npmjs.org", 443),
+            HostVerdict::Allow { .. }
+        ));
+    }
+
+    #[test]
+    fn listed_domains_only_on_allowed_ports() {
+        let p = EgressPolicy::new(NetworkProfile::Dev);
+        assert!(matches!(
+            p.check_host("github.com", 443),
+            HostVerdict::Allow { .. }
+        ));
+        assert!(matches!(
+            p.check_host("github.com", 80),
+            HostVerdict::Allow { .. }
+        ));
+        // ssh (or any other service) on an allowlisted name is not implied by the allowlist.
+        assert_eq!(p.check_host("github.com", 22), HostVerdict::Ask);
+        assert_eq!(p.check_host("api.anthropic.com", 5432), HostVerdict::Ask);
+        let mut q = p.clone();
+        q.ports.insert(22);
+        assert!(matches!(
+            q.check_host("github.com", 22),
+            HostVerdict::Allow { .. }
+        ));
+        assert_eq!(
+            q.check_host("github.com", 443),
+            HostVerdict::Ask,
+            "explicit list"
+        );
+        // Task approvals are per endpoint; bare names mean the allowed ports.
+        let mut t = EgressPolicy::new(NetworkProfile::HarnessApis);
+        t.task_allow.insert("example.com:8443".into());
+        assert!(matches!(
+            t.check_host("example.com", 8443),
+            HostVerdict::Allow { .. }
+        ));
+        assert_eq!(t.check_host("example.com", 22), HostVerdict::Ask);
+        assert_eq!(t.check_host("example.com", 443), HostVerdict::Ask);
+        t.task_allow.insert("example.org".into());
+        assert!(matches!(
+            t.check_host("example.org", 443),
+            HostVerdict::Allow { .. }
+        ));
+        assert_eq!(t.check_host("example.org", 22), HostVerdict::Ask);
+        assert_eq!(split_allow_entry("a.test:22"), ("a.test", Some(22)));
+        assert_eq!(split_allow_entry("a.test"), ("a.test", None));
+        // `open` keeps every port.
+        let o = EgressPolicy::new(NetworkProfile::Open);
+        assert!(matches!(
+            o.check_host("github.com", 22),
             HostVerdict::Allow { .. }
         ));
     }

@@ -160,10 +160,11 @@ impl EgressProxy {
         })
     }
 
-    /// "Allow for task": add a domain to the task allowlist.
-    pub fn allow_for_task(&self, host: &str) {
+    /// "Allow for task": add the approved endpoint (`host:port`) to the task allowlist.
+    pub fn allow_for_task(&self, host: &str, port: u16) {
         if let Ok(mut p) = self.policy.write() {
-            p.task_allow.insert(host.to_ascii_lowercase());
+            p.task_allow
+                .insert(format!("{}:{port}", host.to_ascii_lowercase()));
         }
     }
 }
@@ -178,6 +179,8 @@ struct Head {
     forward: Option<Vec<u8>>,
     /// Bytes read past the head (request body start, or early TLS bytes).
     rest: Vec<u8>,
+    /// Request body length of an absolute-form request (`Content-Length`, 0 without one).
+    body_len: u64,
 }
 
 fn split_host_port(s: &str, default_port: u16) -> Option<(String, u16)> {
@@ -214,6 +217,7 @@ fn parse_head(buf: &[u8], end: usize) -> Result<Head, &'static str> {
             port,
             forward: None,
             rest,
+            body_len: 0,
         });
     }
     let after = target
@@ -226,6 +230,7 @@ fn parse_head(buf: &[u8], end: usize) -> Result<Head, &'static str> {
     let authority = authority.rsplit('@').next().unwrap_or(authority);
     let (host, port) = split_host_port(authority, 80).ok_or("bad request target")?;
     let mut out = format!("{method} {path} {version}\r\n");
+    let mut body_len: Option<u64> = None;
     for l in lines {
         if l.is_empty() {
             continue;
@@ -236,6 +241,21 @@ fn parse_head(buf: &[u8], end: usize) -> Result<Head, &'static str> {
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
+        if name == "transfer-encoding" {
+            // Exactly one request is forwarded per connection; that needs a known body length.
+            return Err("chunked/encoded request bodies are not proxied (send Content-Length)");
+        }
+        if name == "content-length" {
+            let n: u64 = l
+                .split_once(':')
+                .map(|(_, v)| v.trim())
+                .and_then(|v| v.parse().ok())
+                .ok_or("bad Content-Length")?;
+            if body_len.is_some_and(|b| b != n) {
+                return Err("conflicting Content-Length headers");
+            }
+            body_len = Some(n);
+        }
         if matches!(
             name.as_str(),
             "proxy-authorization" | "proxy-connection" | "connection" | "keep-alive"
@@ -246,7 +266,9 @@ fn parse_head(buf: &[u8], end: usize) -> Result<Head, &'static str> {
         out.push_str("\r\n");
     }
     // One request per upstream connection: a keep-alive connection must not carry a second
-    // request to a different host past the policy check.
+    // request to a different host past the policy check. `Connection: close` asks the origin to
+    // end after its response; [`handle`] enforces it by forwarding exactly this head and
+    // `body_len` body bytes, never anything the client sends after them.
     out.push_str("Connection: close\r\n\r\n");
     Ok(Head {
         method,
@@ -254,6 +276,7 @@ fn parse_head(buf: &[u8], end: usize) -> Result<Head, &'static str> {
         port,
         forward: Some(out.into_bytes()),
         rest,
+        body_len: body_len.unwrap_or(0),
     })
 }
 
@@ -314,10 +337,12 @@ pub async fn decide(
             match tokio::time::timeout(cfg.ask_timeout, asker.ask(host.clone(), port)).await {
                 Ok(AskDecision::AllowOnce) => "approved once".to_string(),
                 Ok(AskDecision::AllowTask) => {
+                    // The approval names one endpoint: `host:port`, never the whole host.
+                    let entry = format!("{host}:{port}");
                     if let Ok(mut p) = cfg.policy.write() {
-                        p.task_allow.insert(host.clone());
+                        p.task_allow.insert(entry.clone());
                     }
-                    format!("task:{host}")
+                    format!("task:{entry}")
                 }
                 Ok(AskDecision::Deny) => return Err("denied by user".into()),
                 Err(_) => return Err("no decision in time (fail closed)".into()),
@@ -418,21 +443,53 @@ where
         port: head.port,
         rule,
     });
-    match &head.forward {
-        None => {
-            client
-                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                .await?;
-        }
-        Some(fwd) => {
-            up.write_all(fwd).await?;
-        }
-    }
-    if !head.rest.is_empty() {
-        up.write_all(&head.rest).await?;
-    }
     let _ = head.method;
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut up).await;
+    let Some(fwd) = &head.forward else {
+        // CONNECT: an opaque tunnel to the one checked endpoint.
+        client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
+        if !head.rest.is_empty() {
+            up.write_all(&head.rest).await?;
+        }
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut up).await;
+        return Ok(());
+    };
+    // Absolute-form request: forward this head and exactly `body_len` body bytes, then only
+    // relay the response. Pipelined or keep-alive follow-up requests are never forwarded
+    // (they would bypass the policy check made for this request's host).
+    up.write_all(fwd).await?;
+    let first = (head.rest.len() as u64).min(head.body_len) as usize;
+    up.write_all(&head.rest[..first]).await?;
+    let remaining = head.body_len - first as u64;
+    let (mut ur, mut uw) = up.into_split();
+    let (mut cr, mut cw) = tokio::io::split(client);
+    {
+        let body = async {
+            let mut limited = (&mut cr).take(remaining);
+            let _ = tokio::io::copy(&mut limited, &mut uw).await;
+            // Keep the upstream write half open (half-close aborts some origins); nothing more
+            // from the client goes upstream.
+            std::future::pending::<()>().await;
+        };
+        let response = async {
+            let _ = tokio::io::copy(&mut ur, &mut cw).await;
+            let _ = cw.shutdown().await;
+        };
+        tokio::select! {
+            _ = body => {}
+            _ = response => {}
+        }
+    }
+    drop(uw);
+    // Lingering close: discard whatever the client still sends (a follow-up request) for a
+    // moment, so closing with unread input doesn't reset the connection before the client has
+    // read the response.
+    let mut sink = [0u8; 4096];
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while matches!(cr.read(&mut sink).await, Ok(n) if n > 0) {}
+    })
+    .await;
     Ok(())
 }
 
@@ -619,7 +676,19 @@ mod tests {
             assert!(r.starts_with("HTTP/1.1 200"), "{r}");
         }
         assert_eq!(asker.calls.load(Ordering::SeqCst), 1);
-        assert!(p.policy.read().unwrap().task_allow.contains("asked.test"));
+        assert!(
+            p.policy
+                .read()
+                .unwrap()
+                .task_allow
+                .contains(&format!("asked.test:{o}"))
+        );
+        // The approval covered that endpoint only: another port on the same host asks again.
+        let other = origin().await;
+        p.policy.write().unwrap().local_ports.insert(other);
+        let r = get_via(p.port, &format!("http://asked.test:{other}/")).await;
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+        assert_eq!(asker.calls.load(Ordering::SeqCst), 2);
         // Nobody answers: denied after the hold timeout.
         let mut c = cfg(pol);
         c.asker = Some(Arc::new(CountingAsker {
@@ -628,6 +697,105 @@ mod tests {
         }));
         let e = decide(&c, "asked.test", o).await.unwrap_err();
         assert!(e.contains("fail closed"), "{e}");
+    }
+
+    /// Origin that answers the first request and records every byte it receives afterwards.
+    async fn recording_origin() -> (u16, Arc<std::sync::Mutex<Vec<u8>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen: Arc<std::sync::Mutex<Vec<u8>>> = Arc::default();
+        let s2 = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = l.accept().await else {
+                    return;
+                };
+                let seen = s2.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let mut got = Vec::new();
+                    // Read for a while: everything the proxy forwards ends up in `seen`.
+                    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+                    let mut answered = false;
+                    while let Ok(Ok(n)) = tokio::time::timeout_at(deadline, s.read(&mut buf)).await
+                    {
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        if !answered && got.windows(4).any(|w| w == b"\r\n\r\n") {
+                            answered = true;
+                            let _ = s
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                                .await;
+                        }
+                    }
+                    seen.lock().unwrap().extend_from_slice(&got);
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    #[tokio::test]
+    async fn exactly_one_request_is_forwarded_per_connection() {
+        let (o, seen) = recording_origin().await;
+        let mut pol = EgressPolicy::new(NetworkProfile::Dev);
+        pol.local_ports.insert(o);
+        let p = EgressProxy::start(cfg(pol), 0, None).await.unwrap();
+        let mut s = TcpStream::connect(("127.0.0.1", p.port)).await.unwrap();
+        // A POST with a body, then a pipelined request meant for another host on the same
+        // (allowed) connection.
+        s.write_all(
+            format!(
+                "POST http://127.0.0.1:{o}/a HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nBODYGET http://evil.test/steal HTTP/1.1\r\nHost: evil.test\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        // More bytes later on the same connection.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = s
+            .write_all(b"GET /second HTTP/1.1\r\nHost: evil.test\r\n\r\n")
+            .await;
+        let mut out = String::new();
+        let r = tokio::time::timeout(Duration::from_secs(5), s.read_to_string(&mut out)).await;
+        assert!(out.starts_with("HTTP/1.1 200"), "{r:?} {out}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let got = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+        assert!(got.starts_with("POST /a HTTP/1.1\r\n"), "{got}");
+        assert!(got.ends_with("\r\n\r\nBODY"), "{got}");
+        assert!(
+            !got.contains("evil"),
+            "a second request reached the origin: {got}"
+        );
+        assert!(!got.contains("/second"), "{got}");
+        // Chunked bodies (unknown length) are refused rather than relayed blindly.
+        let mut s = TcpStream::connect(("127.0.0.1", p.port)).await.unwrap();
+        s.write_all(
+            format!("POST http://127.0.0.1:{o}/ HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out).await;
+        assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn connect_to_a_listed_host_on_another_port_is_asked() {
+        let asker = Arc::new(CountingAsker {
+            answer: Some(AskDecision::Deny),
+            calls: AtomicUsize::new(0),
+        });
+        let mut c = cfg(EgressPolicy::new(NetworkProfile::Dev));
+        c.asker = Some(asker.clone());
+        // github.com is listed for 80/443 only: port 22 (ssh through CONNECT) needs a decision.
+        let e = decide(&c, "github.com", 22).await.unwrap_err();
+        assert!(e.contains("denied by user"), "{e}");
+        assert_eq!(asker.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -117,6 +117,9 @@ pub struct SandboxSetup {
     /// Host path of the egress proxy's unix socket (Linux net namespaces).
     pub egress_socket: Option<PathBuf>,
     pub broker: bool,
+    /// Git-executed files inside the checkout ([`crate::gitexec::exec_targets`]): never
+    /// writable.
+    pub protected: Vec<PathBuf>,
 }
 
 pub struct SandboxRunner {
@@ -139,15 +142,52 @@ impl SandboxRunner {
         self.setup.root.join(short_id(pane_id))
     }
 
+    /// May a projected path become a grant? The box can write inside projected dirs, so it may
+    /// have replaced one with a symlink to a host path since the projection: paths under the
+    /// sandbox root must be physically inside it (no symlink in any component); host paths
+    /// (omp's session dir) must not be a symlink themselves. Never re-canonicalize a grant
+    /// through a symlink.
+    pub fn grantable(&self, p: &Path) -> bool {
+        let root = crate::policy::canon(&self.setup.root);
+        let lexical = if p.starts_with(&self.setup.root) {
+            p.strip_prefix(&self.setup.root)
+                .map(|r| root.join(r))
+                .unwrap_or_else(|_| p.to_path_buf())
+        } else {
+            p.to_path_buf()
+        };
+        let ok = if lexical.starts_with(&root) {
+            crate::fsafe::contained_no_symlink(&root, &lexical)
+        } else {
+            crate::fsafe::final_component_real(p)
+        };
+        if !ok {
+            tracing::warn!(path = %p.display(), "projected path is a symlink or escapes the sandbox root; not granted");
+        }
+        ok
+    }
+
     fn spec(&self, private: &Path, broker: Option<&Path>) -> SandboxSpec {
         let s = &self.setup;
         let mut extra_read = s.extra_read.clone();
-        extra_read.extend(s.projection.read.iter().cloned());
+        extra_read.extend(
+            s.projection
+                .read
+                .iter()
+                .filter(|p| self.grantable(p))
+                .cloned(),
+        );
         if let Some(b) = &s.vibeke_bin {
             extra_read.push(b.clone());
         }
         let mut extra_write = s.extra_write.clone();
-        extra_write.extend(s.projection.write.iter().cloned());
+        extra_write.extend(
+            s.projection
+                .write
+                .iter()
+                .filter(|p| self.grantable(p))
+                .cloned(),
+        );
         SandboxSpec {
             home: s.home.clone(),
             checkout: s.checkout.clone(),
@@ -155,13 +195,28 @@ impl SandboxRunner {
             private_dir: private.to_path_buf(),
             extra_read,
             extra_write,
-            read_only_files: s.projection.read_only_files.clone(),
+            read_only_files: s
+                .projection
+                .read_only_files
+                .iter()
+                .filter(|p| self.grantable(p))
+                .cloned()
+                .collect(),
             hidden: s.hidden.clone(),
             home_read: s.home_read.clone(),
             unix_sockets: broker.map(|b| vec![b.to_path_buf()]).unwrap_or_default(),
             network: crate::policy::net_mode(s.network, s.proxy_port, &s.local_ports),
             allow_bind_localhost: true,
+            protected: s.protected.clone(),
         }
+    }
+
+    /// The pane's private dir, created (or verified) without following symlinks.
+    pub fn ensure_pane_dir(&self, pane_id: &str) -> std::io::Result<PathBuf> {
+        if !self.setup.root.exists() {
+            std::fs::create_dir_all(&self.setup.root)?;
+        }
+        crate::fsafe::ensure_dir_under(&self.setup.root, Path::new(&short_id(pane_id)))
     }
 
     /// Env for the contained tree: scrubbed host env + private dirs + proxy + credentials.
@@ -196,13 +251,18 @@ impl SandboxRunner {
         broker: Option<&Path>,
     ) -> std::io::Result<(PathBuf, Policy)> {
         let policy = Policy::from_spec(&self.spec(private, broker));
+        // The private dir is writable from inside: never write through a planted symlink.
         let path = if cfg!(target_os = "linux") {
             let p = private.join("policy.json");
-            std::fs::write(&p, serde_json::to_vec_pretty(&policy).unwrap_or_default())?;
+            crate::fsafe::write_nofollow(
+                &p,
+                &serde_json::to_vec_pretty(&policy).unwrap_or_default(),
+                0o600,
+            )?;
             p
         } else {
             let p = private.join("profile.sb");
-            std::fs::write(&p, crate::seatbelt::render(&policy))?;
+            crate::fsafe::write_nofollow(&p, crate::seatbelt::render(&policy).as_bytes(), 0o600)?;
             p
         };
         Ok((path, policy))
@@ -246,10 +306,7 @@ impl Runner for SandboxRunner {
     }
     fn prepare(&self, req: SpawnRequest) -> Result<PreparedSpawn, RunnerError> {
         self.check()?;
-        let private = self.pane_dir(&req.pane_id);
-        std::fs::create_dir_all(&private)?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700))?;
+        let private = self.ensure_pane_dir(&req.pane_id)?;
         let broker = self.setup.broker.then(|| private.join("b.sock"));
         let (profile, policy) = self.write_profile(&private, broker.as_deref())?;
         let env = self.env(&req.env, &private, broker.as_deref())?;
@@ -372,6 +429,75 @@ mod tests {
         assert_eq!(short_id("a-b"), "ab");
     }
 
+    fn setup_at(root: &Path) -> SandboxSetup {
+        SandboxSetup {
+            home: root.join("home"),
+            checkout: root.join("home/co"),
+            git: None,
+            root: root.join("sbx"),
+            network: NetworkProfile::None,
+            proxy_port: None,
+            local_ports: vec![],
+            extra_read: vec![],
+            extra_write: vec![],
+            hidden: vec![],
+            home_read: None,
+            projection: Projection::default(),
+            vibeke_bin: None,
+            egress_socket: None,
+            broker: false,
+            protected: vec![],
+        }
+    }
+
+    #[test]
+    fn symlinked_projection_never_widens_grants() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("home/co")).unwrap();
+        let mut s = setup_at(&root);
+        std::fs::create_dir_all(&s.root).unwrap();
+        let eph = crate::fsafe::ensure_dir_under(&s.root, Path::new("shared/home/claude")).unwrap();
+        let cred = eph.join(".credentials.json");
+        std::fs::write(&cred, "{}").unwrap();
+        s.projection.write = vec![eph.clone()];
+        s.projection.read_only_files = vec![cred.clone()];
+        let r = SandboxRunner { setup: s };
+        let private = r.ensure_pane_dir("01PANE0000000000000000AAAA").unwrap();
+        let (_, pol) = r.write_profile(&private, None).unwrap();
+        assert!(pol.allow_write.contains(&eph));
+        assert!(pol.allow_read_late.contains(&cred));
+        // The box swaps its projected home (and credential file) for symlinks into the host.
+        std::fs::remove_file(&cred).unwrap();
+        std::os::unix::fs::symlink(root.join("home/.ssh-key"), &cred).unwrap();
+        std::fs::remove_dir_all(&eph).unwrap();
+        std::os::unix::fs::symlink(root.join("home"), &eph).unwrap();
+        // The next pane (or a restart) must not grant the symlink targets.
+        let private2 = r.ensure_pane_dir("01PANE0000000000000000BBBB").unwrap();
+        let (_, pol) = r.write_profile(&private2, None).unwrap();
+        assert!(!pol.allow_write.contains(&root.join("home")), "{pol:?}");
+        assert!(!pol.allow_write.contains(&eph));
+        assert!(!pol.allow_read_late.contains(&root.join("home")));
+        assert!(!pol.allow_read_late.contains(&root.join("home/.ssh-key")));
+        assert!(!pol.allow_read_late.contains(&cred));
+        // A pane private dir replaced by a symlink is refused outright, and a planted profile
+        // symlink is replaced rather than written through.
+        let victim = root.join("home/victim");
+        std::fs::write(&victim, "host").unwrap();
+        let profile = private2.join(if cfg!(target_os = "linux") {
+            "policy.json"
+        } else {
+            "profile.sb"
+        });
+        std::fs::remove_file(&profile).unwrap();
+        std::os::unix::fs::symlink(&victim, &profile).unwrap();
+        r.write_profile(&private2, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "host");
+        std::fs::remove_dir_all(&private2).unwrap();
+        std::os::unix::fs::symlink(root.join("home"), &private2).unwrap();
+        assert!(r.ensure_pane_dir("01PANE0000000000000000BBBB").is_err());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn sandbox_runner_wraps_with_sandbox_exec() {
@@ -395,6 +521,7 @@ mod tests {
                 vibeke_bin: None,
                 egress_socket: None,
                 broker: true,
+                protected: vec![],
             },
         };
         let p = r

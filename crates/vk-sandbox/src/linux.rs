@@ -49,7 +49,17 @@ pub fn bwrap_args(
         "/tmp".into(),
         "--tmpfs".into(),
         "/var/tmp".into(),
+        // Host pathname unix sockets live under /run (systemd, the D-Bus system and user buses,
+        // Docker/Podman, `$XDG_RUNTIME_DIR` = /run/user/<uid> with ssh/gpg agents). The
+        // read-only `/` bind would leave them connectable (Landlock does not mediate connect(2)
+        // on pathname sockets), so /run is an empty tmpfs; abstract sockets are per network
+        // namespace (`--unshare-net`) and additionally scoped by Landlock ABI ≥ 6.
+        "--tmpfs".into(),
+        "/run".into(),
     ];
+    if std::fs::symlink_metadata("/var/run").is_ok_and(|m| m.is_dir()) {
+        a.extend(["--tmpfs".into(), "/var/run".into()]);
+    }
     // Layer 1: hide home and other deny roots behind empty tmpfs mounts.
     for d in &p.deny_read {
         if d == Path::new("/private/tmp") || d == Path::new("/private/var/tmp") {
@@ -68,16 +78,6 @@ pub fn bwrap_args(
     for r in &p.allow_read_late {
         a.extend(["--ro-bind-try".into(), s(r), s(r)]);
     }
-    for n in &p.never_read {
-        // Only mask what exists; masking a missing path would create it on the tmpfs.
-        if n.exists() {
-            if n.is_dir() {
-                a.extend(["--tmpfs".into(), s(n)]);
-            } else {
-                a.extend(["--ro-bind".into(), "/dev/null".into(), s(n)]);
-            }
-        }
-    }
     // Layer 3: writable binds.
     for w in &p.allow_write {
         a.extend(["--bind-try".into(), s(w), s(w)]);
@@ -89,10 +89,25 @@ pub fn bwrap_args(
     for g in &p.allow_write_git {
         a.extend(["--bind-try".into(), s(g), s(g)]);
     }
+    // Never readable, masked after every bind so a writable checkout bind can't re-expose
+    // protected state inside it.
+    for n in &p.never_read {
+        // Only mask what exists; masking a missing path would create it on the tmpfs.
+        if n.exists() {
+            if n.is_dir() {
+                a.extend(["--tmpfs".into(), s(n)]);
+            } else {
+                a.extend(["--ro-bind".into(), "/dev/null".into(), s(n)]);
+            }
+        }
+    }
     // Final: never writable.
     for d in p.deny_write.iter().chain(p.deny_write_literal.iter()) {
         if d == &p.checkout {
             continue; // the root's own entry is protected by the parent being read-only
+        }
+        if p.never_read.iter().any(|n| d.starts_with(n)) {
+            continue; // masked above; a read-only bind would make it readable again
         }
         a.extend(["--ro-bind-try".into(), s(d), s(d)]);
     }
@@ -303,31 +318,33 @@ pub fn bwrap_available() -> bool {
         .is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(BWRAP).is_file()))
 }
 
-/// Apply Landlock rules to the current process (inner helper, after bwrap). Best effort: on a
-/// kernel without Landlock the bwrap mount namespace remains the filesystem boundary.
-#[cfg(target_os = "linux")]
-pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
-    use std::os::unix::ffi::OsStrExt;
-    const CREATE_RULESET: libc::c_long = 444;
-    const ADD_RULE: libc::c_long = 445;
-    const RESTRICT_SELF: libc::c_long = 446;
-    const RULE_PATH_BENEATH: libc::c_int = 1;
-    // ABI v1 access rights.
-    const EXECUTE: u64 = 1 << 0;
-    const WRITE_FILE: u64 = 1 << 1;
-    const READ_FILE: u64 = 1 << 2;
-    const READ_DIR: u64 = 1 << 3;
-    const REMOVE_DIR: u64 = 1 << 4;
-    const REMOVE_FILE: u64 = 1 << 5;
-    const MAKE_CHAR: u64 = 1 << 6;
-    const MAKE_DIR: u64 = 1 << 7;
-    const MAKE_REG: u64 = 1 << 8;
-    const MAKE_SOCK: u64 = 1 << 9;
-    const MAKE_FIFO: u64 = 1 << 10;
-    const MAKE_BLOCK: u64 = 1 << 11;
-    const MAKE_SYM: u64 = 1 << 12;
-    const READ: u64 = EXECUTE | READ_FILE | READ_DIR;
-    const WRITE: u64 = WRITE_FILE
+/// Landlock access rights (`LANDLOCK_ACCESS_FS_*`, `LANDLOCK_SCOPE_*`).
+pub mod ll {
+    pub const EXECUTE: u64 = 1 << 0;
+    pub const WRITE_FILE: u64 = 1 << 1;
+    pub const READ_FILE: u64 = 1 << 2;
+    pub const READ_DIR: u64 = 1 << 3;
+    pub const REMOVE_DIR: u64 = 1 << 4;
+    pub const REMOVE_FILE: u64 = 1 << 5;
+    pub const MAKE_CHAR: u64 = 1 << 6;
+    pub const MAKE_DIR: u64 = 1 << 7;
+    pub const MAKE_REG: u64 = 1 << 8;
+    pub const MAKE_SOCK: u64 = 1 << 9;
+    pub const MAKE_FIFO: u64 = 1 << 10;
+    pub const MAKE_BLOCK: u64 = 1 << 11;
+    pub const MAKE_SYM: u64 = 1 << 12;
+    /// ABI 2 (Linux 5.19).
+    pub const REFER: u64 = 1 << 13;
+    /// ABI 3 (Linux 6.2).
+    pub const TRUNCATE: u64 = 1 << 14;
+    /// ABI 5 (Linux 6.10): ioctl on device files.
+    pub const IOCTL_DEV: u64 = 1 << 15;
+    /// ABI 6 (Linux 6.12): no connecting to abstract unix sockets outside the domain.
+    pub const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+    /// ABI 6: no signals to processes outside the domain.
+    pub const SCOPE_SIGNAL: u64 = 1 << 1;
+    pub const READ: u64 = EXECUTE | READ_FILE | READ_DIR;
+    pub const WRITE: u64 = WRITE_FILE
         | REMOVE_DIR
         | REMOVE_FILE
         | MAKE_CHAR
@@ -337,26 +354,89 @@ pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
         | MAKE_FIFO
         | MAKE_BLOCK
         | MAKE_SYM;
+}
+
+/// What Vibeke asks Landlock for on a kernel with ABI `abi`: every filesystem right the kernel
+/// knows (so unlisted paths get none of them) plus, from ABI 6, IPC scoping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LandlockPlan {
+    pub handled_fs: u64,
+    pub scoped: u64,
+    /// Rights for a read-only rule, a read-write rule and the `/dev` rule.
+    pub read: u64,
+    pub write: u64,
+    pub dev: u64,
+}
+
+pub fn landlock_plan(abi: u32) -> LandlockPlan {
+    let mut extra_write = 0;
+    if abi >= 2 {
+        extra_write |= ll::REFER;
+    }
+    if abi >= 3 {
+        extra_write |= ll::TRUNCATE;
+    }
+    let ioctl = if abi >= 5 { ll::IOCTL_DEV } else { 0 };
+    let write = ll::READ | ll::WRITE | extra_write;
+    LandlockPlan {
+        handled_fs: write | ioctl,
+        scoped: if abi >= 6 {
+            ll::SCOPE_ABSTRACT_UNIX_SOCKET | ll::SCOPE_SIGNAL
+        } else {
+            0
+        },
+        read: ll::READ,
+        write,
+        dev: write | ioctl,
+    }
+}
+
+/// Apply Landlock rules to the current process (inner helper, after bwrap). Best effort: on a
+/// kernel without Landlock the bwrap mount namespace remains the filesystem boundary. The
+/// rights requested follow the kernel's ABI ([`landlock_plan`]).
+#[cfg(target_os = "linux")]
+pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    const CREATE_RULESET: libc::c_long = 444;
+    const ADD_RULE: libc::c_long = 445;
+    const RESTRICT_SELF: libc::c_long = 446;
+    const RULE_PATH_BENEATH: libc::c_int = 1;
+    const CREATE_RULESET_VERSION: u32 = 1;
     #[repr(C)]
     struct RulesetAttr {
         handled_access_fs: u64,
+        handled_access_net: u64,
+        scoped: u64,
     }
     #[repr(C, packed)]
     struct PathBeneath {
         allowed_access: u64,
         parent_fd: i32,
     }
-    let attr = RulesetAttr {
-        handled_access_fs: READ | WRITE,
-    };
     // SAFETY: raw syscalls with valid pointers/sizes; fds are closed below.
     unsafe {
-        let fd = libc::syscall(
+        let abi = libc::syscall(
             CREATE_RULESET,
-            &attr as *const RulesetAttr,
-            std::mem::size_of::<RulesetAttr>(),
-            0u32,
+            std::ptr::null::<RulesetAttr>(),
+            0usize,
+            CREATE_RULESET_VERSION,
         );
+        if abi < 1 {
+            return Ok(false);
+        }
+        let plan = landlock_plan(abi as u32);
+        let attr = RulesetAttr {
+            handled_access_fs: plan.handled_fs,
+            handled_access_net: 0,
+            scoped: plan.scoped,
+        };
+        // Older kernels reject unknown trailing fields: pass only what this ABI knows.
+        let size = if abi >= 6 {
+            std::mem::size_of::<RulesetAttr>()
+        } else {
+            std::mem::size_of::<u64>()
+        };
+        let fd = libc::syscall(CREATE_RULESET, &attr as *const RulesetAttr, size, 0u32);
         if fd < 0 {
             return Ok(false);
         }
@@ -371,7 +451,13 @@ pub fn apply_landlock(rules: &[LandlockRule]) -> std::io::Result<bool> {
                 continue;
             }
             let pb = PathBeneath {
-                allowed_access: if r.write { READ | WRITE } else { READ },
+                allowed_access: if r.path == Path::new("/dev") {
+                    plan.dev
+                } else if r.write {
+                    plan.write
+                } else {
+                    plan.read
+                },
                 parent_fd: pfd,
             };
             libc::syscall(
@@ -440,6 +526,62 @@ mod tests {
         );
         assert!(pos(&a, &["--seccomp", "9"]).is_some());
         assert_eq!(a[a.len() - 2..], ["--chdir".to_string(), co]);
+    }
+
+    #[test]
+    fn host_unix_sockets_are_hidden_and_masks_stay_masked() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("home/.ssh")).unwrap();
+        let mut sp = spec(&root);
+        // `$XDG_RUNTIME_DIR` outside /run (the server adds it to the hidden roots).
+        sp.hidden.push(root.join("xdg-run"));
+        let pol = Policy::from_spec(&sp);
+        let cwd = root.join("home/code/repo-task");
+        let a = bwrap_args(
+            &pol,
+            &cwd,
+            Some(Path::new("/run/user/1/vk/egress.sock")),
+            None,
+        );
+        // /run (systemd, D-Bus, docker, /run/user/<uid>) is an empty tmpfs, mounted before the
+        // egress socket is bound back in.
+        let run = pos(&a, &["--tmpfs", "/run"]).unwrap();
+        let egress = pos(&a, &["--bind", "/run/user/1/vk/egress.sock"]).unwrap();
+        assert!(run < egress);
+        let xdg = root.join("xdg-run").to_string_lossy().into_owned();
+        assert!(pos(&a, &["--tmpfs", &xdg]).is_some());
+        // Never-readable credential dirs are masked after the writable binds and never
+        // re-bound read-only by the final write-deny block.
+        let ssh = root.join("home/.ssh").to_string_lossy().into_owned();
+        let mask = pos(&a, &["--tmpfs", &ssh]).unwrap();
+        let co = cwd.to_string_lossy().into_owned();
+        assert!(mask > pos(&a, &["--bind-try", &co, &co]).unwrap());
+        assert!(pos(&a, &["--ro-bind-try", &ssh, &ssh]).is_none());
+    }
+
+    #[test]
+    fn landlock_plan_follows_the_abi() {
+        let p1 = landlock_plan(1);
+        assert_eq!(p1.handled_fs, ll::READ | ll::WRITE);
+        assert_eq!(p1.scoped, 0);
+        assert_eq!(p1.write & ll::REFER, 0);
+        let p3 = landlock_plan(3);
+        assert_ne!(p3.write & ll::REFER, 0);
+        assert_ne!(p3.write & ll::TRUNCATE, 0);
+        assert_eq!(p3.handled_fs & ll::IOCTL_DEV, 0);
+        let p5 = landlock_plan(5);
+        assert_ne!(p5.handled_fs & ll::IOCTL_DEV, 0);
+        assert_ne!(p5.dev & ll::IOCTL_DEV, 0);
+        assert_eq!(p5.write & ll::IOCTL_DEV, 0, "device ioctls only under /dev");
+        assert_eq!(p5.scoped, 0);
+        let p6 = landlock_plan(6);
+        assert_eq!(p6.scoped, ll::SCOPE_ABSTRACT_UNIX_SOCKET | ll::SCOPE_SIGNAL);
+        // Every right a rule grants is one the ruleset handles.
+        for p in [p1, p3, p5, p6] {
+            assert_eq!(p.dev & !p.handled_fs, 0);
+            assert_eq!(p.read & !p.handled_fs, 0);
+        }
     }
 
     #[test]
