@@ -864,6 +864,8 @@ pane.screenshot :: {pane?: Target, format?: text|ansi|html|png|svg = ansi, sourc
 # --- task.park / resume (full scope only) ---
 task.park :: {task: Target} => {task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}
 task.resume :: {task: Target} => {task: Task, resumed: [AgentRun], skipped: [{run: string, reason: string}]}
+"##;
+
 /// Server security (09, `crate::security`): policy, auth, audit, integration integrity.
 const SECURITY_SHAPES: &str = r##"
 # --- policy.* (07 §2.9, 09 §4); full scope only ---
