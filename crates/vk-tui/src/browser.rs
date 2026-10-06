@@ -2172,8 +2172,8 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "browser_watch_tests.rs"]
-mod watch_tests;
-#[cfg(test)]
 #[path = "browser_media_tests.rs"]
 mod media_tests;
+#[cfg(test)]
+#[path = "browser_watch_tests.rs"]
+mod watch_tests;
