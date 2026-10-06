@@ -541,7 +541,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::session_api::api(server, ctx, method, p).await {
         return r;
     }
-    if let Some(r) = crate::blob_api::api(server, method, p) {
+    if let Some(r) = crate::blob_api::api(server, ctx, method, p) {
         return r;
     }
     if let Some(r) = crate::pane_api::api(server, ctx, method, p) {
@@ -1346,10 +1346,18 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         ))),
 
         // ---- blobs (search and layouts: parity.rs) --------------------------------------
-        "blob.put" | "image.upload" => blob_put(server, p),
+        "blob.put" | "image.upload" => blob_put(server, p).inspect(|v| {
+            if let Some(h) = v["hash"].as_str() {
+                crate::blob_api::record_owner(server, ctx, h);
+            }
+        }),
         "blob.begin" => blob_begin(server, ctx, p),
         "blob.append" => blob_append(ctx, p),
-        "blob.commit" => blob_commit(server, ctx, p),
+        "blob.commit" => blob_commit(server, ctx, p).inspect(|v| {
+            if let Some(h) = v["hash"].as_str() {
+                crate::blob_api::record_owner(server, ctx, h);
+            }
+        }),
         "blob.abort" => blob_abort(ctx, p),
         "paste.translated" => crate::inbox::paste_translated(server, ctx, p),
         _ => Err(err(

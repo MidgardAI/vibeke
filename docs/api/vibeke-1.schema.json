@@ -23741,6 +23741,23 @@
     }
   },
   "x-notifications": {
+    "events.closed": {
+      "params": {
+        "type": "object",
+        "properties": {
+          "subscription_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id",
+          "reason"
+        ]
+      }
+    },
     "events.event": {
       "params": {
         "type": "object",

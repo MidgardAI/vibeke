@@ -16,7 +16,7 @@
 use crate::app::App;
 use std::collections::{HashMap, HashSet};
 use vk_proto::input::KeyEvent;
-use vk_proto::render::ClientFrame;
+use vk_proto::render::{ClientFrame, SyncPayload};
 
 #[derive(Debug, Default, Clone)]
 pub struct Set {
@@ -86,27 +86,56 @@ pub fn targets(app: &App, pane: &str) -> Vec<String> {
     ms.into_iter().filter(|p| p != pane).collect()
 }
 
+/// The server feature that enforces agent exclusion for mirrored input (`SyncInput` frames).
+pub const FEATURE: &str = "sync_input";
+
+/// Whether the user explicitly let `pane` receive synced input although it runs an agent
+/// (`prefix+alt+s`, or `ui.sync_input.include_agents`).
+fn agent_included(app: &App, pane: &str) -> bool {
+    app.config.ui.sync_input.include_agents
+        || focused_key(app)
+            .and_then(|k| app.ux.sync.tabs.get(&k))
+            .is_some_and(|s| s.agents.contains(pane))
+}
+
+/// Send one mirrored input. To a server with [`FEATURE`] it goes as `SyncInput`, so the server
+/// drops it for a pane whose agent started after this client's model was current; older
+/// servers get plain `Key`/`Paste` frames (client-side exclusion only).
+fn mirror(app: &mut App, pane: String, input: SyncPayload) {
+    let id = app.next_input;
+    app.next_input += 1;
+    let include_agent = agent_included(app, &pane);
+    let enforced = app.m().features.iter().any(|f| f == FEATURE);
+    let frame = match (enforced, input) {
+        (true, input) => ClientFrame::SyncInput {
+            input_id: id,
+            pane,
+            input,
+            include_agent,
+        },
+        (false, SyncPayload::Key(key)) => ClientFrame::Key {
+            input_id: id,
+            pane,
+            key,
+        },
+        (false, SyncPayload::Paste(text)) => ClientFrame::Paste {
+            input_id: id,
+            pane,
+            text,
+        },
+    };
+    app.m().send(frame);
+}
+
 pub fn mirror_key(app: &mut App, pane: &str, ev: &KeyEvent) {
     for p in targets(app, pane) {
-        let id = app.next_input;
-        app.next_input += 1;
-        app.m().send(ClientFrame::Key {
-            input_id: id,
-            pane: p,
-            key: ev.clone(),
-        });
+        mirror(app, p, SyncPayload::Key(ev.clone()));
     }
 }
 
 pub fn mirror_paste(app: &mut App, pane: &str, text: &str) {
     for p in targets(app, pane) {
-        let id = app.next_input;
-        app.next_input += 1;
-        app.m().send(ClientFrame::Paste {
-            input_id: id,
-            pane: p,
-            text: text.to_string(),
-        });
+        mirror(app, p, SyncPayload::Paste(text.to_string()));
     }
 }
 

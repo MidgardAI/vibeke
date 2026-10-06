@@ -31,9 +31,36 @@ const DEFAULT_WAIT_MS: u64 = 120_000;
 /// Prefix of `Ctx::kind` for elevated connections: `elevated:<token hash prefix>`.
 pub const ELEVATED_KIND: &str = "elevated:";
 
-#[derive(Default)]
 pub struct State {
     inner: Mutex<Inner>,
+    /// Bumped on every revocation: long-lived authenticated streams (event subscriptions,
+    /// render sessions) re-check their caller when it changes.
+    epoch: watch::Sender<u64>,
+}
+
+impl Default for State {
+    fn default() -> State {
+        State {
+            inner: Mutex::default(),
+            epoch: watch::channel(0).0,
+        }
+    }
+}
+
+/// A receiver that changes whenever a pane token or elevation is revoked.
+pub fn revocations(server: &Server) -> watch::Receiver<u64> {
+    server.security.auth.epoch.subscribe()
+}
+
+/// When this connection's elevation ends (ms since the epoch), for elevated connections.
+pub fn elevation_expiry(server: &Server, kind: &str) -> Option<i64> {
+    let prefix = kind.strip_prefix(ELEVATED_KIND)?;
+    let g = server.security.auth.inner.lock().unwrap();
+    g.elevated
+        .iter()
+        .filter(|(h, _)| h.starts_with(prefix))
+        .map(|(_, gr)| gr.expires_at_ms)
+        .max()
 }
 
 #[derive(Default)]
@@ -184,6 +211,8 @@ fn revoke(server: &Server, ctx: &Ctx, p: &Value) -> R {
         let g = server.security.auth.inner.lock().unwrap();
         serde_json::to_string(g.revoked.as_ref().unwrap_or(&HashMap::new())).unwrap_or_default()
     };
+    // Open subscriptions and render sessions of the pane (or its elevations) end now.
+    server.security.auth.epoch.send_modify(|e| *e += 1);
     {
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
@@ -410,6 +439,15 @@ fn decide(server: &Server, ctx: &Ctx, p: &Value) -> R {
     Ok(
         json!({"request": id, "pane": pane, "decision": if approve { "approved" } else { "denied" }, "expires_at_ms": expires}),
     )
+}
+
+/// Tests: let every elevation run out now (no clock to advance).
+#[cfg(test)]
+pub fn expire_all_for_test(server: &Server) {
+    let mut g = server.security.auth.inner.lock().unwrap();
+    for gr in g.elevated.values_mut() {
+        gr.expires_at_ms = now_ms() - 1;
+    }
 }
 
 /// Forget expired grants and requests nobody collected within 30 minutes.

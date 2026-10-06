@@ -596,6 +596,25 @@ pub enum ClientFrame {
         pane: String,
         data: Option<Vec<u8>>,
     },
+    /// Synchronized input (08 §5): a key or paste mirrored from the focused pane to `pane`.
+    /// The server drops it (ack `Rejected`) when `pane` has a live agent run, unless the user
+    /// explicitly added that agent pane to the sync set (`include_agent`), so a mirrored
+    /// command never prompts an agent that started after the client's model was current. Only
+    /// sent to servers whose `render.attach` result lists the `sync_input` feature. Appended
+    /// (postcard).
+    SyncInput {
+        input_id: u64,
+        pane: String,
+        input: SyncPayload,
+        include_agent: bool,
+    },
+}
+
+/// What a [`ClientFrame::SyncInput`] carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SyncPayload {
+    Key(KeyEvent),
+    Paste(String),
 }
 
 #[cfg(test)]

@@ -378,6 +378,7 @@ pub fn readonly_filter(
         | ClientFrame::RawInput { input_id, .. }
         | ClientFrame::Mouse { input_id, .. }
         | ClientFrame::Paste { input_id, .. }
+        | ClientFrame::SyncInput { input_id, .. }
         | ClientFrame::Browser { input_id, .. } => rejected(input_id),
         ClientFrame::Command { req, json } => {
             let method = serde_json::from_str::<Value>(&json)

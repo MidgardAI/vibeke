@@ -1059,6 +1059,7 @@ integration.tampered :: {run: string|null} => {harness: string, reason: changed|
 pub const NOTIFICATION_SHAPES: &str = r##"
 events.event :: {subscription_id: string, event: Event} => {}
 events.overflow :: {subscription_id: string, resume_from: Cursor} => {}
+events.closed :: {subscription_id: string, reason: string} => {}
 "##;
 
 #[cfg(test)]

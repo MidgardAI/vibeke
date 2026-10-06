@@ -104,3 +104,53 @@ fn include_agents_and_status_segment_and_cleanup() {
     tick(&mut app);
     assert!(app.ux.sync.tabs.is_empty());
 }
+
+/// Review batch 2, finding 9: to a server that enforces exclusion, mirrored input travels as
+/// `SyncInput` flagged with the user's explicit inclusion, so the server (not this client's
+/// possibly stale model) decides whether an agent pane receives it.
+#[test]
+fn mirrored_frames_carry_the_inclusion_flag_for_server_enforcement() {
+    let (mut app, mut rxs) = setup();
+    app.machines[0].features = vec![FEATURE.into()];
+    app.action("sync_input", None);
+    while rxs[0].try_recv().is_ok() {}
+    let sync_frames = |rx: &mut UnboundedReceiver<ClientFrame>| {
+        let mut v = Vec::new();
+        while let Ok(f) = rx.try_recv() {
+            match f {
+                ClientFrame::SyncInput {
+                    pane,
+                    include_agent,
+                    ..
+                } => v.push((pane, include_agent)),
+                ClientFrame::Key { pane, .. } | ClientFrame::Paste { pane, .. } => {
+                    v.push((format!("plain:{pane}"), false))
+                }
+                _ => {}
+            }
+        }
+        v.sort();
+        v
+    };
+    // p3 is a shell in this client's model (an agent may have started there since): mirrored
+    // as SyncInput without inclusion; the focused pane's own key stays a plain frame.
+    app.on_key(KeyEvent::new(Key::Char('l'), Mods::empty()));
+    assert_eq!(
+        sync_frames(&mut rxs[0]),
+        [("p3".to_string(), false), ("plain:p2".to_string(), false)]
+    );
+    // The agent in p1 added explicitly: flagged as included.
+    app.focus_pane(0, "p1");
+    app.action("sync_input_pane", None);
+    app.focus_pane(0, "p2");
+    while rxs[0].try_recv().is_ok() {}
+    app.on_paste("make\n".into());
+    assert_eq!(
+        sync_frames(&mut rxs[0]),
+        [
+            ("p1".to_string(), true),
+            ("p3".to_string(), false),
+            ("plain:p2".to_string(), false)
+        ]
+    );
+}

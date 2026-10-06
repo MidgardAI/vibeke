@@ -29,6 +29,19 @@ pub fn cwd(pid: u32) -> Option<String> {
     imp::cwd(pid)
 }
 
+/// The environment of `pid` as `(name, value)` pairs. Best effort: empty when it can't be read
+/// (another user's process; macOS, which withholds other processes' environments; or an
+/// unsupported platform).
+pub fn environ(pid: u32) -> Vec<(String, String)> {
+    imp::environ(pid)
+        .into_iter()
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
 /// The process tree below `pid` (inclusive), breadth first, up to `max_depth`.
 pub fn tree(pid: u32, max_depth: usize) -> Vec<ProcInfo> {
     let mut out = Vec::new();
@@ -53,6 +66,17 @@ mod imp {
 
     pub fn argv(pid: u32) -> Vec<String> {
         fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|b| {
+                b.split(|&c| c == 0)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn environ(pid: u32) -> Vec<String> {
+        fs::read(format!("/proc/{pid}/environ"))
             .map(|b| {
                 b.split(|&c| c == 0)
                     .filter(|s| !s.is_empty())
@@ -126,6 +150,15 @@ mod imp {
     use std::ffi::CStr;
 
     pub fn argv(pid: u32) -> Vec<String> {
+        procargs(pid).map(|(a, _)| a).unwrap_or_default()
+    }
+
+    pub fn environ(pid: u32) -> Vec<String> {
+        procargs(pid).map(|(_, e)| e).unwrap_or_default()
+    }
+
+    /// `KERN_PROCARGS2`: argc, the exec path, NUL padding, argv, then the environment.
+    fn procargs(pid: u32) -> Option<(Vec<String>, Vec<String>)> {
         let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
         let mut size: libc::size_t = 0;
         // SAFETY: sysctl with a null buffer queries the required size.
@@ -140,7 +173,7 @@ mod imp {
             )
         } != 0
         {
-            return vec![];
+            return None;
         }
         let mut buf = vec![0u8; size];
         // SAFETY: buf has `size` bytes.
@@ -155,27 +188,30 @@ mod imp {
             )
         } != 0
         {
-            return vec![];
+            return None;
         }
         buf.truncate(size);
         if buf.len() < 4 {
-            return vec![];
+            return None;
         }
         let argc = i32::from_ne_bytes(buf[..4].try_into().unwrap()) as usize;
         let mut rest = &buf[4..];
         // exec path, then NUL padding
-        let Some(p) = rest.iter().position(|&b| b == 0) else {
-            return vec![];
-        };
+        let p = rest.iter().position(|&b| b == 0)?;
         rest = &rest[p..];
-        let Some(p) = rest.iter().position(|&b| b != 0) else {
-            return vec![];
-        };
+        let p = rest.iter().position(|&b| b != 0)?;
         rest = &rest[p..];
-        rest.split(|&b| b == 0)
+        let mut parts = rest.split(|&b| b == 0);
+        let argv: Vec<String> = parts
+            .by_ref()
             .take(argc)
             .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect()
+            .collect();
+        let env: Vec<String> = parts
+            .take_while(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        Some((argv, env))
     }
 
     pub fn cwd(pid: u32) -> Option<String> {
@@ -273,6 +309,9 @@ mod imp {
     pub fn cwd(_: u32) -> Option<String> {
         None
     }
+    pub fn environ(_: u32) -> Vec<String> {
+        vec![]
+    }
     pub fn info(_: u32) -> Option<ProcInfo> {
         None
     }
@@ -283,6 +322,27 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_environ() {
+        let mut c = std::process::Command::new("sleep")
+            .arg("5")
+            .env("VK_PROCINFO_PROBE", "a=b")
+            .spawn()
+            .unwrap();
+        let env = super::environ(c.id());
+        let _ = c.kill();
+        let _ = c.wait();
+        // macOS does not expose another process's environment (KERN_PROCARGS2 omits it);
+        // there the reader returns nothing and callers fall back to process ancestry.
+        if cfg!(target_os = "linux") {
+            assert!(
+                env.iter()
+                    .any(|(k, v)| k == "VK_PROCINFO_PROBE" && v == "a=b"),
+                "{env:?}"
+            );
+        }
+    }
+
     #[test]
     fn self_info() {
         let me = std::process::id();
