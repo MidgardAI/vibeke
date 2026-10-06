@@ -428,6 +428,11 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
 
 pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
+        m if m.starts_with("task.")
+            && let Some(r) = crate::tracking::api(server, ctx, m, p).await =>
+        {
+            r
+        }
         "task.create" => task_create(server, ctx, p).await,
         "policy.trust" => policy_trust(server, p),
         "task.list" => Ok(json!({"tasks": server.with_core(|c| c.model.tasks.clone())})),
@@ -579,6 +584,8 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         status: "active".into(),
         setup_status: None,
         created_at_ms: vk_store::now_ms(),
+        owner_machine: server.opts.machine.clone(),
+        ..Default::default()
     };
     {
         let mut c = server.core.lock().unwrap();
@@ -698,6 +705,15 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
+    if task.ownership == vk_proto::model::TaskOwnership::Attached {
+        // 15 §4.3: an attached task's lifecycle never stops processes, closes the workspace,
+        // releases ports or deletes files. Only the record changes.
+        return crate::tracking::finish_attached(
+            server,
+            &task,
+            s(p, "status").unwrap_or("finished"),
+        );
+    }
     if let Some(ws) = &task.workspace {
         let panes: Vec<String> = server.with_core(|c| {
             c.model

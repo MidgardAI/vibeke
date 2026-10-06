@@ -18,6 +18,7 @@ vk-store = { path = "crates/vk-store" }
 vk-server = { path = "crates/vk-server" }
 vk-agents = { path = "crates/vk-agents" }
 vk-tasks = { path = "crates/vk-tasks" }
+vk-review = { path = "crates/vk-review" }
 vk-remote = { path = "crates/vk-remote" }
 vk-tui = { path = "crates/vk-tui" }
 vk-cli = { path = "crates/vk-cli" }

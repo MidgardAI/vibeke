@@ -10,6 +10,7 @@ pub mod pane;
 pub mod paths;
 pub mod render;
 pub mod run;
+pub mod tracking;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
@@ -82,6 +83,7 @@ pub struct Server {
     pub archive: Mutex<Archive>,
     pub fts_buf: Mutex<Vec<(String, u64, i64, String)>>,
     pub tokens: Mutex<HashMap<String, String>>,
+    pub tracking: tracking::State,
     pub agents: agents::Agents,
     pub shutdown: Notify,
     input_counter: AtomicU64,
@@ -149,6 +151,7 @@ impl Server {
             started: Instant::now(),
             fts_buf: Mutex::new(Vec::new()),
             tokens: Mutex::new(tokens),
+            tracking: Default::default(),
             agents: agents::Agents::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
@@ -225,6 +228,7 @@ impl Server {
     /// Reattach to every live holder; panes whose holder is gone are recreated (reboot) or
     /// closed. Returns the number of recovered panes.
     pub fn recover(self: &Arc<Self>) -> Result<usize> {
+        tracking::recover(self);
         let holders = self.with_core(|c| c.store.holders())?;
         let panes: Vec<Pane> = self.with_core(|c| c.model.panes.clone());
         let mut recovered = 0;

@@ -332,7 +332,7 @@ pub struct Notification {
     pub read: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Task {
     pub id: String,
     pub handle: String,
@@ -347,6 +347,34 @@ pub struct Task {
     pub status: String,
     pub setup_status: Option<String>,
     pub created_at_ms: i64,
+    /// `owned` (created by `task new`; 05 cleanup applies) or `attached` (tracking existing work;
+    /// lifecycle actions never stop processes or delete files) — 15 §4.3.
+    #[serde(default)]
+    pub ownership: TaskOwnership,
+    #[serde(default)]
+    pub owner_machine: String,
+    /// Current confirmed intent revision (15 §4.1), if tracked.
+    #[serde(default)]
+    pub intent_revision: Option<u32>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    /// Object revision for expected-revision checks on mutations.
+    #[serde(default)]
+    pub rev: u64,
+    /// Review readiness label (15 §7), independent of lifecycle `status`.
+    #[serde(default)]
+    pub review_label: Option<String>,
+    /// Coarse user-set effort for the five-minute view (15 §8.2): quick | minutes | deep | unknown.
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOwnership {
+    #[default]
+    Owned,
+    Attached,
 }
 
 /// Everything a client needs to draw chrome (07 §3.1 `Layout`), plus per-client focus.

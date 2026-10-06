@@ -730,7 +730,7 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
             pane,
             h,
             "UserPromptSubmit",
-            &json!({"prompt": p.get("prompt_preview")}),
+            &json!({"prompt": p.get("prompt").or_else(|| p.get("prompt_preview"))}),
         ),
         "Working" | "Settling" => {
             let run = bound_run(server, pane, h);
@@ -772,7 +772,7 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                 pane,
                 h,
                 ev,
-                &json!({"tool_name": t, "tool_use_id": call, "tool_input": {"file_path": p.get("file_path")}}),
+                &json!({"tool_name": t, "tool_use_id": call, "tool_input": {"file_path": p.get("file_path"), "command": p.get("command")}, "exit_code": p.get("exit_code")}),
             );
         }
         "Error" => {
@@ -942,6 +942,7 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
 
 fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
     let run = bound_run(server, pane, h);
+    crate::tracking::observe(server, &run, event, p);
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
