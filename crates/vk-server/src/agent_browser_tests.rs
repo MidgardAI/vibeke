@@ -887,7 +887,11 @@ async fn disconnected_screencast_client_releases_the_session() {
         .unwrap()
         .unwrap();
     assert_eq!(sess.screencast_subs.load(Ordering::SeqCst), 0);
-    assert!(!e.fake().calls_of("Page.stopScreencast").is_empty());
+    // stopScreencast is sent asynchronously after the subscription is dropped.
+    until("screencast stopped", || {
+        !e.fake().calls_of("Page.stopScreencast").is_empty()
+    })
+    .await;
     *sess.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(24 * 3600);
     until("idle collector closes the session", || {
         !e.events("browser.session_closed").is_empty()

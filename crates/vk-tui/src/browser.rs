@@ -96,6 +96,8 @@ pub struct PaneMedia {
 
 #[derive(Default)]
 pub struct BrowserUi {
+    /// Browser panes visible on the previous frame (a vanished one forces a full repaint).
+    pub visible_prev: Vec<String>,
     pub panes: HashMap<String, PaneMedia>,
     next_base: u32,
     /// Kitty commands to write before the next grid diff.
@@ -376,13 +378,32 @@ pub fn update_views(app: &mut App) {
         .filter(|p| !visible.contains(p))
         .cloned()
         .collect();
+    let mut repaint = false;
     for p in gone {
-        if let Some(pm) = app.browser.panes.remove(&p)
-            && pm.geom.is_some()
-            && gfx(app) == Gfx::Kitty
-        {
-            delete_range(&mut app.browser.out, pm.base, IDS_PER_PANE);
+        if let Some(pm) = app.browser.panes.remove(&p) {
+            if pm.geom.is_some() && gfx(app) == Gfx::Kitty {
+                delete_range(&mut app.browser.out, pm.base, IDS_PER_PANE);
+            }
+            // Images live outside the cell grid: blank cells under a vanished image never
+            // differ from the previous frame, so the diff renderer would leave the picture on
+            // screen (iTerm2 inline images, kitty placements). Repaint everything once.
+            repaint = true;
         }
+    }
+    // Any browser pane that was on screen and isn't any more (closed, tab switched, zoomed
+    // away) leaves image pixels behind unless the screen is repainted.
+    if app
+        .browser
+        .visible_prev
+        .iter()
+        .any(|p| !visible.contains(p))
+    {
+        repaint = true;
+    }
+    app.browser.visible_prev = visible.clone();
+    if repaint && gfx(app) != Gfx::None {
+        app.prev = crate::screen::Grid::new(0, 0);
+        app.dirty = true;
     }
     let want_px = app.caps.sgr_pixels && app.caps.cell_w > 0 && !visible.is_empty();
     if want_px != app.browser.pixels {
@@ -1753,6 +1774,28 @@ mod tests {
             v.push(f);
         }
         v
+    }
+
+    #[test]
+    fn a_vanished_browser_pane_forces_a_full_repaint() {
+        // Images live outside the grid: without a full repaint the blank cells under the old
+        // image never change and the picture stays on screen (user-reported in iTerm2).
+        for iterm in [false, true] {
+            let (mut app, _rxs, mi) = setup(1);
+            if iterm {
+                app.caps.kitty_graphics = false;
+                app.caps.iterm2_images = true;
+            }
+            update_views(&mut app);
+            app.prev = crate::screen::Grid::new(10, 10);
+            app.machines[mi].model.tabs[0].zoomed_pane = Some("p1".into());
+            update_views(&mut app);
+            assert_eq!(app.prev.cols, 0, "full repaint requested (iterm={iterm})");
+            // Nothing changes on the next pass: no repeated full repaints.
+            app.prev = crate::screen::Grid::new(10, 10);
+            update_views(&mut app);
+            assert_eq!(app.prev.cols, 10, "only once (iterm={iterm})");
+        }
     }
 
     #[test]
