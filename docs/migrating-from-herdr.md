@@ -71,18 +71,62 @@ flag, as above.
 ### Not mapped
 
 - Anything the importer cannot place is listed as `skipped` in its report. Read the report.
-- Herdr plugins are inventoried, not activated. Plugin support arrives later.
-  Partial support (M5 first slice): `vibeke plugin install <dir>` or `vibeke plugin link <dir>`
-  registers an unchanged Herdr plugin in Vibeke's own registry. Then `vibeke plugin trust <id>
-  --legacy` shows everything the plugin can run and grants trust. Actions (`vibeke plugin action
-  run`), event hooks and startup hooks then work, and callbacks reach Vibeke through a private
-  `herdr` launcher. Plugin panes, popups, link handlers and git installs are not supported yet.
-  Your Herdr registry is never read or changed.
+- Herdr plugins are not activated by the importer. See "Herdr plugins" below for the partial
+  plugin support and the separate, copy-only migration of plugin config and state.
 - Running agent processes in Herdr stay in Herdr. Vibeke recreates the layout and offers resume,
   it does not take over live processes.
 
 If `~/.config/vibeke/config.toml` already exists the config import writes
 `config.imported.toml` next to it instead of overwriting; use `--force` to overwrite.
+
+### Herdr plugins (partial, M5)
+
+Support is partial. [herdr-compat-inventory.md](herdr-compat-inventory.md) lists what works,
+item by item.
+
+1. Register the unchanged plugin in Vibeke's own registry, then review and trust it. Nothing it
+   ships runs before trust:
+
+   ```sh
+   vibeke plugin link ~/src/my-herdr-plugin      # or: vibeke plugin install <dir>
+   vibeke plugin trust <id> --legacy             # shows every entrypoint, then grants trust
+   ```
+
+2. Bring over the plugin's config and state. The source is always a directory you name. It can
+   be `~/.config/herdr` itself, but a copy works as well. Files are copied, never moved, and
+   existing Vibeke files are reported as conflicts and left alone:
+
+   ```sh
+   vibeke plugin migrate --from ~/herdr-backup --dry-run    # what would be copied
+   vibeke plugin migrate --from ~/herdr-backup --link       # copy; also link the registry's plugins
+   vibeke plugin migrate --rollback                         # remove what the last run created
+   ```
+
+   Herdr's on-disk layout for per-plugin data is not verified. The migration looks for
+   `plugins/<id>/config|state`, `plugins/config|state/<id>` and `plugin-config|state/<id>`, plus
+   explicit `config_dir`/`state_dir` entries in `plugins.json`. Its report shows which layout
+   matched. `--link` registers plugins untrusted.
+
+What works once a plugin is trusted:
+
+- Actions (`vibeke plugin action run`), event hooks and startup hooks. Callbacks reach Vibeke
+  through a private `herdr` launcher and socket.
+- The worktree, layout, pane move/swap, agent and metadata calls.
+- Plugin panes in the `split`, `tab`, `zoomed` and `overlay` placements. An overlay opens as a
+  zoomed pane.
+- `herdr --session NAME`.
+
+A startup hook's background processes keep their callback access while they run, including
+across a Vibeke server restart. Processes an action leaves behind lose it when the action ends.
+Credentials in plugin output are redacted in `vibeke plugin logs`.
+
+Not supported yet: popups, real overlays, plugin key bindings and palette entries, link
+handlers, and installs from git.
+
+With `[compat.herdr] enabled = true`, Vibeke also listens on Herdr's socket layout for tools
+that talk to Herdr directly. The default session uses `$RUNTIME/herdr-compat/herdr.sock`
+and a named session uses `$RUNTIME/herdr-compat/sessions/<name>/herdr.sock`. This is under
+Vibeke's runtime directory, never under `~/.config/herdr`.
 
 ## 3. Key differences
 

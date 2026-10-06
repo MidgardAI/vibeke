@@ -152,6 +152,12 @@ const VERBS: &[(&str, &str, &str, &[&str])] = &[
     ("events", "wait", "events.wait", &[]),
     ("layout", "export", "layout.export", &[]),
     ("layout", "apply", "layout.apply", &[]),
+    (
+        "layout",
+        "set-split-ratio",
+        "layout.set_split_ratio",
+        &["split_id", "ratio"],
+    ),
     ("server", "reload-config", "server.reload_config", &[]),
     ("server", "stop", "server.stop", &[]),
     ("popup", "close", "popup.close", &[]),
@@ -183,7 +189,15 @@ fn coerce(key: &str, v: &str) -> Value {
         _ => v
             .parse::<i64>()
             .map(Value::from)
-            .unwrap_or_else(|_| Value::String(v.to_string())),
+            .ok()
+            .or_else(|| {
+                v.parse::<f64>()
+                    .ok()
+                    .filter(|f| f.is_finite())
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Value::Number)
+            })
+            .unwrap_or_else(|| Value::String(v.to_string())),
     }
 }
 
@@ -364,6 +378,43 @@ fn invoke(args: &[String]) -> Parsed {
         method: "plugin.action.invoke".into(),
         params: Value::Object(f),
     }
+}
+
+/// Remove Herdr's global `--session NAME` / `--session=NAME` flag from a command line (it may
+/// appear anywhere before a `--` separator). Returns the selected session, if any, and the
+/// remaining arguments; an empty or path-like name is a usage error.
+pub fn take_session(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut session = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--" {
+            out.extend(args[i..].iter().cloned());
+            break;
+        }
+        let v = if a == "--session" {
+            i += 1;
+            Some(
+                args.get(i)
+                    .cloned()
+                    .ok_or("--session needs a session name")?,
+            )
+        } else {
+            a.strip_prefix("--session=").map(str::to_string)
+        };
+        match v {
+            Some(name) => {
+                if !super::valid_session_name(&name) {
+                    return Err(format!("invalid session name `{name}`"));
+                }
+                session = Some(name);
+            }
+            None => out.push(a.clone()),
+        }
+        i += 1;
+    }
+    Ok((session, out))
 }
 
 /// Parse a shim command line (without the program name).
@@ -565,6 +616,26 @@ mod tests {
         );
         assert_eq!(call("plugin logs").0, "plugin.log.list");
         assert!(matches!(p("plugin unlink"), Parsed::Usage(_)));
+    }
+
+    #[test]
+    fn session_flag() {
+        let a = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            take_session(&a("--session work pane list")).unwrap(),
+            (Some("work".into()), a("pane list"))
+        );
+        assert_eq!(
+            take_session(&a("pane list --session=w2")).unwrap(),
+            (Some("w2".into()), a("pane list"))
+        );
+        assert_eq!(
+            take_session(&a("pane send-text p -- --session x")).unwrap(),
+            (None, a("pane send-text p -- --session x")),
+            "after -- it is text"
+        );
+        assert!(take_session(&a("--session")).is_err());
+        assert!(take_session(&a("--session ../x pane list")).is_err());
     }
 
     #[test]

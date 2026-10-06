@@ -81,6 +81,9 @@ fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
                 args.remove(i);
             }
             "--" => break,
+            // `vibeke compat herdr …` hands the rest to the Herdr shim verbatim: Herdr's own
+            // global `--session` is the shim's to interpret (07 §8.2).
+            "compat" if args.get(i + 1).map(String::as_str) == Some("herdr") => break,
             _ => i += 1,
         }
     }

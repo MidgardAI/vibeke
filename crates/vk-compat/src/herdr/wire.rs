@@ -131,6 +131,8 @@ pub fn from_native(kind: &str, object: Option<&str>, message: &str) -> WireError
         ("not_found", Some("workspace")) => "workspace_not_found",
         ("not_found", Some("run")) => "agent_not_found",
         ("not_found", Some("plugin")) => "plugin_not_found",
+        ("not_found", Some("worktree")) => "worktree_not_found",
+        ("not_found", Some("repo")) => "not_a_repository",
         ("not_found", _) => "not_found",
         ("invalid_params", _) => "invalid_params",
         ("invalid_key", _) => "invalid_key",

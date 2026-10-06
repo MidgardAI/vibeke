@@ -88,7 +88,7 @@ impl Session {
         )
     }
     fn compat_socket(&self) -> PathBuf {
-        self.path("run/default/herdr-compat/herdr.sock")
+        self.path("run/herdr-compat/herdr.sock")
     }
 }
 
@@ -215,7 +215,7 @@ fn herdr_cli_shim_and_wire_protocol() {
         (1, "pane_not_found".to_string()),
         "{e}"
     );
-    let (_, e) = s_.fail(&["compat", "herdr", "pane", "process-info", &pane]);
+    let (_, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
     assert_eq!(e["error"]["code"], "unsupported", "{e}");
     let (code, _) = s_.fail(&["compat", "herdr", "pane", "teleport"]);
     assert_eq!(code, 2, "usage error");
@@ -235,7 +235,7 @@ fn herdr_cli_shim_and_wire_protocol() {
     assert_eq!(v["error"]["code"], "invalid_request");
     let (v, _) = raw(&sock, r#"{"id":"x","method":"galaxy.explode","params":{}}"#);
     assert_eq!(v["error"]["code"], "method_not_found");
-    let (v, _) = raw(&sock, r#"{"id":"y","method":"layout.export","params":{}}"#);
+    let (v, _) = raw(&sock, r#"{"id":"y","method":"agent.view.set","params":{}}"#);
     assert_eq!(v["error"]["code"], "unsupported");
     let (v, _) = raw(&sock, "{oops");
     assert_eq!(v["error"]["code"], "parse_error");
