@@ -772,6 +772,11 @@ async fn sessions_close_explicitly_and_with_their_pane() {
         e.server.agent_browser.session("b2").is_none()
     })
     .await;
+    // The session leaves the table before its close event is committed.
+    until("close event recorded", || {
+        e.events("browser.session_closed").len() == 2
+    })
+    .await;
     let closed = e.events("browser.session_closed");
     assert_eq!(closed.len(), 2);
     assert_eq!(closed[1].data["reason"], "owner_pane_closed");
