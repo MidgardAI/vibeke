@@ -177,7 +177,7 @@ export function Composer({
   return (
     <div className="border-t border-border bg-surface px-2 pb-1.5 pt-1.5">
       {lastSent && !text && (
-        <div className="mb-1 flex items-center gap-2 px-1 text-[12px] text-muted">
+        <div className="mb-1 flex items-center gap-2 px-1 text-xs text-muted">
           <span className="shrink-0">{t.composer.youSent}</span>
           <span className="min-w-0 flex-1 truncate font-mono">{lastSent}</span>
           <button type="button" aria-label={t.close} onClick={() => setLastSent(null)}>
@@ -189,7 +189,7 @@ export function Composer({
       {atts.length > 0 && (
         <div className="mb-1.5 flex flex-wrap gap-1.5">
           {atts.map((a) => (
-            <span key={a.n} className={cx('inline-flex h-7 items-center gap-1 rounded-full border px-2 text-[12px]', a.error ? 'border-danger text-danger' : 'border-border')}>
+            <span key={a.n} className={cx('inline-flex h-7 items-center gap-1 rounded-full border px-2 text-xs', a.error ? 'border-danger text-danger' : 'border-border')}>
               <span className="font-semibold">#{a.n}</span>
               <span className="max-w-32 truncate">{a.error ? `${t.composer.uploadFailed}: ${a.error}` : a.name}</span>
               {!a.path && !a.error && <Loader2 className="size-3 animate-spin" />}
@@ -201,7 +201,7 @@ export function Composer({
         </div>
       )}
       {(voice === 'listening' || voice === 'recording' || voice === 'transcribing') && (
-        <div className="mb-1.5 flex items-center gap-2 px-1 text-[13px] text-accent">
+        <div className="mb-1.5 flex items-center gap-2 px-1 text-sm text-accent">
           <span className="size-2 animate-pulse rounded-full bg-danger" />
           {voice === 'listening' ? t.composer.listening : voice === 'recording' ? t.composer.recording : t.composer.transcribing}
         </div>

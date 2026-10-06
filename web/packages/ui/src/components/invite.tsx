@@ -24,9 +24,9 @@ export function InviteLink({ invite, shareTitle, note }: { invite: Invite; share
       <div className="mx-auto w-full max-w-[16rem]">
         <QrCode value={invite.link} label={t.share.link} className={expired ? 'opacity-30' : undefined} />
       </div>
-      <div className="break-all rounded-xl border border-border bg-bg px-3 py-2 font-mono text-[12px] select-all">{invite.link}</div>
+      <div className="break-all rounded-xl border border-border bg-bg px-3 py-2 font-mono text-xs select-all">{invite.link}</div>
       {invite.openBy !== undefined && (
-        <div className={expired ? 'text-[12px] text-danger' : 'text-[12px] text-muted'}>{t.share.openBy(whenText(invite.openBy * 1000, now))}</div>
+        <div className={expired ? 'text-xs text-danger' : 'text-xs text-muted'}>{t.share.openBy(whenText(invite.openBy * 1000, now))}</div>
       )}
       <div className="flex gap-2">
         <Button

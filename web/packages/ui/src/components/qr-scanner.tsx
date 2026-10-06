@@ -66,7 +66,7 @@ export function QrScanner({ onResult }: { onResult(text: string): void }) {
   return (
     <div className="space-y-2">
       <video ref={video} playsInline muted className="aspect-square w-full rounded-2xl bg-black object-cover" />
-      <div className="text-center text-[13px] text-muted">{t.pair.scanning}</div>
+      <div className="text-center text-sm text-muted">{t.pair.scanning}</div>
     </div>
   );
 }

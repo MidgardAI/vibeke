@@ -106,7 +106,7 @@ export function HistoryView({ hostId, run }: { hostId: string; run: AgentRun | n
           <>
             <Search className="size-4 text-muted" />
             <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.pane.find} className="h-9 min-w-0 flex-1 bg-transparent outline-none" />
-            <span className="text-[12px] text-muted">{q ? t.history.matches(shown.length) : ''}</span>
+            <span className="text-xs text-muted">{q ? t.history.matches(shown.length) : ''}</span>
             <IconButton
               label={t.close}
               onClick={() => {
@@ -139,7 +139,7 @@ export function HistoryView({ hostId, run }: { hostId: string; run: AgentRun | n
               {t.history.loadOlder}
             </Button>
           ) : (
-            turns.length > 0 && <span className="text-[12px] text-faint">{t.history.noOlder}</span>
+            turns.length > 0 && <span className="text-xs text-faint">{t.history.noOlder}</span>
           )}
         </div>
         {error && <div className="mb-2 text-center text-sm text-danger">{error}</div>}
@@ -182,7 +182,7 @@ function Item({ it, id, highlight }: { it: TranscriptItem; id: string; highlight
     case 'tool_call':
       return (
         <Row id={id} icon={<Wrench className="size-3.5" />} title={it.tool || t.history.tool} open={!!highlight} detail={[it.summary, it.text].filter(Boolean).join('\n\n') || null}>
-          {it.summary && <span className="truncate font-mono text-[12px] text-muted">{it.summary}</span>}
+          {it.summary && <span className="truncate font-mono text-xs text-muted">{it.summary}</span>}
         </Row>
       );
     case 'tool_result':
@@ -195,7 +195,7 @@ function Item({ it, id, highlight }: { it: TranscriptItem; id: string; highlight
           open={!!highlight}
           detail={[it.summary, it.text].filter(Boolean).join('\n\n') || null}
         >
-          {it.summary && <span className={cx('truncate font-mono text-[12px]', it.error ? 'text-danger' : 'text-muted')}>{it.summary}</span>}
+          {it.summary && <span className={cx('truncate font-mono text-xs', it.error ? 'text-danger' : 'text-muted')}>{it.summary}</span>}
         </Row>
       );
     default:
@@ -211,13 +211,13 @@ function Message({ it, id, highlight }: { it: TranscriptItem; id: string; highli
   if (!text.trim()) return null;
   return (
     <div id={id} className={cx('flex scroll-mt-2', user ? 'justify-end' : 'justify-start')}>
-      <div className={cx('max-w-[92%] rounded-2xl px-3 py-2 text-[14px]', user ? 'bg-accent/15' : 'border border-border bg-surface')}>
-        <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-faint">{user ? t.history.you : t.history.agent}</div>
+      <div className={cx('max-w-[92%] rounded-2xl px-3 py-2 text-sm', user ? 'bg-accent/15' : 'border border-border bg-surface')}>
+        <div className="mb-0.5 text-2xs font-semibold uppercase tracking-wide text-faint">{user ? t.history.you : t.history.agent}</div>
         <div className={cx(!open && 'max-h-40 overflow-hidden')}>
           {user ? <div className="whitespace-pre-wrap break-words">{text}</div> : <Markdown text={text} />}
         </div>
         {long && (
-          <button type="button" className="mt-1 flex items-center gap-1 text-[12px] text-accent" onClick={() => setOpen(!open)}>
+          <button type="button" className="mt-1 flex items-center gap-1 text-xs text-accent" onClick={() => setOpen(!open)}>
             {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
             {open ? t.history.collapse : t.history.expand}
           </button>
@@ -251,7 +251,7 @@ function Row({
   }, [initial]);
   const can = !!detail;
   return (
-    <div id={id} className={cx('rounded-lg border px-2 py-1 text-[13px]', tone === 'danger' ? 'border-danger/40 bg-danger/5' : 'border-border/60')}>
+    <div id={id} className={cx('rounded-lg border px-2 py-1 text-sm', tone === 'danger' ? 'border-danger/40 bg-danger/5' : 'border-border/60')}>
       <button
         type="button"
         disabled={!can}
@@ -264,7 +264,7 @@ function Row({
         <span className="shrink-0 font-medium">{title}</span>
         {!open && children}
       </button>
-      {open && detail && <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] text-fg/80">{detail}</pre>}
+      {open && detail && <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-fg/80">{detail}</pre>}
     </div>
   );
 }

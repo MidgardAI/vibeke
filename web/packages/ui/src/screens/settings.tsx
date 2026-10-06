@@ -18,8 +18,8 @@ function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; ch
   return (
     <div className="flex min-h-12 items-center gap-3 px-4 py-2">
       <div className="min-w-0 flex-1">
-        <div className="text-[15px]">{label}</div>
-        {hint && <div className="text-[12px] text-muted">{hint}</div>}
+        <div className="text-base">{label}</div>
+        {hint && <div className="text-xs text-muted">{hint}</div>}
       </div>
       {children}
     </div>
@@ -217,10 +217,10 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
   const name = h.info?.host_name ?? h.record.name;
 
   if (!online) return <Row label={showName ? name : t.settings.perHost} hint={t.conn.hostOffline} />;
-  if (!prefs) return <Row label={showName ? name : t.settings.perHost}>{err ? <span className="text-[12px] text-danger">{err}</span> : <Spinner />}</Row>;
+  if (!prefs) return <Row label={showName ? name : t.settings.perHost}>{err ? <span className="text-xs text-danger">{err}</span> : <Spinner />}</Row>;
   return (
     <div className="space-y-0">
-      {showName && <div className="px-4 pt-3 text-[13px] font-semibold">{name}</div>}
+      {showName && <div className="px-4 pt-3 text-sm font-semibold">{name}</div>}
       <Row label={t.settings.notifyInput}>
         <Toggle label={t.settings.notifyInput} checked={prefs.notify_input} onChange={(v) => void save({ ...prefs, notify_input: v })} />
       </Row>
@@ -267,7 +267,7 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
           {tested ? t.settings.pushTestSent : t.settings.pushTest}
         </Button>
       </Row>}
-      {err && <div className="px-4 pb-2 text-[12px] text-danger">{err}</div>}
+      {err && <div className="px-4 pb-2 text-xs text-danger">{err}</div>}
     </div>
   );
 }
@@ -301,9 +301,9 @@ function QuickReplies() {
             quickReplies: { ...prefs.quickReplies, [harness]: text.split('\n').map((s) => s.trim()).filter(Boolean) },
           })
         }
-        className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 font-mono text-[13px]"
+        className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 font-mono text-sm"
       />
-      <div className="text-[12px] text-muted">{t.settings.quickHint}</div>
+      <div className="text-xs text-muted">{t.settings.quickHint}</div>
     </div>
   );
 }
@@ -350,10 +350,10 @@ function HostCard({ h }: { h: HostState }) {
       <div className="flex items-center gap-2 px-4 pt-3">
         <Dot tone={tone} />
         <div className="min-w-0 flex-1 font-medium">{h.info?.host_name ?? h.record.name}</div>
-        <span className="text-[12px] text-muted">{statusText}</span>
+        <span className="text-xs text-muted">{statusText}</span>
       </div>
       {kind !== 'device' && (
-        <div className="px-4 pt-1 text-[12px] text-muted">
+        <div className="px-4 pt-1 text-xs text-muted">
           {[
             kind === 'handoff' ? t.settings.handoffOnly : t.settings.sharedWithYou,
             h.record.label,
@@ -365,7 +365,7 @@ function HostCard({ h }: { h: HostState }) {
             .join(' · ')}
         </div>
       )}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-4 py-2 text-[12px]">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-4 py-2 text-xs">
         <dt className="text-muted">{t.settings.scope}</dt>
         <dd>{scope}</dd>
         <dt className="text-muted">{transportOf(h.record.relay) === 'local' ? t.settings.transport : 'Relay'}</dt>
@@ -394,15 +394,15 @@ function HostCard({ h }: { h: HostState }) {
       </dl>
       {devices && (
         <div className="border-t border-border px-4 py-2">
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">{t.settings.devices}</div>
+          <div className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">{t.settings.devices}</div>
           {devices.map((d) => (
-            <div key={d.id} className="flex min-h-10 items-center gap-2 text-[13px]">
+            <div key={d.id} className="flex min-h-10 items-center gap-2 text-sm">
               <Smartphone className="size-4 text-muted" />
               <div className="min-w-0 flex-1">
                 <div className="truncate">
                   {d.name} {d.this && <span className="text-muted">({t.settings.thisDevice})</span>}
                 </div>
-                <div className="font-mono text-[11px] text-faint">
+                <div className="font-mono text-2xs text-faint">
                   {d.fingerprint} · {d.scope} · {d.platform}
                 </div>
                 {d.kind && d.kind !== 'device' && <DeviceShareInfo d={d} now={now} h={h} />}
@@ -429,7 +429,7 @@ function HostCard({ h }: { h: HostState }) {
           ))}
         </div>
       )}
-      {err && <div className="px-4 pb-2 text-[12px] text-danger">{err}</div>}
+      {err && <div className="px-4 pb-2 text-xs text-danger">{err}</div>}
       <div className="flex gap-2 border-t border-border px-4 py-2">
         {h.status !== 'online' && h.status !== 'expired' && (
           <Button size="sm" variant="outline" onClick={() => app.conn(h.record.host_id)?.reconnectNow()}>
@@ -466,7 +466,7 @@ function DeviceShareInfo({ d, now, h }: { d: DeviceInfo; now: number; h: HostSta
         : null,
     exp !== null ? (exp * 1000 <= now ? t.settings.expiredAt : t.settings.expiresAt)(whenText(exp * 1000, now)) : null,
   ].filter(Boolean);
-  return <div className={exp !== null && exp * 1000 <= now ? 'text-[11px] text-danger' : 'text-[11px] text-accent'}>{parts.join(' · ')}</div>;
+  return <div className={exp !== null && exp * 1000 <= now ? 'text-2xs text-danger' : 'text-2xs text-accent'}>{parts.join(' · ')}</div>;
 }
 
 function ReceiveHandoffGroup({ hosts }: { hosts: readonly HostState[] }) {
@@ -478,7 +478,7 @@ function ReceiveHandoffGroup({ hosts }: { hosts: readonly HostState[] }) {
         const name = h.info?.host_name ?? h.record.name;
         return (
           <div key={h.record.host_id}>
-            {own.length > 1 && <div className="px-4 pt-3 text-[13px] font-semibold">{name}</div>}
+            {own.length > 1 && <div className="px-4 pt-3 text-sm font-semibold">{name}</div>}
             {h.status === 'online' ? <ReceiveHandoff hostId={h.record.host_id} hostName={name} /> : <Row label={name} hint={t.conn.hostOffline} />}
           </div>
         );
@@ -504,14 +504,14 @@ function About() {
       )}
       {inst?.iosShareSheet && !inst.standalone && <div className="px-4 py-3"><Notice>{t.settings.iosInstall}</Notice></div>}
       <Row label={t.settings.appOrigin}>
-        <span className="font-mono text-[12px]">{b.origin}</span>
+        <span className="font-mono text-xs">{b.origin}</span>
       </Row>
       <Row label={t.settings.build}>
-        <span className="font-mono text-[12px]">
+        <span className="font-mono text-xs">
           {b.version} · {b.hash}
         </span>
       </Row>
-      <div className="px-4 py-3 text-[12px] text-muted">{t.settings.trustNote}</div>
+      <div className="px-4 py-3 text-xs text-muted">{t.settings.trustNote}</div>
       <Row label={t.settings.tour}>
         <Button size="sm" variant="outline" onClick={() => app.prefs.patch({ tourDone: false })}>
           {t.open}

@@ -24,10 +24,25 @@ export interface Prefs {
   tourDone: boolean;
   /** null = not asked yet. */
   speechConsent: boolean | null;
+  /** Wide layout: the right (changes) panel is open on workspace routes. */
+  panelOpen: boolean;
+  /** Wide layout: right panel width in px. */
+  panelWidth: number;
+  /** Wide layout: the sidebar is hidden (mod+backslash). */
+  sidebarHidden: boolean;
+  /** Collapsed sidebar sections (`pinned`, `needs`, `review`, `working`, `done`, `idle`). */
+  collapsed: string[];
+  /** Sidebar shows the Done and Idle groups. */
+  showDone: boolean;
+  /** Sidebar host filter (host id), null = all hosts. */
+  hostFilter: string | null;
 }
 
+export const PANEL_MIN = 320;
+export const PANEL_MAX = 760;
+
 export const DEFAULT_PREFS: Prefs = {
-  theme: 'system',
+  theme: 'dark',
   termFont: 12,
   beltSize: 'm',
   haptics: true,
@@ -39,6 +54,12 @@ export const DEFAULT_PREFS: Prefs = {
   seenDone: {},
   tourDone: false,
   speechConsent: null,
+  panelOpen: true,
+  panelWidth: 420,
+  sidebarHidden: false,
+  collapsed: [],
+  showDone: true,
+  hostFilter: null,
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -56,7 +77,7 @@ export function parsePrefs(raw: string | null): Prefs {
   if (v.theme === 'light' || v.theme === 'dark' || v.theme === 'system') p.theme = v.theme;
   if (typeof v.termFont === 'number' && v.termFont >= 8 && v.termFont <= 24) p.termFont = v.termFont;
   if (v.beltSize === 's' || v.beltSize === 'm' || v.beltSize === 'l') p.beltSize = v.beltSize;
-  for (const k of ['haptics', 'zenLandscape', 'wrap', 'tourDone'] as const) if (typeof v[k] === 'boolean') p[k] = v[k] as boolean;
+  for (const k of ['haptics', 'zenLandscape', 'wrap', 'tourDone', 'panelOpen', 'sidebarHidden', 'showDone'] as const) if (typeof v[k] === 'boolean') p[k] = v[k] as boolean;
   if (typeof v.deviceName === 'string') p.deviceName = v.deviceName.slice(0, 64);
   if (typeof v.speechConsent === 'boolean') p.speechConsent = v.speechConsent;
   if (isObj(v.quickReplies)) {
@@ -66,6 +87,9 @@ export function parsePrefs(raw: string | null): Prefs {
     }
     p.quickReplies = q;
   }
+  if (typeof v.panelWidth === 'number' && Number.isFinite(v.panelWidth)) p.panelWidth = Math.round(Math.min(PANEL_MAX, Math.max(PANEL_MIN, v.panelWidth)));
+  if (Array.isArray(v.collapsed)) p.collapsed = v.collapsed.filter((x): x is string => typeof x === 'string').slice(0, 20);
+  if (typeof v.hostFilter === 'string') p.hostFilter = v.hostFilter;
   if (Array.isArray(v.pins)) p.pins = v.pins.filter((x): x is string => typeof x === 'string').slice(0, 200);
   if (isObj(v.seenDone)) {
     const s: Record<string, number> = {};
@@ -102,6 +126,10 @@ export class PrefsStore extends ValueStore<Prefs> {
   togglePin(key: string): void {
     const pins = this.get().pins;
     this.patch({ pins: pins.includes(key) ? pins.filter((k) => k !== key) : [...pins, key] });
+  }
+  toggleCollapsed(id: string): void {
+    const c = this.get().collapsed;
+    this.patch({ collapsed: c.includes(id) ? c.filter((x) => x !== id) : [...c, id] });
   }
   markSeen(runKey: string, doneRev: number): void {
     if (this.get().seenDone[runKey] === doneRev) return;

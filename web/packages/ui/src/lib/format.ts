@@ -60,3 +60,32 @@ export function byteSize(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
   return `${(n / 1024 / 1024).toFixed(1)} MiB`;
 }
+
+/**
+ * Compact age for dense lists: `now` (< 1 min), `12m`, `5h`, `3d`, `6w`, `8mo`, `2y`. Future
+ * timestamps (clock skew between hosts) read as `now`.
+ */
+export function relTime(thenMs: number, nowMs: number): string {
+  const s = Math.floor((nowMs - thenMs) / 1000);
+  if (!Number.isFinite(s) || s < 60) return t.time.now;
+  const m = Math.floor(s / 60);
+  if (m < 60) return t.time.m(m);
+  const h = Math.floor(m / 60);
+  if (h < 24) return t.time.h(h);
+  const d = Math.floor(h / 24);
+  if (d < 14) return t.time.d(d);
+  if (d < 60) return t.time.w(Math.floor(d / 7));
+  if (d < 365) return t.time.mo(Math.floor(d / 30));
+  return t.time.y(Math.floor(d / 365));
+}
+
+/** Compact count for diff stats and badges: `684`, `1.9k`, `12k`, `1.2M` (never rounds up to `1000`). */
+export function fmtCount(n: number): string {
+  const v = Math.max(0, Math.floor(Math.abs(n)));
+  if (v < 1000) return String(v);
+  const unit = (x: number, suffix: string) => {
+    const one = Math.floor(x * 10) / 10;
+    return one < 10 ? `${one.toFixed(1).replace(/\.0$/, '')}${suffix}` : `${Math.floor(x)}${suffix}`;
+  };
+  return v < 1_000_000 ? unit(v / 1000, 'k') : unit(v / 1_000_000, 'M');
+}

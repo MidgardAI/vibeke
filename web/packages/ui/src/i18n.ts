@@ -512,6 +512,9 @@ export const en = {
     m: (n: number) => `${n}m`,
     h: (n: number) => `${n}h`,
     d: (n: number) => `${n}d`,
+    w: (n: number) => `${n}w`,
+    mo: (n: number) => `${n}mo`,
+    y: (n: number) => `${n}y`,
     ago: (s: string) => `${s} ago`,
   },
 };

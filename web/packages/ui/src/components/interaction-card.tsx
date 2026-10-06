@@ -43,7 +43,7 @@ export function CardHeader({ item, showHost }: { item: InboxItem; showHost: bool
     (x): x is string => !!x,
   );
   return (
-    <div className="flex items-center gap-2 text-[12px] text-muted">
+    <div className="flex items-center gap-2 text-xs text-muted">
       <KindIcon kind={it.kind} />
       <span className="min-w-0 flex-1 truncate">{parts.join(' · ')}</span>
       <span className="shrink-0 tabular-nums">{t.inbox.waiting(shortDuration(now - it.opened_at_ms))}</span>
@@ -80,7 +80,7 @@ function Collapsible({ children, max = 180 }: { children: ReactNode; max?: numbe
         {children}
         {!open && <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-surface" />}
       </div>
-      <button type="button" className="mt-1 text-[13px] text-accent" onClick={() => setOpen(!open)}>
+      <button type="button" className="mt-1 text-sm text-accent" onClick={() => setOpen(!open)}>
         {open ? t.inbox.showLess : t.inbox.showMore}
       </button>
     </div>
@@ -95,12 +95,12 @@ function ActionPreview({ it }: { it: Interaction }) {
     <div className="space-y-2">
       {a.summary && a.summary !== it.title && <div className="text-sm text-muted">{a.summary}</div>}
       {a.command && (
-        <pre className="term max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border px-2.5 py-2 text-[12.5px]">
+        <pre className="term max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border px-2.5 py-2 text-xs">
           {a.command}
         </pre>
       )}
       {a.paths.length > 0 && (
-        <div className="space-y-0.5 font-mono text-[12px] text-muted">
+        <div className="space-y-0.5 font-mono text-xs text-muted">
           {a.paths.slice(0, 3).map((p) => (
             <div key={p} className="truncate">
               {p}
@@ -111,7 +111,7 @@ function ActionPreview({ it }: { it: Interaction }) {
       )}
       {a.diff && (
         <div>
-          <button type="button" className="text-[13px] text-accent" onClick={() => setDiffOpen(!diffOpen)}>
+          <button type="button" className="text-sm text-accent" onClick={() => setDiffOpen(!diffOpen)}>
             {t.inbox.diff} {diffOpen ? '▾' : '▸'}
           </button>
           {diffOpen && (
@@ -122,7 +122,7 @@ function ActionPreview({ it }: { it: Interaction }) {
         </div>
       )}
       {a.risk_reasons.length > 0 && (a.risk === 'high' || a.risk === 'unknown' || a.risk === 'medium') && (
-        <div className="flex items-start gap-1.5 text-[12px] text-muted">
+        <div className="flex items-start gap-1.5 text-xs text-muted">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warn" />
           <span>{a.risk_reasons.join(' · ')}</span>
         </div>
@@ -148,7 +148,7 @@ export function DeliveryLine({ view, error, onOpenPane, onRefresh }: { view: Del
   const m = map[view];
   const color = { muted: 'text-muted', ok: 'text-ok', warn: 'text-warn', danger: 'text-danger' }[m.tone];
   return (
-    <div className={cx('flex min-h-9 items-center gap-2 text-[13px]', color)} role="status">
+    <div className={cx('flex min-h-9 items-center gap-2 text-sm', color)} role="status">
       {m.spin ? <Loader2 className="size-4 animate-spin" /> : m.tone === 'ok' ? <Check className="size-4" /> : null}
       <span className="flex-1">{m.text}</span>
       {needsPane(view) && (
@@ -259,7 +259,7 @@ export function InteractionCard({
           className="space-y-2.5"
         >
           <CardHeader item={item} showHost={showHost} />
-          <div className="text-[15px] font-medium leading-snug">{it.title}</div>
+          <div className="text-base font-medium leading-snug">{it.title}</div>
           {it.kind === 'approval' && <ActionPreview it={it} />}
           {it.kind === 'question' && <QuestionBody it={it} disabled={disabled} locked={locked} onSubmit={(c, tx) => send({ ...(c ? { choices: c } : {}), ...(tx ? { text: tx } : {}) }, 'answer')} />}
           {it.kind === 'plan_review' && <PlanBody it={it} disabled={disabled} locked={locked} onApprove={() => send({ decision: 'allow' }, 'approve')} onChanges={(tx) => send({ decision: 'deny', text: tx }, 'changes')} />}
@@ -299,14 +299,14 @@ export function InteractionCard({
               </Button>
             </div>
           )}
-          {canSwipe && !locked && <div className="text-center text-[11px] text-faint pointer-fine:hidden">{t.inbox.swipeHint}</div>}
+          {canSwipe && !locked && <div className="text-center text-2xs text-faint pointer-fine:hidden">{t.inbox.swipeHint}</div>}
           {view && <DeliveryLine view={view} error={local?.error} onOpenPane={openPane} onRefresh={refresh} />}
         </div>
       </Card>
       <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={t.inbox.confirmTitle} role="alertdialog">
         <div className="space-y-3">
           <p className="text-sm">{t.inbox.confirmHigh(it.action?.command ? `\`${it.action.command}\`` : it.title)}</p>
-          {it.action?.command && <pre className="term max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-[12px]">{it.action.command}</pre>}
+          {it.action?.command && <pre className="term max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-xs">{it.action.command}</pre>}
           <div className="flex gap-2">
             <Button className="flex-1" variant="outline" onClick={() => setConfirm(null)}>
               {t.cancel}
@@ -346,9 +346,9 @@ function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; dis
       {it.body_md && <Markdown text={it.body_md} className="text-sm" />}
       {it.questions.map((q) => (
         <div key={q.id} className="space-y-1.5">
-          {q.header && <div className="text-[11px] font-semibold uppercase tracking-wide text-faint">{q.header}</div>}
+          {q.header && <div className="text-2xs font-semibold uppercase tracking-wide text-faint">{q.header}</div>}
           {q.prompt && q.prompt !== it.title && <div className="text-sm">{q.prompt}</div>}
-          {q.multi && <div className="text-[11px] text-faint">{t.inbox.multiHint}</div>}
+          {q.multi && <div className="text-2xs text-faint">{t.inbox.multiHint}</div>}
           <div className="flex flex-col gap-1.5">
             {q.options.map((o) => {
               const on = (sel[q.id] ?? []).includes(o.id);
@@ -365,7 +365,7 @@ function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; dis
                   )}
                 >
                   <div className="font-medium">{o.label}</div>
-                  {o.description && <div className="text-[12px] text-muted">{o.description}</div>}
+                  {o.description && <div className="text-xs text-muted">{o.description}</div>}
                 </button>
               );
             })}
@@ -379,7 +379,7 @@ function QuestionBody({ it, disabled, locked, onSubmit }: { it: Interaction; dis
           onChange={(e) => setText(e.target.value)}
           placeholder={t.inbox.answerPlaceholder}
           rows={2}
-          className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-[15px] placeholder:text-faint disabled:opacity-50"
+          className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-base placeholder:text-faint disabled:opacity-50"
         />
       )}
       {!locked && <Button
@@ -413,7 +413,7 @@ function PlanBody({ it, disabled, locked, onApprove, onChanges }: { it: Interact
             onChange={(e) => setText(e.target.value)}
             placeholder={t.inbox.changesPlaceholder}
             rows={3}
-            className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-[15px] placeholder:text-faint"
+            className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-base placeholder:text-faint"
           />
           <div className="flex gap-2">
             <Button className="flex-1" variant="outline" onClick={() => setAsking(false)}>

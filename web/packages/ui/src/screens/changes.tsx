@@ -95,7 +95,7 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
           placeholder={t.changes.filter}
           data-find-input
           aria-keyshortcuts="/"
-          className="h-9 w-full rounded-xl border border-border bg-surface px-3 text-[14px] placeholder:text-faint"
+          className="h-9 w-full rounded-xl border border-border bg-surface px-3 text-sm placeholder:text-faint"
         />
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
           {(['all', 'staged', 'unstaged', 'untracked'] as ChangeFilter[]).map((f) => (
@@ -103,7 +103,7 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
               key={f}
               type="button"
               onClick={() => setFilter(f)}
-              className={cx('h-7 shrink-0 rounded-full border px-3 text-[12px]', filter === f ? 'border-accent bg-accent/10' : 'border-border text-muted')}
+              className={cx('h-7 shrink-0 rounded-full border px-3 text-xs', filter === f ? 'border-accent bg-accent/10' : 'border-border text-muted')}
             >
               {t.changes[f]}
             </button>
@@ -122,7 +122,7 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
         const files = filterFiles(st.files, filter, query);
         return (
           <section key={key} className="mt-3">
-            <div className="flex items-center gap-2 px-4 pb-1.5 text-[13px]">
+            <div className="flex items-center gap-2 px-4 pb-1.5 text-sm">
               <span className="font-semibold">{basename(st.repo_root)}</span>
               {st.branch && (
                 <span className="flex items-center gap-1 text-muted">
@@ -135,7 +135,7 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
               {tree.hosts.length > 1 && <span className="text-faint">· {tree.hosts.find((h) => h.host.record.host_id === r.host)?.host.record.name}</span>}
             </div>
             {st.clean ? (
-              <div className="px-4 text-[13px] text-muted">{t.changes.clean}</div>
+              <div className="px-4 text-sm text-muted">{t.changes.clean}</div>
             ) : (
               <div className="inset-group divide-y divide-border border-y border-border bg-surface">
                 {files.map((f) => (
@@ -143,7 +143,7 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
                 ))}
               </div>
             )}
-            {st.truncated && <div className="px-4 pt-1 text-[12px] text-faint">{t.changes.truncatedList}</div>}
+            {st.truncated && <div className="px-4 pt-1 text-xs text-faint">{t.changes.truncatedList}</div>}
           </section>
         );
       })}
@@ -157,16 +157,16 @@ function FileRow({ f, onClick }: { f: GitFile; onClick(): void }) {
   const tone = { A: 'text-ok', '?': 'text-ok', D: 'text-danger', U: 'text-warn', R: 'text-accent', M: 'text-warn' }[letter] ?? 'text-muted';
   return (
     <button type="button" onClick={onClick} className="flex w-full items-center gap-3 px-4 py-2 text-left active:bg-surface-2">
-      <span className={cx('w-4 font-mono text-[13px] font-semibold', tone)}>{letter}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[13px]">
+      <span className={cx('w-4 font-mono text-sm font-semibold', tone)}>{letter}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-sm">
         <span className="text-faint">{dir}</span>
         {name}
       </span>
       {f.secret && <EyeOff className="size-3.5 text-faint" />}
       {f.binary ? (
-        <span className="text-[11px] text-faint">bin</span>
+        <span className="text-2xs text-faint">bin</span>
       ) : (
-        <span className="shrink-0 font-mono text-[11px]">
+        <span className="shrink-0 font-mono text-2xs">
           {f.adds != null && <span className="text-ok">+{f.adds}</span>} {f.dels != null && <span className="text-danger">-{f.dels}</span>}
         </span>
       )}
@@ -212,7 +212,7 @@ function DiffScreen({
         <IconButton label={t.back} onClick={onBack}>
           <ArrowLeft className="size-5" />
         </IconButton>
-        <div className="min-w-0 flex-1 truncate font-mono text-[13px]">{path}</div>
+        <div className="min-w-0 flex-1 truncate font-mono text-sm">{path}</div>
         <IconButton label={t.refresh} onClick={load}>
           <RefreshCw className="size-4.5" />
         </IconButton>

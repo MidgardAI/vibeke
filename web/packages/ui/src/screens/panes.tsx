@@ -34,13 +34,13 @@ export function PanesScreen() {
     <div className="pb-4" data-nav-list>
       <div className="flex items-center gap-2 px-4 pt-3">
         {tree.needYou.length > 0 ? (
-          <button type="button" onClick={jumpFirst} className="flex h-9 items-center gap-2 rounded-full bg-need px-3 text-[13px] font-medium">
+          <button type="button" onClick={jumpFirst} className="flex h-9 items-center gap-2 rounded-full bg-need px-3 text-sm font-medium">
             <Dot tone="need" />
             {t.panes.needYou(tree.needYou.length)}
             <ChevronRight className="size-4 text-muted" />
           </button>
         ) : (
-          <span className="text-[13px] text-muted">{t.focus.empty}</span>
+          <span className="text-sm text-muted">{t.focus.empty}</span>
         )}
         <span className="flex-1" />
         <Button size="sm" variant="secondary" icon={<Plus className="size-4" />} onClick={() => setNewOpen(true)}>
@@ -62,10 +62,10 @@ export function PanesScreen() {
       {tree.hosts.map((g) => (
         <section key={g.host.record.host_id}>
           {multi && (
-            <div className="flex items-center gap-2 px-4 pb-1 pt-5 text-[13px] font-semibold sm:px-8">
+            <div className="flex items-center gap-2 px-4 pb-1 pt-5 text-sm font-semibold sm:px-8">
               <Dot tone={g.host.status === 'online' ? 'ok' : g.host.status === 'connecting' ? 'warn' : 'danger'} />
               {g.host.info?.host_name ?? g.host.record.name}
-              {g.needsYou > 0 && <span className="text-[12px] font-normal text-muted">· {t.crew.needYou(g.needsYou)}</span>}
+              {g.needsYou > 0 && <span className="text-xs font-normal text-muted">· {t.crew.needYou(g.needsYou)}</span>}
             </div>
           )}
           {!g.host.dashboard && <div className="px-4 py-3 text-sm text-muted sm:px-8">{g.host.status === 'online' ? t.loading : t.conn.hostOffline}</div>}
@@ -81,7 +81,7 @@ export function PanesScreen() {
                   {w.tabs.map((tg, i) => (
                     <div key={tg.tab.id} className={cx(i > 0 && 'border-t-4 border-bg')}>
                       {w.tabs.length > 1 && (
-                        <div className="px-4 pt-1.5 text-[11px] text-faint">
+                        <div className="px-4 pt-1.5 text-2xs text-faint">
                           {tg.tab.number}. {tg.tab.title ?? ''}
                         </div>
                       )}

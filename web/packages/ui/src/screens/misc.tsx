@@ -28,11 +28,11 @@ export function CrewScreen() {
             <Dot tone={h.status === 'online' ? 'ok' : h.status === 'connecting' ? 'warn' : 'danger'} />
             <div className="min-w-0 flex-1">
               <div className="font-medium">{h.info?.host_name ?? h.record.name}</div>
-              <div className="text-[12px] text-muted">
+              <div className="text-xs text-muted">
                 {h.status} · {t.crew.agents(agents)}
               </div>
             </div>
-            {g.needsYou > 0 && <span className="rounded-full bg-need-strong px-2 py-0.5 text-[12px] font-semibold text-black">{t.crew.needYou(g.needsYou)}</span>}
+            {g.needsYou > 0 && <span className="rounded-full bg-need-strong px-2 py-0.5 text-xs font-semibold text-black">{t.crew.needYou(g.needsYou)}</span>}
             {h.status !== 'online' && (
               <Button size="sm" variant="outline" onClick={() => app.conn(h.record.host_id)?.reconnectNow()}>
                 {t.retry}
@@ -60,7 +60,7 @@ export function InteractionRoute({ host, id, preselect }: { host: string; id: st
         <IconButton label={t.back} onClick={() => navigate({ name: 'inbox' })}>
           <ArrowLeft className="size-5" />
         </IconButton>
-        <div className="text-[15px] font-semibold">{t.tabs.inbox}</div>
+        <div className="text-base font-semibold">{t.tabs.inbox}</div>
       </div>
       <div className="flex-1 overflow-y-auto p-3">
         {item ? (
@@ -119,7 +119,7 @@ export function Tour() {
           ))}
         </div>
         <h2 id={titleId} className="text-lg font-semibold tracking-tight">{step.title}</h2>
-        <p className="mt-2 text-[15px] text-muted">{step.body}</p>
+        <p className="mt-2 text-base text-muted">{step.body}</p>
         <div className="mt-5 flex gap-2 pb-2">
           <Button variant="ghost" onClick={finish}>
             {t.tour.skip}

@@ -59,7 +59,7 @@ export function ActionBelt({
               type="button"
               onClick={() => setTab(tab === x.id ? null : x.id)}
               className={cx(
-                'h-8 flex-1 rounded-lg border border-transparent text-[13px] font-medium',
+                'h-8 flex-1 rounded-lg border border-transparent text-sm font-medium',
                 tab === x.id ? 'bg-accent/15 text-accent' : 'text-muted',
               )}
             >
@@ -77,7 +77,7 @@ function KeyButton({ children, onClick, active, locked, h }: { children: ReactNo
       type="button"
       onClick={onClick}
       className={cx(
-        'min-w-0 flex-1 rounded-lg border font-mono text-[13px] active:bg-surface-2',
+        'min-w-0 flex-1 rounded-lg border font-mono text-sm active:bg-surface-2',
         h,
         locked ? 'border-accent bg-accent text-accent-fg' : active ? 'border-accent bg-accent/15 text-accent' : 'border-border bg-bg text-fg',
       )}
@@ -118,9 +118,9 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
     <div className="space-y-1.5 px-2 pt-2">
       {chord && (
         <div className="flex min-h-9 items-center gap-1.5 overflow-x-auto no-scrollbar">
-          {queue.keys.length === 0 && <span className="text-[12px] text-faint">{t.belt.chordHint}</span>}
+          {queue.keys.length === 0 && <span className="text-xs text-faint">{t.belt.chordHint}</span>}
           {queue.keys.map((k, i) => (
-            <button key={i} type="button" className="h-7 shrink-0 rounded-md bg-surface-2 px-2 font-mono text-[12px]" onClick={() => setQueue((q) => queueRemoveAt(q, i))}>
+            <button key={i} type="button" className="h-7 shrink-0 rounded-md bg-surface-2 px-2 font-mono text-xs" onClick={() => setQueue((q) => queueRemoveAt(q, i))}>
               {keyLabel(k)}
             </button>
           ))}
@@ -174,13 +174,13 @@ function KeysPanel({ actions }: { actions: PaneActions }) {
             setChar('');
             if (c) void hit(c === ' ' ? 'space' : c);
           }}
-          className={cx('w-12 rounded-lg border border-border bg-bg text-center font-mono text-[13px]', h)}
+          className={cx('w-12 rounded-lg border border-border bg-bg text-center font-mono text-sm', h)}
         />
         <KeyButton h={h} active={chord} onClick={() => setChord(!chord)}>
           {t.belt.chord}
         </KeyButton>
       </div>
-      <div className="h-5 text-center text-[12px] text-muted">
+      <div className="h-5 text-center text-xs text-muted">
         {echo && (
           <span className="inline-flex items-center gap-1 font-mono">
             {echo.label} {echo.ok === true && <Check className="size-3.5 text-ok" />}
@@ -211,7 +211,7 @@ function QuickPanel({ actions, harness }: { actions: PaneActions; harness: strin
               setTimeout(() => setTapped(null), 1500);
             }}
             className={cx(
-              'inline-flex h-9 items-center gap-1 rounded-full border border-border bg-bg px-3 text-[13px]',
+              'inline-flex h-9 items-center gap-1 rounded-full border border-border bg-bg px-3 text-sm',
               tapped && tapped !== r && 'opacity-40',
             )}
           >
@@ -220,7 +220,7 @@ function QuickPanel({ actions, harness }: { actions: PaneActions; harness: strin
           </button>
         ))}
       </div>
-      <div className="py-1.5 text-[11px] text-faint">{t.belt.editQuick}</div>
+      <div className="py-1.5 text-2xs text-faint">{t.belt.editQuick}</div>
     </div>
   );
 }
@@ -230,7 +230,7 @@ function AgentPanel({ actions, harness, onInsert }: { actions: PaneActions; harn
   const cmds = slashCommandsFor(harness);
   const [armed, setArmed] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
-  if (!cmds.length) return <div className="px-3 py-3 text-[13px] text-muted">{t.belt.noCommands}</div>;
+  if (!cmds.length) return <div className="px-3 py-3 text-sm text-muted">{t.belt.noCommands}</div>;
   const tap = async (c: SlashCommand) => {
     if (c.takesArg) return onInsert(`${c.command} `);
     if (c.dangerous && armed !== c.command) {
@@ -249,8 +249,8 @@ function AgentPanel({ actions, harness, onInsert }: { actions: PaneActions; harn
     <div className="max-h-56 overflow-y-auto px-2 pt-1">
       {cmds.map((c) => (
         <button key={c.command} type="button" onClick={() => void tap(c)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left active:bg-surface-2">
-          <span className={cx('font-mono text-[13px]', c.dangerous ? 'text-danger' : 'text-accent')}>{c.command}</span>
-          <span className="min-w-0 flex-1 truncate text-[12px] text-muted">{armed === c.command ? t.composer.tapAgain : c.description}</span>
+          <span className={cx('font-mono text-sm', c.dangerous ? 'text-danger' : 'text-accent')}>{c.command}</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-muted">{armed === c.command ? t.composer.tapAgain : c.description}</span>
           {sent === c.command && <Check className="size-3.5 text-ok" />}
         </button>
       ))}

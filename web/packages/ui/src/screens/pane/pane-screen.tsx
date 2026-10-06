@@ -194,9 +194,9 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
                   setHit(0);
                 }}
                 placeholder={t.pane.findPlaceholder}
-                className="h-9 min-w-0 flex-1 bg-transparent text-[15px] outline-none"
+                className="h-9 min-w-0 flex-1 bg-transparent text-base outline-none"
               />
-              <span className="text-[12px] tabular-nums text-muted">{query ? `${matches ? hit + 1 : 0}/${matches}` : ''}</span>
+              <span className="text-xs tabular-nums text-muted">{query ? `${matches ? hit + 1 : 0}/${matches}` : ''}</span>
               <IconButton label="previous" disabled={!matches} onClick={() => setHit((h) => (h - 1 + matches) % matches)}>
                 <ChevronUp className="size-4" />
               </IconButton>
@@ -235,7 +235,7 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
 
           {cards.length > 0 && (
             <div className="border-t border-border bg-bg">
-              <button type="button" className="flex h-9 w-full items-center gap-2 px-3 text-[13px] font-medium" onClick={() => setDockOpen(!dockOpen)}>
+              <button type="button" className="flex h-9 w-full items-center gap-2 px-3 text-sm font-medium" onClick={() => setDockOpen(!dockOpen)}>
                 <span className="size-2 rounded-full bg-need-strong" />
                 {t.pane.cards(cards.length)}
                 <span className="flex-1" />
@@ -362,8 +362,8 @@ function Header({ onBack, title, sub, right }: { onBack?: () => void; title: str
         <span className="w-3" />
       )}
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[15px] font-semibold">{title}</div>
-        {sub && <div className={cx('truncate text-[12px] text-muted')}>{sub}</div>}
+        <div className="truncate text-base font-semibold">{title}</div>
+        {sub && <div className={cx('truncate text-xs text-muted')}>{sub}</div>}
       </div>
       {right}
     </div>

@@ -146,7 +146,7 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
             aria-activedescendant={activeId}
             autoComplete="off"
             spellCheck={false}
-            className="h-12 min-w-0 flex-1 bg-transparent text-[15px] text-fg outline-none placeholder:text-faint"
+            className="h-12 min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-faint"
             onKeyDown={(e) => {
               if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
                 e.preventDefault();
@@ -176,14 +176,14 @@ export function CommandPalette({ open, onClose, items }: { open: boolean; onClos
             >
               <span className={cx('shrink-0', i === sel ? 'text-accent' : 'text-muted')}>{it.group === 'pane' && it.sub && !it.sub.startsWith(t.palette.pane) ? <Bot className="size-4" /> : ICONS[it.group]}</span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14px]">{it.title}</span>
-                {it.sub && <span className="block truncate text-[12px] text-muted">{it.sub}</span>}
+                <span className="block truncate text-sm">{it.title}</span>
+                {it.sub && <span className="block truncate text-xs text-muted">{it.sub}</span>}
               </span>
-              {it.shortcut && <kbd className="shrink-0 rounded-md border border-border px-1.5 font-sans text-[11px] text-muted">{it.shortcut}</kbd>}
+              {it.shortcut && <kbd className="shrink-0 rounded-md border border-border px-1.5 font-sans text-2xs text-muted">{it.shortcut}</kbd>}
             </div>
           ))}
         </div>
-        <div className="border-t border-border px-3.5 py-1.5 text-[11px] text-muted">{t.palette.hint}</div>
+        <div className="border-t border-border px-3.5 py-1.5 text-2xs text-muted">{t.palette.hint}</div>
     </Dialog>
   );
 }

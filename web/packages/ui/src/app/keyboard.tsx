@@ -234,7 +234,7 @@ export function CheatSheet({ open, onClose, mac }: { open: boolean; onClose(): v
           <div key={s.what} className="contents">
             <dt className="flex flex-wrap gap-1">
               {s.keys.map((k) => (
-                <kbd key={k} className="min-w-6 rounded-md border border-border bg-bg px-1.5 py-0.5 text-center font-sans text-[12px]">
+                <kbd key={k} className="min-w-6 rounded-md border border-border bg-bg px-1.5 py-0.5 text-center font-sans text-xs">
                   {keyLabel(mac, k)}
                 </kbd>
               ))}

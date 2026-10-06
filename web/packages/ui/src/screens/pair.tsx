@@ -116,9 +116,9 @@ export function PairScreen({ d }: { d: string | null }) {
             <dt className="text-muted">{t.pair.hostName}</dt>
             <dd className="font-medium">{link.name}</dd>
             <dt className="text-muted">{local ? t.settings.transport : t.pair.relay}</dt>
-            <dd className="truncate font-mono text-[12px]" title={link.relay}>{local ? t.pair.thisComputer : link.relay}</dd>
+            <dd className="truncate font-mono text-xs" title={link.relay}>{local ? t.pair.thisComputer : link.relay}</dd>
           </dl>
-          <div className="text-[12px] text-muted">{t.pair.expires(clockTime(link.exp * 1000))}</div>
+          <div className="text-xs text-muted">{t.pair.expires(clockTime(link.exp * 1000))}</div>
           {replacesOwn ? <Notice tone="warn">{t.pair.replacesOwn}</Notice> : known && <Notice>{t.pair.alreadyPaired}</Notice>}
           {expired && <Notice tone="danger">{t.pair.errors.expired}</Notice>}
           {unreachable && <Notice tone="warn">{t.pair.localOnly}</Notice>}
@@ -126,7 +126,7 @@ export function PairScreen({ d }: { d: string | null }) {
           {/* Invitations and local links are bearer links: nobody confirms a fingerprint on the host side. */}
           {!share && !local && (
             <div className="rounded-2xl border border-border bg-bg p-4 text-center">
-              <div className="text-[12px] uppercase tracking-wide text-faint">{t.pair.checkFingerprint}</div>
+              <div className="text-xs uppercase tracking-wide text-faint">{t.pair.checkFingerprint}</div>
               <div className="mt-1 font-mono text-3xl font-semibold tracking-wider">{phase.k === 'pending' ? phase.fingerprint : fp}</div>
             </div>
           )}
@@ -193,16 +193,16 @@ function ShareHeader({ link }: { link: PairingLink }) {
   if (s.kind === 'handoff') {
     return (
       <div className="space-y-1">
-        <div className="text-[15px] font-semibold">{t.pair.handoffFrom(link.name)}</div>
-        <div className="text-[13px] text-muted">{t.pair.handoffWhat}</div>
+        <div className="text-base font-semibold">{t.pair.handoffFrom(link.name)}</div>
+        <div className="text-sm text-muted">{t.pair.handoffWhat}</div>
       </div>
     );
   }
   const what = s.label || (s.limit?.pane ? t.pair.shareWhatPane : t.pair.shareWhatWorkspace);
   return (
     <div className="space-y-1">
-      <div className="text-[15px] font-semibold">{t.pair.shareFrom(link.name, what)}</div>
-      <div className="text-[13px] text-muted">
+      <div className="text-base font-semibold">{t.pair.shareFrom(link.name, what)}</div>
+      <div className="text-sm text-muted">
         {[t.pair.shareScope[s.scope] ?? s.scope, t.pair.shareUntil(whenText(s.until * 1000, now))].join(' · ')}
       </div>
     </div>

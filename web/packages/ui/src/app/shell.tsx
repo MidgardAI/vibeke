@@ -32,7 +32,7 @@ export function ConnectionBanner() {
           ? `${b.fatal.join(', ')}: ${t.conn.revoked}`
           : t.conn.offline(b.down.join(', '));
   return (
-    <div role="status" className={cx('flex min-h-9 items-center gap-2 border-b px-4 py-1 text-[13px]', tone)}>
+    <div role="status" className={cx('flex min-h-9 items-center gap-2 border-b px-4 py-1 text-sm', tone)}>
       <span className="flex-1">{text}</span>
       {b.level === 'red' && !fatalOnly && (
         <Button size="sm" variant="outline" onClick={() => app.manager.connections().forEach((c) => c.reconnectNow())}>
@@ -59,7 +59,7 @@ export function Toasts() {
           key={x.id}
           role="status"
           className={cx(
-            'animate-in pointer-events-auto max-w-sm rounded-xl px-3.5 py-2 text-[13px] shadow-lg',
+            'animate-in pointer-events-auto max-w-sm rounded-xl px-3.5 py-2 text-sm shadow-lg',
             x.tone === 'error' ? 'bg-danger text-danger-fg' : x.tone === 'ok' ? 'bg-ok text-ok-fg' : x.tone === 'warn' ? 'bg-warn text-black' : 'bg-fg text-bg',
           )}
         >
@@ -76,7 +76,7 @@ function TabButton({ tab, label, icon, active, badge }: { tab: Tab; label: strin
       type="button"
       onClick={() => navigate({ name: tab })}
       aria-current={active ? 'page' : undefined}
-      className={cx('relative flex flex-1 flex-col items-center gap-0.5 border-t-2 pb-1 pt-1.5 text-[11px]', active ? 'border-accent text-accent' : 'border-transparent text-muted')}
+      className={cx('relative flex flex-1 flex-col items-center gap-0.5 border-t-2 pb-1 pt-1.5 text-2xs', active ? 'border-accent text-accent' : 'border-transparent text-muted')}
     >
       <span className="relative">
         {icon}
@@ -127,14 +127,14 @@ function SideItem({ label, icon, active, badge, onClick, hint }: { label: string
       aria-current={active ? 'page' : undefined}
       title={hint ? `${label} (${hint})` : label}
       className={cx(
-        'group flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13.5px] focus-visible:outline-2 focus-visible:outline-accent',
+        'group flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm focus-visible:outline-2 focus-visible:outline-accent',
         active ? 'bg-fg/10 font-medium text-fg' : 'text-fg/80 hover:bg-fg/5',
       )}
     >
       <span className={cx('shrink-0', active ? 'text-accent' : 'text-muted')}>{icon}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {!!badge && <span className="min-w-5 rounded-full bg-need-strong px-1.5 text-center text-[11px] font-semibold leading-[18px] text-black">{badge > 99 ? '99+' : badge}</span>}
-      {!badge && hint && <span className="hidden text-[11px] text-faint group-hover:inline">{hint}</span>}
+      {!!badge && <span className="min-w-5 rounded-full bg-need-strong px-1.5 text-center text-2xs font-semibold leading-[18px] text-black">{badge > 99 ? '99+' : badge}</span>}
+      {!badge && hint && <span className="hidden text-2xs text-faint group-hover:inline">{hint}</span>}
     </button>
   );
 }
@@ -155,7 +155,7 @@ export function Sidebar({ route }: { route: Route }) {
         <SideItem label={t.tabs.focus} icon={<Activity className="size-4" />} active={route.name === 'focus'} badge={tree.needYou.length} hint={k(3)} onClick={() => navigate({ name: 'focus' })} />
         <SideItem label={t.tabs.changes} icon={<FileDiff className="size-4" />} active={route.name === 'changes'} hint={k(4)} onClick={() => navigate({ name: 'changes' })} />
       </div>
-      <div className="mt-5 flex items-center px-4 pb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">
+      <div className="mt-5 flex items-center px-4 pb-1 text-2xs font-semibold uppercase tracking-wide text-faint">
         <span className="flex-1">{t.nav.hosts}</span>
         <button type="button" aria-label={t.settings.pairAnother} title={t.settings.pairAnother} className="rounded p-0.5 text-muted hover:text-fg" onClick={() => navigate({ name: 'pair', d: null })}>
           <Plus className="size-3.5" />
@@ -167,11 +167,11 @@ export function Sidebar({ route }: { route: Route }) {
             key={g.host.record.host_id}
             type="button"
             onClick={() => navigate({ name: 'crew' })}
-            className="flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-fg/80 hover:bg-fg/5"
+            className="flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm text-fg/80 hover:bg-fg/5"
           >
             <Dot tone={g.host.status === 'online' ? 'ok' : g.host.status === 'connecting' ? 'warn' : 'danger'} />
             <span className="min-w-0 flex-1 truncate">{g.host.info?.host_name ?? g.host.record.name}</span>
-            {g.needsYou > 0 && <span className="text-[11px] font-semibold text-need-strong">{g.needsYou}</span>}
+            {g.needsYou > 0 && <span className="text-2xs font-semibold text-need-strong">{g.needsYou}</span>}
           </button>
         ))}
       </div>
@@ -199,7 +199,7 @@ export function TopBar({ title, route, column }: { title: string; route: Route; 
       <div className={cx('flex items-center gap-2 px-4', column)}>
       <div className="min-w-0 flex-1">
         <h1 className="text-[22px] font-bold leading-tight tracking-tight">{title}</h1>
-        {label && <div className="truncate text-[12px] text-muted">{label}</div>}
+        {label && <div className="truncate text-xs text-muted">{label}</div>}
       </div>
       {!wide && (
         <>

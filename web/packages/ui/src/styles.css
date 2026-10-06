@@ -1,66 +1,31 @@
 @import "tailwindcss";
 @source "./";
 
-/* Theme: CSS variables; dark/light follow the OS unless the user picked one ([data-theme]). */
+/* Theme (dark-first, neutral). Palette tokens below; the older names (--ok, --danger, --warn,
+   --need-strong…) are aliases so every screen reads the same palette. Dark is the default; with
+   the "system" preference (no [data-theme]) the OS decides. */
 :root {
-  --bg: #f6f6f4;
-  --surface: #ffffff;
-  --surface-2: #efefec;
-  --fg: #1b1c1e;
-  --muted: #5f636b;
-  --faint: #6a6e76;
-  --border: #dcddd8;
-  --accent: #3559d8;
-  --accent-fg: #ffffff;
-  --ok: #1b7a43;
-  --ok-fg: #ffffff;
-  --warn: #965800;
-  --danger: #c4372f;
-  --danger-fg: #ffffff;
-  --scrim: rgb(15 16 18 / 0.28);
-  --need: rgba(230, 150, 20, 0.12);
-  --need-strong: #d98a0b;
-  --term-bg: #fbfbf9;
-  --term-fg: #23252a;
-  --ansi-black: #2e3436;
-  --ansi-red: #c4372f;
-  --ansi-green: #3c8a2e;
-  --ansi-yellow: #a07200;
-  --ansi-blue: #3559d8;
-  --ansi-magenta: #9c3fa8;
-  --ansi-cyan: #1d8a96;
-  --ansi-white: #6b6f76;
-  --ansi-bright-black: #6b6f76;
-  --ansi-bright-red: #e0483e;
-  --ansi-bright-green: #4caf3a;
-  --ansi-bright-yellow: #c08a00;
-  --ansi-bright-blue: #4d72f0;
-  --ansi-bright-magenta: #b85ac4;
-  --ansi-bright-cyan: #26a6b4;
-  --ansi-bright-white: #1b1c1e;
-  --term-font: 12px;
-  color-scheme: light;
-}
-
-:root[data-theme="dark"] {
-  --bg: #0f1012;
-  --surface: #17181b;
-  --surface-2: #1f2125;
-  --fg: #e6e7e9;
-  --muted: #a1a5ad;
-  --faint: #8b9099;
-  --border: #2a2c31;
-  --accent: #7b9bff;
-  --accent-fg: #0b0c0e;
-  --ok: #4cc27c;
-  --ok-fg: #0b0c0e;
-  --warn: #e3a53a;
-  --danger: #ff6b61;
-  --danger-fg: #0b0c0e;
-  --scrim: rgb(0 0 0 / 0.5);
-  --need: rgba(227, 165, 58, 0.13);
-  --need-strong: #e3a53a;
-  --term-bg: #0b0c0e;
+  --bg: #0b0b0c;
+  --surface: #111113;
+  --surface-2: #1c1c1f;
+  --surface-3: #232327;
+  --border: #26262a;
+  --border-strong: #333338;
+  --fg: #e7e7ea;
+  --muted: #9a9aa2;
+  --faint: #5e5e66;
+  --add: #3fb950;
+  --del: #f85149;
+  --need: #f5a524;
+  --info: #58a6ff;
+  --accent: #e7e7ea;
+  --accent-fg: #0b0b0c;
+  --sidebar-bg: #111113;
+  --hover: rgb(255 255 255 / 0.045);
+  --selected: rgb(255 255 255 / 0.075);
+  --shadow: 0 8px 28px rgb(0 0 0 / 0.5), 0 0 0 1px var(--border);
+  --scrim: rgb(0 0 0 / 0.55);
+  --term-bg: #0b0b0c;
   --term-fg: #d7d9dd;
   --ansi-black: #3a3d43;
   --ansi-red: #ff6b61;
@@ -79,46 +44,103 @@
   --ansi-bright-cyan: #84e1ea;
   --ansi-bright-white: #ffffff;
   color-scheme: dark;
+  /* Aliases kept for older screens. */
+  --ok: var(--add);
+  --ok-fg: var(--accent-fg);
+  --danger: var(--del);
+  --danger-fg: #ffffff;
+  --warn: var(--need);
+  --need-strong: var(--need);
+  --need-bg: color-mix(in srgb, var(--need) 12%, transparent);
+  /* Scale */
+  --row-h: 28px;
+  --row-h-compact: 24px;
+  --term-font: 12px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f1012;
-    --surface: #17181b;
-    --surface-2: #1f2125;
-    --fg: #e6e7e9;
-    --muted: #a1a5ad;
-    --faint: #8b9099;
-    --border: #2a2c31;
-    --accent: #7b9bff;
-    --accent-fg: #0b0c0e;
-    --ok: #4cc27c;
-    --ok-fg: #0b0c0e;
-    --warn: #e3a53a;
-    --danger: #ff6b61;
-    --danger-fg: #0b0c0e;
-    --scrim: rgb(0 0 0 / 0.5);
-    --need: rgba(227, 165, 58, 0.13);
-    --need-strong: #e3a53a;
-    --term-bg: #0b0c0e;
-    --term-fg: #d7d9dd;
-    --ansi-black: #3a3d43;
-    --ansi-red: #ff6b61;
-    --ansi-green: #7cd36b;
-    --ansi-yellow: #e9c45a;
-    --ansi-blue: #7b9bff;
-    --ansi-magenta: #d78ae4;
-    --ansi-cyan: #5fd0db;
-    --ansi-white: #c9ccd1;
-    --ansi-bright-black: #6c7079;
-    --ansi-bright-red: #ff8c84;
-    --ansi-bright-green: #98e489;
-    --ansi-bright-yellow: #f5d77d;
-    --ansi-bright-blue: #9eb6ff;
-    --ansi-bright-magenta: #e6a9f0;
-    --ansi-bright-cyan: #84e1ea;
-    --ansi-bright-white: #ffffff;
-    color-scheme: dark;
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f7f7f8;
+  --surface-2: #efeff1;
+  --surface-3: #e4e4e7;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --fg: #18181b;
+  --muted: #63636b;
+  --faint: #a1a1aa;
+  --add: #1a7f37;
+  --del: #cf222e;
+  --need: #b86e00;
+  --info: #0969da;
+  --accent: #18181b;
+  --accent-fg: #ffffff;
+  --sidebar-bg: #f7f7f8;
+  --hover: rgb(0 0 0 / 0.04);
+  --selected: rgb(0 0 0 / 0.065);
+  --shadow: 0 8px 28px rgb(0 0 0 / 0.12), 0 0 0 1px var(--border);
+  --scrim: rgb(15 16 18 / 0.28);
+  --term-bg: #ffffff;
+  --term-fg: #23252a;
+  --ansi-black: #2e3436;
+  --ansi-red: #c4372f;
+  --ansi-green: #3c8a2e;
+  --ansi-yellow: #a07200;
+  --ansi-blue: #3559d8;
+  --ansi-magenta: #9c3fa8;
+  --ansi-cyan: #1d8a96;
+  --ansi-white: #6b6f76;
+  --ansi-bright-black: #6b6f76;
+  --ansi-bright-red: #e0483e;
+  --ansi-bright-green: #4caf3a;
+  --ansi-bright-yellow: #c08a00;
+  --ansi-bright-blue: #4d72f0;
+  --ansi-bright-magenta: #b85ac4;
+  --ansi-bright-cyan: #26a6b4;
+  --ansi-bright-white: #1b1c1e;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #ffffff;
+    --surface: #f7f7f8;
+    --surface-2: #efeff1;
+    --surface-3: #e4e4e7;
+    --border: #e4e4e7;
+    --border-strong: #d4d4d8;
+    --fg: #18181b;
+    --muted: #63636b;
+    --faint: #a1a1aa;
+    --add: #1a7f37;
+    --del: #cf222e;
+    --need: #b86e00;
+    --info: #0969da;
+    --accent: #18181b;
+    --accent-fg: #ffffff;
+    --sidebar-bg: #f7f7f8;
+    --hover: rgb(0 0 0 / 0.04);
+    --selected: rgb(0 0 0 / 0.065);
+    --shadow: 0 8px 28px rgb(0 0 0 / 0.12), 0 0 0 1px var(--border);
+    --scrim: rgb(15 16 18 / 0.28);
+    --term-bg: #ffffff;
+    --term-fg: #23252a;
+    --ansi-black: #2e3436;
+    --ansi-red: #c4372f;
+    --ansi-green: #3c8a2e;
+    --ansi-yellow: #a07200;
+    --ansi-blue: #3559d8;
+    --ansi-magenta: #9c3fa8;
+    --ansi-cyan: #1d8a96;
+    --ansi-white: #6b6f76;
+    --ansi-bright-black: #6b6f76;
+    --ansi-bright-red: #e0483e;
+    --ansi-bright-green: #4caf3a;
+    --ansi-bright-yellow: #c08a00;
+    --ansi-bright-blue: #4d72f0;
+    --ansi-bright-magenta: #b85ac4;
+    --ansi-bright-cyan: #26a6b4;
+    --ansi-bright-white: #1b1c1e;
+    color-scheme: light;
   }
 }
 
@@ -126,12 +148,19 @@
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
   --color-fg: var(--fg);
   --color-muted: var(--muted);
   --color-faint: var(--faint);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+  --color-add: var(--add);
+  --color-del: var(--del);
+  --color-info: var(--info);
+  --color-hover: var(--hover);
+  --color-selected: var(--selected);
   --color-ok: var(--ok);
   --color-ok-fg: var(--ok-fg);
   --color-warn: var(--warn);
@@ -139,10 +168,32 @@
   --color-danger-fg: var(--danger-fg);
   --color-need: var(--need);
   --color-need-strong: var(--need-strong);
+  --color-need-bg: var(--need-bg);
   --color-term-bg: var(--term-bg);
   --color-term-fg: var(--term-fg);
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", Consolas, monospace;
+  /* Type scale: 11 / 12 / 13 (body) / 14 / 16 / 20. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 14px;
+  --text-base--line-height: 20px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  /* Radii: 4 / 6 / 10 / pill. Larger legacy radii step down so cards stay crisp. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 10px;
+  --radius-2xl: 12px;
+  --radius-3xl: 14px;
+  --spacing-row: var(--row-h);
 }
 
 html,
@@ -156,7 +207,8 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 13px;
+  line-height: 20px;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
@@ -382,14 +434,14 @@ mark.find-hit.current {
   }
 }
 
-/* Keyboard selection (j/k): a ring on the selected card or row. */
+/* Keyboard selection (j/k): a ring on the selected card; a filled row in dense lists. */
 [data-nav-item] {
   outline: none;
   scroll-margin: 12px;
-  border-radius: 1rem;
+  border-radius: var(--radius-2xl);
 }
 [data-nav-item][data-selected] {
-  outline: 2px solid var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--fg) 55%, transparent);
   outline-offset: 2px;
 }
 button[data-nav-item] {
@@ -398,6 +450,89 @@ button[data-nav-item] {
 button[data-nav-item][data-selected] {
   outline-offset: -2px;
 }
+/* Sidebar / tree rows: selection is a fill, not a ring. */
+.vk-row[data-nav-item] {
+  border-radius: var(--radius-md);
+}
+.vk-row[data-nav-item][data-selected] {
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+
+/* Focus ring for custom controls (buttons in rows and toolbars). */
+.vk-focus:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--fg) 55%, transparent);
+  outline-offset: -2px;
+}
+
+/* Thin, quiet scrollbars in dense panes. */
+.vk-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-3) transparent;
+}
+.vk-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.vk-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.vk-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: var(--surface-3);
+}
+
+/* Working status: a slow pulse on the dot. */
+@keyframes vk-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.vk-pulse {
+  animation: vk-pulse 1.6s ease-in-out infinite;
+}
+
+/* Drawer (narrow sidebar) and side panels slide in from their edge. */
+@keyframes vk-drawer-l {
+  from {
+    transform: translateX(-100%);
+  }
+}
+@keyframes vk-drawer-r {
+  from {
+    transform: translateX(100%);
+  }
+}
+.animate-drawer-l {
+  animation: vk-drawer-l 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.animate-drawer-r {
+  animation: vk-drawer-r 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Panel resize handle: a hairline that thickens on hover/drag. */
+.vk-resize {
+  cursor: col-resize;
+  touch-action: none;
+}
+.vk-resize::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+  transition: background-color 0.12s;
+}
+.vk-resize:hover::after,
+.vk-resize[data-dragging]::after {
+  background: var(--border-strong);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -429,18 +564,27 @@ button[data-nav-item][data-selected] {
   padding-left: 80px;
 }
 
-/* Wide layout sidebar. Desktop shells with native vibrancy make it see-through. */
+/* Sidebar. Desktop shells with native vibrancy make it (and only it) see-through. */
 .sidebar {
-  background: color-mix(in srgb, var(--surface-2) 70%, var(--bg));
+  background: var(--sidebar-bg);
 }
 :root[data-vibrancy] body {
   background: transparent;
 }
 :root[data-vibrancy] .sidebar {
-  background: transparent;
+  background: color-mix(in srgb, var(--sidebar-bg) 55%, transparent);
 }
-:root[data-vibrancy] .app-content {
+:root[data-vibrancy] .app-content,
+:root[data-vibrancy] .app-panel {
   background: var(--bg);
+}
+/* The traffic lights sit in the sidebar's top strip. */
+:root[data-titlebar="inset"] .sidebar-top {
+  -webkit-app-region: drag;
+  padding-left: 76px;
+}
+:root[data-titlebar="inset"] .sidebar-top button {
+  -webkit-app-region: no-drag;
 }
 
 /* The quick-approvals popover: a translucent sheet over native vibrancy. */
@@ -452,4 +596,13 @@ button[data-nav-item][data-selected] {
 }
 :root:not([data-vibrancy])[data-surface="quick"] .quick-root {
   background: var(--bg);
+}
+
+/* iOS zooms into fields under 16px: keep touch-screen text inputs at 16px. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
 }

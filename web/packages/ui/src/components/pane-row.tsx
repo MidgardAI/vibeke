@@ -91,20 +91,20 @@ export function PaneRowView({ row, showHost }: { row: PaneRow; showHost?: boolea
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
             {r.pinned && <Pin className="size-3 shrink-0 text-faint" />}
-            <span className="truncate text-[15px] font-medium">{rowTitle(r)}</span>
+            <span className="truncate text-base font-medium">{rowTitle(r)}</span>
           </span>
-          <span className="block truncate text-[12px] text-muted">{sub.join(' · ')}</span>
-          {r.run?.last_message && r.attention !== 'working' && <span className="mt-0.5 block truncate text-[12px] text-faint">{r.run.last_message}</span>}
+          <span className="block truncate text-xs text-muted">{sub.join(' · ')}</span>
+          {r.run?.last_message && r.attention !== 'working' && <span className="mt-0.5 block truncate text-xs text-faint">{r.run.last_message}</span>}
         </span>
         <span className="flex shrink-0 flex-col items-end gap-1">
-          <span className="flex items-center gap-1.5 text-[12px] text-muted">
+          <span className="flex items-center gap-1.5 text-xs text-muted">
             <Dot tone={stateTone(r)} />
             {stateWord(r)}
           </span>
           {r.open.length > 0 ? (
-            <span className="rounded-full bg-need-strong px-1.5 text-[11px] font-semibold text-black">{r.open.length}</span>
+            <span className="rounded-full bg-need-strong px-1.5 text-2xs font-semibold text-black">{r.open.length}</span>
           ) : (
-            since !== null && <span className="text-[11px] tabular-nums text-faint">{shortDuration(since)}</span>
+            since !== null && <span className="text-2xs tabular-nums text-faint">{shortDuration(since)}</span>
           )}
         </span>
       </button>

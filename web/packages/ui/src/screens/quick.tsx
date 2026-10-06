@@ -50,8 +50,8 @@ export function QuickScreen() {
     <div className="quick-root flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
         <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-semibold leading-tight">{t.quick.title}</div>
-          <div className="text-[12px] text-muted" aria-live="polite">
+          <div className="text-sm font-semibold leading-tight">{t.quick.title}</div>
+          <div className="text-xs text-muted" aria-live="polite">
             {t.quick.needYou(n)}
           </div>
         </div>
@@ -61,10 +61,10 @@ export function QuickScreen() {
       </header>
       <ConnectionBanner />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        {gone && <div className="px-4 pt-3 text-[13px] text-muted">{t.quick.gone}</div>}
+        {gone && <div className="px-4 pt-3 text-sm text-muted">{t.quick.gone}</div>}
         <InboxScreen />
       </main>
-      <footer className="shrink-0 border-t border-border px-3 py-1.5 text-center text-[11px] text-faint">j / k · a {t.inbox.allow.toLowerCase()} · d {t.inbox.deny.toLowerCase()} · ↵ {t.open.toLowerCase()} · esc</footer>
+      <footer className="shrink-0 border-t border-border px-3 py-1.5 text-center text-2xs text-faint">j / k · a {t.inbox.allow.toLowerCase()} · d {t.inbox.deny.toLowerCase()} · ↵ {t.open.toLowerCase()} · esc</footer>
       <Toasts />
       <Sheet open={!!confirm} onClose={() => setConfirm(null)} title={t.quick.confirmTitle} role="alertdialog">
         {confirm && it && (
@@ -74,7 +74,7 @@ export function QuickScreen() {
               <RiskBadge risk={interactionRisk(it)} />
             </div>
             <p className="text-sm">{risky ? t.inbox.confirmHigh(what) : t.quick.confirmBody(what)}</p>
-            {it.action?.command && <pre className="term max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-[12px]">{it.action.command}</pre>}
+            {it.action?.command && <pre className="term max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-xs">{it.action.command}</pre>}
             <div className="flex gap-2">
               <Button className="flex-1" variant="outline" onClick={() => setConfirm(null)}>
                 {t.cancel}
