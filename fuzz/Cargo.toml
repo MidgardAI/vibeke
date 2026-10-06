@@ -1,0 +1,101 @@
+[package]
+name = "vk-fuzz-targets"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# cargo-fuzz (nightly + libFuzzer) package. It is deliberately NOT a member of the root
+# workspace (`[workspace]` below), so `mise run ci` on stable never builds it.
+# Run: `mise run fuzz` or `cargo +nightly fuzz run <target>` from the repo root (docs/hardening.md).
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vk-fuzz = { path = "../crates/vk-fuzz" }
+
+[workspace]
+
+[[bin]]
+name = "holder_proto_decode"
+path = "fuzz_targets/holder_proto_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "render_frame_decode"
+path = "fuzz_targets/render_frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jsonrpc_decode"
+path = "fuzz_targets/jsonrpc_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "key_grammar"
+path = "fuzz_targets/key_grammar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vt_parse"
+path = "fuzz_targets/vt_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socks5_handshake"
+path = "fuzz_targets/socks5_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux_frame_decode"
+path = "fuzz_targets/mux_frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_payloads"
+path = "fuzz_targets/hook_payloads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_match"
+path = "fuzz_targets/policy_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty_probe"
+path = "fuzz_targets/kitty_probe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compat_import"
+path = "fuzz_targets/compat_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_toml"
+path = "fuzz_targets/manifest_toml.rs"
+test = false
+doc = false
+bench = false

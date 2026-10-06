@@ -1,0 +1,1 @@
+{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"},"tool_use_id":"t1"}
