@@ -288,7 +288,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "start",
         "agent.start",
         &["name"],
-        "--harness claude|codex [--pane p] [--args a,b] [--yolo] [--isolate host|sandbox] [--network p]",
+        "--harness claude|codex [--pane p] [--args a,b] [--yolo] [--isolate host|sandbox|container] [--confirm-host-yolo] [--network p]",
     ),
     (
         "agent",
@@ -441,7 +441,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "new",
         "task.create",
         &["title"],
-        "[--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree|jj_workspace|none|auto] [--yolo] [--isolate host|sandbox|container] [--network none|harness-apis|package-registries|dev|open] [--image ref] [--code clone|worktree] [--devcontainer] [--build]",
+        "[--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree|jj_workspace|none|auto] [--yolo] [--isolate host|sandbox|container] [--confirm-host-yolo] [--network none|harness-apis|package-registries|dev|open] [--image ref] [--code clone|worktree] [--devcontainer] [--build]",
     ),
     ("task", "list", "task.list", &[], ""),
     (
@@ -506,6 +506,69 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "sandbox.remove",
         &["task"],
         "<task> [--force]: sync, then remove a container box (kept when unsynced unless --force)",
+    ),
+    (
+        "sandbox",
+        "disallow",
+        "sandbox.disallow",
+        &["host"],
+        "<host> [--task t | --global]: drop an egress approval (global without --task)",
+    ),
+    (
+        "sandbox",
+        "logs",
+        "sandbox.logs",
+        &["task"],
+        "<task> [--tail n]: box output, setup log and recent sandbox events",
+    ),
+    (
+        "sandbox",
+        "prune",
+        "sandbox.prune",
+        &[],
+        "[--dry-run]: remove boxes and box dirs no task owns any more",
+    ),
+    (
+        "sandbox",
+        "recover",
+        "sandbox.recover",
+        &["task"],
+        "<task>: fresh box after the old one was lost; resumes the lost runs",
+    ),
+    (
+        "sandbox",
+        "relaunch",
+        "sandbox.relaunch",
+        &["run"],
+        "<run> [--isolate sandbox|container] [--network p]: restart a host yolo run from its session inside a box",
+    ),
+    (
+        "sandbox",
+        "push",
+        "sandbox.push",
+        &["task"],
+        "<task> [--remote origin]: push the task branch from the host (boundary action)",
+    ),
+    (
+        "sandbox",
+        "copy-out",
+        "sandbox.copy_out",
+        &["task", "path"],
+        "<task> <path>: copy one file out of the box into the host outbox",
+    ),
+    (
+        "sandbox",
+        "request",
+        "sandbox.request",
+        &["kind"],
+        "push|copy_out [--path p] [--remote r]: from inside a box, ask the host for a boundary action",
+    ),
+    (
+        "sandbox",
+        "setup-token",
+        "sandbox.setup_token",
+        &[],
+        "store `claude setup-token` output read from stdin (projected as CLAUDE_CODE_OAUTH_TOKEN)",
     ),
     (
         "policy",
@@ -635,6 +698,35 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "task.dependency.list",
         &["task"],
         "[task] — confirmed links and how many open tasks each blocks",
+    ),
+    // 15 lane 2C.
+    (
+        "task",
+        "select",
+        "task.review.snapshot",
+        &["task"],
+        "<task> --paths f [--paths g …] | --patch <unified diff> — capture only these files or hunks as a selected-patch subject (checks on it verify the selection alone)",
+    ),
+    (
+        "task",
+        "human-review",
+        "task.review.human_review",
+        &["task", "criterion", "verdict"],
+        "<task> <criterion> supported|failed|withdrawn [--note n] [--subject s] [--screenshots id] — your judgment of a human criterion on the shown revision",
+    ),
+    (
+        "task",
+        "forget",
+        "task.review.forget",
+        &[],
+        "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
+    ),
+    (
+        "task",
+        "link",
+        "task.link.status",
+        &[],
+        "--run r | --pane p — why a run's identity is not verified, how to verify it, and verified runs to track instead",
     ),
     (
         "task",
@@ -1346,7 +1438,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — Show the exact payload. Do not send it.",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|task_title [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it.",
     ),
     (
         "assist",
@@ -1382,6 +1474,127 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "assistant.purge",
         &["request"],
         "<request> | --workspace w | --all — forget generated outputs",
+    ),
+    (
+        "assist",
+        "models",
+        "assistant.models",
+        &["connection"],
+        "[connection] [--profile p] [--refresh] — live|cached|bundled model list with capability records; --refresh asks the provider",
+    ),
+    (
+        "assist",
+        "test",
+        "assistant.test",
+        &[],
+        "[--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works",
+    ),
+    (
+        "assist",
+        "background",
+        "assistant.background",
+        &["action"],
+        "[status|tick] — the opt-in background sweeper (summaries, stall notices)",
+    ),
+    // `assistant` is the spec's name for the `assist` noun (14 §9): same methods, plus `brief`
+    // and `get`.
+    (
+        "assistant",
+        "status",
+        "assistant.status",
+        &[],
+        "enabled/configured state, coordinator, profile, budgets, consents (no secrets)",
+    ),
+    (
+        "assistant",
+        "providers",
+        "assistant.providers",
+        &[],
+        "configured connections and verified adapters (no secrets)",
+    ),
+    (
+        "assistant",
+        "models",
+        "assistant.models",
+        &["connection"],
+        "--connection <id> [--refresh] — model list with live|cached|bundled provenance and capability records",
+    ),
+    (
+        "assistant",
+        "test",
+        "assistant.test",
+        &[],
+        "[--profile p] [--probe streaming,json_schema] — explicit small generation, counted as usage",
+    ),
+    (
+        "assistant",
+        "brief",
+        "assistant.generate",
+        &["workspace"],
+        "[workspace] — preview a briefing request for a workspace (then `assistant confirm`)",
+    ),
+    (
+        "assistant",
+        "generate",
+        "assistant.generate",
+        &["operation"],
+        "<operation> [flags] — show the exact payload; nothing is sent",
+    ),
+    (
+        "assistant",
+        "confirm",
+        "assistant.confirm",
+        &["request", "preview_digest"],
+        "<request> <preview-digest> — send the previewed payload",
+    ),
+    (
+        "assistant",
+        "get",
+        "assistant.get",
+        &["request"],
+        "<request> — lifecycle, usage, cost, sources, staleness and the generated draft",
+    ),
+    (
+        "assistant",
+        "list",
+        "assistant.list",
+        &[],
+        "[--workspace w] [--state done] [--limit 50]",
+    ),
+    (
+        "assistant",
+        "cancel",
+        "assistant.cancel",
+        &["request"],
+        "<request>",
+    ),
+    (
+        "assistant",
+        "consent",
+        "assistant.consent",
+        &["workspace"],
+        "[workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...]",
+    ),
+    (
+        "assistant",
+        "revoke",
+        "assistant.revoke",
+        &["workspace"],
+        "[workspace] [--remote-workspace machine:/path] [--connection c]",
+    ),
+    (
+        "assistant",
+        "purge",
+        "assistant.purge",
+        &["request"],
+        "<request> | --workspace w | --all — forget generated outputs and cached results",
+    ),
+    (
+        "assistant",
+        "background",
+        "assistant.background",
+        &["action"],
+        "[status|tick]",
     ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
@@ -1656,6 +1869,23 @@ fn adjust(method: &str, p: &mut Value) {
             }
             if !to.is_empty() {
                 o.insert("to".into(), Value::Object(to));
+            }
+        }
+        "sandbox.setup_token" => {
+            // The token comes from stdin (`claude setup-token | vibeke sandbox setup-token`), so
+            // it never lands in shell history or the process list.
+            if o.get("token").is_none_or(|t| t.as_str() == Some("-")) {
+                let mut s = String::new();
+                let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut s);
+                // `claude setup-token` prints prose around the token: keep the token line.
+                let tok = s
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| l.starts_with("sk-ant-"))
+                    .or_else(|| s.lines().map(str::trim).rfind(|l| !l.is_empty()))
+                    .unwrap_or("")
+                    .to_string();
+                o.insert("token".into(), json!(tok));
             }
         }
         "config.set" => {
@@ -2054,6 +2284,13 @@ pub fn pretty(method: &str, v: &Value) -> String {
         "assistant.generate" => {
             let pv = &v["preview"];
             let r = &v["request"];
+            if v["coalesced"] == true {
+                return format!(
+                    "{} — attached to an open background request ({}); only its creator can cancel it",
+                    r["id"].as_str().unwrap_or(""),
+                    r["state"].as_str().unwrap_or("")
+                );
+            }
             let mut out = format!(
                 "{} — {} via {} ({}) on {}\n{} bytes, ~{} input tokens, max {} output tokens, {} redaction(s)\n{}\n\n--- system ---\n{}\n--- user ---\n{}\n",
                 r["id"].as_str().unwrap_or(""),
@@ -2069,7 +2306,9 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 pv["system"].as_str().unwrap_or(""),
                 pv["user"].as_str().unwrap_or(""),
             );
-            if v["requires_confirmation"] == true {
+            if v["cached"] == true {
+                out.push_str("\nServed from the result cache: nothing was sent to the provider. See it with `vibeke assist show`.");
+            } else if v["requires_confirmation"] == true {
                 out.push_str(&format!(
                     "\nNothing has been sent. To send exactly this: vibeke assist confirm {} {}",
                     r["id"].as_str().unwrap_or(""),
@@ -2079,6 +2318,68 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 out.push_str(
                     "\nSent automatically (auto_send is enabled for this operation and workspace).",
                 );
+            }
+            out
+        }
+        "assistant.models" => {
+            let mut out = format!(
+                "{} ({}) on {} — {} list{}\n{}\n",
+                v["connection"].as_str().unwrap_or(""),
+                v["adapter"].as_str().unwrap_or(""),
+                v["endpoint_host"].as_str().unwrap_or(""),
+                v["provenance"].as_str().unwrap_or(""),
+                match v["refreshed_at_ms"].as_i64() {
+                    Some(ms) => format!(", refreshed at {ms} ms"),
+                    None => String::new(),
+                },
+                v["note"].as_str().unwrap_or("")
+            );
+            for m in v["models"].as_array().into_iter().flatten() {
+                let caps = ["streaming", "json_schema", "tools", "images"]
+                    .iter()
+                    .map(|f| {
+                        let c = &m["capabilities"][*f];
+                        format!(
+                            "{f}={}({})",
+                            c["support"].as_str().unwrap_or("?"),
+                            c["source"].as_str().unwrap_or("?")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push_str(&format!(
+                    "  {:<40} {}\n",
+                    m["id"].as_str().unwrap_or(""),
+                    caps
+                ));
+            }
+            out
+        }
+        "assistant.test" => {
+            let mut out = format!(
+                "{} via {} ({}) on {}: {} in {} ms, {} attempt(s), counted as usage",
+                v["model"].as_str().unwrap_or(""),
+                v["connection"].as_str().unwrap_or(""),
+                v["endpoint_host"].as_str().unwrap_or(""),
+                v["execution_machine"].as_str().unwrap_or(""),
+                if v["ok"] == true { "ok" } else { "FAILED" },
+                v["latency_ms"],
+                v["attempts"]
+            );
+            if let Some(e) = v["error"].as_object() {
+                out.push_str(&format!(
+                    "\n  error: {} — {}",
+                    e.get("category").and_then(Value::as_str).unwrap_or(""),
+                    e.get("message").and_then(Value::as_str).unwrap_or("")
+                ));
+            }
+            for p in v["probes"].as_array().into_iter().flatten() {
+                out.push_str(&format!(
+                    "\n  probe {}: {} (recorded: {})",
+                    p["feature"].as_str().unwrap_or(""),
+                    if p["ok"] == true { "works" } else { "no" },
+                    p["recorded"].as_str().unwrap_or("none")
+                ));
             }
             out
         }
@@ -2389,6 +2690,85 @@ where
     }
 }
 
+pub const SANDBOX_SHELL_USAGE: &str = "vibeke sandbox shell <task> [--print]\n  An interactive debugging shell inside the task's box (container: `<runtime> exec -it`; sandbox: the same Seatbelt/bubblewrap profile). No credentials are passed. --print shows the command instead.";
+
+/// `vibeke sandbox shell <task>`: ask the server for the shell command of the task's box and
+/// run it in this terminal (13 §11).
+pub async fn sandbox_shell<S>(client: &mut Client<S>, mut params: Value) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let print = params
+        .as_object_mut()
+        .and_then(|o| o.remove("print"))
+        .is_some_and(|v| v.as_bool().unwrap_or(false));
+    if params.get("task").is_none() {
+        eprintln!("{SANDBOX_SHELL_USAGE}");
+        return EXIT_USAGE;
+    }
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let r = match client.call("sandbox.shell", params).await {
+        Ok(v) => v,
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    let argv: Vec<String> = r["argv"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if argv.is_empty() {
+        eprintln!("the server returned no shell command");
+        return EXIT_USAGE;
+    }
+    if print {
+        println!("{}", argv.join(" "));
+        return EXIT_OK;
+    }
+    let env: Vec<(String, String)> = r["env"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|kv| {
+                    Some((
+                        kv.get(0)?.as_str()?.to_string(),
+                        kv.get(1)?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    if !env.is_empty() {
+        // The box's env (sandbox) or the runtime CLI's env (container), nothing else.
+        cmd.env_clear().envs(env);
+    }
+    if let Some(cwd) = r["cwd"].as_str() {
+        cmd.current_dir(cwd);
+    }
+    eprintln!(
+        "vibeke: shell in {} ({}); exit to leave",
+        r["sandbox"].as_str().unwrap_or("?"),
+        r["level"].as_str().unwrap_or("?")
+    );
+    match cmd.status() {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("vibeke: {}: {e}", argv[0]);
+            1
+        }
+    }
+}
+
 pub const FORGET_USAGE: &str = "vibeke forget --pane <p> | --workspace <w> | --before <time> | --all  [--yes] [--dry-run]\n  Deletes archived scrollback (segments, search index rows, archive metadata) for the scope.\n  Does not delete the event log, blobs, the session desk index, drafts, notes, or what a live pane still holds in memory.\n  --before takes a date, an RFC 3339 time or a duration back from now (7d, 12h); it is segment-granular.";
 
 /// `vibeke forget`: preview the scope with `scrollback.forget {dry_run}`, ask (or require
@@ -2602,6 +2982,16 @@ where
     }
     let _ = writeln!(out, "{}", show::describe(&shot, shown));
     EXIT_OK
+}
+
+/// Parameters a verb implies (`assistant brief` is `assistant.generate {operation: briefing}`).
+pub fn preset(noun: &str, verb: &str, params: &mut Value) {
+    if noun == "assistant"
+        && verb == "brief"
+        && let Some(o) = params.as_object_mut()
+    {
+        o.entry("operation").or_insert(json!("briefing"));
+    }
 }
 
 /// Look up `(method, positional)` for `noun verb`.

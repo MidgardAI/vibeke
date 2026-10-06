@@ -775,6 +775,279 @@ pub(crate) fn probe_terminal() -> Option<vk_tui::caps::ProbeResult> {
     Some(parse_replies(&buf, &env))
 }
 
+// ---- doctor terminal --------------------------------------------------------------------------
+
+/// What `vibeke doctor terminal` probed: the capability answers (after
+/// `terminal.host_overrides`) and the graphics answers.
+pub struct TermProbe {
+    pub caps: vk_tui::caps::ProbeResult,
+    pub graphics: vk_browser::probe::GraphicsCaps,
+    /// Override keys that are graphics capabilities (`kitty_graphics`, `kitty_shm`, …).
+    pub graphics_overrides: Vec<(String, bool)>,
+}
+
+/// The `vibeke doctor terminal` table (03 §6.1): one pass/warn row per host feature, then the
+/// settings that decide how Vibeke uses them. `probe` is `None` when stdin/stdout is not a
+/// terminal (only the environment is shown).
+pub fn terminal_report(
+    env: &vk_tui::caps::EnvHints,
+    probe: Option<&TermProbe>,
+    cfg: &vk_config::Config,
+) -> Report {
+    use vk_browser::probe::ModeState;
+    use vk_tui::caps::{Background, Notifications, Osc52};
+    const T: &str = "terminal";
+    const S: &str = "settings";
+    let mut r = Report::default();
+    let show = |s: &str| {
+        if s.is_empty() {
+            "(unset)".to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    r.add(
+        T,
+        Level::Info,
+        format!(
+            "TERM={} TERM_PROGRAM={} COLORTERM={}",
+            show(&env.term),
+            show(&env.term_program),
+            show(&env.colorterm)
+        ),
+    );
+    match probe {
+        None => r.add_hint(
+            T,
+            Level::Warn,
+            "not probed: stdin/stdout is not a terminal",
+            "run `vibeke doctor terminal` directly in the terminal you use Vibeke in",
+        ),
+        Some(p) if !p.caps.complete && p.caps.da1.is_none() => r.add_hint(
+            T,
+            Level::Warn,
+            "no answer to capability queries within 150 ms",
+            "a multiplexer in between (tmux, screen) or a slow link; run it outside them",
+        ),
+        Some(p) => {
+            let c = &p.caps;
+            if let Some(x) = &c.xtversion {
+                r.add(T, Level::Info, format!("identifies as {x}"));
+            }
+            let g = &p.graphics;
+            let ov = |k: &str| {
+                p.graphics_overrides
+                    .iter()
+                    .find(|(n, _)| n == k)
+                    .map(|(_, v)| *v)
+            };
+            let kitty_graphics = ov("kitty_graphics").unwrap_or(g.kitty_graphics);
+            let kitty_shm = ov("kitty_shm").unwrap_or(g.kitty_shm == Some(true));
+            let sgr_pixels = ov("sgr_pixels").unwrap_or(matches!(
+                g.sgr_pixels,
+                Some(ModeState::Set | ModeState::Reset | ModeState::PermanentlySet)
+            ));
+            let iterm2 =
+                ov("iterm2_images").unwrap_or(env.term_program == "iTerm.app" && !kitty_graphics);
+            let rows: [(bool, &str, &str); 14] = [
+                (
+                    c.kitty_keyboard,
+                    "kitty keyboard protocol (flags 31, with associated text)",
+                    "use Ghostty, Kitty, WezTerm or iTerm2 with CSI u; Vibeke falls back to modifyOtherKeys / legacy keys, so AltGr text and shift+enter may be lost",
+                ),
+                (
+                    kitty_graphics,
+                    "kitty graphics (images, browser panes)",
+                    "images in panes show as an [image W×H] label; iTerm2 inline images are used for browser panes where available",
+                ),
+                (
+                    kitty_shm,
+                    "kitty graphics over shared memory (t=s)",
+                    "optional; images go as compressed direct transmissions",
+                ),
+                (
+                    c.sync_update,
+                    "synchronized updates (DEC 2026)",
+                    "optional; redraws may flicker on slow links",
+                ),
+                (
+                    c.truecolor,
+                    "truecolor (24-bit colour)",
+                    "set COLORTERM=truecolor (ssh may need SendEnv/AcceptEnv); colours are approximated",
+                ),
+                (
+                    c.undercurl,
+                    "curly and coloured underlines",
+                    "optional; underlines degrade to single (host_overrides undercurl = true if it lies)",
+                ),
+                (
+                    c.osc52 == Osc52::Allowed,
+                    "OSC 52 clipboard",
+                    "cannot be probed; verify with copy mode (prefix+[) and enable clipboard access in the terminal",
+                ),
+                (
+                    c.osc8,
+                    "OSC 8 hyperlinks",
+                    "optional; links still open with ctrl+click (host_overrides osc8 = true to force)",
+                ),
+                (
+                    c.focus_events,
+                    "focus events (DECSET 1004)",
+                    "optional; apps miss focus-in/out redraws",
+                ),
+                (
+                    c.bracketed_paste,
+                    "bracketed paste (DECSET 2004)",
+                    "pastes may be read as typed keys",
+                ),
+                (
+                    c.sgr_mouse,
+                    "SGR mouse (DECSET 1006)",
+                    "clicks past column 223 may be lost",
+                ),
+                (
+                    sgr_pixels,
+                    "SGR-pixels mouse (DECSET 1016)",
+                    "optional; browser-pane clicks are cell-precise only",
+                ),
+                (
+                    c.sixel,
+                    "sixel graphics",
+                    "optional; Vibeke draws images with kitty graphics",
+                ),
+                (
+                    iterm2,
+                    "iTerm2 inline images (OSC 1337)",
+                    "optional; the fallback for browser panes without kitty graphics",
+                ),
+            ];
+            for (ok, what, hint) in rows {
+                if ok {
+                    r.add(T, Level::Pass, what.to_string());
+                } else {
+                    r.add_hint(T, Level::Warn, format!("{what}: not detected"), hint);
+                }
+            }
+            match g.cell_px {
+                Some((w, h)) => r.add(T, Level::Pass, format!("cell size: {w}×{h} px")),
+                None => r.add_hint(
+                    T,
+                    Level::Warn,
+                    "cell size: unknown",
+                    "images and browser panes assume 10×20 px cells",
+                ),
+            }
+            let bg = match c.background {
+                Background::Light => "light",
+                Background::Dark => "dark",
+                Background::Unknown => "unknown",
+            };
+            r.add(
+                T,
+                if c.background == Background::Unknown {
+                    Level::Warn
+                } else {
+                    Level::Pass
+                },
+                format!("background: {bg} (theme auto follows it)"),
+            );
+            let notes = match c.notifications {
+                Notifications::Osc9 => "OSC 9",
+                Notifications::Osc777 => "OSC 777",
+                Notifications::Osc99 => "OSC 99",
+                Notifications::None => "none known",
+            };
+            r.add(
+                T,
+                Level::Info,
+                format!("native notification escape: {notes}"),
+            );
+        }
+    }
+    let altgr = match cfg.keys.altgr_mode {
+        vk_config::AltgrMode::Chord => "chord (ctrl+alt / alt keys with AltGr text stay chords)",
+        _ => "text (AltGr keys type their character; only altgr+… bindings match them)",
+    };
+    r.add(S, Level::Info, format!("keys.altgr_mode: {altgr}"));
+    if probe.is_some_and(|p| !p.caps.kitty_keyboard) {
+        r.add(
+            S,
+            Level::Info,
+            "AltGr text needs the kitty keyboard protocol; with legacy keys ctrl+alt and AltGr cannot be told apart",
+        );
+    }
+    r.add(
+        S,
+        Level::Info,
+        format!(
+            "terminal.allow_passthrough: {} (DCS tmux passthrough {})",
+            cfg.terminal.allow_passthrough,
+            if cfg.terminal.allow_passthrough {
+                "is unwrapped in new panes"
+            } else {
+                "is ignored"
+            }
+        ),
+    );
+    r.add(
+        S,
+        Level::Info,
+        format!(
+            "graphics: max_image_bytes {}, max_total_per_pane {} (new panes)",
+            cfg.graphics.max_image_bytes, cfg.graphics.max_total_per_pane
+        ),
+    );
+    if !cfg.terminal.host_overrides.is_empty() {
+        let o: Vec<String> = cfg
+            .terminal
+            .host_overrides
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        r.add(
+            S,
+            Level::Info,
+            format!("terminal.host_overrides applied: {}", o.join(", ")),
+        );
+    }
+    r
+}
+
+/// `vibeke doctor terminal [--json]`: probe the host terminal and print the table.
+pub fn doctor_terminal(g: &Global, args: &[String]) -> i32 {
+    if let Some(bad) = args.first() {
+        eprintln!("vibeke doctor terminal [--json]  (unexpected `{bad}`)");
+        return EXIT_USAGE;
+    }
+    let cfg = vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| c)
+        .unwrap_or_default();
+    let env = vk_tui::caps::EnvHints::from_env();
+    let tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
+    let probe = if tty && crossterm::terminal::enable_raw_mode().is_ok() {
+        let (mut caps, graphics) = vk_tui::term::probe();
+        let _ = crossterm::terminal::disable_raw_mode();
+        let graphics_overrides = caps.apply_overrides(&cfg.terminal.host_overrides);
+        Some(TermProbe {
+            caps,
+            graphics,
+            graphics_overrides,
+        })
+    } else {
+        None
+    };
+    let r = terminal_report(&env, probe.as_ref(), &cfg);
+    if g.json == Some(true) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&r.to_json()).unwrap_or_default()
+        );
+    } else {
+        print!("{}", r.render_text());
+    }
+    if r.failed() { 1 } else { EXIT_OK }
+}
+
 fn check_terminal(r: &mut Report) {
     use vk_tui::caps::{Background, EnvHints, Osc52};
     let env = EnvHints::from_env();
@@ -1079,17 +1352,23 @@ fn test_pause_rebuild() {
 /// `scrollback_fts` and `archive_panes` from the zstd segments on disk. Works offline on the
 /// session's state dir and refuses while the session's server is running (it would be writing
 /// the same tables); segment files are never modified.
-async fn rebuild_index(g: &Global) -> i32 {
+/// Whether the session's server is running (its socket answers or its pidfile's process lives).
+pub(crate) async fn session_running(g: &Global) -> bool {
     let p = Paths::new(&g.session);
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     let pid_alive = std::fs::read_to_string(p.pidfile())
         .ok()
         .and_then(|s| s.trim().parse::<i32>().ok())
         .is_some_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0);
-    let running = !matches!(
+    !matches!(
         probe_server(&socket).await,
         ServerProbe::NoSocket | ServerProbe::Stale(_)
-    ) || pid_alive;
+    ) || pid_alive
+}
+
+async fn rebuild_index(g: &Global) -> i32 {
+    let p = Paths::new(&g.session);
+    let running = session_running(g).await;
     if running {
         eprintln!(
             "refusing to rebuild the index of session `{}` while its server is running (it writes the same tables); run `vibeke server stop` first (panes survive), then retry",
@@ -1167,6 +1446,8 @@ async fn rebuild_index(g: &Global) -> i32 {
     EXIT_OK
 }
 
+mod assist_checks;
+
 const AUDIT: &str = "audit";
 
 /// The session's audit log hash chain (09 §11): intact, cut or edited. `all` lists every
@@ -1223,6 +1504,15 @@ fn check_audit(r: &mut Report, g: &Global, all: bool) {
 }
 
 pub async fn run(g: &Global, args: &[String]) -> i32 {
+    if args.first().map(String::as_str) == Some("terminal") {
+        return doctor_terminal(g, &args[1..]);
+    }
+    if args
+        .iter()
+        .any(|a| a == "--list-backups" || a == "--restore-backup")
+    {
+        return crate::state_backup::run(g, args).await;
+    }
     if args.iter().any(|a| a == "--rebuild-index") {
         if let Some(bad) = args.iter().find(|a| a.as_str() != "--rebuild-index") {
             eprintln!("vibeke doctor --rebuild-index takes no other flag  (unexpected `{bad}`)");
@@ -1235,7 +1525,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         .find(|a| !matches!(a.as_str(), "--no-remote" | "--audit"))
     {
         eprintln!(
-            "vibeke doctor [--json] [--no-remote] [--audit] | --rebuild-index  (unexpected `{bad}`)"
+            "vibeke doctor [--json] [--no-remote] [--audit] | --rebuild-index | --list-backups | --restore-backup NAME | terminal  (unexpected `{bad}`)"
         );
         return EXIT_USAGE;
     }
@@ -1268,6 +1558,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     check_topology(&mut r);
     check_isolation(&mut r);
     check_tasks(&mut r);
+    assist_checks::check(&mut r);
     if g.json == Some(true) {
         println!(
             "{}",
@@ -1824,6 +2115,81 @@ mod tests {
             Some("function")
         );
         assert_eq!(shadow_kind("codex is /usr/local/bin/codex"), None);
+    }
+
+    /// `vibeke doctor terminal` (03 §6.1): a pass/warn row per feature from the probe answers
+    /// (with `terminal.host_overrides` applied), then the settings that use them.
+    #[test]
+    fn doctor_terminal_table() {
+        use vk_tui::caps::{EnvHints, Notifications, Osc52, ProbeResult};
+        let env = EnvHints {
+            term: "xterm-ghostty".into(),
+            term_program: "ghostty".into(),
+            colorterm: "truecolor".into(),
+            vte_or_wt: false,
+        };
+        let mut caps = ProbeResult {
+            kitty_keyboard: true,
+            sync_update: true,
+            truecolor: true,
+            osc52: Osc52::Allowed,
+            xtversion: Some("ghostty 1.2".into()),
+            da1: Some(vec![62, 22]),
+            complete: true,
+            undercurl: true,
+            osc8: true,
+            focus_events: true,
+            sgr_mouse: true,
+            bracketed_paste: true,
+            notifications: Notifications::Osc777,
+            ..ProbeResult::default()
+        };
+        let mut cfg = vk_config::Config::default();
+        cfg.terminal
+            .host_overrides
+            .insert("kitty_graphics".into(), true);
+        cfg.terminal.host_overrides.insert("osc8".into(), false);
+        let rest = caps.apply_overrides(&cfg.terminal.host_overrides);
+        let probe = TermProbe {
+            caps,
+            graphics: vk_browser::probe::GraphicsCaps {
+                cell_px: Some((10, 21)),
+                complete: true,
+                ..Default::default()
+            },
+            graphics_overrides: rest,
+        };
+        let r = terminal_report(&env, Some(&probe), &cfg);
+        let t = r.render_text();
+        assert!(t.contains("ok    kitty keyboard protocol"), "{t}");
+        assert!(
+            t.contains("ok    kitty graphics (images, browser panes)"),
+            "override applies: {t}"
+        );
+        assert!(t.contains("warn  OSC 8 hyperlinks: not detected"), "{t}");
+        assert!(t.contains("ok    cell size: 10×21 px"));
+        assert!(t.contains("warn  background: unknown"));
+        assert!(t.contains("keys.altgr_mode: text"));
+        assert!(t.contains("terminal.allow_passthrough: false"));
+        assert!(t.contains("max_image_bytes 32MiB, max_total_per_pane 256MiB"));
+        assert!(t.contains("host_overrides applied: kitty_graphics=true, osc8=false"));
+        assert!(!r.failed());
+        let j = r.to_json();
+        assert!(
+            j["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["section"] == "settings")
+        );
+        // Not a terminal: environment only, one warning saying why.
+        let r = terminal_report(&env, None, &cfg);
+        let t = r.render_text();
+        assert!(
+            t.contains("not probed: stdin/stdout is not a terminal"),
+            "{t}"
+        );
+        assert!(t.contains("TERM=xterm-ghostty"));
     }
 
     #[test]

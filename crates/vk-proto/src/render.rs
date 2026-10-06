@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 ///   `SessionModel.pane_live` (OSC 9;4 progress, last exit code, user vars),
 ///   `ServerFrame::ClipboardQuery` / `ClientFrame::ClipboardReply` (OSC 52 read), and
 ///   `ServerFrame::Image` / `PaneImages` (inbound kitty graphics, 03 §9).
-pub const PROTOCOL: u32 = 4;
+/// - 5: `ImagePlace.virt` (virtual placements a program shows through its own unicode
+///   placeholder cells, 03 §9).
+pub const PROTOCOL: u32 = 5;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";
@@ -345,6 +347,9 @@ pub struct ImagePlace {
     pub cols: u16,
     pub rows: u16,
     pub z: i32,
+    /// A virtual placement: the program's image id, which its own placeholder cells carry in
+    /// their foreground colour (`col`/`row` are 0; `cols`/`rows` the placement's grid size).
+    pub virt: Option<u32>,
 }
 
 /// One pushed event: its sequence number and type for cheap routing, and the full event as
@@ -796,6 +801,7 @@ mod tests {
                 cols: 3,
                 rows: 2,
                 z: 0,
+                virt: Some(7),
             }],
         };
         assert_eq!(rt_server(&pi), pi);

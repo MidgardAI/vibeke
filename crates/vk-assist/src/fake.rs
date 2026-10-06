@@ -17,6 +17,12 @@ pub struct Reply {
     pub delay: Duration,
     /// Announce a longer body than is sent, then close (a body cut off after the headers).
     pub cut: bool,
+    /// A streamed reply: each piece is written and flushed separately (no content length;
+    /// the connection closing ends it), with `piece_delay` between pieces. A stream missing
+    /// its terminal event simply ends early.
+    pub pieces: Option<Vec<String>>,
+    pub piece_delay: Duration,
+    pub content_type: Option<String>,
 }
 
 impl Reply {
@@ -27,6 +33,9 @@ impl Reply {
             headers: vec![],
             delay: Duration::ZERO,
             cut: false,
+            pieces: None,
+            piece_delay: Duration::ZERO,
+            content_type: None,
         }
     }
     pub fn json(v: Value) -> Reply {
@@ -59,6 +68,143 @@ impl Reply {
             "done": true, "done_reason": "stop",
             "prompt_eval_count": input, "eval_count": output,
         }))
+    }
+    /// Native Gemini `generateContent` reply.
+    pub fn gemini(text: &str, input: u64, output: u64) -> Reply {
+        Reply::json(json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": input, "candidatesTokenCount": output},
+        }))
+    }
+    /// Anthropic reply whose content is a forced tool call (native structured output).
+    pub fn anthropic_tool(input_value: Value, input: u64, output: u64) -> Reply {
+        Reply::json(json!({
+            "content": [{"type": "tool_use", "id": "toolu_fake", "name": "emit_result", "input": input_value}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": input, "output_tokens": output},
+        }))
+    }
+    /// A server-sent-events reply made of `data:` pieces.
+    pub fn sse(pieces: Vec<String>) -> Reply {
+        let mut r = Reply::status(200, "");
+        r.pieces = Some(pieces);
+        r.content_type = Some("text/event-stream".into());
+        r
+    }
+    pub fn ndjson(pieces: Vec<String>) -> Reply {
+        let mut r = Reply::status(200, "");
+        r.pieces = Some(pieces);
+        r.content_type = Some("application/x-ndjson".into());
+        r
+    }
+    fn sse_event(name: Option<&str>, v: Value) -> String {
+        match name {
+            Some(n) => format!("event: {n}\ndata: {v}\n\n"),
+            None => format!("data: {v}\n\n"),
+        }
+    }
+    /// Anthropic streaming reply: one text delta per element of `texts`.
+    pub fn anthropic_stream(texts: &[&str], input: u64, output: u64) -> Reply {
+        let mut p = vec![
+            Reply::sse_event(
+                Some("message_start"),
+                json!({"type": "message_start", "message": {"usage": {"input_tokens": input, "output_tokens": 1}}}),
+            ),
+            Reply::sse_event(
+                Some("content_block_start"),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            ),
+        ];
+        for t in texts {
+            p.push(Reply::sse_event(
+                Some("content_block_delta"),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": t}}),
+            ));
+        }
+        p.push(Reply::sse_event(
+            Some("content_block_stop"),
+            json!({"type": "content_block_stop", "index": 0}),
+        ));
+        p.push(Reply::sse_event(
+            Some("message_delta"),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": output}}),
+        ));
+        p.push(Reply::sse_event(
+            Some("message_stop"),
+            json!({"type": "message_stop"}),
+        ));
+        Reply::sse(p)
+    }
+    /// OpenAI-compatible streaming reply.
+    pub fn openai_stream(texts: &[&str], input: u64, output: u64) -> Reply {
+        let mut p: Vec<String> = texts
+            .iter()
+            .map(|t| {
+                Reply::sse_event(
+                    None,
+                    json!({"choices": [{"index": 0, "delta": {"content": t}, "finish_reason": null}]}),
+                )
+            })
+            .collect();
+        p.push(Reply::sse_event(
+            None,
+            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+        ));
+        p.push(Reply::sse_event(
+            None,
+            json!({"choices": [], "usage": {"prompt_tokens": input, "completion_tokens": output}}),
+        ));
+        p.push("data: [DONE]\n\n".into());
+        Reply::sse(p)
+    }
+    /// Ollama streaming reply (newline-delimited JSON).
+    pub fn ollama_stream(texts: &[&str], input: u64, output: u64) -> Reply {
+        let mut p: Vec<String> = texts
+            .iter()
+            .map(|t| {
+                format!(
+                    "{}\n",
+                    json!({"message": {"role": "assistant", "content": t}, "done": false})
+                )
+            })
+            .collect();
+        p.push(format!(
+            "{}\n",
+            json!({"message": {"role": "assistant", "content": ""}, "done": true, "done_reason": "stop", "prompt_eval_count": input, "eval_count": output})
+        ));
+        Reply::ndjson(p)
+    }
+    /// Gemini streaming reply (`alt=sse`).
+    pub fn gemini_stream(texts: &[&str], input: u64, output: u64) -> Reply {
+        let n = texts.len();
+        let p = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut c = json!({"content": {"role": "model", "parts": [{"text": t}]}});
+                let mut v = json!({});
+                if i + 1 == n {
+                    c["finishReason"] = json!("STOP");
+                    v["usageMetadata"] =
+                        json!({"promptTokenCount": input, "candidatesTokenCount": output});
+                }
+                v["candidates"] = json!([c]);
+                Reply::sse_event(None, v)
+            })
+            .collect();
+        Reply::sse(p)
+    }
+    /// Drop the last `n` pieces of a streamed reply (a stream cut before its end marker).
+    pub fn truncated(mut self, n: usize) -> Reply {
+        if let Some(p) = self.pieces.as_mut() {
+            let keep = p.len().saturating_sub(n);
+            p.truncate(keep);
+        }
+        self
+    }
+    pub fn with_piece_delay(mut self, d: Duration) -> Reply {
+        self.piece_delay = d;
+        self
     }
     pub fn redirect(location: &str) -> Reply {
         Reply::status(307, "").with_header("location", location)
@@ -214,6 +360,26 @@ async fn serve(mut sock: tokio::net::TcpStream, shared: Arc<Mutex<Shared>>) {
     };
     if !reply.delay.is_zero() {
         tokio::time::sleep(reply.delay).await;
+    }
+    if let Some(pieces) = &reply.pieces {
+        let head = format!(
+            "HTTP/1.1 {} X\r\ncontent-type: {}\r\nconnection: close\r\ncache-control: no-cache\r\n\r\n",
+            reply.status,
+            reply.content_type.as_deref().unwrap_or("text/event-stream")
+        );
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        for piece in pieces {
+            if !reply.piece_delay.is_zero() {
+                tokio::time::sleep(reply.piece_delay).await;
+            }
+            if sock.write_all(piece.as_bytes()).await.is_err() || sock.flush().await.is_err() {
+                return;
+            }
+        }
+        let _ = sock.shutdown().await;
+        return;
     }
     let mut out = format!(
         "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",

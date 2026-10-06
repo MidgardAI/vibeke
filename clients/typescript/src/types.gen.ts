@@ -201,6 +201,13 @@ export type Facet = {
   detail: string | null;
 };
 
+export type FileChange = {
+  path: string;
+  op: "create" | "modify" | "delete" | "rename";
+  lines_added: number | null;
+  lines_removed: number | null;
+};
+
 export type FloatingPane = {
   pane: string;
   x: number;
@@ -259,6 +266,22 @@ export type Isolation = {
 
 export type IsolationLevel = "host" | "sandbox" | "container" | "vm";
 
+export type Item = {
+  id: string;
+  turn_id: string;
+  run_id: string;
+  seq: number;
+  kind: ItemKind;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  summary: string;
+  payload_ref: string | null;
+  file_change: FileChange | null;
+  native_id: string | null;
+};
+
+export type ItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "file_change" | "command" | "plan" | "subagent" | "error";
+
 export type LayoutNode = {
   Leaf: {
     pane: string;
@@ -271,6 +294,22 @@ export type LayoutNode = {
 };
 
 export type LayoutSpec = Record<string, unknown>;
+
+export type Machine = {
+  id: string;
+  label: string;
+  kind: MachineKind;
+  address: string | null;
+  os: string;
+  arch: string;
+  vibeke_version: string;
+  status: MachineStatus;
+  last_seen_ms: number;
+};
+
+export type MachineKind = "local" | "ssh" | "quic";
+
+export type MachineStatus = "connected" | "connecting" | "degraded" | "offline";
 
 export type MaterializedFile = {
   path: string;
@@ -430,6 +469,20 @@ export type RateLimitInfo = {
   observed_at_ms: number;
 };
 
+export type ReviewPurge = {
+  tasks: number;
+  runs: number;
+  messages: number;
+  intent_excerpts: number;
+  turns: number;
+  tool_items: number;
+  reviewer_prompts: number;
+  notes: number;
+  human_notes: number;
+  check_logs: number;
+  projections: number;
+};
+
 export type RpcError = {
   code: number;
   message: string;
@@ -476,6 +529,15 @@ export type SessionEntry = {
   state: string;
   current: boolean;
   pid?: number;
+};
+
+export type SessionInfo = {
+  id: string;
+  name: string;
+  machine_id: string;
+  created_at_ms: number;
+  server_pid: number;
+  server_version: string;
 };
 
 export type SyncGroup = {
@@ -542,6 +604,27 @@ export type TaskPorts = {
     count: number;
   } | null;
   env: Record<string, unknown>;
+};
+
+export type Turn = {
+  id: string;
+  run_id: string;
+  seq: number;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  input_summary: string;
+  status: "running" | "completed" | "interrupted" | "failed";
+  usage: TurnUsage | null;
+  usage_baseline: TurnUsage | null;
+  item_count: number;
+};
+
+export type TurnUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
 };
 
 export type Workspace = {
@@ -843,12 +926,20 @@ export type ApiSchemaResult = {
   schema: Record<string, unknown>;
 };
 
+export type AssistantBackgroundParams = {
+  action?: "status" | "tick";
+};
+
+export type AssistantBackgroundResult = unknown;
+
 export type AssistantCancelParams = {
   request: string;
 };
 
 export type AssistantCancelResult = {
   request: Record<string, unknown>;
+  detached?: boolean;
+  note?: string;
   cursor?: Cursor;
 };
 
@@ -864,6 +955,7 @@ export type AssistantConfirmResult = {
 
 export type AssistantConsentParams = {
   workspace?: Target;
+  remote_workspace?: string;
   connection?: string;
   profile?: string;
   classes?: ("selected_text" | "structured_state" | "review_package" | "screen")[];
@@ -878,8 +970,10 @@ export type AssistantConsentResult = {
 };
 
 export type AssistantGenerateParams = {
-  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate";
+  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate" | "navigate" | "decision_card" | "stall_notice" | "background_summary" | "task_title";
   profile?: string;
+  priority?: "interactive" | "background";
+  stream?: boolean;
   idempotency_key?: string;
   retry_of?: string;
   inputs?: Record<string, unknown>;
@@ -888,12 +982,15 @@ export type AssistantGenerateParams = {
   pane?: Target;
   task?: Target;
   workspace?: Target;
+  interaction?: Target;
+  query?: string;
+  remote_sources?: Record<string, unknown>[];
   include_screen?: boolean;
 };
 
 export type AssistantGenerateResult = {
   request: Record<string, unknown>;
-  preview: {
+  preview?: {
     digest: string;
     system?: string;
     user?: string;
@@ -909,9 +1006,15 @@ export type AssistantGenerateResult = {
     omitted?: unknown;
     redactions?: unknown;
     notice?: string;
+    priority?: string;
+    coverage_notes?: string[];
   };
-  requires_confirmation: boolean;
-  confirm_with?: Record<string, unknown>;
+  requires_confirmation?: boolean;
+  confirm_with?: Record<string, unknown> | null;
+  deduplicated?: boolean;
+  coalesced?: boolean;
+  cached?: boolean;
+  note?: string;
   cursor?: Cursor;
 };
 
@@ -933,6 +1036,31 @@ export type AssistantListResult = {
   requests: Record<string, unknown>[];
 };
 
+export type AssistantModelsParams = {
+  connection?: string;
+  profile?: string;
+  refresh?: boolean;
+};
+
+export type AssistantModelsResult = {
+  connection: string;
+  adapter: string;
+  provenance: "live" | "cached" | "bundled";
+  refreshed_at_ms: number | null;
+  models: {
+    id: string;
+    display_name?: string | null;
+    created?: string | null;
+    capabilities: Record<string, unknown>;
+  }[];
+  note: string;
+  endpoint_host?: string;
+  execution_machine?: string;
+  current_model?: string | null;
+  current_capabilities?: Record<string, unknown> | null;
+  explicit_model?: string;
+};
+
 export type AssistantProvidersParams = Record<string, unknown>;
 
 export type AssistantProvidersResult = {
@@ -946,6 +1074,12 @@ export type AssistantProvidersResult = {
   }[];
   profiles: Record<string, unknown>[];
   default_profile?: string | null;
+  coordinator_note?: string;
+  targets?: {
+    name: string;
+    adapter: string;
+    endpoint: string;
+  }[];
 };
 
 export type AssistantPurgeParams = {
@@ -961,6 +1095,7 @@ export type AssistantPurgeResult = {
 
 export type AssistantRevokeParams = {
   workspace?: Target;
+  remote_workspace?: string;
   connection?: string;
 };
 
@@ -988,6 +1123,66 @@ export type AssistantStatusResult = {
     reserved: unknown;
     remaining: unknown;
   };
+  background?: boolean;
+  background_detail?: Record<string, unknown>;
+  scheduler?: {
+    capacity: number;
+    running: number;
+    waiting: number;
+  };
+  capabilities?: Record<string, unknown> | null;
+  cache?: {
+    enabled: boolean;
+    entries: number;
+  };
+  remote_sources?: boolean;
+  keychain_backend?: string;
+};
+
+export type AssistantTestParams = {
+  profile?: string;
+  probe?: ("streaming" | "json_schema")[] | string;
+};
+
+export type AssistantTestResult = {
+  ok: boolean;
+  id: string;
+  profile: string;
+  connection: string;
+  adapter: string;
+  model: string;
+  endpoint_host: string;
+  execution_machine: string;
+  latency_ms: number;
+  attempts: number;
+  usage: Record<string, unknown>;
+  estimated_cost_usd?: number | null;
+  counted: boolean;
+  error?: Record<string, unknown> | null;
+  probes: Record<string, unknown>[];
+  cursor?: Cursor;
+};
+
+export type AttentionBatchParams = {
+  interaction: string;
+};
+
+export type AttentionBatchResult = {
+  interaction: string;
+  batchable: boolean;
+  batch?: string;
+  reason?: string;
+  members: {
+    interaction: string;
+    handle: string;
+    run: string;
+    pane: string;
+    title: string;
+    decision_rev: number;
+    opened_at_ms: number;
+  }[];
+  facts?: Record<string, unknown> | null;
+  note?: string;
 };
 
 export type AttentionListParams = {
@@ -1020,6 +1215,13 @@ export type AttentionListResult = {
     snoozed_until_ms: number | null;
     woke_from_snooze: string | null;
     urgent: boolean;
+    deadline_ms?: number | null;
+    deadline_source?: "native" | "gate" | null;
+    deadline_in_ms?: number | null;
+    batch?: {
+      id: string;
+      size: number;
+    } | null;
   }[];
   coverage: {
     complete: boolean;
@@ -1044,6 +1246,26 @@ export type AttentionListResult = {
       note: string;
     }[];
   } | null;
+  batches?: {
+    id: string;
+    members: {
+      kind: string;
+      id: string;
+    }[];
+  }[];
+  also_working?: {
+    run: string;
+    pane: string;
+    name: string;
+    harness: string;
+    task: {
+      id: string;
+      handle: string;
+      title: string;
+    } | null;
+    since_ms: number;
+    working_for_ms: number;
+  }[];
 };
 
 export type AttentionUpdateParams = {
@@ -3736,13 +3958,46 @@ export type PreviewUrlResult = {
 };
 
 export type SandboxAllowParams = {
-  task: Target;
+  task?: Target;
   host: string;
+  global?: boolean;
 };
 
 export type SandboxAllowResult = {
   task: string;
   allowed: string;
+  cursor?: Cursor;
+} | {
+  allowed: string;
+  scope: "global";
+  cursor?: Cursor;
+};
+
+export type SandboxCopyOutParams = {
+  task: Target;
+  path: string;
+};
+
+export type SandboxCopyOutResult = {
+  kind: "copy_out";
+  outcome: "applied";
+  detail: {
+    path: string;
+  };
+  cursor?: Cursor;
+};
+
+export type SandboxDisallowParams = {
+  host: string;
+  task?: Target;
+  global?: boolean;
+};
+
+export type SandboxDisallowResult = {
+  host: string;
+  scope: "global" | "task";
+  removed: boolean;
+  task?: string | null;
   cursor?: Cursor;
 };
 
@@ -3774,7 +4029,100 @@ export type SandboxListResult = {
       warnings: unknown;
       in_box_vibeke: unknown;
     };
+    usage?: unknown;
+    forwards?: {
+      box_port: number;
+      host_port: number;
+    }[];
+    idle_suspended?: boolean;
+    slot?: string | null;
   }[];
+  global_allow?: string[];
+};
+
+export type SandboxLogsParams = {
+  task: Target;
+  tail?: number;
+};
+
+export type SandboxLogsResult = {
+  sandbox: string;
+  task: string | null;
+  level: string;
+  container: string | null;
+  setup: string | null;
+  events: {
+    seq: number;
+    ts: number;
+    type: string;
+    data: unknown;
+  }[];
+};
+
+export type SandboxPruneParams = {
+  dry_run?: boolean;
+};
+
+export type SandboxPruneResult = {
+  dry_run: boolean;
+  containers: {
+    container: string;
+    key: string;
+    state: string;
+    removed: boolean;
+  }[];
+  dirs: {
+    dir: string;
+    removed: boolean;
+  }[];
+  warnings: string[];
+  cursor?: Cursor;
+};
+
+export type SandboxPushParams = {
+  task: Target;
+  remote?: string;
+};
+
+export type SandboxPushResult = {
+  kind: "push";
+  outcome: "applied";
+  detail: {
+    remote: string;
+    branch: string;
+    synced: unknown;
+    output: string;
+  };
+  cursor?: Cursor;
+};
+
+export type SandboxRecoverParams = {
+  task: Target;
+};
+
+export type SandboxRecoverResult = {
+  task: string;
+  created: boolean;
+  synced: unknown;
+  resumed: unknown[];
+  skipped: {
+    run: string;
+    reason: string;
+  }[];
+  cursor?: Cursor;
+};
+
+export type SandboxRelaunchParams = {
+  run: Target;
+  isolate?: "sandbox" | "container";
+  network?: "none" | "harness-apis" | "package-registries" | "dev" | "open";
+};
+
+export type SandboxRelaunchResult = {
+  run: AgentRun;
+  from: string;
+  level: string;
+  cursor?: Cursor;
 };
 
 export type SandboxRemoveParams = {
@@ -3790,6 +4138,43 @@ export type SandboxRemoveResult = {
   error?: string;
   unsynced_kept: boolean;
   cursor?: Cursor;
+};
+
+export type SandboxRequestParams = {
+  kind: "push" | "copy_out";
+  remote?: string;
+  path?: string;
+  pane?: Target;
+};
+
+export type SandboxRequestResult = {
+  interaction: string;
+  kind: string;
+  status: "pending";
+  cursor?: Cursor;
+};
+
+export type SandboxSetupTokenParams = {
+  token: string;
+};
+
+export type SandboxSetupTokenResult = {
+  stored: boolean;
+  path: string;
+  env: string;
+  cursor?: Cursor;
+};
+
+export type SandboxShellParams = {
+  task: Target;
+};
+
+export type SandboxShellResult = {
+  sandbox: string;
+  level: "container" | "sandbox";
+  argv: string[];
+  env: string[][];
+  cwd: unknown;
 };
 
 export type SandboxStartParams = {
@@ -3891,6 +4276,7 @@ export type ScrollbackForgetResult = {
   bytes_deleted?: number;
   fts_rows_deleted?: number;
   archive_panes_dropped?: number;
+  review?: ReviewPurge;
   cursor?: Cursor;
 };
 
@@ -3954,6 +4340,7 @@ export type ServerStatusResult = {
   event_seq: number;
   socket?: string;
   degraded?: unknown;
+  ephemeral?: number;
   preview?: Record<string, unknown>;
   timers?: Record<string, unknown>;
   db_size?: number;
@@ -4402,6 +4789,32 @@ export type TaskGetResult = {
   pr?: PrLookup | null;
 };
 
+export type TaskLinkStatusParams = {
+  run?: string;
+  pane?: Target;
+};
+
+export type TaskLinkStatusResult = {
+  run: {
+    id: string;
+    handle: string;
+    harness: string;
+    integration: string;
+    pane: string;
+    session_reported: boolean;
+  };
+  verified: boolean;
+  reasons: string[];
+  remedies: {
+    action: string;
+    label: string;
+    command?: string;
+    note?: string;
+  }[];
+  candidates: Record<string, unknown>[];
+  note: string;
+};
+
 export type TaskListParams = {
   status?: string;
   repo?: string;
@@ -4578,6 +4991,22 @@ export type TaskReviewDiffResult = {
   max_bytes: number;
 };
 
+export type TaskReviewForgetParams = {
+  task?: Target;
+  pane?: Target;
+  workspace?: Target;
+  before?: string | number;
+  all?: boolean;
+  dry_run?: boolean;
+};
+
+export type TaskReviewForgetResult = {
+  scope: unknown;
+  dry_run: boolean;
+  purged: ReviewPurge;
+  cursor?: Cursor;
+};
+
 export type TaskReviewGetParams = {
   task: Target;
   subject?: string;
@@ -4633,6 +5062,7 @@ export type TaskReviewGetResult = {
     available: boolean;
     method: string;
     note: string;
+    selection?: Record<string, unknown>;
   };
   actions: {
     accept: {
@@ -4641,6 +5071,25 @@ export type TaskReviewGetResult = {
       requires_exceptions: unknown;
     };
   };
+  human_reviews?: Record<string, unknown>[];
+  purged?: unknown;
+};
+
+export type TaskReviewHumanReviewParams = {
+  task: Target;
+  criterion: string;
+  verdict: "supported" | "failed" | "withdrawn";
+  subject?: string;
+  expected_subject?: string;
+  note?: string;
+  screenshots?: string[];
+  idempotency_key?: string;
+};
+
+export type TaskReviewHumanReviewResult = {
+  review: Record<string, unknown>;
+  note: string;
+  cursor?: Cursor;
 };
 
 export type TaskReviewNoteClassifyParams = {
@@ -4695,12 +5144,15 @@ export type TaskReviewRequestReviewerResult = {
 
 export type TaskReviewSnapshotParams = {
   task: Target;
+  paths?: string[];
+  patch?: string;
   idempotency_key?: string;
 };
 
 export type TaskReviewSnapshotResult = {
   subject: Record<string, unknown>;
   snapshot: Record<string, unknown>;
+  selection?: Record<string, unknown>;
   label: string;
   note: string;
   cursor?: Cursor;
@@ -4733,6 +5185,7 @@ export type TaskReviewStartReviewerParams = {
   pane?: Target;
   split_of?: Target;
   direction?: string;
+  checkout?: "disposable" | "task";
   idempotency_key?: string;
 };
 
@@ -4986,16 +5439,20 @@ export interface Methods {
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
   "api.methods": { params: ApiMethodsParams; result: ApiMethodsResult };
   "api.schema": { params: ApiSchemaParams; result: ApiSchemaResult };
+  "assistant.background": { params: AssistantBackgroundParams; result: AssistantBackgroundResult };
   "assistant.cancel": { params: AssistantCancelParams; result: AssistantCancelResult };
   "assistant.confirm": { params: AssistantConfirmParams; result: AssistantConfirmResult };
   "assistant.consent": { params: AssistantConsentParams; result: AssistantConsentResult };
   "assistant.generate": { params: AssistantGenerateParams; result: AssistantGenerateResult };
   "assistant.get": { params: AssistantGetParams; result: AssistantGetResult };
   "assistant.list": { params: AssistantListParams; result: AssistantListResult };
+  "assistant.models": { params: AssistantModelsParams; result: AssistantModelsResult };
   "assistant.providers": { params: AssistantProvidersParams; result: AssistantProvidersResult };
   "assistant.purge": { params: AssistantPurgeParams; result: AssistantPurgeResult };
   "assistant.revoke": { params: AssistantRevokeParams; result: AssistantRevokeResult };
   "assistant.status": { params: AssistantStatusParams; result: AssistantStatusResult };
+  "assistant.test": { params: AssistantTestParams; result: AssistantTestResult };
+  "attention.batch": { params: AttentionBatchParams; result: AttentionBatchResult };
   "attention.list": { params: AttentionListParams; result: AttentionListResult };
   "attention.update": { params: AttentionUpdateParams; result: AttentionUpdateResult };
   "audit.search": { params: AuditSearchParams; result: AuditSearchResult };
@@ -5165,8 +5622,18 @@ export interface Methods {
   "preview.unmirror": { params: PreviewUnmirrorParams; result: PreviewUnmirrorResult };
   "preview.url": { params: PreviewUrlParams; result: PreviewUrlResult };
   "sandbox.allow": { params: SandboxAllowParams; result: SandboxAllowResult };
+  "sandbox.copy_out": { params: SandboxCopyOutParams; result: SandboxCopyOutResult };
+  "sandbox.disallow": { params: SandboxDisallowParams; result: SandboxDisallowResult };
   "sandbox.list": { params: SandboxListParams; result: SandboxListResult };
+  "sandbox.logs": { params: SandboxLogsParams; result: SandboxLogsResult };
+  "sandbox.prune": { params: SandboxPruneParams; result: SandboxPruneResult };
+  "sandbox.push": { params: SandboxPushParams; result: SandboxPushResult };
+  "sandbox.recover": { params: SandboxRecoverParams; result: SandboxRecoverResult };
+  "sandbox.relaunch": { params: SandboxRelaunchParams; result: SandboxRelaunchResult };
   "sandbox.remove": { params: SandboxRemoveParams; result: SandboxRemoveResult };
+  "sandbox.request": { params: SandboxRequestParams; result: SandboxRequestResult };
+  "sandbox.setup_token": { params: SandboxSetupTokenParams; result: SandboxSetupTokenResult };
+  "sandbox.shell": { params: SandboxShellParams; result: SandboxShellResult };
   "sandbox.start": { params: SandboxStartParams; result: SandboxStartResult };
   "sandbox.status": { params: SandboxStatusParams; result: SandboxStatusResult };
   "sandbox.stop": { params: SandboxStopParams; result: SandboxStopResult };
@@ -5209,6 +5676,7 @@ export interface Methods {
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
   "task.forget": { params: TaskForgetParams; result: TaskForgetResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
+  "task.link.status": { params: TaskLinkStatusParams; result: TaskLinkStatusResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
   "task.park": { params: TaskParkParams; result: TaskParkResult };
   "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
@@ -5220,7 +5688,9 @@ export interface Methods {
   "task.review.accept": { params: TaskReviewAcceptParams; result: TaskReviewAcceptResult };
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
   "task.review.diff": { params: TaskReviewDiffParams; result: TaskReviewDiffResult };
+  "task.review.forget": { params: TaskReviewForgetParams; result: TaskReviewForgetResult };
   "task.review.get": { params: TaskReviewGetParams; result: TaskReviewGetResult };
+  "task.review.human_review": { params: TaskReviewHumanReviewParams; result: TaskReviewHumanReviewResult };
   "task.review.note.classify": { params: TaskReviewNoteClassifyParams; result: TaskReviewNoteClassifyResult };
   "task.review.notes": { params: TaskReviewNotesParams; result: TaskReviewNotesResult };
   "task.review.request_reviewer": { params: TaskReviewRequestReviewerParams; result: TaskReviewRequestReviewerResult };
@@ -5273,16 +5743,20 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
   "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
+  "assistant.background": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.confirm": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.consent": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.generate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.get": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "assistant.models": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.providers": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.purge": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.revoke": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "assistant.test": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "attention.batch": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.list": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.update": { mutating: true, scope: "full", paneScope: "forbidden" },
   "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -5452,8 +5926,18 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "preview.unmirror": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.url": { mutating: false, scope: "pane", paneScope: "open" },
   "sandbox.allow": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.copy_out": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.disallow": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "sandbox.logs": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "sandbox.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.push": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.recover": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.relaunch": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.request": { mutating: true, scope: "pane", paneScope: "open" },
+  "sandbox.setup_token": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.shell": { mutating: false, scope: "full", paneScope: "forbidden" },
   "sandbox.start": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.status": { mutating: false, scope: "pane", paneScope: "open" },
   "sandbox.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5496,6 +5980,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.link.status": { mutating: false, scope: "pane", paneScope: "open" },
   "task.list": { mutating: false, scope: "pane", paneScope: "open" },
   "task.park": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5507,7 +5992,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.human_review": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.notes": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.request_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5606,6 +6093,20 @@ export type AgentIdentifiedData = {
   transcript_path?: unknown;
 };
 
+export type AgentItemSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentItemData = {
+  kind: ItemKind;
+  summary: string;
+  item: string;
+  turn: string;
+  seq: number;
+  payload_ref: string | null;
+};
+
 export type AgentNamedSubject = {
   run: string;
 };
@@ -5664,6 +6165,26 @@ export type AgentStateChangedData = {
   confidence?: number;
 };
 
+export type AgentSubagentFinishedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentSubagentFinishedData = {
+  agent_id: string | null;
+  agent_type: string;
+};
+
+export type AgentSubagentStartedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentSubagentStartedData = {
+  agent_id: string | null;
+  agent_type: string;
+};
+
 export type AgentTurnCompletedSubject = {
   run: string;
   pane: string;
@@ -5702,12 +6223,33 @@ export type AssistantConsentGrantedSubject = {
 export type AssistantConsentGrantedData = unknown;
 
 export type AssistantConsentRevokedSubject = {
-  workspace: string;
+  workspace?: string;
+  remote_workspace?: string;
 };
 
 export type AssistantConsentRevokedData = {
   grants: number;
   cancelled: number;
+};
+
+export type AssistantDeltaSubject = {
+  assistant_request: string;
+};
+
+export type AssistantDeltaData = {
+  request: string;
+  seq: number;
+  text: string;
+};
+
+export type AssistantModelsRefreshedSubject = {
+  assistant_connection: string;
+};
+
+export type AssistantModelsRefreshedData = {
+  adapter: string;
+  endpoint_host: string;
+  models: number;
 };
 
 export type AssistantPurgedSubject = Record<string, unknown>;
@@ -5717,11 +6259,38 @@ export type AssistantPurgedData = {
   reason: string;
 };
 
+export type AssistantRequestCreatedSubject = {
+  assistant_request: string;
+};
+
+export type AssistantRequestCreatedData = unknown;
+
 export type AssistantRequestFinishedSubject = {
   assistant_request: string;
 };
 
 export type AssistantRequestFinishedData = unknown;
+
+export type AssistantRequestStartedSubject = {
+  assistant_request: string;
+};
+
+export type AssistantRequestStartedData = unknown;
+
+export type AssistantStallNoticeSubject = {
+  assistant_request: string;
+  run?: unknown;
+};
+
+export type AssistantStallNoticeData = {
+  request: string;
+};
+
+export type AssistantTestFinishedSubject = {
+  assistant_connection: string;
+};
+
+export type AssistantTestFinishedData = unknown;
 
 export type AttentionPreferenceChangedSubject = {
   key: {
@@ -6066,6 +6635,50 @@ export type LayoutAppliedData = {
   tabs: number;
   panes: number;
   new_workspace: unknown;
+};
+
+export type MachineAddedSubject = {
+  machine: string;
+};
+
+export type MachineAddedData = {
+  label: string;
+  kind: string;
+  address: string | null;
+};
+
+export type MachineConnectedSubject = {
+  machine: string;
+};
+
+export type MachineConnectedData = {
+  label: string;
+};
+
+export type MachineDegradedSubject = {
+  machine: string;
+};
+
+export type MachineDegradedData = {
+  label: string;
+  reason: string | null;
+};
+
+export type MachineDisconnectedSubject = {
+  machine: string;
+};
+
+export type MachineDisconnectedData = {
+  label: string;
+  reason: string | null;
+};
+
+export type MachineRemovedSubject = {
+  machine: string;
+};
+
+export type MachineRemovedData = {
+  label: string;
 };
 
 export type NotesUpdatedSubject = {
@@ -6468,6 +7081,18 @@ export type ReviewEndCandidatePinnedData = {
   note: unknown;
 };
 
+export type ReviewHumanReviewedSubject = {
+  task: string;
+  criterion: string;
+  subject: string;
+};
+
+export type ReviewHumanReviewedData = {
+  verdict: string;
+  screenshots: number;
+  intent_revision: number;
+};
+
 export type ReviewInvalidatedSubject = {
   task: string;
   acceptance: string;
@@ -6505,6 +7130,21 @@ export type ReviewNotesRecordedData = {
   count: number;
   subject: unknown;
   open_concerns: unknown;
+};
+
+export type ReviewPurgedSubject = {
+  scope: unknown;
+};
+
+export type ReviewPurgedData = ReviewPurge;
+
+export type ReviewReviewerCheckoutRemovedSubject = {
+  task: string;
+  request: string;
+};
+
+export type ReviewReviewerCheckoutRemovedData = {
+  run: string | null;
 };
 
 export type ReviewReviewerRequestedSubject = {
@@ -6556,6 +7196,20 @@ export type ReviewSnapshotRefsRemovedSubject = {
 
 export type ReviewSnapshotRefsRemovedData = unknown;
 
+export type SandboxBoundaryActionSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxBoundaryActionData = {
+  kind: "push" | "copy_out" | "credential_use";
+  interaction: string | null;
+  outcome: "applied" | "failed" | "denied" | "expired" | "cancelled";
+  detail?: unknown;
+  credentials?: string[];
+  harnesses?: string[];
+};
+
 export type SandboxCreatedSubject = {
   task: string;
   sandbox: string;
@@ -6568,6 +7222,142 @@ export type SandboxCreatedData = {
   yolo: boolean;
   proxy_port?: number | null;
   credentials?: unknown;
+};
+
+export type SandboxCredentialsNoticeSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxCredentialsNoticeData = {
+  harness: string;
+  level: string;
+  message: string;
+};
+
+export type SandboxEgressRevokedSubject = {
+  task?: string | null;
+  sandbox?: string;
+};
+
+export type SandboxEgressRevokedData = {
+  host: string;
+  scope: "global" | "task";
+};
+
+export type SandboxHostYoloConfirmedSubject = {
+  workspace: string;
+};
+
+export type SandboxHostYoloConfirmedData = Record<string, unknown>;
+
+export type SandboxPortForwardedSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxPortForwardedData = {
+  box_port: number;
+  host_port: number;
+  source: "declared" | "discovered";
+};
+
+export type SandboxPrunedSubject = Record<string, unknown>;
+
+export type SandboxPrunedData = {
+  containers: number;
+  dirs: number;
+};
+
+export type SandboxRecoveredSubject = {
+  task: string;
+  sandbox: string;
+};
+
+export type SandboxRecoveredData = {
+  created: boolean;
+  resumed: number;
+  skipped: number;
+};
+
+export type SandboxRelaunchedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type SandboxRelaunchedData = {
+  from: string;
+  level: string;
+};
+
+export type SandboxResourcePressureSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxResourcePressureData = {
+  resource: "memory" | "pids" | "cpus";
+  value: number;
+  limit: number;
+  share: number;
+};
+
+export type SandboxRunnerLostSubject = {
+  task: string;
+  sandbox: string;
+};
+
+export type SandboxRunnerLostData = {
+  state: string;
+  runs: string[];
+  resumable: string[];
+};
+
+export type SandboxSuggestedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type SandboxSuggestedData = {
+  harness: string;
+  level: string;
+  hint: string;
+};
+
+export type SandboxTemplateCreatedSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxTemplateCreatedData = {
+  template: string;
+  image: string;
+};
+
+export type SandboxWarmClaimedSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxWarmClaimedData = {
+  slot: string;
+};
+
+export type SandboxWarmReadySubject = {
+  sandbox: string;
+};
+
+export type SandboxWarmReadyData = {
+  pool: string;
+  index: number;
+};
+
+export type SandboxWarmRecycledSubject = {
+  sandbox: string;
+};
+
+export type SandboxWarmRecycledData = {
+  pool: string;
 };
 
 export type ScreenshotCapturedSubject = {
@@ -6626,6 +7416,24 @@ export type SessionServerRestartedData = {
   recovered_panes?: number;
   pid?: number;
   prev_pid?: number;
+};
+
+export type SessionStartedSubject = Record<string, unknown>;
+
+export type SessionStartedData = {
+  pid: number;
+  version: string;
+  machine: string;
+  name: string;
+  prev_pid: number | null;
+  fresh: boolean;
+};
+
+export type SessionStoppedSubject = Record<string, unknown>;
+
+export type SessionStoppedData = {
+  pid: number;
+  reason: string;
 };
 
 export type TabClosedSubject = {
@@ -7049,19 +7857,28 @@ export interface EventMap {
   "agent.file_changed": { subject: AgentFileChangedSubject; data: AgentFileChangedData };
   "agent.harness_version_unvalidated": { subject: AgentHarnessVersionUnvalidatedSubject; data: AgentHarnessVersionUnvalidatedData };
   "agent.identified": { subject: AgentIdentifiedSubject; data: AgentIdentifiedData };
+  "agent.item": { subject: AgentItemSubject; data: AgentItemData };
   "agent.named": { subject: AgentNamedSubject; data: AgentNamedData };
   "agent.rate_limited": { subject: AgentRateLimitedSubject; data: AgentRateLimitedData };
   "agent.resume_handle": { subject: AgentResumeHandleSubject; data: AgentResumeHandleData };
   "agent.session_ended": { subject: AgentSessionEndedSubject; data: AgentSessionEndedData };
   "agent.started": { subject: AgentStartedSubject; data: AgentStartedData };
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
+  "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
+  "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
   "agent.usage": { subject: AgentUsageSubject; data: AgentUsageData };
   "assistant.consent_granted": { subject: AssistantConsentGrantedSubject; data: AssistantConsentGrantedData };
   "assistant.consent_revoked": { subject: AssistantConsentRevokedSubject; data: AssistantConsentRevokedData };
+  "assistant.delta": { subject: AssistantDeltaSubject; data: AssistantDeltaData };
+  "assistant.models_refreshed": { subject: AssistantModelsRefreshedSubject; data: AssistantModelsRefreshedData };
   "assistant.purged": { subject: AssistantPurgedSubject; data: AssistantPurgedData };
+  "assistant.request_created": { subject: AssistantRequestCreatedSubject; data: AssistantRequestCreatedData };
   "assistant.request_finished": { subject: AssistantRequestFinishedSubject; data: AssistantRequestFinishedData };
+  "assistant.request_started": { subject: AssistantRequestStartedSubject; data: AssistantRequestStartedData };
+  "assistant.stall_notice": { subject: AssistantStallNoticeSubject; data: AssistantStallNoticeData };
+  "assistant.test_finished": { subject: AssistantTestFinishedSubject; data: AssistantTestFinishedData };
   "attention.preference_changed": { subject: AttentionPreferenceChangedSubject; data: AttentionPreferenceChangedData };
   "audit.recorded": { subject: AuditRecordedSubject; data: AuditRecordedData };
   "auth.elevate_denied": { subject: AuthElevateDeniedSubject; data: AuthElevateDeniedData };
@@ -7100,6 +7917,11 @@ export interface EventMap {
   "interaction.opened": { subject: InteractionOpenedSubject; data: InteractionOpenedData };
   "interaction.updated": { subject: InteractionUpdatedSubject; data: InteractionUpdatedData };
   "layout.applied": { subject: LayoutAppliedSubject; data: LayoutAppliedData };
+  "machine.added": { subject: MachineAddedSubject; data: MachineAddedData };
+  "machine.connected": { subject: MachineConnectedSubject; data: MachineConnectedData };
+  "machine.degraded": { subject: MachineDegradedSubject; data: MachineDegradedData };
+  "machine.disconnected": { subject: MachineDisconnectedSubject; data: MachineDisconnectedData };
+  "machine.removed": { subject: MachineRemovedSubject; data: MachineRemovedData };
   "notes.updated": { subject: NotesUpdatedSubject; data: NotesUpdatedData };
   "notification.created": { subject: NotificationCreatedSubject; data: NotificationCreatedData };
   "pane.closed": { subject: PaneClosedSubject; data: PaneClosedData };
@@ -7137,16 +7959,34 @@ export interface EventMap {
   "review.accepted": { subject: ReviewAcceptedSubject; data: ReviewAcceptedData };
   "review.candidate_created": { subject: ReviewCandidateCreatedSubject; data: ReviewCandidateCreatedData };
   "review.end_candidate_pinned": { subject: ReviewEndCandidatePinnedSubject; data: ReviewEndCandidatePinnedData };
+  "review.human_reviewed": { subject: ReviewHumanReviewedSubject; data: ReviewHumanReviewedData };
   "review.invalidated": { subject: ReviewInvalidatedSubject; data: ReviewInvalidatedData };
   "review.label_changed": { subject: ReviewLabelChangedSubject; data: ReviewLabelChangedData };
   "review.note_classified": { subject: ReviewNoteClassifiedSubject; data: ReviewNoteClassifiedData };
   "review.notes_recorded": { subject: ReviewNotesRecordedSubject; data: ReviewNotesRecordedData };
+  "review.purged": { subject: ReviewPurgedSubject; data: ReviewPurgedData };
+  "review.reviewer_checkout_removed": { subject: ReviewReviewerCheckoutRemovedSubject; data: ReviewReviewerCheckoutRemovedData };
   "review.reviewer_requested": { subject: ReviewReviewerRequestedSubject; data: ReviewReviewerRequestedData };
   "review.reviewer_started": { subject: ReviewReviewerStartedSubject; data: ReviewReviewerStartedData };
   "review.reviewer_unknown": { subject: ReviewReviewerUnknownSubject; data: ReviewReviewerUnknownData };
   "review.snapshot_created": { subject: ReviewSnapshotCreatedSubject; data: ReviewSnapshotCreatedData };
   "review.snapshot_refs_removed": { subject: ReviewSnapshotRefsRemovedSubject; data: ReviewSnapshotRefsRemovedData };
+  "sandbox.boundary_action": { subject: SandboxBoundaryActionSubject; data: SandboxBoundaryActionData };
   "sandbox.created": { subject: SandboxCreatedSubject; data: SandboxCreatedData };
+  "sandbox.credentials_notice": { subject: SandboxCredentialsNoticeSubject; data: SandboxCredentialsNoticeData };
+  "sandbox.egress_revoked": { subject: SandboxEgressRevokedSubject; data: SandboxEgressRevokedData };
+  "sandbox.host_yolo_confirmed": { subject: SandboxHostYoloConfirmedSubject; data: SandboxHostYoloConfirmedData };
+  "sandbox.port_forwarded": { subject: SandboxPortForwardedSubject; data: SandboxPortForwardedData };
+  "sandbox.pruned": { subject: SandboxPrunedSubject; data: SandboxPrunedData };
+  "sandbox.recovered": { subject: SandboxRecoveredSubject; data: SandboxRecoveredData };
+  "sandbox.relaunched": { subject: SandboxRelaunchedSubject; data: SandboxRelaunchedData };
+  "sandbox.resource_pressure": { subject: SandboxResourcePressureSubject; data: SandboxResourcePressureData };
+  "sandbox.runner_lost": { subject: SandboxRunnerLostSubject; data: SandboxRunnerLostData };
+  "sandbox.suggested": { subject: SandboxSuggestedSubject; data: SandboxSuggestedData };
+  "sandbox.template_created": { subject: SandboxTemplateCreatedSubject; data: SandboxTemplateCreatedData };
+  "sandbox.warm_claimed": { subject: SandboxWarmClaimedSubject; data: SandboxWarmClaimedData };
+  "sandbox.warm_ready": { subject: SandboxWarmReadySubject; data: SandboxWarmReadyData };
+  "sandbox.warm_recycled": { subject: SandboxWarmRecycledSubject; data: SandboxWarmRecycledData };
   "screenshot.captured": { subject: ScreenshotCapturedSubject; data: ScreenshotCapturedData };
   "screenshot.deleted": { subject: ScreenshotDeletedSubject; data: ScreenshotDeletedData };
   "scrollback.forgotten": { subject: ScrollbackForgottenSubject; data: ScrollbackForgottenData };
@@ -7154,6 +7994,8 @@ export interface EventMap {
   "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
   "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
+  "session.started": { subject: SessionStartedSubject; data: SessionStartedData };
+  "session.stopped": { subject: SessionStoppedSubject; data: SessionStoppedData };
   "tab.closed": { subject: TabClosedSubject; data: TabClosedData };
   "tab.created": { subject: TabCreatedSubject; data: TabCreatedData };
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };

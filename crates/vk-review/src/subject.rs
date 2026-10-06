@@ -56,6 +56,54 @@ pub enum SubjectKind {
     /// binary included) stored as an immutable Git commit under `refs/vibeke/snapshots/`
     /// (15 §5, T4). Accept-capable and verifiable like a committed subject.
     DirtySnapshot,
+    /// A user-selected part of the uncommitted work (whole files or a patch) applied on top of
+    /// the capture-time HEAD and stored as an immutable snapshot commit (15 §5, T4). Defines
+    /// the review scope; checks against it verify the selection in isolation from the rest of
+    /// the checkout. Never a claim that the moving checkout is reviewed.
+    SelectedPatch,
+}
+
+/// How a [`SubjectKind::SelectedPatch`] was selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionMode {
+    /// Whole files: each selected path's working-tree content (or deletion).
+    Paths,
+    /// A unified diff (hunks) applied to HEAD.
+    Patch,
+}
+
+/// What a selected-patch subject contains (part of its identity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    pub mode: SelectionMode,
+    /// Paths mode: the selected paths. Patch mode: the files the patch touches.
+    pub paths: Vec<String>,
+    /// Patch mode: blake3 of the exact patch text applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_digest: Option<String>,
+    /// Uncommitted changes outside the selection existed at capture (they are not part of
+    /// this subject and are not reviewed by accepting it).
+    #[serde(default)]
+    pub excludes_other_changes: bool,
+}
+
+impl Selection {
+    fn digest(&self) -> String {
+        let mut h = FieldHasher::new("vk-review/selection/v1");
+        h.str(match self.mode {
+            SelectionMode::Paths => "paths",
+            SelectionMode::Patch => "patch",
+        });
+        let mut paths = self.paths.clone();
+        paths.sort();
+        paths.dedup();
+        for p in &paths {
+            h.str(p);
+        }
+        h.opt(self.patch_digest.as_deref());
+        h.finish()
+    }
 }
 
 /// Where a [`SubjectKind::DirtySnapshot`]'s content lives: an immutable commit (parent = the
@@ -90,9 +138,12 @@ pub struct ChangeSubject {
     pub dirty_state: DirtyState,
     pub captured_at_ms: i64,
     pub kind: SubjectKind,
-    /// Immutable content of a dirty snapshot (`kind = dirty_snapshot` only).
+    /// Immutable content of a dirty snapshot or selected patch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<SnapshotRef>,
+    /// What was selected (`kind = selected_patch` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Selection>,
 }
 
 impl ChangeSubject {
@@ -123,7 +174,35 @@ impl ChangeSubject {
             captured_at_ms,
             kind,
             snapshot: None,
+            selection: None,
         }
+    }
+
+    /// A selected-patch subject: `base..snapshot.commit` where the snapshot commit is HEAD
+    /// plus only the selection; `dirty_digest` is the whole checkout's change digest at
+    /// capture (for display and the patch-mode currency check).
+    pub fn selected_patch(
+        repo: RepoIdentity,
+        base_sha: String,
+        head_sha: String,
+        dirty_digest: String,
+        snapshot: SnapshotRef,
+        selection: Selection,
+        captured_at_ms: i64,
+    ) -> Self {
+        let mut s = ChangeSubject::new(
+            repo,
+            base_sha,
+            head_sha,
+            Some(dirty_digest),
+            DirtyState::Dirty,
+            SubjectKind::SelectedPatch,
+            captured_at_ms,
+        );
+        s.snapshot = Some(snapshot);
+        s.selection = Some(selection);
+        s.id = s.identity();
+        s
     }
 
     /// A dirty-snapshot subject: `base..snapshot.commit`, with the live checkout's HEAD and
@@ -160,11 +239,19 @@ impl ChangeSubject {
             self.dirty_state,
             self.kind,
         );
-        match &self.snapshot {
+        let with_snapshot = match &self.snapshot {
             None => base,
             Some(sn) => {
                 let mut h = FieldHasher::new("vk-review/change-subject/snapshot/v1");
                 h.str(&base).str(&sn.commit).str(&sn.tree);
+                h.finish()
+            }
+        };
+        match &self.selection {
+            None => with_snapshot,
+            Some(sel) => {
+                let mut h = FieldHasher::new("vk-review/change-subject/selection/v1");
+                h.str(&with_snapshot).str(&sel.digest());
                 h.finish()
             }
         }
@@ -193,6 +280,7 @@ impl ChangeSubject {
                 SubjectKind::Committed => "committed",
                 SubjectKind::CheckoutLive => "checkout_live",
                 SubjectKind::DirtySnapshot => "dirty_snapshot",
+                SubjectKind::SelectedPatch => "selected_patch",
             });
         h.finish()
     }
@@ -213,6 +301,7 @@ impl ChangeSubject {
         match self.kind {
             SubjectKind::Committed => true,
             SubjectKind::DirtySnapshot => self.snapshot.is_some(),
+            SubjectKind::SelectedPatch => self.snapshot.is_some() && self.selection.is_some(),
             SubjectKind::CheckoutLive => false,
         }
     }

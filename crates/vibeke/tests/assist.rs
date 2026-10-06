@@ -1311,6 +1311,9 @@ fn pane_scoped_callers_are_denied_every_assistant_method() {
         "assistant.list",
         "assistant.cancel",
         "assistant.purge",
+        "assistant.models",
+        "assistant.test",
+        "assistant.background",
     ];
     let out = s.dir.path().join("scope-out");
     let script = s.dir.path().join("scope.sh");

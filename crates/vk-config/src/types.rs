@@ -115,6 +115,7 @@ pub struct Config {
     pub remote: Remote,
     pub pane: Pane,
     pub render: Render,
+    pub graphics: Graphics,
     pub compat: Compat,
     pub update: Update,
     /// `[layouts.<name>]`: named declarative layouts (07 §2.14 `LayoutSpec`, parsed by the
@@ -345,6 +346,7 @@ pub struct Ui {
     pub status_bar: StatusBar,
     pub sync_input: SyncInput,
     pub interactions: Interactions,
+    pub inbox: Inbox,
     pub fleet: Fleet,
     /// Outer terminal title sync (OSC 2) with the focused workspace/pane (08 §6.7).
     pub title_sync: bool,
@@ -367,6 +369,7 @@ impl Default for Ui {
             status_bar: StatusBar::default(),
             sync_input: SyncInput::default(),
             interactions: Interactions::default(),
+            inbox: Inbox::default(),
             fleet: Fleet::default(),
             title_sync: true,
             title_format: "{workspace} · {pane}".into(),
@@ -496,10 +499,29 @@ pub struct SyncInput {
 #[serde(default)]
 pub struct Interactions {
     pub batch: bool,
+    /// An open interaction with at most this long left before its native deadline ranks as
+    /// "deadline approaching" in the inbox (15 §8.1).
+    pub deadline_window: Dur,
 }
 impl Default for Interactions {
     fn default() -> Self {
-        Interactions { batch: true }
+        Interactions {
+            batch: true,
+            deadline_window: Dur::secs(60),
+        }
+    }
+}
+
+/// `[ui.inbox]` — the attention inbox (15 §8).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Inbox {
+    /// Show busy agents without an open question in an "Also working" footer.
+    pub also_working: bool,
+}
+impl Default for Inbox {
+    fn default() -> Self {
+        Inbox { also_working: true }
     }
 }
 
@@ -548,6 +570,10 @@ pub struct NotifyOn {
     pub bell: bool,
     pub osc: bool,
     pub remote_disconnected: bool,
+    /// An inbox item's native deadline is approaching (15 §8.1).
+    pub deadline: bool,
+    /// A tracked task became ready for review, or one of its checks failed (15 §8).
+    pub review: bool,
 }
 impl Default for NotifyOn {
     fn default() -> Self {
@@ -559,6 +585,8 @@ impl Default for NotifyOn {
             bell: false,
             osc: true,
             remote_disconnected: true,
+            deadline: true,
+            review: true,
         }
     }
 }
@@ -633,6 +661,9 @@ pub struct Harness {
     /// `subscription` | `api` (04 §10): subscription-billed runs show tokens, never dollars;
     /// unset shows a price-table estimate where the model is known.
     pub billing: Option<String>,
+    /// Arguments added after the binary of a headless run that Vibeke isolates (13 §3): Codex's
+    /// own sandbox cannot nest inside Vibeke's, so it is switched off there (04 §6.2).
+    pub isolated_args: Option<Vec<String>>,
 }
 impl Default for Harness {
     fn default() -> Self {
@@ -643,6 +674,7 @@ impl Default for Harness {
             shim: None,
             headless_shared: None,
             billing: None,
+            isolated_args: None,
         }
     }
 }
@@ -668,6 +700,7 @@ pub(crate) fn default_harnesses() -> BTreeMap<String, Harness> {
         Harness {
             shim: Some(true),
             headless_shared: Some(false),
+            isolated_args: Some(vec![s("-c"), s("sandbox_mode=\"danger-full-access\"")]),
             ..Harness::default()
         },
     );
@@ -877,6 +910,24 @@ pub struct Render {
 impl Default for Render {
     fn default() -> Self {
         Render { max_unacked: 2 }
+    }
+}
+
+/// `[graphics]` (03 §9): limits on images programs place in panes (kitty graphics).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Graphics {
+    /// Largest decoded image a pane may store; bigger transmissions and PNGs are refused.
+    pub max_image_bytes: ByteSize,
+    /// Image storage per pane screen; the oldest images are evicted beyond it.
+    pub max_total_per_pane: ByteSize,
+}
+impl Default for Graphics {
+    fn default() -> Self {
+        Graphics {
+            max_image_bytes: ByteSize::mib(32),
+            max_total_per_pane: ByteSize::mib(256),
+        }
     }
 }
 

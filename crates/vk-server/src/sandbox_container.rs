@@ -48,6 +48,8 @@ pub struct CtrBox {
     pub code: &'static str,
     pub warnings: Vec<String>,
     pub devcontainer: Option<PathBuf>,
+    /// Template of this box (13 §9): started from it, or to be committed after setup.
+    pub template: Option<super::pool::TemplateUse>,
 }
 
 impl CtrBox {
@@ -458,7 +460,7 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
         memory: repo_cfg.memory.clone().or(cfg.container.memory.clone()),
         pids: cfg.container.pids,
     };
-    let spec = BoxSpec {
+    let mut spec = BoxSpec {
         provider,
         name: format!("vk-{}", vk_sandbox::runner::short_id(key)),
         image: image.clone(),
@@ -499,9 +501,26 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
             warnings.push("`.vibeke/setup.sh` skipped: repo not trusted".into());
         }
     }
+    // Template (13 §9): a committed image of the same setup replaces image + steps.
+    let cli_env = vk_sandbox::container::cli_env(&server.opts.env);
+    let mut image = image;
+    let template = super::pool::apply_template(
+        server,
+        cfg,
+        &spec.provider,
+        &cli_env,
+        &mut image,
+        &mut lifecycle,
+    );
+    if template.as_ref().is_some_and(|t| t.from_template) {
+        spec.image = image.clone();
+        warnings.push(format!(
+            "started from template {image}; setup steps were cached in it"
+        ));
+    }
     let b = ContainerBox {
         spec,
-        cli_env: vk_sandbox::container::cli_env(&server.opts.env),
+        cli_env,
         secrets,
         exec_env,
         run_dir,
@@ -521,6 +540,7 @@ pub fn build(i: BuildIn) -> Result<CtrBox, RpcError> {
         code,
         warnings,
         devcontainer: dc.map(|d| d.path),
+        template,
     })
 }
 
@@ -580,8 +600,8 @@ pub fn ensure(
 
 /// Run lifecycle steps in the box on a thread (log in the box root, then
 /// `sandbox.setup_finished`). Every step is an `exec` into the container: nothing runs on the
-/// host.
-fn spawn_lifecycle(
+/// host. With a pending template (13 §9), a successful run is committed as that template.
+pub fn spawn_lifecycle(
     server: &Arc<Server>,
     key: &str,
     task: Option<&str>,
@@ -591,6 +611,11 @@ fn spawn_lifecycle(
     let srv = server.clone();
     let (b, log) = (c.b().clone(), c.root.join("setup.log"));
     let (key, task) = (key.to_string(), task.map(str::to_string));
+    let commit = c
+        .template
+        .as_ref()
+        .filter(|t| !t.from_template && steps == c.lifecycle)
+        .map(|t| t.key.clone());
     std::thread::spawn(move || {
         let mut status = "ok".to_string();
         let mut text = String::new();
@@ -618,6 +643,11 @@ fn spawn_lifecycle(
             json!({"task": task, "sandbox": key}),
             json!({"status": status, "log": log}),
         );
+        if status == "ok"
+            && let Some(t) = commit
+        {
+            super::pool::after_setup(&srv, &key, task.as_deref(), &b, &t);
+        }
     });
 }
 
@@ -809,6 +839,23 @@ impl BoxLink {
         if let Some(m) = self.mux.lock().unwrap().clone() {
             self.open_listen(m, short);
         }
+    }
+    /// Use `m` as the link's mux (tests: an in-process box side instead of `exec -i`).
+    #[cfg(test)]
+    pub fn attach_for_test(&self, m: vk_remote::Mux) {
+        *self.mux.lock().unwrap() = Some(m);
+        self.connected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// A connection to `127.0.0.1:<port>` inside the box (`tcp:` channel; box previews).
+    pub async fn open_tcp(&self, port: u16) -> anyhow::Result<tokio::io::DuplexStream> {
+        let m = self
+            .mux
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("the box link is down"))?;
+        m.open(&format!("tcp:{port}")).await
     }
     pub fn remove_pane(&self, pane: &str) {
         self.panes

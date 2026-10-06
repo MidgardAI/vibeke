@@ -779,6 +779,8 @@ impl Session {
             crate::sync_input::mirror(&self.server, pane, &bytes);
             let id = holder_input_id(&self.client_id, input_id);
             *rt.last_input.lock().unwrap() = Some(Instant::now());
+            // Typing into an idle-suspended (paused) box wakes it (13 §11).
+            crate::sandbox::extras::touch_pane(&self.server, pane);
             let (tx, rx) = tokio::sync::oneshot::channel();
             rt.send(crate::pane::PaneCmd::Input {
                 id,
@@ -897,8 +899,10 @@ impl Session {
                 if sc.recovering {
                     continue;
                 }
-                // Kitty placements, and the pixels of images this client lacks (03 §9).
-                let placements = sc.engine.image_placements();
+                // Kitty placements (visible ones, then the virtual ones the program shows through
+                // its own placeholder cells), and the pixels of images this client lacks (03 §9).
+                let mut placements = sc.engine.image_placements();
+                placements.extend(sc.engine.virtual_placements());
                 let mut pixels: Vec<(String, u32, u32, Vec<u8>)> = Vec::new();
                 for p in &placements {
                     let k = image_key(&p.hash);
@@ -920,6 +924,7 @@ impl Session {
                         cols: p.cols.min(u16::MAX as u32) as u16,
                         rows: p.rows.min(u16::MAX as u32) as u16,
                         z: p.z,
+                        virt: p.virt.then_some(p.image_id),
                     })
                     .collect();
                 (

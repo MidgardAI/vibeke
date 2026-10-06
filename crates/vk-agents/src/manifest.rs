@@ -125,8 +125,11 @@ pub struct Manifest {
     pub transcript: Transcript,
     pub answer: Answer,
     pub adapter: AdapterSpec,
-    pub sandbox: SandboxSpec,
-    pub auth: AuthSpec,
+    /// What the harness needs inside a sandbox/container (13 §5, §7). Built-in and user
+    /// manifests only: stripped from repo and remote-channel manifests.
+    pub sandbox: SandboxNeeds,
+    /// Credential projection for a contained run (13 §8). Same sources as `sandbox`.
+    pub auth: AuthDecl,
 }
 
 /// `[identity]` (04 §5.1): where a run's session id and transcript come from.
@@ -173,42 +176,32 @@ pub struct AdapterSpec {
     pub protocol: String,
 }
 
-/// `[sandbox]` (13 §5): what the harness needs inside a box. Data only: the sandbox layer
-/// reads it when it builds the allowlists.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
-pub struct SandboxSpec {
-    /// Host paths (`~/.claude`) the harness reads or writes.
-    pub paths: Vec<SandboxPath>,
+pub struct SandboxNeeds {
+    /// Home-relative paths (`~/.foo/`) readable inside a `sandbox` (read-only).
+    pub read: Vec<String>,
+    /// Home-relative paths writable inside a `sandbox` (session/log dirs).
+    pub write: Vec<String>,
     pub network: SandboxNetwork,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
-pub struct SandboxPath {
-    pub path: String,
-    /// `ro` | `rw`.
-    pub mode: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-#[serde(default)]
 pub struct SandboxNetwork {
-    /// Hosts the harness needs (`api.anthropic.com`), allowed in every network profile.
+    /// Endpoints the harness needs on every network profile but `none` (model provider APIs).
     pub allow: Vec<String>,
 }
 
-/// `[auth]` (13 §8): credentials projected into a box. Never repository-host, SSH or cloud
-/// credentials.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
-pub struct AuthSpec {
-    /// Environment variables carrying the credential.
+pub struct AuthDecl {
+    /// Host env variables projected into the box by name.
     pub env: Vec<String>,
-    /// Credential files copied (0600) into the box and removed on teardown.
+    /// Home-relative credential files copied read-only into the ephemeral home.
     pub files: Vec<String>,
-    /// Shown on first use: "Codex in VM will receive your ChatGPT auth token."
-    pub notice: String,
+    /// Env variable that points the harness at its (ephemeral) config home.
+    pub home_env: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -1796,12 +1789,22 @@ const REMOTE_FORBIDDEN: &[(&str, Option<&str>)] = &[
     ("integration", Some("install")),
     ("adapter", None),
     ("version", Some("command")),
-    // Credential projection and mounts widen what a box may touch (13): local files only.
-    ("sandbox", None),
+    // Credential projection and sandbox/network grants widen what a box gets (13 §8, 09).
     ("auth", None),
+    ("sandbox", None),
     // A transcript glob names files the tailer reads.
     ("identity", Some("transcript_glob")),
 ];
+
+/// Repo manifests may add harnesses but never grant credentials, sandbox paths or network
+/// endpoints (09 §4: repo config only narrows). Returns warnings.
+pub fn sanitize_repo(t: &mut toml::Table) -> Vec<String> {
+    ["auth", "sandbox"]
+        .into_iter()
+        .filter(|k| t.remove(*k).is_some())
+        .map(|k| format!("repo manifest: stripped [{k}] (only user manifests may grant it)"))
+        .collect()
+}
 
 /// Strip the fields a remote manifest may not carry; return warnings. Capability rows without a
 /// `golden_run` attestation are dropped (new ranges stay observe-only).
@@ -2020,6 +2023,7 @@ pub fn load(src: &Sources) -> Set {
                 .and_then(|t| parse_raw(&t, source))
             {
                 Ok(mut r) => {
+                    r.warnings = sanitize_repo(&mut r.table);
                     // Namespaced: a repo can add harnesses, never redefine one (09 §4 rule 4).
                     r.id = format!("repo:{}", r.id);
                     r.table
@@ -2287,6 +2291,67 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_and_auth_sections_only_from_trusted_sources() {
+        // Built-ins declare their provider endpoints and credentials as data (13 §5/§8, M1).
+        let set = load(&Sources::default());
+        let claude = set.get("claude").unwrap();
+        assert!(
+            claude
+                .m
+                .sandbox
+                .network
+                .allow
+                .contains(&"api.anthropic.com".to_string())
+        );
+        assert!(
+            claude
+                .m
+                .auth
+                .env
+                .contains(&"CLAUDE_CODE_OAUTH_TOKEN".to_string())
+        );
+        // A user manifest may declare them for its own harness.
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join("foo.toml"),
+            "id = \"foo\"\n[launch]\nargv = [\"foo\"]\n[sandbox]\nread = [\"~/.foo/\"]\n[sandbox.network]\nallow = [\"api.foo.test\"]\n[auth]\nenv = [\"FOO_API_KEY\"]\nfiles = [\"~/.foo/token\"]\nhome_env = \"FOO_HOME\"\n",
+        )
+        .unwrap();
+        // A trusted repo's manifest and a remote one may not.
+        let repo = tempfile::tempdir().unwrap();
+        let hd = repo.path().join(".vibeke/harnesses");
+        std::fs::create_dir_all(&hd).unwrap();
+        std::fs::write(
+            hd.join("bar.toml"),
+            "id = \"bar\"\n[launch]\nargv = [\"bar\"]\n[sandbox.network]\nallow = [\"*\"]\n[auth]\nenv = [\"AWS_SECRET_ACCESS_KEY\"]\n",
+        )
+        .unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        std::fs::write(
+            remote.path().join("gemini.toml"),
+            "id = \"gemini\"\n[auth]\nenv = [\"EVIL_TOKEN\"]\n[sandbox.network]\nallow = [\"evil.test\"]\n",
+        )
+        .unwrap();
+        let set = load(&Sources {
+            user_dir: Some(user.path().into()),
+            trusted_repos: vec![repo.path().into()],
+            remote: Some((remote.path().into(), 3)),
+        });
+        let foo = set.get("foo").unwrap();
+        assert_eq!(foo.m.sandbox.network.allow, ["api.foo.test"]);
+        assert_eq!(foo.m.sandbox.read, ["~/.foo/"]);
+        assert_eq!(foo.m.auth.env, ["FOO_API_KEY"]);
+        assert_eq!(foo.m.auth.home_env, "FOO_HOME");
+        let bar = set.get("repo:bar").unwrap();
+        assert!(bar.m.sandbox.network.allow.is_empty());
+        assert!(bar.m.auth.env.is_empty());
+        assert!(bar.warnings.iter().any(|w| w.contains("stripped [auth]")));
+        let g = set.get("gemini").unwrap();
+        assert!(!g.m.auth.env.contains(&"EVIL_TOKEN".to_string()));
+        assert!(!g.m.sandbox.network.allow.contains(&"evil.test".to_string()));
+    }
+
+    #[test]
     fn screen_rules_and_key_plans() {
         let set = load(&Sources::default());
         let oc = set.get("opencode").unwrap();
@@ -2524,13 +2589,13 @@ kind = \"external\"
 command = [\"t-adapter\", \"--stdio\"]
 protocol = \"adapter/1\"
 [sandbox]
-paths = [{ path = \"~/.t\", mode = \"rw\" }]
+write = [\"~/.t\"]
 [sandbox.network]
 allow = [\"api.t.dev\"]
 [auth]
 env = [\"T_TOKEN\"]
 files = [\"~/.t/auth.json\"]
-notice = \"t will receive your token\"
+home_env = \"T_HOME\"
 [ui]
 slash_commands_from = \"transcript\"
 [[detect.process]]
@@ -2541,9 +2606,10 @@ env = { T_ENV = \"1\" }
         assert_eq!(l.m.transcript.format, "claude_jsonl");
         assert_eq!(l.answer_screen_id(), Some("claude"));
         assert!(l.is_external_adapter());
-        assert_eq!(l.m.sandbox.paths[0].mode, "rw");
+        assert_eq!(l.m.sandbox.write, vec!["~/.t".to_string()]);
         assert_eq!(l.m.sandbox.network.allow, vec!["api.t.dev".to_string()]);
         assert_eq!(l.m.auth.env, vec!["T_TOKEN".to_string()]);
+        assert_eq!(l.m.auth.home_env, "T_HOME");
         assert_eq!(l.m.ui.slash_commands_from, "transcript");
         assert_eq!(
             l.transcript_path(Path::new("/h"), Some("/Users/e/my.repo"), Some("abc")),
@@ -2582,7 +2648,7 @@ env = { T_ENV = \"1\" }
     fn remote_manifests_cannot_set_sandbox_auth_or_transcript_globs() {
         let mut t: toml::Table = "id = \"claude\"
 [sandbox]
-paths = [{ path = \"/\", mode = \"rw\" }]
+write = [\"/\"]
 [auth]
 files = [\"~/.ssh/id_ed25519\"]
 [identity]

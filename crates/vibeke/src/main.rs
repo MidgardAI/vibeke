@@ -13,6 +13,7 @@ mod idle;
 mod integration;
 mod remote;
 mod setup;
+mod state_backup;
 
 pub use remote::specs as remote_specs;
 
@@ -37,7 +38,8 @@ usage:
   vibeke integration install|status|uninstall|doctor|capabilities|update|pin|unpin <harness|all> [--mcp] [--sources]
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
-  vibeke doctor [--rebuild-index] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index offline
+  vibeke doctor [--rebuild-index|--list-backups|--restore-backup NAME] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index or restore a pre-migration state backup offline
+  vibeke doctor terminal         probe the host terminal: a pass/warn row per feature (03 §6.1)
   vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart [--binary PATH]|reload-config]
@@ -193,6 +195,10 @@ fn main() {
         // Runs in the pane: drives an ACP agent over stdio (04 §6.6). Sync, no runtime.
         std::process::exit(vk_server::agents::acp::host_main(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("codex-mux") {
+        // A shared headless Codex app-server's relay or mux (04 §6.2). Sync, no runtime.
+        std::process::exit(vk_server::agents::headless::codex_mux::main(&args[1..]));
+    }
     // Invoked as `herdr` (the private plugin launcher or `vibeke compat install-shim`): the
     // Herdr-compatible CLI shim, never a real Herdr (07 §8.2).
     if std::env::args().next().is_some_and(|a| {
@@ -290,6 +296,19 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("bridge") => commands::bridge(&g, &args[1..]).await,
         Some("sandbox") if args.get(1).map(String::as_str) == Some("bridge") => {
             remote::box_bridge(&args[2..]).await
+        }
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("shell") => {
+            let params = match vk_cli::build_params(&["task"], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::SANDBOX_SHELL_USAGE);
+                    return EXIT_USAGE;
+                }
+            };
+            with_client(&g, |mut c| async move {
+                vk_cli::sandbox_shell(&mut c, params).await
+            })
+            .await
         }
         Some("ssh") => commands::ssh(&g, &args[1..]).await,
         Some("notify") => commands::notify(&g, &args[1..]).await,
@@ -461,6 +480,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                     return EXIT_USAGE;
                 }
             };
+            vk_cli::preset(noun, verb, &mut params);
             let mut g = g;
             if vk_cli::runs_on_viewing_machine(method)
                 && let Some(m) = g.machine.take()

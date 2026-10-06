@@ -17,6 +17,8 @@ fn rec(kind: Kind, session: Option<&str>) -> Record {
         acp_argv: vec![],
         queued: vec![],
         auto_done: vec![],
+        isolated: false,
+        terminals: vec![],
     }
 }
 
@@ -514,7 +516,7 @@ fn acp_permission_fs_and_session_load_reconcile() {
         json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "acp-1", "update": {"sessionUpdate": "tool_call", "toolCallId": "old", "title": "Read", "kind": "read", "status": "completed"}}}),
     );
     assert!(cx.signals.is_empty(), "history: no events");
-    assert!(!cx.render.is_empty(), "but rendered");
+    assert!(!cx.view.is_empty(), "but rendered");
     let id = load["id"].as_u64().unwrap();
     let cx = step(&mut b, json!({"jsonrpc": "2.0", "id": id, "result": {}}));
     assert!(cx.signals.is_empty(), "already identified");
@@ -613,7 +615,7 @@ fn launch_argv_per_protocol() {
     );
     assert_eq!(
         launch_argv(Harness::Omp, Kind::Rpc, Some("o"), true, &[], &[]),
-        ["omp", "--mode", "rpc", "--resume", "o"]
+        ["omp", "--mode", "rpc-ui", "--resume", "o"]
     );
     let acp = vec!["agent".to_string(), "--acp".to_string()];
     assert_eq!(
@@ -707,6 +709,8 @@ mod sessions {
                 acp_argv: vec![],
                 queued: vec![],
                 auto_done: vec![],
+                isolated: false,
+                terminals: vec![],
             };
             rec.persist(&server, &pane);
             T {
@@ -1070,6 +1074,150 @@ mod sessions {
         assert_eq!(w[0].1["id"], 10);
         assert!(w[0].1.get("error").is_none());
     }
+
+    fn terminal_req(id: u64, method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    /// ACP `terminal/*` at the session: a cwd outside the session cwd is refused, unknown ids
+    /// are errors, `wait_for_exit` waits until the terminal's watcher reports the exit, and
+    /// `output` returns the newest `outputByteLimit` bytes with the exit status.
+    #[tokio::test]
+    async fn acp_terminals_are_confined_and_answer_exit_and_output() {
+        let mut t = T::new("acp:fake", Kind::Acp);
+        let mut s = t.session();
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                1,
+                "terminal/create",
+                json!({"sessionId": "sess-1", "command": "ls", "cwd": "/"}),
+            ),
+        );
+        let w = act_writes(&acts);
+        assert_eq!(w[0].1["error"]["code"], -32002, "{w:?}");
+        assert!(s.rec.terminals.is_empty());
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                2,
+                "terminal/output",
+                json!({"sessionId": "sess-1", "terminalId": "nope"}),
+            ),
+        );
+        assert_eq!(act_writes(&acts)[0].1["error"]["code"], -32002);
+
+        // A terminal as `terminal/create` leaves it (its pane is not needed here).
+        s.terms.lock().unwrap().insert(
+            "term_1".into(),
+            acp_term::Term {
+                pane: "tp".into(),
+                output: "line one\nline two\n".into(),
+                exit: None,
+                limit: Some(9),
+            },
+        );
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                3,
+                "terminal/wait_for_exit",
+                json!({"sessionId": "sess-1", "terminalId": "term_1"}),
+            ),
+        );
+        assert!(act_writes(&acts).is_empty(), "waits for the exit");
+        s.terms.lock().unwrap().get_mut("term_1").unwrap().exit = Some(acp_term::Exit {
+            code: Some(3),
+            signal: None,
+        });
+        let acts = s.on_cmd(&t.server, Cmd::TerminalExited("term_1".into()));
+        let w = act_writes(&acts);
+        assert_eq!(w[0].1["id"], 3);
+        assert_eq!(w[0].1["result"], json!({"exitCode": 3, "signal": null}));
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                4,
+                "terminal/output",
+                json!({"sessionId": "sess-1", "terminalId": "term_1"}),
+            ),
+        );
+        let r = &act_writes(&acts)[0].1["result"];
+        assert_eq!(r["output"], "line two\n");
+        assert_eq!(r["truncated"], true);
+        assert_eq!(r["exitStatus"]["exitCode"], 3);
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                5,
+                "terminal/release",
+                json!({"sessionId": "sess-1", "terminalId": "term_1"}),
+            ),
+        );
+        assert!(act_writes(&acts)[0].1.get("error").is_none());
+        assert!(s.terms.lock().unwrap().is_empty());
+    }
+
+    /// An isolated run's ACP agent gets no host-side terminals or fs: refused even if it asks.
+    #[tokio::test]
+    async fn isolated_acp_runs_refuse_host_terminals_and_fs() {
+        let mut t = T::new("acp:fake", Kind::Acp);
+        t.rec.isolated = true;
+        t.rec.persist(&t.server, &t.pane);
+        std::fs::write(t.work().join("a.txt"), "x").unwrap();
+        let mut s = t.session();
+        for (i, (m, p)) in [
+            (
+                "terminal/create",
+                json!({"sessionId": "sess-1", "command": "ls"}),
+            ),
+            (
+                "fs/read_text_file",
+                json!({"sessionId": "sess-1", "path": "a.txt"}),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let acts = t.feed(&mut s, Stream::Stdout, &terminal_req(i as u64 + 1, m, p));
+            let w = act_writes(&acts);
+            assert_eq!(w[0].1["error"]["code"], -32002, "{m}: {w:?}");
+        }
+        assert!(s.rec.terminals.is_empty());
+    }
+
+    /// `ctrl+o` in a headless pane redraws the transcript with tool calls expanded.
+    #[tokio::test]
+    async fn ctrl_o_toggles_the_transcript_view() {
+        let mut t = T::new("codex", Kind::AppServer);
+        let mut s = t.session();
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"method": "item/started", "params": {"item": {"type": "fileChange", "id": "fc1", "changes": [{"path": "a.rs", "kind": "update", "diff": "@@ -1 +1 @@\n-old\n+new\n"}]}}}),
+        );
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"method": "item/completed", "params": {"item": {"type": "fileChange", "id": "fc1", "status": "completed", "changes": [{"path": "a.rs", "kind": "update", "diff": "@@ -1 +1 @@\n-old\n+new\n"}]}}}),
+        );
+        assert!(
+            act_text(&acts).contains("ctrl+o to expand"),
+            "{}",
+            act_text(&acts)
+        );
+        let acts = s.on_keys(&t.server, b"\x0f");
+        let text = act_text(&acts);
+        assert!(text.starts_with("\x1b[H\x1b[2J\x1b[3J"), "{text:?}");
+        assert!(text.contains("+new"), "{text:?}");
+        let acts = s.on_keys(&t.server, b"\x0f");
+        assert!(!act_text(&acts).contains("+new"));
+    }
 }
 
 /// Review finding 3: ACP fs requests through an in-checkout symlink (file or directory) to an
@@ -1142,5 +1290,356 @@ fn acp_fs_requests_never_follow_symlinks_out_of_the_cwd() {
     assert_eq!(
         std::fs::read_to_string(cwd.join("sub-new.txt")).unwrap(),
         "made"
+    );
+}
+
+fn views(cx: &Cx) -> Vec<View> {
+    cx.view.clone()
+}
+
+/// omp `rpc-ui` (04 §6.3): a tool approval arrives as `tool_approval_requested` plus a dialog;
+/// the dialog becomes a risk-scored approval for that tool call, answered `confirmed` or with
+/// the option reading as the decision; `tool_approval_resolved` withdraws a dialog answered
+/// elsewhere. pi keeps treating confirm dialogs as extension dialogs.
+#[test]
+fn omp_rpc_ui_tool_approvals() {
+    let mut r = rec(Kind::Rpc, Some("o1"));
+    r.harness = "omp".into();
+    let mut a = pi::Pi::new(&r);
+    let cx = step(
+        &mut a,
+        json!({"type": "tool_approval_requested", "toolCallId": "tc1", "toolName": "bash", "args": {"command": "rm -rf build"}, "reason": "destructive"}),
+    );
+    assert!(cx.opens.is_empty(), "the dialog carries the decision");
+    let cx = step(
+        &mut a,
+        json!({"type": "extension_ui_request", "id": "d1", "method": "confirm", "title": "Allow bash?"}),
+    );
+    let it = cx.opens[0].clone();
+    assert_eq!(it.kind, InteractionKind::Approval);
+    let act = it.action.as_ref().unwrap();
+    assert_eq!(act.tool, "Bash");
+    assert_eq!(act.command.as_deref(), Some("rm -rf build"));
+    let mut cx = Cx::default();
+    assert!(a.answer(&mut cx, "rpc:d1", &it, &allow()));
+    assert_eq!(writes(&cx)[0]["confirmed"], true);
+    echo(&mut a, &cx);
+
+    // A select-style approval naming its tool call.
+    a.on_frame(
+        &mut Cx::live(),
+        &json!({"type": "tool_execution_start", "toolCallId": "tc2", "toolName": "edit", "args": {"path": "src/x.rs"}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"type": "extension_ui_request", "id": "d2", "method": "select", "toolCallId": "tc2", "title": "Edit src/x.rs?", "options": ["Allow once", "Allow always", "Deny"]}),
+    );
+    let it = cx.opens[0].clone();
+    assert_eq!(it.kind, InteractionKind::Approval);
+    assert_eq!(it.action.as_ref().unwrap().tool, "Edit");
+    let pick = |a: &mut pi::Pi, d: Decision| {
+        let mut cx = Cx::default();
+        let ans = Answer {
+            decision: Some(d),
+            ..Default::default()
+        };
+        assert!(a.answer(&mut cx, "rpc:d2", &it, &ans));
+        writes(&cx)[0]["value"].clone()
+    };
+    assert_eq!(pick(&mut a, Decision::AllowAlways), "Allow always");
+    assert_eq!(pick(&mut a, Decision::Allow), "Allow once");
+    assert_eq!(pick(&mut a, Decision::Deny), "Deny");
+
+    // Answered in omp itself: the dialog is withdrawn.
+    let cx = step(
+        &mut a,
+        json!({"type": "tool_approval_resolved", "toolCallId": "tc2", "approved": true}),
+    );
+    assert_eq!(cx.resolved, ["rpc:d2"]);
+    assert!(a.pending().is_empty());
+
+    // pi: no approval binding.
+    let mut p = pi::Pi::new(&rec(Kind::Rpc, Some("p1")));
+    step(
+        &mut p,
+        json!({"type": "tool_approval_requested", "toolCallId": "tc1", "toolName": "bash"}),
+    );
+    let cx = step(
+        &mut p,
+        json!({"type": "extension_ui_request", "id": "d1", "method": "confirm", "title": "Allow?"}),
+    );
+    assert_eq!(cx.opens[0].action.as_ref().unwrap().tool, "extension");
+}
+
+/// pi `get_session_stats` (04 §6.3): asked after every turn and on reconcile; its token totals
+/// replace the per-turn deltas. A pi without it stays quiet.
+#[test]
+fn pi_session_stats_are_the_usage_total() {
+    let mut a = pi::Pi::new(&rec(Kind::Rpc, Some("pi-s1")));
+    let cx = step(&mut a, json!({"type": "agent_end", "messages": []}));
+    let w = writes(&cx);
+    let stats = w.iter().find(|v| v["type"] == "get_session_stats").unwrap();
+    echo(&mut a, &cx);
+    let cx = step(
+        &mut a,
+        json!({"type": "response", "id": stats["id"], "command": "get_session_stats", "success": true, "data": {"sessionId": "pi-s1", "tokens": {"input": 120, "output": 30, "cacheRead": 7, "cacheWrite": 2, "total": 159}, "cost": 0.42}}),
+    );
+    let (u, total) = &cx.usage[0];
+    assert!(*total, "a session total");
+    assert_eq!(
+        (
+            u.input_tokens,
+            u.output_tokens,
+            u.cache_read_tokens,
+            u.cache_write_tokens
+        ),
+        (120, 30, 7, 2)
+    );
+    assert_eq!(u.cost_usd, Some(0.42));
+    let cx = step(&mut a, json!({"type": "agent_end", "messages": []}));
+    let id = writes(&cx)[0]["id"].clone();
+    echo(&mut a, &cx);
+    let cx = step(
+        &mut a,
+        json!({"type": "response", "id": id, "command": "get_session_stats", "success": false, "error": "unknown command"}),
+    );
+    assert!(
+        cx.view.is_empty() && cx.usage.is_empty(),
+        "quiet without it"
+    );
+}
+
+/// Codex `account/rateLimits/updated` (04 §6.2): the most constrained window becomes the run's
+/// rate limit; a window at 100 % reports rate limited (once).
+#[test]
+fn codex_rate_limit_notifications() {
+    let mut a = codex::Codex::new(&rec(Kind::AppServer, Some("t")));
+    let cx = step(
+        &mut a,
+        json!({"method": "account/rateLimits/updated", "params": {"rateLimits": {"primary": {"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1791374400}, "secondary": {"usedPercent": 10, "windowDurationMins": 10080}}}}),
+    );
+    let l = &cx.rate_limits[0];
+    assert!(!l.limited);
+    assert_eq!(l.scope.as_deref(), Some("primary"));
+    assert_eq!(l.used_percent, Some(42.0));
+    assert_eq!(l.resets_at_ms, Some(1_791_374_400_000));
+    let cx = step(
+        &mut a,
+        json!({"method": "account/rateLimits/updated", "params": {"rateLimits": {"primary": {"usedPercent": 60}, "secondary": {"usedPercent": 100, "resetsAt": 1791374400}}}}),
+    );
+    assert!(cx.rate_limits[0].limited);
+    assert_eq!(cx.rate_limits[0].scope.as_deref(), Some("secondary"));
+    assert!(matches!(&cx.view[0], View::Text(t) if t.contains("rate limited")));
+    let cx = step(
+        &mut a,
+        json!({"method": "account/rateLimits/updated", "params": {"rateLimits": {"secondary": {"usedPercent": 100}}}}),
+    );
+    assert!(cx.view.is_empty(), "reported once");
+    assert_eq!(
+        usage::app_server_rate_limit(
+            &json!({"rate_limits": {"primary": {"used_percent": 5, "resets_in_seconds": 60}}}),
+            1000
+        )
+        .unwrap()
+        .resets_at_ms,
+        Some(61_000),
+        "snake_case accepted"
+    );
+}
+
+/// The transcript items adapters report: tool calls with status, diff and output.
+#[test]
+fn adapters_report_tool_calls_with_diffs_outputs_and_statuses() {
+    let mut a = codex::Codex::new(&rec(Kind::AppServer, Some("t")));
+    let cx = step(
+        &mut a,
+        json!({"method": "item/started", "params": {"item": {"type": "commandExecution", "id": "c1", "command": "cargo test"}}}),
+    );
+    assert_eq!(
+        views(&cx),
+        [View::ToolStart {
+            id: "c1".into(),
+            label: "Bash: cargo test".into()
+        }]
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"item": {"type": "commandExecution", "id": "c1", "status": "failed", "exitCode": 101, "aggregatedOutput": "test result: FAILED"}}}),
+    );
+    assert_eq!(
+        views(&cx),
+        [View::ToolEnd {
+            id: "c1".into(),
+            status: ToolStatus::Failed,
+            output: Some("test result: FAILED".into()),
+            diff: None,
+            exit_code: Some(101)
+        }]
+    );
+    step(
+        &mut a,
+        json!({"method": "item/started", "params": {"item": {"type": "commandExecution", "id": "c2", "command": "rm -rf /"}}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"item": {"type": "commandExecution", "id": "c2", "status": "declined"}}}),
+    );
+    assert!(matches!(
+        &cx.view[0],
+        View::ToolEnd {
+            status: ToolStatus::Declined,
+            ..
+        }
+    ));
+
+    // Claude: Edit input becomes the diff, tool_result content the output.
+    let mut c = claude::Claude::new(&rec(Kind::StreamJson, Some("s")));
+    step(
+        &mut c,
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "e1", "name": "Edit", "input": {"file_path": "a.rs", "old_string": "x = 1", "new_string": "x = 2"}}]}}),
+    );
+    let cx = step(
+        &mut c,
+        json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "e1", "content": [{"type": "text", "text": "edited"}]}]}}),
+    );
+    match &cx.view[0] {
+        View::ToolEnd {
+            status,
+            diff,
+            output,
+            ..
+        } => {
+            assert_eq!(*status, ToolStatus::Done);
+            assert_eq!(diff.as_deref(), Some("@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n"));
+            assert_eq!(output.as_deref(), Some("edited"));
+        }
+        v => panic!("{v:?}"),
+    }
+
+    // pi: the edit tool's own diff.
+    let mut p = pi::Pi::new(&rec(Kind::Rpc, Some("p")));
+    step(
+        &mut p,
+        json!({"type": "tool_execution_start", "toolCallId": "t1", "toolName": "edit", "args": {"path": "a.rs", "oldText": "a", "newText": "b"}}),
+    );
+    let cx = step(
+        &mut p,
+        json!({"type": "tool_execution_end", "toolCallId": "t1", "toolName": "edit", "result": {"content": [{"type": "text", "text": "ok"}], "details": {"diff": "-a\n+b\n"}}, "isError": false}),
+    );
+    assert!(matches!(&cx.view[0], View::ToolEnd { diff: Some(d), .. } if d == "-a\n+b\n"));
+
+    // ACP: diff content.
+    let mut r = rec(Kind::Acp, Some("s"));
+    r.processed = 1;
+    let mut acp = acp::Acp::new(&r);
+    step(
+        &mut acp,
+        json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s", "update": {"sessionUpdate": "tool_call", "toolCallId": "k1", "title": "Edit a.rs", "kind": "edit"}}}),
+    );
+    let cx = step(
+        &mut acp,
+        json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "k1", "status": "completed", "content": [{"type": "diff", "path": "a.rs", "oldText": "1", "newText": "2"}]}}}),
+    );
+    assert!(matches!(&cx.view[0], View::ToolEnd { diff: Some(d), .. } if d.contains("+2")));
+}
+
+/// ACP capabilities and `terminal/*` routing: terminals are offered (and handed to the session)
+/// unless the run is isolated, in which case neither fs nor terminals are offered and requests
+/// are refused on the spot.
+#[test]
+fn acp_terminal_capability_and_isolation() {
+    let mut a = acp::Acp::new(&rec(Kind::Acp, None));
+    let mut cx = Cx::default();
+    a.start(&mut cx);
+    let caps = &writes(&cx)[0]["params"]["clientCapabilities"];
+    assert_eq!(caps["terminal"], true);
+    assert_eq!(caps["fs"]["readTextFile"], true);
+    let cx = step(
+        &mut a,
+        json!({"jsonrpc": "2.0", "id": 4, "method": "terminal/create", "params": {"sessionId": "s", "command": "ls"}}),
+    );
+    assert!(writes(&cx).is_empty(), "the session answers terminals");
+    assert_eq!(cx.terminal[0].0, "rpc:4");
+    assert_eq!(cx.terminal[0].1.method, "terminal/create");
+    // Unanswered after a restart: reconcile hands it to the session again.
+    let mut cx = Cx::live();
+    a.reconcile(&mut cx, false);
+    assert_eq!(cx.terminal.len(), 1);
+
+    let mut r = rec(Kind::Acp, None);
+    r.isolated = true;
+    let mut b = acp::Acp::new(&r);
+    let mut cx = Cx::default();
+    b.start(&mut cx);
+    let caps = &writes(&cx)[0]["params"]["clientCapabilities"];
+    assert_eq!(caps["terminal"], false);
+    assert_eq!(caps["fs"]["writeTextFile"], false);
+    let cx = step(
+        &mut b,
+        json!({"jsonrpc": "2.0", "id": 5, "method": "terminal/create", "params": {"sessionId": "s", "command": "ls"}}),
+    );
+    assert!(cx.terminal.is_empty());
+    assert_eq!(writes(&cx)[0]["error"]["code"], -32002);
+}
+
+/// Codex's own sandbox is switched off only at the sandbox level, with the configured args
+/// inserted after the binary (13 §3, 04 §6.2); the relay argv of a shared app-server.
+#[test]
+fn codex_isolated_args_and_relay_argv() {
+    let cfg = vk_config::Config::default();
+    let argv = launch_argv(Harness::Codex, Kind::AppServer, None, false, &[], &[]);
+    assert_eq!(
+        isolated_argv(
+            Harness::Codex,
+            Some(IsolationLevel::Sandbox),
+            argv.clone(),
+            &cfg
+        ),
+        [
+            "codex",
+            "-c",
+            "sandbox_mode=\"danger-full-access\"",
+            "app-server"
+        ]
+    );
+    assert_eq!(
+        isolated_argv(
+            Harness::Codex,
+            Some(IsolationLevel::Container),
+            argv.clone(),
+            &cfg
+        ),
+        argv
+    );
+    assert_eq!(
+        isolated_argv(Harness::Codex, None, argv.clone(), &cfg),
+        argv
+    );
+    let claude = launch_argv(Harness::Claude, Kind::StreamJson, None, false, &[], &[]);
+    assert_eq!(
+        isolated_argv(
+            Harness::Claude,
+            Some(IsolationLevel::Sandbox),
+            claude.clone(),
+            &cfg
+        ),
+        claude
+    );
+    let relay = codex_mux::relay_argv(
+        std::path::Path::new("/bin/vibeke"),
+        std::path::Path::new("/run/codex-mux.sock"),
+        argv,
+    );
+    assert_eq!(
+        relay,
+        [
+            "/bin/vibeke",
+            "codex-mux",
+            "--socket",
+            "/run/codex-mux.sock",
+            "--",
+            "codex",
+            "app-server"
+        ]
     );
 }

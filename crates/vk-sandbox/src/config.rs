@@ -5,6 +5,11 @@
 //! [isolation]
 //! yolo_default = "sandbox"        # level applied by --yolo without --isolate
 //! network = "dev"                 # default network profile for contained tasks
+//! confirm_host_yolo = true        # one-time confirmation per workspace for --yolo --isolate host
+//! suggest_sandbox_for_yolo = false  # nudge: relaunch a user-typed host yolo run in a sandbox
+//! idle_suspend = "30m"            # pause idle container boxes ("off" disables)
+//! resource_pressure = 0.9         # sandbox.resource_pressure above this share of a box limit
+//! resource_poll = "30s"           # how often box usage is sampled
 //!
 //! [isolation.sandbox]
 //! read = ["~/.zshrc"]             # extra home paths readable inside (read-only)
@@ -15,6 +20,8 @@
 //! ports = [443, 80]               # ports allowlisted domains may use (default 80/443)
 //! allow_private = false
 //! broker = true                   # per-pane broker socket (hooks inside the box)
+//! sni_check = true                # TLS SNI / Host cross-check against the checked host
+//! global_approvals = true         # offer "allow always" (every task) on egress Interactions
 //!
 //! [isolation.container]
 //! image = "ghcr.io/acme/dev:node22"  # default image (repo/devcontainer/--image override it)
@@ -29,6 +36,10 @@
 //! build = false                   # allow building devcontainer images (still needs repo trust)
 //! cap_add = []                    # extra capabilities on top of --cap-drop ALL
 //! caches = ["npm", "cargo"]       # shared named cache volumes (13 §5)
+//! template = false                # commit a template image after setup; reuse it (13 §9)
+//! warm_pool = 0                   # pre-started boxes per used template (13 §9)
+//! warm_ttl = "2h"                 # warm boxes older than this are recycled
+//! discover_ports = true           # forward listening box ports as previews (13 §4, 06)
 //! ```
 //!
 //! Repo defaults live in `.vibeke/sandbox.toml` (13 §9, see [`RepoSandbox`]).
@@ -42,6 +53,16 @@ use vk_proto::model::IsolationLevel;
 pub struct IsolationConfig {
     pub yolo_default: String,
     pub network: String,
+    /// Vibeke-launched `--yolo --isolate host` needs a one-time confirmation per workspace.
+    pub confirm_host_yolo: bool,
+    /// Offer to relaunch a user-typed host yolo run (with `resume`) inside a sandbox.
+    pub suggest_sandbox_for_yolo: bool,
+    /// Pause idle container boxes after this long (`off` / `0` disables).
+    pub idle_suspend: String,
+    /// Share of a box limit (memory, pids, cpus) above which `sandbox.resource_pressure` fires.
+    pub resource_pressure: f64,
+    /// How often box resource usage is sampled.
+    pub resource_poll: String,
     pub sandbox: SandboxConfig,
     pub container: ContainerConfig,
 }
@@ -53,6 +74,11 @@ impl Default for IsolationConfig {
             // needs an image, so the default stays sandbox (set "container" explicitly).
             yolo_default: "sandbox".into(),
             network: "dev".into(),
+            confirm_host_yolo: true,
+            suggest_sandbox_for_yolo: false,
+            idle_suspend: "30m".into(),
+            resource_pressure: 0.9,
+            resource_poll: "30s".into(),
             sandbox: SandboxConfig::default(),
             container: ContainerConfig::default(),
         }
@@ -71,6 +97,10 @@ pub struct SandboxConfig {
     pub ports: Vec<u16>,
     pub allow_private: bool,
     pub broker: bool,
+    /// TLS SNI / `Host` cross-check in the egress proxy (domain fronting, 13 §7).
+    pub sni_check: bool,
+    /// Egress Interactions offer "allow always" (persisted for every contained task).
+    pub global_approvals: bool,
 }
 
 impl Default for SandboxConfig {
@@ -84,6 +114,8 @@ impl Default for SandboxConfig {
             ports: vec![],
             allow_private: false,
             broker: true,
+            sni_check: true,
+            global_approvals: true,
         }
     }
 }
@@ -103,6 +135,15 @@ pub struct ContainerConfig {
     pub build: bool,
     pub cap_add: Vec<String>,
     pub caches: Vec<String>,
+    /// Commit a template image once a box's setup succeeded, and start later boxes of the same
+    /// template from it with setup skipped (13 §9). Bind-mounted dirs are not in the image.
+    pub template: bool,
+    /// Pre-started boxes kept per used template (13 §9 warm pool; 0 = off).
+    pub warm_pool: u32,
+    /// Warm boxes older than this are removed and replaced.
+    pub warm_ttl: String,
+    /// Discover listening ports inside boxes and forward them as previews.
+    pub discover_ports: bool,
 }
 
 impl Default for ContainerConfig {
@@ -120,6 +161,10 @@ impl Default for ContainerConfig {
             build: false,
             cap_add: vec![],
             caches: vec![],
+            template: false,
+            warm_pool: 0,
+            warm_ttl: "2h".into(),
+            discover_ports: true,
         }
     }
 }
@@ -200,6 +245,49 @@ impl IsolationConfig {
     pub fn network_profile(&self) -> NetworkProfile {
         NetworkProfile::parse(&self.network).unwrap_or_default()
     }
+    /// `idle_suspend` as a duration (`None` = off).
+    pub fn idle_suspend_after(&self) -> Option<std::time::Duration> {
+        parse_duration(&self.idle_suspend).filter(|d| !d.is_zero())
+    }
+    pub fn resource_poll_every(&self) -> std::time::Duration {
+        parse_duration(&self.resource_poll)
+            .filter(|d| !d.is_zero())
+            .unwrap_or(std::time::Duration::from_secs(30))
+    }
+    pub fn warm_ttl(&self) -> std::time::Duration {
+        parse_duration(&self.container.warm_ttl)
+            .filter(|d| !d.is_zero())
+            .unwrap_or(std::time::Duration::from_secs(7200))
+    }
+}
+
+/// `"30m"`, `"90s"`, `"2h"`, `"1d"`, `"500ms"` or a bare number of seconds. `off`, `never`,
+/// `false` and empty → `None`.
+pub fn parse_duration(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim().to_ascii_lowercase();
+    if matches!(s.as_str(), "" | "off" | "never" | "false" | "none") {
+        return None;
+    }
+    let (num, mult_ms): (&str, u64) = if let Some(n) = s.strip_suffix("ms") {
+        (n, 1)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1000)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60_000)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3_600_000)
+    } else if let Some(n) = s.strip_suffix('d') {
+        (n, 86_400_000)
+    } else {
+        (s.as_str(), 1000)
+    };
+    let n: f64 = num.trim().parse().ok()?;
+    if !(n.is_finite() && n >= 0.0) {
+        return None;
+    }
+    Some(std::time::Duration::from_millis(
+        (n * mult_ms as f64) as u64,
+    ))
 }
 
 /// Expand `~/` against `home`.
@@ -242,6 +330,31 @@ mod tests {
         assert_eq!(c.container.pids, Some(64));
         assert_eq!(c.container.shell, "/bin/sh");
         assert_eq!(c.container.on_finish, "remove");
+    }
+
+    #[test]
+    fn spec_13_extras_defaults_and_durations() {
+        use std::time::Duration;
+        let (c, _) = IsolationConfig::from_toml(None);
+        assert!(c.confirm_host_yolo);
+        assert!(!c.suggest_sandbox_for_yolo);
+        assert_eq!(c.idle_suspend_after(), Some(Duration::from_secs(1800)));
+        assert!(c.sandbox.sni_check && c.sandbox.global_approvals);
+        assert!(!c.container.template);
+        assert_eq!(c.container.warm_pool, 0);
+        assert!(c.container.discover_ports);
+        assert_eq!(c.warm_ttl(), Duration::from_secs(7200));
+        let v: toml::Value =
+            toml::from_str("idle_suspend = \"off\"\nresource_poll = \"5s\"\n").unwrap();
+        let (c, e) = IsolationConfig::from_toml(Some(&v));
+        assert!(e.is_none(), "{e:?}");
+        assert_eq!(c.idle_suspend_after(), None);
+        assert_eq!(c.resource_poll_every(), Duration::from_secs(5));
+        assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("250ms"), Some(Duration::from_millis(250)));
+        assert_eq!(parse_duration("45"), Some(Duration::from_secs(45)));
+        assert_eq!(parse_duration("never"), None);
+        assert_eq!(parse_duration("-3m"), None);
     }
 
     #[test]

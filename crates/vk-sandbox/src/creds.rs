@@ -21,6 +21,12 @@ use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+#[path = "creds_declared.rs"]
+mod declared;
+pub use declared::{
+    DeclaredAuth, env_refused, file_refused, project_declared, store_claude_setup_token,
+};
+
 /// Harnesses with built-in projection rules (manifest `[auth]`, 04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HarnessAuth {

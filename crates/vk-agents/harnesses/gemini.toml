@@ -85,17 +85,17 @@ confidence = 0.6
 interrupt_keys = ["esc"]
 quit_keys = ["ctrl+c", "ctrl+c"]
 
+# 13 §5/§7/§8: what a contained run needs. Unverified against a live Gemini CLI.
+[sandbox.network]
+allow = ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oauth2.googleapis.com"]
+
+[auth]
+env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+files = ["~/.gemini/oauth_creds.json", "~/.gemini/settings.json"]
+
 [identity]
 sources = ["hook:SessionStart"]
 
 [transcript]
 format = "none"
 usage = true
-
-[sandbox]
-paths = [{ path = "~/.gemini", mode = "rw" }]
-[sandbox.network]
-allow = ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com"]
-
-[auth]
-env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]

@@ -749,3 +749,6 @@ async fn broker_enforces_ownership_of_explicit_targets() {
 
 #[path = "sandbox_container_tests.rs"]
 mod container_tests;
+
+#[path = "sandbox_extras_tests.rs"]
+mod extras_tests;

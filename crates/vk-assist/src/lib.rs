@@ -16,13 +16,25 @@
 //! - [`budget`]: per-UTC-day request/token/cost ledger and a per-minute rate window.
 //! - [`fake`]: a local fake HTTP server for tests (no real provider is ever contacted).
 
+pub mod background;
 pub mod budget;
+pub mod cache;
+pub mod capability;
 pub mod config;
 pub mod consent;
 pub mod context;
+pub mod diagnose;
+pub mod eval;
 pub mod fake;
+pub mod keychain;
+pub mod models;
+pub mod navigate;
 pub mod ops;
+pub mod pipeline;
 pub mod provider;
+pub mod remote;
+pub mod sched;
+pub mod stall;
 
 use serde::{Deserialize, Serialize};
 

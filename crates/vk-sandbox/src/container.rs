@@ -67,10 +67,10 @@ impl Provider {
             | Provider::Podman(p) => p,
         }
     }
-    fn s(&self) -> String {
+    pub(crate) fn s(&self) -> String {
         self.cli().to_string_lossy().into_owned()
     }
-    fn apple(&self) -> bool {
+    pub(crate) fn apple(&self) -> bool {
         matches!(self, Provider::AppleContainer(_))
     }
     /// Build a provider from a config value: a provider name (`docker`, `orbstack`, `podman`,
@@ -474,6 +474,8 @@ pub enum BoxState {
     Missing,
     Running,
     Stopped,
+    /// Frozen by `pause` (idle suspend, 13 §11): processes kept, nothing runs.
+    Paused,
     Other,
 }
 
@@ -483,6 +485,7 @@ impl BoxState {
             BoxState::Missing => "missing",
             BoxState::Running => "running",
             BoxState::Stopped => "stopped",
+            BoxState::Paused => "paused",
             BoxState::Other => "unknown",
         }
     }
@@ -492,7 +495,9 @@ impl BoxState {
             return BoxState::Missing;
         }
         let t = out.trim().to_ascii_lowercase();
-        if t.contains("running") {
+        if t.contains("paused") {
+            BoxState::Paused
+        } else if t.contains("running") {
             BoxState::Running
         } else if t.contains("exited") || t.contains("stopped") || t.contains("created") {
             BoxState::Stopped
@@ -629,6 +634,10 @@ impl ContainerBox {
     pub fn ensure_running(&self) -> Result<bool, RunnerError> {
         match self.state() {
             BoxState::Running => Ok(false),
+            BoxState::Paused => {
+                self.cli(&self.spec.unpause_argv(), Duration::from_secs(60))?;
+                Ok(false)
+            }
             BoxState::Stopped => {
                 self.cli(&self.spec.start_argv(), Duration::from_secs(60))?;
                 Ok(false)
@@ -647,7 +656,7 @@ impl ContainerBox {
         }
     }
 
-    fn cli(&self, argv: &[String], t: Duration) -> Result<CmdOut, RunnerError> {
+    pub(crate) fn cli(&self, argv: &[String], t: Duration) -> Result<CmdOut, RunnerError> {
         let o = run_cmd(argv, &self.cli_env, None, t)?;
         if !o.ok {
             return Err(RunnerError::Unsupported(format!(
@@ -661,8 +670,15 @@ impl ContainerBox {
     }
 
     pub fn stop(&self) -> Result<(), RunnerError> {
-        if self.state() == BoxState::Running {
-            self.cli(&self.spec.stop_argv(), Duration::from_secs(60))?;
+        match self.state() {
+            BoxState::Running => {
+                self.cli(&self.spec.stop_argv(), Duration::from_secs(60))?;
+            }
+            BoxState::Paused => {
+                self.cli(&self.spec.unpause_argv(), Duration::from_secs(60))?;
+                self.cli(&self.spec.stop_argv(), Duration::from_secs(60))?;
+            }
+            _ => {}
         }
         Ok(())
     }

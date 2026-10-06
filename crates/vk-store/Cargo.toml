@@ -14,6 +14,7 @@ ulid.workspace = true
 rand.workspace = true
 zstd.workspace = true
 libc.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

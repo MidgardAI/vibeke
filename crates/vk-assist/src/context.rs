@@ -36,6 +36,14 @@ pub struct Source {
     pub truncated: bool,
     pub redactions: usize,
     pub observed_at_ms: Option<i64>,
+    /// `machine/session/kind:ids` of the underlying object (14 §7.1): a citation is traceable
+    /// to one machine, session and object. Local sources say `local` for the machine when the
+    /// object carries none.
+    #[serde(default)]
+    pub identity: String,
+    /// The turn/item/event position the source was taken at, if the object has one.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +156,29 @@ impl Package {
             let text = fence(&text);
             room = room.saturating_sub(text.len() + 160);
             redactions += r;
+            let machine = inp
+                .object
+                .get("machine")
+                .and_then(Value::as_str)
+                .unwrap_or("local")
+                .to_string();
+            let session = inp
+                .object
+                .get("session")
+                .and_then(Value::as_str)
+                .unwrap_or("-")
+                .to_string();
+            let identity = crate::remote::identity(&machine, &session, &inp.kind, &inp.object);
+            let cursor = inp
+                .object
+                .get("cursor")
+                .or_else(|| inp.object.get("turn"))
+                .or_else(|| inp.object.get("revision"))
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                });
             sources.push(Source {
                 id: format!("s{}", i + 1),
                 kind: inp.kind,
@@ -158,6 +189,8 @@ impl Package {
                 truncated,
                 redactions: r,
                 observed_at_ms: inp.observed_at_ms,
+                identity,
+                cursor,
             });
             texts.push(text);
         }
@@ -326,6 +359,31 @@ mod tests {
         .unwrap();
         assert!(p.render().len() < 8192);
         assert!(p.sources[0].truncated);
+    }
+
+    #[test]
+    fn sources_carry_machine_session_object_identity_and_a_cursor() {
+        let mut a = inp("hello");
+        a.object = json!({"machine": "devbox", "session": "main", "run": "r1", "turn": 4});
+        let b = inp("local one");
+        let p = Package::build(
+            vec![a, b],
+            Limits {
+                max_input_bytes: 65536,
+                max_input_tokens: 12000,
+            },
+            100,
+            &red(),
+        )
+        .unwrap();
+        assert_eq!(
+            p.sources[0].identity,
+            "devbox/main/user_request:run=r1,turn=4"
+        );
+        assert_eq!(p.sources[0].cursor.as_deref(), Some("4"));
+        assert_eq!(p.sources[1].identity, "local/-/user_request:run=r1,turn=1");
+        // The digest binds the included content: a different text is a different digest.
+        assert_ne!(p.sources[0].digest, p.sources[1].digest);
     }
 
     #[test]

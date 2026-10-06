@@ -1,4 +1,4 @@
-//! pi / omp headless (04 §6.3): `pi --mode rpc` / `omp --mode rpc`, JSONL split on `\n` only
+//! pi / omp headless (04 §6.3): `pi --mode rpc` / `omp --mode rpc-ui`, JSONL split on `\n` only
 //! (pi `rpc.md` §Framing; never a readline-style splitter that breaks on U+2028/U+2029).
 //!
 //! | RPC | Vibeke |
@@ -7,14 +7,20 @@
 //! | `prompt` written by Vibeke (`steer` / `follow_up` mid-turn) | `UserPromptSubmit` (turn) |
 //! | `tool_execution_start` / `_end` | `PreToolUse` / `PostToolUse(Failure)` |
 //! | `message_end` (assistant) | transcript + last message |
-//! | `turn_end.message.usage` | usage |
-//! | `agent_end` | `Stop` |
+//! | `turn_end.message.usage` | usage (per turn) |
+//! | `agent_end` | `Stop`, then `get_session_stats` |
+//! | `get_session_stats` response `{tokens {input, output, cacheRead, cacheWrite}, cost}` | usage (session total) |
 //! | `compaction_start` / `_end` | `PreCompact` / `PostCompact` |
 //! | `extension_ui_request` `confirm` / `select` / `input` / `editor` | approval / question, answered with `extension_ui_response` |
 //! | `agent.interrupt` | `abort` |
+//! | omp `tool_approval_requested {toolCallId, toolName, reason}` / `_resolved {approved}` | binds the approval dialog to the tool call; resolved by the harness |
 //!
 //! There is no Vibeke approval gate for pi (04 §6.3): what is answered here are the dialogs a
-//! user's own permission extension opens.
+//! user's own permission extension opens. omp runs in `rpc-ui` mode, which also carries omp's
+//! own tool approvals (**[verify M0]** against a live omp): a `confirm`/`select` dialog that
+//! names a `toolCallId`, or follows a `tool_approval_requested` not yet matched to a dialog,
+//! becomes an *approval* for that tool call (risk-scored, so policy rules apply), answered
+//! `confirmed` or with the option that reads as allow / allow always / deny.
 
 use super::*;
 
@@ -31,6 +37,12 @@ pub struct Pi {
     /// toolCallId → (tool, args).
     tools: HashMap<String, (String, Value)>,
     last_msg: Option<String>,
+    /// omp (`rpc-ui`): tool approvals arrive as dialogs.
+    omp: bool,
+    /// omp approvals requested and not yet bound to a dialog: (toolCallId, tool, input).
+    approvals: Vec<(String, String, Value)>,
+    /// Dialog id → (toolCallId, tool, input) it approves.
+    dialog_tool: HashMap<String, (String, String, Value)>,
 }
 
 fn tool_name(t: &str) -> String {
@@ -58,7 +70,80 @@ impl Pi {
             pending: vec![],
             tools: HashMap::new(),
             last_msg: None,
+            omp: Harness::from_id(&rec.harness).is_some_and(|h| h.base() == Harness::Omp),
+            approvals: vec![],
+            dialog_tool: HashMap::new(),
         }
+    }
+
+    /// The tool call an omp dialog approves: named by `toolCallId`, else the oldest approval
+    /// request not yet matched to a dialog.
+    fn bind_approval(&mut self, id: &str, req: &Value) {
+        if !self.omp || self.dialog_tool.contains_key(id) {
+            return;
+        }
+        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        if !matches!(method, "confirm" | "select") {
+            return;
+        }
+        let named = req
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let pos = match &named {
+            Some(t) => self.approvals.iter().position(|a| &a.0 == t),
+            None => (!self.approvals.is_empty()).then_some(0),
+        };
+        let bound = match (pos, named) {
+            (Some(i), _) => self.approvals.remove(i),
+            (None, Some(t)) => {
+                let (tool, input) = self.tools.get(&t).cloned().unwrap_or_else(|| {
+                    (
+                        tool_name(
+                            req.get("toolName")
+                                .and_then(Value::as_str)
+                                .unwrap_or("tool"),
+                        ),
+                        req.get("args").cloned().unwrap_or(json!({})),
+                    )
+                });
+                (t, tool, input)
+            }
+            (None, None) => return,
+        };
+        self.dialog_tool.insert(id.to_string(), bound);
+    }
+
+    /// The option of an approval `select` that reads as decision `d`.
+    fn approval_option(req: &Value, d: Option<Decision>) -> Option<String> {
+        let labels: Vec<String> = req
+            .get("options")
+            .and_then(Value::as_array)?
+            .iter()
+            .filter_map(|o| {
+                o.as_str()
+                    .map(str::to_string)
+                    .or_else(|| o.get("label").and_then(Value::as_str).map(str::to_string))
+            })
+            .collect();
+        let has = |l: &str, ks: &[&str]| {
+            let l = l.to_lowercase();
+            ks.iter()
+                .any(|k| l.split(|c: char| !c.is_alphanumeric()).any(|w| w == *k))
+        };
+        let always = ["always", "session", "remember", "forever"];
+        let deny = [
+            "deny", "reject", "no", "block", "cancel", "decline", "never",
+        ];
+        let pick = match d {
+            Some(Decision::AllowAlways) => labels
+                .iter()
+                .find(|l| has(l, &always) && !has(l, &deny))
+                .or_else(|| labels.iter().find(|l| !has(l, &deny))),
+            Some(Decision::Allow) => labels.iter().find(|l| !has(l, &always) && !has(l, &deny)),
+            _ => labels.iter().find(|l| has(l, &deny)),
+        };
+        pick.cloned()
     }
 
     fn command(&mut self, cx: &mut Cx, ty: &str, extra: Value) {
@@ -81,6 +166,11 @@ impl Pi {
             .unwrap_or("pi extension dialog");
         let message = req.get("message").and_then(Value::as_str);
         let native = format!("rpc:{id}");
+        if let Some((_, tool, input)) = self.dialog_tool.get(id) {
+            let mut it = approval(native, tool, input, Some(title));
+            it.body_md = message.map(str::to_string);
+            return Some(it);
+        }
         let mut it = match method {
             "confirm" => {
                 let mut it = interaction(InteractionKind::Approval, native, title, None, vec![]);
@@ -161,11 +251,37 @@ impl Adapter for Pi {
                 let id = v.get("id").and_then(Value::as_str).unwrap_or("");
                 let cmd = self.inflight.remove(id).unwrap_or_default();
                 if v.get("success").and_then(Value::as_bool) == Some(false) {
+                    if cmd == "get_session_stats" {
+                        // Older pi/omp builds lack it; per-turn usage stays.
+                        return;
+                    }
                     let e = v.get("error").and_then(Value::as_str).unwrap_or("error");
                     cx.render(format!("! {cmd}: {e}\n"));
                     if cmd == "prompt" {
                         self.busy = false;
                         cx.signal("StopFailure", json!({"error_type": "error", "message": e}));
+                    }
+                    return;
+                }
+                if cmd == "get_session_stats" {
+                    let d = v.get("data").cloned().unwrap_or(Value::Null);
+                    if let Some(t) = d.get("tokens") {
+                        let n = |k: &str| t.get(k).and_then(Value::as_u64).unwrap_or(0);
+                        cx.usage(
+                            RunUsage {
+                                input_tokens: n("input"),
+                                output_tokens: n("output"),
+                                cache_read_tokens: n("cacheRead"),
+                                cache_write_tokens: n("cacheWrite"),
+                                cost_usd: d
+                                    .get("cost")
+                                    .and_then(|c| c.as_f64().or_else(|| c.get("total")?.as_f64())),
+                                model: None,
+                                source: "rpc".into(),
+                                updated_at_ms: 0,
+                            },
+                            true,
+                        );
                     }
                     return;
                 }
@@ -257,10 +373,7 @@ impl Adapter for Pi {
                 ) {
                     o.entry("file_path").or_insert(json!(p));
                 }
-                cx.render(format!(
-                    "⏺ {tool} {}\n",
-                    harness::tool_summary(&tool, &input)
-                ));
+                cx.tool_start(&id, harness::tool_summary(&tool, &input));
                 cx.signal(
                     "PreToolUse",
                     json!({"tool_name": tool, "tool_input": input, "tool_use_id": id}),
@@ -280,7 +393,29 @@ impl Adapter for Pi {
                         json!({}),
                     )
                 });
-                cx.render(format!("  {} {tool}\n", if failed { "✗" } else { "✓" }));
+                let result = v.get("result").cloned().unwrap_or(Value::Null);
+                // pi's edit tool reports its own diff (`details.diff`); otherwise derive one.
+                let diff = result
+                    .pointer("/details/diff")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        (!failed && matches!(tool.as_str(), "Edit" | "Write"))
+                            .then(|| transcript::input_diff(&input))
+                            .flatten()
+                    });
+                let output = transcript::result_text(&result).filter(|_| diff.is_none() || failed);
+                cx.tool_end(
+                    &id,
+                    if failed {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    },
+                    output,
+                    diff,
+                    None,
+                );
                 cx.signal(
                     if failed {
                         "PostToolUseFailure"
@@ -297,6 +432,55 @@ impl Adapter for Pi {
                     "Stop",
                     json!({"session_id": self.session, "last_assistant_message": self.last_msg}),
                 );
+                // The session total replaces the per-turn deltas (04 §6.3).
+                self.command(cx, "get_session_stats", json!({}));
+            }
+            "tool_approval_requested" => {
+                let tcid = v
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let tool = tool_name(v.get("toolName").and_then(Value::as_str).unwrap_or("tool"));
+                let input = v
+                    .get("args")
+                    .or_else(|| v.get("input"))
+                    .cloned()
+                    .or_else(|| self.tools.get(&tcid).map(|(_, i)| i.clone()))
+                    .unwrap_or(json!({}));
+                let reason = v.get("reason").and_then(Value::as_str);
+                cx.render(format!(
+                    "⏸ approval requested: {}{}\n",
+                    harness::tool_summary(&tool, &input),
+                    reason.map(|r| format!(" ({r})")).unwrap_or_default()
+                ));
+                let bound = self.dialog_tool.values().any(|(t, _, _)| *t == tcid);
+                if !bound && !self.approvals.iter().any(|a| a.0 == tcid) {
+                    self.approvals.push((tcid, tool, input));
+                }
+            }
+            "tool_approval_resolved" => {
+                let tcid = v.get("toolCallId").and_then(Value::as_str).unwrap_or("");
+                let approved = v.get("approved").and_then(Value::as_bool).unwrap_or(false);
+                self.approvals.retain(|a| a.0 != tcid);
+                cx.render(format!(
+                    "  approval {}\n",
+                    if approved { "granted" } else { "denied" }
+                ));
+                // Answered elsewhere (omp's own UI or a timeout): the dialog is gone.
+                let dialogs: Vec<String> = self
+                    .dialog_tool
+                    .iter()
+                    .filter(|(_, (t, _, _))| t == tcid)
+                    .map(|(d, _)| d.clone())
+                    .collect();
+                for d in dialogs {
+                    self.dialog_tool.remove(&d);
+                    if self.pending.iter().any(|(i, _)| *i == d) {
+                        self.pending.retain(|(i, _)| *i != d);
+                        cx.resolved(format!("rpc:{d}"));
+                    }
+                }
             }
             "compaction_start" | "auto_compaction_start" => cx.signal("PreCompact", json!({})),
             "compaction_end" | "auto_compaction_end" => cx.signal("PostCompact", json!({})),
@@ -313,6 +497,7 @@ impl Adapter for Pi {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                self.bind_approval(&id, v);
                 match self.interaction(&id, v) {
                     Some(it) => {
                         if !self.pending.iter().any(|(i, _)| *i == id) {
@@ -339,6 +524,7 @@ impl Adapter for Pi {
         if let Some(id) = v.get("id").and_then(Value::as_str) {
             if ty == "extension_ui_response" {
                 self.pending.retain(|(i, _)| i != id);
+                self.dialog_tool.remove(id);
                 return;
             }
             self.inflight.insert(id.to_string(), ty.to_string());
@@ -386,7 +572,12 @@ impl Adapter for Pi {
         };
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
         let mut r = json!({"type": "extension_ui_response", "id": id});
+        let approval_dialog = self.dialog_tool.contains_key(id);
         match method {
+            "select" if approval_dialog => match Self::approval_option(&req, decision(a)) {
+                Some(o) => r["value"] = json!(o),
+                None => r["cancelled"] = json!(true),
+            },
             "confirm" => {
                 r["confirmed"] = json!(matches!(
                     decision(a),
@@ -419,6 +610,9 @@ impl Adapter for Pi {
         // `get_state` both finishes an interrupted start and catches a settled run.
         if !self.inflight.values().any(|c| c == "get_state") {
             self.command(cx, "get_state", json!({}));
+        }
+        if self.ready && !self.inflight.values().any(|c| c == "get_session_stats") {
+            self.command(cx, "get_session_stats", json!({}));
         }
     }
 

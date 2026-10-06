@@ -210,10 +210,7 @@ impl Adapter for Claude {
                                 .unwrap_or("tool")
                                 .to_string();
                             let input = b.get("input").cloned().unwrap_or(json!({}));
-                            cx.render(format!(
-                                "⏺ {name} {}\n",
-                                harness::tool_summary(&name, &input)
-                            ));
+                            cx.tool_start(&id, harness::tool_summary(&name, &input));
                             cx.signal(
                                 "PreToolUse",
                                 json!({"tool_name": name, "tool_input": input, "tool_use_id": id, "session_id": self.session}),
@@ -244,7 +241,20 @@ impl Adapter for Claude {
                         .tools
                         .remove(&id)
                         .unwrap_or_else(|| ("tool".into(), json!({})));
-                    cx.render(format!("  {} {name}\n", if failed { "✗" } else { "✓" }));
+                    let output = b.get("content").and_then(transcript::result_text);
+                    let diff = (!failed && matches!(name.as_str(), "Edit" | "MultiEdit" | "Write"))
+                        .then(|| transcript::input_diff(&input))
+                        .flatten();
+                    let declined = failed
+                        && output
+                            .as_deref()
+                            .is_some_and(|o| o.contains("denied") || o.contains("rejected"));
+                    let status = match (failed, declined) {
+                        (_, true) => ToolStatus::Declined,
+                        (true, _) => ToolStatus::Failed,
+                        _ => ToolStatus::Done,
+                    };
+                    cx.tool_end(&id, status, output, diff, None);
                     cx.signal(
                         if failed {
                             "PostToolUseFailure"
