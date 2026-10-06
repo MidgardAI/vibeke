@@ -57,9 +57,10 @@ pub fn spawn(
     cmd.stdin(Stdio::from(s_in))
         .stdout(Stdio::from(s_out))
         .stderr(Stdio::from(slave));
+    let um = crate::child_umask();
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -71,6 +72,10 @@ pub fn spawn(
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
             libc::signal(libc::SIGCHLD, libc::SIG_DFL);
             libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            // The user's own umask, not the holder's 077 (09 §3.1).
+            if let Some(m) = um {
+                libc::umask(m as libc::mode_t);
+            }
             Ok(())
         });
     }
@@ -103,15 +108,20 @@ pub fn spawn_pipe(argv: &[String], cwd: &Path, env: &[(String, String)]) -> Resu
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let um = crate::child_umask();
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
             libc::signal(libc::SIGCHLD, libc::SIG_DFL);
             libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            // The user's own umask, not the holder's 077 (09 §3.1).
+            if let Some(m) = um {
+                libc::umask(m as libc::mode_t);
+            }
             Ok(())
         });
     }

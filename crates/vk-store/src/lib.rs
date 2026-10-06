@@ -66,7 +66,25 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE archive_panes (pane_id TEXT PRIMARY KEY, workspace TEXT, tab TEXT,
         handle TEXT, title TEXT, updated_at INTEGER NOT NULL);
     "#,
+    // 5: approval policy rules added through the API (`policy.add`, 07 §2.9, 09 §4). Rules from
+    // `config.toml` and trusted repository `.vibeke/policy.toml` files are read from their
+    // files; this table holds only the rules the user added at runtime. `ord` keeps insertion
+    // order (the first matching rule applies).
+    r#"
+    CREATE TABLE policy_rules (id TEXT PRIMARY KEY, ord INTEGER NOT NULL, rule_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL, created_by TEXT);
+    "#,
 ];
+
+/// One row of `policy_rules` (migration 5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PolicyRuleRow {
+    pub id: String,
+    pub ord: i64,
+    pub rule: Value,
+    pub created_at: i64,
+    pub created_by: Option<String>,
+}
 
 /// One archived-scrollback search hit (`search.query`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -166,6 +184,11 @@ enum Write {
         user: String,
         pane: String,
         rev: u64,
+    },
+    PolicyRule {
+        id: String,
+        /// `None` deletes the rule.
+        rule: Option<(String, Option<String>)>,
     },
 }
 
@@ -291,12 +314,36 @@ impl Mutation {
         });
         self
     }
+    /// Insert or replace an API-added policy rule (`policy_rules`); keeps the row's `ord` on
+    /// replace, appends otherwise.
+    pub fn policy_rule_put(
+        &mut self,
+        id: &str,
+        rule: &Value,
+        created_by: Option<&str>,
+    ) -> &mut Self {
+        self.writes.push(Write::PolicyRule {
+            id: id.into(),
+            rule: Some((rule.to_string(), created_by.map(str::to_string))),
+        });
+        self
+    }
+    pub fn policy_rule_delete(&mut self, id: &str) -> &mut Self {
+        self.writes.push(Write::PolicyRule {
+            id: id.into(),
+            rule: None,
+        });
+        self
+    }
     pub fn event(&mut self, kind: &str, subject: Value, data: Value) -> &mut Self {
         self.event_by(kind, subject, serde_json::json!({"kind": "system"}), data)
     }
     pub fn event_by(&mut self, kind: &str, subject: Value, actor: Value, data: Value) -> &mut Self {
         let tier = if kind.starts_with("interaction.")
             || kind.starts_with("policy.")
+            // 09 §11: security-relevant records are history.
+            || kind.starts_with("audit.")
+            || kind.starts_with("auth.")
             || matches!(
                 kind,
                 "agent.started"
@@ -363,7 +410,16 @@ impl Store {
             std::fs::create_dir_all(d)?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        Self::init(conn, path.parent())
+        let s = Self::init(conn, path.parent())?;
+        // 09 §3.1: state.db and its WAL files are 0600 whatever the umask was when they were
+        // created (older versions created them with the default umask).
+        restrict_file(path);
+        for ext in ["-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(ext);
+            restrict_file(Path::new(&p));
+        }
+        Ok(s)
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -506,6 +562,19 @@ impl Store {
                             "DELETE FROM kv WHERE scope=?1 AND key=?2",
                             params![scope, key],
                         )?;
+                    }
+                },
+                Write::PolicyRule { id, rule } => match rule {
+                    Some((json, by)) => {
+                        tx.execute(
+                            "INSERT INTO policy_rules (id, ord, rule_json, created_at, created_by)
+                             VALUES (?1, (SELECT COALESCE(MAX(ord), 0) + 1 FROM policy_rules), ?2, ?3, ?4)
+                             ON CONFLICT(id) DO UPDATE SET rule_json=?2",
+                            params![id, json, now, by],
+                        )?;
+                    }
+                    None => {
+                        tx.execute("DELETE FROM policy_rules WHERE id=?1", [id.as_str()])?;
                     }
                 },
                 Write::Read { user, pane, rev } => {
@@ -672,6 +741,34 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// API-added policy rules in order (`policy.list`, 07 §2.9).
+    pub fn policy_rules(&self) -> Result<Vec<PolicyRuleRow>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, ord, rule_json, created_at, created_by FROM policy_rules ORDER BY ord, id",
+        )?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, ord, json, created_at, created_by)| PolicyRuleRow {
+                id,
+                ord,
+                rule: serde_json::from_str(&json).unwrap_or(Value::Null),
+                created_at,
+                created_by,
+            })
+            .collect())
     }
 
     pub fn reads(&self, user: &str) -> Result<Vec<(String, u64)>> {
@@ -913,6 +1010,93 @@ fn fts_quote(q: &str) -> String {
         .join(" ")
 }
 
+/// Make an existing regular file of ours 0600 (no-op when absent, foreign or a symlink).
+pub fn restrict_file(path: &Path) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let Ok(m) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    // SAFETY: getuid has no preconditions.
+    if !m.is_file() || m.uid() != unsafe { libc::getuid() } || m.mode() & 0o077 == 0 {
+        return;
+    }
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+/// A read-only view of a session database for diagnostics (`vibeke debug bundle`, 09 §9.5):
+/// opened without migrating, so it is safe while a server runs. Exposes the schema and table
+/// sizes only, never row content.
+pub struct Diagnostics {
+    conn: Connection,
+}
+
+impl Diagnostics {
+    pub fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("open {} read-only", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        Ok(Diagnostics { conn })
+    }
+
+    /// Table names with their row counts.
+    pub fn table_counts(&self) -> Result<Vec<(String, i64)>> {
+        let mut st = self.conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )?;
+        let names = st
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out = Vec::new();
+        for n in names {
+            let q = format!("SELECT COUNT(*) FROM \"{}\"", n.replace('"', "\"\""));
+            let c: i64 = self.conn.query_row(&q, [], |r| r.get(0)).unwrap_or(-1);
+            out.push((n, c));
+        }
+        Ok(out)
+    }
+
+    /// `CREATE` statements of the schema (no data).
+    pub fn schema_sql(&self) -> Result<Vec<String>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name")?;
+        let v = st
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }
+
+    /// The applied schema migration version.
+    pub fn schema_version(&self) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The pane token hashes (blake3 hex) — never tokens — so a bundle can recognise and
+    /// redact a token that a pane printed.
+    pub fn token_hashes(&self) -> Vec<String> {
+        let v: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM kv WHERE scope='server' AND key='pane_token_hashes'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        v.and_then(|s| serde_json::from_str::<serde_json::Map<String, Value>>(&s).ok())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
 pub fn glob_match(glob: &str, s: &str) -> bool {
     if let Some(p) = glob.strip_suffix('*') {
         return s.starts_with(p);
@@ -1047,6 +1231,52 @@ mod tests {
         let r = s.fts_search("migration failed", None, 10).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, "p1");
+    }
+
+    /// `policy_rules` (migration 5): ordered appends, replace keeps the position, delete, and
+    /// the write commits atomically with its event.
+    #[test]
+    fn policy_rules_roundtrip() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state.db");
+        let mut s = Store::open(&path).unwrap();
+        let mut m = Mutation::new();
+        m.policy_rule_put("p1", &serde_json::json!({"effect": "deny"}), Some("cli"))
+            .policy_rule_put("p2", &serde_json::json!({"effect": "allow"}), None)
+            .event("policy.rule_added", Value::Null, Value::Null);
+        assert_eq!(s.commit(m).unwrap().len(), 1);
+        let mut m = Mutation::new();
+        m.policy_rule_put("p1", &serde_json::json!({"effect": "ask"}), None);
+        s.commit(m).unwrap();
+        let rows = s.policy_rules().unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["p1", "p2"]
+        );
+        assert_eq!(rows[0].rule["effect"], "ask");
+        assert_eq!(rows[0].created_by.as_deref(), Some("cli"));
+        let mut m = Mutation::new();
+        m.policy_rule_delete("p1");
+        s.commit(m).unwrap();
+        assert_eq!(s.policy_rules().unwrap().len(), 1);
+        drop(s);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "state.db is 0600");
+        let diag = Diagnostics::open(&path).unwrap();
+        assert!(diag.schema_version().unwrap() >= 5);
+        assert!(
+            diag.table_counts()
+                .unwrap()
+                .iter()
+                .any(|(n, c)| n == "policy_rules" && *c == 1)
+        );
+        assert!(
+            diag.schema_sql()
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("policy_rules"))
+        );
     }
 
     #[test]

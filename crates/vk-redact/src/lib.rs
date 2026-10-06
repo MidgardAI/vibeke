@@ -21,6 +21,44 @@ enum Rule {
     KeepPrefix(Regex),
     /// `key<delim>value` assignments: keep key and delimiter, replace the value.
     Assignment(Regex),
+    /// Like [`Rule::Assignment`], but the value (group 3) is replaced only when it looks random
+    /// ([`looks_random`]; 09 §9.2 high-entropy heuristic).
+    Entropy(Regex),
+}
+
+/// Shannon entropy in bits per character.
+fn entropy(s: &str) -> f64 {
+    let mut counts = std::collections::HashMap::<char, usize>::new();
+    for c in s.chars() {
+        *counts.entry(c).or_default() += 1;
+    }
+    let n = s.chars().count() as f64;
+    counts
+        .values()
+        .map(|&c| {
+            let p = c as f64 / n;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// A 32+ character base64/hex run that is random-looking: mixed character classes (or hex)
+/// and high entropy, so long identifiers like `some_long_function_name_here_ok` stay.
+fn looks_random(s: &str) -> bool {
+    if s.len() < 32 {
+        return false;
+    }
+    let hex = s.chars().all(|c| c.is_ascii_hexdigit());
+    let digits = s.chars().filter(char::is_ascii_digit).count();
+    let upper = s.chars().filter(char::is_ascii_uppercase).count();
+    let lower = s.chars().filter(char::is_ascii_lowercase).count();
+    let classes = [digits, upper, lower].iter().filter(|&&n| n > 0).count();
+    let e = entropy(s);
+    if hex {
+        digits > 0 && e >= 3.0
+    } else {
+        classes >= 2 && digits > 0 && e >= 3.5
+    }
 }
 
 fn re(p: &str) -> Regex {
@@ -41,6 +79,8 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         Rule::Whole(re(r"\bglpat-[A-Za-z0-9_\-]{16,}")),
         Rule::Whole(re(r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA)[A-Z0-9]{16}\b")),
         Rule::Whole(re(r"\bxox[abprs]-[A-Za-z0-9\-]{8,}")),
+        // Vibeke elevated tokens (09 §3.2).
+        Rule::Whole(re(r"\bvke_[0-9a-f]{32,}")),
         // JWT: header and payload are both base64url JSON objects, so both start with `eyJ`.
         Rule::Whole(re(
             r"\beyJ[A-Za-z0-9_\-]{6,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]*",
@@ -56,6 +96,11 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // password=…, token: "…", api_key=…, client_secret=…
         Rule::Assignment(re(
             r#"(?i)\b([a-z0-9_.\-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?))(["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s"',;&]+)"#,
+        )),
+        // High-entropy heuristic: a random-looking 32+ character base64/hex run right after a
+        // secret-ish key, also without `=`/`:` (`X-Api-Key abcd…`, `"auth": "…"`, `sig=…`).
+        Rule::Entropy(re(
+            r#"(?i)\b([a-z0-9_.\-]*(?:key|token|secret|auth|cred|pass|sig|session)[a-z0-9_.\-]*)(["']?\s*[:=]?\s*["']?)([A-Za-z0-9+/_\-]{32,}={0,2})"#,
         )),
     ]
 });
@@ -95,6 +140,19 @@ fn apply_rules<'a>(input: &'a str, rules: &[Rule]) -> Cow<'a, str> {
                 match out {
                     Cow::Borrowed(_) => None,
                     Cow::Owned(s) => Some(s),
+                }
+            }
+            Rule::Entropy(r) => {
+                let out = r.replace_all(&cur, |c: &Captures| {
+                    if looks_random(&c[3]) {
+                        format!("{}{}{REDACTED}", &c[1], &c[2])
+                    } else {
+                        c[0].to_string()
+                    }
+                });
+                match out {
+                    Cow::Owned(s) if s != *cur => Some(s),
+                    _ => None,
                 }
             }
         };
@@ -314,6 +372,27 @@ mod tests {
         assert_eq!(redact(&once), once.as_str());
         // Names that merely contain the word are not assignments.
         assert_eq!(redact("tokens=5 secretary=bob"), "tokens=5 secretary=bob");
+    }
+
+    /// 09 §9.2: random-looking 32+ character values next to secret-ish keys, with or without
+    /// `=`/`:`; ordinary long identifiers and hashes without such a key stay.
+    #[test]
+    fn high_entropy_near_secret_keys() {
+        let b64 = "Zk9xR2h3TmJ0YVc4dkQ1cEx6M2tRbTdZ";
+        is_redacted(&format!("X-Api-Key {b64}"), b64);
+        is_redacted(&format!(r#"{{"auth": "{b64}"}}"#), b64);
+        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        is_redacted(&format!("signature {hex}"), hex);
+        is_redacted(&format!("session_id={hex}"), hex);
+        // Not random: a long identifier.
+        let ident = "x-api-key some_long_function_name_here_ok_fine";
+        assert_eq!(redact(ident), ident);
+        // Random but no secret-ish key nearby: a commit hash stays.
+        let commit = format!("commit {hex}");
+        assert_eq!(redact(&commit), commit.as_str());
+        // Vibeke's own elevated tokens.
+        let vke = format!("vke_{hex}");
+        is_redacted(&format!("export X={vke}"), &vke);
     }
 
     #[test]

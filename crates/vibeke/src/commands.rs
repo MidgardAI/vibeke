@@ -160,6 +160,8 @@ pub async fn server(g: &Global, args: &[String]) -> i32 {
 }
 
 async fn run_server(g: &Global) -> i32 {
+    // 09 §3.1: everything the server creates is private; pane children get the user's umask.
+    vk_server::paths::harden_umask();
     let paths = Paths::new(&g.session);
     if let Err(e) = paths.ensure() {
         eprintln!("{e}");

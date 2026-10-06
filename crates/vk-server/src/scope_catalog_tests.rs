@@ -34,6 +34,7 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::notify::METHODS,
         crate::theme::METHODS,
         crate::layouts::METHODS,
+        crate::security::METHODS,
     ]
 }
 

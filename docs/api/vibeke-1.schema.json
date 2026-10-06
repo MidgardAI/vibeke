@@ -314,6 +314,41 @@
         "source"
       ]
     },
+    "AuditEntry": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer"
+        },
+        "ts": {
+          "type": "integer"
+        },
+        "type": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "object"
+        },
+        "subject": {},
+        "data": {},
+        "prev_hash": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "actor",
+        "subject",
+        "data",
+        "prev_hash",
+        "hash"
+      ]
+    },
     "BrowserPane": {
       "type": "object",
       "properties": {
@@ -642,6 +677,38 @@
         "session_uuid",
         "log_epoch",
         "seq"
+      ]
+    },
+    "ElevationRequest": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "pane": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "denied"
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "pane",
+        "reason",
+        "created_at_ms",
+        "status"
       ]
     },
     "Event": {
@@ -1380,8 +1447,138 @@
         "user_vars"
       ]
     },
+    "PolicyMatch": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "command_regex": {
+          "type": "string"
+        },
+        "path_glob": {
+          "type": "string"
+        },
+        "url_glob": {
+          "type": "string"
+        }
+      }
+    },
+    "PolicyRepo": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "trusted": {
+          "type": "boolean"
+        },
+        "allow_policy_grants": {
+          "type": "boolean"
+        },
+        "rules": {
+          "type": "integer"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repo",
+        "file",
+        "exists",
+        "trusted",
+        "allow_policy_grants",
+        "rules",
+        "errors"
+      ]
+    },
     "PolicyRule": {
       "type": "object"
+    },
+    "PolicyRuleInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "config",
+            "user",
+            "repo"
+          ]
+        },
+        "repo": {
+          "type": "string"
+        },
+        "match": {
+          "$ref": "#/$defs/PolicyMatch"
+        },
+        "effect": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny",
+            "ask"
+          ]
+        },
+        "scope": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "ignored": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "created_by": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "match",
+        "effect"
+      ]
+    },
+    "PolicyScope": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "repo": {
+              "type": "string"
+            },
+            "pane": {
+              "$ref": "#/$defs/Target"
+            },
+            "run": {
+              "$ref": "#/$defs/Target"
+            }
+          }
+        }
+      ]
     },
     "PrLookup": {
       "type": "object",
@@ -4199,6 +4396,390 @@
           "snoozed_until_ms",
           "pinned",
           "warning"
+        ]
+      }
+    },
+    "audit.search": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "types": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "since_ms": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 200
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AuditEntry"
+            }
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entries",
+          "path"
+        ]
+      }
+    },
+    "audit.tail": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "default": 50
+          },
+          "types": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AuditEntry"
+            }
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entries",
+          "path"
+        ]
+      }
+    },
+    "audit.verify": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "integer"
+          },
+          "last_seq": {
+            "type": "integer"
+          },
+          "last_hash": {
+            "type": "string"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "discontinuities": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "head_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "exists",
+          "entries",
+          "last_seq",
+          "last_hash",
+          "problems",
+          "discontinuities",
+          "head_seq",
+          "path"
+        ]
+      }
+    },
+    "auth.elevate": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 120000
+          },
+          "request": {
+            "type": "string"
+          },
+          "wait": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "result": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "request": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              },
+              "expires_at_ms": {
+                "type": "integer"
+              },
+              "ttl_s": {
+                "type": "integer"
+              },
+              "env": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "request",
+              "token",
+              "expires_at_ms",
+              "ttl_s",
+              "env"
+            ]
+          },
+          {
+            "$ref": "#/$defs/ElevationRequest"
+          }
+        ]
+      }
+    },
+    "auth.elevate.decide": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "deny"
+            ]
+          }
+        },
+        "required": [
+          "request",
+          "decision"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "denied"
+            ]
+          },
+          "expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "request",
+          "pane",
+          "decision",
+          "expires_at_ms"
+        ]
+      }
+    },
+    "auth.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "pending": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ElevationRequest"
+            }
+          },
+          "elevated": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pane": {
+                  "type": "string"
+                },
+                "request": {
+                  "type": "string"
+                },
+                "expires_at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "pane",
+                "request",
+                "expires_at_ms"
+              ]
+            }
+          },
+          "revoked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pane": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pane"
+              ]
+            }
+          }
+        },
+        "required": [
+          "pending",
+          "elevated",
+          "revoked"
+        ]
+      }
+    },
+    "auth.revoke_token": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "revoked": {
+            "const": true
+          },
+          "tokens_removed": {
+            "type": "integer"
+          },
+          "elevations_removed": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "pane",
+          "revoked",
+          "tokens_removed",
+          "elevations_removed"
         ]
       }
     },
@@ -9550,6 +10131,98 @@
         ]
       }
     },
+    "integration.doctor": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex",
+              "pi",
+              "omp",
+              "opencode",
+              "gemini"
+            ]
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "changed",
+                    "removed",
+                    "unrecorded",
+                    "not_installed"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "file": {
+                  "type": "string"
+                },
+                "fingerprint": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "recorded": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "harness",
+                "ok",
+                "status",
+                "detail",
+                "file",
+                "fingerprint",
+                "recorded"
+              ]
+            }
+          }
+        },
+        "required": [
+          "checks"
+        ]
+      }
+    },
     "interaction.answer": {
       "mutating": true,
       "scope": "full",
@@ -11826,6 +12499,350 @@
         },
         "required": [
           "closed"
+        ]
+      }
+    },
+    "policy.add": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "object",
+            "properties": {
+              "match": {
+                "$ref": "#/$defs/PolicyMatch"
+              },
+              "tool": {
+                "type": "string"
+              },
+              "command_regex": {
+                "type": "string"
+              },
+              "path_glob": {
+                "type": "string"
+              },
+              "url_glob": {
+                "type": "string"
+              },
+              "effect": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "deny",
+                  "ask"
+                ]
+              },
+              "scope": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "effect"
+            ]
+          },
+          "tool": {
+            "type": "string"
+          },
+          "command_regex": {
+            "type": "string"
+          },
+          "path_glob": {
+            "type": "string"
+          },
+          "url_glob": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny",
+              "ask"
+            ]
+          },
+          "scope": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "$ref": "#/$defs/PolicyRuleInfo"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "rule"
+        ]
+      }
+    },
+    "policy.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "$ref": "#/$defs/PolicyScope"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PolicyRuleInfo"
+            }
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PolicyRepo"
+            }
+          }
+        },
+        "required": [
+          "rules",
+          "repos"
+        ]
+      }
+    },
+    "policy.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          },
+          "rule": {
+            "$ref": "#/$defs/PolicyRuleInfo"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "removed",
+          "rule"
+        ]
+      }
+    },
+    "policy.test": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "scope": {
+            "$ref": "#/$defs/PolicyScope"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "effect": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny",
+              "ask"
+            ]
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PolicyRuleInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_rule": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PolicyRuleInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo_rule": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PolicyRuleInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "effect",
+          "rule",
+          "user_rule",
+          "repo_rule",
+          "repo",
+          "reason"
+        ]
+      }
+    },
+    "policy.trust": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "."
+          },
+          "digest": {
+            "type": "string"
+          },
+          "devcontainer_digest": {
+            "type": "string"
+          },
+          "allow_policy_grants": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "setup_script": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_file": {},
+          "devcontainer": {},
+          "harness_manifests": {
+            "type": "array",
+            "items": {}
+          },
+          "allow_policy_grants": {
+            "type": "boolean"
+          },
+          "policy_rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PolicyRuleInfo"
+            }
+          },
+          "policy_errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "repo",
+          "digest",
+          "setup_script",
+          "task_file",
+          "devcontainer",
+          "harness_manifests",
+          "allow_policy_grants",
+          "policy_rules"
         ]
       }
     },
@@ -17633,6 +18650,168 @@
         ]
       }
     },
+    "audit.recorded": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "hash"
+        ]
+      }
+    },
+    "auth.elevate_denied": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "expires_at_ms"
+        ]
+      }
+    },
+    "auth.elevate_granted": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "expires_at_ms"
+        ]
+      }
+    },
+    "auth.elevate_requested": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      }
+    },
+    "auth.token_revoked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "pane_handle": {
+            "type": "string"
+          },
+          "tab": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "pane_handle",
+          "tab",
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "tokens_removed": {
+            "type": "integer"
+          },
+          "elevations_removed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokens_removed",
+          "elevations_removed"
+        ]
+      }
+    },
     "browser.navigated": {
       "subject": {
         "type": "object",
@@ -18253,6 +19432,50 @@
         },
         "required": [
           "name"
+        ]
+      }
+    },
+    "integration.tampered": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "removed",
+              "changed_during_run"
+            ]
+          },
+          "file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness",
+          "reason",
+          "file"
         ]
       }
     },
@@ -19129,6 +20352,30 @@
         ]
       }
     },
+    "policy.rule_added": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "$ref": "#/$defs/PolicyRuleInfo"
+          }
+        },
+        "required": [
+          "rule"
+        ]
+      }
+    },
     "policy.rule_matched": {
       "subject": {
         "type": "object",
@@ -19157,6 +20404,30 @@
         },
         "required": [
           "effect"
+        ]
+      }
+    },
+    "policy.rule_removed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "$ref": "#/$defs/PolicyRuleInfo"
+          }
+        },
+        "required": [
+          "rule"
         ]
       }
     },

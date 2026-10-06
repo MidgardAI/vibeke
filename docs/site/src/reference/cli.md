@@ -80,6 +80,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `pin` | `<pane>` | `pane.pin` |  |
 | `float` | `<pane>` | `pane.float` | [pane] float/move it \| --tab t [--command c] [--cwd d]  [--rect '{"x":15,"y":15,"w":70,"h":70}'] [--focus] |
 | `embed` | `<pane>` | `pane.embed` | [--target p] [--direction right\|down\|left\|up] |
+| `revoke-token` | `<pane>` | `auth.revoke_token` | <pane> — Revoke the pane's API token. Its agent keeps running without API access until the pane restarts. |
 
 ## `vibeke agent`
 
@@ -189,6 +190,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
 | `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
+| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
+| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
+| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
+| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
 
 ## `vibeke worktree`
 
@@ -375,4 +380,21 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
 | `methods` | - | `api.methods` | list API methods |
+
+## `vibeke auth`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `revoke-token` | `<pane>` | `auth.revoke_token` | <pane> — same as `pane revoke-token` |
+| `elevate` | `<reason>` | `auth.elevate` | [reason] [--timeout-ms 120000] — From a pane: ask the user for 10 minutes of full API access. Prints the token for VIBEKE_ELEVATED_TOKEN. |
+| `decide` | `<request>` `<decision>` | `auth.elevate.decide` | <request> approve\|deny — Decide an elevation request. Run outside any pane. |
+| `list` | - | `auth.list` | pending elevation requests, live elevations, revoked panes |
+
+## `vibeke audit`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `tail` | - | `audit.tail` | [--limit 50] [--types policy.*,auth.*] |
+| `search` | `<query>` | `audit.search` | <text> [--types t] [--since-ms ms] [--limit 200] |
+| `verify` | - | `audit.verify` | recompute the audit log's hash chain (also part of `vibeke doctor`) |
 

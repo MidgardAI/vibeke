@@ -88,6 +88,7 @@ pub use finish::{DiffStat, archive_worktree, diff_stat, is_merged, merged_branch
 pub use ghpr::{
     ChecksState, PR_CACHE_TTL, PrCache, PrLookup, PrStatus, fetch_pr, gh_binary, gh_ready, parse_pr,
 };
+pub use git::set_child_umask;
 pub use git::{
     HOST_HARDEN, is_contained, register_contained_checkout, safety_args,
     unregister_contained_checkout,

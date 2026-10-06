@@ -80,6 +80,17 @@ Appearance = TypedDict("Appearance", {
     "source": str,
 })
 
+AuditEntry = TypedDict("AuditEntry", {
+    "seq": int,
+    "ts": int,
+    "type": str,
+    "actor": Dict[str, Any],
+    "subject": Any,
+    "data": Any,
+    "prev_hash": str,
+    "hash": str,
+})
+
 BrowserPane = TypedDict("BrowserPane", {
     "url": str,
     "machine": str,
@@ -150,6 +161,14 @@ Cursor = TypedDict("Cursor", {
     "session_uuid": str,
     "log_epoch": str,
     "seq": int,
+})
+
+ElevationRequest = TypedDict("ElevationRequest", {
+    "request": str,
+    "pane": str,
+    "reason": str,
+    "created_at_ms": int,
+    "status": Literal["pending", "approved", "denied"],
 })
 
 EventRecord = TypedDict("EventRecord", {
@@ -310,7 +329,46 @@ PaneLive = TypedDict("PaneLive", {
     "user_vars": List[List[str]],
 })
 
+PolicyMatch = TypedDict("PolicyMatch", {
+    "tool": NotRequired[str],
+    "command_regex": NotRequired[str],
+    "path_glob": NotRequired[str],
+    "url_glob": NotRequired[str],
+})
+
+PolicyRepo = TypedDict("PolicyRepo", {
+    "repo": str,
+    "file": str,
+    "exists": bool,
+    "trusted": bool,
+    "allow_policy_grants": bool,
+    "rules": int,
+    "errors": List[str],
+})
+
 PolicyRule: TypeAlias = Dict[str, Any]
+
+PolicyRuleInfo = TypedDict("PolicyRuleInfo", {
+    "id": str,
+    "source": Literal["config", "user", "repo"],
+    "repo": NotRequired[str],
+    "match": "PolicyMatch",
+    "effect": Literal["allow", "deny", "ask"],
+    "scope": NotRequired[str],
+    "note": NotRequired[str],
+    "ignored": NotRequired[str],
+    "created_at_ms": NotRequired[int],
+    "created_by": NotRequired[str],
+})
+
+PolicyScopeXV1 = TypedDict("PolicyScopeXV1", {
+    "cwd": NotRequired[str],
+    "repo": NotRequired[str],
+    "pane": NotRequired["Target"],
+    "run": NotRequired["Target"],
+})
+
+PolicyScope: TypeAlias = Union[str, "PolicyScopeXV1"]
 
 PrLookupPr = TypedDict("PrLookupPr", {
     "number": int,
@@ -1019,6 +1077,103 @@ AttentionUpdateResult = TypedDict("AttentionUpdateResult", {
     "snoozed_until_ms": Optional[int],
     "pinned": bool,
     "warning": Optional[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+AuditSearchParams = TypedDict("AuditSearchParams", {
+    "query": NotRequired[str],
+    "types": NotRequired[Union[List[str], str]],
+    "since_ms": NotRequired[int],
+    "limit": NotRequired[int],
+})
+
+AuditSearchResult = TypedDict("AuditSearchResult", {
+    "entries": List["AuditEntry"],
+    "path": str,
+})
+
+AuditTailParams = TypedDict("AuditTailParams", {
+    "limit": NotRequired[int],
+    "types": NotRequired[Union[List[str], str]],
+})
+
+AuditTailResult = TypedDict("AuditTailResult", {
+    "entries": List["AuditEntry"],
+    "path": str,
+})
+
+AuditVerifyParams: TypeAlias = Dict[str, Any]
+
+AuditVerifyResult = TypedDict("AuditVerifyResult", {
+    "ok": bool,
+    "exists": bool,
+    "entries": int,
+    "last_seq": int,
+    "last_hash": str,
+    "problems": List[str],
+    "discontinuities": List[int],
+    "head_seq": Optional[int],
+    "path": str,
+})
+
+AuthElevateParams = TypedDict("AuthElevateParams", {
+    "reason": NotRequired[str],
+    "timeout_ms": NotRequired[int],
+    "request": NotRequired[str],
+    "wait": NotRequired[bool],
+})
+
+AuthElevateResultXV0 = TypedDict("AuthElevateResultXV0", {
+    "request": str,
+    "token": str,
+    "expires_at_ms": int,
+    "ttl_s": int,
+    "env": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+AuthElevateResult: TypeAlias = Union["AuthElevateResultXV0", "ElevationRequest"]
+
+AuthElevateDecideParams = TypedDict("AuthElevateDecideParams", {
+    "request": str,
+    "decision": Literal["approve", "deny"],
+})
+
+AuthElevateDecideResult = TypedDict("AuthElevateDecideResult", {
+    "request": str,
+    "pane": str,
+    "decision": Literal["approved", "denied"],
+    "expires_at_ms": Optional[int],
+    "cursor": NotRequired["Cursor"],
+})
+
+AuthListParams: TypeAlias = Dict[str, Any]
+
+AuthListResultElevatedItem = TypedDict("AuthListResultElevatedItem", {
+    "pane": str,
+    "request": str,
+    "expires_at_ms": int,
+})
+
+AuthListResultRevokedItem = TypedDict("AuthListResultRevokedItem", {
+    "pane": str,
+})
+
+AuthListResult = TypedDict("AuthListResult", {
+    "pending": List["ElevationRequest"],
+    "elevated": List["AuthListResultElevatedItem"],
+    "revoked": List["AuthListResultRevokedItem"],
+})
+
+AuthRevokeTokenParams = TypedDict("AuthRevokeTokenParams", {
+    "pane": "Target",
+})
+
+AuthRevokeTokenResult = TypedDict("AuthRevokeTokenResult", {
+    "pane": str,
+    "revoked": Literal[True],
+    "tokens_removed": int,
+    "elevations_removed": int,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -2520,6 +2675,25 @@ ImageUploadResult = TypedDict("ImageUploadResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+IntegrationDoctorParams = TypedDict("IntegrationDoctorParams", {
+    "harness": NotRequired[Literal["claude", "codex", "pi", "omp", "opencode", "gemini"]],
+})
+
+IntegrationDoctorResultChecksItem = TypedDict("IntegrationDoctorResultChecksItem", {
+    "name": str,
+    "harness": str,
+    "ok": bool,
+    "status": Literal["ok", "changed", "removed", "unrecorded", "not_installed"],
+    "detail": str,
+    "file": str,
+    "fingerprint": Optional[str],
+    "recorded": Optional[str],
+})
+
+IntegrationDoctorResult = TypedDict("IntegrationDoctorResult", {
+    "checks": List["IntegrationDoctorResultChecksItem"],
+})
+
 InteractionAnswerParams = TypedDict("InteractionAnswerParams", {
     "interaction": "Target",
     "decision": NotRequired[Literal["allow", "allow_always", "deny"]],
@@ -3191,6 +3365,93 @@ PluginSurfaceCloseParams = TypedDict("PluginSurfaceCloseParams", {
 
 PluginSurfaceCloseResult = TypedDict("PluginSurfaceCloseResult", {
     "closed": Optional["Target"],
+    "cursor": NotRequired["Cursor"],
+})
+
+PolicyAddParamsRule = TypedDict("PolicyAddParamsRule", {
+    "match": NotRequired["PolicyMatch"],
+    "tool": NotRequired[str],
+    "command_regex": NotRequired[str],
+    "path_glob": NotRequired[str],
+    "url_glob": NotRequired[str],
+    "effect": Literal["allow", "deny", "ask"],
+    "scope": NotRequired[str],
+    "note": NotRequired[str],
+})
+
+PolicyAddParams = TypedDict("PolicyAddParams", {
+    "rule": NotRequired["PolicyAddParamsRule"],
+    "tool": NotRequired[str],
+    "command_regex": NotRequired[str],
+    "path_glob": NotRequired[str],
+    "url_glob": NotRequired[str],
+    "effect": NotRequired[Literal["allow", "deny", "ask"]],
+    "scope": NotRequired[str],
+    "note": NotRequired[str],
+})
+
+PolicyAddResult = TypedDict("PolicyAddResult", {
+    "rule": "PolicyRuleInfo",
+    "cursor": NotRequired["Cursor"],
+})
+
+PolicyListParams = TypedDict("PolicyListParams", {
+    "scope": NotRequired["PolicyScope"],
+})
+
+PolicyListResult = TypedDict("PolicyListResult", {
+    "rules": List["PolicyRuleInfo"],
+    "repos": List["PolicyRepo"],
+})
+
+PolicyRemoveParams = TypedDict("PolicyRemoveParams", {
+    "rule_id": str,
+})
+
+PolicyRemoveResult = TypedDict("PolicyRemoveResult", {
+    "removed": bool,
+    "rule": "PolicyRuleInfo",
+    "cursor": NotRequired["Cursor"],
+})
+
+PolicyTestParamsAction = TypedDict("PolicyTestParamsAction", {
+    "tool": str,
+    "command": NotRequired[str],
+    "paths": NotRequired[List[str]],
+    "url": NotRequired[str],
+})
+
+PolicyTestParams = TypedDict("PolicyTestParams", {
+    "action": "PolicyTestParamsAction",
+    "scope": NotRequired["PolicyScope"],
+})
+
+PolicyTestResult = TypedDict("PolicyTestResult", {
+    "effect": Literal["allow", "deny", "ask"],
+    "rule": Optional["PolicyRuleInfo"],
+    "user_rule": Optional["PolicyRuleInfo"],
+    "repo_rule": Optional["PolicyRuleInfo"],
+    "repo": Optional[str],
+    "reason": str,
+})
+
+PolicyTrustParams = TypedDict("PolicyTrustParams", {
+    "path": NotRequired[str],
+    "digest": NotRequired[str],
+    "devcontainer_digest": NotRequired[str],
+    "allow_policy_grants": NotRequired[bool],
+})
+
+PolicyTrustResult = TypedDict("PolicyTrustResult", {
+    "repo": str,
+    "digest": Optional[str],
+    "setup_script": Optional[str],
+    "task_file": Any,
+    "devcontainer": Any,
+    "harness_manifests": List[Any],
+    "allow_policy_grants": bool,
+    "policy_rules": List["PolicyRuleInfo"],
+    "policy_errors": NotRequired[List[str]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4635,6 +4896,13 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "assistant.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "attention.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "attention.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "audit.search": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "audit.tail": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "audit.verify": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "auth.elevate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "auth.elevate.decide": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "auth.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "auth.revoke_token": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "blob.abort": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.append": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.begin": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -4716,6 +4984,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "group.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "group.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "image.upload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "integration.doctor": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "interaction.answer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "interaction.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "interaction.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -4764,6 +5033,11 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "plugin.log.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.registry.notify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.surface.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "preview.dismiss": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "preview.forget": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -5050,6 +5324,53 @@ AttentionPreferenceChangedData = TypedDict("AttentionPreferenceChangedData", {
     "pinned": bool,
 })
 
+AuditRecordedSubject: TypeAlias = Dict[str, Any]
+
+AuditRecordedData = TypedDict("AuditRecordedData", {
+    "seq": int,
+    "type": str,
+    "hash": str,
+})
+
+AuthElevateDeniedSubject = TypedDict("AuthElevateDeniedSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthElevateDeniedData = TypedDict("AuthElevateDeniedData", {
+    "expires_at_ms": Optional[int],
+})
+
+AuthElevateGrantedSubject = TypedDict("AuthElevateGrantedSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthElevateGrantedData = TypedDict("AuthElevateGrantedData", {
+    "expires_at_ms": Optional[int],
+})
+
+AuthElevateRequestedSubject = TypedDict("AuthElevateRequestedSubject", {
+    "pane": str,
+    "request": str,
+})
+
+AuthElevateRequestedData = TypedDict("AuthElevateRequestedData", {
+    "reason": str,
+})
+
+AuthTokenRevokedSubject = TypedDict("AuthTokenRevokedSubject", {
+    "pane": str,
+    "pane_handle": str,
+    "tab": str,
+    "workspace": str,
+})
+
+AuthTokenRevokedData = TypedDict("AuthTokenRevokedData", {
+    "tokens_removed": int,
+    "elevations_removed": int,
+})
+
 BrowserNavigatedSubject = TypedDict("BrowserNavigatedSubject", {
     "pane": str,
     "tab": NotRequired[str],
@@ -5256,6 +5577,16 @@ GroupRenamedSubject = TypedDict("GroupRenamedSubject", {
 
 GroupRenamedData = TypedDict("GroupRenamedData", {
     "name": str,
+})
+
+IntegrationTamperedSubject = TypedDict("IntegrationTamperedSubject", {
+    "run": Optional[str],
+})
+
+IntegrationTamperedData = TypedDict("IntegrationTamperedData", {
+    "harness": str,
+    "reason": Literal["changed", "removed", "changed_during_run"],
+    "file": str,
 })
 
 InteractionCancelledSubject = TypedDict("InteractionCancelledSubject", {
@@ -5536,12 +5867,28 @@ PolicyRepoTrustedData = TypedDict("PolicyRepoTrustedData", {
     "devcontainer_digest": NotRequired[Optional[str]],
 })
 
+PolicyRuleAddedSubject = TypedDict("PolicyRuleAddedSubject", {
+    "rule": str,
+})
+
+PolicyRuleAddedData = TypedDict("PolicyRuleAddedData", {
+    "rule": "PolicyRuleInfo",
+})
+
 PolicyRuleMatchedSubject = TypedDict("PolicyRuleMatchedSubject", {
     "interaction": str,
 })
 
 PolicyRuleMatchedData = TypedDict("PolicyRuleMatchedData", {
     "effect": Optional[str],
+})
+
+PolicyRuleRemovedSubject = TypedDict("PolicyRuleRemovedSubject", {
+    "rule": str,
+})
+
+PolicyRuleRemovedData = TypedDict("PolicyRuleRemovedData", {
+    "rule": "PolicyRuleInfo",
 })
 
 PreviewConsoleErrorSubject = TypedDict("PreviewConsoleErrorSubject", {
@@ -6169,6 +6516,11 @@ EVENT_TYPES = (
     "assistant.purged",
     "assistant.request_finished",
     "attention.preference_changed",
+    "audit.recorded",
+    "auth.elevate_denied",
+    "auth.elevate_granted",
+    "auth.elevate_requested",
+    "auth.token_revoked",
     "browser.navigated",
     "browser.viewport_changed",
     "check.authorized",
@@ -6193,6 +6545,7 @@ EVENT_TYPES = (
     "group.created",
     "group.moved",
     "group.renamed",
+    "integration.tampered",
     "interaction.cancelled",
     "interaction.decided",
     "interaction.delivery_unknown",
@@ -6220,7 +6573,9 @@ EVENT_TYPES = (
     "pane.title_changed",
     "paste.translated",
     "policy.repo_trusted",
+    "policy.rule_added",
     "policy.rule_matched",
+    "policy.rule_removed",
     "preview.console_error",
     "preview.declared",
     "preview.discovered",

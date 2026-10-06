@@ -185,6 +185,16 @@ pub fn safety_args(dir: &Path) -> Result<Vec<String>> {
     Ok(v)
 }
 
+/// The user's umask for git commands that create checkout files (09 §3.1): the server runs
+/// with `umask 077`, but worktree files belong to the user and keep the user's own mode bits.
+/// `u32::MAX` = unset (inherit).
+static CHILD_UMASK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Set the umask git children run with (see [`CHILD_UMASK`]).
+pub fn set_child_umask(mask: u32) {
+    CHILD_UMASK.store(mask & 0o777, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn command(dir: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("-C")
@@ -192,6 +202,17 @@ pub(crate) fn command(dir: &Path) -> Command {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C");
+    let m = CHILD_UMASK.load(std::sync::atomic::Ordering::Relaxed);
+    if m != u32::MAX {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: umask is async-signal-safe.
+        unsafe {
+            c.pre_exec(move || {
+                libc::umask(m as libc::mode_t);
+                Ok(())
+            });
+        }
+    }
     c
 }
 

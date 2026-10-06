@@ -83,7 +83,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     }
 
     pub async fn hello(&mut self, kind: &str) -> Result<Value, CallError> {
-        let token = std::env::var("VIBEKE_PANE_TOKEN").unwrap_or_default();
+        // An approved elevation (09 §3.2) takes precedence over the pane token.
+        let token = std::env::var("VIBEKE_ELEVATED_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+            .or_else(|| std::env::var("VIBEKE_PANE_TOKEN").ok())
+            .unwrap_or_default();
         self.call("client.hello", json!({"client": "vibeke-cli", "version": vk_proto::VERSION, "api": vk_proto::API_VERSION, "kind": kind, "token": token}))
             .await
     }

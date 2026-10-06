@@ -3728,6 +3728,7 @@ name = "vk-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "rand 0.9.5",
  "rusqlite",
  "serde",
