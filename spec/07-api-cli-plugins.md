@@ -524,6 +524,25 @@ Read-only views of a pane's working tree, used by the gateway's Changes screen (
 | `git.status` | `{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository |
 | `git.diff` | `{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB |
 
+### 2.15b `assistant.*` [14; as built 2026-10-06]
+
+User-invoked LLM drafts (spec 14). Off by default (`[assistant] enabled = false`); every method refuses pane-scoped callers (`permission_denied`, `details.scope = "pane"`). Errors carry `details.category` (14 §8: `disabled`, `not_configured`, `permission_denied`, `context_too_large`, `queue_full`, `budget_exhausted`, `authentication_failed`, `rate_limited`, `provider_unavailable`, `invalid_output`, `timeout`, `cancelled`, `interrupted`) and, for consent/preview problems, `details.reason` (`consent_required`, `consent_invalidated`, `operation_not_granted`, `context_class_not_granted`, `preview_mismatch`, `preview_expired`, `not_awaiting_confirmation`, `assistant_read_only`, `idempotency_key_reused`). CLI noun: `vibeke assist <verb>`.
+
+| Method | Params → Result |
+|---|---|
+| `assistant.status` | `{}` → `{enabled, configured, config_problem?, coordinator: {machine, session}, profile?: {id, connection, adapter, model, endpoint_host, credential: "env:NAME"\|"file:PATH"\|..., limits, pricing_usd_per_mtok?}, limits, today: {utc_day, used, reserved, remaining}, auto_send, consents, requests: {awaiting_confirmation, queued, running, stored}, operations, background: false}` — no secrets, no provider contact |
+| `assistant.providers` | `{}` → `{connections: [{id, adapter, endpoint, endpoint_error?, credential, verified}], profiles, default_profile}` |
+| `assistant.consent` | `{workspace?, connection?\|profile?, classes?: [selected_text\|structured_state\|review_package\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`; default classes exclude `screen`; the grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint |
+| `assistant.revoke` | `{workspace?, connection?}` → `{revoked, cancelled_requests}`; cancels that workspace's unfinished requests |
+| `assistant.generate` | `{operation: suggest_task_details\|review_summary\|pane_title\|briefing\|handoff, profile?, idempotency_key?, retry_of?, inputs \| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved; nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send` |
+| `assistant.confirm` | `{request, preview_digest}` → `{request}` (state `queued`); rechecks consent, endpoint, queue, rate and daily budget; sends exactly the previewed payload |
+| `assistant.get` | `{request}` → `{request: {id, operation, state: awaiting_confirmation\|queued\|running\|done\|failed\|cancelled\|interrupted, workspace, inputs (IDs only), profile, connection, adapter, model, endpoint_host, machine, prompt_version, sources (metadata + digests), omitted, redactions, context_digest, preview_digest, payload_bytes, estimated_input_tokens, max_output_tokens, usage: {input_tokens?, output_tokens?}, attempts, estimated_cost_usd?, finish_reason?, error?: {category, message}, output?: {generated: true, label, ...operation fields}, timestamps}}` |
+| `assistant.list` | `{workspace?, state?, limit?}` → `{requests}` (without outputs) |
+| `assistant.cancel` | `{request}` → `{request}`; aborts the provider call; a cancelled running request still counts its reservation against the day's budget |
+| `assistant.purge` | `{request}\|{workspace}\|{all: true}` → `{purged}`; deletes records and generated outputs (cancels unfinished ones first) |
+
+Operation outputs are validated drafts (unknown fields dropped, cited `source_refs`/`targets` must belong to the request). `suggest_task_details` → `{title, objective, constraints, criteria (required: false), suggested_checks (selected: false), stop_at, questions}` for the user to edit and pass to `task.track`; `review_summary` → `{summary, changes, validation: [{text, basis: recorded_check|observed_command|agent_claim|unverified, source_refs}], outstanding, risks}`; `pane_title` → `{title}` (never applied); `briefing` → `{items: [{text, kind, urgency, targets, source_refs}], coverage}`; `handoff` → `{objective, decisions, attempts, remaining, evidence, open_questions}` (never sent). Events: `assistant.request_created`, `assistant.request_started`, `assistant.request_finished`, `assistant.consent_granted`, `assistant.consent_revoked`, `assistant.purged` — metadata only (operation, state, adapter, connection, model, endpoint host, source/redaction counts, payload bytes, token counts, attempts, estimated cost, error category).
+
 ### 2.16 `plugin.*` [M5]
 
 | Method | Params → Result |
@@ -703,6 +722,7 @@ vibeke image     show|upload
 vibeke notification list|send|read
 vibeke events    tail [--types agent.*] [--after-seq N] [--follow] | read | wait
 vibeke search    <query> [--pane p] [--workspace w] [--since 2h] [--regex] [--context n] [--sources live,archive]
+vibeke assist    status|providers|consent|revoke|generate|confirm|show|list|cancel|purge   # 14, off by default
 vibeke layout    export|apply|list|get     # apply <name | file.toml | --doc text> [--workspace w | --cwd d]
 vibeke focus     <pane | vibeke://focus?session=…&pane=…>   # click-to-focus target (08 §7.1)
 vibeke theme     get|set-mode <auto|light|dark>

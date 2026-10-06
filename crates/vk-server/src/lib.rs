@@ -6,6 +6,7 @@
 pub mod agent_browser;
 pub mod agents;
 pub mod api;
+pub mod assist;
 pub mod browser_pane;
 pub mod core;
 pub mod desk;
@@ -115,6 +116,8 @@ pub struct Server {
     pub desk: desk::State,
     /// Drafts composer in-flight sends (research R3).
     pub drafts: drafts::State,
+    /// User-invoked LLM drafts (14).
+    pub assist: assist::State,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -192,6 +195,7 @@ impl Server {
             theme: theme::State::default(),
             desk: Default::default(),
             drafts: Default::default(),
+            assist: assist::State::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),

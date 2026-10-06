@@ -991,6 +991,76 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["text"],
         "<text|-> [--workspace w]",
     ),
+    (
+        "assist",
+        "status",
+        "assistant.status",
+        &[],
+        "enabled/configured state, coordinator, profile, budgets, consents (no secrets)",
+    ),
+    (
+        "assist",
+        "providers",
+        "assistant.providers",
+        &[],
+        "configured connections and profiles (no secrets)",
+    ),
+    (
+        "assist",
+        "consent",
+        "assistant.consent",
+        &["workspace"],
+        "[workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...]",
+    ),
+    (
+        "assist",
+        "revoke",
+        "assistant.revoke",
+        &["workspace"],
+        "[workspace] [--connection c] — also cancels unfinished requests there",
+    ),
+    (
+        "assist",
+        "generate",
+        "assistant.generate",
+        &["operation"],
+        "suggest_task_details|review_summary|pane_title|briefing|handoff [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — shows the exact payload; nothing is sent",
+    ),
+    (
+        "assist",
+        "confirm",
+        "assistant.confirm",
+        &["request", "preview_digest"],
+        "<request> <preview-digest> — send the previewed payload",
+    ),
+    (
+        "assist",
+        "show",
+        "assistant.get",
+        &["request"],
+        "<request> — lifecycle, usage, cost, sources and the generated draft",
+    ),
+    (
+        "assist",
+        "list",
+        "assistant.list",
+        &[],
+        "[--workspace w] [--state done] [--limit 50]",
+    ),
+    (
+        "assist",
+        "cancel",
+        "assistant.cancel",
+        &["request"],
+        "<request>",
+    ),
+    (
+        "assist",
+        "purge",
+        "assistant.purge",
+        &["request"],
+        "<request> | --workspace w | --all — forget generated outputs",
+    ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
 ];
@@ -1514,6 +1584,51 @@ pub fn pretty(method: &str, v: &Value) -> String {
                     m["binding"].as_str().unwrap_or(""),
                     code,
                     m["final_url"].as_str().or(m["url"].as_str()).unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "assistant.generate" => {
+            let pv = &v["preview"];
+            let r = &v["request"];
+            let mut out = format!(
+                "{} — {} via {} ({}) on {}\n{} bytes, ~{} input tokens, max {} output tokens, {} redaction(s)\n{}\n\n--- system ---\n{}\n--- user ---\n{}\n",
+                r["id"].as_str().unwrap_or(""),
+                r["operation"].as_str().unwrap_or(""),
+                pv["model"].as_str().unwrap_or(""),
+                pv["endpoint_host"].as_str().unwrap_or(""),
+                pv["execution_machine"].as_str().unwrap_or(""),
+                pv["bytes"],
+                pv["estimated_input_tokens"],
+                pv["max_output_tokens"],
+                pv["redactions"],
+                pv["notice"].as_str().unwrap_or(""),
+                pv["system"].as_str().unwrap_or(""),
+                pv["user"].as_str().unwrap_or(""),
+            );
+            if v["requires_confirmation"] == true {
+                out.push_str(&format!(
+                    "\nNothing has been sent. To send exactly this: vibeke assist confirm {} {}",
+                    r["id"].as_str().unwrap_or(""),
+                    pv["digest"].as_str().unwrap_or("")
+                ));
+            } else {
+                out.push_str(
+                    "\nSent automatically (auto_send is enabled for this operation and workspace).",
+                );
+            }
+            out
+        }
+        "assistant.list" => rows("requests")
+            .iter()
+            .map(|r| {
+                format!(
+                    "{:<32} {:<22} {:<22} {:<24} {}",
+                    r["id"].as_str().unwrap_or(""),
+                    r["operation"].as_str().unwrap_or(""),
+                    r["state"].as_str().unwrap_or(""),
+                    r["model"].as_str().unwrap_or(""),
+                    r["workspace"].as_str().unwrap_or("")
                 )
             })
             .collect::<Vec<_>>()

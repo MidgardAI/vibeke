@@ -31,6 +31,7 @@ vk-e2e = { path = "crates/vk-e2e" }
 vk-gateway = { path = "crates/vk-gateway" }
 vk-relay = { path = "crates/vk-relay" }
 vk-sandbox = { path = "crates/vk-sandbox" }
+vk-assist = { path = "crates/vk-assist" }
 
 anyhow = "1"
 base64 = "0.22"

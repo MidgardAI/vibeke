@@ -36,3 +36,4 @@ vk-term = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+vk-assist = { workspace = true }
