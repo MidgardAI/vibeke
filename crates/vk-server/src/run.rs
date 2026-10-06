@@ -378,7 +378,7 @@ fn trust_map(server: &Server) -> std::collections::HashMap<String, String> {
     })
 }
 
-fn repo_trusted(server: &Server, repo: &std::path::Path, digest: &str) -> bool {
+pub(crate) fn repo_trusted(server: &Server, repo: &std::path::Path, digest: &str) -> bool {
     let key = repo
         .canonicalize()
         .unwrap_or_else(|_| repo.to_path_buf())

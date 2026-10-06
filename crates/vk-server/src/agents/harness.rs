@@ -1,9 +1,17 @@
-//! Built-in harness knowledge for Claude Code and Codex (04 §6.1, §6.2). pi/omp are deferred
-//! to Goal 02; the `Harness` enum is the seam they plug into.
+//! Built-in harness knowledge (04 §6): Claude Code, Codex, pi and omp are code-backed; OpenCode,
+//! Gemini CLI, generic ACP agents and user/repo manifests (`Harness::Custom`) are driven by
+//! their manifest (04 §5, `vk_agents::manifest`) plus a per-family signal mapping.
 
+use super::manifests;
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::Arc;
+use vk_agents::manifest::Loaded;
 use vk_proto::model::*;
+
+/// Index of a manifest slot in the process-wide registry (`agents::manifests`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ManifestRef(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Harness {
@@ -11,6 +19,24 @@ pub enum Harness {
     Codex,
     Pi,
     Omp,
+    OpenCode,
+    Gemini,
+    /// A manifest-defined harness: user (`espi`), repo (`repo:<id>`), built-in screen/self-report
+    /// harnesses (`hermes`) and ACP runs (`acp`, `acp:<name>`).
+    Custom(ManifestRef),
+}
+
+/// Which signal mapping a harness uses: a custom manifest inherits its `extends` root's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    Claude,
+    Codex,
+    Pi,
+    Omp,
+    OpenCode,
+    Gemini,
+    Acp,
+    Generic,
 }
 
 /// Capability matrix rows for the validated versions (04 §2.3; verified in the M0 reality check).
@@ -20,6 +46,15 @@ pub mod caps {
     pub const CLAUDE_QUESTION_NATIVE: bool = false;
 }
 
+const FIXED: [Harness; 6] = [
+    Harness::Claude,
+    Harness::Codex,
+    Harness::Pi,
+    Harness::Omp,
+    Harness::OpenCode,
+    Harness::Gemini,
+];
+
 impl Harness {
     pub fn from_id(s: &str) -> Option<Harness> {
         match s {
@@ -27,7 +62,10 @@ impl Harness {
             "codex" => Some(Harness::Codex),
             "pi" => Some(Harness::Pi),
             "omp" => Some(Harness::Omp),
-            _ => None,
+            "opencode" => Some(Harness::OpenCode),
+            "gemini" => Some(Harness::Gemini),
+            _ if s.starts_with("acp:") => manifests::synth_acp(s),
+            _ => manifests::lookup(s).map(|(r, _)| Harness::Custom(r)),
         }
     }
     pub fn id(&self) -> &'static str {
@@ -36,6 +74,9 @@ impl Harness {
             Harness::Codex => "codex",
             Harness::Pi => "pi",
             Harness::Omp => "omp",
+            Harness::OpenCode => "opencode",
+            Harness::Gemini => "gemini",
+            Harness::Custom(r) => manifests::get(*r).map(|(id, _, _)| id).unwrap_or("unknown"),
         }
     }
     pub fn display(&self) -> &'static str {
@@ -44,11 +85,82 @@ impl Harness {
             Harness::Codex => "Codex CLI",
             Harness::Pi => "pi",
             Harness::Omp => "oh-my-pi",
+            Harness::OpenCode => "OpenCode",
+            Harness::Gemini => "Gemini CLI",
+            Harness::Custom(r) => manifests::get(*r).map(|(_, d, _)| d).unwrap_or("unknown"),
         }
     }
-    pub fn capabilities(&self) -> &'static [&'static str] {
+    /// This harness's manifest (built-ins included).
+    pub fn manifest(&self) -> Option<Arc<Loaded>> {
         match self {
-            Harness::Claude => &[
+            Harness::Custom(r) => manifests::get(*r).map(|(_, _, l)| l),
+            h => manifests::lookup(h.id()).map(|(_, l)| l),
+        }
+    }
+    pub fn family(&self) -> Family {
+        match self {
+            Harness::Claude => Family::Claude,
+            Harness::Codex => Family::Codex,
+            Harness::Pi => Family::Pi,
+            Harness::Omp => Family::Omp,
+            Harness::OpenCode => Family::OpenCode,
+            Harness::Gemini => Family::Gemini,
+            Harness::Custom(_) => match self.manifest() {
+                Some(l) if l.is_acp() => Family::Acp,
+                Some(l) => match l.family.as_str() {
+                    "claude" => Family::Claude,
+                    "codex" => Family::Codex,
+                    "pi" => Family::Pi,
+                    "omp" => Family::Omp,
+                    "opencode" => Family::OpenCode,
+                    "gemini" => Family::Gemini,
+                    _ => Family::Generic,
+                },
+                None => Family::Generic,
+            },
+        }
+    }
+    /// The built-in harness whose code paths this one uses (itself for ACP/generic manifests).
+    pub fn base(&self) -> Harness {
+        match self.family() {
+            Family::Claude => Harness::Claude,
+            Family::Codex => Harness::Codex,
+            Family::Pi => Harness::Pi,
+            Family::Omp => Harness::Omp,
+            Family::OpenCode => Harness::OpenCode,
+            Family::Gemini => Harness::Gemini,
+            Family::Acp | Family::Generic => *self,
+        }
+    }
+    pub fn is_pi_family(&self) -> bool {
+        matches!(self.family(), Family::Pi | Family::Omp)
+    }
+    /// Signal transport recorded on bound runs (`AgentRun.integration`).
+    pub fn transport(&self) -> &'static str {
+        match self.family() {
+            Family::Claude | Family::Codex | Family::Gemini => "hooks",
+            Family::Pi | Family::Omp | Family::OpenCode => "extension",
+            Family::Acp => "acp",
+            Family::Generic => "self_report",
+        }
+    }
+    /// Every harness Vibeke knows: the fixed six plus detectable/ACP manifests.
+    pub fn all() -> Vec<Harness> {
+        let mut v: Vec<Harness> = FIXED.to_vec();
+        for (r, l) in manifests::all() {
+            let id = l.m.id.as_str();
+            if FIXED.iter().any(|h| h.id() == id) || !manifests::repo_active(&l) {
+                continue;
+            }
+            if !l.m.detect.process.is_empty() || id == "acp" {
+                v.push(Harness::Custom(r));
+            }
+        }
+        v
+    }
+    pub fn capabilities(&self) -> Vec<String> {
+        let fixed: &[&str] = match self.family() {
+            Family::Claude => &[
                 "observe",
                 "gate",
                 "answer_native:approval",
@@ -57,7 +169,7 @@ impl Harness {
                 "resume",
                 "survive_disconnect",
             ],
-            Harness::Codex => &[
+            Family::Codex => &[
                 "observe",
                 "gate",
                 "answer_native:approval",
@@ -67,22 +179,38 @@ impl Harness {
             ],
             // No Vibeke gate for pi/omp (04 §6.3): observe + extension dialogs via the
             // uiContext wrapper (unverified per version until golden-tested).
-            Harness::Pi | Harness::Omp => &[
+            Family::Pi | Family::Omp => &[
                 "observe",
                 "answer_native:extension_dialog",
                 "reconcile",
                 "resume",
                 "survive_disconnect",
             ],
-        }
+            // Manifest-driven: verified rows only (OpenCode/Gemini have none yet → observe +
+            // keystrokes; a user manifest may assert more, shown as user-asserted).
+            Family::OpenCode | Family::Gemini | Family::Acp | Family::Generic => {
+                return self
+                    .manifest()
+                    .map(|l| l.capabilities(None, "tui"))
+                    .unwrap_or_else(|| vec!["observe".into()]);
+            }
+        };
+        fixed.iter().map(|s| s.to_string()).collect()
     }
     pub fn answer_native(&self, kind: InteractionKind) -> bool {
-        match (self, kind) {
-            (_, InteractionKind::Approval) => true,
-            (Harness::Claude, InteractionKind::PlanReview) => true,
-            (Harness::Claude, InteractionKind::Question) => caps::CLAUDE_QUESTION_NATIVE,
+        match (self.family(), kind) {
+            (
+                Family::Claude | Family::Codex | Family::Pi | Family::Omp,
+                InteractionKind::Approval,
+            ) => true,
+            (Family::Claude, InteractionKind::PlanReview) => true,
+            (Family::Claude, InteractionKind::Question) => caps::CLAUDE_QUESTION_NATIVE,
             // pi/omp: dialogs raised through the extension bridge are answered natively.
-            (Harness::Pi | Harness::Omp, InteractionKind::Question) => true,
+            (Family::Pi | Family::Omp, InteractionKind::Question) => true,
+            (Family::OpenCode | Family::Gemini | Family::Acp | Family::Generic, k) => self
+                .capabilities()
+                .iter()
+                .any(|c| c == &format!("answer_native:{}", k.as_str())),
             _ => false,
         }
     }
@@ -94,9 +222,15 @@ impl Harness {
     }
     pub fn preassign_session_id(&self) -> Option<String> {
         match self {
-            Harness::Claude => Some(uuid_v4()),
-            Harness::Pi => Some(uuid_v4()),
+            Harness::Claude | Harness::Pi => Some(uuid_v4()),
             Harness::Codex | Harness::Omp => None,
+            _ => self
+                .manifest()
+                .filter(|l| {
+                    l.m.launch.session_id_format == "uuid"
+                        && !l.m.launch.argv_with_session.is_empty()
+                })
+                .map(|_| uuid_v4()),
         }
     }
     pub fn launch_argv(
@@ -105,14 +239,58 @@ impl Harness {
         args: &[String],
         prompt: Option<&str>,
     ) -> Vec<String> {
-        let mut v = vec![self.id().to_string()];
-        if let (Harness::Claude | Harness::Pi, Some(s)) = (self, session) {
-            v.push("--session-id".into());
-            v.push(s.into());
+        if matches!(
+            self,
+            Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp
+        ) {
+            let mut v = vec![self.id().to_string()];
+            if let (Harness::Claude | Harness::Pi, Some(s)) = (self, session) {
+                v.push("--session-id".into());
+                v.push(s.into());
+            }
+            v.extend(args.iter().cloned());
+            if let Some(p) = prompt {
+                v.push(p.to_string());
+            }
+            return v;
         }
+        let Some(l) = self.manifest() else {
+            let mut v = vec![self.id().to_string()];
+            v.extend(args.iter().cloned());
+            return v;
+        };
+        if l.is_acp() {
+            // ACP: the host runs in the pane and drives the agent over stdio (04 §6.6).
+            let bin = std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "vibeke".into());
+            let mut v = vec![bin, "acp-host".into(), "--harness".into(), self.id().into()];
+            if let Some(p) = prompt {
+                v.push("--prompt".into());
+                v.push(p.into());
+            }
+            v.push("--".into());
+            v.extend(l.m.launch.acp_argv.iter().cloned());
+            v.extend(args.iter().cloned());
+            return v;
+        }
+        let mut v = match session {
+            Some(s) if !l.m.launch.argv_with_session.is_empty() => {
+                vk_agents::manifest::expand(&l.m.launch.argv_with_session, &[("session_id", s)])
+            }
+            _ if !l.m.launch.argv.is_empty() => l.m.launch.argv.clone(),
+            _ => vec![self.id().to_string()],
+        };
         v.extend(args.iter().cloned());
         if let Some(p) = prompt {
-            v.push(p.to_string());
+            match l.m.launch.prompt_arg.as_str() {
+                "none" => {}
+                f if f.starts_with("flag:") => {
+                    v.push(f["flag:".len()..].to_string());
+                    v.push(p.to_string());
+                }
+                _ => v.push(p.to_string()),
+            }
         }
         v
     }
@@ -122,6 +300,10 @@ impl Harness {
             Harness::Codex => vec!["codex".into(), "resume".into(), session.into()],
             Harness::Pi => vec!["pi".into(), "--session".into(), session.into()],
             Harness::Omp => vec!["omp".into(), "--resume".into(), session.into()],
+            _ => self
+                .manifest()
+                .map(|l| l.resume_argv(session))
+                .unwrap_or_default(),
         }
     }
 }
@@ -233,7 +415,60 @@ pub fn yolo(h: Harness, argv: &[String]) -> bool {
         // pi has no permission system by design; omp with approvals off.
         Harness::Pi => true,
         Harness::Omp => pair("--approval", "off") || has("--yolo"),
+        Harness::OpenCode | Harness::Gemini | Harness::Custom(_) => {
+            h.manifest().is_some_and(|l| l.yolo(argv))
+        }
     }
+}
+
+/// Detection over a pane's foreground process tree (04 §5.2): a `vibeke acp-host --harness X`
+/// host wins outright; then manifests with priority above 100 (user wrappers such as `espi`
+/// whose real harness runs as a descendant); then the code-backed built-ins (priority 100);
+/// then the remaining manifests (OpenCode, Gemini, Hermes, `repo:*`).
+pub fn detect_tree(
+    procs: &[(Vec<String>, Option<String>)],
+    cwd: Option<&Path>,
+) -> Option<(Harness, Vec<String>)> {
+    for (argv, _) in procs {
+        if let Some(i) = argv.iter().position(|a| a == "acp-host")
+            && argv
+                .first()
+                .is_some_and(|a0| a0.rsplit('/').next() == Some("vibeke") || i > 0)
+        {
+            let id = argv
+                .windows(2)
+                .find(|w| w[0] == "--harness")
+                .map(|w| w[1].clone())
+                .unwrap_or_else(|| "acp".into());
+            if let Some(h) = Harness::from_id(&id).filter(|h| h.family() == Family::Acp) {
+                return Some((h, argv.clone()));
+            }
+        }
+    }
+    let all = manifests::all();
+    let set = vk_agents::manifest::Set {
+        manifests: all
+            .iter()
+            .filter(|(_, l)| manifests::repo_active(l))
+            .map(|(_, l)| (**l).clone())
+            .collect(),
+        warnings: vec![],
+    };
+    let code = |id: &str| vk_agents::manifest::CODE_BACKED.contains(&id);
+    let found = set.detect(procs, cwd, &code);
+    let pick = |l: &Loaded, i: usize| Harness::from_id(&l.m.id).map(|h| (h, procs[i].0.clone()));
+    if let Some((l, i)) = found
+        && l.m.detect.priority > 100
+    {
+        return pick(l, i);
+    }
+    if let Some(x) = procs
+        .iter()
+        .find_map(|(argv, exe)| detect_harness(argv, exe.as_deref()).map(|h| (h, argv.clone())))
+    {
+        return Some(x);
+    }
+    found.and_then(|(l, i)| pick(l, i))
 }
 
 pub fn shell_join(argv: &[String]) -> String {
@@ -326,8 +561,17 @@ fn blank_interaction(
 
 /// Map a gate-capable hook payload to an Interaction (04 §6.1.1, §6.1.2, §6.2).
 pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Interaction> {
-    if matches!(h, Harness::Pi | Harness::Omp) && event == "Dialog" {
+    if h.is_pi_family() && event == "Dialog" {
         return Some(dialog_interaction(p));
+    }
+    match h.family() {
+        Family::OpenCode if event == "permission.ask" => {
+            return Some(super::opencode::permission_interaction(p));
+        }
+        Family::Acp if event == "RequestPermission" => {
+            return Some(super::acp::permission_interaction(p));
+        }
+        _ => {}
     }
     let tool = p
         .get("tool_name")
@@ -557,7 +801,16 @@ fn dialog_interaction(p: &Value) -> Interaction {
 }
 
 pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
-    if matches!(h, Harness::Pi | Harness::Omp) {
+    match h.family() {
+        // `permission.ask` hook output (04 §6.4): allow-always has no hook equivalent.
+        Family::OpenCode => {
+            let allow = matches!(a.decision, Some(Decision::Allow | Decision::AllowAlways));
+            return json!({"status": if allow { "allow" } else { "deny" }});
+        }
+        Family::Acp => return super::acp::decision_json(it, a),
+        _ => {}
+    }
+    if h.is_pi_family() {
         // Returned to the calling extension through the uiContext wrapper.
         let value = match it.kind {
             InteractionKind::Approval => json!(matches!(
@@ -710,15 +963,57 @@ pub fn validated(h: Harness, version: &str) -> bool {
         Harness::Codex => major == 0 && (157..=160).contains(&minor),
         Harness::Pi => major == 0 && (84..=90).contains(&minor),
         Harness::Omp => major == 17,
+        // A custom wrapper of a code-backed harness (espi → pi) reports the real harness's version.
+        Harness::Custom(_)
+            if matches!(
+                h.family(),
+                Family::Claude | Family::Codex | Family::Pi | Family::Omp
+            ) =>
+        {
+            validated(h.base(), version)
+        }
+        // Manifest-driven: the manifest's validated range, or a user/repo manifest asserting a
+        // `*` capability row ("user-asserted", 04 §13). OpenCode and Gemini ship no range yet.
+        _ => h.manifest().is_some_and(|l| {
+            l.validated(version)
+                || (matches!(
+                    l.source,
+                    vk_agents::manifest::Source::User(_) | vk_agents::manifest::Source::Repo { .. }
+                ) && l
+                    .m
+                    .capabilities
+                    .iter()
+                    .any(|r| r.verified && r.versions.trim() == "*"))
+        }),
     }
 }
 
+/// `<harness> --version` (manifest `[version] command` for manifest-driven harnesses). `None`
+/// when the binary is absent or no command is declared (ACP runs).
 pub fn version(h: Harness) -> Option<String> {
-    let out = std::process::Command::new(h.id())
-        .arg("--version")
+    let (cmd, manifest) = match h {
+        Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp => {
+            (vec![h.id().to_string(), "--version".to_string()], None)
+        }
+        _ => {
+            let l = h.manifest()?;
+            if l.is_acp() || l.m.version.command.is_empty() {
+                return None;
+            }
+            (l.m.version.command.clone(), Some(l))
+        }
+    };
+    let out = std::process::Command::new(cmd.first()?)
+        .args(&cmd[1..])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    parse_version(&String::from_utf8_lossy(&out.stdout))
+    let text = String::from_utf8_lossy(&out.stdout);
+    match manifest {
+        Some(l) => l.parse_version(&text),
+        None => parse_version(&text),
+    }
 }
 
 /// First version-looking token: `2.1.290 (Claude Code)`, `codex-cli 0.160.1`, `omp/17.2.12`, `v0.84.1`.
@@ -918,5 +1213,168 @@ mod version_tests {
         assert!(!validated(Harness::Claude, "3.0.0"));
         assert!(validated(Harness::Codex, "0.160.1"));
         assert!(!validated(Harness::Codex, "0.170.0"));
+    }
+}
+
+#[cfg(test)]
+mod m2_tests {
+    use super::*;
+
+    fn a(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn manifest_detection_across_the_tree() {
+        let t = |procs: Vec<(Vec<String>, Option<String>)>| {
+            detect_tree(&procs, None).map(|(h, _)| h.id().to_string())
+        };
+        assert_eq!(
+            t(vec![(
+                a(&["opencode"]),
+                Some("/opt/homebrew/bin/opencode".into())
+            )])
+            .as_deref(),
+            Some("opencode")
+        );
+        assert_eq!(
+            t(vec![(
+                a(&[
+                    "node",
+                    "/usr/local/lib/node_modules/@google/gemini-cli/dist/index.js"
+                ]),
+                None
+            )])
+            .as_deref(),
+            Some("gemini")
+        );
+        assert_eq!(t(vec![(a(&["claude"]), None)]).as_deref(), Some("claude"));
+        // A user wrapper (priority 200) beats its pi descendant; the wrapper keeps pi's family.
+        let espi = manifests::test_register(vk_agents::manifest::EXAMPLES[0].1);
+        assert_eq!(espi.family(), Family::Pi);
+        assert_eq!(espi.base(), Harness::Pi);
+        assert!(espi.is_pi_family());
+        assert_eq!(espi.transport(), "extension");
+        assert_eq!(
+            t(vec![
+                (a(&["pi"]), Some("/usr/local/bin/pi".into())),
+                (a(&["bash", "/home/e/bin/espi", "-c"]), None),
+            ])
+            .as_deref(),
+            Some("espi")
+        );
+        assert_eq!(espi.resume_argv("s9"), a(&["espi", "--session", "s9"]));
+        assert!(
+            validated(espi, "0.84.1"),
+            "a pi wrapper is gated on pi's range"
+        );
+        assert!(
+            yolo(espi, &a(&["espi"])),
+            "inherits pi's no-permission-system yolo"
+        );
+        // The ACP host wins outright and names its harness.
+        let host = a(&[
+            "/x/vibeke",
+            "acp-host",
+            "--harness",
+            "acp:gemini",
+            "--",
+            "gemini",
+            "--experimental-acp",
+        ]);
+        assert_eq!(
+            t(vec![
+                (host.clone(), None),
+                (a(&["gemini", "--experimental-acp"]), None)
+            ])
+            .as_deref(),
+            Some("acp:gemini")
+        );
+    }
+
+    #[test]
+    fn new_harnesses_are_observe_only_until_validated() {
+        for h in [Harness::OpenCode, Harness::Gemini] {
+            assert_eq!(h.capabilities(), vec!["observe", "answer_keystroke"]);
+            assert!(!h.answer_native(InteractionKind::Approval));
+            assert!(!validated(h, "1.2.3"));
+            assert!(h.keystroke_answers(InteractionKind::Approval));
+        }
+        assert!(yolo(
+            Harness::Gemini,
+            &a(&["gemini", "--approval-mode=yolo"])
+        ));
+        assert!(!yolo(Harness::OpenCode, &a(&["opencode"])));
+        assert_eq!(
+            Harness::Gemini.resume_argv("3"),
+            a(&["gemini", "--resume", "3"])
+        );
+        assert_eq!(
+            Harness::OpenCode.launch_argv(None, &[], Some("fix it")),
+            a(&["opencode", "--prompt", "fix it"])
+        );
+        // A user manifest asserting a `*` row is "user-asserted": granted and validated.
+        let mybot = manifests::test_register(
+            "id = \"mybot\"\n[[detect.process]]\nexe_basename = [\"mybot\"]\n[version]\ncommand = [\"mybot\", \"--version\"]\n[[capabilities]]\nversions = \"*\"\nanswer_native = [\"approval\"]\ngate = true\n",
+        );
+        assert_eq!(mybot.family(), Family::Generic);
+        assert!(mybot.answer_native(InteractionKind::Approval));
+        assert!(validated(mybot, "0.0.1"));
+        assert!(Harness::all().contains(&mybot));
+    }
+
+    #[test]
+    fn acp_harnesses_launch_through_the_host() {
+        let h = Harness::from_id("acp:gemini").unwrap();
+        assert_eq!(h.family(), Family::Acp);
+        assert_eq!(h.transport(), "acp");
+        assert_eq!(h.display(), "Gemini CLI (ACP)");
+        assert!(h.answer_native(InteractionKind::Approval));
+        let argv = h.launch_argv(None, &[], Some("hello"));
+        assert_eq!(
+            &argv[1..5],
+            &a(&["acp-host", "--harness", "acp:gemini", "--prompt"])[..]
+        );
+        assert_eq!(
+            &argv[argv.len() - 2..],
+            &a(&["gemini", "--experimental-acp"])[..]
+        );
+        let generic = Harness::from_id("acp").unwrap();
+        let argv = generic.launch_argv(None, &a(&["python3", "agent.py"]), None);
+        assert_eq!(
+            &argv[argv.len() - 3..],
+            &a(&["--", "python3", "agent.py"])[..]
+        );
+        assert!(version(h).is_none(), "no version probe for ACP runs");
+        assert!(Harness::from_id("acp:").is_none());
+        assert_eq!(Harness::from_id("acp:gemini"), Some(h), "synthesized once");
+    }
+
+    #[test]
+    fn manifest_screen_rules_drive_keystrokes() {
+        let screen = "  △ Permission required\n  $ rm -rf dist\n\n  1. Allow once\n  2. Allow always\n  3. Reject\n";
+        let m = super::super::screen::evaluate(Harness::OpenCode, screen);
+        let d = m.dialog.expect("dialog");
+        assert_eq!(d.command.as_deref(), Some("rm -rf dist"));
+        let it = interaction_from_hook(
+            Harness::Claude,
+            "PermissionRequest",
+            &json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf dist"}}),
+        )
+        .unwrap();
+        let keys = super::super::screen::keys_for(
+            Harness::OpenCode,
+            &d,
+            &it,
+            &Answer {
+                decision: Some(Decision::Deny),
+                ..Default::default()
+            },
+        );
+        assert_eq!(keys, Some(a(&["3"])));
+        // Hermes has no rules of its own: it uses generic-repl's.
+        let h = Harness::from_id("hermes").unwrap();
+        let m = super::super::screen::evaluate(h, "Run this command?\n  1. Yes\n  2. No\n");
+        assert!(m.dialog.is_some());
     }
 }

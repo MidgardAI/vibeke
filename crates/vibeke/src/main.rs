@@ -104,6 +104,10 @@ fn main() {
         // Sync, no runtime: must stay within the hook latency budget (04 §7.5).
         std::process::exit(commands::hook(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("acp-host") {
+        // Runs in the pane: drives an ACP agent over stdio (04 §6.6). Sync, no runtime.
+        std::process::exit(vk_server::agents::acp::host_main(&args[1..]));
+    }
     let g = match parse_global(&mut args) {
         Ok(g) => g,
         Err(e) => {

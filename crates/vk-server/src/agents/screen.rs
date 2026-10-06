@@ -18,6 +18,8 @@ pub struct Dialog {
     pub pointer: Option<u8>,
     pub fingerprint: String,
     pub confidence: f32,
+    /// Manifest screen rule that matched (manifest-driven harnesses; empty for code-backed).
+    pub rule: String,
 }
 
 impl Dialog {
@@ -59,8 +61,16 @@ static QUESTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(do you want to (proceed|make this edit|create|run|allow|fetch)[^?]*\?|would you like to (run|make|apply|allow)[^?]*\?|allow (this|command|the following)[^?]*\?|approve[^?]*\?|proceed\?)").unwrap()
 });
 
-/// Evaluate the bottom of the visible screen.
+/// Evaluate the bottom of the visible screen. Code-backed harnesses (and custom wrappers of
+/// them) use the built-in evaluator; everything else runs its manifest's rules (04 §9).
 pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
+    let h = h.base();
+    if !matches!(
+        h,
+        Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp
+    ) {
+        return evaluate_manifest(h, screen);
+    }
     let lines: Vec<&str> = screen.lines().collect();
     let start = lines.len().saturating_sub(40);
     let tail = &lines[start..];
@@ -72,7 +82,7 @@ pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
                 || text.contains("Esc to interrupt")
                 || text.contains("Working...")
         }
-        Harness::Codex => {
+        _ => {
             text.contains("esc to interrupt")
                 || text.contains("Esc to interrupt")
                 || tail
@@ -166,6 +176,7 @@ pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
                 pointer,
                 fingerprint,
                 confidence: 0.9,
+                rule: String::new(),
             });
         }
     }
@@ -183,6 +194,61 @@ pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
     m
 }
 
+/// The manifest whose screen rules apply to `h` (its own, else `[screen] manifest = "<id>"`).
+pub fn screen_manifest(h: Harness) -> Option<std::sync::Arc<vk_agents::manifest::Loaded>> {
+    let l = h.manifest()?;
+    if l.has_screen_rules() || l.m.screen.manifest.is_empty() {
+        return Some(l);
+    }
+    super::manifests::lookup(&l.m.screen.manifest).map(|(_, l)| l)
+}
+
+fn evaluate_manifest(h: Harness, screen: &str) -> ScreenMatch {
+    let Some(l) = screen_manifest(h) else {
+        return ScreenMatch::default();
+    };
+    let r = l.evaluate(screen);
+    let mut m = ScreenMatch {
+        state: r
+            .state
+            .and_then(|(s, c, _)| Execution::parse(&s).map(|e| (e, c))),
+        dialog: None,
+    };
+    if let Some(d) = r.dialog {
+        let kind = match d.kind.as_str() {
+            "question" => InteractionKind::Question,
+            "plan_review" => InteractionKind::PlanReview,
+            _ => InteractionKind::Approval,
+        };
+        let fingerprint = format!(
+            "{:x}",
+            fnv(&format!(
+                "{}|{}|{}",
+                d.title,
+                d.command.clone().unwrap_or_default(),
+                d.options
+                    .iter()
+                    .map(|o| o.1.as_str())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            ))
+        );
+        m.state = None;
+        m.dialog = Some(Dialog {
+            kind,
+            title: d.title,
+            tool: d.command.as_ref().map(|_| "Bash".to_string()),
+            command: d.command,
+            options: d.options,
+            pointer: d.pointer,
+            fingerprint,
+            confidence: d.confidence,
+            rule: d.rule_id,
+        });
+    }
+    m
+}
+
 fn fnv(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {
@@ -194,6 +260,33 @@ fn fnv(s: &str) -> u64 {
 
 /// Keys that select the option matching `answer` (accelerators preferred: atomic, 04 §8 step 3).
 pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Option<Vec<String>> {
+    let h = h.base();
+    if !matches!(
+        h,
+        Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp
+    ) {
+        use vk_agents::manifest::{DialogMatch, KeyIntent, plan_keys};
+        let l = screen_manifest(h)?;
+        let spec = l.dialog_spec(&d.rule).cloned().unwrap_or_default();
+        let intent = match (it.kind, answer.decision) {
+            (InteractionKind::Question, _) => {
+                KeyIntent::Option(answer.choices.first().and_then(|(_, o)| o.first())?.clone())
+            }
+            (_, Some(Decision::Allow)) => KeyIntent::Allow,
+            (_, Some(Decision::AllowAlways)) => KeyIntent::AllowAlways,
+            (_, Some(Decision::Deny)) | (_, None) => KeyIntent::Deny,
+        };
+        let dm = DialogMatch {
+            rule_id: d.rule.clone(),
+            kind: it.kind.as_str().to_string(),
+            title: d.title.clone(),
+            command: d.command.clone(),
+            options: d.options.clone(),
+            pointer: d.pointer,
+            confidence: d.confidence,
+        };
+        return plan_keys(&dm, &spec, &intent);
+    }
     let pick = |pred: &dyn Fn(&str) -> bool| {
         d.options
             .iter()
@@ -231,7 +324,8 @@ pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Op
             k.push("enter".into());
             k
         }
-        (Harness::Codex, None) => vec![n.to_string(), "enter".into()],
+        (_, None) => vec![n.to_string(), "enter".into()],
+        (_, Some(k)) => vec![k.to_string()],
     })
 }
 
