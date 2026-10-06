@@ -82,6 +82,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::config_api::start(&server);
     crate::security::start(&server);
     crate::privacy::start(&server);
+    crate::orch::start(&server);
     crate::machines::start(&server);
     // Uploads made before the blob stores were unified are ingested off the async threads.
     let adopt = server.clone();
@@ -1177,7 +1178,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let info = crate::parity::resolve_checkout(&repo, p)?;
     // Execution isolation (13 §3): validate before creating anything.
     let mut iso_req = crate::sandbox::IsoRequest::from_params(p, &crate::sandbox::load_cfg())?;
-    if iso_req.level == vk_proto::model::IsolationLevel::Vm {
+    if iso_req.level == vk_proto::model::IsolationLevel::Vm && !crate::orch_vm::enabled(server) {
         return Err(err(
             ErrorKind::Unsupported,
             "the vm isolation level ships in M4; use --isolate sandbox",

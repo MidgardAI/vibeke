@@ -570,7 +570,7 @@ stale_after   = "14d"
 auto_gc       = false
 protect_dirty = true                  # never remove a checkout with uncommitted changes without --force
 [tasks.best_of_n]
-suffix = ""                           # optional per-run prompt suffix for best-of-N runs (05 §12, post-1.0)
+suffix = ""                           # optional per-run prompt suffix for best-of-N runs (05 §12; needs [orchestrate.best_of_n] enabled)
 
 [collision]                           # advisory only (05 §10)
 enabled        = true
@@ -782,3 +782,51 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Command palette | `prefix+:` / `ctrl+shift+p` | M4 |
 | Mosh transport | QUIC roaming + predictive echo (06) | post-1.0 |
 | Synchronized input | `prefix+shift+s`, agents excluded by default | post-1.0 |
+
+### 11.x `[orchestrate]` (Batch 4; all features default off)
+
+```toml
+[orchestrate.best_of_n]      # 05 §12
+enabled = false              # task new --agents claude:2,codex:1; task compare/pick
+max_children = 8
+check = true                 # background check when a child goes idle
+check_command = ""           # fallback; a trusted repo's .vibeke/task.toml [check] command also works
+check_timeout = "10m"
+[orchestrate.split]          # 05 §11
+enabled = false
+quiet_for = "3s"
+resume = false
+[orchestrate.learned_policy] # 04 §7.7
+enabled = false
+min_approvals = 5
+max_denials = 0
+window = "30d"
+suggest_deny = false
+allow_risk = ["low", "medium"]
+[orchestrate.merge]          # 12
+enabled = false
+predict_every = "30s"
+queue_check = ""
+queue_check_timeout = "15m"
+strategy = "merge"           # merge | squash
+target = ""                  # default: the task's base branch
+[orchestrate.planner]        # 12
+enabled = false
+backend = "heuristic"        # heuristic | agent | external
+planner_harness = "claude"
+approval_required = true
+max_steps = 12
+briefing_window = "12h"
+[orchestrate.quota]          # 12
+enabled = false
+interval = "30s"
+pause_at = 0.9
+protect_priority = 5
+max_wait = "6h"
+resume_below = 0.8
+max_resumes_per_tick = 2
+[orchestrate.quota.accounts] # account label per harness (default: the harness id)
+[orchestrate.quota.prices.example-model]   # USD per million tokens; no built-in table
+```
+
+`[isolation.vm]` (13 §15.2): `enabled`, `provider = auto|lima|tart|fake`, `image`, `cpus`, `memory`, `disk`, `template`, `setup`, `transport`, `shell`.
