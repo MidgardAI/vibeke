@@ -1215,13 +1215,14 @@ pub fn draw(app: &App, g: &mut Grid) {
             2,
         );
         let line = format!(
-            "{urgent}{mlabel}{} · {}",
+            "{urgent}{mlabel}{} · {}{}",
             it.title,
             if it.explanation.is_empty() {
                 fmt_age(it.age_ms)
             } else {
                 it.explanation.clone()
-            }
+            },
+            crate::gateway::row_suffix(app, it.key.machine, it.interaction.as_deref())
         );
         g.put_str(x, y, &line, base, (r.x + list_w).saturating_sub(x));
         y += 1;

@@ -75,6 +75,8 @@ pub enum Pending {
     Task(crate::tasks::Reply),
     /// The attention inbox.
     Attn(crate::inbox::Reply),
+    /// Phone-gateway support (presence, confirm overlay, devices).
+    Gateway(crate::gateway::Reply),
     /// A durable mutation (persisted in `client-pending.json` before dispatch); `then` handles
     /// the response once the operation is forgotten.
     Op {
@@ -309,6 +311,7 @@ pub struct App {
     /// Surfaces to return to when a nested one closes (inbox → card/task, peek → track).
     pub return_to: Vec<Popup>,
     pub ui_seq: u64,
+    pub gateway: crate::gateway::State,
 }
 
 pub struct Opts {
@@ -565,6 +568,7 @@ impl App {
             config,
             mode: Mode::Normal,
             toasts: Vec::new(),
+            gateway: Default::default(),
             next_input: 1,
             client_id,
             prev: Grid::new(0, 0),
@@ -775,6 +779,7 @@ impl App {
 
     pub(crate) fn on_connected(&mut self, i: usize) {
         crate::inbox::on_connected(self, i);
+        crate::gateway::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -916,6 +921,7 @@ impl App {
                     self.command_on(i, "workspace.create", params, Pending::Ignore);
                 }
                 crate::tasks::on_model(self, i);
+                crate::gateway::on_model(self, i);
                 crate::inbox::invalidate(self);
                 if let Mode::Popup(Popup::Card { interaction, .. }) = &self.mode
                     && !self.machines.iter().any(|m| {
@@ -1113,6 +1119,7 @@ impl App {
             },
             Pending::Task(r) => crate::tasks::on_reply(self, i, r, res),
             Pending::Attn(r) => crate::inbox::on_reply(self, i, r, res),
+            Pending::Gateway(r) => crate::gateway::on_reply(self, i, r, res),
             Pending::Op { key, then } => {
                 if let Err(e) = &res
                     && e.outcome_unknown()
@@ -1294,6 +1301,7 @@ impl App {
         }
         crate::inbox::tick(self);
         crate::tasks::tick(self);
+        crate::gateway::tick(self);
         // Keep spinners/ages in the sidebar fresh once a second.
         if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
             self.dirty = true;
@@ -1304,6 +1312,13 @@ impl App {
 
     fn on_event(&mut self, ev: Event) {
         self.dirty = true;
+        if matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) {
+            crate::gateway::on_input(self);
+        }
+        // The confirm overlay is modal: pointer and paste events never reach panes behind it.
+        if matches!(ev, Event::Mouse(_) | Event::Paste(_)) && self.gateway.modal() {
+            return;
+        }
         match ev {
             Event::Key(k) => {
                 if let Some(ev) = keymap::from_crossterm(&k) {
@@ -1328,6 +1343,9 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, ev: KeyEvent) {
+        if crate::gateway::key(self, &ev) {
+            return;
+        }
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         let from_card = matches!(
             mode,
