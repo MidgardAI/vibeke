@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 312,
+  "method_count": 360,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -1749,6 +1749,48 @@
       "result": "{event: Event}"
     },
     {
+      "name": "family.check",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string, child?: string}",
+      "result": "{family: string, results: [{child: string, outcome: object}]}"
+    },
+    {
+      "name": "family.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string}",
+      "result": "{family: object, children: [{handle: string, harness: string, task: Task|null, run: object|null, discarded: bool}]}"
+    },
+    {
+      "name": "family.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{families: [object]}"
+    },
+    {
       "name": "fs.list",
       "mutating": false,
       "scope": "pane",
@@ -1817,6 +1859,146 @@
       "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`. `not_found:not_a_repo` outside a repository",
       "params": "{pane?: Target, path?: string}",
       "result": "{repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}"
+    },
+    {
+      "name": "goal.approve",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, by?: string, start?: bool = true}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.briefing",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{since?: int|string, until?: int}",
+      "result": "{briefing: {since_ms: int, until_ms: int, sections: [{title: string, items: [string]}], counts: object, text: string}}"
+    },
+    {
+      "name": "goal.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, stop_tasks?: bool = false}",
+      "result": "{goal: object, progress: {done: int, total: int}, parked: [string]}"
+    },
+    {
+      "name": "goal.create",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{title: string, text?: string, text_file?: string, repo?: string, base?: string, plan?: bool = true}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{goals: [{goal: object, progress: {done: int, total: int}}]}"
+    },
+    {
+      "name": "goal.plan",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, backend?: heuristic|agent|external}",
+      "result": "{goal: object, progress?: object, backend?: string, prompt?: string, submit_command?: string, plan_file?: string, planning_run?: string|null, agent_error?: string}"
+    },
+    {
+      "name": "goal.plan_submit",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, plan?: object|string, file?: string, planner?: string}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
+    },
+    {
+      "name": "goal.start",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string}",
+      "result": "{goal: object, progress: {done: int, total: int}, started: [string]}"
+    },
+    {
+      "name": "goal.step_done",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{goal: string, step: string, ok?: bool = true, error?: string}",
+      "result": "{goal: object, progress: {done: int, total: int}}"
     },
     {
       "name": "group.add",
@@ -2073,6 +2255,90 @@
       "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`. `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
       "params": "{name?: string}",
       "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
+    },
+    {
+      "name": "merge.predict",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{repo?: string, tasks?: [string]}",
+      "result": "{conflicts: [{a: string, b: string, kind: overlap|textual|claim, severity: low|medium|high, paths: [string], detail: string}], tasks: [string], at_ms: int}"
+    },
+    {
+      "name": "merge.queue.add",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, target?: string, priority?: int = 0, note?: string, allow_dirty?: bool = false, run?: bool = false}",
+      "result": "{entry: object, position: int|null, run?: object}"
+    },
+    {
+      "name": "merge.queue.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{entry: string}",
+      "result": "{entry: object|null}"
+    },
+    {
+      "name": "merge.queue.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{all?: bool = false}",
+      "result": "{entries: [object], order: [string]}"
+    },
+    {
+      "name": "merge.queue.requeue",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{entry: string}",
+      "result": "{entry: object|null}"
+    },
+    {
+      "name": "merge.queue.run",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{entry?: string, count?: int = 1, all?: bool = false}",
+      "result": "{ran: int, results: [{entry: object, event: string, detail: object}]}"
     },
     {
       "name": "notes.get",
@@ -2706,6 +2972,48 @@
       "result": "{rule: PolicyRuleInfo}"
     },
     {
+      "name": "policy.learned.accept",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, target?: user|repo = user}",
+      "result": "{accepted: object, result: object}"
+    },
+    {
+      "name": "policy.learned.dismiss",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string}",
+      "result": "{dismissed: string, total: int}"
+    },
+    {
+      "name": "policy.learned.list",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{repo?: string}",
+      "result": "{suggestions: [{id: string, effect: allow|deny, harness: string, tool: string, workspace: string, pattern: string, rule: object, toml: string, approvals: int, denials: int, first_at_ms: int, last_at_ms: int, max_risk: string, samples: [string], reason: string}], stats: {decisions: int, fingerprints: int, min_approvals: int, max_denials: int, window_ms: int, suggest_deny: bool, dismissed: int}}"
+    },
+    {
       "name": "policy.list",
       "mutating": false,
       "scope": "full",
@@ -2970,6 +3278,62 @@
       "spec": "`{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human)",
       "params": "{preview: Target, machine?: string}",
       "result": "{remote_url: string, profile_url: string, proxy_url: string|null}"
+    },
+    {
+      "name": "quota.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key?: string, task?: string}",
+      "result": "{resumed: string, handle: string}"
+    },
+    {
+      "name": "quota.route",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{harnesses?: [string]}",
+      "result": "{ranking: [{harness: string, headroom: number, account: string}]}"
+    },
+    {
+      "name": "quota.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{enabled: bool, accounts: [object], paused: [object], config: object}"
+    },
+    {
+      "name": "quota.tick",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{dry_run?: bool = false}",
+      "result": "{dry_run: bool, actions: [object]}"
     },
     {
       "name": "sandbox.allow",
@@ -3602,6 +3966,20 @@
       "result": "{task: Task, job?: any, stopped?: [any], branch_kept?: string|null, worktree_removed?: bool, archived?: bool}"
     },
     {
+      "name": "task.best_of_n",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{title: string, agents: string|[string|object], repo?: string, base?: string, prompt?: string, prompt_file?: string, suffix?: string, check_command?: string, isolate?: string, yolo?: bool, network?: string, image?: string, setup?: bool, ports?: int, isolation?: string, checkout?: string, root?: string, fetch?: bool}",
+      "result": "{family: object, tasks: [Task|null], runs: [AgentRun], warnings: [any]}"
+    },
+    {
       "name": "task.check.authorize",
       "mutating": true,
       "scope": "full",
@@ -3670,6 +4048,62 @@
       "spec": null,
       "params": "{task: Target, check: string, subject: string, subject_id?: string, definition_digest?: string, idempotency_key?: string, authorize?: bool}",
       "result": "{check_run: object, definition: object, provenance: any}"
+    },
+    {
+      "name": "task.claim",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task?: Target, run?: Target, glob: string, note?: string}",
+      "result": "{claim: {id: string, task: string, glob: string, note: string|null, created_at_ms: int}, conflicts: [object]}"
+    },
+    {
+      "name": "task.claim.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task?: Target}",
+      "result": "{claims: [object]}"
+    },
+    {
+      "name": "task.claim.remove",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{claim: string}",
+      "result": "{removed: string}"
+    },
+    {
+      "name": "task.compare",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string, pair?: [string]}",
+      "result": "{family: string, state: string, picked: string|null, reports: [object], ranking: [{handle: string, score: int, reasons: [string]}], text: string, pair?: {a: string, b: string, summary: object}}"
     },
     {
       "name": "task.create",
@@ -3828,6 +4262,20 @@
       "spec": "`{task}` → `{task}` — park = stop agents gracefully, keep worktree",
       "params": "{task: Target}",
       "result": "{task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}"
+    },
+    {
+      "name": "task.pick",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{family: string, child: string, merge?: bool, discard?: bool, force?: bool, target?: string}",
+      "result": "{family: object, picked: string, merge: any, discarded: [{child: string, ok: bool, error?: string}]}"
     },
     {
       "name": "task.ports",
@@ -4186,6 +4634,20 @@
       "result": "{task: string, path: string, exists: bool, text: string, size: int, truncated: bool, setup_status: string|null}"
     },
     {
+      "name": "task.split",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: string, pane?: Target, workspace?: Target, paths?: [string], title?: string, slug?: string, dry_run?: bool = false, resume?: bool, keep_recovery?: bool}",
+      "result": "{dry_run?: bool, source: string, changes?: [{path: string, staged: bool, unstaged: bool, untracked: bool, deleted: bool}], steps?: [{step: string, detail: string}], blocked_by?: [string]|null, runs: [object], task?: Task|null, moved?: [string], recovery_ref?: string, recovery_kept?: bool}"
+    },
+    {
       "name": "task.sync",
       "mutating": true,
       "scope": "full",
@@ -4228,6 +4690,216 @@
       "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]",
       "params": "{mode: auto|light|dark|null}",
       "result": "{appearance: Appearance, colorfgbg: string, reports?: any}"
+    },
+    {
+      "name": "vm.create",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{name?: string, task?: string, checkout?: string, template?: bool}",
+      "result": "{vm: object, fork_ms: int|null}"
+    },
+    {
+      "name": "vm.destroy",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.fork",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{snapshot: string, count?: int = 1, prefix?: string, tasks?: [string], checkouts?: [string]}",
+      "result": "{vms: [object], ms: int}"
+    },
+    {
+      "name": "vm.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{vms: [{name: string, task: string|null, template: string|null, created_ms: int, state: string}], snapshots: [object]}"
+    },
+    {
+      "name": "vm.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.snapshot",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string, label?: string}",
+      "result": "{snapshot: object}"
+    },
+    {
+      "name": "vm.snapshot.delete",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{snapshot: string, force?: bool = false}",
+      "result": "{deleted: string}"
+    },
+    {
+      "name": "vm.start",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{enabled: bool, provider: string, available: bool, detail: string, config: object, providers: [{provider: string, status: string, note: string}]}"
+    },
+    {
+      "name": "vm.stop",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.suspend",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, state: string|null}"
+    },
+    {
+      "name": "vm.template.build",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{template: object}"
+    },
+    {
+      "name": "vm.template.delete",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key: string}",
+      "result": "{deleted: string}"
+    },
+    {
+      "name": "vm.template.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{templates: [object]}"
+    },
+    {
+      "name": "vm.transport",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "orch"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{vm: string}",
+      "result": "{vm: string, offered: [string], chain: [string], configured: string, link: string}"
     },
     {
       "name": "workspace.close",
