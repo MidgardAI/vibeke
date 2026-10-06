@@ -204,6 +204,10 @@ pub struct Clipboard {
     pub copy_on_select: bool,
     pub primary_selection: bool,
     pub remote_write: RemoteWrite,
+    /// Largest unsolicited (OSC 52) clipboard write accepted from a pane; bigger ones are dropped.
+    pub remote_write_max_bytes: ByteSize,
+    /// Minimum gap between clipboard prompts for the same pane; extra writes are dropped.
+    pub remote_write_min_interval: Dur,
 }
 impl Default for Clipboard {
     fn default() -> Self {
@@ -213,6 +217,8 @@ impl Default for Clipboard {
             copy_on_select: false,
             primary_selection: false,
             remote_write: RemoteWrite::AskOnce,
+            remote_write_max_bytes: ByteSize::mib(1),
+            remote_write_min_interval: Dur::secs(5),
         }
     }
 }

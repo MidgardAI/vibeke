@@ -36,6 +36,21 @@ pub struct PaneBuf {
     pub title: String,
 }
 
+impl PaneBuf {
+    pub fn blank() -> Self {
+        PaneBuf {
+            epoch: 0,
+            rev: 0,
+            cols: 0,
+            rows: 0,
+            lines: Vec::new(),
+            cursor: Cursor::default(),
+            modes: PaneModes::default(),
+            title: String::new(),
+        }
+    }
+}
+
 /// One connected (or connecting) machine.
 pub struct Machine {
     pub label: String,
@@ -56,12 +71,6 @@ pub struct Machine {
 pub enum Pending {
     Ignore,
     Toast(String),
-    PasteUpload {
-        pane: String,
-        original: String,
-        index: usize,
-        total: usize,
-    },
 }
 
 impl Machine {
@@ -137,6 +146,17 @@ pub enum Popup {
     ClipboardAsk {
         machine: usize,
         data: Vec<u8>,
+        primary: bool,
+    },
+    /// `paste.translate = "ask"`: confirm uploading dropped local files before translating
+    /// the paste (06 A11). `sel` is the highlighted button: 0 upload, 1 original, 2 cancel.
+    PasteAsk {
+        machine: usize,
+        pane: String,
+        original: String,
+        parsed: paste::ParsedPaste,
+        items: Vec<crate::upload::Item>,
+        sel: usize,
     },
     Message {
         title: String,
@@ -162,6 +182,27 @@ pub enum Mode {
     Prompt(Prompt),
     Popup(Popup),
 }
+
+/// A remote clipboard write waiting for the user's review (06 A9).
+#[derive(Debug, Clone)]
+pub struct ClipRequest {
+    pub machine: usize,
+    pub pane: String,
+    pub data: Vec<u8>,
+    pub primary: bool,
+}
+
+/// Unsolicited clipboard writes never take over the UI: they queue here as a non-modal notice
+/// until the user opens the review popup (`review_clipboard`).
+#[derive(Default)]
+pub struct ClipGate {
+    pub pending: Vec<ClipRequest>,
+    last_prompt: HashMap<(usize, String), Instant>,
+    /// Writes dropped for size or rate (shown in the review popup and notice).
+    pub dropped: u64,
+}
+
+const CLIP_QUEUE_MAX: usize = 8;
 
 pub struct Toast {
     pub text: String,
@@ -194,6 +235,9 @@ pub struct App {
     pub next_req: u64,
     pub history_reqs: HashMap<u64, String>,
     pub uploads: crate::upload::Uploads,
+    pub clip: ClipGate,
+    /// Tests only: capture clipboard writes instead of touching the host terminal/clipboard.
+    pub clipboard_sink: Option<Vec<(Vec<u8>, bool)>>,
 }
 
 pub struct Opts {
@@ -210,6 +254,8 @@ pub enum Incoming {
     Frame(usize, ServerFrame),
     Connected(usize, mpsc::UnboundedSender<ClientFrame>),
     Disconnected(usize, String),
+    /// Progress from a transfer task (separate connection, see `upload`).
+    Upload(crate::upload::UploadEvent),
 }
 
 /// Attach the render stream on `stream` for machine `idx`: JSON-RPC `render.attach`, then
@@ -299,45 +345,32 @@ async fn run_inner(
 ) -> Result<String> {
     let client_id = format!("tui-{}-{}", std::process::id(), rand_suffix());
     let (inc_tx, mut inc_rx) = mpsc::unbounded_channel::<Incoming>();
-    let mut app = App {
-        machines: specs
+    let mut app = App::new(
+        opts.config,
+        specs
             .iter()
             .map(|s| Machine::new(&s.label, s.local))
             .collect(),
-        cur: 0,
-        size: term::size(),
-        caps: HostCaps {
+        client_id.clone(),
+        HostCaps {
             truecolor: probe.truecolor
                 || std::env::var("COLORTERM")
                     .is_ok_and(|c| c.contains("truecolor") || c.contains("24bit")),
             sync_update: probe.sync_update,
             undercurl: probe.kitty_keyboard,
         },
-        osc52: matches!(probe.osc52, crate::caps::Osc52::Allowed),
-        kitty: probe.kitty_keyboard,
-        theme: Theme::named(&opts.config.theme.name),
-        keymap: Keymap::from_config(&opts.config),
-        sidebar: !opts.config.ui.sidebar.collapsed,
-        sidebar_w: opts.config.ui.sidebar.width.clamp(18, 48),
-        config: opts.config,
-        mode: Mode::Normal,
-        toasts: Vec::new(),
-        next_input: 1,
-        client_id: client_id.clone(),
-        prev: Grid::new(0, 0),
-        dirty: true,
-        quit: None,
-        host_focused: true,
-        last_mouse_pane: None,
-        next_req: 1,
-        history_reqs: HashMap::new(),
-        uploads: Default::default(),
-    };
+        matches!(probe.osc52, crate::caps::Osc52::Allowed),
+        probe.kitty_keyboard,
+    );
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
     let connectors: Vec<std::sync::Arc<Connector>> = specs
         .into_iter()
         .map(|s| std::sync::Arc::new(s.connect))
         .collect();
+    app.uploads.worker = Some(crate::upload::Worker {
+        connectors: connectors.clone(),
+        inc: inc_tx.clone(),
+    });
     for (i, c) in connectors.iter().enumerate() {
         spawn_connect(
             i,
@@ -386,6 +419,7 @@ async fn run_inner(
                         app.dirty = true;
                     }
                     Incoming::Frame(i, f) => app.on_frame(i, f),
+                    Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                     Incoming::Disconnected(i, why) => {
                         app.machines[i].tx = None;
                         if why.contains("server stopped") {
@@ -403,6 +437,7 @@ async fn run_inner(
                 while let Ok(more) = inc_rx.try_recv() {
                     match more {
                         Incoming::Frame(i, f) => app.on_frame(i, f),
+                        Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
                         Incoming::Connected(i, tx) => { app.machines[i].tx = Some(tx); app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
@@ -415,6 +450,45 @@ async fn run_inner(
             }
             _ = tick.tick() => app.on_tick(),
             _ = tokio::time::sleep(redraw_in) => {}
+        }
+    }
+}
+
+impl App {
+    pub fn new(
+        config: vk_config::Config,
+        machines: Vec<Machine>,
+        client_id: String,
+        caps: HostCaps,
+        osc52: bool,
+        kitty: bool,
+    ) -> App {
+        App {
+            machines,
+            cur: 0,
+            size: term::size(),
+            caps,
+            osc52,
+            kitty,
+            theme: Theme::named(&config.theme.name),
+            keymap: Keymap::from_config(&config),
+            sidebar: !config.ui.sidebar.collapsed,
+            sidebar_w: config.ui.sidebar.width.clamp(18, 48),
+            config,
+            mode: Mode::Normal,
+            toasts: Vec::new(),
+            next_input: 1,
+            client_id,
+            prev: Grid::new(0, 0),
+            dirty: true,
+            quit: None,
+            host_focused: true,
+            last_mouse_pane: None,
+            next_req: 1,
+            history_reqs: HashMap::new(),
+            uploads: Default::default(),
+            clip: Default::default(),
+            clipboard_sink: None,
         }
     }
 }
@@ -760,30 +834,10 @@ impl App {
                 }
             }
             ServerFrame::Clipboard {
-                selection, data, ..
-            } => {
-                let remote = !self.machines[i].local;
-                let policy = &self.config.clipboard;
-                let allowed = if !remote {
-                    !matches!(policy.osc52_write, vk_config::AllowDeny::Deny)
-                } else {
-                    match policy.remote_write {
-                        vk_config::RemoteWrite::Allow => true,
-                        vk_config::RemoteWrite::Deny => false,
-                        vk_config::RemoteWrite::AskOnce => match self.machines[i].clipboard_allowed
-                        {
-                            Some(a) => a,
-                            None => {
-                                self.mode = Mode::Popup(Popup::ClipboardAsk { machine: i, data });
-                                return;
-                            }
-                        },
-                    }
-                };
-                if allowed {
-                    self.set_clipboard(&data, matches!(selection, ClipSel::Primary));
-                }
-            }
+                selection,
+                data,
+                pane,
+            } => self.on_clipboard(i, pane, matches!(selection, ClipSel::Primary), data),
             ServerFrame::InputAck { status, .. } => {
                 if status == AckStatus::DroppedOffline {
                     self.toast("offline — input not sent");
@@ -815,23 +869,93 @@ impl App {
         match pending {
             Pending::Ignore => {}
             Pending::Toast(t) => self.toast(t),
-            Pending::PasteUpload {
-                pane,
-                original,
-                index,
-                total,
-            } => {
-                // Collected in the paste module's pending upload set.
-                let path = v["result"]["path_on_machine"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-                crate::upload::uploaded(self, i, &pane, &original, index, total, path);
-            }
         }
     }
 
+    /// An OSC 52 write from a pane. Never replaces the current UI mode: when consent is needed it
+    /// queues a non-modal notice (`review_clipboard` opens the prompt). Oversized writes are
+    /// dropped and prompts are rate-limited per pane.
+    pub fn on_clipboard(&mut self, i: usize, pane: String, primary: bool, data: Vec<u8>) {
+        let remote = !self.machines[i].local;
+        let policy = &self.config.clipboard;
+        if data.len() as u64 > policy.remote_write_max_bytes.0 {
+            self.clip.dropped += 1;
+            let msg = format!(
+                "dropped {} clipboard write from {} (limit {})",
+                crate::upload::human(data.len() as u64),
+                self.machines[i].label,
+                crate::upload::human(policy.remote_write_max_bytes.0),
+            );
+            self.toast(msg);
+            return;
+        }
+        let allowed = if !remote {
+            !matches!(policy.osc52_write, vk_config::AllowDeny::Deny)
+        } else {
+            match policy.remote_write {
+                vk_config::RemoteWrite::Allow => true,
+                vk_config::RemoteWrite::Deny => false,
+                vk_config::RemoteWrite::AskOnce => match self.machines[i].clipboard_allowed {
+                    Some(a) => a,
+                    None => {
+                        let interval = policy.remote_write_min_interval.0;
+                        let key = (i, pane.clone());
+                        let now = Instant::now();
+                        if self
+                            .clip
+                            .last_prompt
+                            .get(&key)
+                            .is_some_and(|t| now.duration_since(*t) < interval)
+                        {
+                            self.clip.dropped += 1;
+                            return;
+                        }
+                        self.clip.last_prompt.insert(key, now);
+                        // One queued request per machine (the latest wins), bounded overall.
+                        self.clip.pending.retain(|r| r.machine != i);
+                        if self.clip.pending.len() >= CLIP_QUEUE_MAX {
+                            self.clip.pending.remove(0);
+                            self.clip.dropped += 1;
+                        }
+                        self.clip.pending.push(ClipRequest {
+                            machine: i,
+                            pane,
+                            data,
+                            primary,
+                        });
+                        let label = self.machines[i].label.clone();
+                        self.toast(format!(
+                            "⎘ {label} wants to set your clipboard — prefix+y to review"
+                        ));
+                        return;
+                    }
+                },
+            }
+        };
+        if allowed {
+            self.set_clipboard(&data, primary);
+        }
+    }
+
+    /// `review_clipboard`: open the prompt for the oldest queued request.
+    fn review_clipboard(&mut self) {
+        if self.clip.pending.is_empty() {
+            self.toast("no clipboard request pending");
+            return;
+        }
+        let r = self.clip.pending.remove(0);
+        self.mode = Mode::Popup(Popup::ClipboardAsk {
+            machine: r.machine,
+            data: r.data,
+            primary: r.primary,
+        });
+    }
+
     pub fn set_clipboard(&mut self, data: &[u8], primary: bool) {
+        if let Some(sink) = &mut self.clipboard_sink {
+            sink.push((data.to_vec(), primary));
+            return;
+        }
         if self.osc52 {
             let _ = std::io::stdout().write_all(&clipboard::osc52_set(data, primary));
             let _ = std::io::stdout().flush();
@@ -887,7 +1011,7 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, ev: KeyEvent) {
+    pub(crate) fn on_key(&mut self, ev: KeyEvent) {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         match mode {
             Mode::Normal => {
@@ -1104,6 +1228,8 @@ impl App {
         match action {
             "help" => self.mode = Mode::Popup(Popup::Help),
             "detach" => self.quit = Some("detached".into()),
+            "cancel_transfer" => crate::upload::cancel_all(self),
+            "review_clipboard" => self.review_clipboard(),
             "split_vertical" | "split_horizontal" => {
                 if let Some(p) = pane {
                     let dir = if action == "split_vertical" {
@@ -1746,5 +1872,108 @@ fn btn(b: CtButton) -> MouseButton {
         CtButton::Left => MouseButton::Left,
         CtButton::Middle => MouseButton::Middle,
         CtButton::Right => MouseButton::Right,
+    }
+}
+
+/// An `App` over fake machines whose outgoing frames land in the returned receivers.
+#[cfg(test)]
+pub(crate) fn test_app(n: usize) -> (App, Vec<mpsc::UnboundedReceiver<ClientFrame>>) {
+    let mut machines = Vec::new();
+    let mut rxs = Vec::new();
+    for i in 0..n {
+        let mut m = Machine::new(&format!("m{i}"), i == 0);
+        let (tx, rx) = mpsc::unbounded_channel();
+        m.tx = Some(tx);
+        m.panes.insert("p1".into(), PaneBuf::blank());
+        m.panes.insert("p2".into(), PaneBuf::blank());
+        machines.push(m);
+        rxs.push(rx);
+    }
+    let mut cfg = vk_config::Config::default();
+    cfg.paste.translate = vk_config::PasteTranslate::Ask;
+    let mut app = App::new(
+        cfg,
+        machines,
+        "tui-test".into(),
+        HostCaps::default(),
+        false,
+        false,
+    );
+    // Never touch the host terminal or the real clipboard from tests.
+    app.clipboard_sink = Some(Vec::new());
+    (app, rxs)
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    fn sink(app: &App) -> usize {
+        app.clipboard_sink.as_ref().unwrap().len()
+    }
+    fn key(k: Key) -> KeyEvent {
+        KeyEvent::new(k, Mods::empty())
+    }
+
+    #[test]
+    fn unsolicited_write_does_not_replace_the_ui_mode() {
+        let (mut app, _rx) = test_app(2);
+        app.mode = Mode::Resize;
+        app.on_clipboard(1, "p1".into(), false, b"hi".to_vec());
+        assert!(matches!(app.mode, Mode::Resize));
+        assert_eq!(app.clip.pending.len(), 1);
+        assert_eq!(sink(&app), 0);
+        app.mode = Mode::Popup(Popup::Help);
+        app.on_clipboard(1, "p2".into(), false, b"again".to_vec());
+        assert!(matches!(app.mode, Mode::Popup(Popup::Help)));
+        assert_eq!(sink(&app), 0);
+    }
+
+    #[test]
+    fn review_popup_needs_explicit_keys() {
+        let (mut app, _rx) = test_app(2);
+        app.on_clipboard(1, "p1".into(), false, b"secret".to_vec());
+        app.review_clipboard();
+        assert!(matches!(app.mode, Mode::Popup(Popup::ClipboardAsk { .. })));
+        for c in "hell wrld\n abdefghijklmpqrstvwxz!/".chars() {
+            app.on_key(key(Key::Char(c)));
+            assert!(matches!(app.mode, Mode::Popup(Popup::ClipboardAsk { .. })));
+        }
+        assert_eq!(sink(&app), 0);
+        assert_eq!(app.machines[1].clipboard_allowed, None);
+        app.on_key(key(Key::Char('o')));
+        assert_eq!(sink(&app), 1);
+        assert_eq!(app.machines[1].clipboard_allowed, None);
+    }
+
+    #[test]
+    fn size_cap_drops_large_writes() {
+        let (mut app, _rx) = test_app(2);
+        app.config.clipboard.remote_write = vk_config::RemoteWrite::Allow;
+        app.config.clipboard.remote_write_max_bytes = vk_config::ByteSize(16);
+        app.on_clipboard(1, "p1".into(), false, vec![b'x'; 17]);
+        assert_eq!(sink(&app), 0);
+        assert_eq!(app.clip.dropped, 1);
+        app.on_clipboard(1, "p1".into(), false, vec![b'x'; 16]);
+        assert_eq!(sink(&app), 1);
+    }
+
+    #[test]
+    fn prompts_are_rate_limited_per_pane() {
+        let (mut app, _rx) = test_app(2);
+        app.on_clipboard(1, "p1".into(), false, b"1".to_vec());
+        app.on_clipboard(1, "p1".into(), false, b"2".to_vec());
+        app.on_clipboard(1, "p1".into(), false, b"3".to_vec());
+        assert_eq!(app.clip.pending.len(), 1);
+        assert_eq!(app.clip.pending[0].data, b"1");
+        assert_eq!(app.clip.dropped, 2);
+        // A different pane has its own budget (and the machine's latest request wins).
+        app.on_clipboard(1, "p2".into(), false, b"4".to_vec());
+        assert_eq!(app.clip.pending.len(), 1);
+        assert_eq!(app.clip.pending[0].data, b"4");
+        // Once the interval has passed the pane may prompt again.
+        app.config.clipboard.remote_write_min_interval = vk_config::Dur(Duration::ZERO);
+        app.on_clipboard(1, "p1".into(), false, b"5".to_vec());
+        assert_eq!(app.clip.pending[0].data, b"5");
     }
 }
