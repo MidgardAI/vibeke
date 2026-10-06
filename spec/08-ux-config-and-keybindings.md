@@ -556,7 +556,7 @@ profile_scope     = "machine"         # machine | task — one profile per machi
 profile_route     = "loopback"        # loopback | remote — where non-preview traffic of the profile exits
 local_browser     = "profile"         # profile | default — what `vibeke preview open` launches
 proxy_port        = 47800             # proxy mode listener (loopback only)
-tls_origin        = false             # proxy mode: serve https://*.vibeke.localhost with a local CA
+tls_origin        = false             # proxy mode: serve https://*.vibeke.localhost with a local CA (never auto-trusted: `vibeke preview trust-ca`)
 browser_path      = ""                # remote headless browser binary ("" = auto-detect Chromium)
 browser_idle      = "10m"             # stop the headless browser after this idle time
 browser_external  = "subresources"    # deny | subresources | allow — non-preview destinations for the headless browser

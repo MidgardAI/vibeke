@@ -79,6 +79,10 @@ pub struct PreviewConfig {
     /// Reverse proxy listener port (B4), machine-wide: busy → proxy mode is refused (no
     /// fallback; pick another port for this session). 0 = ephemeral.
     pub proxy_port: u16,
+    /// Serve proxy-mode previews over https with the local CA (B4 `tls_origin`): the global
+    /// default; a repo `[previews] tls_origin`, a task preview entry, `preview.declare` and
+    /// `preview.open` override it.
+    pub tls_origin: bool,
 }
 
 impl Default for PreviewConfig {
@@ -94,6 +98,7 @@ impl Default for PreviewConfig {
             pane_browser: String::new(),
             profile_browser: "auto".into(),
             proxy_port: 47800,
+            tls_origin: false,
         }
     }
 }
@@ -188,6 +193,8 @@ pub struct Previews {
     pub(crate) proxy_handle: Mutex<Option<Arc<vk_preview::proxy::Proxy>>>,
     /// Test hook: the proxy port to use instead of `[preview] proxy_port`.
     pub(crate) proxy_port_override: Mutex<Option<u16>>,
+    /// The per-user local CA once a `tls_origin` preview needed it (B4).
+    pub(crate) tls_ca: Mutex<Option<Arc<vk_preview::ca::LocalCa>>>,
     /// Explicit mirrors by local port (B4; never persisted, never automatic).
     pub(crate) mirrors: Mutex<HashMap<u16, crate::preview_fabric::Mirror>>,
 }
@@ -213,6 +220,7 @@ impl Default for Previews {
             proxy: tokio::sync::Mutex::new(None),
             proxy_handle: Mutex::default(),
             proxy_port_override: Mutex::default(),
+            tls_ca: Mutex::default(),
             mirrors: Mutex::default(),
         }
     }
@@ -1574,6 +1582,9 @@ pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             x
         }
     };
+    if let Some(t) = b(p, "tls_origin") {
+        crate::preview_fabric::set_tls_origin(server, &pv.id, t);
+    }
     Ok(
         json!({"preview": server.with_core(|c| preview_json(c, &pv)), "cursor": crate::api::cursor(server, None)}),
     )

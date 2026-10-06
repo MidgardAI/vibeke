@@ -1682,6 +1682,9 @@ pub fn on_reply(
                 Some(url) => {
                     let open = app.browser.opener.unwrap_or(os_open);
                     match open(url) {
+                        Ok(()) if v["tls_origin"] == true => app.toast(format!(
+                            "opened {plain} in your browser via the proxy (https: your browser must trust the local CA, see `vibeke preview trust-ca`)"
+                        )),
                         Ok(()) => {
                             app.toast(format!("opened {plain} in your browser via the proxy"))
                         }

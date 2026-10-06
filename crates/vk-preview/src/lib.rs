@@ -7,6 +7,7 @@
 //! `vk-server::preview` and `vk-server::preview_proxy`.
 
 pub mod browser;
+pub mod ca;
 pub mod lifecycle;
 pub mod probe;
 pub mod proxy;

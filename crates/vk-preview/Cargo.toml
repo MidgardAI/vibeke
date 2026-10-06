@@ -25,5 +25,11 @@ bytes = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
+# 06 B4 `tls_origin`: the per-user local CA and its leaf certificates (ring backend, as rustls).
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+
+time = { version = "0.3", default-features = false }
+base64.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

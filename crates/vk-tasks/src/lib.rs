@@ -72,7 +72,7 @@ pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_s
 pub use ports::{Lease, LeaseRequest, PortLeases, PortPool};
 pub use previews::{
     MAX_TASK_PREVIEWS, PreviewSpec, ResolvedPreview, normalize_preview_path, offset_of_env,
-    parse_previews, port_env_offsets, resolve_previews,
+    parse_previews, port_env_offsets, previews_tls_default, resolve_previews,
 };
 pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};

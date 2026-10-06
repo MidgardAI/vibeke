@@ -1133,3 +1133,192 @@ fn firefox_window_profile_routes_over_socks() {
         .cmd(&["--machine", "fakebox", "server", "stop", "--kill-panes"])
         .output();
 }
+
+/// A dev server whose page reports what the browser sees (`https:` and a secure context).
+fn context_app() -> Http {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; 8192];
+                let mut got = 0;
+                let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                while got < buf.len() {
+                    match s.read(&mut buf[got..]) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got += n,
+                    }
+                    if buf[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let req = String::from_utf8_lossy(&buf[..got]).into_owned();
+                let first = req.lines().next().unwrap_or("").to_string();
+                seen.lock().unwrap().push(first.clone());
+                let html = "<html><body><p id=m>pending</p><script>var r='ctx:'+window.isSecureContext+' proto:'+location.protocol+' subtle:'+(typeof crypto.subtle);document.getElementById('m').textContent=r;fetch('/report?'+encodeURIComponent(r))</script></body></html>";
+                let _ = write!(
+                    s,
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{html}",
+                    html.len()
+                );
+            });
+        }
+    });
+    Http { port, seen }
+}
+
+/// `preview trust-ca` and `--tls-origin` with the real binary: the CA is generated on first
+/// use in the state dir (0600 key, 0700 dir), `trust-ca` only prints (and `--install` refuses
+/// without a terminal: nothing in this test can change a trust store), and the proxy serves
+/// the preview over https. Real Chromium (gated; Playwright's binary, a temp profile and the
+/// CA trusted by SPKI pin on its command line, never the system store) loads the https origin.
+#[test]
+fn tls_origin_trust_ca_and_https_proxy() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Session::new("[preview]\nproxy_port = 0\n");
+    let mut c = s.cmd(&["preview", "trust-ca"]);
+    c.stdin(std::process::Stdio::null());
+    let out = c.output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let ca_dir = s.path().join("state/tls");
+    assert!(
+        text.contains(&ca_dir.join("preview-ca.pem").display().to_string()),
+        "{text}"
+    );
+    for needle in [
+        "SHA-256",
+        "macOS",
+        "Debian/Ubuntu",
+        "Firefox",
+        "never changes a trust store",
+    ] {
+        assert!(text.contains(needle), "{needle}: {text}");
+    }
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&ca_dir), 0o700);
+    assert_eq!(mode(&ca_dir.join("preview-ca-key.pem")), 0o600);
+    // `--install` without a terminal: refused, exit 2, before anything could run.
+    let mut c = s.cmd(&["preview", "trust-ca", "--install"]);
+    c.stdin(std::process::Stdio::null());
+    let out = c.output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The same CA again (the user's trust keeps working).
+    let again = s.cmd(&["preview", "trust-ca", "--path"]).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout).trim(),
+        ca_dir.join("preview-ca.pem").display().to_string()
+    );
+
+    let mut s = s;
+    s.extra_env = vec![("VIBEKE_NO_OPEN".into(), "1".into())];
+    let app = context_app();
+    s.json(&["server", "status"]);
+    let d = s.json(&[
+        "preview",
+        "declare",
+        "--port",
+        &app.port.to_string(),
+        "--path",
+        "/ctx",
+    ]);
+    let handle = d["preview"]["handle"].as_str().unwrap().to_string();
+    let r = s.json(&[
+        "preview",
+        "open",
+        &handle,
+        "--proxy",
+        "--no-open",
+        "--tls-origin",
+    ]);
+    assert_eq!(r["tls_origin"], true, "{r}");
+    let open_url = r["open_url"].as_str().unwrap().to_string();
+    assert!(r["url"].as_str().unwrap().starts_with("https://"), "{r}");
+    assert!(open_url.starts_with("https://"), "{open_url}");
+    assert_eq!(
+        r["ca"]["path"].as_str().unwrap(),
+        ca_dir.join("preview-ca.pem").display().to_string()
+    );
+    // Plain HTTP to the https origin is refused.
+    let port = r["proxy_port"].as_u64().unwrap() as u16;
+    let host = r["host"].as_str().unwrap();
+    assert_eq!(
+        proxy_get(port, &format!("{host}:{port}"), "/ctx", "").0,
+        421
+    );
+    // The https proxy shows in `preview status`.
+    assert_eq!(s.json(&["preview", "status"])["proxy"]["tls"], true);
+
+    if std::env::var("VIBEKE_BROWSER_TESTS").is_ok_and(|v| v == "1")
+        && let Some(chromium) = playwright_chromium()
+    {
+        let r = s.json(&[
+            "preview",
+            "open",
+            &handle,
+            "--proxy",
+            "--no-open",
+            "--tls-origin",
+        ]);
+        let url = r["open_url"].as_str().unwrap().to_string();
+        let spki = r["ca"]["spki_sha256"].as_str().unwrap().to_string();
+        let profile = tempfile::tempdir().unwrap();
+        let mut child = Command::new(&chromium)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--disable-background-networking",
+                &format!("--user-data-dir={}", profile.path().display()),
+                // Trust the CA by its key pin in this throwaway browser only.
+                &format!("--ignore-certificate-errors-spki-list={spki}"),
+                &url,
+            ])
+            .spawn()
+            .unwrap();
+        // The page reports what the browser sees by fetching `/report?<facts>` through the
+        // https origin (with the session cookie the token exchange set).
+        let want = "GET /report?ctx%3Atrue%20proto%3Ahttps%3A%20subtle%3Aobject ";
+        let t0 = Instant::now();
+        while !app.seen.lock().unwrap().iter().any(|l| l.starts_with(want)) {
+            if t0.elapsed() > Duration::from_secs(30) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "Chromium never reported over the https origin: {:?}\n{}",
+                    app.seen.lock().unwrap(),
+                    s.log_tail()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            app.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("GET /ctx ")),
+            "{:?}",
+            app.seen.lock().unwrap()
+        );
+    }
+}
