@@ -914,7 +914,7 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                 1.0,
                 None,
             );
-            let open: Vec<String> = p
+            let mut open: Vec<String> = p
                 .get("open_approvals")
                 .and_then(Value::as_array)
                 .map(|a| {
@@ -925,6 +925,13 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                         .collect()
                 })
                 .unwrap_or_default();
+            // Newer extensions list wrapper dialogs still pending; then dialogs not listed were
+            // handled elsewhere. Without the list (older extensions) dialogs are left alone.
+            let dialogs: Option<Vec<Value>> = p.get("pending_dialogs").and_then(Value::as_array).cloned();
+            if let Some(d) = &dialogs {
+                open.extend(d.iter().filter_map(|x| x.get("dialog_id").and_then(Value::as_str).map(str::to_string)));
+            }
+            let has_dialog_list = dialogs.is_some();
             let stale: Vec<String> = server.with_core(|c| {
                 c.model
                     .interactions
@@ -934,8 +941,8 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                             && i.status == InteractionStatus::Open
                             && i.native_ref
                                 .as_ref()
-                                .is_some_and(|r| !open.contains(r) && !r.starts_with("dlg"))
-                            && i.answer_channel == AnswerChannel::None
+                                .is_some_and(|r| !open.contains(r))
+                            && (i.answer_channel == AnswerChannel::None || has_dialog_list)
                     })
                     .map(|i| i.id.clone())
                     .collect()
@@ -955,6 +962,25 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                 .unwrap_or_default()
             {
                 on_extension_signal(server, pane, h, "ApprovalRequested", &a);
+            }
+            // Pending dialogs we don't know (opened while disconnected): observe-only.
+            for d in dialogs.unwrap_or_default() {
+                let Some(id) = d.get("dialog_id").and_then(Value::as_str) else { continue };
+                let known = server.with_core(|c| c.model.interactions.iter().any(|i| i.run == run.id && i.native_ref.as_deref() == Some(id) && i.status == InteractionStatus::Open));
+                if known {
+                    continue;
+                }
+                let Some(mut it) = harness::interaction_from_hook(h, "Dialog", &d) else { continue };
+                let mut c = server.core.lock().unwrap();
+                it.handle = c.next_interaction_handle();
+                it.run = run.id.clone();
+                it.pane = pane.to_string();
+                it.answerable = false;
+                it.answer_channel = AnswerChannel::None;
+                let mut tx = Tx::new();
+                tx.event("interaction.opened", json!({"interaction": it.id, "run": run.id}), json!({"kind": it.kind.as_str(), "observe_only": true, "via": "snapshot"}));
+                tx.interaction(it);
+                let _ = server.commit(&mut c, tx);
             }
         }
         _ => {}
