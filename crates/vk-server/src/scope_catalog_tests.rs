@@ -40,6 +40,7 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::pane_api::METHODS,
         crate::task_park::METHODS,
         crate::security::METHODS,
+        crate::orch::METHODS,
     ]
 }
 

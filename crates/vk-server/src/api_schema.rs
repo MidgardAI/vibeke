@@ -51,6 +51,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("sync_input", sync_input::METHODS),
         ("tab_renumber", tab_renumber::METHODS),
         ("task_lifecycle", task_lifecycle::METHODS),
+        ("orch", orch::METHODS),
         ("review::pr", review::pr::METHODS),
         ("review::interval", review::interval::METHODS),
         ("privacy", privacy::METHODS),
@@ -170,7 +171,12 @@ fn build() -> Result<Registry, Vec<String>> {
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
     let events = load(
-        &[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES, BATCH_3F_EVENT_SHAPES],
+        &[
+            EVENT_SHAPES,
+            BATCH_3D_EVENT_SHAPES,
+            BATCH_3F_EVENT_SHAPES,
+            crate::orch_shapes::EVENTS,
+        ],
         "event",
         &mut errs,
     );
@@ -480,6 +486,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_2A_SHAPES,
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
+    crate::orch_shapes::SHAPES,
     ADAPTER_POLISH_SHAPES,
     PRIVACY_SHAPES,
     BATCH_3D_SHAPES,

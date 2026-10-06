@@ -44,3 +44,16 @@ Rules: evidence whose `head_sha`/`dirty_digest` doesn't match the task's current
 - Basic remote control is commoditized by vendors (Claude Remote Control, Codex in ChatGPT mobile). Orchestration-only startups died (Terragon Feb 2026, Vibe Kanban Apr 2026); Omnara pivoted. Differentiation must be: vendor-neutral + custom harnesses, E2E-encrypted, safe-yolo isolation, and the supervision layer (multi-machine alone is table stakes) (inbox, evidence, merge) — not "chat with your agent from your phone".
 - Human review time, not agent count, is the bottleneck. *Human review minutes per accepted change* is the north-star metric; it is baselined from M3 (00 §Success metrics).
 - Other tools' roadmaps (E2E relays, cross-machine agent collaboration, session mobility) overlap the gateway/relay; our edge must be interactions, isolation, BYO harnesses and evidence, not the relay itself.
+
+## As built (Batch 4, lane 4, 2026-10-06)
+
+Everything below is off by default behind `[orchestrate.*] enabled` flags (config in 08 §11) and tested with fakes only; no live harness, account or provider was used. Code: crate `vk-orchestrate` (pure logic) and `vk-server` `orch*.rs`.
+
+| Capability | Built | Not built / needs the user |
+|---|---|---|
+| Learned policy | `policy.learned.list|accept|dismiss`: fingerprints from the interaction history, safe-rule generation, repo `.vibeke/policy.toml` target (04 §7.7) | Inbox surface; learning from `ask`-only history across machines |
+| Merge orchestration | Advisory claims (`task.claim*`, agents may claim for their own task); conflict prediction across live worktrees (changed-file overlap, `git merge-tree` textual conflicts, claim violations; background `merge.conflict_predicted`); merge queue through a throwaway integration worktree with optional check gate, merge or squash, never touching a dirty checkout; best-of-N compare and pick-and-merge (05 §12); split into task (05 §11) | The collision tracker (3A: fs watcher attribution, steer, pause); a TUI view of the queue; CI/PR-based merging |
+| Goal to plan to tasks | `goal.*`: heuristic planner (numbered list = sequential, bullets = parallel), external submission and an agent planner backend (`goal.plan_submit` validates JSON), approval gate (editing the plan clears approval), fan-out as tasks with routing by fit, cost, quota and load, step completion observed from task finish or merge, `goal.briefing` | An LLM planner run needs a logged-in harness (`planner.backend = "agent"` is the code path, unverified live); briefings are deterministic digests, not model prose |
+| Quota and cost scheduling | `quota.status|tick|route|resume`: accounts from the adapters' rate-limit reports, pause (park) low-priority tasks near `pause_at`, resume after the reset or when usage falls, protected priority, account pooling, routing by headroom, config-only price table for cost estimates | Per-turn usage records and the built-in price table belong to lane 2F; no live-limit verification |
+| Cloud runners | Not built (needs provider accounts). `vm` level scaffolding is in 13 §15.2 | |
+| Team mode, native GUI, marketplace, QUIC, Windows | Not built (decision- or hardware-gated) | |

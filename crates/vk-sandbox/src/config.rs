@@ -65,6 +65,92 @@ pub struct IsolationConfig {
     pub resource_poll: String,
     pub sandbox: SandboxConfig,
     pub container: ContainerConfig,
+    pub vm: VmConfig,
+}
+
+/// `[isolation.vm]` (13 §2.1, §9): the `vm` level. Off by default; `provider = "fake"` uses
+/// directory-backed VMs (tests, dry runs) and needs no hardware.
+///
+/// ```toml
+/// [isolation.vm]
+/// enabled = false
+/// provider = "auto"        # auto | lima | tart | fake (firecracker, cloud-hypervisor: scaffolding only)
+/// image = ""               # base image (Tart image name, Lima template, or image URL)
+/// cpus = 4
+/// memory = "8g"
+/// disk = "30g"
+/// template = true          # snapshot a template after `setup`; tasks fork from it
+/// setup = []               # commands run once in the template builder VM
+/// transport = "auto"       # auto | vsock | virtio-serial | exec | ssh
+/// shell = "/bin/sh"
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VmConfig {
+    pub enabled: bool,
+    pub provider: String,
+    pub image: Option<String>,
+    pub cpus: u32,
+    pub memory: String,
+    pub disk: String,
+    pub template: bool,
+    pub setup: Vec<String>,
+    pub transport: String,
+    pub shell: String,
+}
+
+impl Default for VmConfig {
+    fn default() -> Self {
+        VmConfig {
+            enabled: false,
+            provider: "auto".into(),
+            image: None,
+            cpus: 4,
+            memory: "8g".into(),
+            disk: "30g".into(),
+            template: true,
+            setup: vec![],
+            transport: "auto".into(),
+            shell: "/bin/sh".into(),
+        }
+    }
+}
+
+/// `8g`, `8192m`, `512` (MiB) as MiB.
+pub fn parse_size_mb(s: &str) -> Option<u64> {
+    let s = s.trim().to_ascii_lowercase();
+    let (num, mult): (&str, f64) = if let Some(n) = s
+        .strip_suffix("gib")
+        .or_else(|| s.strip_suffix("gb"))
+        .or_else(|| s.strip_suffix('g'))
+    {
+        (n, 1024.0)
+    } else if let Some(n) = s
+        .strip_suffix("mib")
+        .or_else(|| s.strip_suffix("mb"))
+        .or_else(|| s.strip_suffix('m'))
+    {
+        (n, 1.0)
+    } else if let Some(n) = s
+        .strip_suffix("tib")
+        .or_else(|| s.strip_suffix("tb"))
+        .or_else(|| s.strip_suffix('t'))
+    {
+        (n, 1024.0 * 1024.0)
+    } else {
+        (s.as_str(), 1.0)
+    };
+    let n: f64 = num.trim().parse().ok()?;
+    (n.is_finite() && n > 0.0).then_some((n * mult) as u64)
+}
+
+impl VmConfig {
+    pub fn memory_mb(&self) -> u64 {
+        parse_size_mb(&self.memory).unwrap_or(8192)
+    }
+    pub fn disk_gb(&self) -> u64 {
+        (parse_size_mb(&self.disk).unwrap_or(30 * 1024) / 1024).max(1)
+    }
 }
 
 impl Default for IsolationConfig {
@@ -81,6 +167,7 @@ impl Default for IsolationConfig {
             resource_poll: "30s".into(),
             sandbox: SandboxConfig::default(),
             container: ContainerConfig::default(),
+            vm: VmConfig::default(),
         }
     }
 }
