@@ -454,6 +454,10 @@ pub fn kind_enabled(on: &vk_config::NotifyOn, kind: &str, title: &str) -> bool {
         "bell" => on.bell,
         "osc9" | "osc99" | "osc777" => on.osc,
         "remote_disconnected" => on.remote_disconnected,
+        // Inbox notifications (15 §8.3, review::attention_ext).
+        "attention.deadline" => on.deadline,
+        "attention.review" => on.review,
+        "attention.delivery" => on.error,
         _ => true,
     }
 }

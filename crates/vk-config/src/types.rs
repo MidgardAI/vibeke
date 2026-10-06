@@ -346,6 +346,7 @@ pub struct Ui {
     pub status_bar: StatusBar,
     pub sync_input: SyncInput,
     pub interactions: Interactions,
+    pub inbox: Inbox,
     pub fleet: Fleet,
     /// Outer terminal title sync (OSC 2) with the focused workspace/pane (08 §6.7).
     pub title_sync: bool,
@@ -368,6 +369,7 @@ impl Default for Ui {
             status_bar: StatusBar::default(),
             sync_input: SyncInput::default(),
             interactions: Interactions::default(),
+            inbox: Inbox::default(),
             fleet: Fleet::default(),
             title_sync: true,
             title_format: "{workspace} · {pane}".into(),
@@ -497,10 +499,29 @@ pub struct SyncInput {
 #[serde(default)]
 pub struct Interactions {
     pub batch: bool,
+    /// An open interaction with at most this long left before its native deadline ranks as
+    /// "deadline approaching" in the inbox (15 §8.1).
+    pub deadline_window: Dur,
 }
 impl Default for Interactions {
     fn default() -> Self {
-        Interactions { batch: true }
+        Interactions {
+            batch: true,
+            deadline_window: Dur::secs(60),
+        }
+    }
+}
+
+/// `[ui.inbox]` — the attention inbox (15 §8).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Inbox {
+    /// Show busy agents without an open question in an "Also working" footer.
+    pub also_working: bool,
+}
+impl Default for Inbox {
+    fn default() -> Self {
+        Inbox { also_working: true }
     }
 }
 
@@ -549,6 +570,10 @@ pub struct NotifyOn {
     pub bell: bool,
     pub osc: bool,
     pub remote_disconnected: bool,
+    /// An inbox item's native deadline is approaching (15 §8.1).
+    pub deadline: bool,
+    /// A tracked task became ready for review, or one of its checks failed (15 §8).
+    pub review: bool,
 }
 impl Default for NotifyOn {
     fn default() -> Self {
@@ -560,6 +585,8 @@ impl Default for NotifyOn {
             bell: false,
             osc: true,
             remote_disconnected: true,
+            deadline: true,
+            review: true,
         }
     }
 }

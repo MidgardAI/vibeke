@@ -437,6 +437,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::machines::PANE_FORBIDDEN.contains(&method)
         || crate::items::PANE_FORBIDDEN.contains(&method)
         || crate::review::pr::PANE_FORBIDDEN.contains(&method)
+        || crate::review::ext::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))

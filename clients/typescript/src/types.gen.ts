@@ -496,6 +496,20 @@ export type RateLimitInfo = {
   observed_at_ms: number;
 };
 
+export type ReviewPurge = {
+  tasks: number;
+  runs: number;
+  messages: number;
+  intent_excerpts: number;
+  turns: number;
+  tool_items: number;
+  reviewer_prompts: number;
+  notes: number;
+  human_notes: number;
+  check_logs: number;
+  projections: number;
+};
+
 export type RpcError = {
   code: number;
   message: string;
@@ -1176,6 +1190,28 @@ export type AssistantTestResult = {
   cursor?: Cursor;
 };
 
+export type AttentionBatchParams = {
+  interaction: string;
+};
+
+export type AttentionBatchResult = {
+  interaction: string;
+  batchable: boolean;
+  batch?: string;
+  reason?: string;
+  members: {
+    interaction: string;
+    handle: string;
+    run: string;
+    pane: string;
+    title: string;
+    decision_rev: number;
+    opened_at_ms: number;
+  }[];
+  facts?: Record<string, unknown> | null;
+  note?: string;
+};
+
 export type AttentionListParams = {
   budget_ms?: number;
   effort?: "quick" | "minutes" | "deep";
@@ -1206,6 +1242,13 @@ export type AttentionListResult = {
     snoozed_until_ms: number | null;
     woke_from_snooze: string | null;
     urgent: boolean;
+    deadline_ms?: number | null;
+    deadline_source?: "native" | "gate" | null;
+    deadline_in_ms?: number | null;
+    batch?: {
+      id: string;
+      size: number;
+    } | null;
   }[];
   coverage: {
     complete: boolean;
@@ -1230,6 +1273,26 @@ export type AttentionListResult = {
       note: string;
     }[];
   } | null;
+  batches?: {
+    id: string;
+    members: {
+      kind: string;
+      id: string;
+    }[];
+  }[];
+  also_working?: {
+    run: string;
+    pane: string;
+    name: string;
+    harness: string;
+    task: {
+      id: string;
+      handle: string;
+      title: string;
+    } | null;
+    since_ms: number;
+    working_for_ms: number;
+  }[];
 };
 
 export type AttentionUpdateParams = {
@@ -4240,6 +4303,7 @@ export type ScrollbackForgetResult = {
   bytes_deleted?: number;
   fts_rows_deleted?: number;
   archive_panes_dropped?: number;
+  review?: ReviewPurge;
   cursor?: Cursor;
 };
 
@@ -4752,6 +4816,32 @@ export type TaskGetResult = {
   pr?: PrLookup | null;
 };
 
+export type TaskLinkStatusParams = {
+  run?: string;
+  pane?: Target;
+};
+
+export type TaskLinkStatusResult = {
+  run: {
+    id: string;
+    handle: string;
+    harness: string;
+    integration: string;
+    pane: string;
+    session_reported: boolean;
+  };
+  verified: boolean;
+  reasons: string[];
+  remedies: {
+    action: string;
+    label: string;
+    command?: string;
+    note?: string;
+  }[];
+  candidates: Record<string, unknown>[];
+  note: string;
+};
+
 export type TaskListParams = {
   status?: string;
   repo?: string;
@@ -4969,6 +5059,22 @@ export type TaskReviewDiffResult = {
   max_bytes: number;
 };
 
+export type TaskReviewForgetParams = {
+  task?: Target;
+  pane?: Target;
+  workspace?: Target;
+  before?: string | number;
+  all?: boolean;
+  dry_run?: boolean;
+};
+
+export type TaskReviewForgetResult = {
+  scope: unknown;
+  dry_run: boolean;
+  purged: ReviewPurge;
+  cursor?: Cursor;
+};
+
 export type TaskReviewGetParams = {
   task: Target;
   subject?: string;
@@ -5024,6 +5130,7 @@ export type TaskReviewGetResult = {
     available: boolean;
     method: string;
     note: string;
+    selection?: Record<string, unknown>;
   };
   actions: {
     accept: {
@@ -5032,6 +5139,25 @@ export type TaskReviewGetResult = {
       requires_exceptions: unknown;
     };
   };
+  human_reviews?: Record<string, unknown>[];
+  purged?: unknown;
+};
+
+export type TaskReviewHumanReviewParams = {
+  task: Target;
+  criterion: string;
+  verdict: "supported" | "failed" | "withdrawn";
+  subject?: string;
+  expected_subject?: string;
+  note?: string;
+  screenshots?: string[];
+  idempotency_key?: string;
+};
+
+export type TaskReviewHumanReviewResult = {
+  review: Record<string, unknown>;
+  note: string;
+  cursor?: Cursor;
 };
 
 export type TaskReviewIntervalStatusParams = Record<string, unknown>;
@@ -5108,12 +5234,15 @@ export type TaskReviewRequestReviewerResult = {
 
 export type TaskReviewSnapshotParams = {
   task: Target;
+  paths?: string[];
+  patch?: string;
   idempotency_key?: string;
 };
 
 export type TaskReviewSnapshotResult = {
   subject: Record<string, unknown>;
   snapshot: Record<string, unknown>;
+  selection?: Record<string, unknown>;
   label: string;
   note: string;
   cursor?: Cursor;
@@ -5146,6 +5275,7 @@ export type TaskReviewStartReviewerParams = {
   pane?: Target;
   split_of?: Target;
   direction?: string;
+  checkout?: "disposable" | "task";
   idempotency_key?: string;
 };
 
@@ -5412,6 +5542,7 @@ export interface Methods {
   "assistant.revoke": { params: AssistantRevokeParams; result: AssistantRevokeResult };
   "assistant.status": { params: AssistantStatusParams; result: AssistantStatusResult };
   "assistant.test": { params: AssistantTestParams; result: AssistantTestResult };
+  "attention.batch": { params: AttentionBatchParams; result: AttentionBatchResult };
   "attention.list": { params: AttentionListParams; result: AttentionListResult };
   "attention.update": { params: AttentionUpdateParams; result: AttentionUpdateResult };
   "audit.search": { params: AuditSearchParams; result: AuditSearchResult };
@@ -5635,6 +5766,7 @@ export interface Methods {
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
   "task.forget": { params: TaskForgetParams; result: TaskForgetResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
+  "task.link.status": { params: TaskLinkStatusParams; result: TaskLinkStatusResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
   "task.park": { params: TaskParkParams; result: TaskParkResult };
   "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
@@ -5649,7 +5781,9 @@ export interface Methods {
   "task.review.accept": { params: TaskReviewAcceptParams; result: TaskReviewAcceptResult };
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
   "task.review.diff": { params: TaskReviewDiffParams; result: TaskReviewDiffResult };
+  "task.review.forget": { params: TaskReviewForgetParams; result: TaskReviewForgetResult };
   "task.review.get": { params: TaskReviewGetParams; result: TaskReviewGetResult };
+  "task.review.human_review": { params: TaskReviewHumanReviewParams; result: TaskReviewHumanReviewResult };
   "task.review.interval_status": { params: TaskReviewIntervalStatusParams; result: TaskReviewIntervalStatusResult };
   "task.review.intervals": { params: TaskReviewIntervalsParams; result: TaskReviewIntervalsResult };
   "task.review.note.classify": { params: TaskReviewNoteClassifyParams; result: TaskReviewNoteClassifyResult };
@@ -5717,6 +5851,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "assistant.revoke": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.test": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "attention.batch": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.list": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.update": { mutating: true, scope: "full", paneScope: "forbidden" },
   "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -5940,6 +6075,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.link.status": { mutating: false, scope: "pane", paneScope: "open" },
   "task.list": { mutating: false, scope: "pane", paneScope: "open" },
   "task.park": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5954,7 +6090,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.human_review": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.interval_status": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.intervals": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -7043,6 +7181,18 @@ export type ReviewEndCandidatePinnedData = {
   note: unknown;
 };
 
+export type ReviewHumanReviewedSubject = {
+  task: string;
+  criterion: string;
+  subject: string;
+};
+
+export type ReviewHumanReviewedData = {
+  verdict: string;
+  screenshots: number;
+  intent_revision: number;
+};
+
 export type ReviewInvalidatedSubject = {
   task: string;
   acceptance: string;
@@ -7117,6 +7267,21 @@ export type ReviewPrObservedData = {
   draft: boolean | null;
   checks: "none" | "pending" | "passing" | "failing" | null;
   reason: string | null;
+};
+
+export type ReviewPurgedSubject = {
+  scope: unknown;
+};
+
+export type ReviewPurgedData = ReviewPurge;
+
+export type ReviewReviewerCheckoutRemovedSubject = {
+  task: string;
+  request: string;
+};
+
+export type ReviewReviewerCheckoutRemovedData = {
+  run: string | null;
 };
 
 export type ReviewReviewerRequestedSubject = {
@@ -7931,6 +8096,7 @@ export interface EventMap {
   "review.accepted": { subject: ReviewAcceptedSubject; data: ReviewAcceptedData };
   "review.candidate_created": { subject: ReviewCandidateCreatedSubject; data: ReviewCandidateCreatedData };
   "review.end_candidate_pinned": { subject: ReviewEndCandidatePinnedSubject; data: ReviewEndCandidatePinnedData };
+  "review.human_reviewed": { subject: ReviewHumanReviewedSubject; data: ReviewHumanReviewedData };
   "review.invalidated": { subject: ReviewInvalidatedSubject; data: ReviewInvalidatedData };
   "review.label_changed": { subject: ReviewLabelChangedSubject; data: ReviewLabelChangedData };
   "review.note_classified": { subject: ReviewNoteClassifiedSubject; data: ReviewNoteClassifiedData };
@@ -7938,6 +8104,8 @@ export interface EventMap {
   "review.pr_claimed": { subject: ReviewPrClaimedSubject; data: ReviewPrClaimedData };
   "review.pr_head_changed": { subject: ReviewPrHeadChangedSubject; data: ReviewPrHeadChangedData };
   "review.pr_observed": { subject: ReviewPrObservedSubject; data: ReviewPrObservedData };
+  "review.purged": { subject: ReviewPurgedSubject; data: ReviewPurgedData };
+  "review.reviewer_checkout_removed": { subject: ReviewReviewerCheckoutRemovedSubject; data: ReviewReviewerCheckoutRemovedData };
   "review.reviewer_requested": { subject: ReviewReviewerRequestedSubject; data: ReviewReviewerRequestedData };
   "review.reviewer_started": { subject: ReviewReviewerStartedSubject; data: ReviewReviewerStartedData };
   "review.reviewer_unknown": { subject: ReviewReviewerUnknownSubject; data: ReviewReviewerUnknownData };

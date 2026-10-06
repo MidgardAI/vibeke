@@ -1445,6 +1445,13 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             .unwrap_or_default();
         return Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}));
     }
+    // Native deadline from the payload, else the end of the hook gate (15 §8.1, lane 2C).
+    crate::review::attention_ext::on_gate_opened(
+        server,
+        &it.id,
+        p,
+        gate_mode.then_some(GATE_TIMEOUT),
+    );
     notify_interaction(server, &it, &run);
     if !gate_mode {
         return Ok(json!({"decision": null, "interaction": it.id, "mode": "observe"}));

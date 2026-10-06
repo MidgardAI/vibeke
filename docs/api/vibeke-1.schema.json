@@ -2308,6 +2308,57 @@
         "observed_at_ms"
       ]
     },
+    "ReviewPurge": {
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "integer"
+        },
+        "runs": {
+          "type": "integer"
+        },
+        "messages": {
+          "type": "integer"
+        },
+        "intent_excerpts": {
+          "type": "integer"
+        },
+        "turns": {
+          "type": "integer"
+        },
+        "tool_items": {
+          "type": "integer"
+        },
+        "reviewer_prompts": {
+          "type": "integer"
+        },
+        "notes": {
+          "type": "integer"
+        },
+        "human_notes": {
+          "type": "integer"
+        },
+        "check_logs": {
+          "type": "integer"
+        },
+        "projections": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tasks",
+        "runs",
+        "messages",
+        "intent_excerpts",
+        "turns",
+        "tool_items",
+        "reviewer_prompts",
+        "notes",
+        "human_notes",
+        "check_logs",
+        "projections"
+      ]
+    },
     "RpcError": {
       "type": "object",
       "properties": {
@@ -5060,6 +5111,95 @@
         ]
       }
     },
+    "attention.batch": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "interaction": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "interaction"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "interaction": {
+            "type": "string"
+          },
+          "batchable": {
+            "type": "boolean"
+          },
+          "batch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "interaction": {
+                  "type": "string"
+                },
+                "handle": {
+                  "type": "string"
+                },
+                "run": {
+                  "type": "string"
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "decision_rev": {
+                  "type": "integer"
+                },
+                "opened_at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "interaction",
+                "handle",
+                "run",
+                "pane",
+                "title",
+                "decision_rev",
+                "opened_at_ms"
+              ]
+            }
+          },
+          "facts": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "interaction",
+          "batchable",
+          "members"
+        ]
+      }
+    },
     "attention.list": {
       "mutating": false,
       "scope": "pane",
@@ -5232,6 +5372,61 @@
                 },
                 "urgent": {
                   "type": "boolean"
+                },
+                "deadline_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "deadline_source": {
+                  "anyOf": [
+                    {
+                      "const": "native"
+                    },
+                    {
+                      "const": "gate"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "deadline_in_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "batch": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "size"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -5367,6 +5562,100 @@
                 "type": "null"
               }
             ]
+          },
+          "batches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "members"
+              ]
+            }
+          },
+          "also_working": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "task": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "handle": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "handle",
+                        "title"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "since_ms": {
+                  "type": "integer"
+                },
+                "working_for_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "run",
+                "pane",
+                "name",
+                "harness",
+                "task",
+                "since_ms",
+                "working_for_ms"
+              ]
+            }
           }
         },
         "required": [
@@ -17029,6 +17318,9 @@
           "archive_panes_dropped": {
             "type": "integer"
           },
+          "review": {
+            "$ref": "#/$defs/ReviewPurge"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -19069,6 +19361,108 @@
         ]
       }
     },
+    "task.link.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "handle": {
+                "type": "string"
+              },
+              "harness": {
+                "type": "string"
+              },
+              "integration": {
+                "type": "string"
+              },
+              "pane": {
+                "type": "string"
+              },
+              "session_reported": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "handle",
+              "harness",
+              "integration",
+              "pane",
+              "session_reported"
+            ]
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remedies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "label"
+              ]
+            }
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "verified",
+          "reasons",
+          "remedies",
+          "candidates",
+          "note"
+        ]
+      }
+    },
     "task.list": {
       "mutating": false,
       "scope": "pane",
@@ -19927,6 +20321,62 @@
         ]
       }
     },
+    "task.review.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "scope": {},
+          "dry_run": {
+            "type": "boolean"
+          },
+          "purged": {
+            "$ref": "#/$defs/ReviewPurge"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "scope",
+          "dry_run",
+          "purged"
+        ]
+      }
+    },
     "task.review.get": {
       "mutating": false,
       "scope": "pane",
@@ -20156,6 +20606,9 @@
               },
               "note": {
                 "type": "string"
+              },
+              "selection": {
+                "type": "object"
               }
             },
             "required": [
@@ -20195,7 +20648,14 @@
             "required": [
               "accept"
             ]
-          }
+          },
+          "human_reviews": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purged": {}
         },
         "required": [
           "task",
@@ -20238,6 +20698,71 @@
           "effort",
           "snapshot",
           "actions"
+        ]
+      }
+    },
+    "task.review.human_review": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "criterion": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "supported",
+              "failed",
+              "withdrawn"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "expected_subject": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "screenshots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "criterion",
+          "verdict"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "review": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "review",
+          "note"
         ]
       }
     },
@@ -20525,6 +21050,15 @@
           "task": {
             "$ref": "#/$defs/Target"
           },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "patch": {
+            "type": "string"
+          },
           "idempotency_key": {
             "type": "string"
           }
@@ -20540,6 +21074,9 @@
             "type": "object"
           },
           "snapshot": {
+            "type": "object"
+          },
+          "selection": {
             "type": "object"
           },
           "label": {
@@ -20683,6 +21220,13 @@
           "direction": {
             "type": "string",
             "default": "right"
+          },
+          "checkout": {
+            "type": "string",
+            "enum": [
+              "disposable",
+              "task"
+            ]
           },
           "idempotency_key": {
             "type": "string"
@@ -25099,6 +25643,46 @@
         ]
       }
     },
+    "review.human_reviewed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "criterion": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "criterion",
+          "subject"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "verdict": {
+            "type": "string"
+          },
+          "screenshots": {
+            "type": "integer"
+          },
+          "intent_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "verdict",
+          "screenshots",
+          "intent_revision"
+        ]
+      }
+    },
     "review.invalidated": {
       "subject": {
         "type": "object",
@@ -25424,6 +26008,55 @@
           "draft",
           "checks",
           "reason"
+        ]
+      }
+    },
+    "review.purged": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "scope": {}
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "data": {
+        "$ref": "#/$defs/ReviewPurge"
+      }
+    },
+    "review.reviewer_checkout_removed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run"
         ]
       }
     },

@@ -170,6 +170,7 @@ pub enum Reply {
     },
     /// T4 surfaces (snapshot, reviewer, notes, dependencies, effort): `crate::tasks_t4`.
     T4(crate::tasks_t4::T4Reply),
+    Lane2c(crate::tasks_2c::R),
 }
 
 // ---- Track this work ----------------------------------------------------------------------------
@@ -272,6 +273,9 @@ pub struct TrackForm {
     pub error: Option<String>,
     /// Fields were filled from an assistant suggestion (14; still unsaved and editable).
     pub assisted: bool,
+    /// `task.link.status` for an unverified run (lane 2C **Link run**, `crate::tasks_2c`).
+    pub link: Option<Value>,
+    pub link_sel: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -310,6 +314,8 @@ impl TrackForm {
             field: TrackField::Source,
             error: None,
             assisted: false,
+            link: None,
+            link_sel: 0,
         }
     }
 
@@ -569,14 +575,19 @@ pub fn open_track(app: &mut App, mi: usize, pane: &str) {
         app.toast("no agent in that pane to track");
         return;
     };
+    open_track_run(app, mi, &run.id, pane);
+}
+
+/// **Track this work** for a specific run (also the **Link run** choice, lane 2C).
+pub fn open_track_run(app: &mut App, mi: usize, run: &str, pane: &str) {
     let id = app.next_ui_id();
     let idem = app.new_idempotency_key("track");
-    app.track = Some(TrackForm::new(id, mi, &run.id, pane, idem));
+    app.track = Some(TrackForm::new(id, mi, run, pane, idem));
     app.mode = Mode::Popup(Popup::Track);
     app.command_on(
         mi,
         "task.sources",
-        json!({"run": run.id, "limit": 10}),
+        json!({"run": run, "limit": 10}),
         Pending::Task(Reply::Sources { form: id }),
     );
 }
@@ -585,6 +596,15 @@ pub fn track_key(app: &mut App, ev: KeyEvent) {
     let Some(mut f) = app.track.take() else {
         return;
     };
+    // Link run (lane 2C): choose a verified run instead of an unverified one.
+    if f.phase == TrackPhase::Unverified && ev.key != Key::Named(NamedKey::Escape) {
+        if crate::tasks_2c::link_key(app, f.clone(), &ev) {
+            return;
+        }
+        app.track = Some(f);
+        app.mode = Mode::Popup(Popup::Track);
+        return;
+    }
     // Suggest task details (15 §2.2 via 14): preview → confirm → fills this form, unsaved.
     if ev.mods.ctrl() && ev.key == Key::Char('g') && f.phase == TrackPhase::Ready {
         app.track = Some(f);
@@ -1090,6 +1110,8 @@ pub enum TaskSub {
     Authorize(AuthDialog),
     /// T4 screens (`crate::tasks_t4`).
     T4(crate::tasks_t4::T4Sub),
+    /// Lane 2C screens (`crate::tasks_2c`): human review, select changes.
+    Lane2c(crate::tasks_2c::Sub),
 }
 
 /// The check authorization dialog (15 §6.3). It freezes the exact subject and check-definition
@@ -1438,6 +1460,11 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
             crate::tasks_t4::sub_key(app, s, ev);
             return;
         }
+        TaskSub::Lane2c(s) => {
+            app.task_view = Some(v);
+            crate::tasks_2c::sub_key(app, s, ev);
+            return;
+        }
         TaskSub::None => {}
     }
     let detail = v.detail.clone().unwrap_or(Value::Null);
@@ -1445,6 +1472,11 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
     if crate::tasks_t4::is_main_key(&ev) {
         app.task_view = Some(v);
         crate::tasks_t4::main_key(app, ev);
+        return;
+    }
+    if crate::tasks_2c::is_main_key(&ev) {
+        app.task_view = Some(v);
+        crate::tasks_2c::main_key(app, ev);
         return;
     }
     match ev.key {
@@ -1795,10 +1827,12 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             let Some(f) = app.track.as_mut().filter(|f| f.id == form) else {
                 return;
             };
+            let mut link = false;
             match res {
                 Ok(v) => f.load_sources(&v),
                 Err(e) if e.reason() == Some("binding_unverified") => {
-                    f.phase = TrackPhase::Unverified
+                    f.phase = TrackPhase::Unverified;
+                    link = true;
                 }
                 Err(e) if e.is_method_not_found() => {
                     f.phase = TrackPhase::Unverified;
@@ -1808,6 +1842,9 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     f.phase = TrackPhase::Unverified;
                     f.error = Some(e.message);
                 }
+            }
+            if link {
+                crate::tasks_2c::request_link(app, mi);
             }
         }
         Reply::Track { form } => {
@@ -1831,15 +1868,20 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     ));
                 }
                 Err(e) => {
+                    let mut link = false;
                     if let Some(f) = app.track.as_mut().filter(|f| f.id == form) {
                         if e.reason() == Some("binding_unverified") {
                             f.phase = TrackPhase::Unverified;
+                            link = true;
                         } else {
                             f.phase = TrackPhase::Ready;
                             f.error = Some(e.message);
                         }
                     } else {
                         app.toast(format!("✗ track: {}", e.message));
+                    }
+                    if link {
+                        crate::tasks_2c::request_link(app, mi);
                     }
                 }
             }
@@ -2157,6 +2199,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
         }
         Reply::T4(r) => crate::tasks_t4::on_reply(app, mi, r, res),
+        Reply::Lane2c(r) => crate::tasks_2c::on_reply(app, mi, r, res),
         Reply::TaskRuns { task } => {
             let Ok(d) = res else {
                 return;
@@ -2665,6 +2708,7 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
         }
     }
     crate::tasks_t4::review_lines(app, p, v, w, out);
+    crate::tasks_2c::review_lines(app, p, w, out);
 }
 
 /// The acceptance block, from the server's shape `{acceptance: {subject_id, head_sha,
@@ -2771,7 +2815,7 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
     let t = app.theme;
     let sel = |on: bool| if on { t.sel(t.accent) } else { t.text() };
     match &v.sub {
-        TaskSub::None | TaskSub::T4(_) => None,
+        TaskSub::None | TaskSub::T4(_) | TaskSub::Lane2c(_) => None,
         TaskSub::Edit(f) => {
             let mut l: Lines = Vec::new();
             l.push((
@@ -3044,6 +3088,7 @@ fn task_keys(v: &TaskView) -> String {
         k.push("m mark reviewed");
     }
     k.extend(crate::tasks_t4::keys_hint(v));
+    k.extend(crate::tasks_2c::keys_hint(v));
     k.extend([
         "S summarize review",
         "D drafts",
@@ -3076,6 +3121,10 @@ pub fn draw_task(app: &App, g: &mut Grid) {
     }
     if let TaskSub::T4(s) = &v.sub {
         crate::tasks_t4::draw_sub(app, g, v, s, r, y);
+        return;
+    }
+    if let TaskSub::Lane2c(s) = &v.sub {
+        crate::tasks_2c::draw_sub(app, g, s, r, y);
         return;
     }
     if let Some((title, lines)) = sub_lines(app, v, w) {
@@ -3140,6 +3189,11 @@ pub fn draw_track(app: &App, g: &mut Grid) {
             );
             if let Some(e) = &f.error {
                 b.line(e, t.s(t.red));
+            }
+            let mut link = Vec::new();
+            crate::tasks_2c::link_lines(app, f, &mut link);
+            for (s, stl) in &link {
+                b.line(s, *stl);
             }
             b.line("[esc] close", t.dim());
             return;

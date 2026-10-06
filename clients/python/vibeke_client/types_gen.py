@@ -523,6 +523,20 @@ RateLimitInfo = TypedDict("RateLimitInfo", {
     "observed_at_ms": int,
 })
 
+ReviewPurge = TypedDict("ReviewPurge", {
+    "tasks": int,
+    "runs": int,
+    "messages": int,
+    "intent_excerpts": int,
+    "turns": int,
+    "tool_items": int,
+    "reviewer_prompts": int,
+    "notes": int,
+    "human_notes": int,
+    "check_logs": int,
+    "projections": int,
+})
+
 RpcError = TypedDict("RpcError", {
     "code": int,
     "message": str,
@@ -1231,6 +1245,30 @@ AssistantTestResult = TypedDict("AssistantTestResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AttentionBatchParams = TypedDict("AttentionBatchParams", {
+    "interaction": str,
+})
+
+AttentionBatchResultMembersItem = TypedDict("AttentionBatchResultMembersItem", {
+    "interaction": str,
+    "handle": str,
+    "run": str,
+    "pane": str,
+    "title": str,
+    "decision_rev": int,
+    "opened_at_ms": int,
+})
+
+AttentionBatchResult = TypedDict("AttentionBatchResult", {
+    "interaction": str,
+    "batchable": bool,
+    "batch": NotRequired[str],
+    "reason": NotRequired[str],
+    "members": List["AttentionBatchResultMembersItem"],
+    "facts": NotRequired[Optional[Dict[str, Any]]],
+    "note": NotRequired[str],
+})
+
 AttentionListParams = TypedDict("AttentionListParams", {
     "budget_ms": NotRequired[int],
     "effort": NotRequired[Literal["quick", "minutes", "deep"]],
@@ -1244,6 +1282,11 @@ AttentionListResultItemsItemKey = TypedDict("AttentionListResultItemsItemKey", {
 AttentionListResultItemsItemEffortEstimateV0 = TypedDict("AttentionListResultItemsItemEffortEstimateV0", {
     "effort": str,
     "source": Literal["heuristic"],
+})
+
+AttentionListResultItemsItemBatchV0 = TypedDict("AttentionListResultItemsItemBatchV0", {
+    "id": str,
+    "size": int,
 })
 
 AttentionListResultItemsItem = TypedDict("AttentionListResultItemsItem", {
@@ -1264,6 +1307,10 @@ AttentionListResultItemsItem = TypedDict("AttentionListResultItemsItem", {
     "snoozed_until_ms": Optional[int],
     "woke_from_snooze": Optional[str],
     "urgent": bool,
+    "deadline_ms": NotRequired[Optional[int]],
+    "deadline_source": NotRequired[Optional[Union[Literal["native"], Literal["gate"]]]],
+    "deadline_in_ms": NotRequired[Optional[int]],
+    "batch": NotRequired[Optional["AttentionListResultItemsItemBatchV0"]],
 })
 
 AttentionListResultCoverageScopeV1 = TypedDict("AttentionListResultCoverageScopeV1", {
@@ -1299,10 +1346,38 @@ AttentionListResultFiveMinuteV0 = TypedDict("AttentionListResultFiveMinuteV0", {
     "item_notes": List["AttentionListResultFiveMinuteV0ItemNotesItem"],
 })
 
+AttentionListResultBatchesItemMembersItem = TypedDict("AttentionListResultBatchesItemMembersItem", {
+    "kind": str,
+    "id": str,
+})
+
+AttentionListResultBatchesItem = TypedDict("AttentionListResultBatchesItem", {
+    "id": str,
+    "members": List["AttentionListResultBatchesItemMembersItem"],
+})
+
+AttentionListResultAlsoWorkingItemTaskV0 = TypedDict("AttentionListResultAlsoWorkingItemTaskV0", {
+    "id": str,
+    "handle": str,
+    "title": str,
+})
+
+AttentionListResultAlsoWorkingItem = TypedDict("AttentionListResultAlsoWorkingItem", {
+    "run": str,
+    "pane": str,
+    "name": str,
+    "harness": str,
+    "task": Optional["AttentionListResultAlsoWorkingItemTaskV0"],
+    "since_ms": int,
+    "working_for_ms": int,
+})
+
 AttentionListResult = TypedDict("AttentionListResult", {
     "items": List["AttentionListResultItemsItem"],
     "coverage": "AttentionListResultCoverage",
     "five_minute": Optional["AttentionListResultFiveMinuteV0"],
+    "batches": NotRequired[List["AttentionListResultBatchesItem"]],
+    "also_working": NotRequired[List["AttentionListResultAlsoWorkingItem"]],
 })
 
 AttentionUpdateParamsKey = TypedDict("AttentionUpdateParamsKey", {
@@ -4559,6 +4634,7 @@ ScrollbackForgetResult = TypedDict("ScrollbackForgetResult", {
     "bytes_deleted": NotRequired[int],
     "fts_rows_deleted": NotRequired[int],
     "archive_panes_dropped": NotRequired[int],
+    "review": NotRequired["ReviewPurge"],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -5119,6 +5195,36 @@ TaskGetResult = TypedDict("TaskGetResult", {
     "pr": NotRequired[Optional["PrLookup"]],
 })
 
+TaskLinkStatusParams = TypedDict("TaskLinkStatusParams", {
+    "run": NotRequired[str],
+    "pane": NotRequired["Target"],
+})
+
+TaskLinkStatusResultRun = TypedDict("TaskLinkStatusResultRun", {
+    "id": str,
+    "handle": str,
+    "harness": str,
+    "integration": str,
+    "pane": str,
+    "session_reported": bool,
+})
+
+TaskLinkStatusResultRemediesItem = TypedDict("TaskLinkStatusResultRemediesItem", {
+    "action": str,
+    "label": str,
+    "command": NotRequired[str],
+    "note": NotRequired[str],
+})
+
+TaskLinkStatusResult = TypedDict("TaskLinkStatusResult", {
+    "run": "TaskLinkStatusResultRun",
+    "verified": bool,
+    "reasons": List[str],
+    "remedies": List["TaskLinkStatusResultRemediesItem"],
+    "candidates": List[Dict[str, Any]],
+    "note": str,
+})
+
 TaskListParams = TypedDict("TaskListParams", {
     "status": NotRequired[str],
     "repo": NotRequired[str],
@@ -5354,6 +5460,22 @@ TaskReviewDiffResult = TypedDict("TaskReviewDiffResult", {
     "max_bytes": int,
 })
 
+TaskReviewForgetParams = TypedDict("TaskReviewForgetParams", {
+    "task": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "before": NotRequired[Union[str, int]],
+    "all": NotRequired[bool],
+    "dry_run": NotRequired[bool],
+})
+
+TaskReviewForgetResult = TypedDict("TaskReviewForgetResult", {
+    "scope": Any,
+    "dry_run": bool,
+    "purged": "ReviewPurge",
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskReviewGetParams = TypedDict("TaskReviewGetParams", {
     "task": "Target",
     "subject": NotRequired[str],
@@ -5374,6 +5496,7 @@ TaskReviewGetResultSnapshot = TypedDict("TaskReviewGetResultSnapshot", {
     "available": bool,
     "method": str,
     "note": str,
+    "selection": NotRequired[Dict[str, Any]],
 })
 
 TaskReviewGetResultActionsAccept = TypedDict("TaskReviewGetResultActionsAccept", {
@@ -5427,6 +5550,25 @@ TaskReviewGetResult = TypedDict("TaskReviewGetResult", {
     "effort": "TaskReviewGetResultEffort",
     "snapshot": "TaskReviewGetResultSnapshot",
     "actions": "TaskReviewGetResultActions",
+    "human_reviews": NotRequired[List[Dict[str, Any]]],
+    "purged": NotRequired[Any],
+})
+
+TaskReviewHumanReviewParams = TypedDict("TaskReviewHumanReviewParams", {
+    "task": "Target",
+    "criterion": str,
+    "verdict": Literal["supported", "failed", "withdrawn"],
+    "subject": NotRequired[str],
+    "expected_subject": NotRequired[str],
+    "note": NotRequired[str],
+    "screenshots": NotRequired[List[str]],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskReviewHumanReviewResult = TypedDict("TaskReviewHumanReviewResult", {
+    "review": Dict[str, Any],
+    "note": str,
+    "cursor": NotRequired["Cursor"],
 })
 
 TaskReviewIntervalStatusParams: TypeAlias = Dict[str, Any]
@@ -5507,12 +5649,15 @@ TaskReviewRequestReviewerResult = TypedDict("TaskReviewRequestReviewerResult", {
 
 TaskReviewSnapshotParams = TypedDict("TaskReviewSnapshotParams", {
     "task": "Target",
+    "paths": NotRequired[List[str]],
+    "patch": NotRequired[str],
     "idempotency_key": NotRequired[str],
 })
 
 TaskReviewSnapshotResult = TypedDict("TaskReviewSnapshotResult", {
     "subject": Dict[str, Any],
     "snapshot": Dict[str, Any],
+    "selection": NotRequired[Dict[str, Any]],
     "label": str,
     "note": str,
     "cursor": NotRequired["Cursor"],
@@ -5549,6 +5694,7 @@ TaskReviewStartReviewerParams = TypedDict("TaskReviewStartReviewerParams", {
     "pane": NotRequired["Target"],
     "split_of": NotRequired["Target"],
     "direction": NotRequired[str],
+    "checkout": NotRequired[Literal["disposable", "task"]],
     "idempotency_key": NotRequired[str],
 })
 
@@ -5825,6 +5971,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "assistant.revoke": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "assistant.test": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "attention.batch": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "attention.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "attention.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "audit.search": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
@@ -6048,6 +6195,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.finish": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.link.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.park": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6062,7 +6210,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.review.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.review.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.review.human_review": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.interval_status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.intervals": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.note.classify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -7155,6 +7305,18 @@ ReviewEndCandidatePinnedData = TypedDict("ReviewEndCandidatePinnedData", {
     "note": Any,
 })
 
+ReviewHumanReviewedSubject = TypedDict("ReviewHumanReviewedSubject", {
+    "task": str,
+    "criterion": str,
+    "subject": str,
+})
+
+ReviewHumanReviewedData = TypedDict("ReviewHumanReviewedData", {
+    "verdict": str,
+    "screenshots": int,
+    "intent_revision": int,
+})
+
 ReviewInvalidatedSubject = TypedDict("ReviewInvalidatedSubject", {
     "task": str,
     "acceptance": str,
@@ -7229,6 +7391,21 @@ ReviewPrObservedData = TypedDict("ReviewPrObservedData", {
     "draft": Optional[bool],
     "checks": Optional[Union[Literal["none"], Literal["pending"], Literal["passing"], Literal["failing"]]],
     "reason": Optional[str],
+})
+
+ReviewPurgedSubject = TypedDict("ReviewPurgedSubject", {
+    "scope": Any,
+})
+
+ReviewPurgedData: TypeAlias = "ReviewPurge"
+
+ReviewReviewerCheckoutRemovedSubject = TypedDict("ReviewReviewerCheckoutRemovedSubject", {
+    "task": str,
+    "request": str,
+})
+
+ReviewReviewerCheckoutRemovedData = TypedDict("ReviewReviewerCheckoutRemovedData", {
+    "run": Optional[str],
 })
 
 ReviewReviewerRequestedSubject = TypedDict("ReviewReviewerRequestedSubject", {
@@ -8049,6 +8226,7 @@ EVENT_TYPES = (
     "review.accepted",
     "review.candidate_created",
     "review.end_candidate_pinned",
+    "review.human_reviewed",
     "review.invalidated",
     "review.label_changed",
     "review.note_classified",
@@ -8056,6 +8234,8 @@ EVENT_TYPES = (
     "review.pr_claimed",
     "review.pr_head_changed",
     "review.pr_observed",
+    "review.purged",
+    "review.reviewer_checkout_removed",
     "review.reviewer_requested",
     "review.reviewer_started",
     "review.reviewer_unknown",
