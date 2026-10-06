@@ -8,7 +8,7 @@
 //! | `host` | [`HostRunner`] | identity |
 //! | `sandbox` | [`SandboxRunner`] | Seatbelt (macOS, tested); bubblewrap+Landlock+seccomp (Linux, generated + unit-tested, unverified on a Linux host) |
 //! | `container` | [`crate::container::ContainerRunner`] | per-task box (`run -d`), panes are `exec -it` (Docker/OrbStack/Podman; Apple `container` open network only) |
-//! | `vm` | [`VmRunner`] | placeholder (M4) |
+//! | `vm` | [`VmRunner`] (unconfigured placeholder), [`crate::vm::VmBoxRunner`] | scaffolding behind `[isolation.vm] enabled`: fake backend tested, Lima/Tart command lines unverified on real VMs |
 
 use crate::creds::Projection;
 use crate::env;
@@ -363,7 +363,7 @@ impl Runner for VmRunner {
     fn check(&self) -> Result<(), RunnerError> {
         Err(RunnerError::Unavailable {
             level: "vm",
-            reason: "the vm level ships in M4 (Lima vz/Tart on macOS, Firecracker on Linux)".into(),
+            reason: "the vm level is off: set `[isolation.vm] enabled = true` (providers: tart, lima on macOS; `fake` for dry runs)".into(),
         })
     }
     fn prepare(&self, _req: SpawnRequest) -> Result<PreparedSpawn, RunnerError> {
@@ -396,7 +396,10 @@ pub fn availability() -> Vec<(IsolationLevel, Result<String, String>)> {
         (IsolationLevel::Host, Ok("always".into())),
         (IsolationLevel::Sandbox, sbx),
         (IsolationLevel::Container, ctr),
-        (IsolationLevel::Vm, Err("M4".into())),
+        (
+            IsolationLevel::Vm,
+            Err("off by default: set [isolation.vm] enabled = true (tart or lima)".into()),
+        ),
     ]
 }
 

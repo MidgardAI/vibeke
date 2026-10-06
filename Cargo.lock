@@ -3573,6 +3573,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vk-orchestrate"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "vk-tasks",
+]
+
+[[package]]
 name = "vk-preview"
 version = "0.1.0"
 dependencies = [
