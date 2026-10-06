@@ -371,7 +371,7 @@ fn the_shim_never_talks_to_a_socket_that_is_not_a_registered_broker() {
     // never forwarded anywhere.
     let (code, e) = s_.fail(&["compat", "herdr", "server", "stop"]);
     assert_eq!(code, 1, "{e}");
-    assert_eq!(e["error"]["kind"], "unsupported", "{e}");
+    assert_eq!(e["error"]["code"], "unsupported", "{e}");
     std::thread::sleep(Duration::from_millis(300));
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     t.join().unwrap();
