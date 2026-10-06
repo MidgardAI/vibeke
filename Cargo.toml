@@ -20,6 +20,7 @@ vk-agents = { path = "crates/vk-agents" }
 vk-tasks = { path = "crates/vk-tasks" }
 vk-review = { path = "crates/vk-review" }
 vk-remote = { path = "crates/vk-remote" }
+vk-preview = { path = "crates/vk-preview" }
 vk-tui = { path = "crates/vk-tui" }
 vk-cli = { path = "crates/vk-cli" }
 vk-compat = { path = "crates/vk-compat" }

@@ -195,13 +195,20 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 );
                 return EXIT_USAGE;
             };
-            let params = match vk_cli::build_params(positional, &args[2..]) {
+            let mut params = match vk_cli::build_params(positional, &args[2..]) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("{e}\n{}", vk_cli::noun_help(noun));
                     return EXIT_USAGE;
                 }
             };
+            let mut g = g;
+            if vk_cli::runs_on_viewing_machine(method)
+                && let Some(m) = g.machine.take()
+                && let Some(o) = params.as_object_mut()
+            {
+                o.entry("machine").or_insert(json!(m));
+            }
             {
                 let gr = &g;
                 with_client(gr, |mut c| async move {

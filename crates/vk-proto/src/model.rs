@@ -390,6 +390,10 @@ pub struct SessionModel {
     pub interactions: Vec<Interaction>,
     pub tasks: Vec<Task>,
     pub degraded: Option<String>,
+    /// Previews on this machine (06 B2), suggestions included. Last field: postcard is
+    /// positional, so new fields go after it.
+    #[serde(default)]
+    pub previews: Vec<Preview>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -397,4 +401,67 @@ pub struct ClientFocus {
     pub workspace: Option<String>,
     pub tab: Option<String>,
     pub pane: Option<String>,
+}
+
+/// Preview lifecycle (06 B2): `suggested|declared → up ⇄ down → gone`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewStatus {
+    /// Discovered (listener, output URL or banner), not confirmed by the user or an agent.
+    Suggested,
+    /// Declared and not probed yet.
+    Declared,
+    Up,
+    Down,
+    Gone,
+}
+
+impl PreviewStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PreviewStatus::Suggested => "suggested",
+            PreviewStatus::Declared => "declared",
+            PreviewStatus::Up => "up",
+            PreviewStatus::Down => "down",
+            PreviewStatus::Gone => "gone",
+        }
+    }
+}
+
+/// Where a preview came from (06 B2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewSource {
+    Declared,
+    /// A LISTEN socket in the pane's process tree.
+    Listener,
+    /// A `http://localhost:<port>` URL printed in the pane.
+    OutputUrl,
+    /// A known dev-server banner (Vite `Local:`, Next `- Local:`).
+    Banner,
+}
+
+/// A dev server reachable on a machine's loopback (02, 06 B2). Postcard-safe (crosses the
+/// render stream inside [`SessionModel`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preview {
+    pub id: String,
+    /// `v<N>`.
+    pub handle: String,
+    pub machine: String,
+    /// Pane id (ULID) the preview belongs to, if any.
+    pub pane: Option<String>,
+    pub task: Option<String>,
+    pub port: u16,
+    /// Path to open, starting with `/`.
+    pub path: String,
+    pub label: Option<String>,
+    /// URL as the dev server printed it (or `http://localhost:<port><path>`).
+    pub url: String,
+    pub scheme: String,
+    pub status: PreviewStatus,
+    pub source: PreviewSource,
+    pub pid: Option<u32>,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
 }

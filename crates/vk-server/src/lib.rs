@@ -8,6 +8,7 @@ pub mod api;
 pub mod core;
 pub mod pane;
 pub mod paths;
+pub mod preview;
 pub mod render;
 pub mod review;
 pub mod run;
@@ -86,6 +87,7 @@ pub struct Server {
     pub tokens: Mutex<HashMap<String, String>>,
     pub tracking: tracking::State,
     pub agents: agents::Agents,
+    pub previews: preview::Previews,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -154,6 +156,7 @@ impl Server {
             tokens: Mutex::new(tokens),
             tracking: Default::default(),
             agents: agents::Agents::default(),
+            previews: preview::Previews::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
@@ -1229,6 +1232,7 @@ impl Server {
             "runs": c.model.runs,
             "interactions": c.model.interactions,
             "tasks": c.model.tasks,
+            "previews": c.model.previews,
         })
     }
 }
