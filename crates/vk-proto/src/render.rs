@@ -213,6 +213,22 @@ pub enum ServerFrame {
         pane: String,
         state: BrowserStatus,
     },
+    /// Event push (07 §3): events matching the client's `ClientFrame::Subscribe` filters, in
+    /// sequence order. `lagged` = the server dropped events for this client (its buffer
+    /// overflowed); the client catches up with `events.read` from its cursor.
+    Events {
+        events: Vec<PushedEvent>,
+        lagged: bool,
+    },
+}
+
+/// One pushed event: its sequence number and type for cheap routing, and the full event as
+/// JSON (the same object `events.read` returns: `seq, ts, type, subject, actor, data`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushedEvent {
+    pub seq: i64,
+    pub kind: String,
+    pub json: String,
 }
 
 /// Changed tiles of one browser pane frame. Tiles are cell-aligned: tile `index` covers
@@ -282,6 +298,17 @@ pub struct BrowserStatus {
     /// CSS viewport size.
     pub css_w: u32,
     pub css_h: u32,
+    /// Watch mode (06 B7): the agent browser session shown (`b3`); `None` for an ordinary
+    /// browser pane.
+    #[serde(default)]
+    pub watch: Option<String>,
+    /// A human has taken the watched session over (input goes to the page, the agent gets
+    /// `human_control` errors).
+    #[serde(default)]
+    pub human_control: bool,
+    /// The take-over is held by this pane (`prefix+t` releases it; closing the pane does too).
+    #[serde(default)]
+    pub controlled_here: bool,
 }
 
 /// A browser pane visible on the client, with the geometry the viewport follows (06 B3.2
@@ -337,6 +364,8 @@ pub enum BrowserCmd {
     /// Hand the profile to a headful window (true) or back to the pane (false) (06 B3.3).
     Window(bool),
     Screenshot,
+    /// Watch mode (06 B7): take the watched agent session over (true) or release it (false).
+    TakeOver(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -411,6 +440,15 @@ pub enum ClientFrame {
         input_id: u64,
         pane: String,
         cmd: BrowserCmd,
+    },
+    /// Event push (07 §3): replace this client's event subscription. `types` are globs as in
+    /// `events.read` (`client.confirm_*`, `interaction.*`); empty = unsubscribe. With `after`,
+    /// matching events after that sequence number are replayed first. Only sent to servers
+    /// whose `render.attach` result lists the `event_push` feature (older servers would drop
+    /// the connection on an unknown frame).
+    Subscribe {
+        types: Vec<String>,
+        after: Option<i64>,
     },
 }
 
@@ -510,6 +548,43 @@ mod tests {
             },
         };
         assert_eq!(rt_client(&k), k);
+    }
+
+    #[test]
+    fn event_push_and_watch_frames_roundtrip() {
+        let ev = ServerFrame::Events {
+            events: vec![PushedEvent {
+                seq: 42,
+                kind: "client.confirm_requested".into(),
+                json: r#"{"seq":42,"type":"client.confirm_requested"}"#.into(),
+            }],
+            lagged: false,
+        };
+        assert_eq!(rt_server(&ev), ev);
+        let sub = ClientFrame::Subscribe {
+            types: vec!["client.confirm_*".into(), "interaction.*".into()],
+            after: Some(41),
+        };
+        assert_eq!(rt_client(&sub), sub);
+        let t = ClientFrame::Browser {
+            input_id: 1,
+            pane: "P".into(),
+            cmd: BrowserCmd::TakeOver(true),
+        };
+        assert_eq!(rt_client(&t), t);
+        let st = ServerFrame::BrowserState {
+            pane: "P".into(),
+            state: BrowserStatus {
+                watch: Some("b3".into()),
+                human_control: true,
+                controlled_here: true,
+                ..Default::default()
+            },
+        };
+        assert_eq!(rt_server(&st), st);
+        // Appended variants: Events after BrowserState, Subscribe after Browser.
+        assert_eq!(encode(&ev).unwrap()[4], 14);
+        assert_eq!(encode(&sub).unwrap()[4], 15);
     }
 
     /// New variants are appended, so existing postcard discriminants are unchanged.

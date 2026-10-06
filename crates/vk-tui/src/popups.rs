@@ -91,97 +91,6 @@ fn find_interaction(app: &App, id: &str) -> Option<(usize, Interaction)> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum GotoTarget {
-    Pane(String),
-    Task(String),
-}
-
-/// Goto entries: (label, machine, target). Panes/agents first, then tracked tasks (`#task`).
-fn goto_entries(app: &App, filter: &str) -> Vec<(String, usize, GotoTarget)> {
-    let f = filter.to_lowercase();
-    let mut out = Vec::new();
-    for (mi, m) in app.machines.iter().enumerate() {
-        let mprefix = if app.machines.len() > 1 {
-            format!("{}/", m.label)
-        } else {
-            String::new()
-        };
-        for w in &m.model.workspaces {
-            for t in m.model.tabs.iter().filter(|t| t.workspace == w.id) {
-                for pid in t.layout.panes() {
-                    let Some(p) = m.model.panes.iter().find(|x| x.id == pid) else {
-                        continue;
-                    };
-                    let run = m.model.runs.iter().find(|r| r.pane == pid);
-                    let agent = run
-                        .map(|r| {
-                            format!(
-                                " @{} {}",
-                                r.name.clone().unwrap_or_else(|| r.harness.clone()),
-                                r.execution.value.as_str()
-                            )
-                        })
-                        .unwrap_or_default();
-                    let label = format!(
-                        "{mprefix}{} :{} {} {}{agent}",
-                        w.display_name(),
-                        t.number,
-                        t.title.clone().unwrap_or_default(),
-                        p.display_title()
-                    );
-                    let hay = label.to_lowercase();
-                    let ok = f.split_whitespace().all(|tok| {
-                        if let Some(state) = tok.strip_prefix('!') {
-                            run.is_some_and(|r| r.execution.value.as_str().starts_with(state))
-                                || (state.starts_with("appr")
-                                    && m.model.interactions.iter().any(|i| {
-                                        i.pane == pid && i.status == InteractionStatus::Open
-                                    }))
-                        } else {
-                            hay.contains(tok.trim_start_matches(['@', '#', ':']))
-                        }
-                    });
-                    if ok {
-                        out.push((label, mi, GotoTarget::Pane(pid)));
-                    }
-                }
-            }
-        }
-    }
-    let wants_task = f.split_whitespace().any(|t| t.starts_with('#'));
-    for (mi, m) in app.machines.iter().enumerate() {
-        let mprefix = if app.machines.len() > 1 {
-            format!("{}/", m.label)
-        } else {
-            String::new()
-        };
-        for t in m
-            .model
-            .tasks
-            .iter()
-            .filter(|t| t.status != "archived" && (t.intent_revision.is_some() || wants_task))
-        {
-            let label = format!(
-                "{mprefix}#{} {} · {}",
-                t.handle,
-                t.title,
-                t.review_label
-                    .as_deref()
-                    .map(crate::tasks::label_text)
-                    .unwrap_or("task")
-            );
-            let hay = label.to_lowercase();
-            if f.split_whitespace().all(|tok| {
-                !tok.starts_with('!') && hay.contains(tok.trim_start_matches(['@', ':']))
-            }) {
-                out.push((label, mi, GotoTarget::Task(t.id.clone())));
-            }
-        }
-    }
-    out
-}
-
 pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
     let esc = matches!(ev.key, Key::Named(NamedKey::Escape));
     match p {
@@ -220,44 +129,9 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             }
         },
         p @ Popup::PasteAsk { .. } => crate::upload::ask_key(app, ev, p),
-        Popup::Goto {
-            mut filter,
-            mut sel,
-        } => {
-            let entries = goto_entries(app, &filter);
-            match ev.key {
-                _ if esc => {}
-                Key::Named(NamedKey::Enter) => match entries.get(sel).cloned() {
-                    Some((_, mi, GotoTarget::Pane(pane))) => {
-                        app.cur = mi;
-                        app.machines[mi].send(vk_proto::render::ClientFrame::Focus { pane });
-                    }
-                    Some((_, mi, GotoTarget::Task(t))) => crate::tasks::open_task(app, mi, &t),
-                    None => {}
-                },
-                Key::Named(NamedKey::Down) | Key::Char('n')
-                    if ev.mods.ctrl() || ev.key == Key::Named(NamedKey::Down) =>
-                {
-                    sel = (sel + 1).min(entries.len().saturating_sub(1));
-                    app.mode = Mode::Popup(Popup::Goto { filter, sel });
-                }
-                Key::Named(NamedKey::Up) | Key::Char('p')
-                    if ev.mods.ctrl() || ev.key == Key::Named(NamedKey::Up) =>
-                {
-                    sel = sel.saturating_sub(1);
-                    app.mode = Mode::Popup(Popup::Goto { filter, sel });
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    filter.pop();
-                    app.mode = Mode::Popup(Popup::Goto { filter, sel: 0 });
-                }
-                Key::Char(c) if !ev.mods.ctrl() => {
-                    filter.push(c);
-                    app.mode = Mode::Popup(Popup::Goto { filter, sel: 0 });
-                }
-                _ => app.mode = Mode::Popup(Popup::Goto { filter, sel }),
-            }
-        }
+        Popup::Goto { filter, sel } => crate::nav::goto_key(app, ev, filter, sel),
+        Popup::Palette { filter, sel } => crate::nav::palette_key(app, ev, filter, sel),
+        Popup::Hints(h) => crate::nav::hints_key(app, ev, h),
         Popup::Inbox => crate::inbox::key(app, ev),
         Popup::Track => crate::tasks::track_key(app, ev),
         Popup::Task => crate::tasks::task_key(app, ev),
@@ -310,6 +184,12 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                     }
                     None => app.mode = Mode::Popup(Popup::Peek { pane }),
                 }
+            }
+            // Watch the agent's browser session (06 B7).
+            Key::Char('w') => {
+                let mi = app.cur;
+                app.return_to.clear();
+                crate::nav::watch_session(app, mi, json!({"agent_pane": pane}));
             }
             Key::Char('r') | Key::Char('i') => {
                 app.mode = Mode::Prompt(crate::app::Prompt {
@@ -457,6 +337,12 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                         "navigate sidebar (space peek, a answer)",
                     ),
                     ("goto", "goto anything"),
+                    (
+                        "command_palette",
+                        "command palette (every action, searchable)",
+                    ),
+                    ("last_workspace", "back to the last workspace"),
+                    ("url_hints", "label URLs/IDs in the pane: open or copy"),
                     ("next_attention", "next agent that needs you"),
                     ("enter_copy_mode", "copy mode (/ search, v select, y yank)"),
                     ("resize_mode", "resize mode"),
@@ -560,25 +446,14 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 }
             }
             Popup::Goto { filter, sel } => {
-                let entries = goto_entries(app, filter);
-                let mut b = frame(
-                    app,
-                    g,
-                    80,
-                    22,
-                    "goto · type to filter · !approve !working @name",
-                );
-                b.line(&format!("> {filter}"), t.bold(t.fg));
-                for (i, (label, _, _)) in entries
-                    .iter()
-                    .enumerate()
-                    .skip(sel.saturating_sub(15))
-                    .take(18)
-                {
-                    let st = if i == *sel { t.sel(t.accent) } else { t.text() };
-                    b.line(label, st);
-                }
+                let (x, y) = crate::nav::draw_goto(app, g, filter, *sel);
+                return Some((x, y, CursorShape::Bar));
             }
+            Popup::Palette { filter, sel } => {
+                let (x, y) = crate::nav::draw_palette(app, g, filter, *sel);
+                return Some((x, y, CursorShape::Bar));
+            }
+            Popup::Hints(h) => crate::nav::draw_hints(app, g, h),
             Popup::Inbox => crate::inbox::draw(app, g),
             Popup::Task => crate::tasks::draw_task(app, g),
             Popup::Track => crate::tasks::draw_track(app, g),
@@ -637,11 +512,29 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     }
                 }
                 let tracked = run.and_then(|r| crate::tasks::task_for_run(app, app.cur, r));
+                let browsing = crate::nav::session_of_pane(app, app.cur, pane);
+                if let Some(s) = browsing {
+                    b.line(
+                        &format!(
+                            "◉ browsing {} · {}{}  [w] watch",
+                            s.handle,
+                            s.url
+                                .trim_start_matches("http://")
+                                .trim_start_matches("https://"),
+                            if s.human_control {
+                                " · taken over"
+                            } else {
+                                ""
+                            }
+                        ),
+                        t.s(t.accent),
+                    );
+                }
                 b.line(
                     if tracked.is_some() {
-                        "[enter] focus  [a] answer  [r] reply  [t] task details  [esc] close"
+                        "[enter] focus  [a] answer  [r] reply  [t] task details  [w] watch browser  [esc] close"
                     } else {
-                        "[enter] focus  [a] answer  [r] reply  [t] track this work  [esc] close"
+                        "[enter] focus  [a] answer  [r] reply  [t] track this work  [w] watch browser  [esc] close"
                     },
                     t.dim(),
                 );

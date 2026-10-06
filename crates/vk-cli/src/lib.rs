@@ -781,6 +781,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ("browser", "release", "browser.release", &["session"], ""),
     (
         "browser",
+        "watch",
+        "browser.watch",
+        &["session"],
+        "<session> [--pane p] [--split right|down|tab] — watch an agent's session in a browser pane (read-only; prefix+t takes over)",
+    ),
+    (
+        "browser",
         "pane-status",
         "browser.pane.status",
         &[],

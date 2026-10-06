@@ -65,6 +65,8 @@ pub struct Machine {
     pub clipboard_allowed: Option<bool>,
     pub pending: HashMap<u64, Pending>,
     pub auto_ws: bool,
+    /// `render.attach` features of this machine's server (`event_push`, …).
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +79,8 @@ pub enum Pending {
     Attn(crate::inbox::Reply),
     /// Phone-gateway support (presence, confirm overlay, devices).
     Gateway(crate::gateway::Reply),
+    /// Navigation (agent browser sessions for the palette and peek).
+    Nav(crate::nav::Reply),
     /// A durable mutation (persisted in `client-pending.json` before dispatch); `then` handles
     /// the response once the operation is forgotten.
     Op {
@@ -144,6 +148,7 @@ impl Machine {
             clipboard_allowed: None,
             pending: HashMap::new(),
             auto_ws: false,
+            features: Vec::new(),
         }
     }
     pub fn send(&self, f: ClientFrame) -> bool {
@@ -189,6 +194,13 @@ pub enum Popup {
         filter: String,
         sel: usize,
     },
+    /// Searchable command palette (`prefix+:`, 08 §6.3).
+    Palette {
+        filter: String,
+        sel: usize,
+    },
+    /// URL/ID hint labels over the focused pane (`url_hints`).
+    Hints(crate::nav::Hints),
     /// Interaction card for an unfocused agent (08 §8).
     Card {
         interaction: String,
@@ -322,6 +334,10 @@ pub struct App {
     pub gateway: crate::gateway::State,
     /// Browser panes on this client (06 B3.2).
     pub browser: crate::browser::BrowserUi,
+    /// Event push per machine (07 §3).
+    pub push: crate::push::State,
+    /// Palette/goto history, last workspace, agent browser sessions, title sync.
+    pub nav: crate::nav::Nav,
 }
 
 pub struct Opts {
@@ -338,7 +354,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
 pub enum Incoming {
     Frame(usize, ServerFrame),
-    Connected(usize, mpsc::UnboundedSender<ClientFrame>),
+    /// Render stream up, with the server's `render.attach` features.
+    Connected(usize, mpsc::UnboundedSender<ClientFrame>, Vec<String>),
     Disconnected(usize, String),
     /// Progress from a transfer task (separate connection, see `upload`).
     Upload(crate::upload::UploadEvent),
@@ -366,8 +383,17 @@ pub async fn attach_stream(
     if let Some(e) = v.get("error") {
         anyhow::bail!("render.attach: {e}");
     }
+    let features: Vec<String> = v
+        .pointer("/result/features")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| f.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientFrame>();
-    let _ = inc.send(Incoming::Connected(idx, tx));
+    let _ = inc.send(Incoming::Connected(idx, tx, features));
     let inc2 = inc.clone();
     tokio::spawn(async move {
         loop {
@@ -457,6 +483,11 @@ async fn run_inner(
     if let Some(e) = app.pending_ops.load_error.clone() {
         app.toast(format!("pending operations unreadable: {e}"));
     }
+    app.nav = crate::nav::Nav::open(
+        crate::pending::default_dir(&opts.session),
+        &crate::nav::client_key(),
+        &opts.session,
+    );
     if !app.pending_ops.ops.is_empty() {
         app.toast(format!(
             "{} pending operation(s) from a previous session — checking outcomes",
@@ -512,8 +543,9 @@ async fn run_inner(
             inc = inc_rx.recv() => {
                 let Some(inc) = inc else { return Ok("disconnected".into()) };
                 match inc {
-                    Incoming::Connected(i, tx) => {
+                    Incoming::Connected(i, tx, features) => {
                         app.machines[i].tx = Some(tx);
+                        app.machines[i].features = features;
                         app.machines[i].status = "connected".into();
                         app.machines[i].panes.clear();
                         app.machines[i].last_hint.clear();
@@ -541,7 +573,7 @@ async fn run_inner(
                     match more {
                         Incoming::Frame(i, f) => app.on_frame(i, f),
                         Incoming::Upload(e) => crate::upload::on_event(&mut app, e),
-                        Incoming::Connected(i, tx) => { app.machines[i].tx = Some(tx); app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
+                        Incoming::Connected(i, tx, features) => { app.machines[i].tx = Some(tx); app.machines[i].features = features; app.machines[i].status = "connected".into(); app.machines[i].panes.clear(); app.machines[i].last_hint.clear(); app.on_connected(i); }
                         Incoming::Disconnected(i, _) => {
                             app.machines[i].tx = None;
                             app.on_disconnected(i);
@@ -603,6 +635,8 @@ impl App {
             return_to: Vec::new(),
             ui_seq: 1,
             browser: Default::default(),
+            push: Default::default(),
+            nav: Default::default(),
         }
     }
 }
@@ -795,6 +829,7 @@ impl App {
         crate::browser::on_connected(self, i);
         crate::inbox::on_connected(self, i);
         crate::gateway::on_connected(self, i);
+        crate::push::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -1106,6 +1141,9 @@ impl App {
             ServerFrame::BrowserState { pane, state } => {
                 crate::browser::on_state(self, i, pane, state)
             }
+            ServerFrame::Events { events, lagged } => {
+                crate::push::on_events(self, i, events, lagged)
+            }
             ServerFrame::Goodbye { reason } => {
                 self.machines[i].status = if reason.contains("stop") {
                     "stopped".into()
@@ -1143,6 +1181,7 @@ impl App {
             Pending::Task(r) => crate::tasks::on_reply(self, i, r, res),
             Pending::Attn(r) => crate::inbox::on_reply(self, i, r, res),
             Pending::Gateway(r) => crate::gateway::on_reply(self, i, r, res),
+            Pending::Nav(r) => crate::nav::on_reply(self, i, r, res),
             Pending::Op { key, then } => {
                 if let Err(e) = &res
                     && e.outcome_unknown()
@@ -1484,7 +1523,7 @@ impl App {
         }
     }
 
-    fn on_paste(&mut self, text: String) {
+    pub(crate) fn on_paste(&mut self, text: String) {
         match &mut self.mode {
             Mode::Prompt(p) => {
                 p.input.push_str(&text.replace(['\n', '\r'], " "));
@@ -1538,7 +1577,7 @@ impl App {
         });
     }
 
-    fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
+    pub(crate) fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
         if crate::browser::on_mouse(self, &me, px) {
             return;
@@ -1782,6 +1821,15 @@ impl App {
                     sel: 0,
                 })
             }
+            "last_workspace" => crate::nav::last_workspace(self),
+            "url_hints" => crate::nav::open_hints(self),
+            "browser_watch" => match pane {
+                Some(p) => {
+                    let cur = self.cur;
+                    crate::nav::watch_session(self, cur, json!({"agent_pane": p}));
+                }
+                None => self.toast("no focused agent"),
+            },
             "next_workspace" | "previous_workspace" => {
                 let list: Vec<Workspace> = self.m().model.workspaces.clone();
                 if let Some(w) = ws
@@ -1863,7 +1911,7 @@ impl App {
                     self.focus_pane(mi, &p);
                 }
             }
-            "command_palette" => self.prompt(PromptKind::Command, ":", String::new()),
+            "command_palette" => crate::nav::open_palette(self, String::new()),
             "new_task" => self.prompt(PromptKind::TaskTitle, "new task title", String::new()),
             "inbox" => crate::inbox::open(self),
             "paste_buffer" => {}
@@ -2035,6 +2083,8 @@ impl App {
             Key::Char(' ') => {
                 if let Some((mi, pane)) = rows.get(sel).cloned() {
                     self.cur = mi;
+                    // The peek shows the agent's browser session (`[w] watch`).
+                    crate::nav::refresh_sessions(self, mi);
                     self.mode = Mode::Popup(Popup::Peek { pane });
                 }
             }
@@ -2279,11 +2329,15 @@ impl App {
         self.dirty = false;
         self.send_view_hints(false);
         crate::browser::update_views(self);
+        crate::nav::observe(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);
         // Browser tile images first; their placeholder cells follow in the grid diff.
         let mut out = crate::browser::take_output(self);
+        if let Some(title) = crate::nav::title_update(self) {
+            out.extend_from_slice(&title);
+        }
         out.reserve(16 * 1024);
         if !self.caps.sync_update {
             out.extend_from_slice(b"\x1b[?25l");

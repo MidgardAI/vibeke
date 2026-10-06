@@ -43,6 +43,100 @@ pub struct Session {
     acks: mpsc::UnboundedSender<(u64, AckStatus)>,
     /// Media channel (browser panes rendered on this server, 06 B3.2).
     media: crate::browser_pane::MediaSession,
+    /// A `ClientFrame::Subscribe` waiting to be applied by the session loop (event push).
+    pending_sub: Option<(Vec<String>, Option<i64>)>,
+}
+
+/// The `render.attach` features this server supports (listed in the attach result).
+pub const FEATURES: &[&str] = &["event_push"];
+
+/// Most events replayed for a `Subscribe { after }` (older ones: `events.read`).
+const PUSH_BACKLOG: usize = 1000;
+
+/// Event push state of one render session (07 §3, `ClientFrame::Subscribe`).
+#[derive(Default)]
+pub struct EventPush {
+    rx: Option<tokio::sync::broadcast::Receiver<Arc<vk_store::Event>>>,
+    types: Vec<String>,
+    last: i64,
+}
+
+impl EventPush {
+    pub fn matches(&self, kind: &str) -> bool {
+        self.types.iter().any(|g| vk_store::glob_match(g, kind))
+    }
+
+    /// Apply a subscription: live events from now on, plus a replay after `after`.
+    pub fn subscribe(
+        &mut self,
+        server: &Server,
+        types: Vec<String>,
+        after: Option<i64>,
+    ) -> Vec<PushedEvent> {
+        if types.is_empty() {
+            *self = EventPush::default();
+            return vec![];
+        }
+        // Subscribe before reading the backlog so nothing falls in between (dupes are
+        // dropped by sequence number).
+        self.rx = Some(server.events.subscribe());
+        self.types = types;
+        self.last = 0;
+        let Some(after) = after else {
+            return vec![];
+        };
+        let backlog = server
+            .with_core(|c| c.store.events_after(after, PUSH_BACKLOG, &self.types))
+            .unwrap_or_default();
+        let out: Vec<PushedEvent> = backlog.iter().map(pushed).collect();
+        if let Some(e) = backlog.last() {
+            self.last = e.seq;
+        }
+        out
+    }
+
+    /// Filter a batch of live events.
+    pub fn filter(&mut self, evs: &[Arc<vk_store::Event>]) -> Vec<PushedEvent> {
+        let mut out = Vec::new();
+        for e in evs {
+            if e.seq > self.last && self.matches(&e.kind) {
+                self.last = e.seq;
+                out.push(pushed(e));
+            }
+        }
+        out
+    }
+}
+
+fn pushed(e: &vk_store::Event) -> PushedEvent {
+    PushedEvent {
+        seq: e.seq,
+        kind: e.kind.clone(),
+        json: serde_json::to_string(e).unwrap_or_default(),
+    }
+}
+
+/// Wait for the next live event (forever when not subscribed).
+async fn next_event(
+    rx: &mut Option<tokio::sync::broadcast::Receiver<Arc<vk_store::Event>>>,
+) -> Result<Arc<vk_store::Event>, tokio::sync::broadcast::error::RecvError> {
+    match rx.as_mut() {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// `client.attached` / `client.detached` (event push lets other clients refresh their device
+/// and client lists without polling).
+fn client_event(server: &Server, kind: &str, client_id: &str, remote: bool) {
+    let mut c = server.core.lock().unwrap();
+    let mut tx = crate::core::Tx::new();
+    tx.event(
+        kind,
+        serde_json::json!({"client": client_id}),
+        serde_json::json!({"kind": "tui", "remote": remote}),
+    );
+    let _ = server.commit(&mut c, tx);
 }
 
 /// Client-facing status for a holder ack (07 §3.2). `Duplicate` means the bytes were written
@@ -113,6 +207,7 @@ where
         }
     }
     server.fix_client_focus();
+    client_event(&server, "client.attached", &client_id, remote);
     *server.geometry_leader.lock().unwrap() = Some(client_id.clone());
     let mut s = Session {
         server: server.clone(),
@@ -126,7 +221,9 @@ where
         remote,
         acks: ack_tx,
         media: crate::browser_pane::MediaSession::new(&server, remote),
+        pending_sub: None,
     };
+    let mut push = EventPush::default();
     let hello = ServerFrame::Hello {
         protocol: PROTOCOL,
         server_version: vk_proto::VERSION.into(),
@@ -143,6 +240,7 @@ where
         wr.flush().await?;
         loop {
             let deadline = s.next_deadline();
+            let mut got_event = None;
             tokio::select! {
                 f = in_rx.recv() => {
                     let Some(f) = f else { break };
@@ -163,11 +261,41 @@ where
                 ev = ui_rx.recv() => {
                     if let Ok(ev) = ev && !s.on_ui(ev, &mut wr).await? { break }
                 }
+                ev = next_event(&mut push.rx) => got_event = Some(ev),
                 _ = tokio::time::sleep_until(deadline) => {}
                 _ = server.shutdown.notified() => {
                     asyncio::write_frame(&mut wr, &ServerFrame::Goodbye { reason: "server stopping".into() }).await?;
                     wr.flush().await?;
                     break;
+                }
+            }
+            if let Some((types, after)) = s.pending_sub.take() {
+                let backlog = push.subscribe(&s.server, types, after);
+                if !backlog.is_empty() {
+                    asyncio::write_frame(&mut wr, &ServerFrame::Events { events: backlog, lagged: false }).await?;
+                }
+            }
+            if let Some(ev) = got_event {
+                use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+                let mut batch = Vec::new();
+                let mut lagged = false;
+                match ev {
+                    Ok(e) => batch.push(e),
+                    Err(RecvError::Lagged(_)) => lagged = true,
+                    Err(RecvError::Closed) => push = EventPush::default(),
+                }
+                if let Some(rx) = push.rx.as_mut() {
+                    loop {
+                        match rx.try_recv() {
+                            Ok(e) => batch.push(e),
+                            Err(TryRecvError::Lagged(_)) => lagged = true,
+                            Err(_) => break,
+                        }
+                    }
+                }
+                let events = push.filter(&batch);
+                if !events.is_empty() || lagged {
+                    asyncio::write_frame(&mut wr, &ServerFrame::Events { events, lagged }).await?;
                 }
             }
             if *model_rx.borrow() != s.model_rev {
@@ -195,6 +323,7 @@ where
         let _ = c.commit(tx);
     });
     server.clients.lock().unwrap().remove(&client_id);
+    client_event(&server, "client.detached", &client_id, remote);
     result
 }
 
@@ -424,6 +553,9 @@ impl Session {
                 .await?;
             }
             ClientFrame::Detach => return Ok(false),
+            ClientFrame::Subscribe { types, after } => {
+                self.pending_sub = Some((types.into_iter().take(64).collect(), after));
+            }
             ClientFrame::MediaView {
                 panes,
                 shm,
@@ -712,3 +844,7 @@ pub async fn write_and_ack(server: &Server, pane: &str, id: u64, bytes: Vec<u8>)
         None => InputStatus::ChildExited,
     }
 }
+
+#[cfg(test)]
+#[path = "render_push_tests.rs"]
+mod push_tests;

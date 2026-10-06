@@ -332,6 +332,10 @@ pub struct Ui {
     pub sync_input: SyncInput,
     pub interactions: Interactions,
     pub fleet: Fleet,
+    /// Outer terminal title sync (OSC 2) with the focused workspace/pane (08 §6.7).
+    pub title_sync: bool,
+    /// `{workspace}`, `{tab}`, `{pane}`, `{machine}`, `{session}`.
+    pub title_format: String,
 }
 impl Default for Ui {
     fn default() -> Self {
@@ -350,6 +354,8 @@ impl Default for Ui {
             sync_input: SyncInput::default(),
             interactions: Interactions::default(),
             fleet: Fleet::default(),
+            title_sync: true,
+            title_format: "{workspace} · {pane}".into(),
         }
     }
 }

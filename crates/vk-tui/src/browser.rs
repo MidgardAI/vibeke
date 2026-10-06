@@ -53,6 +53,7 @@ pub const DEFAULT_BROWSER_KEYS: &[(&str, &str)] = &[
     ("browser_screenshot", "prefix+shift+s"),
     ("browser_window", "prefix+o"),
     ("browser_console", "prefix+alt+c"),
+    ("browser_take_over", "prefix+t"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,8 @@ pub struct BrowserUi {
     /// Pane → URL last reported to a remote owner.
     relayed: HashMap<String, String>,
     pub bytes_out: u64,
+    /// Last "read-only" hint for a watch pane (rate limit).
+    ro_hint: Option<Instant>,
 }
 
 impl BrowserUi {
@@ -201,6 +204,39 @@ pub fn focused_browser(app: &App) -> Option<String> {
     browser_of(app, app.cur, &p).map(|_| p)
 }
 
+/// Watch mode of a browser pane (06 B7): (session, held by this pane, held by anyone).
+pub fn watch_of(app: &App, pane: &str) -> Option<(String, bool, bool)> {
+    let session = browser_of(app, app.cur, pane)?.watch.clone()?;
+    let st = app.browser.panes.get(pane).map(|p| &p.status);
+    Some((
+        session,
+        st.is_some_and(|s| s.controlled_here),
+        st.is_some_and(|s| s.human_control),
+    ))
+}
+
+/// Input to a read-only watch pane is dropped here (the server ignores it too) with a hint.
+fn read_only(app: &mut App, pane: &str) -> bool {
+    match watch_of(app, pane) {
+        Some((_, false, human)) => {
+            if app
+                .browser
+                .ro_hint
+                .is_none_or(|t| t.elapsed() > Duration::from_secs(4))
+            {
+                app.browser.ro_hint = Some(Instant::now());
+                app.toast(if human {
+                    "taken over elsewhere — read-only here; prefix+t takes it over in this pane"
+                } else {
+                    "watching (read-only) — prefix+t takes over"
+                });
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 // ---- views ------------------------------------------------------------------------------------
 
 /// Report visible browser panes to their media hosts (only when something changed) and turn
@@ -216,7 +252,13 @@ pub fn update_views(app: &mut App) {
             let Some(spec) = browser_of(app, cur, &pid).cloned() else {
                 continue;
             };
-            let host = media_host(app, cur);
+            // A watch pane is rendered by its own machine (the one running the agent's
+            // browser); its frames come over that machine's render stream.
+            let host = if spec.watch.is_some() {
+                cur
+            } else {
+                media_host(app, cur)
+            };
             visible.push(pid.clone());
             per_host.entry(host).or_default().push(MediaPane {
                 pane: pid,
@@ -588,9 +630,95 @@ pub fn draw_pane(app: &App, g: &mut Grid, pane: &str, r: Rect) {
         },
         chrome_style,
     );
+    if let Some(w) = spec.and_then(|s| s.watch.clone()) {
+        draw_watch_chrome(app, g, pane, r, &w, url, chrome_style);
+    } else {
+        draw_nav_chrome(g, r, url, st, chrome_style);
+    }
+    draw_content(app, g, r, url, st, pm);
+}
+
+/// Watch-mode chrome (06 B7): `◉ watching agent session b3 · read-only` (or `✋ you control
+/// …`), the agent's URL, and the environment label.
+fn draw_watch_chrome(
+    app: &App,
+    g: &mut Grid,
+    pane: &str,
+    r: Rect,
+    session: &str,
+    url: &str,
+    chrome_style: Style,
+) {
+    let t = &app.theme;
+    let st = app.browser.panes.get(pane).map(|p| &p.status);
+    let here = st.is_some_and(|s| s.controlled_here);
+    let human = st.is_some_and(|s| s.human_control);
+    let (label, style) = if here {
+        (
+            format!(" ✋ you control agent session {session} · prefix+t releases "),
+            Style {
+                attrs: attr::BOLD,
+                ..t.sel(t.red)
+            },
+        )
+    } else if human {
+        (
+            format!(" ◉ watching agent session {session} · taken over elsewhere · read-only "),
+            Style {
+                attrs: attr::BOLD,
+                ..t.sel(t.yellow)
+            },
+        )
+    } else {
+        (
+            format!(" ◉ watching agent session {session} · read-only "),
+            Style {
+                attrs: chrome_style.attrs | attr::BOLD,
+                ..chrome_style
+            },
+        )
+    };
+    let used = g.put_str(r.x, r.y, &label, style, r.w);
+    let shown = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let env = st.map(|s| s.env.clone()).unwrap_or_default();
+    let env_w = UnicodeWidthStr::width(env.as_str()) as u16;
+    let rest = r.w.saturating_sub(used + 1);
+    let env_fits = env_w + 2 < rest.saturating_sub(12);
+    let url_w = if env_fits { rest - env_w - 2 } else { rest };
+    g.put_str(
+        r.x + used + 1,
+        r.y,
+        &crate::draw::truncate(shown, url_w as usize),
+        chrome_style,
+        url_w,
+    );
+    if env_fits && !env.is_empty() {
+        g.put_str(
+            r.x + r.w - env_w - 1,
+            r.y,
+            &env,
+            Style {
+                attrs: chrome_style.attrs | attr::DIM,
+                ..chrome_style
+            },
+            env_w,
+        );
+    }
+}
+
+/// ` ← → ⟳ <url>` and the environment label.
+fn draw_nav_chrome(
+    g: &mut Grid,
+    r: Rect,
+    url: &str,
+    st: Option<&BrowserStatus>,
+    chrome_style: Style,
+) {
     let on = |b: bool| {
         if b {
-            Style { ..chrome_style }
+            chrome_style
         } else {
             Style {
                 attrs: chrome_style.attrs | attr::DIM,
@@ -640,6 +768,21 @@ pub fn draw_pane(app: &App, g: &mut Grid, pane: &str, r: Rect) {
             env_w,
         );
     }
+}
+
+/// The content area: placeholders for the tiles, or a message.
+fn draw_content(
+    app: &App,
+    g: &mut Grid,
+    r: Rect,
+    url: &str,
+    st: Option<&BrowserStatus>,
+    pm: Option<&PaneMedia>,
+) {
+    let t = &app.theme;
+    let shown = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     let content = SRect {
         x: r.x,
         y: r.y + 1,
@@ -736,7 +879,13 @@ fn send_cmd(app: &mut App, pane: &str, cmd: BrowserCmd) {
         .panes
         .get(pane)
         .map(|p| p.host)
-        .unwrap_or_else(|| host_of_focused(app));
+        .unwrap_or_else(|| {
+            if watch_of(app, pane).is_some() {
+                app.cur
+            } else {
+                host_of_focused(app)
+            }
+        });
     let id = app.next_input;
     app.next_input += 1;
     if !app.machines[host].send(ClientFrame::Browser {
@@ -756,6 +905,12 @@ pub fn send_key(app: &mut App, ev: KeyEvent) -> bool {
     let Some(pane) = focused_browser(app) else {
         return false;
     };
+    if ev.kind != vk_proto::input::KeyKind::Release && read_only(app, &pane) {
+        return true;
+    }
+    if watch_of(app, &pane).is_some_and(|w| !w.1) {
+        return true;
+    }
     send_cmd(app, &pane, BrowserCmd::Key(ev));
     true
 }
@@ -764,6 +919,9 @@ pub fn on_paste(app: &mut App, text: &str) -> bool {
     let Some(pane) = focused_browser(app) else {
         return false;
     };
+    if read_only(app, &pane) {
+        return true;
+    }
     send_cmd(app, &pane, BrowserCmd::Text(text.to_string()));
     true
 }
@@ -852,8 +1010,12 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
     if down && app.focused_pane().as_deref() != Some(&pane) {
         app.focus_pane(cur, &pane);
     }
+    let watching = watch_of(app, &pane);
     // Chrome row.
     if y == r.y {
+        if watching.is_some() {
+            return true;
+        }
         if down {
             match chrome_hit(x - r.x) {
                 Some("back") => send_cmd(app, &pane, BrowserCmd::Back),
@@ -862,6 +1024,19 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
                 Some("address") => address_bar(app, &pane),
                 _ => {}
             }
+        }
+        return true;
+    }
+    if let Some((_, here, _)) = watching
+        && !here
+    {
+        if down
+            || matches!(
+                me.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            read_only(app, &pane);
         }
         return true;
     }
@@ -1134,6 +1309,17 @@ pub fn action_name(app: &mut App, action: &str) -> bool {
                 });
             }
         }
+        ("browser_take_over", Some(p)) => match watch_of(app, &p) {
+            Some((session, here, _)) => {
+                send_cmd(app, &p, BrowserCmd::TakeOver(!here));
+                app.toast(if here {
+                    format!("releasing agent session {session}")
+                } else {
+                    format!("taking over agent session {session}")
+                });
+            }
+            None => app.toast("not watching an agent session (browser watch <session>)"),
+        },
         ("browser_console", Some(_)) => {
             app.toast("console split: not built yet (arrives with `vibeke browser console`, Goal 03 Stage 3)");
         }
@@ -1812,3 +1998,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "browser_watch_tests.rs"]
+mod watch_tests;

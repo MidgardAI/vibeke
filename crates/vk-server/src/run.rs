@@ -230,7 +230,8 @@ where
             .unwrap_or(120) as u32;
         let r = Response::ok(
             req.id.unwrap_or(Value::Null),
-            json!({"protocol": vk_proto::render::PROTOCOL, "client_id": client_id}),
+            json!({"protocol": vk_proto::render::PROTOCOL, "client_id": client_id,
+                   "features": render::FEATURES}),
         );
         wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
         wr.write_all(b"\n").await?;

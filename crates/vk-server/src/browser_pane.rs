@@ -46,7 +46,12 @@ pub const METHODS: &[(&str, bool)] = &[
     ("browser.pane.list", false),
     ("browser.pane.status", false),
     ("browser.command", true),
+    ("browser.watch", true),
 ];
+
+/// Watch mode (06 B7): a browser pane showing an agent browser session (`browser.watch`).
+#[path = "browser_watch.rs"]
+pub mod watch;
 
 /// Tiles are `TILE_COLS × TILE_ROWS` host cells (64×64 device px for 16×32 cells).
 pub const TILE_COLS: u16 = 4;
@@ -234,6 +239,8 @@ struct TState {
     frames_in: u64,
     frame_times: Vec<Instant>,
     decode_ms: f64,
+    /// Watch mode: frames come from an agent browser session, not a page of our own.
+    watch: Option<watch::Watch>,
 }
 
 pub struct Target {
@@ -256,6 +263,9 @@ impl Target {
             notice: st.notice.clone(),
             css_w: st.css.0,
             css_h: st.css.1,
+            watch: st.watch.as_ref().map(|w| w.session.clone()),
+            human_control: st.watch.as_ref().is_some_and(|w| w.human),
+            controlled_here: st.watch.as_ref().is_some_and(|w| w.here),
         }
     }
 
@@ -597,11 +607,15 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                         Some(format!("refused to open {}", mp.spec.url)),
                     )
                 };
+                let watched = mp.spec.watch.clone().filter(|_| mp.owner.is_empty());
                 let t = Arc::new(Target {
                     pane: mp.pane.clone(),
                     owner: mp.owner.clone(),
                     st: Mutex::new(TState {
-                        env: env_label(server, &route),
+                        env: match &watched {
+                            Some(w) => watch::env_label(server, w),
+                            None => env_label(server, &route),
+                        },
                         route: route.clone(),
                         page: None,
                         proc: None,
@@ -632,6 +646,7 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                         frames_in: 0,
                         frame_times: Vec::new(),
                         decode_ms: 0.0,
+                        watch: watched.map(watch::Watch::new),
                     }),
                 });
                 inner.targets.insert(mp.pane.clone(), t.clone());
@@ -660,6 +675,10 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
         };
         if start {
             set_screencast(&t, true);
+        }
+        if t.st.lock().unwrap().watch.is_some() {
+            watch::ensure_pump(server, &t);
+            continue;
         }
         if resize {
             schedule_resize(server, &t);
@@ -778,7 +797,8 @@ fn kick(server: &Arc<Server>, t: &Arc<Target>) {
     }
     {
         let mut st = t.st.lock().unwrap();
-        if st.page.is_some() || st.creating || st.subs.is_empty() || st.closed {
+        if st.page.is_some() || st.creating || st.subs.is_empty() || st.closed || st.watch.is_some()
+        {
             return;
         }
         st.creating = true;
@@ -1260,6 +1280,9 @@ fn update_pane_record(
 }
 
 fn browser_title(b: &BrowserPane) -> String {
+    if let Some(w) = &b.watch {
+        return format!("◉ watching {w}");
+    }
     let host = preview::url_host(&b.url).unwrap_or_default();
     let port = b
         .url
@@ -1282,6 +1305,10 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
     let Some(t) = server.browser.target(pane) else {
         return;
     };
+    if t.st.lock().unwrap().watch.is_some() {
+        watch::command(server, &t, cmd, key_releases);
+        return;
+    }
     let page = t.page();
     match cmd {
         BrowserCmd::Key(ev) => {
@@ -1407,6 +1434,11 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
                     Target::mark_state(&mut st);
                 }
             });
+        }
+        BrowserCmd::TakeOver(_) => {
+            let mut st = t.st.lock().unwrap();
+            st.notice = Some("not watching an agent browser session".into());
+            Target::mark_state(&mut st);
         }
         BrowserCmd::Screenshot => {
             let server = server.clone();
@@ -1615,7 +1647,9 @@ pub fn gc(server: &Arc<Server>) {
         inner.targets.retain(|pane, t| {
             let st = t.st.lock().unwrap();
             let gone = t.owner.is_empty() && !local_panes.contains(pane);
-            let idle = st.subs.is_empty() && st.last_viewed.elapsed() > idle_t;
+            // A taken-over watch pane keeps its control while hidden; closing it releases.
+            let holds = st.watch.as_ref().is_some_and(|w| w.here);
+            let idle = st.subs.is_empty() && st.last_viewed.elapsed() > idle_t && !holds;
             if gone || idle {
                 close.push(t.clone());
                 false
@@ -1625,6 +1659,7 @@ pub fn gc(server: &Arc<Server>) {
         });
     }
     for t in close {
+        watch::on_close(server, &t);
         let page = {
             let mut st = t.st.lock().unwrap();
             st.closed = true;
@@ -1854,8 +1889,22 @@ fn split_dir(s: &str) -> Option<Option<Direction>> {
 /// the focused pane). `split = tab` opens it in a new tab; `float` is a right split until
 /// floating panes exist.
 pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    let (url, preview_id, task, preview_pane) = match s(p, "preview").filter(|t| !t.contains("://"))
+    // Watch mode (06 B7, `browser.watch`): human callers only; the URL is informational.
+    let watch = s(p, "watch")
+        .filter(|_| ctx.pane_scope.is_none())
+        .map(str::to_string);
+    let (url, preview_id, task, preview_pane) = match s(p, "preview")
+        .filter(|t| !t.contains("://"))
+        .filter(|_| watch.is_none())
     {
+        _ if watch.is_some() => (
+            s(p, "url")
+                .and_then(normalize_url)
+                .unwrap_or_else(|| "about:blank".into()),
+            None,
+            None,
+            None,
+        ),
         Some(t) => {
             let mut pv = preview::find_local(server, t)?;
             if vk_preview::lifecycle::promote(&mut pv) {
@@ -1933,6 +1982,7 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         history: vec![url.clone()],
         history_index: 0,
         title: String::new(),
+        watch: watch.clone(),
     };
     let created_by = ctx
         .pane_scope
@@ -2005,7 +2055,7 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         tx.event(
             "pane.created",
             subject_pane(&pane),
-            json!({"kind": "browser", "url": url, "source_pane": source, "split": split}),
+            json!({"kind": "browser", "url": url, "source_pane": source, "split": split, "watch": watch}),
         );
         match (dir, new_tab) {
             (Some(d), _) => {
@@ -2114,6 +2164,7 @@ pub async fn open_pane(
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "browser.pane.create" => create_pane(server, ctx, p),
+        "browser.watch" => watch::create(server, ctx, p),
         "browser.pane.update" | "browser.command" if ctx.pane_scope.is_some() => Err(err(
             ErrorKind::PermissionDenied,
             format!("{method} is not allowed from a pane"),
@@ -2306,6 +2357,7 @@ mod tests {
                 frames_in: 0,
                 frame_times: vec![],
                 decode_ms: 0.0,
+                watch: None,
             }),
         }
     }
