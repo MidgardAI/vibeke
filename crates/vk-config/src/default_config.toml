@@ -314,6 +314,14 @@ herdr_socket = false
 [compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/<session>/herdr-compat/herdr.sock
 enabled = false
 
+# Event log retention (02 §2.3). Read by the running server; changes apply at the next hourly
+# sweep (or `vibeke api call storage.prune`). Durations are `7d`/`36h` or a bare number of days.
+# [events]
+# sync_retention    = "7d"          # catch-up/live-UI events (the `sync` tier)
+# history_retention = "365d"        # interactions, policy, task status, agent start/exit (`history`)
+# blob_retention    = "30d"         # unreferenced uploads and tool-output payloads in the blob store
+# max_rows          = 2000000       # hard cap on event rows; oldest `sync` rows go first; 0 = no cap
+
 [update]
 channel        = "stable"             # stable | preview
 version_check  = true

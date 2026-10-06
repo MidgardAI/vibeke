@@ -67,6 +67,7 @@ fn store(server: &Server, run: &str, usage: Option<RunUsage>, limit: Option<Rate
     if usage.is_none() && limit.is_none() {
         return;
     }
+    let stream_usage = usage.clone();
     update_run(server, run, |r, tx| {
         if let Some(u) = usage
             && u != r.usage
@@ -82,6 +83,11 @@ fn store(server: &Server, run: &str, usage: Option<RunUsage>, limit: Option<Rate
             r.rate_limit = Some(l);
         }
     });
+    // Per-turn usage of the Turn/Item stream (02 §1.1): after the run update, never inside it
+    // (the stream takes the core lock itself).
+    if let Some(u) = &stream_usage {
+        crate::items::usage_updated(server, run, u);
+    }
 }
 
 /// Hook-vocabulary events (`on_signal`).

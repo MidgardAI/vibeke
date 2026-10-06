@@ -3179,7 +3179,7 @@
       "milestone": "M1",
       "spec": "`{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}`",
       "params": "{}",
-      "result": "{pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, preview?: object, timers?: object, db_size?: int, rss?: int}"
+      "result": "{pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}"
     },
     {
       "name": "server.stop",

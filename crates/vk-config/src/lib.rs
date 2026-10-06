@@ -3,6 +3,7 @@
 
 mod binding;
 pub mod edit;
+mod events;
 mod keys;
 pub mod layers;
 mod load;
@@ -14,6 +15,7 @@ mod units;
 mod watch;
 
 pub use binding::{Binding, parse_binding, parse_prefix_key};
+pub use events::Events;
 pub use keys::{
     ACTION_ALIASES, COPY_MODE_ACTIONS, Conflict, ConflictReason, DEFAULT_KEYMAP, binding_clash,
     canonical_action, check_keys, default_bindings, is_copy_mode_action, is_known_action,

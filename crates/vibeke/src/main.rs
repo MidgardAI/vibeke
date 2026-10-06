@@ -13,6 +13,7 @@ mod idle;
 mod integration;
 mod remote;
 mod setup;
+mod state_backup;
 
 pub use remote::specs as remote_specs;
 
@@ -37,7 +38,7 @@ usage:
   vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
-  vibeke doctor [--rebuild-index] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index offline
+  vibeke doctor [--rebuild-index|--list-backups|--restore-backup NAME] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index or restore a pre-migration state backup offline
   vibeke doctor terminal         probe the host terminal: a pass/warn row per feature (03 §6.1)
   vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
   vibeke update [--check]         replace the binary and restart the server (panes survive)

@@ -62,7 +62,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
                 }
                 _ = tokio::time::sleep_until(prune_at) => {
                     hk.housekeeping();
-                    let _ = hk.with_core(|c| c.store.prune(7, 365));
+                    crate::hardening::sweep(&hk);
                     hk.archive_retention();
                     prune_at += hour;
                 }
@@ -79,6 +79,13 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::inbox::start(&server);
     crate::config_api::start(&server);
     crate::security::start(&server);
+    crate::machines::start(&server);
+    // Uploads made before the blob stores were unified are ingested off the async threads.
+    let adopt = server.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::blob_store::adopt_legacy(&adopt);
+    });
+    crate::items::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -92,6 +99,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
         sd.housekeeping();
+        crate::machines::stopped(&sd, "signal");
         let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
         tokio::time::sleep(Duration::from_millis(100)).await;
         std::process::exit(0);

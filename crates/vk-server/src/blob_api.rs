@@ -181,7 +181,11 @@ pub fn find(server: &Server, ctx: &Ctx, hash: &str) -> Option<Found> {
     }
     // Pane inbox (blob.put, chunked uploads): shared by every session of the installation, so
     // only files this session recorded as its own, readable by this caller.
-    if recorded_ok && let Ok(rd) = std::fs::read_dir(crate::paths::Paths::inbox().join(&hash[..12]))
+    // Uploads are ingested into the session store (`blob_store`), so the inbox copy only counts
+    // for uploads made before that (or whose ingest failed): the store copy wins.
+    if recorded_ok
+        && hits.is_empty()
+        && let Ok(rd) = std::fs::read_dir(crate::paths::Paths::inbox().join(&hash[..12]))
     {
         for e in rd.flatten() {
             let p = e.path();

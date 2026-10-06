@@ -3364,6 +3364,7 @@ dependencies = [
  "crossterm",
  "jsonschema",
  "libc",
+ "rusqlite",
  "rustix",
  "serde_json",
  "tempfile",
@@ -3738,6 +3739,7 @@ name = "vk-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "libc",
  "rand 0.9.5",
  "rusqlite",
