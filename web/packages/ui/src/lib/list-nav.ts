@@ -1,4 +1,4 @@
-// j/k selection over the current screen's list (inbox cards, pane rows). Lists mark themselves
+// j/k selection over the current screen's list (inbox cards, else the sidebar's workspaces). Lists mark themselves
 // with `data-nav-list`, items with `data-nav-item="<stable key>"`, and the buttons a key may
 // press with `data-act="allow|deny|allow_always|open"`. Keys press the same buttons a pointer
 // would, so confirmations (high/unknown risk, allow always) stay in the path.
@@ -44,8 +44,10 @@ class ListNav {
 
   private root(): Element | null {
     if (typeof document === 'undefined') return null;
-    // The topmost visible list (dialogs never contain one).
-    return document.querySelector('[data-nav-list]');
+    // The screen's own visible list (inbox cards…) wins; otherwise the sidebar's workspace rows
+    // (`data-nav-list="sidebar"`). Dialogs never contain one.
+    const lists = [...document.querySelectorAll('[data-nav-list]')].filter((el) => !el.closest('[inert]') && el.getClientRects().length > 0);
+    return lists.find((el) => el.getAttribute('data-nav-list') !== 'sidebar') ?? lists[0] ?? null;
   }
 
   private items(root: Element): HTMLElement[] {

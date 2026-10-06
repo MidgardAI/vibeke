@@ -334,7 +334,14 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
 }
 
 fn features(gw: &Gateway) -> Vec<&'static str> {
-    let mut f = vec!["inbox", "batch", "push", "git", "transcript"];
+    let mut f = vec![
+        "inbox",
+        "batch",
+        "push",
+        "git",
+        "transcript",
+        "workspace_views",
+    ];
     if gw.cfg.stt.is_some() {
         f.push("stt");
     }

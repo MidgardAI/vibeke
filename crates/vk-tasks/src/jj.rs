@@ -304,6 +304,118 @@ impl Jj {
     }
 }
 
+// ---- display label (08 §2.1: sidebar / status bar) ------------------------------------------
+
+/// Template for [`display_label`]: the working-copy change's bookmarks, else its short change id.
+/// Only built-in keywords: nothing here can be redefined into a command by a repo's config.
+const LABEL_TEMPLATE: &str =
+    r#"if(bookmarks, bookmarks.map(|b| b.name()).join(","), change_id.shortest(8))"#;
+
+/// How long the label query may run before it is killed.
+const LABEL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Longest label kept (chars); sidebars truncate further.
+const LABEL_MAX: usize = 48;
+
+/// The `jj` binary for display queries: `jj` on `PATH`; `$VIBEKE_JJ_BIN` (absolute path) only
+/// when `VIBEKE_TEST_HOOKS=1`.
+pub fn display_bin() -> PathBuf {
+    if std::env::var("VIBEKE_TEST_HOOKS").is_ok_and(|v| v == "1")
+        && let Some(b) = std::env::var_os("VIBEKE_JJ_BIN")
+    {
+        return PathBuf::from(b);
+    }
+    PathBuf::from("jj")
+}
+
+/// An empty `JJ_CONFIG` file in a private (0700) per-process directory, so no user-level jj
+/// config (aliases, fsmonitor, pagers, merge tools) applies to our queries.
+fn empty_config() -> Option<&'static Path> {
+    static CFG: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    CFG.get_or_init(|| {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::env::temp_dir().join(format!("vibeke-jj-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
+        let f = dir.join("empty.toml");
+        std::fs::write(&f, "").ok()?;
+        Some(f)
+    })
+    .as_deref()
+}
+
+/// Clean a template result into a one-line label.
+pub fn clean_label(raw: &str) -> Option<String> {
+    let line = raw.lines().next()?;
+    let s: String = line
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(LABEL_MAX)
+        .collect();
+    let s = s.trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Bookmarks (or short change id) of `@` for the jj repo containing `cwd`; `None` when `cwd` is
+/// not in a jj repo, `bin` is missing, or the query fails or times out. Read-only
+/// (`--ignore-working-copy`: no snapshot, no fsmonitor), no pager, no colour, user config
+/// replaced by an empty file.
+pub fn display_label(bin: &Path, cwd: &Path) -> Option<String> {
+    let root = find_root(cwd)?;
+    let cfg = empty_config()?;
+    let mut child = Command::new(bin)
+        .args([
+            "--ignore-working-copy",
+            "--color",
+            "never",
+            "--no-pager",
+            "-R",
+        ])
+        .arg(&root)
+        .args([
+            "log",
+            "-r",
+            "@",
+            "--no-graph",
+            "--limit",
+            "1",
+            "-T",
+            LABEL_TEMPLATE,
+        ])
+        .current_dir(&root)
+        .env("JJ_CONFIG", cfg)
+        .env_remove("JJ_USER")
+        .env_remove("JJ_EMAIL")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                if !st.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) if start.elapsed() < LABEL_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    clean_label(&out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +452,63 @@ mod tests {
         assert!(is_colocated(&root));
         let other = tempfile::tempdir().unwrap();
         assert!(find_root(other.path()).is_none());
+    }
+
+    #[test]
+    fn display_bin_override_needs_test_hooks() {
+        // SAFETY: the only test in this binary that touches these variables.
+        unsafe {
+            std::env::set_var("VIBEKE_JJ_BIN", "/opt/fake/jj");
+            std::env::remove_var("VIBEKE_TEST_HOOKS");
+        }
+        assert_eq!(display_bin(), PathBuf::from("jj"));
+        unsafe { std::env::set_var("VIBEKE_TEST_HOOKS", "1") };
+        assert_eq!(display_bin(), PathBuf::from("/opt/fake/jj"));
+        unsafe {
+            std::env::remove_var("VIBEKE_TEST_HOOKS");
+            std::env::remove_var("VIBEKE_JJ_BIN");
+        }
+    }
+
+    #[test]
+    fn display_label_hardened_query() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("r");
+        std::fs::create_dir_all(repo.join(".jj")).unwrap();
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        let bin = d.path().join("jj");
+        let argv = d.path().join("argv");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {a}\necho \"cfg=$JJ_CONFIG\" >> {a}\nprintf 'main,dev\\033[0m\\nignored\\n'\n",
+                a = argv.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let l = display_label(&bin, &repo.join("sub")).unwrap();
+        assert_eq!(l, "main,dev[0m");
+        let a = std::fs::read_to_string(&argv).unwrap();
+        for want in [
+            "--ignore-working-copy",
+            "--color never",
+            "--no-pager",
+            "log -r @ --no-graph",
+        ] {
+            assert!(a.contains(want), "{a}");
+        }
+        assert!(a.contains("vibeke-jj-") && a.contains("empty.toml"), "{a}");
+        // Not a jj repo, or no binary: nothing.
+        assert!(display_label(&bin, d.path()).is_none());
+        assert!(display_label(&d.path().join("missing"), &repo).is_none());
+        // A hanging jj is killed.
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        let t = std::time::Instant::now();
+        assert!(display_label(&bin, &repo).is_none());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(clean_label("\n"), None);
+        assert_eq!(clean_label("a\u{1b}b\nc").as_deref(), Some("ab"));
     }
 
     /// A fake `jj` that logs its argv and emulates `workspace add` / `forget` / `list` / `log`.

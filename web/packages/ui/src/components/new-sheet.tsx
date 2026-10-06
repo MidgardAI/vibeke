@@ -105,12 +105,12 @@ export function NewSheet({ open, onClose, hostId, workspaceId }: { open: boolean
               onChange={setHarness}
             />
             <label className="block">
-              <span className="mb-1 block text-[13px] text-muted">{t.newAgent.prompt}</span>
+              <span className="mb-1 block text-sm text-muted">{t.newAgent.prompt}</span>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={3}
-                className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-[15px]"
+                className="w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-base"
               />
             </label>
           </>
@@ -127,7 +127,7 @@ export function NewSheet({ open, onClose, hostId, workspaceId }: { open: boolean
 function Picker({ label, value, options, onChange }: { label: string; value: string | null; options: { value: string; label: string }[]; onChange(v: string): void }) {
   return (
     <div>
-      <div className="mb-1 text-[13px] text-muted">{label}</div>
+      <div className="mb-1 text-sm text-muted">{label}</div>
       <div className="flex flex-wrap gap-1.5">
         {options.map((o) => (
           <button
@@ -135,7 +135,7 @@ function Picker({ label, value, options, onChange }: { label: string; value: str
             type="button"
             onClick={() => onChange(o.value)}
             aria-pressed={value === o.value}
-            className={cx('h-9 rounded-full border px-3 text-[13px]', value === o.value ? 'border-accent bg-accent/10 text-fg' : 'border-border text-muted')}
+            className={cx('h-9 rounded-full border px-3 text-sm', value === o.value ? 'border-accent bg-accent/10 text-fg' : 'border-border text-muted')}
           >
             {o.label}
           </button>

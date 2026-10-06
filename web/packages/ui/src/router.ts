@@ -1,10 +1,36 @@
-// Hash routes (spec 16 §9.3): `#/inbox`, `#/h/<host>/p/<pane>`, push deep links from the gateway
+// Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
+// `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`) and the pairing link `#/pair?d=…`.
+// Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
+// parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
 
 import { useSyncExternalStore } from 'react';
 
 export type Tab = 'inbox' | 'panes' | 'focus' | 'changes';
 export type PaneView = 'term' | 'history' | 'changes';
+export type PanelKind = 'changes' | 'files';
+
+export interface WorkspaceRoute {
+  name: 'workspace';
+  host: string;
+  workspace: string;
+  /** The selected tab (a pane id); null = the remembered or primary one. */
+  pane: string | null;
+  /** Right panel: explicit tab, `off`, or null = the per-device default. */
+  panel: PanelKind | 'off' | null;
+  file: string | null;
+  commit: string | null;
+  /** Changes compared against this ref (`?base=`) instead of the uncommitted work. */
+  base?: string | null;
+  /** `diff`: the centre shows `file`'s diff (from `commit` / `base` when set) as a transient view. */
+  view?: 'diff' | null;
+  /**
+   * The tab's centre: null = the pane's default (agents: the workspace's agent view, see
+   * lib/agent-view.ts), `term` / `conversation` (an agent's terminal or conversation), or
+   * `preview:<id>`.
+   */
+  show?: string | null;
+}
 
 export type Route =
   | { name: 'home' }
@@ -12,7 +38,8 @@ export type Route =
   | { name: 'crew' }
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
-  | { name: 'pane'; host: string; pane: string; view: PaneView }
+  | WorkspaceRoute
+  | { name: 'pane'; host: string; pane: string; view: PaneView; show?: string | null }
   | { name: 'interaction'; host: string; id: string; preselect: 'allow' | 'deny' | null }
   | { name: 'run'; host: string; run: string }
   | { name: 'not_found'; path: string };
@@ -33,6 +60,10 @@ export function parseRoute(hash: string): Route {
   const query = new URLSearchParams(q >= 0 ? h.slice(q + 1) : '');
   const parts = path.split('/').filter(Boolean).map(dec);
   const [a, b, c, d, e] = parts;
+  const opt = (k: string) => {
+    const v = query.get(k);
+    return v ? v : null;
+  };
   switch (a) {
     case undefined:
       return { name: 'home' };
@@ -51,10 +82,28 @@ export function parseRoute(hash: string): Route {
       const m = /(?:^|[?&])d=([^&]*)/.exec(h.slice(q + 1));
       return { name: 'pair', d: q >= 0 && m ? m[1]! : null };
     }
+    case 'w':
+      if (b && c && (d === undefined || (d === 't' && e))) {
+        const p = query.get('panel');
+        return {
+          name: 'workspace',
+          host: b,
+          workspace: c,
+          pane: d === 't' ? e! : null,
+          panel: p === 'changes' || p === 'files' || p === 'off' ? p : null,
+          file: opt('file'),
+          commit: opt('commit'),
+          base: opt('base'),
+          view: query.get('view') === 'diff' ? 'diff' : null,
+          show: opt('show'),
+        };
+      }
+      break;
     case 'h':
       if (b && c === 'p' && d) {
         const view: PaneView = e === 'history' || e === 'changes' ? e : 'term';
-        return { name: 'pane', host: b, pane: d, view };
+        const show = opt('show');
+        return show ? { name: 'pane', host: b, pane: d, view, show } : { name: 'pane', host: b, pane: d, view };
       }
       break;
     case 'i':
@@ -72,6 +121,11 @@ export function parseRoute(hash: string): Route {
 
 const enc = encodeURIComponent;
 
+/** A workspace route with defaults for the optional parts. */
+export function workspaceRoute(host: string, workspace: string, o: Partial<Omit<WorkspaceRoute, 'name' | 'host' | 'workspace'>> = {}): WorkspaceRoute {
+  return { name: 'workspace', host, workspace, pane: o.pane ?? null, panel: o.panel ?? null, file: o.file ?? null, commit: o.commit ?? null, base: o.base ?? null, view: o.view ?? null, show: o.show ?? null };
+}
+
 export function formatRoute(r: Route): string {
   switch (r.name) {
     case 'home':
@@ -86,8 +140,19 @@ export function formatRoute(r: Route): string {
       return r.section ? `#/settings/${enc(r.section)}` : '#/settings';
     case 'pair':
       return r.d ? `#/pair?d=${r.d}` : '#/pair';
+    case 'workspace': {
+      const q = new URLSearchParams();
+      if (r.panel) q.set('panel', r.panel);
+      if (r.file) q.set('file', r.file);
+      if (r.commit) q.set('commit', r.commit);
+      if (r.base) q.set('base', r.base);
+      if (r.view) q.set('view', r.view);
+      if (r.show) q.set('show', r.show);
+      const qs = q.toString();
+      return `#/w/${enc(r.host)}/${enc(r.workspace)}${r.pane ? `/t/${enc(r.pane)}` : ''}${qs ? `?${qs}` : ''}`;
+    }
     case 'pane':
-      return `#/h/${enc(r.host)}/p/${enc(r.pane)}${r.view === 'term' ? '' : `/${r.view}`}`;
+      return `#/h/${enc(r.host)}/p/${enc(r.pane)}${r.view === 'term' ? '' : `/${r.view}`}${r.show ? `?show=${enc(r.show)}` : ''}`;
     case 'interaction':
       return `#/i/${enc(r.host)}/${enc(r.id)}${r.preselect ? `?do=${r.preselect}` : ''}`;
     case 'run':

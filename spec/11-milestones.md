@@ -93,7 +93,7 @@ Tasks:
     - **Notifications: built.** `host` in `render.attach` (local machine only), no OSC forward when `delivered` has `native`, coalesced `(×n)` toasts. The signed helper bundle is still open.
     - **Layout save/apply: built** as palette entries; save prints/copies a `[layouts.<name>]` snippet (no config-write API).
     - Server change for paging: `pane.read {source: archive}` also returns `mem_first`.
-    - Still open (TUI-only): goto improvements (`ctrl+enter`), jj bookmark display. Verified with fake machines and the unit/draw tests only — not yet driven in a real terminal against a live server (the editor hand-off in particular).
+    - **Goto `ctrl+enter` / `alt+enter` and jj bookmark display: built** (08 §6.2, §2.1): the secondary goto action opens a new split in the entry's directory (or a workspace at a typed path); `alt+enter` works on every terminal, `ctrl+enter` needs kitty/modifyOtherKeys. jj repos show the working-copy change's bookmarks (else change id) in place of the recorded branch via the event-driven, hardened `Pane.jj` refresh. Verified with fake machines, a fake `jj` and the unit/draw tests only — not yet driven in a real terminal against a live server (the editor hand-off in particular).
 
 ## M5 — Full Herdr plugin/automation compatibility + plugins
 

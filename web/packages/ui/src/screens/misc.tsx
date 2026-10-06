@@ -9,8 +9,8 @@ import { Button, Card, Dot, Empty, IconButton, Spinner } from '../components/ui'
 import { t } from '../i18n';
 import { IdleLock } from '../lib/idle-lock';
 import { useStore } from '../lib/store';
-import { navigate } from '../router';
-import { useWide } from '../app/shell';
+import { navigate, workspaceRoute } from '../router';
+import { TopBar } from '../app/shell';
 
 export function CrewScreen() {
   const app = useApp();
@@ -28,11 +28,11 @@ export function CrewScreen() {
             <Dot tone={h.status === 'online' ? 'ok' : h.status === 'connecting' ? 'warn' : 'danger'} />
             <div className="min-w-0 flex-1">
               <div className="font-medium">{h.info?.host_name ?? h.record.name}</div>
-              <div className="text-[12px] text-muted">
+              <div className="text-xs text-muted">
                 {h.status} · {t.crew.agents(agents)}
               </div>
             </div>
-            {g.needsYou > 0 && <span className="rounded-full bg-need-strong px-2 py-0.5 text-[12px] font-semibold text-black">{t.crew.needYou(g.needsYou)}</span>}
+            {g.needsYou > 0 && <span className="rounded-full bg-need-strong px-2 py-0.5 text-xs font-semibold text-black">{t.crew.needYou(g.needsYou)}</span>}
             {h.status !== 'online' && (
               <Button size="sm" variant="outline" onClick={() => app.conn(h.record.host_id)?.reconnectNow()}>
                 {t.retry}
@@ -53,16 +53,17 @@ export function InteractionRoute({ host, id, preselect }: { host: string; id: st
   const h = useHost(host);
   const item = items.find((x) => x.host_id === host && x.interaction.id === id);
   const done = h?.dashboard?.interactions.find((i) => i.id === id);
-  const wide = useWide();
   return (
     <div className="flex h-full flex-col pt-safe">
-      <div className={`titlebar flex items-center gap-1 px-1 py-1 ${wide ? '' : 'titlebar-inset'}`}>
-        <IconButton label={t.back} onClick={() => navigate({ name: 'inbox' })}>
-          <ArrowLeft className="size-5" />
-        </IconButton>
-        <div className="text-[15px] font-semibold">{t.tabs.inbox}</div>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3">
+      <TopBar
+        title={t.tabs.inbox}
+        leading={
+          <IconButton label={t.back} onClick={() => navigate({ name: 'inbox' })}>
+            <ArrowLeft className="size-5" />
+          </IconButton>
+        }
+      />
+      <div className="vk-scroll mx-auto w-full max-w-[720px] flex-1 overflow-y-auto p-3">
         {item ? (
           <InteractionCard item={item} preselect={preselect} showHost />
         ) : !h?.dashboard ? (
@@ -85,8 +86,10 @@ export function RunRoute({ host, run }: { host: string; run: string }) {
   const h = useHost(host);
   useEffect(() => {
     const r = h?.dashboard?.runs.find((x) => x.id === run);
-    if (r) navigate({ name: 'pane', host, pane: r.pane, view: 'term' }, { replace: true });
-    else if (h?.dashboard) navigate({ name: 'panes' }, { replace: true });
+    const ws = r ? h?.dashboard?.panes.find((p) => p.id === r.pane)?.workspace : undefined;
+    if (r && ws) navigate(workspaceRoute(host, ws, { pane: r.pane }), { replace: true });
+    else if (r) navigate({ name: 'pane', host, pane: r.pane, view: 'term' }, { replace: true });
+    else if (h?.dashboard) navigate({ name: 'home' }, { replace: true });
   }, [h?.dashboard, host, run]);
   return (
     <div className="flex h-full items-center justify-center">
@@ -119,7 +122,7 @@ export function Tour() {
           ))}
         </div>
         <h2 id={titleId} className="text-lg font-semibold tracking-tight">{step.title}</h2>
-        <p className="mt-2 text-[15px] text-muted">{step.body}</p>
+        <p className="mt-2 text-base text-muted">{step.body}</p>
         <div className="mt-5 flex gap-2 pb-2">
           <Button variant="ghost" onClick={finish}>
             {t.tour.skip}

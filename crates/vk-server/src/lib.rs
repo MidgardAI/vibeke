@@ -12,6 +12,7 @@ pub mod compat;
 pub mod core;
 pub mod desk;
 pub mod drafts;
+pub mod fs_api;
 pub mod gateway_api;
 pub mod git_api;
 pub mod layouts;
@@ -20,6 +21,7 @@ pub mod pane;
 pub mod parity;
 pub mod paths;
 pub mod preview;
+pub mod preview_console;
 pub mod preview_fabric;
 pub mod render;
 pub mod review;
@@ -30,9 +32,12 @@ pub mod search;
 pub mod theme;
 pub mod timers;
 pub mod tracking;
+pub mod vcs;
 
 #[cfg(test)]
 mod scope_catalog_tests;
+#[cfg(test)]
+mod scrollback_tests;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
@@ -710,6 +715,7 @@ impl Server {
             recovered: None,
             isolation,
             browser: None,
+            jj: None,
         };
         tx.m.holder(&id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
         tx.event(
@@ -936,11 +942,26 @@ impl Server {
     /// Remove a pane whose process ended from the layout (closing empty tabs/workspaces).
     pub fn pane_ended(&self, pane_id: &str, reason: &str) {
         self.panes.lock().unwrap().remove(pane_id);
-        let _ = self.archive.lock().unwrap().close_pane(pane_id);
+        let had_archive = {
+            let mut a = self.archive.lock().unwrap();
+            let _ = a.close_pane(pane_id);
+            !a.segment_infos(pane_id).is_empty()
+        };
         let mut c = self.core.lock().unwrap();
         let Some(p) = c.pane(pane_id).cloned() else {
             return;
         };
+        if had_archive {
+            // A pane that closes within a flush interval of its last output would otherwise
+            // never get its workspace recorded for scoped archive search and `forget`.
+            let _ = c.store.fts_register_panes(&[(
+                p.id.clone(),
+                p.workspace.clone(),
+                p.tab.clone(),
+                p.handle.clone(),
+                p.display_title().to_string(),
+            )]);
+        }
         let mut tx = Tx::new();
         if let Some(r) = c.run_for_pane(pane_id).cloned() {
             self.agents.end_run_tx(&mut c, &mut tx, &r, reason);
@@ -1387,6 +1408,35 @@ impl Server {
                 self.with_core(|c| c.model.degraded = None);
                 self.bump_model();
             }
+        }
+    }
+
+    /// Scrollback retention (`terminal.archive_max_per_pane`, `terminal.archive_days`): delete
+    /// the oldest closed segments of every pane together with their `scrollback_fts` rows and
+    /// the `archive_panes` rows of panes left with nothing. The segment being written is never
+    /// touched. `0` disables a limit. Runs from the hourly housekeeping pass.
+    pub fn archive_retention(&self) {
+        let (max_bytes, days) = vk_config::Config::load(vk_config::config_path())
+            .map(|(c, _)| (c.terminal.archive_max_per_pane.0, c.terminal.archive_days))
+            .unwrap_or((200 << 20, 30));
+        self.archive_retention_with(max_bytes, days);
+    }
+
+    pub fn archive_retention_with(&self, max_bytes: u64, days: u32) {
+        use vk_store::archive::Select;
+        let mut a = self.archive.lock().unwrap();
+        let _ = a.flush();
+        let c = self.core.lock().unwrap();
+        if max_bytes > 0 {
+            let _ = c
+                .store
+                .purge_archive(&mut a, None, Select::OverBytes(max_bytes), false);
+        }
+        if days > 0 {
+            let cutoff = now_ms() - i64::from(days) * 86_400_000;
+            let _ = c
+                .store
+                .purge_archive(&mut a, None, Select::OlderThan(cutoff), false);
         }
     }
 

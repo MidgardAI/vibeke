@@ -375,6 +375,8 @@ pub struct Sidebar {
     pub collapsed: bool,
     pub show_shell_panes: bool,
     pub nest_tasks: bool,
+    /// Tiny latest-screenshot thumbnail per preview row (kitty graphics only; 06 B8).
+    pub preview_thumbnails: bool,
     pub show_state_source: ShowStateSource,
     pub isolation_glyphs: IsolationGlyphs,
     pub token: Vec<SidebarToken>,
@@ -391,6 +393,7 @@ impl Default for Sidebar {
             collapsed: false,
             show_shell_panes: false,
             nest_tasks: true,
+            preview_thumbnails: false,
             show_state_source: ShowStateSource::InferredOnly,
             isolation_glyphs: IsolationGlyphs::default(),
             token: Vec::new(),

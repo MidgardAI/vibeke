@@ -9,6 +9,7 @@ import {
   ChannelError,
   RpcError,
   type AppApi,
+  type AppEvent,
   type AppMethod,
   type HostConnectionApi,
   type HostManagerApi,
@@ -16,6 +17,7 @@ import {
   type RequestOptions,
 } from '@vibeke/core';
 import { EVENT, INVOKE, type Bridge, type HostsPatch, type WireError, type WireResult } from '../shared/contract';
+import { parseHostEvent } from '../shared/host-events';
 
 export function fromWire(e: WireError): Error {
   switch (e.type) {
@@ -83,10 +85,43 @@ export class RemoteManager implements HostManagerApi {
   private version: number | null = null;
   /** Patches that arrived before the snapshot (subscribed first, so none are lost). */
   private early: HostsPatch[] = [];
+  private eventSubs = new Map<string, Set<(e: AppEvent) => void>>();
+  private offEvents: (() => void) | null = null;
 
   /** Subscribes to patches immediately; call `attach` with the snapshot fetched afterwards. */
   constructor(private readonly bridge: Bridge) {
     this.off = this.bridge.on(EVENT.hosts, (p) => this.receive(p as HostsPatch));
+  }
+
+  /**
+   * Live events of one host, forwarded by main (only the types the UI needs). Main sends them
+   * only while this window has at least one listener for the host.
+   */
+  subscribeEvents(hostId: string, cb: (e: AppEvent) => void): () => void {
+    this.offEvents ??= this.bridge.on(EVENT.hostEvent, (p) => this.onHostEvent(p));
+    let set = this.eventSubs.get(hostId);
+    if (!set) {
+      this.eventSubs.set(hostId, (set = new Set()));
+      void call(this.bridge, INVOKE.hostEvents, hostId, true).catch(() => {});
+    }
+    set.add(cb);
+    return () => {
+      if (!set.delete(cb) || set.size || this.eventSubs.get(hostId) !== set) return;
+      this.eventSubs.delete(hostId);
+      void call(this.bridge, INVOKE.hostEvents, hostId, false).catch(() => {});
+    };
+  }
+
+  private onHostEvent(p: unknown): void {
+    const ev = parseHostEvent(p);
+    if (!ev) return;
+    for (const cb of [...(this.eventSubs.get(ev.hostId) ?? [])]) {
+      try {
+        cb(ev.event);
+      } catch {
+        /* one listener's failure must not starve the others */
+      }
+    }
   }
 
   /** Seed with the snapshot (at `version`), then replay patches newer than it. */
@@ -137,5 +172,7 @@ export class RemoteManager implements HostManagerApi {
   stop(): void {
     this.off?.();
     this.off = null;
+    this.offEvents?.();
+    this.offEvents = null;
   }
 }

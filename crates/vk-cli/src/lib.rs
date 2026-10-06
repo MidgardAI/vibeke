@@ -6,6 +6,7 @@
 pub mod client;
 pub mod compat;
 pub mod mcp;
+pub mod show;
 
 use anyhow::Result;
 use client::{CallError, Client};
@@ -745,6 +746,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ("preview", "forget", "preview.forget", &["preview"], ""),
     (
         "preview",
+        "show",
+        "screenshot.list",
+        &["preview"],
+        "<v4|devbox/v4> [--no-image] the latest screenshot of a preview, inline (kitty graphics, iTerm2) or path + metadata",
+    ),
+    (
+        "preview",
         "profile",
         "preview.profile",
         &["action", "profile"],
@@ -762,7 +770,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "open",
         "browser.open",
         &["target"],
-        "<preview|url> [--viewport 390x844] [--dark] — headless session on this machine",
+        "<preview|url> [--viewport 390x844] [--device iphone-15|pixel-8|ipad|desktop-1280|desktop-1440|desktop-1920] [--dark] — headless session on this machine",
     ),
     (
         "browser",
@@ -811,7 +819,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "screenshot",
         "browser.screenshot",
         &["session"],
-        "<session> [--full-page] [--selector css] [--out f.png]",
+        "<session|preview|url> [--full-page] [--selector css] [--out f.png] — a preview handle or URL (or --preview/--url) is a one-shot capture in a fresh context, with [--device d] [--viewport WxH]",
     ),
     (
         "browser",
@@ -1308,6 +1316,17 @@ fn adjust(method: &str, p: &mut Value) {
             }
             if let Some(Value::String(v)) = o.get("viewport").cloned() {
                 o.insert("viewport".into(), json!(v));
+            }
+        }
+        "browser.screenshot" => {
+            // `screenshot <session|preview|url>`: `b3` is a session, `v4` a preview, anything
+            // with a scheme a URL (those two are one-shot captures).
+            if let Some(Value::String(t)) = o.get("session").cloned()
+                && !t.starts_with('b')
+            {
+                o.remove("session");
+                let k = if t.contains("://") { "url" } else { "preview" };
+                o.entry(k).or_insert(json!(t));
             }
         }
         "browser.type" => {
@@ -1947,6 +1966,202 @@ where
     }
 }
 
+pub const FORGET_USAGE: &str = "vibeke forget --pane <p> | --workspace <w> | --before <time> | --all  [--yes] [--dry-run]\n  Deletes archived scrollback (segments, search index rows, archive metadata) for the scope.\n  Does not delete the event log, blobs, the session desk index, drafts, notes, or what a live pane still holds in memory.\n  --before takes a date, an RFC 3339 time or a duration back from now (7d, 12h); it is segment-granular.";
+
+/// `vibeke forget`: preview the scope with `scrollback.forget {dry_run}`, ask (or require
+/// `--yes` without a terminal), then delete. Idempotent.
+pub async fn forget<S>(client: &mut Client<S>, g: &Global, mut params: Value) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let flag = |params: &mut Value, names: &[&str]| {
+        names
+            .iter()
+            .filter_map(|n| params.as_object_mut().and_then(|o| o.remove(*n)))
+            .any(|v| v.as_bool().unwrap_or(false))
+    };
+    let yes = flag(&mut params, &["yes", "y"]);
+    let dry = flag(&mut params, &["dry_run"]);
+    for k in ["pane", "workspace"] {
+        if let Some(v) = params.get_mut(k)
+            && v.is_number()
+        {
+            *v = json!(v.to_string());
+        }
+    }
+    let scopes = ["pane", "workspace", "before", "all"]
+        .iter()
+        .filter(|k| {
+            params
+                .get(**k)
+                .is_some_and(|v| !v.is_null() && *v != json!(false))
+        })
+        .count();
+    if scopes != 1 || params.as_object().is_some_and(|o| o.len() != 1) {
+        eprintln!("{FORGET_USAGE}");
+        return EXIT_USAGE;
+    }
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let mut plan_params = params.clone();
+    plan_params["dry_run"] = json!(true);
+    let plan = match client.call("scrollback.forget", plan_params).await {
+        Ok(v) => v,
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    let n = |k: &str| plan[k].as_u64().unwrap_or(0);
+    let empty =
+        n("segments_deleted") == 0 && n("fts_rows_deleted") == 0 && n("archive_panes_dropped") == 0;
+    let where_ = g.machine.as_deref().unwrap_or("this machine");
+    eprintln!(
+        "vibeke forget {} on {where_} {} {} segments ({} bytes) of {} panes, {} search rows and {} archive records.",
+        plan["scope"],
+        if dry { "would delete" } else { "will delete" },
+        n("segments_deleted"),
+        n("bytes_deleted"),
+        n("panes"),
+        n("fts_rows_deleted"),
+        n("archive_panes_dropped"),
+    );
+    if dry {
+        if !g.quiet {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&plan).unwrap_or_default()
+            );
+        }
+        return EXIT_OK;
+    }
+    if empty {
+        eprintln!("nothing to forget");
+        return EXIT_OK;
+    }
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("not a terminal: rerun with --yes to delete");
+            return EXIT_USAGE;
+        }
+        eprint!("This cannot be undone. Delete? [y/N] ");
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_err()
+            || !matches!(answer.trim(), "y" | "Y" | "yes")
+        {
+            eprintln!("cancelled");
+            return EXIT_OK;
+        }
+    }
+    match client.call("scrollback.forget", params).await {
+        Ok(v) => {
+            if !g.quiet {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            print_error(&e);
+            exit_code_for(&e)
+        }
+    }
+}
+
+/// `vibeke preview show <handle>`: print the newest screenshot of a preview inline when the
+/// terminal can show it ([`show::detect`]), else its path and metadata.
+pub async fn preview_show<S>(client: &mut Client<S>, g: &Global, params: Value) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let tty = std::io::stdout().is_terminal();
+    let mode = show::detect(&|k| std::env::var(k).ok(), tty);
+    let mut out = std::io::stdout().lock();
+    preview_show_to(client, g, params, mode, tty, &mut out).await
+}
+
+/// [`preview_show`] with the terminal decision and the output made explicit (tests).
+pub async fn preview_show_to<S>(
+    client: &mut Client<S>,
+    g: &Global,
+    params: Value,
+    mode: show::Mode,
+    tty: bool,
+    out: &mut dyn std::io::Write,
+) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let Some(handle) = params.get("preview").and_then(Value::as_str) else {
+        eprintln!("usage: vibeke preview show <v4|devbox/v4> [--no-image]");
+        return EXIT_USAGE;
+    };
+    let handle = handle.rsplit('/').next().unwrap_or(handle).to_string();
+    let no_image = params
+        .get("no_image")
+        .or_else(|| params.get("no-image"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let list = match client
+        .call("screenshot.list", json!({"preview": handle, "limit": 1}))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    let Some(newest) = list["screenshots"].as_array().and_then(|a| a.first()) else {
+        eprintln!(
+            "no screenshots of {handle} yet — take one with `vibeke browser screenshot {handle}`"
+        );
+        return EXIT_API;
+    };
+    let id = newest["id"].as_str().unwrap_or("").to_string();
+    let as_json = g.json.unwrap_or(!tty);
+    let mode = if no_image || as_json {
+        show::Mode::Text
+    } else {
+        mode
+    };
+    let inline = mode != show::Mode::Text;
+    let shot = match client
+        .call("screenshot.get", json!({"id": id, "inline": inline}))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    if g.quiet {
+        return EXIT_OK;
+    }
+    if as_json {
+        let _ = writeln!(out, "{}", serde_json::to_string(&shot).unwrap_or_default());
+        return EXIT_OK;
+    }
+    let png = shot["data_b64"].as_str().and_then(|d| {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(d).ok()
+    });
+    let mut shown = false;
+    if let Some(png) = png.filter(|_| inline) {
+        let name = format!("{}.png", shot["handle"].as_str().unwrap_or("screenshot"));
+        let bytes = show::image_bytes(mode, &png, &name, show::terminal_cols().min(100));
+        shown = out.write_all(&bytes).and_then(|_| out.flush()).is_ok();
+    }
+    let _ = writeln!(out, "{}", show::describe(&shot, shown));
+    EXIT_OK
+}
+
 /// Look up `(method, positional)` for `noun verb`.
 /// Methods that act on the *viewing* machine (they launch a local browser or manage local
 /// profiles) even when `--machine m` is given: the CLI sends them to the local server with
@@ -2069,5 +2284,200 @@ mod tests {
         for c in COMMANDS {
             assert!(seen.insert((c.0, c.1)), "duplicate {} {}", c.0, c.1);
         }
+    }
+
+    /// `preview show`: newest screenshot of the preview, drawn inline for graphics terminals,
+    /// path + metadata otherwise; `--json`/pipes get the record.
+    #[tokio::test]
+    async fn preview_show_draws_or_describes() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let seen: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+        let have = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let spawn = |seen: Arc<Mutex<Vec<(String, Value)>>>,
+                     have: Arc<std::sync::atomic::AtomicBool>| {
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            tokio::spawn(async move {
+                let (rd, mut wr) = tokio::io::split(theirs);
+                let mut lines = BufReader::new(rd).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&l).unwrap();
+                    let m = req["method"].as_str().unwrap().to_string();
+                    seen.lock()
+                        .unwrap()
+                        .push((m.clone(), req["params"].clone()));
+                    let result = match m.as_str() {
+                        "screenshot.list" if have.load(std::sync::atomic::Ordering::SeqCst) => {
+                            json!({"screenshots": [{"id": "S9", "handle": "s9"}], "count": 1})
+                        }
+                        "screenshot.list" => json!({"screenshots": [], "count": 0}),
+                        "screenshot.get" => json!({"id": "S9", "handle": "s9",
+                            "label": "devbox · headless · fresh context", "url": "http://localhost:5173/",
+                            "binding": "bound", "created_at_ms": 0,
+                            "path_on_machine": "/state/blobs/ab/x.png",
+                            "data_b64": "iVBORw0KGgo="}),
+                        _ => json!({}),
+                    };
+                    let mut s = serde_json::to_string(
+                        &json!({"jsonrpc": "2.0", "id": req["id"], "result": result}),
+                    )
+                    .unwrap();
+                    s.push('\n');
+                    wr.write_all(s.as_bytes()).await.unwrap();
+                }
+            });
+            Client::new(ours)
+        };
+        let g = Global {
+            session: "t".into(),
+            machine: None,
+            socket: None,
+            json: Some(false),
+            quiet: false,
+            no_spawn: true,
+            timeout_ms: None,
+        };
+        // Kitty terminal: the image goes through the escape, then the metadata line.
+        let mut c = spawn(seen.clone(), have.clone());
+        let mut out = Vec::new();
+        let code = preview_show_to(
+            &mut c,
+            &g,
+            json!({"preview": "devbox/v4"}),
+            show::Mode::Kitty,
+            true,
+            &mut out,
+        )
+        .await;
+        assert_eq!(code, EXIT_OK);
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(text.starts_with("\x1b_Ga=T,"), "{text:?}");
+        assert!(text.contains("s9 · devbox · headless · fresh context"));
+        assert!(
+            !text.contains("image: "),
+            "the image was shown, no path needed"
+        );
+        {
+            let s = seen.lock().unwrap();
+            let list = s.iter().find(|(m, _)| m == "screenshot.list").unwrap();
+            assert_eq!(list.1, json!({"preview": "v4", "limit": 1}));
+            let get = s.iter().find(|(m, _)| m == "screenshot.get").unwrap();
+            assert_eq!(get.1, json!({"id": "S9", "inline": true}));
+        }
+        // Plain terminal: no image bytes requested, path and metadata printed.
+        seen.lock().unwrap().clear();
+        let mut c = spawn(seen.clone(), have.clone());
+        let mut out = Vec::new();
+        preview_show_to(
+            &mut c,
+            &g,
+            json!({"preview": "v4"}),
+            show::Mode::Text,
+            true,
+            &mut out,
+        )
+        .await;
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert!(
+            !text.contains("\x1b") && text.contains("image: /state/blobs/ab/x.png"),
+            "{text}"
+        );
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .find(|(m, _)| m == "screenshot.get")
+                .unwrap()
+                .1["inline"],
+            false
+        );
+        // --no-image beats a graphics terminal; a pipe gets JSON.
+        let mut c = spawn(seen.clone(), have.clone());
+        let mut out = Vec::new();
+        preview_show_to(
+            &mut c,
+            &g,
+            json!({"preview": "v4", "no_image": true}),
+            show::Mode::Kitty,
+            true,
+            &mut out,
+        )
+        .await;
+        assert!(!String::from_utf8_lossy(&out).contains("\x1b"));
+        let gj = Global {
+            json: None,
+            ..g_clone(&g)
+        };
+        let mut c = spawn(seen.clone(), have.clone());
+        let mut out = Vec::new();
+        preview_show_to(
+            &mut c,
+            &gj,
+            json!({"preview": "v4"}),
+            show::Mode::Kitty,
+            false,
+            &mut out,
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["handle"], "s9");
+        // Nothing captured yet.
+        have.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut c = spawn(seen.clone(), have.clone());
+        let mut out = Vec::new();
+        let code = preview_show_to(
+            &mut c,
+            &g,
+            json!({"preview": "v4"}),
+            show::Mode::Kitty,
+            true,
+            &mut out,
+        )
+        .await;
+        assert_eq!(code, EXIT_API);
+        assert!(out.is_empty());
+    }
+
+    fn g_clone(g: &Global) -> Global {
+        Global {
+            session: g.session.clone(),
+            machine: g.machine.clone(),
+            socket: g.socket.clone(),
+            json: g.json,
+            quiet: g.quiet,
+            no_spawn: g.no_spawn,
+            timeout_ms: g.timeout_ms,
+        }
+    }
+
+    #[test]
+    fn screenshot_positional_is_a_session_a_preview_or_a_url() {
+        let (m, pos) = lookup("browser", "screenshot").unwrap();
+        assert_eq!(m, "browser.screenshot");
+        let mut p = build_params(pos, &["b3".into(), "--full-page".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["session"], "b3");
+        let mut p =
+            build_params(pos, &["v4".into(), "--device".into(), "iphone-15".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(
+            (
+                p.get("session"),
+                p["preview"].as_str(),
+                p["device"].as_str()
+            ),
+            (None, Some("v4"), Some("iphone-15"))
+        );
+        let mut p = build_params(pos, &["http://localhost:3000/x".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["url"], "http://localhost:3000/x");
+        // `--url` / `--preview` flags work without a positional.
+        let mut p = build_params(pos, &["--url".into(), "http://localhost:3000/".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["url"], "http://localhost:3000/");
+        let (_, pos) = lookup("browser", "open").unwrap();
+        let p = build_params(pos, &["v4".into(), "--device".into(), "pixel-8".into()]).unwrap();
+        assert_eq!(p["device"], "pixel-8");
+        assert!(lookup("preview", "show").is_some());
     }
 }

@@ -1,14 +1,21 @@
-// Composer (spec 16 §9.1): text box with clear / undo clear, "You sent:" preview, destructive
-// second-tap guard, attachments (#N chips), voice (consent first; transcript never auto-sent).
+// Composer (spec 16 §9.1): a rounded box — the text on top, a row of controls below (attach,
+// the agent's harness · model and permission mode as read-only labels, keys/quick replies in a
+// ⋯ popover, voice, send or stop). Keeps clear / undo clear, the "You sent:" preview, the
+// destructive second-tap guard, attachments (#N chips) and voice (consent first; a transcript
+// is never auto-sent).
 
-import { useEffect, useRef, useState, type ClipboardEvent, type Dispatch, type SetStateAction } from 'react';
-import { Camera, Loader2, Mic, Paperclip, RotateCcw, Send, Square, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { ArrowUp, Camera, Loader2, Mic, MoreHorizontal, Paperclip, Plus, RotateCcw, ShieldCheck, ShieldOff, Square, X } from 'lucide-react';
+import type { AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
-import { Button, IconButton, Notice, Sheet, cx } from '../../components/ui';
+import { Button, HarnessIcon, IconButton, Notice, Sheet, cx } from '../../components/ui';
+import { MenuButton } from '../workspace/menu';
+import { useMediaQuery } from '../../app/shell';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { base64Std } from '../../lib/format';
-import { destructiveReason } from '../../lib/guards';
+import { composerShowsStop, destructiveReason } from '../../lib/guards';
+import { harnessLabel } from '../../lib/harness';
 import type { PaneActions } from './actions';
 
 interface Attachment {
@@ -27,6 +34,11 @@ export function Composer({
   setText,
   isAgent,
   sttAvailable,
+  run = null,
+  interactions = null,
+  more,
+  onSent,
+  placeholder,
 }: {
   hostId: string;
   actions: PaneActions;
@@ -34,7 +46,18 @@ export function Composer({
   setText: Dispatch<SetStateAction<string>>;
   isAgent: boolean;
   sttAvailable: boolean;
+  /** The agent (read-only `harness · model` and permission mode labels). */
+  run?: AgentRun | null;
+  /** The host's interactions (an open one on the run means it waits on the user, not working). */
+  interactions?: readonly { run: string; status: string }[] | null;
+  /** Content of the ⋯ popover (keys, quick replies, slash commands). */
+  more?: ReactNode;
+  onSent?: () => void;
+  /** Overrides the agent / shell placeholder (e.g. typing into an agent's own terminal). */
+  placeholder?: string;
 }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const roomy = useMediaQuery('(min-width: 640px)');
   const app = useApp();
   const prefs = usePrefs();
   const [cleared, setCleared] = useState<string | null>(null);
@@ -74,6 +97,7 @@ export function Composer({
     const ok = await actions.text(body);
     setSending(false);
     if (ok) {
+      onSent?.();
       setLastSent(body);
       setText('');
       setAtts([]);
@@ -174,94 +198,151 @@ export function Composer({
 
   const why = armed ? destructiveReason(armed) : null;
 
+  const modeLabel = run?.permission_mode ? permissionLabel(run.permission_mode) : run?.yolo ? permissionLabel('bypassPermissions') : null;
+  const open = run?.yolo || run?.permission_mode === 'bypassPermissions';
+  const canStop = composerShowsStop(run, interactions, text);
+
   return (
-    <div className="border-t border-border bg-surface px-2 pb-1.5 pt-1.5">
-      {lastSent && !text && (
-        <div className="mb-1 flex items-center gap-2 px-1 text-[12px] text-muted">
-          <span className="shrink-0">{t.composer.youSent}</span>
-          <span className="min-w-0 flex-1 truncate font-mono">{lastSent}</span>
-          <button type="button" aria-label={t.close} onClick={() => setLastSent(null)}>
-            <X className="size-3.5" />
-          </button>
-        </div>
-      )}
-      {why && <Notice tone="danger" className="mb-1.5">{t.composer.reallySend(why)} — {t.composer.tapAgain}</Notice>}
-      {atts.length > 0 && (
-        <div className="mb-1.5 flex flex-wrap gap-1.5">
-          {atts.map((a) => (
-            <span key={a.n} className={cx('inline-flex h-7 items-center gap-1 rounded-full border px-2 text-[12px]', a.error ? 'border-danger text-danger' : 'border-border')}>
-              <span className="font-semibold">#{a.n}</span>
-              <span className="max-w-32 truncate">{a.error ? `${t.composer.uploadFailed}: ${a.error}` : a.name}</span>
-              {!a.path && !a.error && <Loader2 className="size-3 animate-spin" />}
-              <button type="button" aria-label={t.remove} onClick={() => removeAtt(a)}>
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {(voice === 'listening' || voice === 'recording' || voice === 'transcribing') && (
-        <div className="mb-1.5 flex items-center gap-2 px-1 text-[13px] text-accent">
-          <span className="size-2 animate-pulse rounded-full bg-danger" />
-          {voice === 'listening' ? t.composer.listening : voice === 'recording' ? t.composer.recording : t.composer.transcribing}
-        </div>
-      )}
-      <div className="flex items-end gap-1">
-        <IconButton label={t.composer.photo} onClick={() => photoRef.current?.click()}>
-          <Camera className="size-5 text-muted" />
-        </IconButton>
-        <IconButton label={t.composer.file} onClick={() => fileRef.current?.click()} className="-ml-1">
-          <Paperclip className="size-5 text-muted" />
-        </IconButton>
-        <textarea
-          ref={taRef}
-          value={text}
-          rows={1}
-          onChange={(e) => setText(e.target.value)}
-          onPaste={onPaste}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-          placeholder={isAgent ? t.composer.placeholderAgent : t.composer.placeholderShell}
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          className="min-h-10 min-w-0 flex-1 resize-none rounded-2xl border border-border bg-bg px-3 py-2 text-[16px] leading-snug placeholder:text-faint focus:outline-2 focus:outline-accent"
-        />
-        {text ? (
-          <IconButton label={t.composer.clear} onClick={clear}>
-            <X className="size-5 text-muted" />
-          </IconButton>
-        ) : cleared ? (
-          <IconButton
-            label={t.composer.undoClear}
-            onClick={() => {
-              setText(cleared);
-              setCleared(null);
-            }}
-          >
-            <RotateCcw className="size-5 text-muted" />
-          </IconButton>
-        ) : (
-          <IconButton label={t.composer.voice} onClick={voiceTap} active={voice !== 'idle'} disabled={!voiceAvailable}>
-            {voice === 'listening' || voice === 'recording' ? <Square className="size-4.5 text-danger" /> : <Mic className="size-5 text-muted" />}
-          </IconButton>
+    <div className="px-3 pb-3 pt-1 sm:px-4">
+      <div className="mx-auto w-full max-w-[780px]">
+        {lastSent && !text && (
+          <div className="mb-1 flex items-center gap-2 px-1 text-xs text-muted">
+            <span className="shrink-0">{t.composer.youSent}</span>
+            <span className="min-w-0 flex-1 truncate font-mono">{lastSent}</span>
+            <button type="button" aria-label={t.close} onClick={() => setLastSent(null)}>
+              <X className="size-3.5" />
+            </button>
+          </div>
         )}
-        <button
-          type="button"
-          aria-label={t.send}
-          disabled={!text.trim() || sending}
-          onClick={() => void send()}
+        {why && <Notice tone="danger" className="mb-1.5">{t.composer.reallySend(why)} — {t.composer.tapAgain}</Notice>}
+        {moreOpen && more && (
+          <div className="mb-1.5 overflow-hidden rounded-xl border border-border bg-surface" role="region" aria-label={t.composer2.more}>
+            {more}
+          </div>
+        )}
+        <div
           className={cx(
-            'inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-transparent disabled:opacity-40',
-            armed ? 'bg-danger text-danger-fg' : 'bg-accent text-accent-fg',
+            'rounded-2xl border bg-surface transition-colors focus-within:border-border-strong',
+            armed ? 'border-del/60' : 'border-border',
           )}
         >
-          {sending ? <Loader2 className="size-5 animate-spin" /> : <Send className="size-4.5" />}
-        </button>
+          {atts.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+              {atts.map((a) => (
+                <span key={a.n} className={cx('inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs', a.error ? 'border-danger text-danger' : 'border-border')}>
+                  <span className="font-semibold">#{a.n}</span>
+                  <span className="max-w-32 truncate">{a.error ? `${t.composer.uploadFailed}: ${a.error}` : a.name}</span>
+                  {!a.path && !a.error && <Loader2 className="size-3 animate-spin" />}
+                  <button type="button" aria-label={t.remove} onClick={() => removeAtt(a)}>
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {(voice === 'listening' || voice === 'recording' || voice === 'transcribing') && (
+            <div className="flex items-center gap-2 px-3 pt-2.5 text-sm text-muted">
+              <span className="size-2 animate-pulse rounded-full bg-danger" />
+              {voice === 'listening' ? t.composer.listening : voice === 'recording' ? t.composer.recording : t.composer.transcribing}
+            </div>
+          )}
+          <textarea
+            ref={taRef}
+            value={text}
+            rows={1}
+            aria-label={placeholder ?? (isAgent ? t.composer2.placeholder : t.composer2.placeholderShell)}
+            onChange={(e) => setText(e.target.value)}
+            onPaste={onPaste}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            placeholder={placeholder ?? (isAgent ? (roomy ? t.composer2.placeholder : t.composer2.placeholderShort) : t.composer2.placeholderShell)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            className="block min-h-11 w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[16px] leading-snug text-fg outline-none placeholder:text-faint sm:text-[14px]"
+          />
+          <div className="flex items-center gap-1 px-2 pb-2">
+            <MenuButton
+              label={t.composer2.attach}
+              icon={<Plus />}
+              align="left"
+              placement="up"
+              items={[
+                { label: t.composer.file, icon: <Paperclip />, onSelect: () => fileRef.current?.click() },
+                { label: t.composer.photo, icon: <Camera />, onSelect: () => photoRef.current?.click() },
+              ]}
+            />
+            {run && (
+              <span className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted" title={t.composer2.model}>
+                <HarnessIcon harness={run.harness} />
+                <span className="truncate">
+                  {harnessLabel(run.harness)}
+                  {run.model && <span className="text-faint"> · {run.model}</span>}
+                </span>
+              </span>
+            )}
+            {modeLabel && (
+              <span className={cx('hidden h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs sm:inline-flex', open ? 'text-need' : 'text-muted')} title={t.composer2.mode}>
+                {open ? <ShieldOff className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
+                {modeLabel}
+              </span>
+            )}
+            <span className="flex-1" />
+            {more && (
+              <IconButton label={t.composer2.more} aria-expanded={moreOpen} active={moreOpen} onClick={() => setMoreOpen(!moreOpen)}>
+                <MoreHorizontal />
+              </IconButton>
+            )}
+            {text ? (
+              <IconButton label={t.composer.clear} onClick={clear}>
+                <X />
+              </IconButton>
+            ) : cleared ? (
+              <IconButton
+                label={t.composer.undoClear}
+                onClick={() => {
+                  setText(cleared);
+                  setCleared(null);
+                }}
+              >
+                <RotateCcw />
+              </IconButton>
+            ) : (
+              <IconButton label={t.composer.voice} onClick={voiceTap} active={voice !== 'idle'} disabled={!voiceAvailable}>
+                {voice === 'listening' || voice === 'recording' ? <Square className="text-danger" /> : <Mic />}
+              </IconButton>
+            )}
+            {canStop ? (
+              <button
+                type="button"
+                aria-label={t.pane.interrupt}
+                title={t.pane.interrupt}
+                onClick={() => void actions.interrupt()}
+                className="vk-focus inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-fg text-bg pointer-coarse:size-9"
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label={t.send}
+                title={t.send}
+                disabled={!text.trim() || sending}
+                onClick={() => void send()}
+                className={cx(
+                  'vk-focus inline-flex size-7 shrink-0 items-center justify-center rounded-full disabled:bg-surface-3 disabled:text-faint pointer-coarse:size-9',
+                  armed ? 'bg-danger text-danger-fg' : 'bg-fg text-bg',
+                )}
+              >
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" strokeWidth={2.25} />}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
       <input ref={fileRef} type="file" multiple hidden onChange={(e) => [...(e.target.files ?? [])].forEach((f) => void upload(f))} />
       <input ref={photoRef} type="file" accept="image/*" multiple hidden onChange={(e) => [...(e.target.files ?? [])].forEach((f) => void upload(f))} />
@@ -297,4 +378,18 @@ export function Composer({
       </Sheet>
     </div>
   );
+}
+
+/** Read-only label for the agent's permission mode (Claude's names; others shown as given). */
+export function permissionLabel(mode: string): string {
+  const known: Record<string, string> = {
+    bypassPermissions: 'Full access',
+    acceptEdits: 'Accept edits',
+    plan: 'Plan mode',
+    default: 'Ask first',
+    'full-access': 'Full access',
+    'read-only': 'Read only',
+    auto: 'Auto',
+  };
+  return known[mode] ?? mode;
 }

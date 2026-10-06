@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAnsi, stripAnsi } from '../src/lib/ansi';
-import { destructiveReason, isNoEchoPrompt } from '../src/lib/guards';
+import { composerShowsStop, destructiveReason, isNoEchoPrompt } from '../src/lib/guards';
 import { NO_MODS, chord, cycleMod, isValidKey, keyLabel, press, queueAdd, queueRemoveAt } from '../src/lib/keys';
 import { MAX_DEPTH, parseInline, parseMarkdown, safeHref, type Block } from '../src/lib/markdown';
 import { parseDiff, tokenize, langOf } from '../src/lib/highlight';
@@ -30,6 +30,23 @@ describe('destructive guard', () => {
   for (const s of bad) test(`flags: ${s}`, () => expect(destructiveReason(s)).not.toBeNull());
   for (const s of good) test(`allows: ${s}`, () => expect(destructiveReason(s)).toBeNull());
   test('first matching reason wins', () => expect(destructiveReason('sudo rm -rf /')).toBe('rm -r (recursive delete)'));
+});
+
+describe('composer send / stop', () => {
+  const run = (value: string) => ({ id: 'r1', execution: { value } });
+  test('Stop only while working with nothing waiting on the user', () => {
+    expect(composerShowsStop(run('working'), [], '')).toBe(true);
+    expect(composerShowsStop(run('working'), null, '  ')).toBe(true);
+    // Text in the box is a message to send.
+    expect(composerShowsStop(run('working'), [], 'hi')).toBe(false);
+    for (const v of ['idle', 'exited', 'unknown', 'error', 'rate_limited', 'starting']) expect(composerShowsStop(run(v), [], '')).toBe(false);
+    expect(composerShowsStop(null, [], '')).toBe(false);
+  });
+  test('an open interaction on the run (waiting for approval) shows the send button', () => {
+    expect(composerShowsStop(run('working'), [{ run: 'r1', status: 'open' }], '')).toBe(false);
+    // Answered ones, or open ones on other runs, do not count.
+    expect(composerShowsStop(run('working'), [{ run: 'r1', status: 'answered' }, { run: 'r2', status: 'open' }], '')).toBe(true);
+  });
 });
 
 describe('no-echo detection', () => {
@@ -172,8 +189,12 @@ describe('prefs', () => {
   test('lenient parse with defaults', () => {
     expect(parsePrefs(null)).toEqual(DEFAULT_PREFS);
     expect(parsePrefs('not json')).toEqual(DEFAULT_PREFS);
-    const p = parsePrefs(JSON.stringify({ theme: 'dark', termFont: 99, pins: ['a/b', 3], quickReplies: { claude: ['go', '', 5] }, bogus: 1 }));
-    expect(p.theme).toBe('dark');
+    const p = parsePrefs(JSON.stringify({ theme: 'light', termFont: 99, panelWidth: 5000, collapsed: ['done', 1], hostFilter: 7, pins: ['a/b', 3], quickReplies: { claude: ['go', '', 5] }, bogus: 1 }));
+    expect(p.theme).toBe('light');
+    expect(p.panelWidth).toBe(760);
+    expect(p.collapsed).toEqual(['done']);
+    expect(p.hostFilter).toBeNull();
+    expect(DEFAULT_PREFS.theme).toBe('dark');
     expect(p.termFont).toBe(DEFAULT_PREFS.termFont);
     expect(p.pins).toEqual(['a/b']);
     expect(p.quickReplies).toEqual({ claude: ['go'] });

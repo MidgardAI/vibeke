@@ -69,7 +69,10 @@ pub use git::{
     HOST_HARDEN, is_contained, register_contained_checkout, safety_args,
     unregister_contained_checkout,
 };
-pub use jj::{Jj, JjStatus, JjWorkspace, find_root as jj_root, is_colocated as jj_colocated};
+pub use jj::{
+    Jj, JjStatus, JjWorkspace, display_bin as jj_display_bin, display_label as jj_display_label,
+    find_root as jj_root, is_colocated as jj_colocated,
+};
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};
 pub use ports::{Lease, LeaseRequest, PortLeases, PortPool};
 pub use previews::{

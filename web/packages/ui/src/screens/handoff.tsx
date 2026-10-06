@@ -199,7 +199,7 @@ function Body({
     case 'choose':
       return (
         <div className="space-y-2">
-          <div className="text-[13px] text-muted">{t.handoff.chooseDest}</div>
+          <div className="text-sm text-muted">{t.handoff.chooseDest}</div>
           {dests.length === 0 && <Notice>{t.handoff.noDest}</Notice>}
           {dests.map((h) => {
             const invite = hostKind(h.record) === 'handoff';
@@ -214,15 +214,15 @@ function Body({
               >
                 <Server className="size-5 text-muted" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[15px] font-medium">{hostName(h)}</div>
-                  <div className="text-[12px] text-muted">{[invite ? t.handoff.viaInvite : t.handoff.ownHost, online ? null : t.handoff.offline].filter(Boolean).join(' · ')}</div>
+                  <div className="truncate text-base font-medium">{hostName(h)}</div>
+                  <div className="text-xs text-muted">{[invite ? t.handoff.viaInvite : t.handoff.ownHost, online ? null : t.handoff.offline].filter(Boolean).join(' · ')}</div>
                 </div>
                 <Dot tone={online ? 'ok' : 'muted'} />
                 <ArrowRight className="size-4 text-muted" />
               </button>
             );
           })}
-          <div className="pt-1 text-[12px] text-muted">{t.handoff.sourceKept}</div>
+          <div className="pt-1 text-xs text-muted">{t.handoff.sourceKept}</div>
         </div>
       );
     case 'exporting':
@@ -245,11 +245,11 @@ function Body({
       const pct = step.total ? Math.floor((step.sent / step.total) * 100) : 0;
       return (
         <div className="space-y-3">
-          <div className="text-[15px]">{t.handoff.sending(step.dest.name)}</div>
+          <div className="text-base">{t.handoff.sending(step.dest.name)}</div>
           <div className="h-2 overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
             <div className="h-full bg-accent transition-[width]" style={{ width: `${pct}%` }} />
           </div>
-          <div className="text-[12px] tabular-nums text-muted">
+          <div className="text-xs tabular-nums text-muted">
             {byteSize(step.sent)} / {byteSize(step.total)} · {pct}%
           </div>
           <Button block variant="outline" onClick={onCancel}>
@@ -271,7 +271,7 @@ function Body({
             <CheckCircle2 className="size-6 text-ok" />
             {t.handoff.success(step.dest.name)}
           </div>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
             {r.branch && (
               <>
                 <dt className="text-muted">{t.handoff.newBranch}</dt>
@@ -341,7 +341,7 @@ function Body({
 
 function Working({ text }: { text: string }) {
   return (
-    <div className="flex items-center gap-3 py-6 text-[15px]">
+    <div className="flex items-center gap-3 py-6 text-base">
       <Spinner />
       {text}
     </div>
@@ -352,26 +352,26 @@ function Confirm({ exp, dest, onSend, onBack }: { exp: ExportedHandoff; dest: De
   const s = handoffSummary(exp.manifest);
   return (
     <div className="space-y-3">
-      <div className="text-[15px] font-medium">{t.handoff.confirmTitle}</div>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[13px]">
+      <div className="text-base font-medium">{t.handoff.confirmTitle}</div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         <Item label={t.handoff.repo}>
           {s.repo}
-          {s.origin && <div className="break-all font-mono text-[11px] text-muted">{s.origin}</div>}
+          {s.origin && <div className="break-all font-mono text-2xs text-muted">{s.origin}</div>}
         </Item>
         <Item label={t.handoff.branch}>
           <span className="font-mono">{s.branch ?? exp.manifest.head.slice(0, 10)}</span>
         </Item>
         {s.harness && <Item label={t.handoff.harness}>{harnessLabel(s.harness)}</Item>}
       </dl>
-      <div className={cx('text-[13px]', s.resumable ? 'text-ok' : 'text-muted')}>{s.resumable ? t.handoff.resumable : t.handoff.notResumable}</div>
-      {s.untracked > 0 && <div className="text-[13px] text-muted">{t.handoff.untracked(s.untracked)}</div>}
+      <div className={cx('text-sm', s.resumable ? 'text-ok' : 'text-muted')}>{s.resumable ? t.handoff.resumable : t.handoff.notResumable}</div>
+      {s.untracked > 0 && <div className="text-sm text-muted">{t.handoff.untracked(s.untracked)}</div>}
       {s.secrets.length > 0 && (
         <Notice tone="warn">
           <div className="flex items-center gap-1.5 font-medium">
             <KeyRound className="size-4" />
             {t.handoff.secrets}
           </div>
-          <ul className="mt-1 font-mono text-[12px]">
+          <ul className="mt-1 font-mono text-xs">
             {s.secrets.map((p) => (
               <li key={p} className="break-all">
                 {p}
@@ -381,7 +381,7 @@ function Confirm({ exp, dest, onSend, onBack }: { exp: ExportedHandoff; dest: De
         </Notice>
       )}
       {s.otherSkipped.length > 0 && (
-        <div className="text-[12px] text-muted">
+        <div className="text-xs text-muted">
           <div>{t.handoff.skipped}</div>
           <ul className="font-mono">
             {s.otherSkipped.map((x) => (
@@ -392,8 +392,8 @@ function Confirm({ exp, dest, onSend, onBack }: { exp: ExportedHandoff; dest: De
           </ul>
         </div>
       )}
-      {s.redactions > 0 && <div className="text-[13px] text-muted">{t.handoff.redactions(s.redactions)}</div>}
-      <div className="text-[12px] text-faint">{t.handoff.size(byteSize(exp.size))}</div>
+      {s.redactions > 0 && <div className="text-sm text-muted">{t.handoff.redactions(s.redactions)}</div>}
+      <div className="text-xs text-faint">{t.handoff.size(byteSize(exp.size))}</div>
       <Button block size="lg" variant="primary" icon={<Send className="size-5" />} onClick={onSend}>
         {t.handoff.send(dest.name)}
       </Button>
@@ -433,7 +433,7 @@ function NeedsRepo({ step, onSubmit }: { step: Extract<Step, { k: 'needs_repo' }
         spellCheck={false}
         onChange={(e) => setPath(e.target.value)}
       />
-      <div className="text-[12px] text-muted">{t.handoff.repoPathHint}</div>
+      <div className="text-xs text-muted">{t.handoff.repoPathHint}</div>
       {step.error && <Notice tone="danger">{step.error}</Notice>}
       <Button type="submit" block variant="primary" disabled={!path.trim()}>
         {t.handoff.continue}

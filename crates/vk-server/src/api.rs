@@ -227,6 +227,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("image.upload", true),
     ("git.status", false),
     ("git.diff", false),
+    ("git.log", false),
+    ("fs.list", false),
+    ("fs.read", false),
     ("layout.export", false),
     ("task.create", true),
     ("task.list", false),
@@ -315,6 +318,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "desk.open",
     "desk.resume",
     "desk.forget",
+    "scrollback.forget",
     "desk.index",
     "desk.status",
     // Refused by their handlers for every pane-scoped call regardless of params; listed here
@@ -535,7 +539,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::agent_browser::api(server, ctx, method, p).await {
         return r;
     }
-    if let Some(r) = crate::git_api::api(server, ctx, method, p).await {
+    // Boxed: these futures are large and would overflow a worker stack in debug builds.
+    if let Some(r) = Box::pin(crate::git_api::api(server, ctx, method, p)).await {
+        return r;
+    }
+    // Boxed: these futures are large and would overflow a worker stack in debug builds.
+    if let Some(r) = Box::pin(crate::fs_api::api(server, ctx, method, p)).await {
         return r;
     }
     if let Some(r) = crate::desk::api(server, ctx, method, p).await {

@@ -547,7 +547,7 @@ fn new_preview(server: &Server, port: u16, source: PreviewSource, now: i64) -> P
     }
 }
 
-fn task_of_pane(c: &Core, pane: &str) -> Option<String> {
+pub(crate) fn task_of_pane(c: &Core, pane: &str) -> Option<String> {
     let p = c.pane(pane)?;
     c.ws(&p.workspace).and_then(|w| w.task.clone())
 }
