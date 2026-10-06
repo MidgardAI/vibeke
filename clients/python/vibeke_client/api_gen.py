@@ -122,6 +122,9 @@ class Api:
     async def assistant_test(self, params: "Optional[t.AssistantTestParams]" = None) -> "t.AssistantTestResult":
         return await self.call("assistant.test", params or {})  # type: ignore[arg-type, return-value]
 
+    async def attention_batch(self, params: "t.AttentionBatchParams") -> "t.AttentionBatchResult":
+        return await self.call("attention.batch", params)  # type: ignore[arg-type, return-value]
+
     async def attention_list(self, params: "Optional[t.AttentionListParams]" = None) -> "t.AttentionListResult":
         return await self.call("attention.list", params or {})  # type: ignore[arg-type, return-value]
 
@@ -791,6 +794,9 @@ class Api:
     async def task_get(self, params: "t.TaskGetParams") -> "t.TaskGetResult":
         return await self.call("task.get", params)  # type: ignore[arg-type, return-value]
 
+    async def task_link_status(self, params: "Optional[t.TaskLinkStatusParams]" = None) -> "t.TaskLinkStatusResult":
+        return await self.call("task.link.status", params or {})  # type: ignore[arg-type, return-value]
+
     async def task_list(self, params: "Optional[t.TaskListParams]" = None) -> "t.TaskListResult":
         return await self.call("task.list", params or {})  # type: ignore[arg-type, return-value]
 
@@ -824,8 +830,14 @@ class Api:
     async def task_review_diff(self, params: "t.TaskReviewDiffParams") -> "t.TaskReviewDiffResult":
         return await self.call("task.review.diff", params)  # type: ignore[arg-type, return-value]
 
+    async def task_review_forget(self, params: "Optional[t.TaskReviewForgetParams]" = None) -> "t.TaskReviewForgetResult":
+        return await self.call("task.review.forget", params or {})  # type: ignore[arg-type, return-value]
+
     async def task_review_get(self, params: "t.TaskReviewGetParams") -> "t.TaskReviewGetResult":
         return await self.call("task.review.get", params)  # type: ignore[arg-type, return-value]
+
+    async def task_review_human_review(self, params: "t.TaskReviewHumanReviewParams") -> "t.TaskReviewHumanReviewResult":
+        return await self.call("task.review.human_review", params)  # type: ignore[arg-type, return-value]
 
     async def task_review_note_classify(self, params: "t.TaskReviewNoteClassifyParams") -> "t.TaskReviewNoteClassifyResult":
         return await self.call("task.review.note.classify", params)  # type: ignore[arg-type, return-value]
