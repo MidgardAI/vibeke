@@ -1285,9 +1285,14 @@ async fn shell(server: &Arc<Server>, p: &Value) -> R {
                 &v.vm,
                 &[v.shell.clone(), "-l".into()],
                 Some(vk_sandbox::vm::VM_WORKSPACE),
-                &[("TERM".into(), term), ("VIBEKE_SANDBOX_SHELL".into(), "1".into())],
+                &[
+                    ("TERM".into(), term),
+                    ("VIBEKE_SANDBOX_SHELL".into(), "1".into()),
+                ],
             );
-            Ok(json!({"sandbox": b.key, "level": "vm", "argv": argv, "env": [], "cwd": Value::Null}))
+            Ok(
+                json!({"sandbox": b.key, "level": "vm", "argv": argv, "env": [], "cwd": Value::Null}),
+            )
         }
         BoxRunner::Sandbox(r) => {
             let shell = server

@@ -966,7 +966,12 @@ mod tests {
         let mut b = rep("k7.2", 3, 1, None, "idle", &["b"]);
         b.summary.head = Some("h1".into());
         let r = rank(&[a.clone(), b]);
-        assert!(r[0].reasons.iter().chain(r[1].reasons.iter()).any(|x| x == "check is stale"));
+        assert!(
+            r[0].reasons
+                .iter()
+                .chain(r[1].reasons.iter())
+                .any(|x| x == "check is stale")
+        );
         assert!(render_compare("k7", &[a.clone()], &r).contains("pass*"));
         // Dirty state changes also stale it.
         a.summary.head = Some("h1".into());

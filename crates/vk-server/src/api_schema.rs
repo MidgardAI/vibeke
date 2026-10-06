@@ -162,7 +162,11 @@ fn build() -> Result<Registry, Vec<String>> {
         out
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
-    let events = load(&[EVENT_SHAPES, crate::orch_shapes::EVENTS], "event", &mut errs);
+    let events = load(
+        &[EVENT_SHAPES, crate::orch_shapes::EVENTS],
+        "event",
+        &mut errs,
+    );
     let notifications = load(&[NOTIFICATION_SHAPES], "notification", &mut errs);
     let mut reg = Registry {
         defs,

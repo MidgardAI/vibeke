@@ -154,7 +154,10 @@ pub fn load_cfg() -> OrchestrateConfig {
 
 /// Use `c` instead of the config file for this server (tests).
 pub fn set_cfg(server: &Server, c: OrchestrateConfig) {
-    overrides().lock().unwrap().insert(server.paths.state.clone(), c);
+    overrides()
+        .lock()
+        .unwrap()
+        .insert(server.paths.state.clone(), c);
 }
 
 /// `unsupported` naming the flag that turns a feature on.
@@ -167,12 +170,22 @@ pub fn disabled(feature: &str, flag: &str) -> vk_proto::rpc::RpcError {
 }
 
 pub fn require(on: bool, feature: &str, flag: &str) -> Result<(), vk_proto::rpc::RpcError> {
-    if on { Ok(()) } else { Err(disabled(feature, flag)) }
+    if on {
+        Ok(())
+    } else {
+        Err(disabled(feature, flag))
+    }
 }
 
 // ---- store helpers ------------------------------------------------------------------------
 
-pub(crate) fn put<T: Serialize>(tx: &mut Tx, kind: &'static str, id: &str, handle: Option<&str>, v: &T) {
+pub(crate) fn put<T: Serialize>(
+    tx: &mut Tx,
+    kind: &'static str,
+    id: &str,
+    handle: Option<&str>,
+    v: &T,
+) {
     tx.m.put(kind, id, handle, v);
 }
 
@@ -180,7 +193,11 @@ pub(crate) fn load_all<T: DeserializeOwned>(server: &Server, kind: &str) -> Vec<
     server.with_core(|c| c.store.load(kind).unwrap_or_default())
 }
 
-pub(crate) fn load_one<T: DeserializeOwned>(server: &Server, kind: &str, id_or_handle: &str) -> Option<T> {
+pub(crate) fn load_one<T: DeserializeOwned>(
+    server: &Server,
+    kind: &str,
+    id_or_handle: &str,
+) -> Option<T> {
     server.with_core(|c| c.store.find(kind, id_or_handle).ok().flatten())
 }
 
@@ -237,7 +254,13 @@ pub(crate) fn repo_param(server: &Server, ctx: &Ctx, p: &Value) -> String {
 
 /// Run `task.create` (or any API method) as the local user.
 pub(crate) async fn call(server: &Arc<Server>, method: &str, params: Value) -> R {
-    Box::pin(crate::api::dispatch(server, &crate::drafts::user_ctx(), method, &params)).await
+    Box::pin(crate::api::dispatch(
+        server,
+        &crate::drafts::user_ctx(),
+        method,
+        &params,
+    ))
+    .await
 }
 
 pub(crate) fn from_orch(e: vk_orchestrate::Error) -> vk_proto::rpc::RpcError {
@@ -259,7 +282,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     if !METHODS.iter().any(|(m, _)| *m == method) {
         return None;
     }
-    if method.starts_with("family.") || matches!(method, "task.best_of_n" | "task.compare" | "task.pick") {
+    if method.starts_with("family.")
+        || matches!(method, "task.best_of_n" | "task.compare" | "task.pick")
+    {
         return crate::orch_family::api(server, ctx, method, p).await;
     }
     if method == "task.split" {
@@ -323,3 +348,7 @@ pub fn start(server: &Arc<Server>) {
         }
     });
 }
+
+#[cfg(test)]
+#[path = "orch_tests.rs"]
+mod tests;

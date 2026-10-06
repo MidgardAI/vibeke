@@ -23,7 +23,11 @@ const SCOPE: &str = "orch.learned";
 pub fn decision_records(server: &Server) -> Vec<DecisionRecord> {
     let its: Vec<Interaction> = server.with_core(|c| {
         let mut v = c.model.interactions.clone();
-        v.extend(c.store.load_closed::<Interaction>("interaction", 5000).unwrap_or_default());
+        v.extend(
+            c.store
+                .load_closed::<Interaction>("interaction", 5000)
+                .unwrap_or_default(),
+        );
         v
     });
     let mut seen = HashSet::new();
@@ -32,17 +36,21 @@ pub fn decision_records(server: &Server) -> Vec<DecisionRecord> {
         if it.kind != InteractionKind::Approval || !seen.insert(it.id.clone()) {
             continue;
         }
-        let (Some(a), Some(ans)) = (&it.action, &it.answer) else { continue };
+        let (Some(a), Some(ans)) = (&it.action, &it.answer) else {
+            continue;
+        };
         let verdict = match ans.decision {
             Some(Decision::Allow | Decision::AllowAlways) => Verdict::Allow,
             Some(Decision::Deny) => Verdict::Deny,
             None => continue,
         };
         let (harness, workspace) = server.with_core(|c| {
-            let run = c
-                .run(&it.run)
-                .cloned()
-                .or_else(|| c.store.find::<vk_proto::model::AgentRun>("run", &it.run).ok().flatten());
+            let run = c.run(&it.run).cloned().or_else(|| {
+                c.store
+                    .find::<vk_proto::model::AgentRun>("run", &it.run)
+                    .ok()
+                    .flatten()
+            });
             let ws = run
                 .as_ref()
                 .and_then(|r| r.task.as_deref())
@@ -72,7 +80,9 @@ pub fn decision_records(server: &Server) -> Vec<DecisionRecord> {
 }
 
 fn dismissed(server: &Server) -> HashSet<String> {
-    kv_get::<Vec<String>>(server, SCOPE, "dismissed").into_iter().collect()
+    kv_get::<Vec<String>>(server, SCOPE, "dismissed")
+        .into_iter()
+        .collect()
 }
 
 /// Current suggestions: thresholds from config, minus dismissed and already-decided actions.
@@ -104,7 +114,11 @@ pub async fn api(server: &Arc<Server>, _ctx: &Ctx, method: &str, p: &Value) -> O
 }
 
 fn gate(server: &Server) -> Result<(), vk_proto::rpc::RpcError> {
-    require(orch::cfg(server).learned_policy.enabled, "learned policy", "learned_policy")
+    require(
+        orch::cfg(server).learned_policy.enabled,
+        "learned policy",
+        "learned_policy",
+    )
 }
 
 fn list(server: &Arc<Server>, p: &Value) -> R {
@@ -190,7 +204,11 @@ fn dismiss(server: &Arc<Server>, p: &Value) -> R {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     kv_put(&mut tx, SCOPE, "dismissed", &d);
-    tx.event("policy.learned_dismissed", json!({"suggestion": id}), json!({}));
+    tx.event(
+        "policy.learned_dismissed",
+        json!({"suggestion": id}),
+        json!({}),
+    );
     server.commit(&mut c, tx).map_err(internal)?;
     Ok(json!({"dismissed": id, "total": d.len()}))
 }

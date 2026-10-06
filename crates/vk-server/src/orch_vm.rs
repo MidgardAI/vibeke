@@ -14,10 +14,13 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use vk_sandbox::NetworkProfile;
-use vk_sandbox::vm::{self, FakeVmBackend, TemplateSpec, VmBackend, VmBoxRunner, VmManager, VmMount, VmProviderKind, VmSpec};
-use vk_sandbox::vm_transport;
 use vk_proto::rpc::ErrorKind;
+use vk_sandbox::NetworkProfile;
+use vk_sandbox::vm::{
+    self, FakeVmBackend, TemplateSpec, VmBackend, VmBoxRunner, VmManager, VmMount, VmProviderKind,
+    VmSpec,
+};
+use vk_sandbox::vm_transport;
 
 fn backend_overrides() -> &'static Mutex<HashMap<PathBuf, Arc<dyn VmBackend>>> {
     static O: OnceLock<Mutex<HashMap<PathBuf, Arc<dyn VmBackend>>>> = OnceLock::new();
@@ -26,7 +29,10 @@ fn backend_overrides() -> &'static Mutex<HashMap<PathBuf, Arc<dyn VmBackend>>> {
 
 /// Use `b` as this server's VM backend (tests).
 pub fn set_backend(server: &Server, b: Arc<dyn VmBackend>) {
-    backend_overrides().lock().unwrap().insert(server.paths.state.clone(), b);
+    backend_overrides()
+        .lock()
+        .unwrap()
+        .insert(server.paths.state.clone(), b);
 }
 
 pub fn vm_cfg(server: &Server) -> vk_sandbox::config::VmConfig {
@@ -41,7 +47,8 @@ fn backend(server: &Server) -> Result<Arc<dyn VmBackend>, vk_proto::rpc::RpcErro
     if let Some(b) = backend_overrides().lock().unwrap().get(&server.paths.state) {
         return Ok(b.clone());
     }
-    vm::backend_for(&vm_cfg(server).provider, &server.paths.state).map_err(|e| err(ErrorKind::Unsupported, e.to_string()))
+    vm::backend_for(&vm_cfg(server).provider, &server.paths.state)
+        .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))
 }
 
 fn manager(server: &Server) -> Result<VmManager, vk_proto::rpc::RpcError> {
@@ -82,13 +89,23 @@ fn spec_of(c: &vk_sandbox::config::VmConfig, name: &str, checkout: Option<&Path>
     s.memory_mb = c.memory_mb();
     s.disk_gb = c.disk_gb();
     if let Some(co) = checkout {
-        s.mounts.push(VmMount { host: co.to_path_buf(), target: vm::VM_WORKSPACE.into(), read_only: false });
+        s.mounts.push(VmMount {
+            host: co.to_path_buf(),
+            target: vm::VM_WORKSPACE.into(),
+            read_only: false,
+        });
     }
     s
 }
 
 fn template_spec(c: &vk_sandbox::config::VmConfig) -> TemplateSpec {
-    TemplateSpec { image: c.image.clone(), setup: c.setup.clone(), cpus: c.cpus, memory_mb: c.memory_mb(), disk_gb: c.disk_gb() }
+    TemplateSpec {
+        image: c.image.clone(),
+        setup: c.setup.clone(),
+        cpus: c.cpus,
+        memory_mb: c.memory_mb(),
+        disk_gb: c.disk_gb(),
+    }
 }
 
 /// Run the configured setup commands in the template builder VM, in order; the first failure
@@ -102,7 +119,10 @@ fn run_setup(cmds: Vec<String>) -> impl Fn(&dyn VmBackend, &str) -> vm::VmResult
                 .stdin(std::process::Stdio::null())
                 .output()?;
             if !o.status.success() {
-                return Err(vm::VmError::Command { what: format!("setup `{cmd}`"), detail: String::from_utf8_lossy(&o.stderr).trim().to_string() });
+                return Err(vm::VmError::Command {
+                    what: format!("setup `{cmd}`"),
+                    detail: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                });
             }
         }
         Ok(())
@@ -137,7 +157,12 @@ pub async fn build_runner(
     }
     let name = vm_name(key);
     let m = VmManager::new(be.clone(), &server.paths.state);
-    let (task_s, checkout_p, c2, name2) = (task.map(str::to_string), checkout.to_path_buf(), c.clone(), name.clone());
+    let (task_s, checkout_p, c2, name2) = (
+        task.map(str::to_string),
+        checkout.to_path_buf(),
+        c.clone(),
+        name.clone(),
+    );
     tokio::task::spawn_blocking(move || -> Result<(), vk_proto::rpc::RpcError> {
         let exists = m.backend().state(&name2).is_ok();
         if exists {
@@ -153,8 +178,11 @@ pub async fn build_runner(
         let spec = spec_of(&c2, &name2, Some(&checkout_p));
         if c2.template {
             let ts = template_spec(&c2);
-            let tpl = m.ensure_template(&ts, &run_setup(c2.setup.clone())).map_err(vm_err)?;
-            m.claim_from_template(&tpl.key, task_s.as_deref(), &spec).map_err(vm_err)?;
+            let tpl = m
+                .ensure_template(&ts, &run_setup(c2.setup.clone()))
+                .map_err(vm_err)?;
+            m.claim_from_template(&tpl.key, task_s.as_deref(), &spec)
+                .map_err(vm_err)?;
         } else {
             m.create(task_s.as_deref(), &spec).map_err(vm_err)?;
         }
@@ -162,7 +190,14 @@ pub async fn build_runner(
     })
     .await
     .map_err(internal)??;
-    Ok(VmBoxRunner { backend: be, vm: name, checkout: checkout.to_path_buf(), network, proxy: false, shell: c.shell })
+    Ok(VmBoxRunner {
+        backend: be,
+        vm: name,
+        checkout: checkout.to_path_buf(),
+        network,
+        proxy: false,
+        shell: c.shell,
+    })
 }
 
 /// Destroy the VM of a task box (task teardown).
@@ -177,7 +212,9 @@ pub async fn api(server: &Arc<Server>, _ctx: &Ctx, method: &str, p: &Value) -> O
         "vm.status" => Ok(status(server)),
         "vm.list" => list(server),
         "vm.create" => create(server, p).await,
-        "vm.start" | "vm.stop" | "vm.suspend" | "vm.resume" | "vm.destroy" => lifecycle(server, method, p).await,
+        "vm.start" | "vm.stop" | "vm.suspend" | "vm.resume" | "vm.destroy" => {
+            lifecycle(server, method, p).await
+        }
         "vm.snapshot" => snapshot(server, p).await,
         "vm.snapshot.delete" => snapshot_delete(server, p).await,
         "vm.fork" => fork(server, p).await,
@@ -220,13 +257,17 @@ fn list(server: &Server) -> R {
         .values()
         .map(|v| json!({"name": v.name, "task": v.task, "template": v.template, "created_ms": v.created_ms, "state": m.backend().state(&v.name).map(|s| s.as_str().to_string()).unwrap_or_else(|_| "missing".into())}))
         .collect();
-    Ok(json!({"vms": vms, "snapshots": reg.snapshots.values().map(|s| json!({"id": s.snap.id, "vm": s.snap.vm, "label": s.snap.label, "memory": s.snap.memory, "task": s.task, "template": s.template, "created_ms": s.snap.created_ms})).collect::<Vec<_>>()}))
+    Ok(
+        json!({"vms": vms, "snapshots": reg.snapshots.values().map(|s| json!({"id": s.snap.id, "vm": s.snap.vm, "label": s.snap.label, "memory": s.snap.memory, "task": s.task, "template": s.template, "created_ms": s.snap.created_ms})).collect::<Vec<_>>()}),
+    )
 }
 
 async fn create(server: &Arc<Server>, p: &Value) -> R {
     let c = gate(server)?;
     let m = manager(server)?;
-    let name = s(p, "name").map(str::to_string).unwrap_or_else(|| format!("vk-{}", &crate::core::ulid().to_lowercase()[18..]));
+    let name = s(p, "name")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("vk-{}", &crate::core::ulid().to_lowercase()[18..]));
     let task = s(p, "task").map(str::to_string);
     let checkout = s(p, "checkout").map(PathBuf::from);
     let use_template = b(p, "template").unwrap_or(c.template);
@@ -245,7 +286,12 @@ async fn create(server: &Arc<Server>, p: &Value) -> R {
     .await
     .map_err(internal)?
     .map_err(vm_err)?;
-    orch::emit(server, "vm.created", json!({"vm": info.name}), json!({"provider": info.provider.as_str(), "template": use_template, "fork_ms": fork_ms}));
+    orch::emit(
+        server,
+        "vm.created",
+        json!({"vm": info.name}),
+        json!({"provider": info.provider.as_str(), "template": use_template, "fork_ms": fork_ms}),
+    );
     Ok(json!({"vm": info, "fork_ms": fork_ms}))
 }
 
@@ -279,18 +325,33 @@ async fn lifecycle(server: &Arc<Server>, method: &str, p: &Value) -> R {
         "resume" => "vm.resumed",
         _ => "vm.destroyed",
     };
-    orch::emit(server, kind, json!({"vm": name}), json!({"state": state.map(|s| s.as_str())}));
+    orch::emit(
+        server,
+        kind,
+        json!({"vm": name}),
+        json!({"state": state.map(|s| s.as_str())}),
+    );
     Ok(json!({"vm": name, "state": state.map(|s| s.as_str())}))
 }
 
 async fn snapshot(server: &Arc<Server>, p: &Value) -> R {
     gate(server)?;
     let name = req(p, "vm")?.to_string();
-    let label = s(p, "label").map(str::to_string).unwrap_or_else(|| format!("snap-{}", vk_store::now_ms() / 1000));
+    let label = s(p, "label")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("snap-{}", vk_store::now_ms() / 1000));
     let m = manager(server)?;
     let (n2, l2) = (name.clone(), label.clone());
-    let snap = tokio::task::spawn_blocking(move || m.snapshot(&n2, &l2)).await.map_err(internal)?.map_err(vm_err)?;
-    orch::emit(server, "vm.snapshot_created", json!({"vm": name}), json!({"snapshot": snap.id, "memory": snap.memory}));
+    let snap = tokio::task::spawn_blocking(move || m.snapshot(&n2, &l2))
+        .await
+        .map_err(internal)?
+        .map_err(vm_err)?;
+    orch::emit(
+        server,
+        "vm.snapshot_created",
+        json!({"vm": name}),
+        json!({"snapshot": snap.id, "memory": snap.memory}),
+    );
     Ok(json!({"snapshot": snap}))
 }
 
@@ -299,7 +360,10 @@ async fn snapshot_delete(server: &Arc<Server>, p: &Value) -> R {
     let id = req(p, "snapshot")?.to_string();
     let m = manager(server)?;
     let (i2, force) = (id.clone(), b(p, "force").unwrap_or(false));
-    tokio::task::spawn_blocking(move || m.delete_snapshot(&i2, force)).await.map_err(internal)?.map_err(vm_err)?;
+    tokio::task::spawn_blocking(move || m.delete_snapshot(&i2, force))
+        .await
+        .map_err(internal)?
+        .map_err(vm_err)?;
     Ok(json!({"deleted": id}))
 }
 
@@ -307,22 +371,49 @@ async fn fork(server: &Arc<Server>, p: &Value) -> R {
     let c = gate(server)?;
     let snap = req(p, "snapshot")?.to_string();
     let count = u(p, "count").unwrap_or(1).clamp(1, 16) as usize;
-    let prefix = s(p, "prefix").map(str::to_string).unwrap_or_else(|| format!("vk-fork-{}", &crate::core::ulid().to_lowercase()[20..]));
+    let prefix = s(p, "prefix")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("vk-fork-{}", &crate::core::ulid().to_lowercase()[20..]));
     let tasks: Vec<Option<String>> = (0..count)
-        .map(|i| p.get("tasks").and_then(Value::as_array).and_then(|a| a.get(i)).and_then(Value::as_str).map(str::to_string))
+        .map(|i| {
+            p.get("tasks")
+                .and_then(Value::as_array)
+                .and_then(|a| a.get(i))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
     let checkouts: Vec<Option<PathBuf>> = (0..count)
-        .map(|i| p.get("checkouts").and_then(Value::as_array).and_then(|a| a.get(i)).and_then(Value::as_str).map(PathBuf::from))
+        .map(|i| {
+            p.get("checkouts")
+                .and_then(Value::as_array)
+                .and_then(|a| a.get(i))
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+        })
         .collect();
     let m = manager(server)?;
     let specs: Vec<(Option<String>, VmSpec)> = (0..count)
-        .map(|i| (tasks[i].clone(), spec_of(&c, &format!("{prefix}-{}", i + 1), checkouts[i].as_deref())))
+        .map(|i| {
+            (
+                tasks[i].clone(),
+                spec_of(&c, &format!("{prefix}-{}", i + 1), checkouts[i].as_deref()),
+            )
+        })
         .collect();
     let s2 = snap.clone();
     let started = std::time::Instant::now();
-    let vms = tokio::task::spawn_blocking(move || m.fork_many(&s2, &specs)).await.map_err(internal)?.map_err(vm_err)?;
+    let vms = tokio::task::spawn_blocking(move || m.fork_many(&s2, &specs))
+        .await
+        .map_err(internal)?
+        .map_err(vm_err)?;
     let ms = started.elapsed().as_millis() as u64;
-    orch::emit(server, "vm.forked", json!({"snapshot": snap}), json!({"vms": vms.iter().map(|v| v.name.clone()).collect::<Vec<_>>(), "ms": ms}));
+    orch::emit(
+        server,
+        "vm.forked",
+        json!({"snapshot": snap}),
+        json!({"vms": vms.iter().map(|v| v.name.clone()).collect::<Vec<_>>(), "ms": ms}),
+    );
     Ok(json!({"vms": vms, "ms": ms}))
 }
 
@@ -351,8 +442,16 @@ async fn template_build(server: &Arc<Server>) -> R {
     let m = manager(server)?;
     let ts = template_spec(&c);
     let setup = c.setup.clone();
-    let tpl = tokio::task::spawn_blocking(move || m.ensure_template(&ts, &run_setup(setup))).await.map_err(internal)?.map_err(vm_err)?;
-    orch::emit(server, "vm.template_built", json!({"template": tpl.key}), json!({"snapshot": tpl.snapshot.id, "setup_digest": tpl.setup_digest}));
+    let tpl = tokio::task::spawn_blocking(move || m.ensure_template(&ts, &run_setup(setup)))
+        .await
+        .map_err(internal)?
+        .map_err(vm_err)?;
+    orch::emit(
+        server,
+        "vm.template_built",
+        json!({"template": tpl.key}),
+        json!({"snapshot": tpl.snapshot.id, "setup_digest": tpl.setup_digest}),
+    );
     Ok(json!({"template": tpl}))
 }
 
@@ -361,7 +460,10 @@ async fn template_delete(server: &Arc<Server>, p: &Value) -> R {
     let key = req(p, "key")?.to_string();
     let m = manager(server)?;
     let k2 = key.clone();
-    tokio::task::spawn_blocking(move || m.delete_template(&k2)).await.map_err(internal)?.map_err(vm_err)?;
+    tokio::task::spawn_blocking(move || m.delete_template(&k2))
+        .await
+        .map_err(internal)?
+        .map_err(vm_err)?;
     Ok(json!({"deleted": key}))
 }
 

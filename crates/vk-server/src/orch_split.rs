@@ -15,7 +15,9 @@ use vk_orchestrate::split as sp;
 use vk_proto::model::{AgentRun, Execution};
 use vk_proto::rpc::ErrorKind;
 
-const SHELLS: &[&str] = &["sh", "bash", "zsh", "fish", "nu", "dash", "ksh", "tcsh", "pwsh"];
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "nu", "dash", "ksh", "tcsh", "pwsh",
+];
 
 fn source_dir(server: &Server, ctx: &Ctx, p: &Value) -> Result<PathBuf, vk_proto::rpc::RpcError> {
     let cwd: Option<String> = if let Some(r) = s(p, "run") {
@@ -33,9 +35,15 @@ fn source_dir(server: &Server, ctx: &Ctx, p: &Value) -> Result<PathBuf, vk_proto
                 .and_then(|x| x.cwd.clone())
         })
     } else {
-        crate::api::resolve_pane(server, ctx, None).ok().and_then(|x| server.pane_cwd(&x.id))
+        crate::api::resolve_pane(server, ctx, None)
+            .ok()
+            .and_then(|x| server.pane_cwd(&x.id))
     };
-    let cwd = cwd.ok_or_else(|| invalid("give `run`, `pane` or `workspace` (or call from a pane) to name the checkout to split"))?;
+    let cwd = cwd.ok_or_else(|| {
+        invalid(
+            "give `run`, `pane` or `workspace` (or call from a pane) to name the checkout to split",
+        )
+    })?;
     let top = gitx::run(Path::new(&cwd), &["rev-parse", "--show-toplevel"])
         .map_err(|_| invalid(format!("{cwd} is not inside a git checkout")))?;
     Ok(PathBuf::from(top))
@@ -53,7 +61,9 @@ fn runs_in(server: &Server, root: &Path) -> Vec<AgentRun> {
             .filter(|r| r.ended_at_ms.is_none())
             .filter(|r| {
                 r.cwd.as_deref().is_some_and(|d| under(root, d))
-                    || c.pane(&r.pane).and_then(|p| p.cwd.as_deref()).is_some_and(|d| under(root, d))
+                    || c.pane(&r.pane)
+                        .and_then(|p| p.cwd.as_deref())
+                        .is_some_and(|d| under(root, d))
             })
             .cloned()
             .collect()
@@ -70,7 +80,11 @@ fn other_writers(server: &Server, root: &Path, runs: &[AgentRun]) -> Vec<sp::Wri
             .filter(|p| !runs.iter().any(|r| r.pane == p.id))
             .filter_map(|p| {
                 let prog = p.fg_cmdline.first()?;
-                let base = prog.rsplit('/').next().unwrap_or(prog).trim_start_matches('-');
+                let base = prog
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(prog)
+                    .trim_start_matches('-');
                 (!SHELLS.contains(&base)).then(|| sp::Writer {
                     label: format!("{} ({base})", p.handle),
                     agent: false,
@@ -88,8 +102,12 @@ async fn interrupt_and_wait(server: &Arc<Server>, runs: &[AgentRun], wait: Durat
     let until = Instant::now() + wait;
     loop {
         let busy = server.with_core(|c| {
-            runs.iter()
-                .any(|r| c.run(&r.id).is_some_and(|x| x.execution.value == Execution::Working || x.execution.value == Execution::Starting))
+            runs.iter().any(|r| {
+                c.run(&r.id).is_some_and(|x| {
+                    x.execution.value == Execution::Working
+                        || x.execution.value == Execution::Starting
+                })
+            })
         });
         if !busy || Instant::now() >= until {
             return;
@@ -103,12 +121,18 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     require(c.split.enabled, "split into task", "split")?;
     let root = source_dir(server, ctx, p)?;
     let selected: Option<Vec<String>> = p.get("paths").and_then(Value::as_array).map(|a| {
-        a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+        a.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
     });
     let dry = b(p, "dry_run").unwrap_or(false);
     let runs = runs_in(server, &root);
     let moved_runs: Vec<AgentRun> = match s(p, "run") {
-        Some(r) => runs.iter().filter(|x| x.id == r || x.handle == r).cloned().collect(),
+        Some(r) => runs
+            .iter()
+            .filter(|x| x.id == r || x.handle == r)
+            .cloned()
+            .collect(),
         None => runs.clone(),
     };
     if s(p, "run").is_some() && moved_runs.is_empty() {
@@ -122,7 +146,10 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .map_err(from_orch)?
     };
     if changes.is_empty() {
-        return Err(err(ErrorKind::Conflict, "nothing to split: the checkout has no uncommitted changes"));
+        return Err(err(
+            ErrorKind::Conflict,
+            "nothing to split: the checkout has no uncommitted changes",
+        ));
     }
     if dry {
         let cap = sp::Captured {
@@ -136,17 +163,32 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             captured_at_ms: 0,
         };
         let sel = sp::Selection {
-            paths: selected.clone().unwrap_or_else(|| changes.iter().map(|c| c.path.clone()).collect()),
+            paths: selected
+                .clone()
+                .unwrap_or_else(|| changes.iter().map(|c| c.path.clone()).collect()),
             digest: String::new(),
         };
         let writers = {
-            let mut w: Vec<sp::Writer> = runs.iter().map(|r| sp::Writer { label: r.handle.clone(), agent: true, quiet: r.execution.value != Execution::Working }).collect();
+            let mut w: Vec<sp::Writer> = runs
+                .iter()
+                .map(|r| sp::Writer {
+                    label: r.handle.clone(),
+                    agent: true,
+                    quiet: r.execution.value != Execution::Working,
+                })
+                .collect();
             w.extend(other_writers(server, &root, &runs));
             w
         };
         let paths: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
         let newest = sp::newest_mtime_ms(&root, &paths);
-        let blocked = sp::quiesce_check(&writers, newest, vk_store::now_ms(), c.split.quiet_for().as_millis() as i64).err();
+        let blocked = sp::quiesce_check(
+            &writers,
+            newest,
+            vk_store::now_ms(),
+            c.split.quiet_for().as_millis() as i64,
+        )
+        .err();
         return Ok(json!({
             "dry_run": true,
             "source": root,
@@ -166,7 +208,9 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 sp::Writer {
                     label: r.handle.clone(),
                     agent: true,
-                    quiet: x.is_none_or(|x| !matches!(x.execution.value, Execution::Working | Execution::Starting)),
+                    quiet: x.is_none_or(|x| {
+                        !matches!(x.execution.value, Execution::Working | Execution::Starting)
+                    }),
                 }
             })
             .collect()
@@ -174,8 +218,17 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     writers.extend(other_writers(server, &root, &runs));
     let paths: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
     let newest = sp::newest_mtime_ms(&root, &paths);
-    if let Err(why) = sp::quiesce_check(&writers, newest, vk_store::now_ms(), c.split.quiet_for().as_millis() as i64) {
-        return Err(err(ErrorKind::Conflict, format!("the checkout is not quiet: {}", why.join("; "))).details(json!({"reason": "not_quiet", "why": why})));
+    if let Err(why) = sp::quiesce_check(
+        &writers,
+        newest,
+        vk_store::now_ms(),
+        c.split.quiet_for().as_millis() as i64,
+    ) {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!("the checkout is not quiet: {}", why.join("; ")),
+        )
+        .details(json!({"reason": "not_quiet", "why": why})));
     }
 
     // 2-3. Capture (recovery ref) and select.
@@ -193,7 +246,10 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     // 4. The destination: a fresh worktree of exactly the source's HEAD. No setup and no file
     // copies (either would make it unclean and the apply would refuse).
     let title = s(p, "title").map(str::to_string).unwrap_or_else(|| {
-        format!("split from {}", cap.branch.clone().unwrap_or_else(|| "detached HEAD".into()))
+        format!(
+            "split from {}",
+            cap.branch.clone().unwrap_or_else(|| "detached HEAD".into())
+        )
     });
     let mut params = json!({"title": title, "repo": root, "base": cap.head, "isolation": "worktree", "setup": false, "copy_files": []});
     if let Some(slug) = s(p, "slug") {
@@ -206,17 +262,28 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         return Err(internal("the new task has no worktree"));
     };
     let abandon = |server: Arc<Server>, task: String| async move {
-        let _ = call(&server, "task.finish", json!({"task": task, "remove_worktree": true, "archive": true, "force": true})).await;
+        let _ = call(
+            &server,
+            "task.finish",
+            json!({"task": task, "remove_worktree": true, "archive": true, "force": true}),
+        )
+        .await;
     };
 
     // 5. Validate, apply, verify, revert the source.
     let (r3, d3, c3, s3) = (root.clone(), dest.clone(), cap.clone(), sel.clone());
-    let res = tokio::task::spawn_blocking(move || sp::execute(&r3, &d3, &c3, &s3)).await.map_err(internal)?;
+    let res = tokio::task::spawn_blocking(move || sp::execute(&r3, &d3, &c3, &s3))
+        .await
+        .map_err(internal)?;
     let result = match res {
         Ok(r) => r,
         Err(e) => {
             abandon(server.clone(), task_id.clone()).await;
-            return Err(err(ErrorKind::Conflict, format!("split failed, nothing was moved: {e}")).details(json!({"recovery_ref": cap.recovery_ref})));
+            return Err(err(
+                ErrorKind::Conflict,
+                format!("split failed, nothing was moved: {e}"),
+            )
+            .details(json!({"recovery_ref": cap.recovery_ref})));
         }
     };
 
@@ -244,10 +311,25 @@ pub async fn split(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             created["task"]["handle"].as_str().unwrap_or(""),
             branch,
             result.moved.len(),
-            if last.is_empty() { String::new() } else { format!("\n\nYour last message was:\n{last}") }
+            if last.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nYour last message was:\n{last}")
+            }
         );
         let opts = crate::sandbox::LaunchOpts::default();
-        match crate::agents::start_in_pane_opts(server, &pane, &r.harness, None, Some(&prompt), &[], Some(&task_id), &opts).await {
+        match crate::agents::start_in_pane_opts(
+            server,
+            &pane,
+            &r.harness,
+            None,
+            Some(&prompt),
+            &[],
+            Some(&task_id),
+            &opts,
+        )
+        .await
+        {
             Ok(v) => started.push(json!({"from": r.handle, "via": "hand_off", "run": v})),
             Err(e) => {
                 resumed_all = false;

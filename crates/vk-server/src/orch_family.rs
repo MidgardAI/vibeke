@@ -27,10 +27,16 @@ pub fn find(server: &Server, id: &str) -> Result<Family, vk_proto::rpc::RpcError
 
 /// The family a child task belongs to.
 pub fn family_of_task(server: &Server, task: &str) -> Option<Family> {
-    families(server).into_iter().find(|f| f.child(task).is_some())
+    families(server)
+        .into_iter()
+        .find(|f| f.child(task).is_some())
 }
 
-fn save(server: &Server, f: &Family, events: Vec<(&str, Value, Value)>) -> Result<(), vk_proto::rpc::RpcError> {
+fn save(
+    server: &Server,
+    f: &Family,
+    events: Vec<(&str, Value, Value)>,
+) -> Result<(), vk_proto::rpc::RpcError> {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     put(&mut tx, KIND, &f.id, Some(&f.id), f);
@@ -93,7 +99,9 @@ fn resolve_agents(p: &Value, max: u32) -> Result<Vec<fam::AgentSpec>, vk_proto::
                 .collect();
             fam::parse_agents(&text.join(","), max).map_err(from_orch)
         }
-        _ => Err(invalid("missing param `agents` (for example \"claude:2,codex:1\")")),
+        _ => Err(invalid(
+            "missing param `agents` (for example \"claude:2,codex:1\")",
+        )),
     }
 }
 
@@ -103,7 +111,9 @@ fn read_prompt(p: &Value) -> Result<Option<String>, vk_proto::rpc::RpcError> {
         if md.len() > 1 << 20 {
             return Err(invalid("prompt_file is larger than 1 MiB"));
         }
-        return Ok(Some(std::fs::read_to_string(f).map_err(|e| invalid(format!("prompt_file {f}: {e}")))?));
+        return Ok(Some(
+            std::fs::read_to_string(f).map_err(|e| invalid(format!("prompt_file {f}: {e}")))?,
+        ));
     }
     Ok(s(p, "prompt").map(str::to_string))
 }
@@ -127,8 +137,20 @@ fn resolve_check(server: &Server, c: &OrchestrateConfig, repo: &Path, p: &Value)
 }
 
 const PASS_THROUGH: &[&str] = &[
-    "isolate", "yolo", "network", "image", "setup", "ports", "isolation", "checkout", "confirm_host_yolo", "code",
-    "devcontainer", "build", "root", "fetch",
+    "isolate",
+    "yolo",
+    "network",
+    "image",
+    "setup",
+    "ports",
+    "isolation",
+    "checkout",
+    "confirm_host_yolo",
+    "code",
+    "devcontainer",
+    "build",
+    "root",
+    "fetch",
 ];
 
 pub async fn best_of_n(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
@@ -183,7 +205,8 @@ pub async fn best_of_n(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         params["agents"] = json!([agent]);
         match call(server, "task.create", params).await {
             Ok(r) => {
-                let task: vk_proto::model::Task = serde_json::from_value(r["task"].clone()).map_err(internal)?;
+                let task: vk_proto::model::Task =
+                    serde_json::from_value(r["task"].clone()).map_err(internal)?;
                 let handle = fam::child_handle(&id, plan.index);
                 rename_task(server, &task.id, &handle)?;
                 let run = r["runs"][0]["id"].as_str().map(str::to_string);
@@ -214,17 +237,28 @@ pub async fn best_of_n(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 }
                 return Err(err(
                     ErrorKind::Conflict,
-                    format!("could not create child {} ({}): {}", plan.index, plan.harness, e.message),
+                    format!(
+                        "could not create child {} ({}): {}",
+                        plan.index, plan.harness, e.message
+                    ),
                 )
                 .details(json!({"created_then_removed": family.children.len()})));
             }
         }
     }
-    let kids: Vec<Value> = family.children.iter().map(|c| json!({"handle": c.handle, "task": c.task, "harness": c.harness})).collect();
+    let kids: Vec<Value> = family
+        .children
+        .iter()
+        .map(|c| json!({"handle": c.handle, "task": c.task, "harness": c.harness}))
+        .collect();
     save(
         server,
         &family,
-        vec![("family.created", json!({"family": family.id}), json!({"title": title, "children": kids, "check_command": family.check_command}))],
+        vec![(
+            "family.created",
+            json!({"family": family.id}),
+            json!({"title": title, "children": kids, "check_command": family.check_command}),
+        )],
     )?;
     Ok(json!({"family": family, "tasks": tasks, "runs": runs, "warnings": warnings}))
 }
@@ -254,7 +288,9 @@ fn inputs(server: &Server, f: &Family) -> Vec<fam::ChildInput> {
                     .model
                     .runs
                     .iter()
-                    .find(|r| r.task.as_deref() == Some(ch.task.as_str()) && r.ended_at_ms.is_none())
+                    .find(|r| {
+                        r.task.as_deref() == Some(ch.task.as_str()) && r.ended_at_ms.is_none()
+                    })
                     .map(|r| r.execution.value.as_str().to_string())
                     .unwrap_or_else(|| t.status.clone());
                 Some(fam::ChildInput {
@@ -276,7 +312,8 @@ async fn compare(server: &Arc<Server>, p: &Value) -> R {
     let ins = inputs(server, &f);
     let stored = f.checks.clone();
     let (reports, ranked) = tokio::task::spawn_blocking(move || {
-        let mut reports: Vec<fam::ChildReport> = ins.iter().map(|i| fam::collect_report(i, None)).collect();
+        let mut reports: Vec<fam::ChildReport> =
+            ins.iter().map(|i| fam::collect_report(i, None)).collect();
         for r in &mut reports {
             fam::attach_check(r, stored.get(&r.handle));
         }
@@ -298,7 +335,10 @@ async fn compare(server: &Arc<Server>, p: &Value) -> R {
                 .and_then(|r| r.branch.clone())
                 .ok_or_else(|| not_found("child", h))
         };
-        let (a, bb) = (branch(pair[0].as_str().unwrap_or(""))?, branch(pair[1].as_str().unwrap_or(""))?);
+        let (a, bb) = (
+            branch(pair[0].as_str().unwrap_or(""))?,
+            branch(pair[1].as_str().unwrap_or(""))?,
+        );
         let repo = f.repo.clone();
         let d = tokio::task::spawn_blocking(move || fam::pairwise(Path::new(&repo), &a, &bb))
             .await
@@ -310,7 +350,12 @@ async fn compare(server: &Arc<Server>, p: &Value) -> R {
 }
 
 /// Run the family's check in each child (or one) and store the outcome with the revision.
-async fn run_checks(server: &Arc<Server>, f: &mut Family, only: Option<&str>, timeout: std::time::Duration) -> Result<Vec<Value>, vk_proto::rpc::RpcError> {
+async fn run_checks(
+    server: &Arc<Server>,
+    f: &mut Family,
+    only: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<Vec<Value>, vk_proto::rpc::RpcError> {
     let Some(cmd) = f.check_command.clone() else {
         return Err(err(
             ErrorKind::Conflict,
@@ -319,7 +364,10 @@ async fn run_checks(server: &Arc<Server>, f: &mut Family, only: Option<&str>, ti
     };
     let ins = inputs(server, f);
     let mut out = vec![];
-    for i in ins.into_iter().filter(|i| only.is_none_or(|o| o == i.handle || o == i.task)) {
+    for i in ins
+        .into_iter()
+        .filter(|i| only.is_none_or(|o| o == i.handle || o == i.task))
+    {
         let (wt, c2) = (i.worktree.clone(), cmd.clone());
         let (outcome, summary) = tokio::task::spawn_blocking(move || {
             let o = fam::run_check(&wt, &c2, timeout);
@@ -373,7 +421,11 @@ async fn pick(server: &Arc<Server>, p: &Value) -> R {
     }
     let mut discarded = vec![];
     if b(p, "discard").unwrap_or(false) {
-        let losers: Vec<(String, String)> = f.losers().iter().map(|c| (c.handle.clone(), c.task.clone())).collect();
+        let losers: Vec<(String, String)> = f
+            .losers()
+            .iter()
+            .map(|c| (c.handle.clone(), c.task.clone()))
+            .collect();
         for (h, t) in losers {
             let r = call(
                 server,
@@ -393,7 +445,11 @@ async fn pick(server: &Arc<Server>, p: &Value) -> R {
     save(
         server,
         &f,
-        vec![("family.picked", json!({"family": f.id}), json!({"picked": picked, "discarded": discarded.iter().filter(|d| d["ok"] == true).count()}))],
+        vec![(
+            "family.picked",
+            json!({"family": f.id}),
+            json!({"picked": picked, "discarded": discarded.iter().filter(|d| d["ok"] == true).count()}),
+        )],
     )?;
     Ok(json!({"family": f, "picked": picked, "merge": merged, "discarded": discarded}))
 }
@@ -403,24 +459,42 @@ pub async fn tick(server: &Arc<Server>, c: &OrchestrateConfig) {
     if !c.best_of_n.check {
         return;
     }
-    for mut f in families(server).into_iter().filter(|f| f.state == FamilyState::Running && f.check_command.is_some()) {
+    for mut f in families(server)
+        .into_iter()
+        .filter(|f| f.state == FamilyState::Running && f.check_command.is_some())
+    {
         let ready: Vec<String> = server.with_core(|core| {
             f.children
                 .iter()
                 .filter(|ch| !ch.discarded)
                 .filter(|ch| {
-                    let runs: Vec<_> = core.model.runs.iter().filter(|r| r.task.as_deref() == Some(ch.task.as_str()) && r.ended_at_ms.is_none()).collect();
+                    let runs: Vec<_> = core
+                        .model
+                        .runs
+                        .iter()
+                        .filter(|r| {
+                            r.task.as_deref() == Some(ch.task.as_str()) && r.ended_at_ms.is_none()
+                        })
+                        .collect();
                     !runs.is_empty()
-                        && runs.iter().all(|r| r.execution.value == vk_proto::model::Execution::Idle && r.turns_completed > 0)
+                        && runs.iter().all(|r| {
+                            r.execution.value == vk_proto::model::Execution::Idle
+                                && r.turns_completed > 0
+                        })
                 })
                 .map(|ch| ch.handle.clone())
                 .collect()
         });
         for h in ready {
             let ins = inputs(server, &f);
-            let Some(i) = ins.into_iter().find(|i| i.handle == h) else { continue };
+            let Some(i) = ins.into_iter().find(|i| i.handle == h) else {
+                continue;
+            };
             let wt = i.worktree.clone();
-            let head = tokio::task::spawn_blocking(move || fam::diff_summary(&wt, None).ok()).await.ok().flatten();
+            let head = tokio::task::spawn_blocking(move || fam::diff_summary(&wt, None).ok())
+                .await
+                .ok()
+                .flatten();
             let fresh = f
                 .checks
                 .get(&h)
@@ -429,7 +503,10 @@ pub async fn tick(server: &Arc<Server>, c: &OrchestrateConfig) {
             if fresh {
                 continue;
             }
-            if run_checks(server, &mut f, Some(&h), c.best_of_n.check_timeout()).await.is_ok() {
+            if run_checks(server, &mut f, Some(&h), c.best_of_n.check_timeout())
+                .await
+                .is_ok()
+            {
                 let _ = save(server, &f, vec![]);
             }
             // One check per pass keeps the load flat.

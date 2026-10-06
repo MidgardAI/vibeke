@@ -57,7 +57,9 @@ fn run_views(server: &Server) -> Vec<RunView> {
                 RunView {
                     run: r.id.clone(),
                     task: task.map(|t| t.id.clone()),
-                    handle: task.map(|t| t.handle.clone()).unwrap_or_else(|| r.handle.clone()),
+                    handle: task
+                        .map(|t| t.handle.clone())
+                        .unwrap_or_else(|| r.handle.clone()),
                     harness: r.harness.clone(),
                     priority: task.and_then(|t| t.priority).unwrap_or(0),
                     working: r.execution.value == Execution::Working,
@@ -71,7 +73,11 @@ fn load_state(server: &Server) -> State {
     kv_get(server, SCOPE, "state")
 }
 
-fn save_state(server: &Server, st: &State, events: Vec<(&str, Value, Value)>) -> Result<(), vk_proto::rpc::RpcError> {
+fn save_state(
+    server: &Server,
+    st: &State,
+    events: Vec<(&str, Value, Value)>,
+) -> Result<(), vk_proto::rpc::RpcError> {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     kv_put(&mut tx, SCOPE, "state", st);
@@ -106,8 +112,16 @@ fn status(server: &Server) -> Value {
 fn route(server: &Server, p: &Value) -> Value {
     let c = orch::cfg(server);
     let cand: Vec<String> = match p.get("harnesses").and_then(Value::as_array) {
-        Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-        None => ["claude", "codex", "pi", "omp", "opencode", "gemini", "hermes"].iter().map(|s| s.to_string()).collect(),
+        Some(a) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        None => [
+            "claude", "codex", "pi", "omp", "opencode", "gemini", "hermes",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
     };
     let ranked = quota::rank_for_routing(vk_store::now_ms(), &cand, &observe(server, &c), &c.quota);
     json!({"ranking": ranked.iter().map(|(h, r)| json!({"harness": h, "headroom": r, "account": c.quota.account_of(h)})).collect::<Vec<_>>()})
@@ -135,9 +149,22 @@ pub async fn tick_apply(server: &Arc<Server>, c: &OrchestrateConfig, dry: bool) 
     actions
 }
 
-async fn apply_one(server: &Arc<Server>, a: &Action, now: i64) -> Result<(), vk_proto::rpc::RpcError> {
+async fn apply_one(
+    server: &Arc<Server>,
+    a: &Action,
+    now: i64,
+) -> Result<(), vk_proto::rpc::RpcError> {
     match a {
-        Action::Pause { task, runs, handle, account, reason, resumes_at_ms, key, .. } => {
+        Action::Pause {
+            task,
+            runs,
+            handle,
+            account,
+            reason,
+            resumes_at_ms,
+            key,
+            ..
+        } => {
             match task {
                 Some(t) => {
                     call(server, "task.park", json!({"task": t})).await?;
@@ -150,9 +177,22 @@ async fn apply_one(server: &Arc<Server>, a: &Action, now: i64) -> Result<(), vk_
             }
             let mut st = load_state(server);
             quota::apply(&mut st, a, now);
-            save_state(server, &st, vec![("quota.paused", json!({"key": key}), json!({"handle": handle, "account": account, "reason": reason, "resumes_at_ms": resumes_at_ms, "task": task}))])
+            save_state(
+                server,
+                &st,
+                vec![(
+                    "quota.paused",
+                    json!({"key": key}),
+                    json!({"handle": handle, "account": account, "reason": reason, "resumes_at_ms": resumes_at_ms, "task": task}),
+                )],
+            )
         }
-        Action::Resume { key, task, handle, reason } => {
+        Action::Resume {
+            key,
+            task,
+            handle,
+            reason,
+        } => {
             let st0 = load_state(server);
             match task {
                 Some(t) => {
@@ -168,7 +208,15 @@ async fn apply_one(server: &Arc<Server>, a: &Action, now: i64) -> Result<(), vk_
             }
             let mut st = st0;
             quota::apply(&mut st, a, now);
-            save_state(server, &st, vec![("quota.resumed", json!({"key": key}), json!({"handle": handle, "reason": reason, "task": task}))])
+            save_state(
+                server,
+                &st,
+                vec![(
+                    "quota.resumed",
+                    json!({"key": key}),
+                    json!({"handle": handle, "reason": reason, "task": task}),
+                )],
+            )
         }
         Action::Forget { .. } => {
             let mut st = load_state(server);
@@ -179,12 +227,21 @@ async fn apply_one(server: &Arc<Server>, a: &Action, now: i64) -> Result<(), vk_
 }
 
 async fn resume(server: &Arc<Server>, p: &Value) -> R {
-    let key = req(p, "key").or_else(|_| s(p, "task").ok_or_else(|| invalid("missing param `key` (a task id or run id)")))?.to_string();
+    let key = req(p, "key")
+        .or_else(|_| {
+            s(p, "task").ok_or_else(|| invalid("missing param `key` (a task id or run id)"))
+        })?
+        .to_string();
     let st = load_state(server);
     let Some(e) = st.paused.get(&key).cloned() else {
         return Err(crate::api::not_found("paused entry", &key));
     };
-    let a = Action::Resume { key: e.key.clone(), task: e.task.clone(), handle: e.handle.clone(), reason: "resumed by hand".into() };
+    let a = Action::Resume {
+        key: e.key.clone(),
+        task: e.task.clone(),
+        handle: e.handle.clone(),
+        reason: "resumed by hand".into(),
+    };
     apply_one(server, &a, vk_store::now_ms()).await?;
     Ok(json!({"resumed": e.key, "handle": e.handle}))
 }

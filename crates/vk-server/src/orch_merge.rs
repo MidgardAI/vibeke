@@ -30,7 +30,11 @@ fn queue(server: &Server) -> MergeQueue {
     load_one(server, QUEUE, "main").unwrap_or_default()
 }
 
-fn save_queue(server: &Server, q: &MergeQueue, events: Vec<(&str, Value, Value)>) -> Result<(), vk_proto::rpc::RpcError> {
+fn save_queue(
+    server: &Server,
+    q: &MergeQueue,
+    events: Vec<(&str, Value, Value)>,
+) -> Result<(), vk_proto::rpc::RpcError> {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     put(&mut tx, QUEUE, "main", Some("main"), q);
@@ -48,7 +52,9 @@ fn gate(server: &Server) -> Result<OrchestrateConfig, vk_proto::rpc::RpcError> {
 }
 
 fn task_of(server: &Server, t: &str) -> Result<Task, vk_proto::rpc::RpcError> {
-    server.with_core(|c| c.task(t).cloned()).ok_or_else(|| not_found("task", t))
+    server
+        .with_core(|c| c.task(t).cloned())
+        .ok_or_else(|| not_found("task", t))
 }
 
 /// The task a pane-scoped caller belongs to (its workspace's task).
@@ -56,7 +62,11 @@ fn caller_task(server: &Server, ctx: &Ctx) -> Option<String> {
     let pane = ctx.pane_scope.as_deref()?;
     server.with_core(|c| {
         let ws = c.pane(pane)?.workspace.clone();
-        c.model.tasks.iter().find(|t| t.workspace.as_deref() == Some(ws.as_str())).map(|t| t.id.clone())
+        c.model
+            .tasks
+            .iter()
+            .find(|t| t.workspace.as_deref() == Some(ws.as_str()))
+            .map(|t| t.id.clone())
     })
 }
 
@@ -64,7 +74,11 @@ fn owns(server: &Server, ctx: &Ctx, task: &str) -> Result<(), vk_proto::rpc::Rpc
     if ctx.pane_scope.is_none() || caller_task(server, ctx).as_deref() == Some(task) {
         return Ok(());
     }
-    Err(err(ErrorKind::PermissionDenied, "a pane may only claim for its own task").details(json!({"scope": "pane"})))
+    Err(err(
+        ErrorKind::PermissionDenied,
+        "a pane may only claim for its own task",
+    )
+    .details(json!({"scope": "pane"})))
 }
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
@@ -85,7 +99,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 // ---- claims ---------------------------------------------------------------------------------
 
 async fn claim_add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    let glob = s(p, "glob").or_else(|| s(p, "path")).ok_or_else(|| invalid("missing param `glob`"))?;
+    let glob = s(p, "glob")
+        .or_else(|| s(p, "path"))
+        .ok_or_else(|| invalid("missing param `glob`"))?;
     let task_ref: String = match (s(p, "task"), s(p, "run")) {
         (Some(t), _) => t.to_string(),
         (None, Some(r)) => server
@@ -108,7 +124,11 @@ async fn claim_add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
         put(&mut tx, CLAIM, &claim.id, Some(&claim.id), &claim);
-        tx.event("task.claim_added", json!({"task": task.id, "claim": claim.id}), json!({"glob": claim.glob, "note": claim.note}));
+        tx.event(
+            "task.claim_added",
+            json!({"task": task.id, "claim": claim.id}),
+            json!({"glob": claim.glob, "note": claim.note}),
+        );
         server.commit(&mut c, tx).map_err(internal)?;
     }
     // Who already changes something under it?
@@ -141,7 +161,11 @@ fn claim_remove(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     tx.m.close(CLAIM, &c0.id, Some(&c0.id), &c0);
-    tx.event("task.claim_removed", json!({"task": c0.task, "claim": c0.id}), json!({"glob": c0.glob}));
+    tx.event(
+        "task.claim_removed",
+        json!({"task": c0.task, "claim": c0.id}),
+        json!({"glob": c0.glob}),
+    );
     server.commit(&mut c, tx).map_err(internal)?;
     Ok(json!({"removed": c0.id}))
 }
@@ -162,7 +186,10 @@ fn live_tasks(server: &Server, handles: Option<&[String]>) -> Vec<Task> {
     })
 }
 
-async fn predict_all(server: &Arc<Server>, handles: Option<&[String]>) -> Result<Vec<mg::Conflict>, vk_proto::rpc::RpcError> {
+async fn predict_all(
+    server: &Arc<Server>,
+    handles: Option<&[String]>,
+) -> Result<Vec<mg::Conflict>, vk_proto::rpc::RpcError> {
     let tasks = live_tasks(server, handles);
     let claims = claims(server);
     tokio::task::spawn_blocking(move || {
@@ -175,7 +202,9 @@ async fn predict_all(server: &Arc<Server>, handles: Option<&[String]>) -> Result
             let mut changes = vec![];
             for t in tasks.iter().filter(|t| t.repo_root == repo) {
                 let wt = Path::new(t.worktree_path.as_deref().unwrap_or_default());
-                let Ok((files, committed)) = mg::changed_files(wt, t.base_ref.as_deref()) else { continue };
+                let Ok((files, committed)) = mg::changed_files(wt, t.base_ref.as_deref()) else {
+                    continue;
+                };
                 changes.push(mg::Changed {
                     task: t.id.clone(),
                     handle: t.handle.clone(),
@@ -186,7 +215,14 @@ async fn predict_all(server: &Arc<Server>, handles: Option<&[String]>) -> Result
                 });
             }
             let ids: HashSet<&str> = changes.iter().map(|c| c.task.as_str()).collect();
-            let repo_claims: Vec<Claim> = claims.iter().filter(|c| ids.contains(c.task.as_str()) || tasks.iter().any(|t| t.id == c.task && t.repo_root == repo)).cloned().collect();
+            let repo_claims: Vec<Claim> = claims
+                .iter()
+                .filter(|c| {
+                    ids.contains(c.task.as_str())
+                        || tasks.iter().any(|t| t.id == c.task && t.repo_root == repo)
+                })
+                .cloned()
+                .collect();
             out.extend(mg::predict(Path::new(&repo), &changes, &repo_claims));
         }
         out
@@ -197,13 +233,27 @@ async fn predict_all(server: &Arc<Server>, handles: Option<&[String]>) -> Result
 
 async fn predict(server: &Arc<Server>, p: &Value) -> R {
     gate(server)?;
-    let handles: Option<Vec<String>> = p.get("tasks").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
+    let handles: Option<Vec<String>> = p.get("tasks").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    });
     let mut conflicts = predict_all(server, handles.as_deref()).await?;
     if let Some(repo) = s(p, "repo") {
-        let tasks: HashSet<String> = server.with_core(|c| c.model.tasks.iter().filter(|t| t.repo_root == repo).map(|t| t.handle.clone()).collect());
+        let tasks: HashSet<String> = server.with_core(|c| {
+            c.model
+                .tasks
+                .iter()
+                .filter(|t| t.repo_root == repo)
+                .map(|t| t.handle.clone())
+                .collect()
+        });
         conflicts.retain(|c| tasks.contains(&c.a) || tasks.contains(&c.b));
     }
-    let checked: Vec<String> = live_tasks(server, handles.as_deref()).into_iter().map(|t| t.handle).collect();
+    let checked: Vec<String> = live_tasks(server, handles.as_deref())
+        .into_iter()
+        .map(|t| t.handle)
+        .collect();
     Ok(json!({"conflicts": conflicts, "tasks": checked, "at_ms": vk_store::now_ms()}))
 }
 
@@ -212,10 +262,18 @@ pub async fn tick(server: &Arc<Server>, _c: &OrchestrateConfig) {
     if live_tasks(server, None).len() < 2 && claims(server).is_empty() {
         return;
     }
-    let Ok(cs) = predict_all(server, None).await else { return };
+    let Ok(cs) = predict_all(server, None).await else {
+        return;
+    };
     let key = |c: &mg::Conflict| format!("{}|{}|{:?}|{:?}", c.a, c.b, c.kind, c.severity);
-    let now: Vec<(&mg::Conflict, String)> = cs.iter().filter(|c| c.severity >= mg::Severity::Medium).map(|c| (c, key(c))).collect();
-    let before: HashSet<String> = kv_get::<Vec<String>>(server, "orch.merge", "predicted").into_iter().collect();
+    let now: Vec<(&mg::Conflict, String)> = cs
+        .iter()
+        .filter(|c| c.severity >= mg::Severity::Medium)
+        .map(|c| (c, key(c)))
+        .collect();
+    let before: HashSet<String> = kv_get::<Vec<String>>(server, "orch.merge", "predicted")
+        .into_iter()
+        .collect();
     let mut events = vec![];
     for (c, k) in &now {
         if !before.contains(k) {
@@ -230,7 +288,11 @@ pub async fn tick(server: &Arc<Server>, _c: &OrchestrateConfig) {
     let mut tx = Tx::new();
     kv_put(&mut tx, "orch.merge", "predicted", &keys);
     for d in events {
-        tx.event("merge.conflict_predicted", json!({"a": d["a"], "b": d["b"]}), d);
+        tx.event(
+            "merge.conflict_predicted",
+            json!({"a": d["a"], "b": d["b"]}),
+            d,
+        );
     }
     let _ = server.commit(&mut core, tx);
 }
@@ -238,13 +300,19 @@ pub async fn tick(server: &Arc<Server>, _c: &OrchestrateConfig) {
 // ---- queue ----------------------------------------------------------------------------------
 
 fn short_branch(base: &str) -> String {
-    base.strip_prefix("origin/").or_else(|| base.strip_prefix("refs/heads/")).unwrap_or(base).to_string()
+    base.strip_prefix("origin/")
+        .or_else(|| base.strip_prefix("refs/heads/"))
+        .unwrap_or(base)
+        .to_string()
 }
 
 async fn queue_add(server: &Arc<Server>, p: &Value) -> R {
     let c = gate(server)?;
     let task = task_of(server, req(p, "task")?)?;
-    let branch = task.branch.clone().ok_or_else(|| err(ErrorKind::Conflict, "the task has no branch"))?;
+    let branch = task
+        .branch
+        .clone()
+        .ok_or_else(|| err(ErrorKind::Conflict, "the task has no branch"))?;
     let repo = task.repo_root.clone();
     let target = s(p, "target")
         .map(str::to_string)
@@ -259,7 +327,14 @@ async fn queue_add(server: &Arc<Server>, p: &Value) -> R {
             return Err(format!("branch {b2} does not exist in {r2}"));
         }
         Ok(wt
-            .map(|w| gitx::run(Path::new(&w), &["status", "--porcelain", "--untracked-files=no"]).map(|o| !o.trim().is_empty()).unwrap_or(false))
+            .map(|w| {
+                gitx::run(
+                    Path::new(&w),
+                    &["status", "--porcelain", "--untracked-files=no"],
+                )
+                .map(|o| !o.trim().is_empty())
+                .unwrap_or(false)
+            })
             .unwrap_or(false))
     })
     .await
@@ -291,7 +366,15 @@ async fn queue_add(server: &Arc<Server>, p: &Value) -> R {
         check: None,
     };
     let added = q.add(entry).map_err(from_orch)?.clone();
-    save_queue(server, &q, vec![("merge.queued", json!({"entry": added.id, "task": task.id}), json!({"handle": added.handle, "target": target, "priority": added.priority}))])?;
+    save_queue(
+        server,
+        &q,
+        vec![(
+            "merge.queued",
+            json!({"entry": added.id, "task": task.id}),
+            json!({"handle": added.handle, "target": target, "priority": added.priority}),
+        )],
+    )?;
     let mut out = json!({"entry": added, "position": q.order().iter().position(|e| e.id == added.id).map(|i| i + 1)});
     if b(p, "run").unwrap_or(false) {
         out["run"] = queue_run(server, &json!({"entry": added.id})).await?;
@@ -306,14 +389,28 @@ fn queue_list(server: &Server, p: &Value) -> R {
     let entries: Vec<&QueueEntry> = if b(p, "all").unwrap_or(false) {
         q.entries.iter().collect()
     } else {
-        q.entries.iter().filter(|e| e.state.is_open() || matches!(e.state, EntryState::Conflict | EntryState::CheckFailed | EntryState::Blocked | EntryState::Failed)).collect()
+        q.entries
+            .iter()
+            .filter(|e| {
+                e.state.is_open()
+                    || matches!(
+                        e.state,
+                        EntryState::Conflict
+                            | EntryState::CheckFailed
+                            | EntryState::Blocked
+                            | EntryState::Failed
+                    )
+            })
+            .collect()
     };
     Ok(json!({"entries": entries, "order": order}))
 }
 
 fn queue_edit(server: &Arc<Server>, p: &Value, cancel: bool) -> R {
     gate(server)?;
-    let which = s(p, "entry").or_else(|| s(p, "task")).ok_or_else(|| invalid("missing param `entry`"))?;
+    let which = s(p, "entry")
+        .or_else(|| s(p, "task"))
+        .ok_or_else(|| invalid("missing param `entry`"))?;
     let mut q = queue(server);
     if cancel {
         q.cancel(which).map_err(from_orch)?;
@@ -321,8 +418,20 @@ fn queue_edit(server: &Arc<Server>, p: &Value, cancel: bool) -> R {
         q.requeue(which).map_err(from_orch)?;
     }
     let e = q.get(which).cloned();
-    let kind = if cancel { "merge.cancelled" } else { "merge.requeued" };
-    save_queue(server, &q, vec![(kind, json!({"entry": e.as_ref().map(|e| e.id.clone())}), json!({"handle": e.as_ref().map(|e| e.handle.clone())}))])?;
+    let kind = if cancel {
+        "merge.cancelled"
+    } else {
+        "merge.requeued"
+    };
+    save_queue(
+        server,
+        &q,
+        vec![(
+            kind,
+            json!({"entry": e.as_ref().map(|e| e.id.clone())}),
+            json!({"handle": e.as_ref().map(|e| e.handle.clone())}),
+        )],
+    )?;
     Ok(json!({"entry": e}))
 }
 
@@ -335,11 +444,17 @@ async fn queue_run(server: &Arc<Server>, p: &Value) -> R {
     let c = gate(server)?;
     let _g = run_lock().lock().await;
     let only = s(p, "entry").map(str::to_string);
-    let count = if b(p, "all").unwrap_or(false) { usize::MAX } else { u(p, "count").unwrap_or(1) as usize };
+    let count = if b(p, "all").unwrap_or(false) {
+        usize::MAX
+    } else {
+        u(p, "count").unwrap_or(1) as usize
+    };
     let mut results = vec![];
     for _ in 0..count {
         let mut q = queue(server);
-        let check = Some(c.merge.queue_check.clone()).filter(|x| !x.is_empty()).map(|x| (x, c.merge.queue_check_timeout()));
+        let check = Some(c.merge.queue_check.clone())
+            .filter(|x| !x.is_empty())
+            .map(|x| (x, c.merge.queue_check_timeout()));
         let (squash, only2) = (c.merge.squash(), only.clone());
         let (q2, ran) = tokio::task::spawn_blocking(move || {
             let r = mg::run_next(&mut q, only2.as_deref(), check, squash);
@@ -350,15 +465,38 @@ async fn queue_run(server: &Arc<Server>, p: &Value) -> R {
         let Some((id, outcome)) = ran else { break };
         let e = q2.entries.iter().find(|e| e.id == id).cloned().unwrap();
         let (kind, data) = match &outcome {
-            Ok(MergeOutcome::Merged { commit, already, via }) => ("merge.merged", json!({"handle": e.handle, "target": e.target, "commit": commit, "already": already, "via": via})),
-            Ok(MergeOutcome::Conflict { paths }) => ("merge.conflict", json!({"handle": e.handle, "target": e.target, "paths": paths})),
-            Ok(MergeOutcome::CheckFailed(ch)) => ("merge.check_failed", json!({"handle": e.handle, "target": e.target, "exit_code": ch.exit_code, "timed_out": ch.timed_out})),
-            Ok(MergeOutcome::Blocked { reason }) => ("merge.blocked", json!({"handle": e.handle, "target": e.target, "reason": reason})),
-            Err(er) => ("merge.failed", json!({"handle": e.handle, "target": e.target, "error": er.to_string()})),
+            Ok(MergeOutcome::Merged {
+                commit,
+                already,
+                via,
+            }) => (
+                "merge.merged",
+                json!({"handle": e.handle, "target": e.target, "commit": commit, "already": already, "via": via}),
+            ),
+            Ok(MergeOutcome::Conflict { paths }) => (
+                "merge.conflict",
+                json!({"handle": e.handle, "target": e.target, "paths": paths}),
+            ),
+            Ok(MergeOutcome::CheckFailed(ch)) => (
+                "merge.check_failed",
+                json!({"handle": e.handle, "target": e.target, "exit_code": ch.exit_code, "timed_out": ch.timed_out}),
+            ),
+            Ok(MergeOutcome::Blocked { reason }) => (
+                "merge.blocked",
+                json!({"handle": e.handle, "target": e.target, "reason": reason}),
+            ),
+            Err(er) => (
+                "merge.failed",
+                json!({"handle": e.handle, "target": e.target, "error": er.to_string()}),
+            ),
         };
         let mut q3 = q2;
         q3.trim(100);
-        save_queue(server, &q3, vec![(kind, json!({"entry": e.id, "task": e.task}), data.clone())])?;
+        save_queue(
+            server,
+            &q3,
+            vec![(kind, json!({"entry": e.id, "task": e.task}), data.clone())],
+        )?;
         results.push(json!({"entry": e, "event": kind, "detail": data}));
         // Stop at the first entry that did not land: later ones may depend on it.
         if kind != "merge.merged" || only.is_some() {
