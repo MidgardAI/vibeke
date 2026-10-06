@@ -6,7 +6,7 @@ use crate::copy::CopyMode;
 use crate::keymap::{self, Keymap};
 use crate::screen::{Grid, HostCaps};
 use crate::theme::Theme;
-use crate::{clipboard, draw, paste, term};
+use crate::{draw, paste, term};
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, MouseButton as CtButton, MouseEventKind};
 use futures::StreamExt;
@@ -378,6 +378,10 @@ pub struct App {
     pub clip: ClipGate,
     /// Tests only: capture clipboard writes instead of touching the host terminal/clipboard.
     pub clipboard_sink: Option<Vec<(Vec<u8>, bool)>>,
+    /// How copies reach the user's clipboard (OSC 52, platform tool, iTerm2 hint).
+    pub copyout: crate::copyout::Delivery,
+    /// The last text copied from this client (middle-click pastes it with `primary_selection`).
+    pub last_copy: Option<String>,
     pub inbox: crate::inbox::InboxState,
     pub pending_ops: crate::pending::PendingStore,
     pub track: Option<crate::tasks::TrackForm>,
@@ -751,6 +755,8 @@ impl App {
             uploads: Default::default(),
             clip: Default::default(),
             clipboard_sink: None,
+            copyout: crate::copyout::Delivery::from_env(),
+            last_copy: None,
             inbox: Default::default(),
             pending_ops: Default::default(),
             track: None,
@@ -1489,21 +1495,35 @@ impl App {
         });
     }
 
+    /// Put `data` on the user's clipboard (`crate::copyout`: OSC 52, plus the platform tool
+    /// when not over SSH) and toast `copied N chars` / `copy failed — why`. PRIMARY writes
+    /// are silent.
     pub fn set_clipboard(&mut self, data: &[u8], primary: bool) {
-        if let Some(sink) = &mut self.clipboard_sink {
+        let res = if let Some(sink) = &mut self.clipboard_sink {
             sink.push((data.to_vec(), primary));
+            Ok(())
+        } else {
+            let max = self.config.clipboard.remote_write_max_bytes.0;
+            let plan = crate::copyout::plan(data, primary, &self.copyout.env, max);
+            let cmd = self.copyout.native_cmd.clone();
+            crate::copyout::deliver(data, primary, &plan, &mut std::io::stdout(), &mut |d, p| {
+                crate::copyout::native_copy(cmd.as_deref(), d, p)
+            })
+        };
+        if primary {
             return;
         }
-        if self.osc52 {
-            let _ = std::io::stdout().write_all(&clipboard::osc52_set(data, primary));
-            let _ = std::io::stdout().flush();
-        } else if primary {
-            let _ = clipboard::os_copy_primary(data);
-        } else {
-            let _ = clipboard::os_copy(data);
-        }
-        if !primary {
-            self.toast("copied to clipboard");
+        match res {
+            Ok(()) => {
+                let text = String::from_utf8_lossy(data).into_owned();
+                let n = text.chars().count();
+                self.last_copy = Some(text);
+                self.toast(format!("copied {n} char{}", if n == 1 { "" } else { "s" }));
+                if let Some(h) = self.copyout.take_hint() {
+                    self.toast(h);
+                }
+            }
+            Err(why) => self.toast(format!("copy failed — {why}")),
         }
     }
 
@@ -1569,6 +1589,7 @@ impl App {
         crate::assist::tick(self);
         crate::browser::tick(self);
         crate::plugins::report_scroll(self, now);
+        crate::selection::tick(self, now);
     }
 
     /// A deadline woke the loop: repaint when a redraw-only one passed (an age label, the
@@ -1600,6 +1621,7 @@ impl App {
         crate::assist::deadlines(self, now, &mut d);
         crate::browser::deadlines(self, now, &mut d);
         crate::plugins::deadlines(self, now, &mut d);
+        crate::selection::deadlines(self, &mut d);
         d
     }
 
@@ -1813,6 +1835,11 @@ impl App {
         if crate::plugins::on_mouse(self, me.column, me.row) {
             return;
         }
+        // A selection drag in progress follows the pointer past the pane (03 §11.1); the
+        // scrollback viewer selects over its own text.
+        if crate::selection::on_active_drag(self, &me) || crate::scrollback::on_mouse(self, &me) {
+            return;
+        }
         // Float frames (move/resize/raise), group rows and drags, the status bar.
         if crate::parity::on_mouse(self, &me) {
             return;
@@ -1842,61 +1869,66 @@ impl App {
         let Some((pane, r)) = rects.into_iter().find(|(_, r)| r.contains(x, y)) else {
             return;
         };
-        let local = (x - r.x, y - r.y);
         let mouse_mode = self.m().panes.get(&pane).is_some_and(|b| b.modes.mouse);
         let shift = me.modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
-        if let MouseEventKind::Down(_) = me.kind
+        if let MouseEventKind::Down(b) = me.kind
             && self.focused_pane().as_deref() != Some(&pane)
         {
             let cur = self.cur;
             self.focus_pane(cur, &pane);
-            if !mouse_mode {
+            // A left press also starts a selection (or reaches the app) in the new pane.
+            if !mouse_mode && b != CtButton::Left {
                 return;
             }
         }
         // Drag-to-select / copy-on-select, and the mouse inside copy mode (03 §11.1).
-        if crate::selection::on_mouse(self, &me, &pane, r, mouse_mode, shift) {
+        if crate::selection::on_mouse(self, &me, &pane, r, mouse_mode) {
             return;
         }
         if mouse_mode && !shift {
-            let (kind, button) = match me.kind {
-                MouseEventKind::Down(b) => (MouseKind::Press, btn(b)),
-                MouseEventKind::Up(b) => (MouseKind::Release, btn(b)),
-                MouseEventKind::Drag(b) => (MouseKind::Drag, btn(b)),
-                MouseEventKind::Moved => (MouseKind::Move, MouseButton::None),
-                MouseEventKind::ScrollUp => (MouseKind::Press, MouseButton::WheelUp),
-                MouseEventKind::ScrollDown => (MouseKind::Press, MouseButton::WheelDown),
-                MouseEventKind::ScrollLeft => (MouseKind::Press, MouseButton::WheelLeft),
-                MouseEventKind::ScrollRight => (MouseKind::Press, MouseButton::WheelRight),
-            };
-            let mut mods = Mods::empty();
-            if me
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
-            {
-                mods = mods | Mods::CTRL;
-            }
-            if me.modifiers.contains(crossterm::event::KeyModifiers::ALT) {
-                mods = mods | Mods::ALT;
-            }
-            let id = self.input_id();
-            self.m().send(ClientFrame::Mouse {
-                input_id: id,
-                pane,
-                event: MouseEvent {
-                    kind,
-                    button,
-                    col: local.0,
-                    row: local.1,
-                    mods,
-                },
-            });
+            self.forward_mouse(&pane, &me, r);
             return;
         }
         if let MouseEventKind::ScrollUp = me.kind {
             self.enter_copy(Some(3));
         }
         let _ = InputEvent::FocusIn;
+    }
+
+    /// Send a host mouse event to the app in `pane` (content rect `r`) as a pane-local event.
+    pub(crate) fn forward_mouse(&mut self, pane: &str, me: &crossterm::event::MouseEvent, r: Rect) {
+        let (kind, button) = match me.kind {
+            MouseEventKind::Down(b) => (MouseKind::Press, btn(b)),
+            MouseEventKind::Up(b) => (MouseKind::Release, btn(b)),
+            MouseEventKind::Drag(b) => (MouseKind::Drag, btn(b)),
+            MouseEventKind::Moved => (MouseKind::Move, MouseButton::None),
+            MouseEventKind::ScrollUp => (MouseKind::Press, MouseButton::WheelUp),
+            MouseEventKind::ScrollDown => (MouseKind::Press, MouseButton::WheelDown),
+            MouseEventKind::ScrollLeft => (MouseKind::Press, MouseButton::WheelLeft),
+            MouseEventKind::ScrollRight => (MouseKind::Press, MouseButton::WheelRight),
+        };
+        let mut mods = Mods::empty();
+        if me
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            mods = mods | Mods::CTRL;
+        }
+        if me.modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+            mods = mods | Mods::ALT;
+        }
+        let id = self.input_id();
+        self.m().send(ClientFrame::Mouse {
+            input_id: id,
+            pane: pane.to_string(),
+            event: MouseEvent {
+                kind,
+                button,
+                col: me.column.saturating_sub(r.x),
+                row: me.row.saturating_sub(r.y),
+                mods,
+            },
+        });
     }
 
     // ---- actions --------------------------------------------------------------------------
@@ -2777,6 +2809,8 @@ pub(crate) fn test_app(n: usize) -> (App, Vec<mpsc::UnboundedReceiver<ClientFram
     );
     // Never touch the host terminal or the real clipboard from tests.
     app.clipboard_sink = Some(Vec::new());
+    // Deterministic copy delivery whatever the test host's SSH/iTerm2/tmux environment.
+    app.copyout = Default::default();
     app.size = (120, 40);
     (app, rxs)
 }

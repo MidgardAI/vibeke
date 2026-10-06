@@ -326,6 +326,19 @@ fn placement_and_clipboard_options_parse() {
     assert_eq!(c.ui.tabs.position, TabsPosition::Hidden);
     assert!(c.clipboard.copy_on_select && c.clipboard.primary_selection);
     assert!(parse("[ui.tabs]\nposition = \"left\"\n").is_err());
+    // Mouse selection defaults: copy on select, modifier+drag over mouse-reporting apps.
+    let (c, _) = parse("").unwrap();
+    assert!(c.clipboard.copy_on_select);
+    assert_eq!(
+        c.clipboard.mouse_select_in_apps,
+        MouseSelectInApps::Modifier
+    );
+    let (c, w) =
+        parse("[clipboard]\ncopy_on_select = false\nmouse_select_in_apps = \"always\"\n").unwrap();
+    assert!(w.is_empty(), "{w:?}");
+    assert!(!c.clipboard.copy_on_select);
+    assert_eq!(c.clipboard.mouse_select_in_apps, MouseSelectInApps::Always);
+    assert!(parse("[clipboard]\nmouse_select_in_apps = \"never\"\n").is_err());
 }
 
 #[test]

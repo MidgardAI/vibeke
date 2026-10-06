@@ -54,8 +54,9 @@ The file is `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). It r
 # [clipboard]
 # osc52_write       = "allow"           # allow | deny
 # osc52_read        = "deny"            # deny | ask | allow
-# copy_on_select    = false
+# copy_on_select    = true              # a mouse selection is copied on release (false: stays in copy mode for y)
 # primary_selection = false
+# mouse_select_in_apps = "modifier"     # modifier (shift/alt+drag selects over mouse-reporting apps) | always (every drag selects; apps get clicks and wheel)
 # remote_write      = "ask_once"        # ask_once | allow | deny
 # remote_write_max_bytes    = "1MiB"      # larger OSC 52 writes are dropped
 # remote_write_min_interval = "5s"        # per-pane gap between clipboard prompts

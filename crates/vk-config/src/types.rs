@@ -61,6 +61,7 @@ choice_enum!(GraphemeWidth { Auto = "auto", Unicode = "unicode", Legacy = "legac
 choice_enum!(AllowDeny { Allow = "allow", Deny = "deny" } default Allow);
 choice_enum!(Osc52Read { Deny = "deny", Ask = "ask", Allow = "allow" } default Deny);
 choice_enum!(RemoteWrite { AskOnce = "ask_once", Allow = "allow", Deny = "deny" } default AskOnce);
+choice_enum!(MouseSelectInApps { Modifier = "modifier", Always = "always" } default Modifier);
 choice_enum!(PasteTranslate { PathsOnly = "paths_only", Embedded = "embedded", Ask = "ask", Off = "off" } default PathsOnly);
 choice_enum!(AltgrMode { Auto = "auto", Text = "text", Chord = "chord" } default Auto);
 choice_enum!(ShiftEnterLegacy { Cr = "cr", Lf = "lf" } default Cr);
@@ -209,8 +210,13 @@ impl Default for Terminal {
 pub struct Clipboard {
     pub osc52_write: AllowDeny,
     pub osc52_read: Osc52Read,
+    /// A finished mouse selection is copied at once (otherwise it waits in copy mode for `y`).
     pub copy_on_select: bool,
     pub primary_selection: bool,
+    /// Panes whose app turned on mouse reporting: `modifier` = `shift`/`alt`+drag selects in
+    /// Vibeke, a plain drag goes to the app; `always` = every left drag selects in Vibeke and
+    /// the app gets only clicks and the wheel.
+    pub mouse_select_in_apps: MouseSelectInApps,
     pub remote_write: RemoteWrite,
     /// Largest unsolicited (OSC 52) clipboard write accepted from a pane; bigger ones are dropped.
     pub remote_write_max_bytes: ByteSize,
@@ -222,8 +228,9 @@ impl Default for Clipboard {
         Clipboard {
             osc52_write: AllowDeny::Allow,
             osc52_read: Osc52Read::Deny,
-            copy_on_select: false,
+            copy_on_select: true,
             primary_selection: false,
+            mouse_select_in_apps: MouseSelectInApps::Modifier,
             remote_write: RemoteWrite::AskOnce,
             remote_write_max_bytes: ByteSize::mib(1),
             remote_write_min_interval: Dur::secs(5),
