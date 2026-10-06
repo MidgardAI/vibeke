@@ -1346,7 +1346,9 @@ fn pane_scoped_callers_are_denied_every_assistant_method() {
             .find(|l| l.starts_with(&format!("{m} ")))
             .unwrap_or_else(|| panic!("{m} missing in {text}"));
         assert!(
-            line.contains("pane-scoped") && line.contains("permission_denied"),
+            // Refused either by the central scope check or by the assistant handler itself.
+            line.contains("permission_denied")
+                && (line.contains("pane-scoped") || line.contains("pane scope")),
             "{m} not denied: {line}"
         );
     }
