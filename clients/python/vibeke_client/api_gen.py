@@ -548,11 +548,41 @@ class Api:
     async def paste_translated(self, params: "t.PasteTranslatedParams") -> "t.PasteTranslatedResult":
         return await self.call("paste.translated", params)  # type: ignore[arg-type, return-value]
 
+    async def plugin_action(self, params: "t.PluginActionParams") -> "t.PluginActionResult":
+        return await self.call("plugin.action", params)  # type: ignore[arg-type, return-value]
+
     async def plugin_action_list(self, params: "Optional[t.PluginActionListParams]" = None) -> "t.PluginActionListResult":
         return await self.call("plugin.action.list", params or {})  # type: ignore[arg-type, return-value]
 
     async def plugin_action_run(self, params: "t.PluginActionRunParams") -> "t.PluginActionRunResult":
         return await self.call("plugin.action.run", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_consent(self, params: "t.PluginConsentParams") -> "t.PluginConsentResult":
+        return await self.call("plugin.consent", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_disable(self, params: "t.PluginDisableParams") -> "t.PluginDisableResult":
+        return await self.call("plugin.disable", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_enable(self, params: "t.PluginEnableParams") -> "t.PluginEnableResult":
+        return await self.call("plugin.enable", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_install(self, params: "t.PluginInstallParams") -> "t.PluginInstallResult":
+        return await self.call("plugin.install", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_kv_delete(self, params: "t.PluginKvDeleteParams") -> "t.PluginKvDeleteResult":
+        return await self.call("plugin.kv.delete", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_kv_get(self, params: "t.PluginKvGetParams") -> "t.PluginKvGetResult":
+        return await self.call("plugin.kv.get", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_kv_list(self, params: "Optional[t.PluginKvListParams]" = None) -> "t.PluginKvListResult":
+        return await self.call("plugin.kv.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def plugin_kv_set(self, params: "t.PluginKvSetParams") -> "t.PluginKvSetResult":
+        return await self.call("plugin.kv.set", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_link(self, params: "t.PluginLinkParams") -> "t.PluginLinkResult":
+        return await self.call("plugin.link", params)  # type: ignore[arg-type, return-value]
 
     async def plugin_link_open(self, params: "t.PluginLinkOpenParams") -> "t.PluginLinkOpenResult":
         return await self.call("plugin.link.open", params)  # type: ignore[arg-type, return-value]
@@ -568,6 +598,12 @@ class Api:
 
     async def plugin_registry_notify(self, params: "Optional[t.PluginRegistryNotifyParams]" = None) -> "t.PluginRegistryNotifyResult":
         return await self.call("plugin.registry.notify", params or {})  # type: ignore[arg-type, return-value]
+
+    async def plugin_remove(self, params: "t.PluginRemoveParams") -> "t.PluginRemoveResult":
+        return await self.call("plugin.remove", params)  # type: ignore[arg-type, return-value]
+
+    async def plugin_restart(self, params: "t.PluginRestartParams") -> "t.PluginRestartResult":
+        return await self.call("plugin.restart", params)  # type: ignore[arg-type, return-value]
 
     async def plugin_surface_close(self, params: "t.PluginSurfaceCloseParams") -> "t.PluginSurfaceCloseResult":
         return await self.call("plugin.surface.close", params)  # type: ignore[arg-type, return-value]
@@ -871,6 +907,15 @@ class Api:
 
     async def theme_set_mode(self, params: "t.ThemeSetModeParams") -> "t.ThemeSetModeResult":
         return await self.call("theme.set_mode", params)  # type: ignore[arg-type, return-value]
+
+    async def ui_contribute(self, params: "Optional[t.UiContributeParams]" = None) -> "t.UiContributeResult":
+        return await self.call("ui.contribute", params or {})  # type: ignore[arg-type, return-value]
+
+    async def ui_contributions(self, params: "Optional[t.UiContributionsParams]" = None) -> "t.UiContributionsResult":
+        return await self.call("ui.contributions", params or {})  # type: ignore[arg-type, return-value]
+
+    async def ui_pane_open(self, params: "t.UiPaneOpenParams") -> "t.UiPaneOpenResult":
+        return await self.call("ui.pane.open", params)  # type: ignore[arg-type, return-value]
 
     async def workspace_close(self, params: "Optional[t.WorkspaceCloseParams]" = None) -> "t.WorkspaceCloseResult":
         return await self.call("workspace.close", params or {})  # type: ignore[arg-type, return-value]

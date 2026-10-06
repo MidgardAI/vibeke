@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 298,
+  "method_count": 313,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -1312,7 +1312,7 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}"
+      "result": "{window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, contributions?: [object], agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}"
     },
     {
       "name": "config.get",
@@ -2510,6 +2510,20 @@
       "result": "{recorded: int}"
     },
     {
+      "name": "plugin.action",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": "M5",
+      "spec": "`{plugin, action, context?: {workspace?, pane?}}` → `{exit_code, stdout_tail}`",
+      "params": "{plugin?: string, action: string, context?: {workspace?: Target, pane?: Target, tab?: Target}, source?: string}",
+      "result": "{exit_code: int|null, stdout_tail: string|null, status: string, log: object}"
+    },
+    {
       "name": "plugin.action.list",
       "mutating": false,
       "scope": "pane",
@@ -2536,6 +2550,132 @@
       "spec": null,
       "params": "{plugin: string, action: string, source?: palette|keybinding, context?: {pane_id?: Target, pane?: Target, tab_id?: Target, tab?: Target, workspace_id?: Target, workspace?: Target}, pane_id?: Target, tab_id?: Target, workspace_id?: Target} | {action: string, source?: palette|keybinding, context?: object}",
       "result": "{log: {log_id: string, plugin_id: string, action_id?: string, event?: string, entrypoint_id?: string, source: string, command: any, long_lived: bool, isolation: sandbox|host, status: string, started_unix_ms: int, finished_unix_ms?: int, started_at: int, finished_at?: int, exit_code?: int, stdout: string, stderr: string, context: object}}"
+    },
+    {
+      "name": "plugin.consent",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{plugin: string, accept_capabilities: [string]}",
+      "result": "{plugin: string, consent_id: string, capabilities: object}"
+    },
+    {
+      "name": "plugin.disable",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": "M5",
+      "spec": "`{plugin}` → `{plugin}`",
+      "params": "{plugin: string}",
+      "result": "{plugin: string, enabled: bool}"
+    },
+    {
+      "name": "plugin.enable",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": "M5",
+      "spec": "`{plugin}` → `{plugin}`",
+      "params": "{plugin: string}",
+      "result": "{plugin: string, enabled: bool}"
+    },
+    {
+      "name": "plugin.install",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": "M5",
+      "spec": "`{source: \"owner/repo[/subdir]\"\\|path\\|url, ref?, accept_capabilities?: [..], trust?: scoped\\|herdr_legacy}` → `{plugin, requested_capabilities}` — returns `permission_denied:capabilities_not_accepted` until confirmed. Herdr manifests use the explicit legacy trust grant in §7.7",
+      "params": "{source: string, ref?: string, accept_capabilities?: [string], trust?: scoped|herdr_legacy = scoped}",
+      "result": "{plugin: string, kind: native|herdr, requested_capabilities: [object], entrypoints?: [string], status: string}"
+    },
+    {
+      "name": "plugin.kv.delete",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key: string}",
+      "result": "{key: string, deleted: bool}"
+    },
+    {
+      "name": "plugin.kv.get",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key: string}",
+      "result": "{key: string, found: bool, value?: any, value_b64?: string}"
+    },
+    {
+      "name": "plugin.kv.list",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{prefix?: string, after?: string, limit?: int = 100}",
+      "result": "{keys: [{key: string, bytes: int}], next: string|null}"
+    },
+    {
+      "name": "plugin.kv.set",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{key: string, value?: any, value_b64?: string}",
+      "result": "{key: string, bytes: int, used: int, quota: int}"
+    },
+    {
+      "name": "plugin.link",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": "M5",
+      "spec": "`{path}` → `{plugin}` (dev mode, hot reload)",
+      "params": "{path: string}",
+      "result": "{plugin: string, kind: native|herdr, requested_capabilities?: [object]}"
     },
     {
       "name": "plugin.link.open",
@@ -2577,7 +2717,7 @@
       "milestone": "M5",
       "spec": "`{}` → `{plugins: [{id, version, enabled, kind: actions|process, capabilities, status}]}`",
       "params": "{}",
-      "result": "{plugins: [{id: string, version?: string, enabled: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}"
+      "result": "{plugins: [{id?: string, plugin_id?: string, version?: string|null, enabled: bool, native?: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}"
     },
     {
       "name": "plugin.log.list",
@@ -2606,6 +2746,34 @@
       "spec": null,
       "params": "{}",
       "result": "{ok: bool}"
+    },
+    {
+      "name": "plugin.remove",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": "M5",
+      "spec": "`{plugin}` → `{plugin}`",
+      "params": "{plugin: string, purge_data?: bool = false}",
+      "result": "{plugin: string, removed: bool, kind: native|herdr}"
+    },
+    {
+      "name": "plugin.restart",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{plugin: string}",
+      "result": "{plugin: string, restarted: bool}"
     },
     {
       "name": "plugin.surface.close",
@@ -4032,6 +4200,48 @@
       "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]",
       "params": "{mode: auto|light|dark|null}",
       "result": "{appearance: Appearance, colorfgbg: string, reports?: any}"
+    },
+    {
+      "name": "ui.contribute",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{contributions?: [object], replace?: bool = false, remove?: [{kind: string, id: string}]}",
+      "result": "{plugin: string, contributions: int}"
+    },
+    {
+      "name": "ui.contributions",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{contributions: [object]}"
+    },
+    {
+      "name": "ui.pane.open",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "plugin_native"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{plugin: string, pane: string, target?: Target, direction?: right|down|left|up = right}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "workspace.close",

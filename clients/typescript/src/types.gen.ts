@@ -2299,6 +2299,7 @@ export type CompatUiStateResult = {
     plugin_id: string;
     entrypoint_id: string;
   };
+  contributions?: Record<string, unknown>[];
   agent_views: {
     plugin_id: string;
     run: string;
@@ -3464,6 +3465,25 @@ export type PasteTranslatedResult = {
   cursor?: Cursor;
 };
 
+export type PluginActionParams = {
+  plugin?: string;
+  action: string;
+  context?: {
+    workspace?: Target;
+    pane?: Target;
+    tab?: Target;
+  };
+  source?: string;
+};
+
+export type PluginActionResult = {
+  exit_code: number | null;
+  stdout_tail: string | null;
+  status: string;
+  log: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
 export type PluginActionListParams = {
   plugin?: string;
 };
@@ -3535,6 +3555,114 @@ export type PluginActionRunResult = {
   cursor?: Cursor;
 };
 
+export type PluginConsentParams = {
+  plugin: string;
+  accept_capabilities: string[];
+};
+
+export type PluginConsentResult = {
+  plugin: string;
+  consent_id: string;
+  capabilities: Record<string, unknown>;
+  cursor?: Cursor;
+};
+
+export type PluginDisableParams = {
+  plugin: string;
+};
+
+export type PluginDisableResult = {
+  plugin: string;
+  enabled: boolean;
+  cursor?: Cursor;
+};
+
+export type PluginEnableParams = {
+  plugin: string;
+};
+
+export type PluginEnableResult = {
+  plugin: string;
+  enabled: boolean;
+  cursor?: Cursor;
+};
+
+export type PluginInstallParams = {
+  source: string;
+  ref?: string;
+  accept_capabilities?: string[];
+  trust?: "scoped" | "herdr_legacy";
+};
+
+export type PluginInstallResult = {
+  plugin: string;
+  kind: "native" | "herdr";
+  requested_capabilities: Record<string, unknown>[];
+  entrypoints?: string[];
+  status: string;
+  cursor?: Cursor;
+};
+
+export type PluginKvDeleteParams = {
+  key: string;
+};
+
+export type PluginKvDeleteResult = {
+  key: string;
+  deleted: boolean;
+  cursor?: Cursor;
+};
+
+export type PluginKvGetParams = {
+  key: string;
+};
+
+export type PluginKvGetResult = {
+  key: string;
+  found: boolean;
+  value?: unknown;
+  value_b64?: string;
+};
+
+export type PluginKvListParams = {
+  prefix?: string;
+  after?: string;
+  limit?: number;
+};
+
+export type PluginKvListResult = {
+  keys: {
+    key: string;
+    bytes: number;
+  }[];
+  next: string | null;
+};
+
+export type PluginKvSetParams = {
+  key: string;
+  value?: unknown;
+  value_b64?: string;
+};
+
+export type PluginKvSetResult = {
+  key: string;
+  bytes: number;
+  used: number;
+  quota: number;
+  cursor?: Cursor;
+};
+
+export type PluginLinkParams = {
+  path: string;
+};
+
+export type PluginLinkResult = {
+  plugin: string;
+  kind: "native" | "herdr";
+  requested_capabilities?: Record<string, unknown>[];
+  cursor?: Cursor;
+};
+
 export type PluginLinkOpenParams = {
   plugin: string;
   handler: string;
@@ -3572,9 +3700,11 @@ export type PluginListParams = Record<string, unknown>;
 
 export type PluginListResult = {
   plugins: {
-    id: string;
-    version?: string;
+    id?: string;
+    plugin_id?: string;
+    version?: string | null;
     enabled: boolean;
+    native?: boolean;
     kind?: "actions" | "process" | string;
     capabilities?: unknown;
     status?: unknown;
@@ -3594,6 +3724,28 @@ export type PluginRegistryNotifyParams = Record<string, unknown>;
 
 export type PluginRegistryNotifyResult = {
   ok: boolean;
+  cursor?: Cursor;
+};
+
+export type PluginRemoveParams = {
+  plugin: string;
+  purge_data?: boolean;
+};
+
+export type PluginRemoveResult = {
+  plugin: string;
+  removed: boolean;
+  kind: "native" | "herdr";
+  cursor?: Cursor;
+};
+
+export type PluginRestartParams = {
+  plugin: string;
+};
+
+export type PluginRestartResult = {
+  plugin: string;
+  restarted: boolean;
   cursor?: Cursor;
 };
 
@@ -5269,6 +5421,39 @@ export type ThemeSetModeResult = {
   cursor?: Cursor;
 };
 
+export type UiContributeParams = {
+  contributions?: Record<string, unknown>[];
+  replace?: boolean;
+  remove?: {
+    kind: string;
+    id: string;
+  }[];
+};
+
+export type UiContributeResult = {
+  plugin: string;
+  contributions: number;
+  cursor?: Cursor;
+};
+
+export type UiContributionsParams = Record<string, unknown>;
+
+export type UiContributionsResult = {
+  contributions: Record<string, unknown>[];
+};
+
+export type UiPaneOpenParams = {
+  plugin: string;
+  pane: string;
+  target?: Target;
+  direction?: "right" | "down" | "left" | "up";
+};
+
+export type UiPaneOpenResult = {
+  pane: Pane;
+  cursor?: Cursor;
+};
+
 export type WorkspaceCloseParams = {
   workspace?: Target;
   force?: boolean;
@@ -5594,13 +5779,25 @@ export interface Methods {
   "pane.wait_output": { params: PaneWaitOutputParams; result: PaneWaitOutputResult };
   "pane.zoom": { params: PaneZoomParams; result: PaneZoomResult };
   "paste.translated": { params: PasteTranslatedParams; result: PasteTranslatedResult };
+  "plugin.action": { params: PluginActionParams; result: PluginActionResult };
   "plugin.action.list": { params: PluginActionListParams; result: PluginActionListResult };
   "plugin.action.run": { params: PluginActionRunParams; result: PluginActionRunResult };
+  "plugin.consent": { params: PluginConsentParams; result: PluginConsentResult };
+  "plugin.disable": { params: PluginDisableParams; result: PluginDisableResult };
+  "plugin.enable": { params: PluginEnableParams; result: PluginEnableResult };
+  "plugin.install": { params: PluginInstallParams; result: PluginInstallResult };
+  "plugin.kv.delete": { params: PluginKvDeleteParams; result: PluginKvDeleteResult };
+  "plugin.kv.get": { params: PluginKvGetParams; result: PluginKvGetResult };
+  "plugin.kv.list": { params: PluginKvListParams; result: PluginKvListResult };
+  "plugin.kv.set": { params: PluginKvSetParams; result: PluginKvSetResult };
+  "plugin.link": { params: PluginLinkParams; result: PluginLinkResult };
   "plugin.link.open": { params: PluginLinkOpenParams; result: PluginLinkOpenResult };
   "plugin.link_handler.list": { params: PluginLinkHandlerListParams; result: PluginLinkHandlerListResult };
   "plugin.list": { params: PluginListParams; result: PluginListResult };
   "plugin.log.list": { params: PluginLogListParams; result: PluginLogListResult };
   "plugin.registry.notify": { params: PluginRegistryNotifyParams; result: PluginRegistryNotifyResult };
+  "plugin.remove": { params: PluginRemoveParams; result: PluginRemoveResult };
+  "plugin.restart": { params: PluginRestartParams; result: PluginRestartResult };
   "plugin.surface.close": { params: PluginSurfaceCloseParams; result: PluginSurfaceCloseResult };
   "policy.add": { params: PolicyAddParams; result: PolicyAddResult };
   "policy.list": { params: PolicyListParams; result: PolicyListResult };
@@ -5702,6 +5899,9 @@ export interface Methods {
   "task.sync": { params: TaskSyncParams; result: TaskSyncResult };
   "theme.get": { params: ThemeGetParams; result: ThemeGetResult };
   "theme.set_mode": { params: ThemeSetModeParams; result: ThemeSetModeResult };
+  "ui.contribute": { params: UiContributeParams; result: UiContributeResult };
+  "ui.contributions": { params: UiContributionsParams; result: UiContributionsResult };
+  "ui.pane.open": { params: UiPaneOpenParams; result: UiPaneOpenResult };
   "workspace.close": { params: WorkspaceCloseParams; result: WorkspaceCloseResult };
   "workspace.create": { params: WorkspaceCreateParams; result: WorkspaceCreateResult };
   "workspace.focus": { params: WorkspaceFocusParams; result: WorkspaceFocusResult };
@@ -5898,13 +6098,25 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "pane.wait_output": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.zoom": { mutating: true, scope: "pane", paneScope: "own_target" },
   "paste.translated": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.action": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.action.list": { mutating: false, scope: "pane", paneScope: "open" },
   "plugin.action.run": { mutating: true, scope: "pane", paneScope: "open" },
+  "plugin.consent": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.disable": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.enable": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.install": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.kv.delete": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.kv.get": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "plugin.kv.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "plugin.kv.set": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.link": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.link.open": { mutating: true, scope: "pane", paneScope: "open" },
   "plugin.link_handler.list": { mutating: false, scope: "pane", paneScope: "open" },
   "plugin.list": { mutating: false, scope: "pane", paneScope: "open" },
   "plugin.log.list": { mutating: false, scope: "pane", paneScope: "open" },
   "plugin.registry.notify": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "plugin.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.surface.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -6006,6 +6218,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.sync": { mutating: true, scope: "full", paneScope: "forbidden" },
   "theme.get": { mutating: false, scope: "pane", paneScope: "open" },
   "theme.set_mode": { mutating: true, scope: "pane", paneScope: "open" },
+  "ui.contribute": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "ui.contributions": { mutating: false, scope: "pane", paneScope: "open" },
+  "ui.pane.open": { mutating: true, scope: "full", paneScope: "forbidden" },
   "workspace.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "workspace.create": { mutating: true, scope: "pane", paneScope: "open" },
   "workspace.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -6905,6 +7120,175 @@ export type PasteTranslatedData = {
   target_namespace: string;
 };
 
+export type PluginActionInvokedSubject = {
+  plugin: string;
+};
+
+export type PluginActionInvokedData = {
+  action: string;
+  log: string;
+  source: string;
+  via: "argv" | "process";
+};
+
+export type PluginApiCallSubject = {
+  plugin: string;
+};
+
+export type PluginApiCallData = {
+  method: string;
+  token?: string;
+  ok?: boolean;
+  error_code?: string | null;
+};
+
+export type PluginCapabilityViolationSubject = {
+  plugin: string;
+};
+
+export type PluginCapabilityViolationData = {
+  method: string;
+  reason: string;
+  token?: string;
+};
+
+export type PluginCommandFinishedSubject = {
+  plugin: string;
+};
+
+export type PluginCommandFinishedData = {
+  log: string;
+  what: string;
+  status: "completed" | "failed";
+  exit_code: number | null;
+};
+
+export type PluginCrashedSubject = {
+  plugin: string;
+};
+
+export type PluginCrashedData = {
+  exit_code: number | null;
+  reason: string;
+  crashes_in_window: number;
+  restart: boolean;
+  restart_in_ms: number | null;
+  disabled: boolean;
+  stderr_tail: string;
+};
+
+export type PluginDisabledSubject = {
+  plugin: string;
+};
+
+export type PluginDisabledData = {
+  kind: string;
+};
+
+export type PluginEnabledSubject = {
+  plugin: string;
+};
+
+export type PluginEnabledData = {
+  kind: string;
+};
+
+export type PluginInstalledSubject = {
+  plugin: string;
+};
+
+export type PluginInstalledData = {
+  kind: string;
+  update?: boolean;
+};
+
+export type PluginLaunchFailedSubject = {
+  plugin: string;
+};
+
+export type PluginLaunchFailedData = {
+  what: string;
+  error: string;
+};
+
+export type PluginLinkedSubject = {
+  plugin: string;
+};
+
+export type PluginLinkedData = {
+  kind: string;
+  update?: boolean;
+};
+
+export type PluginPaneOpenedSubject = {
+  plugin: string;
+  pane?: string;
+};
+
+export type PluginPaneOpenedData = {
+  entrypoint?: string;
+};
+
+export type PluginProcessStartedSubject = {
+  plugin: string;
+};
+
+export type PluginProcessStartedData = {
+  pid: number;
+  sandbox: boolean;
+  restarts: number;
+};
+
+export type PluginProcessStoppedSubject = {
+  plugin: string;
+};
+
+export type PluginProcessStoppedData = {
+  exit_code: number | null;
+  signal: number | null;
+  requested: boolean;
+};
+
+export type PluginRegistryObservedSubject = Record<string, unknown>;
+
+export type PluginRegistryObservedData = {
+  generation: number;
+  plugins: number;
+};
+
+export type PluginReloadedSubject = {
+  plugin: string;
+};
+
+export type PluginReloadedData = {
+  reason: string;
+};
+
+export type PluginTrustChangedSubject = {
+  plugin: string;
+};
+
+export type PluginTrustChangedData = {
+  kind: string;
+  trusted: boolean;
+};
+
+export type PluginUninstalledSubject = {
+  plugin: string;
+};
+
+export type PluginUninstalledData = {
+  kind: string;
+};
+
+export type PluginUnlinkedSubject = {
+  plugin: string;
+};
+
+export type PluginUnlinkedData = {
+  kind: string;
+};
+
 export type PolicyRepoTrustedSubject = Record<string, unknown>;
 
 export type PolicyRepoTrustedData = {
@@ -7780,6 +8164,14 @@ export type ThemeChangedSubject = Record<string, unknown>;
 
 export type ThemeChangedData = unknown;
 
+export type UiContributionsChangedSubject = {
+  plugin: string;
+};
+
+export type UiContributionsChangedData = {
+  contributions: number;
+};
+
 export type WorkspaceClosedSubject = {
   workspace: string;
 };
@@ -7943,6 +8335,24 @@ export interface EventMap {
   "pane.sync_input_changed": { subject: PaneSyncInputChangedSubject; data: PaneSyncInputChangedData };
   "pane.title_changed": { subject: PaneTitleChangedSubject; data: PaneTitleChangedData };
   "paste.translated": { subject: PasteTranslatedSubject; data: PasteTranslatedData };
+  "plugin.action_invoked": { subject: PluginActionInvokedSubject; data: PluginActionInvokedData };
+  "plugin.api_call": { subject: PluginApiCallSubject; data: PluginApiCallData };
+  "plugin.capability_violation": { subject: PluginCapabilityViolationSubject; data: PluginCapabilityViolationData };
+  "plugin.command_finished": { subject: PluginCommandFinishedSubject; data: PluginCommandFinishedData };
+  "plugin.crashed": { subject: PluginCrashedSubject; data: PluginCrashedData };
+  "plugin.disabled": { subject: PluginDisabledSubject; data: PluginDisabledData };
+  "plugin.enabled": { subject: PluginEnabledSubject; data: PluginEnabledData };
+  "plugin.installed": { subject: PluginInstalledSubject; data: PluginInstalledData };
+  "plugin.launch_failed": { subject: PluginLaunchFailedSubject; data: PluginLaunchFailedData };
+  "plugin.linked": { subject: PluginLinkedSubject; data: PluginLinkedData };
+  "plugin.pane_opened": { subject: PluginPaneOpenedSubject; data: PluginPaneOpenedData };
+  "plugin.process_started": { subject: PluginProcessStartedSubject; data: PluginProcessStartedData };
+  "plugin.process_stopped": { subject: PluginProcessStoppedSubject; data: PluginProcessStoppedData };
+  "plugin.registry_observed": { subject: PluginRegistryObservedSubject; data: PluginRegistryObservedData };
+  "plugin.reloaded": { subject: PluginReloadedSubject; data: PluginReloadedData };
+  "plugin.trust_changed": { subject: PluginTrustChangedSubject; data: PluginTrustChangedData };
+  "plugin.uninstalled": { subject: PluginUninstalledSubject; data: PluginUninstalledData };
+  "plugin.unlinked": { subject: PluginUnlinkedSubject; data: PluginUnlinkedData };
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
   "policy.rule_added": { subject: PolicyRuleAddedSubject; data: PolicyRuleAddedData };
   "policy.rule_matched": { subject: PolicyRuleMatchedSubject; data: PolicyRuleMatchedData };
@@ -8031,6 +8441,7 @@ export interface EventMap {
   "task.tracked": { subject: TaskTrackedSubject; data: TaskTrackedData };
   "task.updated": { subject: TaskUpdatedSubject; data: TaskUpdatedData };
   "theme.changed": { subject: ThemeChangedSubject; data: ThemeChangedData };
+  "ui.contributions_changed": { subject: UiContributionsChangedSubject; data: UiContributionsChangedData };
   "workspace.closed": { subject: WorkspaceClosedSubject; data: WorkspaceClosedData };
   "workspace.created": { subject: WorkspaceCreatedSubject; data: WorkspaceCreatedData };
   "workspace.moved": { subject: WorkspaceMovedSubject; data: WorkspaceMovedData };
