@@ -35,7 +35,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     if !matches!(method, "git.log" | "fs.list" | "fs.read") {
         return None;
     }
-    let root = match root_for(server, ctx, p).await {
+    // For fs.*, `path` is the entry inside the repository, never `target_dir`'s directory
+    // override, so the repository always comes from the pane.
+    let mut target = p.clone();
+    if method.starts_with("fs.")
+        && let Some(o) = target.as_object_mut()
+    {
+        o.remove("path");
+    }
+    let root = match root_for(server, ctx, &target).await {
         Ok(root) => root,
         Err(e) => return Some(Err(e)),
     };

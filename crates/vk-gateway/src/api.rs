@@ -71,7 +71,22 @@ const SERVER_READ_ONLY: &[&str] = &[
     "interaction.list",
     "git.status",
     "git.diff",
+    "git.log",
+    "fs.list",
+    "fs.read",
     "server.status",
+    "attention.list",
+    "task.get",
+    "task.review.get",
+    "task.review.candidates",
+    "task.review.diff",
+    "task.check.list",
+    "task.check.get",
+    "preview.list",
+    "preview.get",
+    "preview.url",
+    "preview.status",
+    "worktree.list",
 ];
 
 /// Minimum scope per method; `None` = unknown method.
@@ -84,14 +99,32 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "prefs.set" | "push.subscribe" | "push.unsubscribe" | "push.test" | "devices.list" => {
             View
         }
+        // Workspace views (read-only passthroughs).
+        "attention.list"
+        | "task.review.get"
+        | "task.review.candidates"
+        | "task.review.diff"
+        | "task.check.list"
+        | "task.check.get"
+        | "preview.list"
+        | "preview.get"
+        | "preview.url"
+        | "preview.status"
+        | "worktree.list"
+        | "git.log"
+        | "fs.list"
+        | "fs.read" => View,
         "agent.interrupt"
         | "interaction.answer"
         | "interaction.answer_batch"
-        | "notification.read" => Approve,
+        | "notification.read"
+        | "attention.update" => Approve,
         "pane.send_text" | "pane.send_keys" | "pane.rename" | "pane.close" | "pane.focus"
         | "agent.prompt" | "agent.start" | "tab.create" | "attachment.put" | "stt.transcribe"
         | "devices.revoke" | "share.create" | "handoff.export" | "handoff.read"
-        | "handoff.discard" | "handoff.begin" | "handoff.write" | "handoff.finish" => Full,
+        | "handoff.discard" | "handoff.begin" | "handoff.write" | "handoff.finish"
+        | "task.check.run" | "preview.open" | "preview.promote" | "preview.forget"
+        | "tab.rename" | "tab.close" | "tab.focus" => Full,
         _ => return None,
     })
 }
@@ -170,6 +203,17 @@ fn req<'a>(p: &'a Value, k: &str) -> Result<&'a str, ApiError> {
         .ok_or_else(|| ApiError::invalid(format!("{k} is required")))
 }
 
+/// Like [`pick`] but keeps explicit nulls (`attention.update {snooze_until_ms: null}` clears).
+fn pick_nullable(p: &Value, keys: &[&str]) -> Value {
+    let mut m = Map::new();
+    for k in keys {
+        if let Some(v) = p.get(*k) {
+            m.insert((*k).into(), v.clone());
+        }
+    }
+    Value::Object(m)
+}
+
 fn pick(p: &Value, keys: &[&str]) -> Value {
     let mut m = Map::new();
     for k in keys {
@@ -244,6 +288,23 @@ impl Allowed {
             (None, None) => true,
         }
     }
+    /// A task (by its workspace) inside the limit? Tasks belong to workspaces, so a pane-only
+    /// share sees none.
+    pub fn task_ok(&self, workspace: Option<&str>) -> bool {
+        match (&self.pane, &self.workspace) {
+            (Some(_), _) => false,
+            (None, Some(w)) => workspace == Some(w.as_str()),
+            (None, None) => true,
+        }
+    }
+    /// A tab inside the limit? A pane-only share sees only the tab holding its pane.
+    pub fn tab_ok(&self, workspace: Option<&str>, panes: &[String]) -> bool {
+        match (&self.pane, &self.workspace) {
+            (Some(p), _) => panes.iter().any(|x| x == p),
+            (None, Some(w)) => workspace == Some(w.as_str()),
+            (None, None) => true,
+        }
+    }
     /// An event subject inside the limit?
     pub fn subject_ok(&self, subject: &Value) -> bool {
         let pane = s(subject, "pane");
@@ -273,7 +334,11 @@ pub fn kind_allows(kind: &str, method: &str) -> bool {
             !(method.starts_with("devices.")
                 || method.starts_with("share.")
                 || method.starts_with("handoff.")
-                || method == "stt.transcribe")
+                || method.starts_with("tab.") && method != "tab.create"
+                || matches!(
+                    method,
+                    "stt.transcribe" | "task.check.run" | "attention.update" | "preview.status"
+                ))
         }
         _ => true,
     }
@@ -423,6 +488,17 @@ impl Call<'_> {
                     self.check_selectors(allowed, item).await?;
                 }
             }
+            "worktree.list" => {
+                // Shares name a pane or their workspace, never a host path.
+                if p.get("cwd").is_some() || p.get("repo").is_some() {
+                    return Err(deny());
+                }
+                if let Some(w) = s(p, "workspace")
+                    && (allowed.pane.is_some() || allowed.workspace.as_deref() != Some(w))
+                {
+                    return Err(deny());
+                }
+            }
             "notification.read" => {
                 // Only a notification attached to a shared pane, never "all".
                 if p.get("all").is_some_and(|v| v != &Value::Bool(false)) {
@@ -448,21 +524,193 @@ impl Call<'_> {
         self.check_selectors(allowed, p).await
     }
 
-    /// Every selector present (`pane`, `target`, `interaction`) must resolve inside the limit, so a
-    /// request can't pair an allowed pane with an outside run or interaction.
+    /// Every selector present (`pane`, `target`, `interaction`, `task`, `check_run`, `tab`,
+    /// `preview`) must resolve inside the limit, so a request can't pair an allowed pane with an
+    /// outside run, interaction, task, tab or preview.
     async fn check_selectors(&self, allowed: &Allowed, p: &Value) -> Result<(), ApiError> {
         let deny = || ApiError::new("forbidden", "outside what was shared with you");
-        for key in ["pane", "target", "interaction"] {
+        for key in [
+            "pane",
+            "target",
+            "interaction",
+            "task",
+            "check_run",
+            "tab",
+            "preview",
+        ] {
             let Some(v) = p.get(key) else { continue };
             let Some(v) = v.as_str() else {
                 return Err(deny());
             };
-            match self.locate(&json!({key: v})).await? {
-                Some((pane, ws)) if allowed.pane_ok(&pane, ws.as_deref()) => {}
-                _ => return Err(deny()),
+            let ok = match key {
+                "task" => allowed.task_ok(self.task_workspace(v).await.as_deref()),
+                "check_run" => {
+                    // A check run belongs to a task; resolve it, then judge the task.
+                    let r = self
+                        .server("task.check.get", json!({"check_run": v}))
+                        .await
+                        .map_err(|_| deny())?;
+                    match s(&r, "task") {
+                        Some(t) => allowed.task_ok(self.task_workspace(t).await.as_deref()),
+                        None => false,
+                    }
+                }
+                "tab" => match self.tab_of(v).await? {
+                    Some((ws, panes)) => allowed.tab_ok(ws.as_deref(), &panes),
+                    None => false,
+                },
+                "preview" => {
+                    let r = self
+                        .server("preview.get", json!({"preview": v}))
+                        .await
+                        .map_err(|_| deny())?;
+                    match r.pointer("/preview/pane").and_then(|x| x.as_str()) {
+                        Some(pane) => matches!(
+                            self.locate(&json!({"pane": pane})).await,
+                            Ok(Some((id, ws))) if allowed.pane_ok(&id, ws.as_deref())
+                        ),
+                        None => false,
+                    }
+                }
+                _ => matches!(
+                    self.locate(&json!({key: v})).await?,
+                    Some((pane, ws)) if allowed.pane_ok(&pane, ws.as_deref())
+                ),
+            };
+            if !ok {
+                return Err(deny());
             }
         }
         Ok(())
+    }
+
+    /// The workspace a task belongs to (None when unknown or not in a workspace).
+    async fn task_workspace(&self, task: &str) -> Option<String> {
+        let r = self.server("task.get", json!({"task": task})).await.ok()?;
+        r.pointer("/task/workspace")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    /// A tab's workspace and panes, from the snapshot.
+    async fn tab_of(&self, tab: &str) -> Result<Option<(Option<String>, Vec<String>)>, ApiError> {
+        let snap = self.server("session.snapshot", json!({})).await?;
+        let Some(t) = snap
+            .get("tabs")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .find(|t| s(t, "id") == Some(tab) || s(t, "handle") == Some(tab))
+        else {
+            return Ok(None);
+        };
+        let tab_id = s(t, "id").unwrap_or(tab);
+        let panes: Vec<String> = snap
+            .get("panes")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|p| s(p, "tab") == Some(tab_id))
+            .filter_map(|p| s(p, "id").map(str::to_string))
+            .collect();
+        Ok(Some((s(t, "workspace").map(str::to_string), panes)))
+    }
+
+    /// Panes and tasks visible to a limited device (from the snapshot, as `dashboard.get`).
+    async fn visible(&self, allowed: &Allowed) -> Result<(Vec<String>, Vec<String>), ApiError> {
+        let raw = self.server("session.snapshot", json!({})).await?;
+        let tasks: Vec<String> = raw
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|t| allowed.task_ok(s(t, "workspace")))
+            .filter_map(|t| s(t, "id").map(str::to_string))
+            .collect();
+        let mut snap = raw;
+        Self::filter_snapshot(allowed, &mut snap);
+        let panes = snap["panes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| s(p, "id").map(str::to_string))
+            .collect();
+        Ok((panes, tasks))
+    }
+
+    /// Filter list results to the limit: attention items by pane (or task, when they have no
+    /// pane), previews by pane. Excluded items are counted, never described.
+    fn filter_list(method: &str, r: &mut Value, panes: &[String], tasks: &[String]) {
+        let has = |list: &[String], v: Option<&str>| v.is_some_and(|v| list.iter().any(|x| x == v));
+        match method {
+            "attention.list" => {
+                let mut kept_keys = Vec::new();
+                let mut excluded = 0;
+                if let Some(items) = r.get_mut("items").and_then(|v| v.as_array_mut()) {
+                    let before = items.len();
+                    items.retain(|it| match s(it, "pane") {
+                        Some(pane) => has(panes, Some(pane)),
+                        None => has(tasks, s(it, "task")),
+                    });
+                    excluded = before - items.len();
+                    kept_keys = items
+                        .iter()
+                        .filter_map(|it| it.get("key").cloned())
+                        .collect();
+                }
+                if let Some(c) = r.get_mut("coverage").and_then(|v| v.as_object_mut()) {
+                    let prior = c.get("excluded").and_then(|v| v.as_u64()).unwrap_or(0);
+                    c.insert("excluded".into(), json!(prior + excluded as u64));
+                    c.insert("scope".into(), json!("shared"));
+                    c.insert("notes".into(), json!([]));
+                }
+                if let Some(f) = r.get_mut("five_minute").and_then(|v| v.as_object_mut()) {
+                    for k in ["keys", "item_notes"] {
+                        if let Some(a) = f.get_mut(k).and_then(|v| v.as_array_mut()) {
+                            a.retain(|x| {
+                                let key = if k == "keys" { Some(x) } else { x.get("key") };
+                                key.is_some_and(|key| kept_keys.contains(key))
+                            });
+                        }
+                    }
+                }
+            }
+            "preview.list" => {
+                if let Some(list) = r.get_mut("previews").and_then(|v| v.as_array_mut()) {
+                    list.retain(|pv| has(panes, s(pv, "pane")));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `worktree.list` runs in a directory: the pane's cwd, the workspace root, or (devices
+    /// without a limit only) an explicit `cwd`/`repo`.
+    async fn worktree_dir(&self, p: &Value) -> Result<String, ApiError> {
+        if let Some(pane) = s(p, "pane") {
+            let r = self.server("pane.get", json!({"pane": pane})).await?;
+            return s(&r, "cwd")
+                .map(str::to_string)
+                .ok_or_else(|| ApiError::new("not_found", "pane has no known working directory"));
+        }
+        if let Some(w) = s(p, "workspace") {
+            let snap = self.server("session.snapshot", json!({})).await?;
+            return snap
+                .get("workspaces")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .find(|x| s(x, "id") == Some(w) || s(x, "handle") == Some(w))
+                .and_then(|x| s(x, "root_path"))
+                .map(str::to_string)
+                .ok_or_else(|| ApiError::new("not_found", "workspace not found"));
+        }
+        if self.device.limit.is_none()
+            && let Some(c) = s(p, "cwd").or(s(p, "repo"))
+        {
+            return Ok(c.to_string());
+        }
+        Err(ApiError::invalid("pane or workspace is required"))
     }
 
     fn filter_snapshot(allowed: &Allowed, snap: &mut Value) {
@@ -577,6 +825,10 @@ impl Call<'_> {
                             s(it, "pane").is_some_and(|p| panes.iter().any(|x| x == p))
                         });
                     }
+                }
+                "attention.list" | "preview.list" => {
+                    let (panes, tasks) = self.visible(a).await?;
+                    Self::filter_list(method, &mut r, &panes, &tasks);
                 }
                 _ => {}
             }
@@ -770,8 +1022,86 @@ impl Call<'_> {
             }
             "git.status" => self.server("git.status", pick(&p, &["pane"])).await,
             "git.diff" => {
-                self.server("git.diff", pick(&p, &["pane", "file", "staged"]))
+                self.server(
+                    "git.diff",
+                    pick(&p, &["pane", "file", "staged", "base", "range"]),
+                )
+                .await
+            }
+            "git.log" => {
+                self.server("git.log", pick(&p, &["pane", "base", "limit"]))
                     .await
+            }
+            "fs.list" | "fs.read" => {
+                req(&p, "pane")?;
+                self.server(method, pick(&p, &["pane", "path"])).await
+            }
+            "attention.list" => {
+                let mut r = self
+                    .server("attention.list", pick(&p, &["budget_ms", "effort"]))
+                    .await?;
+                normalize(&mut r);
+                Ok(r)
+            }
+            "attention.update" => {
+                self.server(
+                    "attention.update",
+                    pick_nullable(&p, &["key", "seen", "snooze_until_ms", "pin", "item_rev"]),
+                )
+                .await
+            }
+            "task.review.get" | "task.check.list" => {
+                self.server(method, pick(&p, &["task", "subject"])).await
+            }
+            "task.review.candidates" => self.server(method, pick(&p, &["task"])).await,
+            "task.review.diff" => {
+                self.server(method, pick(&p, &["task", "subject", "path", "max_bytes"]))
+                    .await
+            }
+            "task.check.get" => self.server(method, pick(&p, &["check_run"])).await,
+            "task.check.run" => {
+                let mut params = pick(
+                    &p,
+                    &["task", "subject", "check", "definition_digest", "authorize"],
+                );
+                params["idempotency_key"] = format!("gw:{}:{op_id}", self.device.id).into();
+                self.server(method, params).await
+            }
+            "preview.list" => {
+                self.server(
+                    method,
+                    pick(&p, &["machine", "status", "all", "task", "pane"]),
+                )
+                .await
+            }
+            "preview.get" | "preview.url" | "preview.promote" | "preview.forget" => {
+                req(&p, "preview")?;
+                self.server(method, pick(&p, &["preview", "machine"])).await
+            }
+            "preview.status" => self.server(method, json!({})).await,
+            "preview.open" => {
+                self.server(
+                    method,
+                    pick(
+                        &p,
+                        &[
+                            "preview", "url", "machine", "window", "split", "focus", "pane",
+                        ],
+                    ),
+                )
+                .await
+            }
+            "worktree.list" => {
+                let cwd = self.worktree_dir(&p).await?;
+                self.server(method, json!({"cwd": cwd})).await
+            }
+            "tab.rename" => {
+                req(&p, "tab")?;
+                self.server(method, pick(&p, &["tab", "title"])).await
+            }
+            "tab.close" | "tab.focus" => {
+                req(&p, "tab")?;
+                self.server(method, pick(&p, &["tab"])).await
             }
             "attachment.put" => {
                 let data = req(&p, "data_b64")?;
@@ -1236,5 +1566,367 @@ mod share_tests {
         assert!(!kind_allows("share", "handoff.export"));
         assert!(kind_allows("share", "pane.read"));
         assert!(!is_mutating("handoff.read"));
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    //! Workspace-view passthroughs: scope table, share-limit denials and result filtering against
+    //! a fake server.
+    use super::*;
+    use crate::state::{Limit, StateDir};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn fake_server(path: std::path::PathBuf) {
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let (r, mut w) = stream.into_split();
+                    let mut lines = BufReader::new(r).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        let p = req["params"].clone();
+                        let ws_of = |x: &str| if x.ends_with('1') { "w1" } else { "w2" };
+                        let result = match req["method"].as_str().unwrap() {
+                            "client.hello" => json!({"capabilities": ["*"]}),
+                            "pane.get" => {
+                                let id = p["pane"].as_str().unwrap_or("");
+                                json!({"pane": {"id": id, "workspace": ws_of(id)}, "cwd": format!("/repo/{id}")})
+                            }
+                            "session.snapshot" => json!({
+                                "at_seq": 1,
+                                "workspaces": [{"id": "w1", "root_path": "/ws1"}, {"id": "w2", "root_path": "/ws2"}],
+                                "tabs": [{"id": "t1", "workspace": "w1"}, {"id": "t2", "workspace": "w2"}],
+                                "panes": [{"id": "p1", "tab": "t1", "workspace": "w1"}, {"id": "p2", "tab": "t2", "workspace": "w2"}],
+                                "tasks": [{"id": "k1", "workspace": "w1"}, {"id": "k2", "workspace": "w2"}],
+                                "runs": [], "interactions": []
+                            }),
+                            "task.get" => {
+                                let id = p["task"].as_str().unwrap_or("");
+                                json!({"task": {"id": id, "workspace": ws_of(id)}})
+                            }
+                            "task.check.get" => {
+                                let id = p["check_run"].as_str().unwrap_or("");
+                                json!({"check_run": {"id": id}, "task": if id == "c1" { "k1" } else { "k2" }})
+                            }
+                            "preview.get" => match p["preview"].as_str().unwrap_or("") {
+                                "v1" => json!({"preview": {"id": "v1", "pane": "p1"}}),
+                                "v2" => json!({"preview": {"id": "v2", "pane": "p2"}}),
+                                _ => json!({"preview": {"id": "v3", "pane": null}}),
+                            },
+                            "preview.list" => json!({"previews": [
+                                {"id": "v1", "pane": "p1"}, {"id": "v2", "pane": "p2"}, {"id": "v3", "pane": null}
+                            ]}),
+                            "attention.list" => json!({
+                                "items": [
+                                    {"key": {"kind": "interaction", "id": "i1"}, "pane": "p1", "title": "in"},
+                                    {"key": {"kind": "interaction", "id": "i2"}, "pane": "p2", "title": "secret title"},
+                                    {"key": {"kind": "review", "id": "k1"}, "task": "k1", "pane": null},
+                                    {"key": {"kind": "review", "id": "k2"}, "task": "k2", "pane": null}
+                                ],
+                                "coverage": {"complete": true, "notes": ["x"], "scope": "all", "excluded": 0},
+                                "five_minute": {"keys": [{"kind": "interaction", "id": "i2"}, {"kind": "interaction", "id": "i1"}],
+                                                "item_notes": [{"key": {"kind": "interaction", "id": "i2"}, "note": "n"}]}
+                            }),
+                            _ => json!({"echo": p}),
+                        };
+                        let out = json!({"jsonrpc": "2.0", "id": req["id"], "result": result})
+                            .to_string()
+                            + "\n";
+                        if w.write_all(out.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    fn device(id: &str, scope: Scope, kind: &str, limit: Option<Limit>) -> Device {
+        Device {
+            id: id.into(),
+            name: id.into(),
+            platform: "test".into(),
+            public: format!("k-{id}"),
+            scope,
+            paired_at: 0,
+            vapid_private: None,
+            push: vec![],
+            prefs: Default::default(),
+            push_failures: 0,
+            kind: kind.into(),
+            expires_at: None,
+            limit,
+        }
+    }
+
+    async fn gateway(t: &tempfile::TempDir) -> Arc<crate::Gateway> {
+        let sock = t.path().join("s.sock");
+        fake_server(sock.clone());
+        crate::Gateway::new(
+            StateDir::open(t.path().join("gw")).unwrap(),
+            crate::server::Server::new(sock),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scope_table_for_workspace_methods() {
+        for m in [
+            "attention.list",
+            "task.review.get",
+            "task.review.candidates",
+            "task.review.diff",
+            "task.check.list",
+            "task.check.get",
+            "preview.list",
+            "preview.get",
+            "preview.url",
+            "preview.status",
+            "worktree.list",
+            "git.log",
+            "fs.list",
+            "fs.read",
+        ] {
+            assert_eq!(required_scope(m), Some(Scope::View), "{m}");
+            assert!(!is_mutating(m), "{m}");
+            assert!(SERVER_READ_ONLY.contains(&m), "{m} must not need an actor");
+        }
+        assert_eq!(required_scope("attention.update"), Some(Scope::Approve));
+        assert!(is_mutating("attention.update"));
+        for m in [
+            "task.check.run",
+            "preview.open",
+            "preview.promote",
+            "preview.forget",
+            "tab.rename",
+            "tab.close",
+            "tab.focus",
+        ] {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(is_mutating(m), "{m}");
+        }
+        // Shares never run checks, change attention or touch tabs.
+        for m in [
+            "task.check.run",
+            "attention.update",
+            "tab.rename",
+            "tab.close",
+            "tab.focus",
+            "preview.status",
+        ] {
+            assert!(!kind_allows("share", m), "{m}");
+            assert!(kind_allows("device", m), "{m}");
+        }
+        assert!(kind_allows("share", "tab.create"));
+        assert!(kind_allows("share", "fs.read"));
+    }
+
+    #[test]
+    fn task_and_tab_limits() {
+        let ws = Allowed {
+            workspace: Some("w1".into()),
+            pane: None,
+        };
+        let pane = Allowed {
+            workspace: None,
+            pane: Some("p1".into()),
+        };
+        assert!(ws.task_ok(Some("w1")));
+        assert!(!ws.task_ok(Some("w2")));
+        assert!(!ws.task_ok(None));
+        assert!(!pane.task_ok(Some("w1")), "pane-only shares see no tasks");
+        assert!(ws.tab_ok(Some("w1"), &[]));
+        assert!(!ws.tab_ok(Some("w2"), &["p1".into()]));
+        assert!(pane.tab_ok(Some("w2"), &["p1".into()]));
+        assert!(!pane.tab_ok(Some("w1"), &["p2".into()]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn share_limit_denials_and_filtering() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let share = device(
+            "s1",
+            Scope::Approve,
+            "share",
+            Some(Limit {
+                workspace: Some("w1".into()),
+                pane: None,
+            }),
+        );
+        gw.add_device(share.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &share,
+        };
+        let forbidden = |r: ApiResult, what: &str| {
+            assert_eq!(r.unwrap_err().kind, "forbidden", "{what}");
+        };
+        for (m, p) in [
+            ("task.review.get", json!({"task": "k2"})),
+            ("task.review.candidates", json!({"task": "k2"})),
+            ("task.review.diff", json!({"task": "k2", "path": "a.rs"})),
+            ("task.check.list", json!({"task": "k2"})),
+            ("task.check.get", json!({"check_run": "c2"})),
+            ("preview.get", json!({"preview": "v2"})),
+            ("preview.url", json!({"preview": "v2"})),
+            ("preview.url", json!({"preview": "v3"})),
+            ("preview.list", json!({"task": "k2"})),
+            ("preview.list", json!({"pane": "p2"})),
+            ("git.log", json!({"pane": "p2"})),
+            (
+                "git.diff",
+                json!({"pane": "p2", "file": "a", "range": "a..b"}),
+            ),
+            ("fs.list", json!({"pane": "p2"})),
+            ("fs.read", json!({"pane": "p2", "path": "a.txt"})),
+            ("worktree.list", json!({"pane": "p2"})),
+            ("worktree.list", json!({"workspace": "w2"})),
+            ("worktree.list", json!({"cwd": "/"})),
+            ("worktree.list", json!({"pane": "p1", "repo": "/etc"})),
+            // An allowed pane can't smuggle an outside task.
+            ("fs.read", json!({"pane": "p1", "path": "a", "task": "k2"})),
+        ] {
+            forbidden(call.dispatch(m, p.clone()).await, &format!("{m} {p}"));
+        }
+        // Inside the limit.
+        for (m, p) in [
+            ("task.review.get", json!({"task": "k1"})),
+            ("task.check.get", json!({"check_run": "c1"})),
+            ("preview.get", json!({"preview": "v1"})),
+            ("fs.list", json!({"pane": "p1", "path": "src"})),
+            ("git.log", json!({"pane": "p1", "base": "main"})),
+        ] {
+            call.dispatch(m, p.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{m} {p}: {e:?}"));
+        }
+        let wt = call
+            .dispatch("worktree.list", json!({"workspace": "w1"}))
+            .await
+            .unwrap();
+        assert_eq!(wt["echo"], json!({"cwd": "/ws1"}));
+        // Lists are filtered to the limit.
+        let a = call.dispatch("attention.list", json!({})).await.unwrap();
+        let ids: Vec<&str> = a["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["key"]["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["i1", "k1"]);
+        assert_eq!(a["coverage"]["excluded"], 2);
+        assert_eq!(a["coverage"]["notes"], json!([]));
+        assert_eq!(
+            a["five_minute"]["keys"],
+            json!([{"kind": "interaction", "id": "i1"}])
+        );
+        assert_eq!(a["five_minute"]["item_notes"], json!([]));
+        assert!(!a.to_string().contains("secret title"));
+        let pv = call.dispatch("preview.list", json!({})).await.unwrap();
+        assert_eq!(pv["previews"], json!([{"id": "v1", "pane": "p1"}]));
+
+        // A pane-only share sees no tasks.
+        let pane_share = device(
+            "s2",
+            Scope::View,
+            "share",
+            Some(Limit {
+                workspace: None,
+                pane: Some("p1".into()),
+            }),
+        );
+        gw.add_device(pane_share.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &pane_share,
+        };
+        forbidden(
+            call.dispatch("task.review.get", json!({"task": "k1"}))
+                .await,
+            "pane share task",
+        );
+        forbidden(
+            call.dispatch("worktree.list", json!({"workspace": "w1"}))
+                .await,
+            "pane share workspace",
+        );
+        let a = call.dispatch("attention.list", json!({})).await.unwrap();
+        assert_eq!(a["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn passthrough_params_are_whitelisted() {
+        let t = tempfile::tempdir().unwrap();
+        let gw = gateway(&t).await;
+        let me = device("d1", Scope::Full, "device", None);
+        gw.add_device(me.clone()).unwrap();
+        let call = Call {
+            gw: &gw,
+            device: &me,
+        };
+        let echo = |r: ApiResult| r.unwrap()["echo"].clone();
+        assert_eq!(
+            echo(
+                call.dispatch("fs.read", json!({"pane": "p1", "path": "a", "junk": 1}))
+                    .await
+            ),
+            json!({"pane": "p1", "path": "a"})
+        );
+        assert_eq!(
+            echo(
+                call.dispatch(
+                    "git.diff",
+                    json!({"pane": "p1", "file": "a", "base": "main", "range": "a..b", "x": 1})
+                )
+                .await
+            ),
+            json!({"pane": "p1", "file": "a", "base": "main", "range": "a..b"})
+        );
+        let up = echo(
+            call.dispatch(
+                "attention.update",
+                json!({"key": {"kind": "review", "id": "k1"}, "snooze_until_ms": null, "op_id": "o"}),
+            )
+            .await,
+        );
+        assert!(up["snooze_until_ms"].is_null() && up.get("snooze_until_ms").is_some());
+        assert_eq!(up["actor"], "gateway:d1");
+        let run = echo(
+            call.dispatch(
+                "task.check.run",
+                json!({"task": "k1", "subject": "s", "check": "c", "authorize": true, "op_id": "o2"}),
+            )
+            .await,
+        );
+        assert_eq!(run["idempotency_key"], "gw:d1:o2");
+        assert_eq!(run["authorize"], true);
+        assert_eq!(
+            echo(
+                call.dispatch(
+                    "tab.rename",
+                    json!({"tab": "t1", "title": "x", "pane": "p9"})
+                )
+                .await
+            )["pane"],
+            Value::Null
+        );
+        assert_eq!(
+            echo(call.dispatch("worktree.list", json!({"cwd": "/r"})).await),
+            json!({"cwd": "/r"})
+        );
+        assert_eq!(
+            echo(
+                call.dispatch(
+                    "preview.open",
+                    json!({"preview": "v1", "split": "down", "headless": true})
+                )
+                .await
+            ),
+            json!({"preview": "v1", "split": "down", "actor": "gateway:d1"})
+        );
     }
 }
