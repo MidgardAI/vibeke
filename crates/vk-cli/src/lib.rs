@@ -432,7 +432,78 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "set",
         "task.set",
         &["task"],
-        "[--priority N] [--effort quick|minutes|deep|unknown]",
+        "[--priority N] [--effort quick|minutes|deep|unknown] [--effort-source heuristic|assistant:<request>]",
+    ),
+    // 15 T4.
+    (
+        "task",
+        "snapshot",
+        "task.review.snapshot",
+        &["task"],
+        "<task> — capture uncommitted work as an immutable, accept-capable subject (files, index and branches stay as they are)",
+    ),
+    (
+        "task",
+        "snapshot-gc",
+        "task.review.snapshot.gc",
+        &["task"],
+        "[task] | --repo path [--dry-run] [--include-unrecorded] — delete snapshot refs no candidate, acceptance, reviewer or running check references; prints what was removed",
+    ),
+    (
+        "task",
+        "effort",
+        "task.effort.estimate",
+        &["task"],
+        "<task> — your effort, the deterministic heuristic (model estimate: assist generate effort_estimate --task)",
+    ),
+    (
+        "task",
+        "reviewer",
+        "task.review.request_reviewer",
+        &["task"],
+        "<task> [--harness claude] [--subject s] [--prompt text] — show the reviewer prompt; nothing is launched",
+    ),
+    (
+        "task",
+        "reviewer-start",
+        "task.review.start_reviewer",
+        &["request", "prompt_digest"],
+        "<request> <prompt-digest> [--pane p | --split-of p] — start the confirmed reviewer run (role review)",
+    ),
+    (
+        "task",
+        "notes",
+        "task.review.notes",
+        &["task"],
+        "<task> — reviewer findings (agent opinions, not evidence) and reviewer runs",
+    ),
+    (
+        "task",
+        "note-classify",
+        "task.review.note.classify",
+        &["note", "classification"],
+        "<note> blocking|not_blocking|dismissed [--reason r]",
+    ),
+    (
+        "task",
+        "depend",
+        "task.dependency.add",
+        &["task", "depends_on"],
+        "<task> <depends-on> [--kind blocks|related] — confirm a dependency link (cycles refused)",
+    ),
+    (
+        "task",
+        "undepend",
+        "task.dependency.remove",
+        &["task", "depends_on"],
+        "<task> <depends-on> [--kind k] | --edge e",
+    ),
+    (
+        "task",
+        "deps",
+        "task.dependency.list",
+        &["task"],
+        "[task] — confirmed links and how many open tasks each blocks",
     ),
     (
         "task",
@@ -647,9 +718,23 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "open",
         "preview.open",
         &["preview"],
-        "<v4|devbox/v4|url> [--split right|down|tab|float | --window] [--pane p] [--machine m]",
+        "<v4|devbox/v4|url> [--split right|down|tab|float | --window | --proxy [--no-open]] [--pane p] [--machine m]",
     ),
     ("preview", "url", "preview.url", &["preview"], ""),
+    (
+        "preview",
+        "mirror",
+        "preview.mirror",
+        &["preview"],
+        "<devbox/v4> bind the remote port number on this machine's loopback (unauthenticated; explicit)",
+    ),
+    (
+        "preview",
+        "unmirror",
+        "preview.unmirror",
+        &["preview"],
+        "<devbox/v4 | port> stop a mirror",
+    ),
     (
         "preview",
         "promote",
@@ -1025,7 +1110,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — shows the exact payload; nothing is sent",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — shows the exact payload; nothing is sent",
     ),
     (
         "assist",
@@ -1635,6 +1720,32 @@ pub fn pretty(method: &str, v: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         "pane.read" | "agent.read" => v["text"].as_str().unwrap_or("").to_string(),
+        "preview.open" if v["opened_in"] == "proxy" => {
+            let mut out = format!(
+                "{} via the preview proxy: {}",
+                v["preview"].as_str().unwrap_or(""),
+                v["url"].as_str().unwrap_or("")
+            );
+            if v["opened"] != true
+                && let Some(u) = v["open_url"].as_str()
+            {
+                out.push_str(&format!(
+                    "\none-time login link ({} s): {u}",
+                    v["token_ttl_s"].as_u64().unwrap_or(60)
+                ));
+            }
+            out
+        }
+        "preview.mirror" => format!(
+            "{}/{} mirrored on {} — {}",
+            v["machine"].as_str().unwrap_or(""),
+            v["preview_handle"].as_str().unwrap_or(""),
+            v["url"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("localhost:{}", v["local_port"])),
+            v["warning"].as_str().unwrap_or("")
+        ),
         _ => serde_json::to_string_pretty(v).unwrap_or_default(),
     }
 }
@@ -1843,7 +1954,12 @@ where
 pub fn runs_on_viewing_machine(method: &str) -> bool {
     matches!(
         method,
-        "preview.open" | "preview.profile" | "preview.status" | "preview.url"
+        "preview.open"
+            | "preview.profile"
+            | "preview.status"
+            | "preview.url"
+            | "preview.mirror"
+            | "preview.unmirror"
     )
 }
 

@@ -96,6 +96,8 @@ table against the spec 10 §1 budgets. It is report-only: exit status is 0 unles
 | VT parse throughput | `cargo test --release -p vk-term --test recovery throughput -- --ignored` | >= 300 MB/s (1.2) |
 | Added keystroke latency | `vibeke debug latency` | p50 <= 1 ms, p99 <= 3 ms (1.1) |
 | Remote bandwidth (`PERF_MACHINE=<label>`) | `vibeke debug bandwidth` | idle 0 B/s, spinner <= 2 KiB/s unfocused, <= 8 KiB/s focused (1.5); printed for review |
+| Idle CPU / RSS / wakeups (`PERF_IDLE=0` skips) | `vibeke debug idle` (isolated server, 30 idle panes, headless attached TUI; load average recorded, verdicts marked "(loaded)" on a busy host) | server <= 0.3% CPU, <= 2 wakeups/s, holder <= 2 MiB, server <= 25 MiB, TUI <= 30 MiB (1.3) |
+| VT conformance (`cargo test -p vk-term --test conformance`, also in `mise run test`) | in-repo corpus, `VK_CONFORMANCE_REPORT=1` prints per-category counts and expected failures | 0 unexpected failures (4.1) |
 | Browser frame path (`PERF_BROWSER=1`) | `cargo run -p vk-browser --example bench` | 1.6; printed for review |
 
 Budgets are defined on the two reference machines (spec 10 §2.1); numbers from other hardware
@@ -103,10 +105,22 @@ are indicative. Turning this into the PR gate (fail on a budget breach or a >10%
 against the median of the last five `main` runs) needs the benchmark-history store from spec 10
 §2 and is not part of this groundwork.
 
-## Reproducible builds (status and plan)
+## Reproducible builds
 
-Release builds already use `--locked` and pinned toolchains (`mise.toml`, `scripts/dist.sh`).
-Remaining for the Linux release set: build in a fixed container image, set `SOURCE_DATE_EPOCH`
-from the tag commit, pass `--remap-path-prefix` for the workspace and `CARGO_HOME`, vendor or
-checksum the Zig cache for libghostty-vt, and verify by building twice on separate runners and
-comparing `sha256sum` of `dist/`. Publish the digests with the release notes.
+`mise run repro-check` (`scripts/repro-check.sh`) builds the Linux musl release binary twice with
+`cargo zigbuild --release --locked`, in two separate target directories, with
+`SOURCE_DATE_EPOCH` (HEAD commit time unless set; releases use the tag commit),
+`--remap-path-prefix` for the workspace, `CARGO_HOME`, `RUSTUP_HOME` and the target directory,
+`-C strip=symbols`, `CARGO_INCREMENTAL=0`, `TZ=UTC` and `LC_ALL=C`, then compares sha256.
+`REPRO_TARGETS` selects targets (default `x86_64-unknown-linux-musl`).
+
+Result, 2026-10-06 (macOS arm64 host, Rust 1.99.0, Zig 0.16.0, commit `858036a` plus the M6
+docs changes): `x86_64-unknown-linux-musl` is **reproducible** between two clean builds on one
+machine: both produced sha256 `40e33616587d25f66ba32e9665da2eebec01bd3d9ce7f008aa8f9017d91257a2`
+(about 14 minutes per cold build). Not yet shown: `aarch64-unknown-linux-musl`; builds on
+different machines, different checkout paths (the remap should cover it, unverified) or different
+host OSes; a fixed container image; the vendored libghostty-vt Zig cache is not checksummed
+separately (Zig's own build is part of the compared output, so drift would have shown up as a
+differing hash). `dist.sh` does not yet set these flags, so `mise run dist` artifacts are not the
+ones checked here. CI does not run the check yet; the spec's target (CI double-builds on separate
+runners, digests published with the release notes) is open.

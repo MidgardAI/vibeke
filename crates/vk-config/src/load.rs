@@ -345,6 +345,32 @@ impl Config {
             }
         }
 
+        // `[keys.copy_mode]` overrides: one plain key → a copy-mode action ("" unbinds). Bad
+        // entries are ignored with a warning; copy mode keeps working with the base table.
+        for (key, action) in &k.copy_mode.overrides {
+            let path = format!("keys.copy_mode.{key}");
+            match parse_binding(key) {
+                Ok(b) if !b.prefix && b.chords.len() == 1 && b.range.is_none() => {}
+                Ok(_) => warns.push(Warning::new(
+                    path.clone(),
+                    format!("`{key}` must be a single key (no prefix or sequence); ignoring"),
+                )),
+                Err(e) => warns.push(Warning::new(
+                    path.clone(),
+                    format!("invalid key `{key}`: {e}; ignoring"),
+                )),
+            }
+            if !action.is_empty() && !crate::keys::is_copy_mode_action(action) {
+                warns.push(Warning::new(
+                    path,
+                    format!(
+                        "unknown copy-mode action `{action}` (one of: {}); ignoring",
+                        crate::keys::COPY_MODE_ACTIONS.join(", ")
+                    ),
+                ));
+            }
+        }
+
         let sb = &self.ui.sidebar;
         if sb.min_width > sb.max_width {
             errs.push(problem("ui.sidebar.min_width", "greater than max_width"));
@@ -616,7 +642,16 @@ fn is_free_table(path: &str) -> bool {
 fn element_schema(path: &str) -> Option<&'static [&'static str]> {
     Some(match path {
         "keys.command" => &[
-            "key", "type", "command", "width", "height", "cwd", "env", "title", "when",
+            "key",
+            "type",
+            "command",
+            "width",
+            "height",
+            "cwd",
+            "env",
+            "title",
+            "when",
+            "description",
         ],
         "ui.sidebar.token" => &["match", "label", "color", "hide"],
         "ui.sidebar.token.match" => &["harness", "state", "regex"],

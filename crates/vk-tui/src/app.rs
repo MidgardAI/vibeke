@@ -101,6 +101,10 @@ pub enum Pending {
     },
     /// M4 parity surfaces (status bar, search, groups, layouts, appearance).
     Parity(crate::parity::Reply),
+    /// Herdr plugin surfaces (actions, link handlers, UI state; M5).
+    Plugin(crate::plugins::Reply),
+    /// Preview proxy / mirror commands (06 B4).
+    Preview(crate::browser::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -291,6 +295,10 @@ pub enum Popup {
         layouts: Vec<crate::layouts::Entry>,
         sel: usize,
     },
+    /// Plugin link handlers matching an activated link (07 §7.7).
+    PluginLink(Box<crate::plugins::LinkChoice>),
+    /// Edit-scrollback viewer; state in `App::scrollback`.
+    Scrollback,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -391,6 +399,15 @@ pub struct App {
     pub desk: Option<crate::desk::Desk>,
     pub drafts: Option<crate::drafts::DraftsView>,
     pub assist: Option<crate::assist::Flow>,
+    /// Herdr plugin surfaces: actions, link handlers, window title, scroll reports (M5).
+    pub plugins: crate::plugins::State,
+    /// Edit-scrollback viewer (`edit_scrollback`, 03 §11.3).
+    pub scrollback: Option<crate::scrollback::ScrollbackView>,
+    /// A program to run with the TUI suspended (the editor for edit-scrollback); taken by the
+    /// main loop.
+    pub external: Option<crate::scrollback::External>,
+    /// Resolved `[keys.copy_mode]`.
+    pub copy_keys: std::sync::Arc<crate::copykeys::CopyKeys>,
 }
 
 pub struct Opts {
@@ -572,8 +589,6 @@ async fn run_inner(
     // Host appearance from the startup probe (OSC 11 / `CSI ? 996 n`, theme auto).
     crate::appearance::on_detect(&mut app, crate::appearance::startup());
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         if app.dirty {
@@ -585,6 +600,21 @@ async fn run_inner(
         }
         if let Some(r) = app.quit.take() {
             return Ok(r);
+        }
+        // Edit-scrollback's editor: suspend the TUI (stop reading input, restore the host
+        // terminal), run it in the foreground, then take the terminal back and repaint.
+        if let Some(x) = app.external.take() {
+            drop(events);
+            term::leave();
+            let res = crate::scrollback::run_external(&x);
+            let _ = term::raw();
+            let _ = term::enter(app.kitty);
+            events = EventStream::new();
+            app.prev = Grid::new(0, 0);
+            app.dirty = true;
+            if let Err(e) = res {
+                app.toast(e);
+            }
         }
         // Re-query the host's light/dark appearance (after a focus change): crossterm can't
         // parse the replies, so the event reader is stopped while we read them raw.
@@ -598,6 +628,16 @@ async fn run_inner(
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
         } else {
             Duration::from_secs(3600)
+        };
+        // No fixed tick (spec 10 §1.3.1): sleep until the earliest armed deadline, or until
+        // input / a server frame when nothing needs time.
+        let now = Instant::now();
+        let wake = crate::deadline::wake_at(app.next_deadline(now), now);
+        let timer = async move {
+            match wake {
+                Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
+                None => std::future::pending::<()>().await,
+            }
         };
         tokio::select! {
             ev = events.next() => {
@@ -650,9 +690,12 @@ async fn run_inner(
                 }
                 app.dirty = true;
             }
-            _ = tick.tick() => app.on_tick(),
+            _ = timer => app.on_deadline(Instant::now()),
             _ = tokio::time::sleep(redraw_in) => {}
         }
+        // Housekeeping after every wakeup: whatever became due (by time or because of what
+        // just arrived) is handled now; the next deadline is computed from the result.
+        app.on_tick();
     }
 }
 
@@ -665,6 +708,9 @@ impl App {
         osc52: bool,
         kitty: bool,
     ) -> App {
+        let copy_keys = std::sync::Arc::new(crate::copykeys::CopyKeys::from_config(
+            &config.keys.copy_mode,
+        ));
         App {
             machines,
             cur: 0,
@@ -708,6 +754,10 @@ impl App {
             desk: None,
             drafts: None,
             assist: None,
+            plugins: Default::default(),
+            scrollback: None,
+            external: None,
+            copy_keys,
         }
     }
 }
@@ -768,15 +818,17 @@ impl App {
         m.model.workspaces.iter().find(|x| &x.id == w).cloned()
     }
     pub fn pane_area(&self) -> Rect {
-        let (cols, rows) = self.size;
-        let x = if self.sidebar { self.sidebar_w + 1 } else { 0 };
-        // The status bar takes a row below the tab bar or at the bottom (08 §4).
+        let rows = self.size.1;
+        // Sidebar left or right, tab bar top/bottom/hidden (08 §2.4, §3).
+        let (x, w) = crate::chrome::main_x(self);
+        let (tt, tb) = crate::chrome::tab_rows(self);
+        // The status bar takes a row next to the tab bar or at the far edge (08 §4).
         let (top, bottom) = crate::statusbar::reserved(self);
         Rect {
             x,
-            y: 1 + top,
-            w: cols.saturating_sub(x),
-            h: rows.saturating_sub(1 + top + bottom),
+            y: tt + top,
+            w,
+            h: rows.saturating_sub(tt + tb + top + bottom),
         }
     }
     /// Tiled pane rects for the focused tab (zoom applied).
@@ -793,12 +845,27 @@ impl App {
     /// Every visible pane of the focused tab: floating panes first (topmost first, content
     /// rects inside their frames), then the tiling. Hit tests take the first match, so floats
     /// win; `ViewHint` reports them so their PTYs get real sizes (08 §5).
+    /// Plugin popups/overlays come before everything (M5); nothing under an overlay is
+    /// visible, so it is the only pane (with a popup over it) then.
     pub fn pane_rects(&self) -> Vec<(String, Rect)> {
-        let mut v: Vec<(String, Rect)> = crate::floats::visible(self)
-            .into_iter()
+        let surf = crate::plugins::surfaces(self);
+        let mut v: Vec<(String, Rect)> = surf
+            .iter()
             .rev()
-            .map(|f| (f.pane, f.inner))
+            .map(|s| (s.pane.clone(), s.inner))
             .collect();
+        if surf
+            .iter()
+            .any(|s| s.info.kind == vk_proto::model::SurfaceKind::Overlay)
+        {
+            return v;
+        }
+        v.extend(
+            crate::floats::visible(self)
+                .into_iter()
+                .rev()
+                .map(|f| (f.pane, f.inner)),
+        );
         v.extend(self.tiled_rects());
         v
     }
@@ -916,6 +983,7 @@ impl App {
         crate::gateway::on_connected(self, i);
         crate::push::on_connected(self, i);
         crate::parity::on_connected(self, i);
+        crate::plugins::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -973,7 +1041,7 @@ impl App {
         id
     }
 
-    fn send_key(&mut self, ev: KeyEvent) {
+    pub(crate) fn send_key(&mut self, ev: KeyEvent) {
         if crate::browser::focused_browser(self).is_some() {
             crate::browser::send_key(self, ev);
             return;
@@ -1265,6 +1333,8 @@ impl App {
             }
             Pending::Reconcile { key } => self.on_reconciled(i, &key, res),
             Pending::Parity(r) => crate::parity::on_reply(self, i, r, res),
+            Pending::Plugin(r) => crate::plugins::on_reply(self, i, r, res),
+            Pending::Preview(r) => crate::browser::on_reply(self, i, r, res),
         }
     }
 
@@ -1408,13 +1478,59 @@ impl App {
         if self.osc52 {
             let _ = std::io::stdout().write_all(&clipboard::osc52_set(data, primary));
             let _ = std::io::stdout().flush();
+        } else if primary {
+            let _ = clipboard::os_copy_primary(data);
         } else {
             let _ = clipboard::os_copy(data);
         }
-        self.toast("copied to clipboard");
+        if !primary {
+            self.toast("copied to clipboard");
+        }
     }
 
-    fn on_tick(&mut self) {
+    /// A user copy (copy-mode yank, copy-on-select): the clipboard, plus PRIMARY when
+    /// `clipboard.primary_selection` is on (03 §11.1).
+    pub fn copy_text(&mut self, text: &str) {
+        self.set_clipboard(text.as_bytes(), false);
+        if self.config.clipboard.primary_selection {
+            self.set_clipboard(text.as_bytes(), true);
+        }
+    }
+
+    /// Act on a copy-mode outcome (keys or mouse wheel).
+    pub(crate) fn copy_outcome(&mut self, mut cm: Box<CopyMode>, out: crate::copy::Outcome) {
+        match out {
+            crate::copy::Outcome::Stay => self.mode = Mode::Copy(cm),
+            crate::copy::Outcome::Exit => {}
+            crate::copy::Outcome::Yank(text) => self.copy_text(&text),
+            crate::copy::Outcome::Fetch { start, count } => {
+                let req = self.next_req;
+                self.next_req += 1;
+                self.history_reqs.insert(req, cm.pane.clone());
+                cm.pending_req = Some(req);
+                self.m().send(ClientFrame::FetchHistory {
+                    req,
+                    pane: cm.pane.clone(),
+                    start,
+                    count,
+                });
+                self.mode = Mode::Copy(cm);
+            }
+            // No match in memory: search the archive (and unloaded scrollback).
+            crate::copy::Outcome::Search { q, back } => {
+                crate::search::copy_search(self, cm, q, back)
+            }
+            // At the top of everything in memory: page older rows from the archive.
+            crate::copy::Outcome::Archive => crate::search::copy_page(self, cm),
+            // The viewer / editor at copy mode's view (03 §11.3).
+            crate::copy::Outcome::EditScrollback { line } => {
+                self.mode = Mode::Normal;
+                crate::scrollback::open(self, Some(line));
+            }
+        }
+    }
+
+    pub(crate) fn on_tick(&mut self) {
         let now = Instant::now();
         let before = self.toasts.len();
         self.toasts.retain(|t| t.until > now);
@@ -1432,10 +1548,45 @@ impl App {
         crate::gateway::tick(self);
         crate::parity::on_tick(self);
         crate::assist::tick(self);
-        // Keep spinners/ages in the sidebar fresh once a second.
-        if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
+        crate::browser::tick(self);
+        crate::plugins::report_scroll(self, now);
+    }
+
+    /// A deadline woke the loop: repaint when a redraw-only one passed (an age label, the
+    /// confirm countdown, the clock); `on_tick` follows and handles the rest.
+    fn on_deadline(&mut self, now: Instant) {
+        if self.deadlines(now).redraw_due(now) {
             self.dirty = true;
         }
+    }
+
+    /// Everything that needs time in the current state (spec 10 §1.3.1). An idle client (no
+    /// toast, no countdown, no working agent, no open poller, push-capable servers) arms none.
+    pub fn deadlines(&self, now: Instant) -> crate::deadline::Deadlines {
+        let mut d = crate::deadline::Deadlines::default();
+        if let Some(t) = self.toasts.iter().map(|t| t.until).min() {
+            d.at("toast", t);
+        }
+        if let Mode::Prefix(at) = self.mode {
+            d.at(
+                "prefix",
+                at + Duration::from_millis(self.keymap.prefix_timeout_ms),
+            );
+        }
+        crate::draw::deadlines(self, now, &mut d);
+        crate::inbox::deadlines(self, now, &mut d);
+        crate::tasks::deadlines(self, now, &mut d);
+        crate::gateway::deadlines(self, now, &mut d);
+        crate::statusbar::deadlines(self, now, &mut d);
+        crate::assist::deadlines(self, now, &mut d);
+        crate::browser::deadlines(self, now, &mut d);
+        crate::plugins::deadlines(self, now, &mut d);
+        d
+    }
+
+    /// The earliest of [`App::deadlines`]; `None` = sleep until input or a server frame.
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        self.deadlines(now).next()
     }
 
     // ---- host events --------------------------------------------------------------------
@@ -1508,6 +1659,10 @@ impl App {
                     self.mode = Mode::Prefix(Instant::now());
                     return;
                 }
+                // A plugin popup is modal: its terminal gets every key (08 §5).
+                if crate::plugins::normal_key(self, &ev) {
+                    return;
+                }
                 // Direct bindings never steal keys from a focused browser page.
                 if let Some(b) = self.keymap.direct(&ev).cloned()
                     && crate::browser::focused_browser(self).is_none()
@@ -1548,7 +1703,7 @@ impl App {
                     self.send_key(ev);
                     return;
                 }
-                if crate::browser::prefix_key(self, &ev) {
+                if crate::plugins::prefix_key(self, &ev) || crate::browser::prefix_key(self, &ev) {
                 } else if let Some(b) = self.keymap.prefixed(&ev).cloned() {
                     self.action(&b.action, b.index);
                 } else if matches!(ev.key, Key::Named(NamedKey::Escape)) {
@@ -1566,32 +1721,8 @@ impl App {
                     self.mode = Mode::Copy(cm);
                     return;
                 }
-                match cm.key(&ev) {
-                    crate::copy::Outcome::Stay => self.mode = Mode::Copy(cm),
-                    crate::copy::Outcome::Exit => {}
-                    crate::copy::Outcome::Yank(text) => {
-                        self.set_clipboard(text.as_bytes(), false);
-                    }
-                    crate::copy::Outcome::Fetch { start, count } => {
-                        let req = self.next_req;
-                        self.next_req += 1;
-                        self.history_reqs.insert(req, cm.pane.clone());
-                        cm.pending_req = Some(req);
-                        self.m().send(ClientFrame::FetchHistory {
-                            req,
-                            pane: cm.pane.clone(),
-                            start,
-                            count,
-                        });
-                        self.mode = Mode::Copy(cm);
-                    }
-                    // No match in memory: search the archive (and unloaded scrollback).
-                    crate::copy::Outcome::Search { q, back } => {
-                        crate::search::copy_search(self, cm, q, back)
-                    }
-                    // At the top of everything in memory: page older rows from the archive.
-                    crate::copy::Outcome::Archive => crate::search::copy_page(self, cm),
-                }
+                let out = cm.key(&ev);
+                self.copy_outcome(cm, out);
             }
             Mode::Prompt(p) => self.prompt_key(ev, p),
             Mode::Popup(p) => self.popup_key(ev, p),
@@ -1659,6 +1790,10 @@ impl App {
 
     pub(crate) fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
+        // Plugin popups are modal; overlay headers and popup frames are chrome.
+        if crate::plugins::on_mouse(self, me.column, me.row) {
+            return;
+        }
         // Float frames (move/resize/raise), group rows and drags, the status bar.
         if crate::parity::on_mouse(self, &me) {
             return;
@@ -1668,7 +1803,7 @@ impl App {
         }
         let (x, y) = (me.column, me.row);
         // Sidebar clicks.
-        if self.sidebar && x < self.sidebar_w {
+        if crate::chrome::in_sidebar(self, x) {
             if let MouseEventKind::Down(CtButton::Left) = me.kind
                 && let Some((mi, pane)) = draw::sidebar_hit(self, y)
             {
@@ -1676,7 +1811,7 @@ impl App {
             }
             return;
         }
-        if y == 0 {
+        if crate::chrome::tab_row(self) == Some(y) {
             if let MouseEventKind::Down(CtButton::Left) = me.kind
                 && let Some(tab) = draw::tabbar_hit(self, x)
             {
@@ -1699,6 +1834,10 @@ impl App {
             if !mouse_mode {
                 return;
             }
+        }
+        // Drag-to-select / copy-on-select, and the mouse inside copy mode (03 §11.1).
+        if crate::selection::on_mouse(self, &me, &pane, r, mouse_mode, shift) {
+            return;
         }
         if mouse_mode && !shift {
             let (kind, button) = match me.kind {
@@ -1744,6 +1883,9 @@ impl App {
     // ---- actions --------------------------------------------------------------------------
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
+        if crate::plugins::action(self, action) {
+            return;
+        }
         if crate::browser::action_name(self, action) || crate::parity::action(self, action) {
             return;
         }
@@ -1752,6 +1894,8 @@ impl App {
             || crate::desk::action(self, action)
             || crate::drafts::action(self, action)
             || crate::assist::action(self, action)
+            || crate::chrome::action(self, action)
+            || crate::scrollback::action(self, action)
         {
             return;
         }
@@ -1990,6 +2134,9 @@ impl App {
                 match vk_config::Config::load(vk_config::config_path()) {
                     Ok((c, _)) => {
                         self.keymap = Keymap::from_config(&c);
+                        self.copy_keys = std::sync::Arc::new(
+                            crate::copykeys::CopyKeys::from_config(&c.keys.copy_mode),
+                        );
                         self.theme = Theme::named(&c.theme.name);
                         self.config = c;
                         crate::appearance::apply(self, true);
@@ -2019,6 +2166,10 @@ impl App {
     }
 
     fn run_key_command(&mut self, c: &vk_config::KeyCommand) {
+        if c.kind == vk_config::CommandType::PluginAction {
+            crate::plugins::run_key_command(self, c);
+            return;
+        }
         let Some(pane) = self.focused_pane() else {
             return;
         };
@@ -2080,6 +2231,7 @@ impl App {
             return;
         };
         let mut cm = CopyMode::new(&pane, buf.lines.clone(), buf.cols, buf.cursor);
+        cm.set_keys(self.copy_keys.clone());
         // Where in-memory rows end and the archive begins (archive paging, M4); asked first so
         // the first history page can stay in memory.
         crate::search::request_bounds(self, &pane);
@@ -2444,6 +2596,7 @@ impl App {
         crate::browser::update_views(self);
         crate::gallery::before_draw(self);
         crate::nav::observe(self);
+        crate::plugins::observe(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);
@@ -2718,7 +2871,14 @@ mod pending_tests {
         let mut v = Vec::new();
         while let Ok(f) = rx.try_recv() {
             if let ClientFrame::Command { req, json } = f {
-                v.push((req, serde_json::from_str(&json).unwrap()));
+                let c: Value = serde_json::from_str(&json).unwrap();
+                // The plugin queries every connect makes (crate::plugins) aren't operations.
+                if !matches!(
+                    c["method"].as_str(),
+                    Some("plugin.action.list" | "plugin.link_handler.list" | "compat.ui.state")
+                ) {
+                    v.push((req, c));
+                }
             }
         }
         v

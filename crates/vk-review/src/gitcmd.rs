@@ -50,9 +50,20 @@ pub(crate) fn command(dir: &Path) -> Command {
 
 /// Run git and return its output whatever the exit status.
 pub(crate) fn run_raw(dir: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput, GitError> {
+    run_raw_env(dir, args, &[], timeout)
+}
+
+/// [`run_raw`] with extra environment variables (e.g. a private `GIT_INDEX_FILE`).
+pub(crate) fn run_raw_env(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<GitOutput, GitError> {
     let joined = args.join(" ");
     let mut child = command(dir)
         .args(args)
+        .envs(envs.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -105,6 +116,26 @@ pub(crate) fn run_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> 
     let out = run_raw(dir, args, GIT_TIMEOUT)?;
     if out.code == Some(0) {
         Ok(out.stdout)
+    } else {
+        Err(GitError::Failed {
+            args: args.join(" "),
+            code: out.code,
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        })
+    }
+}
+
+/// Run git with extra environment, require success, return trimmed stdout.
+pub(crate) fn run_env(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<String, GitError> {
+    let out = run_raw_env(dir, args, envs, Duration::from_secs(300))?;
+    if out.code == Some(0) {
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .trim_end_matches(['\n', '\r'])
+            .to_string())
     } else {
         Err(GitError::Failed {
             args: args.join(" "),

@@ -68,6 +68,45 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("url_hints", "prefix+shift+u"),
 ];
 
+/// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty
+/// value unbinds the key) — 03 §11.1, 08 §10.2. `mode = "vi" | "emacs"` picks the
+/// base table the overrides apply to.
+pub const COPY_MODE_ACTIONS: &[&str] = &[
+    "exit",
+    "cancel",
+    "left",
+    "right",
+    "up",
+    "down",
+    "half_page_up",
+    "half_page_down",
+    "page_up",
+    "page_down",
+    "line_start",
+    "line_end",
+    "top",
+    "bottom",
+    "view_top",
+    "view_middle",
+    "view_bottom",
+    "word_next",
+    "word_prev",
+    "word_end",
+    "select_char",
+    "select_line",
+    "select_block",
+    "search_forward",
+    "search_backward",
+    "search_next",
+    "search_prev",
+    "copy",
+    "edit_scrollback",
+];
+
+pub fn is_copy_mode_action(name: &str) -> bool {
+    COPY_MODE_ACTIONS.contains(&name)
+}
+
 /// Herdr action names accepted as aliases for ours (`from`, `to`).
 pub const ACTION_ALIASES: &[(&str, &str)] = &[("fullscreen", "zoom")];
 

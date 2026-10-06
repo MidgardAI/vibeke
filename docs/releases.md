@@ -84,10 +84,24 @@ Until the workflow and key exist, nothing in this repository claims releases are
 
 ## Cutting a release
 
-1. Bump `version` in the workspace `Cargo.toml`, run `mise run ci`.
-2. `mise run dist`; smoke-test `dist/<version>/vibeke-macos-aarch64 --version`.
+1. Bump `version` in the workspace `Cargo.toml`, run `mise run ci` (it includes the generated-docs
+   drift test and the `vibeke/1` freeze check; see below).
+2. `mise run repro-check` for the Linux artifacts (see [hardening.md](hardening.md)), then `mise run dist`; smoke-test `dist/<version>/vibeke-macos-aarch64 --version`.
 3. Tag `v<version>`; the release workflow (when it exists) rebuilds from the tag, signs
    `SHA256SUMS`, and uploads the assets.
 4. `scripts/install.sh` defaults to
    `https://github.com/MidgardAI/vibeke/releases/download/v<version>`; override with
    `VIBEKE_RELEASE_URL` for a mirror, or `VIBEKE_INSTALL_FROM=<dir>` for an offline install.
+
+## API freeze and generated docs (M6 groundwork)
+
+- `docs/api/methods.json` and `docs/api/README.md` are generated from the server's `METHODS`
+  tables. `docs/api/vibeke-1.frozen.json` is the `vibeke/1` snapshot. Removing a frozen method or
+  changing its mutating or scope flag fails `cargo test -p vibeke --test api_docs`; additions pass.
+  **The freeze is a draft until 1.0**. Before a release, review the catalog diff, then refresh the
+  snapshot with `VIBEKE_UPDATE_API_FREEZE=1 cargo test -p vibeke --test api_docs vibeke_1_freeze`
+  (add `VIBEKE_API_FREEZE_ALLOW_BREAK=1` only for a justified break while the freeze is a draft).
+- After adding a method, a CLI command or a config key, run
+  `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs` and commit the regenerated files
+  (`docs/api/`, `docs/site/src/reference/`).
+- `mise run docs` builds the docs site (`docs/site/`) when `mdbook` is installed.

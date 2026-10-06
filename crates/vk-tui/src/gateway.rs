@@ -329,6 +329,48 @@ pub fn catch_up(app: &mut App, i: usize) {
     p.next_events = None;
 }
 
+/// When `tick` next has something to do: the confirm overlay's countdown and expiry, and per
+/// connected machine the `events.read` poll (not once the server pushes and we caught up) and
+/// the `client.list` refresh at their own intervals, or a re-send after a lost request. With
+/// event push the list follows pushed `client.*` events; its 120 s safety net then rides on
+/// other wakeups instead of arming a timer of its own (spec 10 §1.3.1).
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    let g = &app.gateway;
+    if let Some(t) = g.queue.iter().map(|q| q.deadline).min() {
+        d.at("confirm.expire", t);
+    }
+    if let Some(c) = g.queue.front() {
+        // "expires in Ns" shows whole seconds: repaint when the next one starts.
+        let left = c.remaining(now);
+        let frac = left - Duration::from_secs(left.as_secs());
+        d.redraw(
+            "confirm.countdown",
+            now + frac.max(Duration::from_millis(1)),
+        );
+    }
+    let due = |sent: Option<Instant>, next: Option<Instant>| {
+        let retry = sent.map_or(now, |s| s + INFLIGHT_MAX);
+        retry.max(next.unwrap_or(now))
+    };
+    for (i, m) in app.machines.iter().enumerate() {
+        if !m.connected() {
+            continue;
+        }
+        let Some(p) = g.per.get(i) else {
+            // Never ticked since connecting: both polls are due.
+            d.at("gateway.events", now);
+            d.at("gateway.list", now);
+            continue;
+        };
+        if !(p.push && p.caught_up) {
+            d.at("gateway.events", due(p.events_sent, p.next_events));
+        }
+        if !p.push || p.list_sent.is_some() {
+            d.at("gateway.list", due(p.list_sent, p.next_list));
+        }
+    }
+}
+
 pub fn tick(app: &mut App) {
     let now = Instant::now();
     if app.gateway.expire(now) || app.gateway.modal() {

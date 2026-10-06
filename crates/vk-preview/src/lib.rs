@@ -1,16 +1,21 @@
 //! Preview fabric primitives (06 Part B): listener discovery via socket ownership, output URL
 //! and banner scanning, HTTP probes, the preview lifecycle, the SOCKS5 listener protocol with
-//! pluggable peer checks and routing, and the managed browser (profiles, discovery, launch).
+//! pluggable peer checks and routing, the managed browser (profiles, discovery, launch), the
+//! authenticated reverse proxy (B4), the loopback TLS probe and raw mirror forwarding.
 //!
 //! The server-side wiring (state, API, routing over bridge links) lives in
-//! `vk-server::preview`.
+//! `vk-server::preview` and `vk-server::preview_proxy`.
 
 pub mod browser;
 pub mod lifecycle;
 pub mod probe;
+pub mod proxy;
 pub mod scan;
 pub mod sockets;
 pub mod socks;
+#[cfg(test)]
+mod testutil;
+pub mod tls;
 
 /// Shells: a pane whose foreground process is one of these gets no listener scans (06 B2).
 pub fn is_shell(argv0: &str) -> bool {

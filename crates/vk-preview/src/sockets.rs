@@ -46,6 +46,23 @@ pub fn owner_of_connection(pids: &[u32], peer: SocketAddr, listener: SocketAddr)
     imp::owner_of_connection(pids, &want)
 }
 
+/// Whether the client end of an accepted loopback connection belongs to **this user** (any
+/// process with this process's effective uid). The mirror listener's peer check (06 B4): a
+/// mirror cannot carry a credential, so connections from other local users are refused. Unlike
+/// [`owner_of_connection`] this looks at every process of the user (macOS: libproc
+/// `PROC_UID_ONLY`; Linux: the socket's uid in `/proc/net/tcp{,6}`). The complete 4-tuple
+/// must match.
+pub fn connection_owned_by_me(peer: SocketAddr, listener: SocketAddr) -> bool {
+    let want = Tuple {
+        local: (peer.ip().to_canonical(), peer.port()),
+        remote: (listener.ip().to_canonical(), listener.port()),
+    };
+    if !want.local.0.is_loopback() || !want.remote.0.is_loopback() {
+        return false;
+    }
+    imp::owned_by_me(&want)
+}
+
 /// The client socket's (local, remote) endpoints, canonical (IPv4-mapped IPv6 → IPv4).
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +336,41 @@ mod imp {
         out
     }
 
+    /// Pids whose effective uid is `uid` (`proc_listpids(PROC_UID_ONLY)`).
+    fn pids_of_uid(uid: u32) -> Vec<u32> {
+        const PROC_UID_ONLY: u32 = 4;
+        let each = std::mem::size_of::<libc::c_int>();
+        // SAFETY: a null buffer asks for the required size in bytes.
+        let n = unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, std::ptr::null_mut(), 0) };
+        if n <= 0 {
+            return vec![];
+        }
+        // Room for processes started between the two calls.
+        let cap = n as usize / each + 64;
+        let mut buf: Vec<libc::c_int> = vec![0; cap];
+        // SAFETY: `buf` holds `cap` c_ints; the kernel writes at most that many bytes.
+        let got = unsafe {
+            libc::proc_listpids(
+                PROC_UID_ONLY,
+                uid,
+                buf.as_mut_ptr().cast(),
+                (cap * each) as libc::c_int,
+            )
+        };
+        if got <= 0 {
+            return vec![];
+        }
+        buf.truncate((got as usize / each).min(cap));
+        buf.into_iter()
+            .filter(|p| *p > 0)
+            .map(|p| p as u32)
+            .collect()
+    }
+
+    pub fn owned_by_me(want: &Tuple) -> bool {
+        owner_of_connection(&pids_of_uid(my_euid()), want).is_some()
+    }
+
     /// libproc reports no socket credential (`soi_stat.vst_uid` is 0), so the owner check is
     /// the owning process's effective uid.
     pub fn owner_of_connection(pids: &[u32], want: &Tuple) -> Option<u32> {
@@ -461,6 +513,13 @@ mod imp {
             .and_then(|u| u.parse().ok())
     }
 
+    pub fn owned_by_me(want: &Tuple) -> bool {
+        let me = my_euid();
+        rows().into_iter().any(|r| {
+            r.state != TCP_LISTEN && r.local == want.local && r.remote == want.remote && r.uid == me
+        })
+    }
+
     pub fn owner_of_connection(pids: &[u32], want: &Tuple) -> Option<u32> {
         let me = my_euid();
         let inodes: HashSet<u64> = rows()
@@ -492,6 +551,9 @@ mod imp {
     }
     pub fn owner_of_connection(_: &[u32], _: &Tuple) -> Option<u32> {
         None
+    }
+    pub fn owned_by_me(_: &Tuple) -> bool {
+        false
     }
 }
 
@@ -561,6 +623,14 @@ mod tests {
         assert_eq!(owner_of_connection(&[me], pm, srv), Some(me));
         // pid 1 (launchd/init) owns no such socket (and is not ours to inspect).
         assert_eq!(owner_of_connection(&[1], peer, srv), None);
+        // The mirror's same-user check finds the connection among all of this user's
+        // processes; a tuple that does not exist (or a non-loopback one) is refused.
+        assert!(connection_owned_by_me(peer, srv));
+        assert!(connection_owned_by_me(pm, srv));
+        assert!(!connection_owned_by_me(peer, other_port));
+        assert!(!connection_owned_by_me(p2, srv));
+        let lan: SocketAddr = format!("192.168.1.4:{}", peer.port()).parse().unwrap();
+        assert!(!connection_owned_by_me(lan, srv));
     }
 
     /// Child-process half of [`identical_ports_other_address_is_not_the_browser`]: connect to

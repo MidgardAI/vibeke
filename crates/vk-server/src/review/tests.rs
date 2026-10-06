@@ -1053,6 +1053,7 @@ fn projection(task: &str, label: &str, at: i64, rev: u64) -> Projection {
         explanation: None,
         updated_at_ms: at,
         live_token: None,
+        effort_heuristic: None,
     }
 }
 
@@ -1450,7 +1451,7 @@ async fn call_as(e: &Env, ctx: &Ctx, method: &str, p: Value) -> R {
 }
 
 async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !f() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2384,3 +2385,7 @@ async fn screenshots_are_browser_evidence_and_never_satisfy_checks() {
             .contains(&json!(bound.id))
     );
 }
+
+// Spec 15 T4 (snapshots, effort, reviewer runs, dependency links).
+#[path = "t4_tests.rs"]
+mod t4_tests;

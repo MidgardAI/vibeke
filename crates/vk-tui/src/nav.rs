@@ -521,6 +521,19 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Pending operations with unknown outcomes",
     ),
     ("open_preview", "Open the pane's preview in a browser pane"),
+    (
+        "preview_window",
+        "Preview: open in a window (right-click a chip/row to pick one)",
+    ),
+    (
+        "preview_proxy",
+        "Preview: open in your normal browser via the proxy",
+    ),
+    (
+        "preview_mirror",
+        "Preview: mirror a remote preview to localhost (⇄ unauthenticated port)",
+    ),
+    ("preview_unmirror", "Preview: stop mirroring"),
     ("browser_address", "Browser: edit the URL"),
     ("browser_back", "Browser: back"),
     ("browser_forward", "Browser: forward"),
@@ -551,6 +564,8 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ("layout_save", "Save this tab's layout…"),
     ("layout_apply", "Apply a saved layout…"),
     ("status_bar_toggle", "Show/hide the status bar"),
+    ("sidebar_side", "Move the sidebar left ⇄ right"),
+    ("tab_bar_position", "Tab bar top → bottom → hidden"),
     (
         "theme_detect",
         "Re-detect the terminal's light/dark appearance",
@@ -579,6 +594,10 @@ const EXTRA_ACTIONS: &[&str] = &[
     "task_details",
     "pending_operations",
     "open_preview",
+    "preview_window",
+    "preview_proxy",
+    "preview_mirror",
+    "preview_unmirror",
     "browser_stop",
     "browser_watch",
     "float_pane",
@@ -591,6 +610,8 @@ const EXTRA_ACTIONS: &[&str] = &[
     "layout_save",
     "layout_apply",
     "status_bar_toggle",
+    "sidebar_side",
+    "tab_bar_position",
     "theme_detect",
     "screenshots",
     "screenshot_pane",
@@ -611,10 +632,13 @@ pub fn describe(action: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaletteEntry {
-    /// Action name (`split_vertical`, `command:0`, `watch:<machine>:<session>`).
+    /// Action name (`split_vertical`, `command:0`, `watch:<machine>:<session>`,
+    /// `plugin:<machine>:<plugin>.<action>`).
     pub id: String,
     pub desc: String,
     pub binding: Option<String>,
+    /// Listed but not runnable (an untrusted or disabled plugin's action); `desc` says why.
+    pub disabled: bool,
 }
 
 impl PaletteEntry {
@@ -634,6 +658,7 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
                 id,
                 desc,
                 binding: b,
+                disabled: false,
             });
         }
     };
@@ -673,8 +698,22 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
             .clone()
             .map(|t| format!("Command: {t}"))
             .unwrap_or_else(|| format!("Command: {}", c.command));
+        if c.kind == vk_config::CommandType::PluginAction {
+            // Listed with the plugin's own entry below (binding shown there).
+            continue;
+        }
         let b = (!c.key.is_empty()).then(|| c.key.clone());
         push(&mut out, format!("command:{i}"), desc, b);
+    }
+    // Herdr plugin actions per machine (M5); untrusted/disabled ones listed but disabled.
+    for (id, desc, disabled) in crate::plugins::palette_entries(app) {
+        let q = id.splitn(3, ':').nth(2).unwrap_or_default().to_string();
+        let b = crate::plugins::binding_for(app, &q);
+        let n = out.len();
+        push(&mut out, id, desc, b);
+        if let Some(e) = out.get_mut(n) {
+            e.disabled = disabled;
+        }
     }
     let multi = app.machines.len() > 1;
     let mut mis: Vec<&usize> = app.nav.sessions.keys().collect();
@@ -733,6 +772,7 @@ pub fn palette_ranked(app: &App, filter: &str) -> Vec<(PaletteEntry, Vec<usize>)
 pub fn open_palette(app: &mut App, filter: String) {
     for mi in 0..app.machines.len() {
         refresh_sessions(app, mi);
+        crate::plugins::refresh(app, mi);
     }
     app.mode = Mode::Popup(Popup::Palette { filter, sel: 0 });
 }
@@ -879,7 +919,8 @@ pub fn draw_palette(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, 
         .enumerate()
     {
         let desc_len = e.desc.chars().count();
-        let mut segs = highlight(&e.desc, pos, t.text(), hi);
+        let base = if e.disabled { t.dim() } else { t.text() };
+        let mut segs = highlight(&e.desc, pos, base, hi);
         let name_pos: Vec<usize> = pos
             .iter()
             .filter(|p| **p >= desc_len + 2)
@@ -1443,6 +1484,7 @@ pub fn open_hints(app: &mut App) {
         return;
     };
     let found = scan(&buf.lines);
+    crate::plugins::refresh(app, mi);
     if found.is_empty() {
         app.toast("no URLs or IDs visible in this pane");
         return;
@@ -1522,7 +1564,21 @@ pub fn hint_key(h: &mut Hints, ev: &KeyEvent) -> HintStep {
 }
 
 pub fn hints_key(app: &mut App, ev: KeyEvent, mut h: Hints) {
-    match hint_key(&mut h, &ev) {
+    let step = hint_key(&mut h, &ev);
+    // Plugin link handlers matching the target are offered first (07 §7.7); SHIFT+label
+    // still copies.
+    if let HintStep::Done(a) = &step
+        && !h.typed.starts_with('!')
+    {
+        let (text, open) = match a {
+            HintAction::Open(t) => (t.clone(), true),
+            HintAction::Copy(t) => (t.clone(), false),
+        };
+        if crate::plugins::offer_link(app, h.machine, &h.pane, &text, open) {
+            return;
+        }
+    }
+    match step {
         HintStep::Close => {}
         HintStep::Wait => app.mode = Mode::Popup(Popup::Hints(h)),
         HintStep::Done(HintAction::Copy(t)) => app.set_clipboard(t.as_bytes(), false),
@@ -1622,6 +1678,10 @@ pub fn draw_hints(app: &App, g: &mut Grid, h: &Hints) {
 pub fn title(app: &App) -> Option<String> {
     if !app.config.ui.title_sync {
         return None;
+    }
+    // A plugin's `client.window_title.set` replaces the formatted title until cleared (M5).
+    if let Some(t) = crate::plugins::window_title(app) {
+        return Some(t.to_string());
     }
     let m = app.m();
     let ws = app

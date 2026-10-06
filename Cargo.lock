@@ -2931,6 +2931,7 @@ dependencies = [
 name = "vk-compat"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "regex",
  "serde",
  "serde_json",
@@ -3044,12 +3045,20 @@ name = "vk-preview"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
+ "rand 0.9.5",
  "regex",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "vk-hold",
  "vk-proto",
@@ -3225,6 +3234,7 @@ dependencies = [
  "crossterm",
  "futures",
  "libc",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

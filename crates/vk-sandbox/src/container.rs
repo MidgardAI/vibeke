@@ -247,6 +247,18 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Is `name` a plain named volume (`[A-Za-z0-9][A-Za-z0-9_.-]*`, ≤ 128)? Docker treats a
+/// `--volume` source containing `/` (or `.`/`~` prefixes) as a **host path**, so anything else
+/// would be a bind mount in disguise.
+pub fn safe_volume_name(name: &str) -> bool {
+    let mut cs = name.chars();
+    cs.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
 /// PID 1 when the box has no Linux `vibeke` binary: sleep forever, exit on TERM.
 pub const SLEEP_INIT: &str = "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done";
 
@@ -322,6 +334,20 @@ impl BoxSpec {
             v.extend(["--userns".into(), "keep-id".into()]);
         }
         for m in &self.mounts {
+            match m {
+                BoxMount::Bind { host, .. } if !host.is_absolute() => {
+                    return Err(RunnerError::Unsupported(format!(
+                        "bind mount source {} is not an absolute path",
+                        host.display()
+                    )));
+                }
+                BoxMount::Volume { name, .. } if !safe_volume_name(name) => {
+                    return Err(RunnerError::Unsupported(format!(
+                        "volume source {name:?} is not a plain volume name (it would be a host bind mount)"
+                    )));
+                }
+                _ => {}
+            }
             match m {
                 BoxMount::Bind {
                     host,
@@ -914,6 +940,39 @@ mod tests {
             .create_argv()
             .unwrap_err();
         assert!(e.to_string().contains("vibeke_linux"), "{e}");
+    }
+
+    #[test]
+    fn volume_sources_must_be_plain_names() {
+        for ok in ["vk-cache-npm", "vibeke.cache_1", "a"] {
+            assert!(safe_volume_name(ok), "{ok}");
+        }
+        for bad in [
+            "/Users/demo",
+            "/var/run/docker.sock",
+            "./data",
+            "../x",
+            "~/x",
+            ".hidden",
+            "a/b",
+            "",
+            "x:y",
+        ] {
+            assert!(!safe_volume_name(bad), "{bad}");
+            let mut s = spec(docker(), BoxNet::None, false);
+            s.mounts.push(BoxMount::Volume {
+                name: bad.into(),
+                target: "/host".into(),
+            });
+            assert!(s.create_argv().is_err(), "{bad} reached argv");
+        }
+        let mut s = spec(docker(), BoxNet::None, false);
+        s.mounts.push(BoxMount::Bind {
+            host: "relative/dir".into(),
+            target: "/x".into(),
+            read_only: true,
+        });
+        assert!(s.create_argv().is_err());
     }
 
     #[test]

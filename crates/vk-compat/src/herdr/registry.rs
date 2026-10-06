@@ -6,8 +6,16 @@
 //! * `install` copies a local plugin directory into a Vibeke-managed checkout; `link` registers a
 //!   directory in place. Neither runs any plugin code.
 //! * A Herdr plugin is **inactive until trusted**: `trust` records a `herdr_legacy` grant bound to
-//!   the manifest's SHA-256 and root. Any manifest change makes the grant stale (re-review
-//!   required). Unlink/uninstall drop the registration and its grant.
+//!   the manifest's SHA-256, the root, the source path, a content digest of the whole reviewed
+//!   tree and a digest of every file the manifest's commands reference. Any manifest change, a
+//!   changed referenced file or a different source makes the grant stale (re-review required).
+//!   A reinstall keeps the grant only when the source and the whole tree are unchanged and the
+//!   plugin needs no build; otherwise it is inactive until reviewed and rebuilt. Each grant has
+//!   a unique `grant_id`, so a revoke followed by a new grant never revives old invocations.
+//!   Unlink/uninstall drop the registration and its grant.
+//! * Every change is a read-modify-write under an exclusive lock ([`Registry::update`]), so
+//!   concurrent CLI processes and servers never lose each other's decisions (a revocation made
+//!   while another plugin builds stays revoked).
 //! * Herdr's own registry (`~/.config/herdr/plugins.json`) is never read or written here.
 
 use std::collections::BTreeMap;
@@ -68,6 +76,19 @@ pub struct Grant {
     pub entrypoints: Vec<String>,
     /// Herdr baseline the grant was reviewed against.
     pub baseline: String,
+    /// Unique per grant: a revoke + new grant never matches an invocation of the old one.
+    #[serde(default)]
+    pub grant_id: String,
+    /// The registration's source (`origin.path`) at review time.
+    #[serde(default)]
+    pub source: PathBuf,
+    /// Content digest of the whole reviewed tree ([`tree_digest`]), before any build.
+    #[serde(default)]
+    pub tree_sha256: String,
+    /// Digest of the files the manifest's commands reference ([`entry_digest`]); re-recorded
+    /// after a successful build (which may produce them). Checked on every status read.
+    #[serde(default)]
+    pub entry_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -160,6 +181,170 @@ pub fn read_manifest(root: &Path) -> Result<(Manifest, String), RegistryError> {
     Ok((m, sha256_hex(text.as_bytes())))
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A unique grant id (time, pid and a process-local counter).
+fn new_grant_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{nanos:x}-{:x}-{:x}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+#[cfg(unix)]
+fn exec_bits(meta: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111
+}
+
+#[cfg(not(unix))]
+fn exec_bits(_: &std::fs::Metadata) -> u32 {
+    0
+}
+
+/// Content digest of a plugin tree: every entry below `root` (`.git` excluded) in sorted order,
+/// with its relative path, kind, executable bits and content (files) or target (symlinks).
+pub fn tree_digest(root: &Path) -> io::Result<String> {
+    fn walk(root: &Path, rel: &Path, h: &mut Sha256) -> io::Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(root.join(rel))?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name();
+            if rel.as_os_str().is_empty() && name == ".git" {
+                continue;
+            }
+            let r = rel.join(&name);
+            let meta = std::fs::symlink_metadata(root.join(&r))?;
+            let ft = meta.file_type();
+            h.update(r.to_string_lossy().as_bytes());
+            h.update([0]);
+            if ft.is_symlink() {
+                h.update(b"l");
+                h.update(
+                    std::fs::read_link(root.join(&r))?
+                        .to_string_lossy()
+                        .as_bytes(),
+                );
+            } else if ft.is_dir() {
+                h.update(b"d");
+                walk(root, &r, h)?;
+            } else if ft.is_file() {
+                h.update(format!("f{:o}", exec_bits(&meta)).as_bytes());
+                h.update(Sha256::digest(std::fs::read(root.join(&r))?));
+            } else {
+                h.update(b"s");
+            }
+            h.update([0]);
+        }
+        Ok(())
+    }
+    let mut h = Sha256::new();
+    walk(root, Path::new(""), &mut h)?;
+    Ok(hex(&h.finalize()))
+}
+
+/// Every command line the manifest declares, on any platform.
+fn all_commands(m: &Manifest) -> Vec<&[String]> {
+    let mut v: Vec<&[String]> = Vec::new();
+    v.extend(m.build.iter().map(|s| s.command.as_slice()));
+    v.extend(m.startup.iter().map(|s| s.command.as_slice()));
+    v.extend(m.actions.iter().map(|a| a.command.as_slice()));
+    v.extend(m.events.iter().map(|e| e.command.as_slice()));
+    v.extend(m.panes.iter().map(|p| p.command.as_slice()));
+    v
+}
+
+/// Digest of the files below `root` that the manifest's commands reference (an argument that
+/// names an existing file inside the plugin root, such as `bin/hook.sh` or `dist/index.js`),
+/// with their executable bits and content. Cheap enough to recompute on every status read.
+pub fn entry_digest(root: &Path, m: &Manifest) -> String {
+    use std::path::Component;
+    let mut files = std::collections::BTreeSet::new();
+    for cmd in all_commands(m) {
+        for arg in cmd {
+            let p = Path::new(arg.as_str());
+            if arg.is_empty() || arg.starts_with('-') || p.is_absolute() {
+                continue;
+            }
+            if p.components()
+                .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+            {
+                continue;
+            }
+            files.insert(p.to_path_buf());
+        }
+    }
+    let mut h = Sha256::new();
+    for f in files {
+        let full = root.join(&f);
+        let Ok(meta) = std::fs::symlink_metadata(&full) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            h.update(f.to_string_lossy().as_bytes());
+            h.update(b"\0l");
+            if let Ok(t) = std::fs::read_link(&full) {
+                h.update(t.to_string_lossy().as_bytes());
+            }
+        } else if meta.is_file() {
+            h.update(f.to_string_lossy().as_bytes());
+            h.update(format!("\0f{:o}", exec_bits(&meta)).as_bytes());
+            match std::fs::read(&full) {
+                Ok(b) => h.update(Sha256::digest(b)),
+                Err(_) => h.update(b"unreadable"),
+            }
+        } else {
+            continue;
+        }
+        h.update([0]);
+    }
+    hex(&h.finalize())
+}
+
+/// An exclusive advisory lock on `plugins.json.lock`, held while the guard lives.
+struct RegistryLock {
+    _file: std::fs::File,
+}
+
+impl RegistryLock {
+    fn acquire(dirs: &PluginDirs) -> io::Result<Self> {
+        if let Some(d) = dirs.registry.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let path = dirs.registry.with_extension("json.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            loop {
+                // SAFETY: flock on a descriptor we own; blocks until the lock is free.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    break;
+                }
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+        Ok(RegistryLock { _file: file })
+    }
+}
+
 /// A plugin directory from a path that is either the directory or its manifest.
 fn plugin_root(src: &Path) -> Result<PathBuf, RegistryError> {
     let p = if src.is_file() {
@@ -228,7 +413,22 @@ impl Registry {
         }
     }
 
-    /// Atomic replace (tmp + rename, 0600).
+    /// Read-modify-write under the registry's exclusive lock: load the current file, apply `f`,
+    /// save when `f` succeeds. Every registry change goes through here, so concurrent processes
+    /// never overwrite each other's decisions with a stale snapshot.
+    pub fn update<T>(
+        dirs: &PluginDirs,
+        f: impl FnOnce(&mut Registry) -> Result<T, RegistryError>,
+    ) -> Result<T, RegistryError> {
+        let _lock = RegistryLock::acquire(dirs)?;
+        let mut reg = Registry::load(dirs)?;
+        let out = f(&mut reg)?;
+        reg.save(dirs)?;
+        Ok(out)
+    }
+
+    /// Atomic replace (tmp + rename, 0600). Outside tests, changes go through
+    /// [`Registry::update`].
     pub fn save(&self, dirs: &PluginDirs) -> Result<(), RegistryError> {
         let mut r = self.clone();
         r.version = 1;
@@ -280,9 +480,22 @@ impl Registry {
                 "manifest changed while copying".into(),
             ));
         }
+        let tree = match tree_digest(&staging) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(e.into());
+            }
+        };
         let _ = std::fs::remove_dir_all(&dest);
         std::fs::rename(&staging, &dest)?;
         let prev = self.plugins.get(&m.id).cloned();
+        // The grant survives a reinstall only for the exact reviewed content from the same
+        // source, and only when there is nothing to rebuild (the fresh checkout is unbuilt).
+        let needs_build = !m.build_on(super::current_platform()).is_empty();
+        let trust = prev.as_ref().and_then(|p| p.trust.clone()).filter(|g| {
+            !needs_build && g.source == root && !g.tree_sha256.is_empty() && g.tree_sha256 == tree
+        });
         let entry = Entry {
             id: m.id.clone(),
             kind: "herdr".into(),
@@ -296,9 +509,7 @@ impl Registry {
             enabled: prev.as_ref().is_none_or(|p| p.enabled),
             built: false,
             installed_at_ms: now_ms(),
-            // Kept only if the digest still matches (status() checks it): reinstalling the same
-            // reviewed source keeps its grant; any change requires review.
-            trust: prev.and_then(|p| p.trust),
+            trust,
         };
         self.plugins.insert(m.id.clone(), entry.clone());
         Ok((entry, m))
@@ -392,6 +603,7 @@ impl Registry {
                 m.id
             )));
         }
+        let tree = tree_digest(&e.root)?;
         let g = Grant {
             mode: "herdr_legacy".into(),
             manifest_sha256: digest,
@@ -399,9 +611,41 @@ impl Registry {
             granted_at_ms: now_ms(),
             entrypoints: m.entrypoints(super::current_platform()),
             baseline: BASELINE_VERSION.into(),
+            grant_id: new_grant_id(),
+            source: e.origin.path.clone(),
+            tree_sha256: tree,
+            entry_sha256: entry_digest(&e.root, &m),
         };
+        // A new review of a managed checkout requires a new build.
+        if e.managed {
+            e.built = false;
+        }
         e.trust = Some(g.clone());
         Ok(g)
+    }
+
+    /// Record a successful build for the grant `grant_id`: only if that grant is still the
+    /// current one and the manifest is still the reviewed one. The referenced files' digest is
+    /// re-recorded (the build may have produced them).
+    pub fn finish_build(&mut self, id: &str, grant_id: &str) -> Result<(), RegistryError> {
+        let e = self
+            .plugins
+            .get_mut(id)
+            .ok_or_else(|| RegistryError::NotFound(id.to_string()))?;
+        let (m, digest) = read_manifest(&e.root)?;
+        let Some(g) = e.trust.as_mut().filter(|g| g.grant_id == grant_id) else {
+            return Err(RegistryError::Conflict(format!(
+                "the grant for {id} changed during the build (revoked or re-reviewed)"
+            )));
+        };
+        if g.manifest_sha256 != digest {
+            return Err(RegistryError::Conflict(format!(
+                "{id}'s manifest changed during the build"
+            )));
+        }
+        g.entry_sha256 = entry_digest(&e.root, &m);
+        e.built = true;
+        Ok(())
     }
 
     pub fn revoke(&mut self, id: &str) -> Result<Entry, RegistryError> {
@@ -411,12 +655,6 @@ impl Registry {
             .ok_or_else(|| RegistryError::NotFound(id.to_string()))?;
         e.trust = None;
         Ok(e.clone())
-    }
-
-    pub fn mark_built(&mut self, id: &str) {
-        if let Some(e) = self.plugins.get_mut(id) {
-            e.built = true;
-        }
     }
 
     /// Effective status, re-reading the manifest so a changed file disables execution.
@@ -442,9 +680,18 @@ pub fn entry_status(e: &Entry) -> (Status, Option<Manifest>) {
     let Ok((m, digest)) = read_manifest(&e.root) else {
         return (Status::Broken, None);
     };
+    let unbuilt = e.managed && !e.built && !m.build_on(super::current_platform()).is_empty();
     let status = match &e.trust {
         None => Status::Untrusted,
-        Some(g) if g.manifest_sha256 != digest || g.root != e.root || m.id != e.id => {
+        Some(g)
+            if g.manifest_sha256 != digest
+                || g.root != e.root
+                || m.id != e.id
+                || g.source != e.origin.path
+                || g.grant_id.is_empty()
+                || g.entry_sha256 != entry_digest(&e.root, &m)
+                || unbuilt =>
+        {
             Status::StaleTrust
         }
         Some(_) if !e.enabled => Status::Disabled,
@@ -548,7 +795,9 @@ pub fn trust_terms(e: &Entry, m: &Manifest, digest: &str) -> String {
          as you, with your environment, filesystem and network, and call the complete Herdr\n\
          compatibility API (workspaces, panes, input, agents, notifications) of this Vibeke\n\
          session. It does not grant native-only administrative APIs, holder keys or other\n\
-         plugins' identities. Any change to the manifest requires a new review.\n",
+         plugins' identities. Any change to the manifest, to a file its commands reference or\n\
+         (on reinstall) to the installed content requires a new review and, when the plugin\n\
+         declares [[build]], a new build.\n",
     );
     s
 }
@@ -680,6 +929,103 @@ mod tests {
             Err(RegistryError::Manifest(ManifestError::VersionTooNew { .. }))
         ));
         assert!(r.install(&d, &t.path().join("missing"), None).is_err());
+    }
+
+    #[test]
+    fn reinstalling_changed_content_with_the_same_manifest_needs_review() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(t.path());
+        let src = plugin(t.path(), "acme.five", "");
+        let mut r = Registry::default();
+        r.install(&d, &src, None).unwrap();
+        r.trust("acme.five").unwrap();
+        assert_eq!(r.status("acme.five").unwrap().0, Status::Active);
+        // Same manifest bytes, different script: the reinstall is inactive.
+        std::fs::write(src.join("bin/go"), "#!/bin/sh\necho evil\n").unwrap();
+        let (e, _) = r.install(&d, &src, None).unwrap();
+        assert!(e.trust.is_none(), "grant dropped");
+        assert_eq!(r.status("acme.five").unwrap().0, Status::Untrusted);
+        // An unreferenced extra file changes the tree too.
+        r.trust("acme.five").unwrap();
+        std::fs::write(src.join("lib.sh"), "x").unwrap();
+        r.install(&d, &src, None).unwrap();
+        assert_eq!(r.status("acme.five").unwrap().0, Status::Untrusted);
+        // The same content from a different source directory is a different registration.
+        r.trust("acme.five").unwrap();
+        let other = t.path().join("copy");
+        copy_tree(&src, &other).unwrap();
+        r.install(&d, &other, None).unwrap();
+        assert_eq!(r.status("acme.five").unwrap().0, Status::Untrusted);
+        // Editing a referenced file in place makes the grant stale.
+        r.trust("acme.five").unwrap();
+        let root = r.get("acme.five").unwrap().root.clone();
+        std::fs::write(root.join("bin/go"), "#!/bin/sh\necho changed\n").unwrap();
+        assert_eq!(r.status("acme.five").unwrap().0, Status::StaleTrust);
+    }
+
+    #[test]
+    fn plugins_with_a_build_need_a_build_for_each_grant() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(t.path());
+        let src = plugin(
+            t.path(),
+            "acme.six",
+            "[[build]]\ncommand = [\"sh\", \"-c\", \"true\"]\n",
+        );
+        let mut r = Registry::default();
+        r.install(&d, &src, None).unwrap();
+        let g = r.trust("acme.six").unwrap();
+        assert_eq!(
+            r.status("acme.six").unwrap().0,
+            Status::StaleTrust,
+            "trusted but not built yet"
+        );
+        r.finish_build("acme.six", &g.grant_id).unwrap();
+        assert_eq!(r.status("acme.six").unwrap().0, Status::Active);
+        // An identical reinstall still needs review + build (the fresh checkout is unbuilt).
+        r.install(&d, &src, None).unwrap();
+        assert_eq!(r.status("acme.six").unwrap().0, Status::Untrusted);
+        // A build for a grant that was revoked or replaced is not recorded.
+        let g1 = r.trust("acme.six").unwrap();
+        r.revoke("acme.six").unwrap();
+        let _g2 = r.trust("acme.six").unwrap();
+        assert!(matches!(
+            r.finish_build("acme.six", &g1.grant_id),
+            Err(RegistryError::Conflict(_))
+        ));
+        assert_eq!(r.status("acme.six").unwrap().0, Status::StaleTrust);
+    }
+
+    #[test]
+    fn concurrent_updates_never_lose_a_revocation() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(t.path());
+        let a = plugin(t.path(), "acme.a", "");
+        let b = plugin(t.path(), "acme.b", "");
+        Registry::update(&d, |r| {
+            r.link(&a)?;
+            r.link(&b)?;
+            r.trust("acme.a")?;
+            r.trust("acme.b")?;
+            Ok(())
+        })
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d2 = d.clone();
+        let slow = std::thread::spawn(move || {
+            Registry::update(&d2, |r| {
+                tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                r.set_enabled("acme.b", false)
+            })
+            .unwrap();
+        });
+        rx.recv().unwrap();
+        Registry::update(&d, |r| r.revoke("acme.a")).unwrap();
+        slow.join().unwrap();
+        let r = Registry::load(&d).unwrap();
+        assert!(r.get("acme.a").unwrap().trust.is_none(), "revocation kept");
+        assert!(!r.get("acme.b").unwrap().enabled, "other change kept");
     }
 
     #[test]

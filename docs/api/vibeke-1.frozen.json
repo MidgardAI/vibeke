@@ -1,0 +1,1147 @@
+{
+  "api": "vibeke/1",
+  "status": "draft until 1.0",
+  "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
+  "render_protocol": 2,
+  "holder_protocol": {
+    "proto": 1,
+    "min": 1
+  },
+  "methods": {
+    "adapter.delivery_ack": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "adapter.gate": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "adapter.report_self": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "adapter.signal": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.harnesses": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.interrupt": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.manifests": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.manifests_reload": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.prompt": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.read": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.release": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.rename": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.report": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.resumable": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.resume": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.send_keys": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.spawn": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "agent.start": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.wait": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "api.methods": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "assistant.cancel": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.confirm": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.consent": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.generate": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.get": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.providers": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.purge": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.revoke": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "assistant.status": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "attention.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "attention.update": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "blob.abort": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "blob.append": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "blob.begin": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "blob.commit": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "blob.put": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.attach_screencast": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.click": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.close": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.command": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.console": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.detach_screencast": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.diff": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.dom": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.eval": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.install": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.navigate": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.network": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.open": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.pane.create": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.pane.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.pane.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.pane.update": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.press": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.release": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.screencast_frame": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.screenshot": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.session_close": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.session_open": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.snapshot": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.take_over": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.type": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.wait": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "browser.watch": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "client.appearance": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "client.focus": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "client.hello": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "client.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "compat.herdr.call": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "compat.invocation.verify": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "compat.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "compat.ui.state": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "desk.context": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "desk.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "desk.index": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "desk.open": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "desk.resume": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "desk.search": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "desk.sessions": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "desk.status": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "draft.check": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.combine": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.create": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.delete": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.reconcile": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "draft.reorder": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "draft.send": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "draft.update": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "events.read": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "events.subscribe": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "events.wait": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "git.diff": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "git.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "group.add": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "group.collapse": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "group.create": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "group.delete": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "group.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "group.move": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "group.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "group.rename": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "image.upload": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "interaction.answer": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "interaction.cancel": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "interaction.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "interaction.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "layout.apply": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "layout.export": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "layout.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "layout.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "notes.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "notes.set": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "notification.config": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "notification.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "notification.read": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "notification.send": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.can_see_paths": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.close": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.current": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.embed": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.equalize": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.float": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.focus": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "pane.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.mark_seen": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.mark_unread": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.pin": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.read": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.rename": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.report_agent": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.report_agent_session": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.resize": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.run": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.send_bytes": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.send_keys": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.send_text": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.split": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "pane.wait_idle": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.wait_output": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "pane.zoom": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "plugin.action.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "plugin.action.run": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "plugin.link.open": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "plugin.link_handler.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "plugin.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "plugin.log.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "plugin.surface.close": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "preview.declare": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.dismiss": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.forget": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.open": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.profile": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.profile.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.profile.reset": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "preview.promote": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "preview.url": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "sandbox.allow": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "sandbox.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "sandbox.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "sandbox.start": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "sandbox.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "sandbox.stop": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "screenshot.delete": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "screenshot.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "screenshot.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "screenshot.open": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "search.query": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "server.reload_config": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "server.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "server.stop": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "session.snapshot": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "status.segments": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "tab.close": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "tab.create": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "tab.floats": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "tab.focus": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "tab.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "tab.move": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "tab.rename": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.check.authorize": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.check.cancel": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.check.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.check.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.check.run": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.create": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.dependency.add": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.dependency.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.dependency.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.effort.estimate": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.finish": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.review.accept": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.review.candidates": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.review.diff": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.review.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.review.note.classify": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.review.notes": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "task.review.request_reviewer": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.review.snapshot": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.review.start_reviewer": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "task.sync": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "theme.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "theme.set_mode": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "workspace.close": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "workspace.create": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "workspace.focus": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "workspace.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "workspace.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "workspace.move": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "workspace.rename": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "worktree.create": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "worktree.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "worktree.open": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
+    "worktree.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "worktree.repo_root": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    }
+  }
+}

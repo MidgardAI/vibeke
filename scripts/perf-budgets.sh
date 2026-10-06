@@ -43,7 +43,10 @@ fi
 # 1.1 Added keystroke latency: needs a reachable local server; skipped when there is none.
 if cargo build --release -p vibeke > "$OUT/build.txt" 2>&1; then
   BIN="${CARGO_TARGET_DIR:-target}/release/vibeke"
-  if "$BIN" debug latency --n "${PERF_LATENCY_N:-300}" > "$OUT/latency.txt" 2>&1; then
+  # Isolated session so the probe never touches (or leaves behind) a real server.
+  LAT_DIR=$(mktemp -d /tmp/vkperf.XXXXXX)
+  if VIBEKE_RUNTIME_DIR="$LAT_DIR/run" VIBEKE_STATE_DIR="$LAT_DIR/state" VIBEKE_CONFIG="$LAT_DIR/c.toml" \
+      "$BIN" debug latency --n "${PERF_LATENCY_N:-300}" > "$OUT/latency.txt" 2>&1; then
     line=$(grep '^added:' "$OUT/latency.txt" | head -1)
     p50=$(echo "$line" | sed -n 's/.*p50 *\([0-9.]*\) ms.*/\1/p')
     p99=$(echo "$line" | sed -n 's/.*p99 *\([0-9.]*\) ms.*/\1/p')
@@ -58,6 +61,41 @@ if cargo build --release -p vibeke > "$OUT/build.txt" 2>&1; then
   fi
 else
   row "Keystroke -> screen added (1.1)" "build failed" "p50<=1, p99<=3 ms" "SKIP"
+fi
+
+VIBEKE_RUNTIME_DIR="${LAT_DIR:-/nonexistent}/run" VIBEKE_STATE_DIR="${LAT_DIR:-/nonexistent}/state" \
+  VIBEKE_CONFIG="${LAT_DIR:-/nonexistent}/c.toml" "${CARGO_TARGET_DIR:-target}/release/vibeke" server stop \
+  >/dev/null 2>&1
+[ -n "${LAT_DIR:-}" ] && rm -rf "$LAT_DIR"
+
+# 1.3 Idle CPU / RSS / wakeups: isolated server with 30 idle panes + a headless attached TUI
+# (`vibeke debug idle`). Verdicts carry "(loaded)" when the host load exceeds half the cores;
+# do not read budget compliance from a loaded run. PERF_IDLE=0 skips it (about 3 minutes).
+if [ "${PERF_IDLE:-1}" = 1 ] && [ -x "${CARGO_TARGET_DIR:-target}/release/vibeke" ]; then
+  BIN="${CARGO_TARGET_DIR:-target}/release/vibeke"
+  if "$BIN" debug idle --seconds "${PERF_IDLE_SECONDS:-15}" --repeat "${PERF_IDLE_REPEAT:-3}" \
+      > "$OUT/idle.txt" 2>&1; then
+    while IFS= read -r l; do
+      case "$l" in *"(loaded)"*) ;; *" FAIL"*) FAILS=$((FAILS+1));; esac
+    done < "$OUT/idle.txt"
+    row "Idle CPU/RSS/wakeups (1.3)" "see idle.txt" "10 §1.3 rows" "REVIEW"
+    sed 's/^/    /' "$OUT/idle.txt" | tee -a "$REPORT"
+  else
+    row "Idle CPU/RSS/wakeups (1.3)" "failed" "10 §1.3 rows" "SKIP"
+  fi
+else
+  row "Idle CPU/RSS/wakeups (1.3)" "-" "release build needed (or PERF_IDLE=0)" "SKIP"
+fi
+
+# 6 VT conformance suite (in-repo corpus; also runs in `mise run test`). Baseline counts only.
+VK_CONFORMANCE_REPORT=1 cargo test -p vk-term --test conformance -- --nocapture \
+  > "$OUT/conformance.txt" 2>&1
+tot=$(sed -n 's/^TOTAL \(.*\)/\1/p' "$OUT/conformance.txt" | head -1)
+if [ -n "$tot" ]; then
+  row "VT conformance corpus (6)" "$tot" "0 unexpected failures" "REVIEW"
+else
+  row "VT conformance corpus (6)" "failed or unparsed" "0 unexpected failures" "FAIL"
+  FAILS=$((FAILS+1))
 fi
 
 # 1.5 Remote bandwidth: needs an SSH-reachable machine with vibeke installed.

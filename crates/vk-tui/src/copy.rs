@@ -1,9 +1,13 @@
-//! Copy mode (03 §11.1): vi keys over in-memory + archived scrollback, `/` `?` search with
-//! smart case, character/line/rectangle selection, yank to the host clipboard (OSC 52).
+//! Copy mode (03 §11.1): vi (or emacs) keys over in-memory + archived scrollback, `/` `?`
+//! search with smart case, character/line/rectangle selection, yank to the host clipboard
+//! (OSC 52). Keys come from [`crate::copykeys`] (`[keys.copy_mode]`); a mouse drag selects too
+//! (`crate::selection`).
 
+use crate::copykeys::{CopyAction, CopyKeys};
 use crate::screen::Grid;
 use crate::theme::Theme;
 use std::cell::Cell;
+use std::sync::Arc;
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::layout::Rect;
 use vk_proto::render::{Cursor, Row, Style, attr};
@@ -36,6 +40,10 @@ pub struct CopyMode {
     want_top: bool,
     /// Archive paging and search fallback (`crate::search`, M4).
     pub archive: crate::search::ArchiveCursor,
+    /// Resolved `[keys.copy_mode]` table.
+    keys: Arc<CopyKeys>,
+    /// Entered by a mouse drag: releasing copies (copy-on-select) or keeps the selection.
+    pub mouse: bool,
 }
 
 pub enum Outcome {
@@ -55,6 +63,10 @@ pub enum Outcome {
     /// At the top with every in-memory row loaded: page older rows from the archive
     /// (`pane.read {source: archive}`).
     Archive,
+    /// `edit_scrollback` from copy mode: open the viewer at absolute line `line`.
+    EditScrollback {
+        line: u64,
+    },
 }
 
 fn row_chars(r: &Row) -> Vec<String> {
@@ -91,7 +103,51 @@ impl CopyMode {
             message: None,
             want_top: false,
             archive: Default::default(),
+            keys: CopyKeys::default_arc(),
+            mouse: false,
         }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel = None;
+    }
+
+    pub fn set_keys(&mut self, keys: Arc<CopyKeys>) {
+        self.keys = keys;
+    }
+
+    /// Mouse selection (03 §11.1): put the cursor on view cell (`row`, `col`); `start` anchors a
+    /// new character selection there. Returns false outside the loaded rows.
+    pub fn mouse_select(&mut self, row: u16, col: u16, start: bool) -> bool {
+        let y = self.top + row as usize;
+        if y >= self.lines.len() {
+            return false;
+        }
+        self.cy = y;
+        self.cx = col.min(self.cols.saturating_sub(1));
+        if start || self.sel.is_none() {
+            self.sel = Some((self.cy, self.cx, SelKind::Char));
+        }
+        true
+    }
+
+    /// Mouse wheel in copy mode: move the view and cursor by `n` rows (older rows load at the
+    /// top as with the keys).
+    pub fn wheel(&mut self, up: bool, n: usize) -> Outcome {
+        self.message = None;
+        if up {
+            self.top = self.top.saturating_sub(n);
+            self.cy = self.cy.saturating_sub(n);
+        } else {
+            self.top = (self.top + n).min(self.lines.len().saturating_sub(1));
+            self.cy += n;
+        }
+        self.after_move()
+    }
+
+    /// Absolute history line of the top of the view.
+    pub fn view_top_abs(&self) -> u64 {
+        self.top_abs() + self.top as u64
     }
 
     /// Reply to a history fetch. Returns a follow-up fetch when only the size was requested.
@@ -201,70 +257,71 @@ impl CopyMode {
             return Outcome::Stay;
         }
         let h = self.height.get().max(1) as usize;
-        let ctrl = ev.mods.ctrl();
-        match ev.key {
-            Key::Named(NamedKey::Escape) | Key::Char('q') if !ctrl => {
-                if self.sel.is_some() && ev.key == Key::Named(NamedKey::Escape) {
+        use CopyAction as A;
+        match self.keys.resolve(ev) {
+            None => {}
+            Some(A::Cancel) => {
+                if self.sel.is_some() {
                     self.sel = None;
                     return Outcome::Stay;
                 }
                 return Outcome::Exit;
             }
-            Key::Char('c') if ctrl => return Outcome::Exit,
-            Key::Char('u') if ctrl => self.cy = self.cy.saturating_sub(h / 2),
-            Key::Char('d') if ctrl => self.cy += h / 2,
-            Key::Char('b') if ctrl => self.cy = self.cy.saturating_sub(h),
-            Key::Char('f') if ctrl => self.cy += h,
-            Key::Char('v') if ctrl => self.toggle_sel(SelKind::Block),
-            Key::Named(NamedKey::PageUp) => self.cy = self.cy.saturating_sub(h),
-            Key::Named(NamedKey::PageDown) => self.cy += h,
-            Key::Char('h') | Key::Named(NamedKey::Left) => self.cx = self.cx.saturating_sub(1),
-            Key::Char('l') | Key::Named(NamedKey::Right) => self.cx += 1,
-            Key::Char('k') | Key::Named(NamedKey::Up) => self.cy = self.cy.saturating_sub(1),
-            Key::Char('j') | Key::Named(NamedKey::Down) => self.cy += 1,
-            Key::Char('0') | Key::Named(NamedKey::Home) => self.cx = 0,
-            Key::Char('$') | Key::Named(NamedKey::End) => {
-                self.cx = self.line_len(self.cy).saturating_sub(1) as u16
-            }
-            Key::Char('g') => {
+            Some(A::Exit) => return Outcome::Exit,
+            Some(A::HalfPageUp) => self.cy = self.cy.saturating_sub(h / 2),
+            Some(A::HalfPageDown) => self.cy += h / 2,
+            Some(A::PageUp) => self.cy = self.cy.saturating_sub(h),
+            Some(A::PageDown) => self.cy += h,
+            Some(A::SelectBlock) => self.toggle_sel(SelKind::Block),
+            Some(A::Left) => self.cx = self.cx.saturating_sub(1),
+            Some(A::Right) => self.cx += 1,
+            Some(A::Up) => self.cy = self.cy.saturating_sub(1),
+            Some(A::Down) => self.cy += 1,
+            Some(A::LineStart) => self.cx = 0,
+            Some(A::LineEnd) => self.cx = self.line_len(self.cy).saturating_sub(1) as u16,
+            Some(A::Top) => {
                 self.cy = 0;
                 self.want_top = true;
             }
-            Key::Char('G') => {
+            Some(A::Bottom) => {
                 self.cy = self.lines.len().saturating_sub(1);
                 self.want_top = false;
             }
-            Key::Char('H') => self.cy = self.top,
-            Key::Char('M') => self.cy = self.top + h / 2,
-            Key::Char('L') => self.cy = self.top + h - 1,
-            Key::Char('w') => self.word(true),
-            Key::Char('b') => self.word(false),
-            Key::Char('e') => self.word(true),
-            Key::Char('v') => self.toggle_sel(SelKind::Char),
-            Key::Char('V') => self.toggle_sel(SelKind::Line),
-            Key::Char('/') => self.start_search(false),
-            Key::Char('?') => self.start_search(true),
-            Key::Char('n') | Key::Char('N') => {
+            Some(A::ViewTop) => self.cy = self.top,
+            Some(A::ViewMiddle) => self.cy = self.top + h / 2,
+            Some(A::ViewBottom) => self.cy = self.top + h - 1,
+            Some(A::WordNext | A::WordEnd) => self.word(true),
+            Some(A::WordPrev) => self.word(false),
+            Some(A::SelectChar) => self.toggle_sel(SelKind::Char),
+            Some(A::SelectLine) => self.toggle_sel(SelKind::Line),
+            Some(A::SearchForward) => self.start_search(false),
+            Some(A::SearchBackward) => self.start_search(true),
+            Some(a @ (A::SearchNext | A::SearchPrev)) => {
                 if let Some((q, back)) = self.last_search.clone() {
-                    let back = if ev.key == Key::Char('N') {
-                        !back
-                    } else {
-                        back
-                    };
+                    let back = if a == A::SearchPrev { !back } else { back };
                     if !self.find(&q, back) {
                         return Outcome::Search { q, back };
                     }
                 }
             }
-            Key::Char('y') | Key::Named(NamedKey::Enter) => {
+            Some(A::Copy) => {
                 let text = self.selection_text();
                 return match text {
                     Some(t) if !t.is_empty() => Outcome::Yank(t),
                     _ => Outcome::Exit,
                 };
             }
-            _ => {}
+            Some(A::EditScrollback) => {
+                return Outcome::EditScrollback {
+                    line: self.view_top_abs(),
+                };
+            }
         }
+        self.after_move()
+    }
+
+    /// Clamp the cursor, then ask for older rows when it reached the top.
+    fn after_move(&mut self) -> Outcome {
         self.clamp();
         // Lazy-load older rows when scrolling to the top. `FetchHistory` indexes by absolute
         // line (archive, then memory); it pages the in-memory rows, and everything when the
@@ -310,6 +367,15 @@ impl CopyMode {
         } else {
             (self.total_hist as u64).saturating_sub(self.hist as u64)
         }
+    }
+
+    /// Viewport position for scroll reports (`pane.scroll_changed`): rows between the top of
+    /// the view and the live screen (0 = the live screen's top row is visible at the top), and
+    /// the history rows known.
+    pub fn scroll_offset(&self) -> (u32, u32) {
+        let off = self.hist.saturating_sub(self.top) as u32;
+        let total = (self.total_hist as usize).max(self.hist) + self.archive.rows;
+        (off, total as u32)
     }
 
     /// (in-memory history rows loaded, in-memory history rows on the server, archive rows

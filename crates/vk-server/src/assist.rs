@@ -20,10 +20,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
-use vk_assist::budget::{Amount, Ledger, RateWindow};
+use vk_assist::budget::{Amount, Ledger, RateWindow, Reservation};
 use vk_assist::config::{AssistConfig, Resolved};
 use vk_assist::context::{Limits, Package, Payload, Source, SourceInput};
 use vk_assist::ops::{self, Operation};
@@ -53,6 +53,8 @@ pub const READ_ONLY: &[&str] = &["task.review.get", "task.intent.get", "pane.rea
 const K_REQ: &str = "assist_request";
 const KV_SCOPE: &str = "assistant";
 const KV_LEDGER: &str = "ledger";
+/// Budget reservations of unfinished requests, persisted before dispatch (14 §8).
+const KV_RESERVED: &str = "reservations";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +98,10 @@ pub struct AssistRequest {
     pub state: ReqState,
     pub workspace: String,
     pub workspace_path: String,
+    /// Canonical paths of further workspaces whose content was selected (each needs its own
+    /// consent; such requests never auto-send).
+    #[serde(default)]
+    pub other_workspace_paths: Vec<String>,
     pub inputs: Value,
     pub profile: String,
     pub connection: String,
@@ -130,23 +136,45 @@ pub struct AssistRequest {
     pub finished_at_ms: Option<i64>,
 }
 
+impl AssistRequest {
+    /// Every workspace whose consent this request depends on.
+    fn workspace_paths(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.workspace_path).chain(&self.other_workspace_paths)
+    }
+}
+
 struct Prepared {
     payload: Payload,
     resolved: Resolved,
     source_ids: Vec<String>,
     targets: Vec<String>,
     expires: Instant,
+    op: Operation,
+    classes: Vec<&'static str>,
+    /// Canonical paths of every workspace a source came from (primary first).
+    workspaces: Vec<String>,
 }
 
 #[derive(Default)]
 pub struct State {
+    /// Frozen payloads awaiting confirmation (bounded; expired ones are purged).
     prepared: Mutex<HashMap<String, Prepared>>,
     running: Mutex<HashMap<String, tokio::task::AbortHandle>>,
-    reserved: Mutex<HashMap<String, Amount>>,
     rate: Mutex<RateWindow>,
+    /// Serializes every request state transition (confirm/start, dispatch, finish, cancel,
+    /// expiry, recovery) so racing calls can't both act on one request.
+    transitions: Mutex<()>,
+    /// Serializes ledger + reservation updates.
     ledger: Mutex<()>,
+    /// Serializes `generate` calls that carry an idempotency key.
+    idem: tokio::sync::Mutex<()>,
     sem: OnceLock<Arc<Semaphore>>,
     recovered: OnceLock<()>,
+}
+
+/// Lock without propagating poison: a panic elsewhere must not disable the assistant.
+fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn now() -> i64 {
@@ -185,10 +213,32 @@ fn ae(c: Category, m: impl Into<String>) -> RpcError {
 
 // ---- configuration ------------------------------------------------------------------------------
 
+/// A config-load error without the file's content: TOML parse errors quote the offending
+/// line, which may hold a credential pasted inline (14 §8). Only the location survives.
+fn config_error_summary(e: &str) -> String {
+    let first = e.lines().next().unwrap_or("").trim();
+    let loc = first
+        .find("line ")
+        .map(|i| &first[i..])
+        .map(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | ','))
+                .collect::<String>()
+        })
+        .filter(|s| !s.trim().is_empty());
+    match loc {
+        Some(l) => format!(
+            "config.toml could not be parsed (at {})",
+            l.trim_end_matches([',', ' '])
+        ),
+        None => "config.toml could not be loaded".into(),
+    }
+}
+
 pub fn load_config() -> Result<(AssistConfig, Vec<String>), String> {
     let cfg = match vk_config::Config::load(vk_config::config_path()) {
         Ok((c, _)) => c,
-        Err(e) => return Err(format!("config.toml: {e}")),
+        Err(e) => return Err(config_error_summary(&e.to_string())),
     };
     let table = cfg
         .extra
@@ -315,7 +365,7 @@ fn meta(r: &AssistRequest) -> Value {
 }
 
 fn save(server: &Server, r: &AssistRequest, event: Option<&str>) -> Result<(), RpcError> {
-    let mut c = server.core.lock().unwrap();
+    let mut c = lk(&server.core);
     let mut tx = Tx::new();
     put(&mut tx, r);
     if let Some(kind) = event {
@@ -349,16 +399,18 @@ fn view(r: &AssistRequest, with_output: bool) -> Value {
     v
 }
 
-// ---- maintenance: restart recovery, retention, disable ------------------------------------------
+// ---- maintenance: restart recovery, preview expiry, retention, disable ------------------------
 
 fn maintain(server: &Arc<Server>) {
     let st = state(server);
+    let _t = lk(&st.transitions);
     let first = st.recovered.set(()).is_ok();
     let cfg = load_config().map(|(c, _)| c).unwrap_or_default();
     let retention = cfg.result_retention_hours as i64 * 3_600_000;
     let t = now();
-    let mut changed: Vec<(AssistRequest, &'static str)> = vec![];
+    let mut changed: Vec<AssistRequest> = vec![];
     let mut purge: Vec<String> = vec![];
+    let mut dispatched: Vec<String> = vec![];
     for mut r in all_requests(server) {
         if first && r.state.open() {
             // Unfinished at startup: never replayed automatically (14 §8).
@@ -367,44 +419,51 @@ fn maintain(server: &Arc<Server>) {
             } else {
                 (ReqState::Interrupted, Category::Interrupted)
             };
+            if r.state == ReqState::Running {
+                // It may have been sent and billed: its reservation is charged below.
+                dispatched.push(r.id.clone());
+                r.attempts = r.attempts.max(1);
+            }
             r.state = st2;
             r.error = Some(AssistError::new(
                 cat,
                 "the server restarted before this request finished",
             ));
             r.finished_at_ms = Some(t);
-            changed.push((r, "assistant.request_finished"));
+            changed.push(r);
             continue;
         }
         if !cfg.enabled && r.state.open() {
-            // 14 §10: disabling assistance cancels queued/running work.
-            if let Some(h) = st.running.lock().unwrap().remove(&r.id) {
-                h.abort();
-            }
-            st.prepared.lock().unwrap().remove(&r.id);
-            release(server, &r.id, r.state == ReqState::Running, None);
-            r.state = ReqState::Cancelled;
-            r.error = Some(AssistError::new(
-                Category::Disabled,
-                "assistance was disabled",
-            ));
-            r.finished_at_ms = Some(t);
-            changed.push((r, "assistant.request_finished"));
+            // 14 §10: disabling assistance cancels queued/running work (dispatch re-checks
+            // too, so this also covers requests nobody polls).
+            let _ = cancel_locked(server, r, Category::Disabled, "assistance was disabled");
+            continue;
+        }
+        if r.state == ReqState::AwaitingConfirmation && preview_expired(st, &r.id) {
+            let _ = cancel_locked(
+                server,
+                r,
+                Category::Cancelled,
+                "the preview expired before it was confirmed",
+            );
             continue;
         }
         if !r.state.open() && r.finished_at_ms.is_some_and(|f| t - f > retention) {
             purge.push(r.id);
         }
     }
+    if first {
+        recover_reservations(server, &dispatched);
+    }
     if changed.is_empty() && purge.is_empty() {
         return;
     }
-    let mut c = server.core.lock().unwrap();
+    let mut c = lk(&server.core);
     let mut tx = Tx::new();
-    for (r, kind) in &changed {
+    for r in &changed {
         put(&mut tx, r);
         tx.event_by(
-            kind,
+            "assistant.request_finished",
             json!({"assistant_request": r.id}),
             json!({"kind": "system"}),
             meta(r),
@@ -423,7 +482,39 @@ fn maintain(server: &Arc<Server>) {
     let _ = server.commit(&mut c, tx);
 }
 
-// ---- budget ledger ------------------------------------------------------------------------------
+/// The frozen payload is gone or past its TTL.
+fn preview_expired(st: &State, id: &str) -> bool {
+    lk(&st.prepared)
+        .get(id)
+        .is_none_or(|p| p.expires <= Instant::now())
+}
+
+/// Expire one preview when its TTL passes, even if no other assistant call ever comes
+/// (an abandoned preview's raw content must not outlive the TTL).
+fn schedule_expiry(server: &Arc<Server>, id: &str, ttl: Duration) {
+    let srv = server.clone();
+    let id = id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(ttl + Duration::from_millis(50)).await;
+        let st = state(&srv);
+        let _t = lk(&st.transitions);
+        if let Ok(r) = find(&srv, &id)
+            && r.state == ReqState::AwaitingConfirmation
+            && preview_expired(st, &id)
+        {
+            let _ = cancel_locked(
+                &srv,
+                r,
+                Category::Cancelled,
+                "the preview expired before it was confirmed",
+            );
+        } else if find(&srv, &id).is_err() || preview_expired(st, &id) {
+            lk(&st.prepared).remove(&id);
+        }
+    });
+}
+
+// ---- budget ledger and durable reservations ---------------------------------------------------
 
 fn ledger(server: &Server) -> Ledger {
     let mut l: Ledger = server
@@ -434,46 +525,150 @@ fn ledger(server: &Server) -> Ledger {
     l
 }
 
-fn store_ledger(server: &Server, l: &Ledger) {
-    let mut c = server.core.lock().unwrap();
-    let mut tx = Tx::new();
-    tx.m.kv(
-        KV_SCOPE,
-        KV_LEDGER,
-        Some(serde_json::to_string(l).unwrap_or_default()),
-    );
-    let _ = server.commit(&mut c, tx);
+fn reservations(server: &Server) -> HashMap<String, Reservation> {
+    server
+        .with_core(|c| c.store.kv_get(KV_SCOPE, KV_RESERVED).ok().flatten())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
-fn reserved_total(st: &State) -> Amount {
+/// Persist the ledger (when given) and the reservations in one commit.
+fn store_budget(
+    server: &Server,
+    l: Option<&Ledger>,
+    res: &HashMap<String, Reservation>,
+) -> Result<(), RpcError> {
+    let mut c = lk(&server.core);
+    let mut tx = Tx::new();
+    if let Some(l) = l {
+        tx.m.kv(
+            KV_SCOPE,
+            KV_LEDGER,
+            Some(serde_json::to_string(l).unwrap_or_default()),
+        );
+    }
+    tx.m.kv(
+        KV_SCOPE,
+        KV_RESERVED,
+        Some(serde_json::to_string(res).unwrap_or_default()),
+    );
+    server.commit(&mut c, tx).map_err(crate::api::internal)?;
+    Ok(())
+}
+
+/// Today's reserved allowance across this coordinator's unfinished requests.
+fn reserved_total(server: &Server) -> Amount {
+    let day = vk_assist::budget::utc_day(now());
     let mut t = Amount::default();
-    for a in st.reserved.lock().unwrap().values() {
-        t.add(*a);
+    for r in reservations(server).values().filter(|r| r.day == day) {
+        t.add(r.amount());
     }
     t
 }
 
-/// Drop a reservation; with `consumed`, record actual usage (or the reservation when the
-/// provider's usage is unknown — e.g. cancelled mid-request).
-fn release(server: &Server, id: &str, consumed: bool, actual: Option<Amount>) {
+/// Admit one provider attempt for `id`: budget check against used + reserved, the rate
+/// window, then the reservation is extended and **persisted before** the attempt is sent.
+fn admit_attempt(
+    server: &Server,
+    cfg: &AssistConfig,
+    id: &str,
+    resolved: &Resolved,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Result<(), AssistError> {
     let st = state(server);
-    let _g = st.ledger.lock().unwrap();
-    let res = st.reserved.lock().unwrap().remove(id);
-    if !consumed {
-        return;
+    let _g = lk(&st.ledger);
+    let cost = resolved.cost(input_tokens, output_tokens).unwrap_or(0.0);
+    let want = Reservation::attempt(input_tokens, output_tokens, cost);
+    ledger(server).check(
+        cfg,
+        reserved_total(server),
+        want,
+        resolved.prices().is_some(),
+    )?;
+    lk(&st.rate).admit(now(), cfg.requests_per_minute)?;
+    let mut all = reservations(server);
+    let day = vk_assist::budget::utc_day(now());
+    let r = all.entry(id.to_string()).or_insert(Reservation {
+        day,
+        ..Default::default()
+    });
+    r.add_attempt(input_tokens, output_tokens, cost);
+    store_budget(server, None, &all).map_err(|_| {
+        AssistError::new(
+            Category::ProviderUnavailable,
+            "could not record the budget reservation",
+        )
+    })
+}
+
+fn mark_dispatched(server: &Server, id: &str) {
+    let st = state(server);
+    let _g = lk(&st.ledger);
+    let mut all = reservations(server);
+    if let Some(r) = all.get_mut(id) {
+        r.dispatched = true;
+        let _ = store_budget(server, None, &all);
     }
-    let Some(res) = res else {
+}
+
+/// How a finished request's reservation is charged.
+enum Charge {
+    /// Never sent: the reservation is dropped.
+    Nothing,
+    /// Possibly sent, usage unknown: the whole reservation.
+    Reserved,
+    /// Reported usage over `attempts`; unknown components keep their reservation.
+    Settle {
+        attempts: u32,
+        usage: Usage,
+        prices: Option<(f64, f64)>,
+    },
+}
+
+fn release(server: &Server, id: &str, charge: Charge) {
+    let st = state(server);
+    let _g = lk(&st.ledger);
+    let mut all = reservations(server);
+    let Some(res) = all.remove(id) else {
         return;
     };
+    let amount = match charge {
+        Charge::Nothing => None,
+        Charge::Reserved => Some(res.amount()),
+        Charge::Settle { attempts: 0, .. } => None,
+        Charge::Settle {
+            attempts,
+            usage,
+            prices,
+        } => Some(res.settle(attempts, usage.input_tokens, usage.output_tokens, prices)),
+    };
     let mut l = ledger(server);
-    l.used.add(actual.unwrap_or(res));
-    store_ledger(server, &l);
+    let charged = amount.filter(|_| res.day == l.day).map(|a| l.used.add(a));
+    let _ = store_budget(server, charged.map(|_| &l), &all);
+}
+
+/// After a restart: a reservation whose request was dispatched (`running`) is charged in full
+/// — the provider may have billed it — and every other leftover reservation is dropped.
+fn recover_reservations(server: &Server, running: &[String]) {
+    let st = state(server);
+    let _g = lk(&st.ledger);
+    let all = reservations(server);
+    if all.is_empty() {
+        return;
+    }
+    let mut l = ledger(server);
+    for (id, r) in &all {
+        if (r.dispatched || running.contains(id)) && r.day == l.day {
+            l.used.add(r.amount());
+        }
+    }
+    let _ = store_budget(server, Some(&l), &HashMap::new());
 }
 
 // ---- status / providers / consent ---------------------------------------------------------------
 
 fn status(server: &Server) -> R {
-    let st = state(server);
     let (cfg, _) = match load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -512,7 +707,7 @@ fn status(server: &Server) -> R {
             "request_timeout_seconds": cfg.request_timeout_seconds,
             "result_retention_hours": cfg.result_retention_hours,
         },
-        "today": {"utc_day": l.day, "used": l.used, "reserved": reserved_total(st), "remaining": l.remaining(&cfg, reserved_total(st))},
+        "today": {"utc_day": l.day, "used": l.used, "reserved": reserved_total(server), "remaining": l.remaining(&cfg, reserved_total(server))},
         "auto_send": cfg.auto_send,
         "consents": grants,
         "requests": {
@@ -625,7 +820,7 @@ fn consent(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         granted_by: ctx.client_id.clone(),
     };
     let g = vk_assist::consent::grant(&consent_path(), g).map_err(crate::api::internal)?;
-    let mut c = server.core.lock().unwrap();
+    let mut c = lk(&server.core);
     let mut tx = Tx::new();
     tx.event_by(
         "assistant.consent_granted",
@@ -646,18 +841,19 @@ fn revoke(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let path = canonical(&ws.root_path);
     let gone = vk_assist::consent::revoke(&consent_path(), &path, s(p, "connection"))
         .map_err(crate::api::internal)?;
-    // Revocation cancels this workspace's unfinished requests.
+    // Revocation cancels this session's unfinished requests that depend on this workspace.
+    // Other sessions sharing the consent file re-read it before every dispatch and retry.
     let mut cancelled = 0;
     for r in all_requests(server) {
         if r.state.open()
-            && r.workspace_path == path
+            && r.workspace_paths().any(|w| *w == path)
             && s(p, "connection").is_none_or(|c| c == r.connection)
+            && cancel_one(server, r, Category::PermissionDenied, "consent revoked").is_ok()
         {
-            let _ = cancel_one(server, r, Category::PermissionDenied, "consent revoked");
             cancelled += 1;
         }
     }
-    let mut c = server.core.lock().unwrap();
+    let mut c = lk(&server.core);
     let mut tx = Tx::new();
     tx.event_by(
         "assistant.consent_revoked",
@@ -701,6 +897,12 @@ pub async fn read_call(server: &Arc<Server>, ctx: &Ctx, method: &str, params: Va
 
 struct Target {
     ws: Workspace,
+    /// Further workspaces a selected object belongs to, with what was selected there.
+    others: Vec<(Workspace, String)>,
+    /// Handoff: the task's bound runs whose workspace is known (each is consent-checked).
+    bound_runs: Vec<AgentRun>,
+    /// Handoff: bound runs left out because their workspace can't be determined.
+    excluded_runs: Vec<String>,
     run: Option<AgentRun>,
     task: Option<Task>,
     pane: Option<Pane>,
@@ -715,8 +917,9 @@ fn input_s<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
     input(p, k).and_then(Value::as_str)
 }
 
-fn ws_of_pane(server: &Server, pane: &str) -> Option<Workspace> {
-    server.with_core(|c| c.pane(pane).and_then(|p| c.ws(&p.workspace).cloned()))
+/// The workspace a run belongs to (through its pane); `None` when that can't be determined.
+fn ws_id_of_run(server: &Server, r: &AgentRun) -> Option<String> {
+    server.with_core(|c| c.pane(&r.pane).map(|p| p.workspace.clone()))
 }
 
 fn resolve_target(
@@ -765,41 +968,90 @@ fn resolve_target(
         }
         x => x,
     };
-    let ws = if let Some(w) = input_s(p, "workspace").or_else(|| {
-        p.get("scope")
-            .and_then(|s| s.get("workspace"))
-            .and_then(Value::as_str)
-    }) {
-        crate::api::resolve_ws(server, ctx, Some(w))?
-    } else if let Some(pn) = &pane {
-        ws_of_pane(server, &pn.id).ok_or_else(|| not_found("workspace", &pn.workspace))?
-    } else if let Some(t) = &task {
-        let wid = t
+    // Every selected object's own workspace (14 §6: consent is per workspace). A selection
+    // whose workspace can't be determined is refused rather than attributed to another one.
+    let unknown = |what: String| {
+        rpc(AssistError::new(
+            Category::PermissionDenied,
+            format!(
+                "workspace_unknown: the workspace of {what} cannot be determined, so its consent can't be checked"
+            ),
+        ))
+    };
+    let mut members: Vec<(String, String)> = vec![]; // (workspace id, what)
+    if let Some(pn) = &pane {
+        members.push((pn.workspace.clone(), format!("pane {}", pn.id)));
+    }
+    if let Some(r) = &run {
+        let w = ws_id_of_run(server, r).ok_or_else(|| unknown(format!("run {}", r.id)))?;
+        members.push((w, format!("run {}", r.id)));
+    }
+    if let Some(t) = &task {
+        let w = t
             .workspace
             .clone()
             .or_else(|| {
                 crate::tracking::task_bindings(server, &t.id)
                     .last()
-                    .and_then(|b| {
-                        server.with_core(|c| {
-                            c.run(&b.run_id)
-                                .and_then(|r| c.pane(&r.pane))
-                                .map(|p| p.workspace.clone())
-                        })
-                    })
+                    .and_then(|b| server.with_core(|c| c.run(&b.run_id).cloned()))
+                    .and_then(|r| ws_id_of_run(server, &r))
             })
-            .ok_or_else(|| invalid("the task has no workspace to check consent against"))?;
-        crate::api::resolve_ws(server, ctx, Some(&wid))?
-    } else {
-        crate::api::resolve_ws(server, ctx, None)?
+            .ok_or_else(|| unknown(format!("task {}", t.handle)))?;
+        members.push((w, format!("task {}", t.handle)));
+    }
+    // Handoff also reads the task's bound runs: each one is a source with its own workspace.
+    let mut bound_runs = vec![];
+    let mut excluded_runs = vec![];
+    if op == Operation::Handoff
+        && let Some(t) = &task
+    {
+        let ids: Vec<String> = crate::tracking::task_bindings(server, &t.id)
+            .into_iter()
+            .map(|b| b.run_id)
+            .collect();
+        for rid in ids.iter().rev().take(2) {
+            let Some(r) = server.with_core(|c| c.run(rid).cloned()) else {
+                continue;
+            };
+            match ws_id_of_run(server, &r) {
+                Some(w) => {
+                    members.push((w, format!("run {} (bound to task {})", r.id, t.handle)));
+                    bound_runs.push(r);
+                }
+                // Unverifiable workspace: not sent (listed in the request's inputs).
+                None => excluded_runs.push(r.id.clone()),
+            }
+        }
+    }
+    let explicit = input_s(p, "workspace").or_else(|| {
+        p.get("scope")
+            .and_then(|s| s.get("workspace"))
+            .and_then(Value::as_str)
+    });
+    let ws = match (explicit, members.first()) {
+        (Some(w), _) => crate::api::resolve_ws(server, ctx, Some(w))?,
+        (None, Some((w, _))) => crate::api::resolve_ws(server, ctx, Some(w))?,
+        (None, None) => crate::api::resolve_ws(server, ctx, None)?,
     };
+    let mut others: Vec<(Workspace, String)> = vec![];
+    for (w, what) in members {
+        if w == ws.id || others.iter().any(|(o, _)| o.id == w) {
+            continue;
+        }
+        let other = server
+            .with_core(|c| c.ws(&w).cloned())
+            .ok_or_else(|| unknown(what.clone()))?;
+        others.push((other, what));
+    }
     let need = |what: &str| invalid(format!("{} needs {what}", op.as_str()));
     match op {
         Operation::SuggestTaskDetails if run.is_none() => {
             return Err(need("--run or --pane (the selected request)"));
         }
         Operation::PaneTitle if pane.is_none() => return Err(need("--pane")),
-        Operation::ReviewSummary if task.is_none() => return Err(need("--task")),
+        Operation::ReviewSummary | Operation::EffortEstimate if task.is_none() => {
+            return Err(need("--task"));
+        }
         Operation::Handoff if task.is_none() && run.is_none() => {
             return Err(need("--task or --run"));
         }
@@ -807,6 +1059,9 @@ fn resolve_target(
     }
     Ok(Target {
         ws,
+        others,
+        bound_runs,
+        excluded_runs,
         run,
         task,
         pane,
@@ -940,6 +1195,9 @@ async fn gather(
     let mut targets = vec![];
     let scope = json!({
         "workspace": t.ws.id,
+        "other_workspaces": t.others.iter().map(|(w, _)| &w.id).collect::<Vec<_>>(),
+        "bound_runs": t.bound_runs.iter().map(|r| &r.id).collect::<Vec<_>>(),
+        "excluded_runs": t.excluded_runs,
         "run": t.run.as_ref().map(|r| &r.id),
         "task": t.task.as_ref().map(|x| &x.id),
         "pane": t.pane.as_ref().map(|x| &x.id),
@@ -1101,17 +1359,17 @@ async fn gather(
         Operation::ReviewSummary => {
             sources = review_source(server, ctx, t.task.as_ref().expect("checked")).await;
         }
+        // 15 §8.2 (T4): the package (diff stat, checks, criteria, the deterministic heuristic)
+        // is the only input; the result is a labelled estimate the user applies explicitly.
+        Operation::EffortEstimate => {
+            sources = review_source(server, ctx, t.task.as_ref().expect("checked")).await;
+        }
         Operation::Handoff => {
             if let Some(task) = &t.task {
                 sources.extend(review_source(server, ctx, task).await);
-                let runs: Vec<String> = crate::tracking::task_bindings(server, &task.id)
-                    .into_iter()
-                    .map(|b| b.run_id)
-                    .collect();
-                for rid in runs.iter().rev().take(2) {
-                    if let Some(r) = server.with_core(|c| c.run(rid).cloned()) {
-                        sources.extend(turn_sources(server, &r, &[], 5));
-                    }
+                // Only bound runs whose workspace was resolved (and consent-checked).
+                for r in &t.bound_runs {
+                    sources.extend(turn_sources(server, r, &[], 5));
                 }
             }
             if let Some(run) = &t.run {
@@ -1147,6 +1405,13 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     })?;
     let (cfg, patterns) = enabled_config()?;
     let resolved = cfg.resolve(s(p, "profile")).map_err(rpc)?;
+    let st = state(server);
+    // Concurrent calls carrying one idempotency key create one request: keyed calls are
+    // serialized, so the second sees the first's record.
+    let _idem = match s(p, "idempotency_key") {
+        Some(_) => Some(st.idem.lock().await),
+        None => None,
+    };
     if let Some(key) = s(p, "idempotency_key")
         && let Some(prev) = all_requests(server)
             .into_iter()
@@ -1172,13 +1437,48 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let grant = vk_assist::consent::check(&grants, &ws_path, &resolved, op.as_str(), &classes)
         .map_err(rpc)?
         .clone();
+    // A selected object from another workspace needs that workspace's own consent.
+    let mut other_paths: Vec<String> = vec![];
+    for (w, what) in &target.others {
+        let path = canonical(&w.root_path);
+        vk_assist::consent::check(&grants, &path, &resolved, op.as_str(), &classes).map_err(
+            |e| {
+                rpc(AssistError::new(
+                    e.category,
+                    format!(
+                        "{} ({what} belongs to workspace {}, not {}; each workspace needs its own consent)",
+                        e.message,
+                        w.display_name(),
+                        target.ws.display_name()
+                    ),
+                ))
+            },
+        )?;
+        other_paths.push(path);
+    }
+    // Unconfirmed previews hold assembled content in memory: bounded.
+    {
+        let cap = (cfg.max_queued_requests + cfg.max_concurrent_requests).max(1);
+        let live = lk(&st.prepared)
+            .values()
+            .filter(|x| x.expires > Instant::now())
+            .count();
+        if live >= cap {
+            return Err(ae(
+                Category::QueueFull,
+                format!(
+                    "too many unconfirmed previews ({live}); confirm or cancel one before generating another"
+                ),
+            ));
+        }
+    }
     let (inputs, targets, scope) = gather(server, ctx, op, &target).await?;
     let system = op.system();
     let instructions = op.instructions(&targets);
-    let redactor = vk_redact::Redactor::new(&patterns).map_err(|e| {
+    let redactor = vk_redact::Redactor::new(&patterns).map_err(|_| {
         ae(
             Category::NotConfigured,
-            format!("[security.redact] patterns: {e}"),
+            "[security.redact] patterns: a pattern is not a valid regular expression",
         )
     })?;
     let pkg = Package::build(
@@ -1199,8 +1499,11 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         user: format!("{instructions}\n{}", pkg.render()),
     };
     let digest = payload.digest();
-    let auto =
-        cfg.auto_send_allows(op.as_str()) && grant.auto_send.iter().any(|o| o == op.as_str());
+    // Auto-send needs the operation on both the config's and the consent's lists, and a
+    // single-workspace selection (a cross-workspace selection always previews).
+    let auto = cfg.auto_send_allows(op.as_str())
+        && grant.auto_send.iter().any(|o| o == op.as_str())
+        && other_paths.is_empty();
     let t = now();
     let rec = AssistRequest {
         id: format!("as_{}", crate::core::ulid().to_lowercase()),
@@ -1208,7 +1511,8 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         operation: op.as_str().into(),
         state: ReqState::AwaitingConfirmation,
         workspace: target.ws.id.clone(),
-        workspace_path: ws_path,
+        workspace_path: ws_path.clone(),
+        other_workspace_paths: other_paths.clone(),
         inputs: scope,
         profile: resolved.profile_id.clone(),
         connection: resolved.connection_id.clone(),
@@ -1259,19 +1563,36 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "redactions": pkg.redactions,
         "notice": vk_assist::context::REDACTION_NOTICE,
     });
-    save(server, &rec, Some("assistant.request_created"))?;
-    state(server).prepared.lock().unwrap().insert(
-        rec.id.clone(),
-        Prepared {
-            payload,
-            resolved,
-            source_ids: pkg.source_ids(),
-            targets,
-            expires: Instant::now() + Duration::from_secs(cfg.preview_ttl_seconds.max(1)),
-        },
-    );
+    let ttl = Duration::from_secs(cfg.preview_ttl_seconds.max(1));
+    let workspaces: Vec<String> = std::iter::once(ws_path).chain(other_paths).collect();
+    {
+        // The frozen payload exists before the record does, so maintenance never sees an
+        // awaiting request without its payload.
+        let _t = lk(&st.transitions);
+        lk(&st.prepared).insert(
+            rec.id.clone(),
+            Prepared {
+                payload,
+                resolved,
+                source_ids: pkg.source_ids(),
+                targets,
+                expires: Instant::now() + ttl,
+                op,
+                classes,
+                workspaces,
+            },
+        );
+        if let Err(e) = save(server, &rec, Some("assistant.request_created")) {
+            lk(&st.prepared).remove(&rec.id);
+            return Err(e);
+        }
+    }
+    schedule_expiry(server, &rec.id, ttl);
     if auto {
-        let r = start(server, &rec.id, &cfg)?;
+        let r = {
+            let _t = lk(&st.transitions);
+            start_locked(server, rec.clone(), &cfg)?
+        };
         return Ok(
             json!({"request": view(&r, false), "preview": preview, "requires_confirmation": false}),
         );
@@ -1284,17 +1605,25 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }))
 }
 
+fn not_awaiting(r: &AssistRequest) -> RpcError {
+    err(
+        ErrorKind::Conflict,
+        format!("request is {}, not awaiting confirmation", r.state.as_str()),
+    )
+    .details(json!({"reason": "not_awaiting_confirmation", "state": r.state}))
+}
+
 fn confirm(server: &Arc<Server>, p: &Value) -> R {
     let id = req(p, "request")?;
     let digest = req(p, "preview_digest")?;
     let (cfg, _) = enabled_config()?;
+    let st = state(server);
+    // State check, payload hand-off and admission happen under one lock: of two racing
+    // confirmations (or a confirmation racing a cancel or an expiry) exactly one proceeds.
+    let _t = lk(&st.transitions);
     let r = find(server, id)?;
     if r.state != ReqState::AwaitingConfirmation {
-        return Err(err(
-            ErrorKind::Conflict,
-            format!("request is {}, not awaiting confirmation", r.state.as_str()),
-        )
-        .details(json!({"reason": "not_awaiting_confirmation", "state": r.state})));
+        return Err(not_awaiting(&r));
     }
     if digest != r.preview_digest {
         return Err(err(
@@ -1303,24 +1632,57 @@ fn confirm(server: &Arc<Server>, p: &Value) -> R {
         )
         .details(json!({"reason": "preview_mismatch"})));
     }
-    let r = start(server, &r.id, &cfg)?;
+    let r = start_locked(server, r, &cfg)?;
     Ok(json!({"request": view(&r, false)}))
 }
 
-/// Admission (consent recheck, queue, rate, budget reservation) and dispatch.
-fn start(server: &Arc<Server>, id: &str, cfg: &AssistConfig) -> Result<AssistRequest, RpcError> {
-    let st = state(server);
-    let mut r = find(server, id)?;
-    let (resolved, expired) = {
-        let prep = st.prepared.lock().unwrap();
-        match prep.get(id) {
-            Some(pr) => (Some(pr.resolved.clone()), pr.expires < Instant::now()),
-            None => (None, true),
+/// Everything that must still hold right before content leaves: assistance enabled, the same
+/// connection (adapter, endpoint, credential reference) as previewed, and a current consent
+/// grant for every workspace a source came from. Re-read from disk each time, so a disable
+/// or a revocation from any session takes effect at the next dispatch or retry.
+fn dispatch_check(
+    cfg: &AssistConfig,
+    r: &AssistRequest,
+    prep: &Prepared,
+) -> Result<(), AssistError> {
+    if !cfg.enabled {
+        return Err(AssistError::new(
+            Category::Disabled,
+            "assistance was disabled",
+        ));
+    }
+    match cfg.resolve(Some(&r.profile)) {
+        Ok(x)
+            if x.fingerprint == prep.resolved.fingerprint
+                && x.connection == prep.resolved.connection => {}
+        _ => {
+            return Err(AssistError::new(
+                Category::NotConfigured,
+                "the profile or connection changed since the preview; generate a new one",
+            ));
         }
-    };
-    if expired {
-        st.prepared.lock().unwrap().remove(id);
-        let r = cancel_one(
+    }
+    let grants = vk_assist::consent::load(&consent_path());
+    for w in &prep.workspaces {
+        vk_assist::consent::check(&grants, w, &prep.resolved, prep.op.as_str(), &prep.classes)?;
+    }
+    Ok(())
+}
+
+/// Admission (dispatch checks, queue, budget reservation, rate window) and dispatch. The
+/// caller holds `transitions`.
+fn start_locked(
+    server: &Arc<Server>,
+    mut r: AssistRequest,
+    cfg: &AssistConfig,
+) -> Result<AssistRequest, RpcError> {
+    let st = state(server);
+    let id = r.id.clone();
+    let prep = lk(&st.prepared)
+        .remove(&id)
+        .filter(|p| p.expires > Instant::now());
+    let Some(prep) = prep else {
+        let r = cancel_locked(
             server,
             r,
             Category::Cancelled,
@@ -1331,55 +1693,40 @@ fn start(server: &Arc<Server>, id: &str, cfg: &AssistConfig) -> Result<AssistReq
             "the preview expired; generate a new one",
         )
         .details(json!({"reason": "preview_expired", "request": r.id})));
+    };
+    // A refused admission keeps the preview confirmable (e.g. after raising a limit).
+    let back = |prep: Prepared| {
+        lk(&st.prepared).insert(id.clone(), prep);
+    };
+    if let Err(e) = dispatch_check(cfg, &r, &prep) {
+        back(prep);
+        return Err(rpc(e));
     }
-    let resolved = resolved.expect("present");
-    // The user may have revoked consent or changed the endpoint since the preview.
-    let grants = vk_assist::consent::load(&consent_path());
-    let op = Operation::parse(&r.operation).expect("stored op");
-    let mut classes: Vec<&str> = op.classes().to_vec();
-    if r.inputs["include_screen"] == true {
-        classes.push("screen");
-    }
-    vk_assist::consent::check(&grants, &r.workspace_path, &resolved, op.as_str(), &classes)
-        .map_err(rpc)?;
-    if cfg.resolve(Some(&r.profile)).map(|x| x.fingerprint) != Ok(resolved.fingerprint.clone()) {
-        return Err(ae(
-            Category::NotConfigured,
-            "the profile or connection changed since the preview; generate a new one",
-        ));
-    }
-    let active = st.running.lock().unwrap().len()
+    let active = lk(&st.running).len()
         + all_requests(server)
             .iter()
             .filter(|x| x.state == ReqState::Queued)
             .count();
     if active >= cfg.max_concurrent_requests + cfg.max_queued_requests {
+        back(prep);
         return Err(ae(Category::QueueFull, "the assistant queue is full"));
     }
-    {
-        let _g = st.ledger.lock().unwrap();
-        let want = Amount {
-            requests: 1,
-            tokens: r.estimated_input_tokens + r.max_output_tokens,
-            cost_usd: resolved
-                .cost(r.estimated_input_tokens, r.max_output_tokens)
-                .unwrap_or(0.0),
-        };
-        ledger(server)
-            .check(cfg, reserved_total(st), want, resolved.prices().is_some())
-            .map_err(rpc)?;
-        st.rate
-            .lock()
-            .unwrap()
-            .admit(now(), cfg.requests_per_minute)
-            .map_err(rpc)?;
-        st.reserved.lock().unwrap().insert(id.to_string(), want);
+    if let Err(e) = admit_attempt(
+        server,
+        cfg,
+        &id,
+        &prep.resolved,
+        r.estimated_input_tokens,
+        r.max_output_tokens,
+    ) {
+        back(prep);
+        return Err(rpc(e));
     }
-    let prepared = st.prepared.lock().unwrap().remove(id).expect("present");
     r.state = ReqState::Queued;
     r.queued_at_ms = Some(now());
     if let Err(e) = save(server, &r, None) {
-        release(server, id, false, None);
+        release(server, &id, Charge::Nothing);
+        back(prep);
         return Err(e);
     }
     let deadline = Instant::now() + Duration::from_secs(cfg.request_timeout_seconds.max(1));
@@ -1387,11 +1734,11 @@ fn start(server: &Arc<Server>, id: &str, cfg: &AssistConfig) -> Result<AssistReq
         .sem
         .get_or_init(|| Arc::new(Semaphore::new(cfg.max_concurrent_requests.max(1))))
         .clone();
-    let mut running = st.running.lock().unwrap();
+    let mut running = lk(&st.running);
     let srv = server.clone();
-    let rid = id.to_string();
-    let h = tokio::spawn(async move { run(srv, rid, prepared, sem, deadline).await });
-    running.insert(id.to_string(), h.abort_handle());
+    let rid = id.clone();
+    let h = tokio::spawn(async move { run(srv, rid, prep, sem, deadline).await });
+    running.insert(id, h.abort_handle());
     Ok(r)
 }
 
@@ -1418,16 +1765,37 @@ async fn run(
         );
         return;
     };
-    let Ok(mut r) = find(&server, &id) else {
-        return;
-    };
-    if r.state != ReqState::Queued {
-        state(&server).running.lock().unwrap().remove(&id);
-        return;
+    let st = state(&server);
+    {
+        let _t = lk(&st.transitions);
+        let Ok(mut r) = find(&server, &id) else {
+            lk(&st.running).remove(&id);
+            release(&server, &id, Charge::Nothing);
+            return;
+        };
+        if r.state != ReqState::Queued {
+            lk(&st.running).remove(&id);
+            return;
+        }
+        // Re-read enabled state, consent and endpoint right before sending: a request that
+        // waited in the queue must not outlive a disable or a revocation (from any session).
+        let check = load_config()
+            .map_err(|_| {
+                AssistError::new(
+                    Category::NotConfigured,
+                    "the configuration can no longer be loaded",
+                )
+            })
+            .and_then(|(cfg, _)| dispatch_check(&cfg, &r, &prep));
+        if let Err(e) = check {
+            let _ = cancel_locked(&server, r, e.category, &e.message);
+            return;
+        }
+        r.state = ReqState::Running;
+        r.started_at_ms = Some(now());
+        let _ = save(&server, &r, Some("assistant.request_started"));
+        mark_dispatched(&server, &id);
     }
-    r.state = ReqState::Running;
-    r.started_at_ms = Some(now());
-    let _ = save(&server, &r, Some("assistant.request_started"));
     let key = match vk_assist::config::resolve_credential(&prep.resolved.connection) {
         Ok(k) => k,
         Err(e) => {
@@ -1435,14 +1803,25 @@ async fn run(
             return;
         }
     };
-    let out =
-        vk_assist::provider::generate(&prep.resolved, key.as_deref(), &prep.payload, deadline)
-            .await;
+    let out = vk_assist::provider::generate_gated(
+        &prep.resolved,
+        key.as_deref(),
+        &prep.payload,
+        deadline,
+        |n| {
+            if n == 1 {
+                // Admitted and checked above.
+                Ok(())
+            } else {
+                retry_gate(&server, &id, &prep)
+            }
+        },
+    )
+    .await;
     drop(key);
-    let op = Operation::parse(&r.operation).expect("stored op");
     let result = out
         .result
-        .and_then(|text| ops::validate(op, &text, &prep.source_ids, &prep.targets));
+        .and_then(|text| ops::validate(prep.op, &text, &prep.source_ids, &prep.targets));
     finish(
         &server,
         &id,
@@ -1452,6 +1831,36 @@ async fn run(
         out.finish_reason,
         &prep,
     );
+}
+
+/// An automatic retry is a new provider attempt: it passes the same dispatch checks and is
+/// admitted (reserved, rate-counted) like the first one.
+fn retry_gate(server: &Arc<Server>, id: &str, prep: &Prepared) -> Result<(), AssistError> {
+    let st = state(server);
+    let _t = lk(&st.transitions);
+    let r = find(server, id)
+        .map_err(|_| AssistError::new(Category::Cancelled, "the request no longer exists"))?;
+    if r.state != ReqState::Running {
+        return Err(AssistError::new(
+            Category::Cancelled,
+            "the request was cancelled",
+        ));
+    }
+    let (cfg, _) = load_config().map_err(|_| {
+        AssistError::new(
+            Category::NotConfigured,
+            "the configuration can no longer be loaded",
+        )
+    })?;
+    dispatch_check(&cfg, &r, prep)?;
+    admit_attempt(
+        server,
+        &cfg,
+        id,
+        &prep.resolved,
+        r.estimated_input_tokens,
+        r.max_output_tokens,
+    )
 }
 
 fn finish(
@@ -1464,21 +1873,27 @@ fn finish(
     prep: &Prepared,
 ) {
     let st = state(server);
-    st.running.lock().unwrap().remove(id);
-    let Ok(mut r) = find(server, id) else { return };
+    let _t = lk(&st.transitions);
+    lk(&st.running).remove(id);
+    let charge = Charge::Settle {
+        attempts,
+        usage,
+        prices: prep.resolved.prices(),
+    };
+    let Ok(mut r) = find(server, id) else {
+        // Purged meanwhile: the attempts still count.
+        release(server, id, charge);
+        return;
+    };
     if !r.state.open() {
+        // Cancelled meanwhile: the cancellation already charged the reservation.
         return;
     }
     let cost = match (usage.input_tokens, usage.output_tokens) {
         (Some(i), Some(o)) => prep.resolved.cost(i, o),
         _ => None,
     };
-    let actual = (usage.input_tokens.is_some() || usage.output_tokens.is_some()).then(|| Amount {
-        requests: attempts.max(1) as u64,
-        tokens: usage.total(),
-        cost_usd: cost.unwrap_or(0.0),
-    });
-    release(server, id, attempts > 0, actual);
+    release(server, id, charge);
     r.usage = usage;
     r.attempts = attempts;
     r.estimated_cost_usd = cost;
@@ -1517,7 +1932,32 @@ fn list(server: &Server, p: &Value) -> R {
     Ok(json!({"requests": v.iter().map(|r| view(r, false)).collect::<Vec<_>>()}))
 }
 
+fn already_finished(r: &AssistRequest) -> RpcError {
+    err(
+        ErrorKind::Conflict,
+        format!("request already {}", r.state.as_str()),
+    )
+    .details(json!({"reason": "already_finished", "state": r.state}))
+}
+
+/// Cancel an unfinished request (re-read under the transitions lock).
 fn cancel_one(
+    server: &Server,
+    r: AssistRequest,
+    cat: Category,
+    why: &str,
+) -> Result<AssistRequest, RpcError> {
+    let st = state(server);
+    let _t = lk(&st.transitions);
+    let fresh = find(server, &r.id)?;
+    if !fresh.state.open() {
+        return Err(already_finished(&fresh));
+    }
+    cancel_locked(server, fresh, cat, why)
+}
+
+/// The caller holds `transitions`.
+fn cancel_locked(
     server: &Server,
     mut r: AssistRequest,
     cat: Category,
@@ -1525,12 +1965,20 @@ fn cancel_one(
 ) -> Result<AssistRequest, RpcError> {
     let st = state(server);
     let was_running = r.state == ReqState::Running;
-    if let Some(h) = st.running.lock().unwrap().remove(&r.id) {
+    if let Some(h) = lk(&st.running).remove(&r.id) {
         h.abort();
     }
-    st.prepared.lock().unwrap().remove(&r.id);
-    // A request cancelled mid-flight may still be billed: count its reservation.
-    release(server, &r.id, was_running, None);
+    lk(&st.prepared).remove(&r.id);
+    // A request cancelled mid-flight may still be billed: charge its whole reservation.
+    release(
+        server,
+        &r.id,
+        if was_running {
+            Charge::Reserved
+        } else {
+            Charge::Nothing
+        },
+    );
     r.state = ReqState::Cancelled;
     r.error = Some(AssistError::new(cat, why));
     r.finished_at_ms = Some(now());
@@ -1544,11 +1992,7 @@ fn cancel_one(
 fn cancel(server: &Server, p: &Value) -> R {
     let r = find(server, req(p, "request")?)?;
     if !r.state.open() {
-        return Err(err(
-            ErrorKind::Conflict,
-            format!("request already {}", r.state.as_str()),
-        )
-        .details(json!({"reason": "already_finished", "state": r.state})));
+        return Err(already_finished(&r));
     }
     let r = cancel_one(server, r, Category::Cancelled, "cancelled by the user")?;
     Ok(json!({"request": view(&r, false)}))
@@ -1575,7 +2019,7 @@ fn purge(server: &Server, p: &Value) -> R {
             let _ = cancel_one(server, r.clone(), Category::Cancelled, "purged");
         }
     }
-    let mut c = server.core.lock().unwrap();
+    let mut c = lk(&server.core);
     let mut tx = Tx::new();
     for r in &victims {
         tx.m.delete(K_REQ, &r.id);

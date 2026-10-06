@@ -309,6 +309,8 @@ impl Mutation {
                     | "check.cancelled"
                     | "check.interrupted"
                     | "check.unknown"
+                    // 15 T4: dependency changes are history (§10.3).
+                    | "task.dependency_changed"
             ) {
             "history"
         } else {

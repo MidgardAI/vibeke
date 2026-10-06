@@ -26,6 +26,9 @@ pub enum Operation {
     Briefing,
     /// Handoff context package (14 §2, research R2): prepared, never sent.
     Handoff,
+    /// Coarse review-effort estimate for a task (15 §8.2, T4): a labelled estimate the user
+    /// applies explicitly with `task.set effort`; never applied automatically.
+    EffortEstimate,
 }
 
 pub const ALL: &[Operation] = &[
@@ -34,6 +37,7 @@ pub const ALL: &[Operation] = &[
     Operation::PaneTitle,
     Operation::Briefing,
     Operation::Handoff,
+    Operation::EffortEstimate,
 ];
 
 /// Context classes a workspace consent can grant (14 §6, §7.1).
@@ -58,6 +62,7 @@ impl Operation {
             Operation::PaneTitle => "pane_title",
             Operation::Briefing => "briefing",
             Operation::Handoff => "handoff",
+            Operation::EffortEstimate => "effort_estimate",
         }
     }
 
@@ -68,6 +73,7 @@ impl Operation {
             Operation::ReviewSummary => &["review_package"],
             Operation::Briefing => &["structured_state"],
             Operation::Handoff => &["selected_text", "review_package"],
+            Operation::EffortEstimate => &["review_package"],
         }
     }
 
@@ -80,6 +86,9 @@ impl Operation {
             Operation::PaneTitle => "Suggested title (generated — not applied)",
             Operation::Briefing => "Generated briefing — check the linked items",
             Operation::Handoff => "Prepared handoff package (generated — not sent)",
+            Operation::EffortEstimate => {
+                "Estimated review effort (generated estimate — not applied; set it with task.set)"
+            }
         }
     }
 
@@ -112,6 +121,9 @@ impl Operation {
             Operation::Handoff => {
                 "Prepare a handoff package for another agent: objective, decisions made, attempts so far, remaining work and supporting evidence. It will be reviewed and sent by the user, if at all."
             }
+            Operation::EffortEstimate => {
+                "Estimate how much of the user's attention reviewing this task's current change needs: quick (about a minute), minutes (a few minutes) or deep (a careful review). Base it on the diff size, the files touched, failing or missing checks and criteria needing human judgment. It is a coarse estimate, not a promise; give a short rationale citing the sources."
+            }
         }
     }
 
@@ -130,6 +142,9 @@ impl Operation {
             }
             Operation::Handoff => {
                 r#"{"objective": string, "decisions": [{"text": string, "source_refs": [source id]}], "attempts": [{"text": string, "source_refs": [source id]}], "remaining": [string], "evidence": [{"text": string, "kind": "observed"|"agent_claim", "source_refs": [source id]}], "open_questions": [string]}"#
+            }
+            Operation::EffortEstimate => {
+                r#"{"effort": "quick"|"minutes"|"deep", "rationale": string (<=400 chars), "source_refs": [source id]}"#
             }
         }
     }
@@ -187,9 +202,10 @@ impl V<'_> {
         match v.get(k).and_then(Value::as_str) {
             None => Ok(default.into()),
             Some(s) if allowed.contains(&s) => Ok(s.into()),
-            Some(s) => Err(invalid(format!(
-                "field `{k}` has unknown value `{}`",
-                clip(s, 40).0
+            // Never echo provider-supplied values into a stored error (14 §8).
+            Some(_) => Err(invalid(format!(
+                "field `{k}` has a value outside its schema (allowed: {})",
+                allowed.join(", ")
             ))),
         }
     }
@@ -207,8 +223,7 @@ impl V<'_> {
                 .ok_or_else(|| invalid(format!("field `{k}` has a non-string id")))?;
             if !set.contains(r) {
                 return Err(invalid(format!(
-                    "cited id `{}` is not part of this request",
-                    clip(r, 40).0
+                    "field `{k}` cites an id that is not part of this request"
                 )));
             }
             out.push(r.to_string());
@@ -357,6 +372,7 @@ pub fn validate(
                 json!(v.text(&raw, "coverage", 500, false)?),
             );
         }
+        Operation::EffortEstimate => {}
         Operation::Handoff => {
             let cited = |k: &str| {
                 v.list(&raw, k, 20, |c| {
@@ -389,6 +405,34 @@ pub fn validate(
                 json!(v.strings(&raw, "open_questions", 10, 300)?),
             );
         }
+    }
+    if op == Operation::EffortEstimate {
+        let effort = match raw.get("effort").and_then(Value::as_str) {
+            Some(e @ ("quick" | "minutes" | "deep")) => e.to_string(),
+            Some(other) => {
+                return Err(invalid(format!(
+                    "field `effort` has unknown value `{}`",
+                    clip(other, 40).0
+                )));
+            }
+            None => return Err(invalid("field `effort` missing or not a string")),
+        };
+        out.insert("effort".into(), json!(effort));
+        out.insert(
+            "rationale".into(),
+            json!(v.text(&raw, "rationale", 400, true)?),
+        );
+        out.insert(
+            "source_refs".into(),
+            json!(v.refs(&raw, "source_refs", src)?),
+        );
+        // A labelled estimate with its source; applying it is a separate user action.
+        out.insert("estimate_source".into(), json!("assistant"));
+        out.insert("applied".into(), json!(false));
+        out.insert(
+            "apply_with".into(),
+            json!({"method": "task.set", "params": {"effort": effort}}),
+        );
     }
     out.insert("generated".into(), json!(true));
     out.insert("label".into(), json!(op.label()));
@@ -445,6 +489,52 @@ mod tests {
     fn unknown_enum_values_rejected() {
         let reply = r#"{"summary":"s","validation":[{"text":"x","basis":"verified_by_ai"}]}"#;
         assert!(validate(Operation::ReviewSummary, reply, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn effort_estimate_is_a_labelled_unapplied_draft() {
+        let reply = r#"{"effort":"minutes","rationale":"Six files; one failing check","source_refs":["s1"],"method":"task.set","params":{"effort":"quick"}}"#;
+        let out = validate(Operation::EffortEstimate, reply, &ids(&["s1"]), &[]).unwrap();
+        assert_eq!(out["effort"], "minutes");
+        assert_eq!(out["applied"], false);
+        assert_eq!(out["estimate_source"], "assistant");
+        assert_eq!(out["apply_with"]["params"]["effort"], "minutes");
+        assert!(out.get("method").is_none() && out.get("params").is_none());
+        assert!(out["label"].as_str().unwrap().contains("not applied"));
+        for bad in [
+            r#"{"effort":"5 minutes","rationale":"x"}"#,
+            r#"{"rationale":"x"}"#,
+            r#"{"effort":"quick"}"#,
+            r#"{"effort":"quick","rationale":"x","source_refs":["s9"]}"#,
+        ] {
+            assert!(
+                validate(Operation::EffortEstimate, bad, &ids(&["s1"]), &[]).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_never_echo_provider_content() {
+        let secret = "sk-ant-SENTINEL-0123456789";
+        for reply in [
+            format!(
+                r#"{{"summary":"s","validation":[{{"text":"x","basis":"{secret}\u001b[2J"}}]}}"#
+            ),
+            format!(
+                r#"{{"title":"t","criteria":[{{"text":"a","source_refs":["{secret}\u001b]0;x"]}}]}}"#
+            ),
+        ] {
+            let op = if reply.contains("summary") {
+                Operation::ReviewSummary
+            } else {
+                Operation::SuggestTaskDetails
+            };
+            let e = validate(op, &reply, &ids(&["s1"]), &[]).unwrap_err();
+            assert_eq!(e.category, Category::InvalidOutput);
+            assert!(!e.message.contains("SENTINEL"), "{}", e.message);
+            assert!(!e.message.contains('\u{1b}'), "{}", e.message);
+        }
     }
 
     #[test]

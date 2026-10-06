@@ -215,8 +215,14 @@ fn herdr_cli_shim_and_wire_protocol() {
         (1, "pane_not_found".to_string()),
         "{e}"
     );
-    let (_, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
+    let (_, e) = s_.fail(&["compat", "herdr", "server", "stop"]);
     assert_eq!(e["error"]["code"], "unsupported", "{e}");
+    let (code, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
+    assert_eq!(
+        (code, s(&e["error"]["code"])),
+        (1, "popup_not_found".to_string()),
+        "no popup open: {e}"
+    );
     let (code, _) = s_.fail(&["compat", "herdr", "pane", "teleport"]);
     assert_eq!(code, 2, "usage error");
     let (_, e) = s_.fail(&["compat", "herdr", "integration", "install", "claude"]);
@@ -425,7 +431,7 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
     ]);
     let log_id = s(&r["log"]["log_id"]);
     assert!(
-        matches!(r["log"]["status"].as_str(), Some("running" | "completed")),
+        matches!(r["log"]["status"].as_str(), Some("running" | "succeeded")),
         "{r}"
     );
     let mut last = Value::Null;
@@ -444,7 +450,7 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
         .find(|l| l["log_id"] == log_id.as_str())
         .unwrap()
         .clone();
-    assert_eq!(log["status"], "completed", "{log}");
+    assert_eq!(log["status"], "succeeded", "{log}");
     assert_eq!(log["exit_code"], 0);
     assert!(s(&log["stdout"]).contains("done"));
     let panes: Value =

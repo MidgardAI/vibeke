@@ -515,7 +515,7 @@ pub fn resolve_definition_at(
     spec: &CheckSpec,
 ) -> Result<CheckDefinition, CheckError> {
     let repo = PathBuf::from(&subject.repo.root);
-    let sha = subject.head_sha.clone();
+    let sha = subject.content_sha().to_string();
     let read = move |rel: &str| -> Option<Vec<u8>> {
         let obj = format!("{sha}:{rel}");
         let out = gitcmd::run_raw(&repo, &["cat-file", "blob", &obj], gitcmd::GIT_TIMEOUT).ok()?;
@@ -653,7 +653,7 @@ pub fn authorization_required(
     subject: &ChangeSubject,
     prior_grants: &[CheckGrant],
 ) -> AuthRequirement {
-    if !subject.is_committed() {
+    if !subject.is_immutable() {
         return AuthRequirement::Unavailable {
             reason: "Select a committed revision to verify".into(),
         };
@@ -1080,7 +1080,7 @@ pub fn run_in_disposable_checkout(
         return Ok(run);
     }
 
-    let checkout = make_checkout(repo, &subject.head_sha, opts)?;
+    let checkout = make_checkout(repo, subject.content_sha(), opts)?;
     let check_dir = checkout.path.clone();
     let resolved_here = resolve_definition_in_dir(&check_dir, &def.spec())?;
     if resolved_here.definition_digest != def.definition_digest {

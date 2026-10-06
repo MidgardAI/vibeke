@@ -167,14 +167,22 @@ pub struct TaskBox {
     pub created: Instant,
 }
 
+/// One egress endpoint of one box: approvals, pending decisions and denials are keyed by it
+/// (13 §7: an approval covers exactly the destination it displayed).
+type EgressKey = (String, String, u16);
+
 #[derive(Default)]
 struct Inner {
     boxes: HashMap<String, Arc<TaskBox>>,
     by_checkout: Vec<(PathBuf, String)>,
     brokers: HashMap<String, JoinHandle<()>>,
-    /// Pending egress decisions per (box, host): later attempts join the same Interaction.
-    waits: HashMap<(String, String), watch::Receiver<Option<AskDecision>>>,
-    denied: HashMap<(String, String), Instant>,
+    /// Pending egress decisions per (box, host, port): later attempts join the same Interaction.
+    waits: HashMap<EgressKey, watch::Receiver<Option<AskDecision>>>,
+    denied: HashMap<EgressKey, Instant>,
+    /// Contained tasks whose context could not be (re)built, with the reason, and their
+    /// checkouts: spawns there fail closed instead of falling back to the host (13 §4).
+    failed: HashMap<String, String>,
+    failed_checkouts: Vec<(PathBuf, String)>,
     /// Test override for the host home directory.
     home: Option<PathBuf>,
     /// Test override for the container runtime CLI (a fake script in tests).
@@ -203,6 +211,25 @@ impl State {
     }
     pub fn get(&self, key: &str) -> Option<Arc<TaskBox>> {
         self.inner.lock().unwrap().boxes.get(key).cloned()
+    }
+    /// Why the contained task `key` has no usable context (restore failed), if it doesn't.
+    pub fn failure(&self, key: &str) -> Option<String> {
+        self.inner.lock().unwrap().failed.get(key).cloned()
+    }
+    /// Record that contained task `key` (checkout `checkout`) has no context: its spawns fail.
+    pub fn mark_failed(&self, key: &str, checkout: Option<&Path>, reason: String) {
+        let mut i = self.inner.lock().unwrap();
+        i.failed.insert(key.to_string(), reason);
+        if let Some(co) = checkout {
+            let co = co.canonicalize().unwrap_or_else(|_| co.to_path_buf());
+            i.failed_checkouts.retain(|(_, k)| k != key);
+            i.failed_checkouts.push((co, key.to_string()));
+        }
+    }
+    fn clear_failed(&self, key: &str) {
+        let mut i = self.inner.lock().unwrap();
+        i.failed.remove(key);
+        i.failed_checkouts.retain(|(_, k)| k != key);
     }
     fn home(&self) -> PathBuf {
         self.inner
@@ -234,6 +261,11 @@ fn hidden_paths() -> Vec<PathBuf> {
     }
     if let Some(t) = std::env::var_os("TMPDIR") {
         v.push(PathBuf::from(t));
+    }
+    // ssh/gpg agents, the D-Bus user bus and other per-user sockets (Linux; usually under /run,
+    // which the bubblewrap profile empties anyway).
+    if let Some(x) = std::env::var_os("XDG_RUNTIME_DIR").filter(|x| !x.is_empty()) {
+        v.push(PathBuf::from(x));
     }
     v
 }
@@ -354,9 +386,26 @@ pub async fn prepare_box_opts(
     let checkout = checkout
         .canonicalize()
         .unwrap_or_else(|_| checkout.to_path_buf());
+    // Container boxes see the code at their own workdir; the trust dialog is pre-accepted there.
+    let code = container::code_mode(req.code.as_deref(), &cfg, task.is_some());
+    // The contained process can write the checkout itself (sandbox level, container worktree
+    // mode): it must not be $HOME, `/` or contain protected state (13 §5), and the files host
+    // git executes from it are write-protected (13 §6).
+    let writes_checkout = req.level == IsolationLevel::Sandbox
+        || (req.level == IsolationLevel::Container && code == "worktree");
+    if req.level != IsolationLevel::Host {
+        vk_sandbox::policy::check_checkout(&home, &checkout, &hidden_paths())
+            .map_err(|e| err(ErrorKind::PermissionDenied, e))?;
+    }
+    let protected = if writes_checkout {
+        vk_sandbox::gitexec::exec_targets(&checkout, Some(&home))
+    } else {
+        vec![]
+    };
     let mut proxy = None;
     if req.level != IsolationLevel::Host && req.network.uses_proxy() {
         let mut pol = EgressPolicy::new(req.network);
+        pol.ports.extend(cfg.sandbox.ports.iter().copied());
         pol.extra_allow
             .extend(cfg.sandbox.allow_domains.iter().cloned());
         pol.deny.extend(cfg.sandbox.deny_domains.iter().cloned());
@@ -422,8 +471,6 @@ pub async fn prepare_box_opts(
         req.proxy_port = Some(p.port);
         proxy = Some(p);
     }
-    // Container boxes see the code at their own workdir; the trust dialog is pre-accepted there.
-    let code = container::code_mode(req.code.as_deref(), &cfg, task.is_some());
     let box_wd = PathBuf::from(container::workdir(code, &checkout, None));
     let trust = req
         .yolo
@@ -455,6 +502,7 @@ pub async fn prepare_box_opts(
                 vibeke_bin: Some(server.opts.bin.clone()),
                 egress_socket: proxy.as_ref().and_then(|p| p.unix_socket.clone()),
                 broker: cfg.sandbox.broker,
+                protected: protected.clone(),
             };
             let r = SandboxRunner { setup };
             r.check()
@@ -465,13 +513,14 @@ pub async fn prepare_box_opts(
         IsolationLevel::Container => {
             let srv = server.clone();
             let (k, t, co) = (key.to_string(), task.map(str::to_string), checkout.clone());
-            let (cfg2, net, image, dc, build, home2) = (
+            let (cfg2, net, image, dc, build, home2, prot) = (
                 cfg.clone(),
                 req.network,
                 req.image.clone(),
                 req.devcontainer.clone(),
                 req.build,
                 home.clone(),
+                protected.clone(),
             );
             // Building the box may run `git` and (explicit, trusted) image builds; creating it
             // runs the runtime CLI: keep both off the async executor.
@@ -489,6 +538,7 @@ pub async fn prepare_box_opts(
                     build_image: build,
                     projection: &projection,
                     home: &home2,
+                    protected: &prot,
                 })?;
                 c.runner
                     .check()
@@ -536,6 +586,11 @@ pub async fn prepare_box_opts(
         projection_names: projection_names.clone(),
         created: Instant::now(),
     });
+    if writes_checkout {
+        // Host-side git in this checkout now runs hardened and checks its `.git` (13 §6).
+        vk_tasks::register_contained_checkout(&checkout);
+    }
+    server.sandbox.clear_failed(key);
     {
         let mut i = server.sandbox.inner.lock().unwrap();
         i.boxes.insert(key.to_string(), b.clone());
@@ -616,6 +671,22 @@ fn box_for_spawn(server: &Server, ws_task: Option<&str>, cwd: &str) -> Option<Ar
         .and_then(|(_, k)| i.boxes.get(k).cloned())
 }
 
+/// The failure reason when a spawn targets a contained task without a context.
+fn failed_for_spawn(server: &Server, ws_task: Option<&str>, cwd: &str) -> Option<String> {
+    let i = server.sandbox.inner.lock().unwrap();
+    if let Some(t) = ws_task
+        && let Some(r) = i.failed.get(t)
+    {
+        return Some(r.clone());
+    }
+    let cwd = Path::new(cwd);
+    let canon = cwd.canonicalize().ok();
+    i.failed_checkouts
+        .iter()
+        .find(|(co, _)| cwd.starts_with(co) || canon.as_ref().is_some_and(|c| c.starts_with(co)))
+        .and_then(|(_, k)| i.failed.get(k).cloned())
+}
+
 /// argv, env and the pane's isolation record.
 pub type WrappedSpawn = (Vec<String>, Vec<(String, String)>, Isolation);
 
@@ -630,6 +701,13 @@ pub fn wrap_spawn(
     ws_task: Option<&str>,
 ) -> anyhow::Result<WrappedSpawn> {
     let Some(b) = box_for_spawn(server, ws_task, cwd) else {
+        // A contained task whose context could not be rebuilt never gets a host pane: a
+        // split/respawn there fails closed (13 §4; review finding 6).
+        if let Some(reason) = failed_for_spawn(server, ws_task, cwd) {
+            anyhow::bail!(
+                "this task is isolated but its sandbox is unavailable ({reason}); refusing to start the pane on the host"
+            );
+        }
         return Ok((argv.to_vec(), env, Isolation::default()));
     };
     if b.task.is_none() {
@@ -698,6 +776,7 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
     {
         old.abort();
     }
+    ensure_tick(server);
 }
 
 /// One broker connection: pane scope is fixed by the socket, tokens can't change it, and only
@@ -735,6 +814,12 @@ where
                     let _ = tx.send(serde_json::to_string(&r)?);
                     continue;
                 }
+                let params = req.as_ref().map(|r| r.params.clone()).unwrap_or(Value::Null);
+                if let Err(e) = broker_authorize(&server, &ctx, &method, &params) {
+                    let id = req.and_then(|r| r.id).unwrap_or(Value::Null);
+                    let _ = tx.send(serde_json::to_string(&Response::err(id, e))?);
+                    continue;
+                }
                 let (srv, c, t) = (server.clone(), ctx.clone(), tx.clone());
                 tokio::spawn(async move { let _ = t.send(crate::api::handle_line(&srv, &c, &l).await); });
             }
@@ -744,6 +829,91 @@ where
                 wr.flush().await?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Explicit targets in broker calls must belong to the broker's own pane (13 §4.1): a
+/// contained process may read and report only its own run/pane and declare previews only for
+/// itself. Method allowlisting alone would let it name another box's run, pane, task or preview.
+pub fn broker_authorize(
+    server: &Server,
+    ctx: &Ctx,
+    method: &str,
+    p: &Value,
+) -> Result<(), vk_proto::rpc::RpcError> {
+    let Some(own) = ctx.pane_scope.as_deref() else {
+        return Ok(());
+    };
+    let deny = |what: &str| {
+        Err(err(
+            ErrorKind::PermissionDenied,
+            format!("{method}: {what} is not this sandbox's own (broker, 13 §4.1)"),
+        )
+        .details(json!({"scope": "broker"})))
+    };
+    let pane_is_own = |t: &str| {
+        t == "@current"
+            || crate::api::resolve_pane(server, ctx, Some(t)).is_ok_and(|pane| pane.id == own)
+    };
+    let own_task = server.with_core(|c| {
+        c.pane(own)
+            .and_then(|pane| c.ws(&pane.workspace))
+            .and_then(|w| w.task.clone())
+    });
+    match method {
+        "agent.get" => {
+            if let Some(t) = s(p, "target") {
+                let run_pane = server.with_core(|c| c.run(t).map(|r| r.pane.clone()));
+                let ok = match run_pane {
+                    Some(rp) => rp == own,
+                    None => pane_is_own(t),
+                };
+                if !ok {
+                    return deny("the target run/pane");
+                }
+            }
+        }
+        "agent.report" => {
+            if let Some(t) = s(p, "pane")
+                && !pane_is_own(t)
+            {
+                return deny("the pane");
+            }
+        }
+        "preview.declare" => {
+            if let Some(t) = s(p, "pane")
+                && !pane_is_own(t)
+            {
+                return deny("the pane");
+            }
+            if let Some(t) = s(p, "task") {
+                let id = server.with_core(|c| c.task(t).map(|x| x.id.clone()));
+                if id.is_none() || id != own_task {
+                    return deny("the task");
+                }
+            }
+            // An existing preview on that port that belongs to another pane or task can't be
+            // taken over.
+            let port = p
+                .get("port")
+                .and_then(Value::as_u64)
+                .or_else(|| s(p, "port").and_then(|x| x.parse().ok()));
+            if let Some(port) = port {
+                let foreign = server.with_core(|c| {
+                    c.model.previews.iter().any(|x| {
+                        u64::from(x.port) == port
+                            && x.status != PreviewStatus::Gone
+                            && (x.pane.as_deref().is_some_and(|pp| pp != own)
+                                || (x.task.is_some() && x.task != own_task))
+                    })
+                });
+                if foreign {
+                    return deny("the preview on that port");
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -758,33 +928,44 @@ fn decision_of(it: &Interaction) -> AskDecision {
     }
 }
 
-/// Ask the user about `host:port` for box `key`. Concurrent attempts share one Interaction.
+/// Ask the user about `host:port` for box `key`. The Interaction shows exactly that endpoint,
+/// and its answer applies only to it: concurrent attempts to the same `host:port` join it,
+/// other ports of the same host get their own. "Allow" (this connection only) admits the
+/// attempt that opened the Interaction; an attempt that merely joined it asks again.
 pub async fn egress_ask(server: &Arc<Server>, key: &str, host: String, port: u16) -> AskDecision {
-    let wkey = (key.to_string(), host.clone());
-    let existing = {
-        let mut i = server.sandbox.inner.lock().unwrap();
-        if let Some(t) = i.denied.get(&wkey) {
-            if t.elapsed() < EGRESS_DENY_MEMORY {
-                return AskDecision::Deny;
-            }
-            i.denied.remove(&wkey);
-        }
-        i.waits.get(&wkey).cloned()
-    };
-    let mut rx = match existing {
-        Some(rx) => rx,
-        None => match open_egress_interaction(server, key, &host, port) {
-            Some(rx) => rx,
-            None => return AskDecision::Deny,
-        },
-    };
+    let wkey: EgressKey = (key.to_string(), host.clone(), port);
     loop {
-        if let Some(d) = *rx.borrow() {
-            return d;
+        let existing = {
+            let mut i = server.sandbox.inner.lock().unwrap();
+            if let Some(t) = i.denied.get(&wkey) {
+                if t.elapsed() < EGRESS_DENY_MEMORY {
+                    return AskDecision::Deny;
+                }
+                i.denied.remove(&wkey);
+            }
+            i.waits.get(&wkey).cloned()
+        };
+        let (mut rx, joined) = match existing {
+            Some(rx) => (rx, true),
+            None => match open_egress_interaction(server, key, &host, port) {
+                Some(rx) => (rx, false),
+                None => return AskDecision::Deny,
+            },
+        };
+        let d = loop {
+            if let Some(d) = *rx.borrow() {
+                break d;
+            }
+            if rx.changed().await.is_err() {
+                break rx.borrow().unwrap_or(AskDecision::Deny);
+            }
+        };
+        if joined && d == AskDecision::AllowOnce {
+            // The user approved one connection, which was the opener's; this one needs its
+            // own answer.
+            continue;
         }
-        if rx.changed().await.is_err() {
-            return rx.borrow().unwrap_or(AskDecision::Deny);
-        }
+        return d;
     }
 }
 
@@ -852,7 +1033,7 @@ fn open_egress_interaction(
             questions: vec![],
             plan_md: None,
             answer_channel: AnswerChannel::Native,
-            native_ref: Some(format!("egress:{key}:{host}")),
+            native_ref: Some(format!("egress:{key}:{host}:{port}")),
             source: StateSource::Structured,
             confidence: 1.0,
             answerable: true,
@@ -885,7 +1066,7 @@ fn open_egress_interaction(
         .lock()
         .unwrap()
         .waits
-        .insert((key.to_string(), host.to_string()), rx.clone());
+        .insert((key.to_string(), host.to_string(), port), rx.clone());
     server.notify(
         "interaction",
         Some(&pane),
@@ -918,7 +1099,7 @@ fn open_egress_interaction(
                 if let Some(b) = srv.sandbox.get(&key)
                     && let Some(p) = &b.proxy
                 {
-                    p.allow_for_task(&host);
+                    p.allow_for_task(&host, port);
                 }
             }
             AskDecision::Deny => {
@@ -927,7 +1108,7 @@ fn open_egress_interaction(
                     .lock()
                     .unwrap()
                     .denied
-                    .insert((key.clone(), host.clone()), Instant::now());
+                    .insert((key.clone(), host.clone(), port), Instant::now());
             }
             AskDecision::AllowOnce => {}
         }
@@ -945,7 +1126,7 @@ fn open_egress_interaction(
             .lock()
             .unwrap()
             .waits
-            .remove(&(key.clone(), host.clone()));
+            .remove(&(key.clone(), host.clone(), port));
         let _ = tx.send(Some(decision));
     });
     Some(rx)
@@ -1064,7 +1245,7 @@ pub async fn prepare_agent(
                 argv,
             });
         };
-        let private = r.pane_dir(pane_id);
+        let private = r.ensure_pane_dir(pane_id).map_err(internal)?;
         let trust = opts.yolo.then(|| r.setup.checkout.clone());
         let pr = project_all(server, &[harness.to_string()], &private, trust.as_deref())
             .map_err(internal)?;
@@ -1130,7 +1311,11 @@ pub async fn prepare_agent(
                 .unwrap_or_default(),
         )
     });
-    let host_env = server.pane_env_for(pane_id, &handle, &tabh, &wsh);
+    let task_env = server.with_core(|c| {
+        let ws_task = c.ws(&pane.workspace).and_then(|w| w.task.clone());
+        server.task_env_for(c, ws_task.as_deref())
+    });
+    let host_env = server.pane_env_for(pane_id, &handle, &tabh, &wsh, &task_env);
     let prepared = b
         .runner
         .runner()
@@ -1230,6 +1415,7 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
                 r.clone(),
             );
             if r["action"] == "removed" {
+                release_checkout(&srv, &b.checkout);
                 let mut core = srv.core.lock().unwrap();
                 let mut tx = Tx::new();
                 tx.m.kv("sandbox", &key, None);
@@ -1254,12 +1440,28 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
             json!({}),
         );
         let root = sbx_root(key);
+        release_checkout(server, &b.checkout);
         drop(b);
         let _ = std::fs::remove_dir_all(root);
         let mut c = server.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.kv("sandbox", key, None);
         let _ = server.commit(&mut c, tx);
+    }
+}
+
+/// Host git in `checkout` goes back to normal once no box can write it any more.
+fn release_checkout(server: &Server, checkout: &Path) {
+    let still = server
+        .sandbox
+        .inner
+        .lock()
+        .unwrap()
+        .boxes
+        .values()
+        .any(|b| b.checkout == checkout);
+    if !still {
+        vk_tasks::unregister_contained_checkout(checkout);
     }
 }
 
@@ -1281,8 +1483,20 @@ fn ensure_tick(server: &Arc<Server>) {
             t.tick().await;
             let Some(srv) = weak.upgrade() else { return };
             tick(&srv);
+            // Nothing left to watch: stop ticking (no idle wakeups, spec 10 §1.3); the next
+            // context or broker restarts it. Checked under the lock they are inserted under.
+            let mut i = srv.sandbox.inner.lock().unwrap();
+            if i.boxes.is_empty() && i.brokers.is_empty() {
+                i.ticking = false;
+                return;
+            }
         }
     });
+}
+
+/// Whether the sandbox housekeeping tick is running (test hook / `server.status`).
+pub fn ticking(server: &Server) -> bool {
+    server.sandbox.inner.lock().unwrap().ticking
 }
 
 /// Drop brokers of closed panes and end run-scoped contexts whose agent is gone.
@@ -1364,7 +1578,9 @@ pub async fn restore(server: &Arc<Server>) {
         tx.interaction(it);
         let _ = server.commit(&mut c, tx);
     }
-    let records: Vec<(String, Value, bool)> = server.with_core(|c| {
+    // (task, record, active, worktree): every contained task, with its kv record if readable.
+    type Rec = (String, Option<Value>, bool, Option<String>);
+    let records: Vec<Rec> = server.with_core(|c| {
         c.model
             .tasks
             .iter()
@@ -1372,23 +1588,56 @@ pub async fn restore(server: &Arc<Server>) {
                 t.isolation.is_contained()
                     && (t.status == "active" || t.isolation.level == IsolationLevel::Container)
             })
-            .filter_map(|t| {
-                c.store
+            .map(|t| {
+                let rec = c
+                    .store
                     .kv_get("sandbox", &t.id)
                     .ok()
                     .flatten()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .map(|v| (t.id.clone(), v, t.status == "active"))
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+                (
+                    t.id.clone(),
+                    rec,
+                    t.status == "active",
+                    t.worktree_path.clone(),
+                )
             })
             .collect()
     });
-    for (task, rec, active) in records {
-        let Ok(req) = serde_json::from_value::<IsoRequest>(rec["request"].clone()) else {
+    for (task, rec, active, worktree) in records {
+        let req = rec
+            .as_ref()
+            .and_then(|r| serde_json::from_value::<IsoRequest>(r["request"].clone()).ok());
+        let checkout = rec
+            .as_ref()
+            .and_then(|r| r["checkout"].as_str().map(PathBuf::from))
+            .or(worktree.map(PathBuf::from));
+        let Some(req) = req else {
+            // No usable record: the task stays contained, with no context (fail closed).
+            if active {
+                tracing::warn!(task, "sandbox restore failed: no readable sandbox record");
+                server.sandbox.mark_failed(
+                    &task,
+                    checkout.as_deref(),
+                    "its sandbox record is missing or unreadable".into(),
+                );
+            }
             continue;
         };
-        let checkout = PathBuf::from(rec["checkout"].as_str().unwrap_or_default());
+        let checkout = checkout.unwrap_or_default();
         if let Err(e) = prepare_box_opts(server, &task, Some(&task), &checkout, req, false).await {
             tracing::warn!(task, error = %e.message, "sandbox restore failed");
+            // Keep an unavailable context: splits/respawns in this task now fail instead of
+            // silently starting on the host (review finding 6).
+            server
+                .sandbox
+                .mark_failed(&task, Some(&checkout), e.message.clone());
+            emit(
+                server,
+                "sandbox.unavailable",
+                json!({"task": task, "sandbox": task}),
+                json!({"reason": e.message}),
+            );
         }
         if !active {
             // A finished task's kept box: listed and syncable, but new panes never join it.
@@ -1427,9 +1676,12 @@ pub async fn restore(server: &Arc<Server>) {
             continue;
         };
         match &b.runner {
-            BoxRunner::Sandbox(r) if r.setup.broker => {
-                start_broker(server, &pane, &r.pane_dir(&pane).join("b.sock"));
-            }
+            BoxRunner::Sandbox(r) if r.setup.broker => match r.ensure_pane_dir(&pane) {
+                Ok(d) => start_broker(server, &pane, &d.join("b.sock")),
+                Err(e) => {
+                    tracing::warn!(pane, error = %e, "sandbox pane dir is not safe; broker not rebound")
+                }
+            },
             BoxRunner::Container(c) => {
                 let sock = c
                     .b()
@@ -1499,6 +1751,7 @@ pub fn can_see(server: &Server, pane: &str, path: &str) -> Option<bool> {
         unix_sockets: vec![],
         network: vk_sandbox::NetMode::None,
         allow_bind_localhost: false,
+        protected: vec![],
     });
     Some(policy.can_read(Path::new(path)))
 }
@@ -1585,6 +1838,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .and_then(|b| b.proxy.as_ref().map(|p| p.policy.clone()))
             {
                 Some(pol) => {
+                    // `host` (the profile's allowed ports) or `host:port` (exactly that endpoint).
                     if let Ok(mut w) = pol.write() {
                         w.task_allow.insert(host.to_ascii_lowercase());
                     }

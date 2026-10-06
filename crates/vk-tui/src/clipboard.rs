@@ -54,6 +54,26 @@ pub fn os_copy(data: &[u8]) -> Result<()> {
     Err(last.unwrap_or_else(|| anyhow!("no clipboard tool available")))
 }
 
+/// Set the PRIMARY selection (X11/Wayland) with the first available tool; macOS has none.
+pub fn os_copy_primary(data: &[u8]) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        bail!("no PRIMARY selection on macOS");
+    }
+    let candidates: &[(&str, &[&str])] = &[
+        ("wl-copy", &["--primary"]),
+        ("xclip", &["-selection", "primary"]),
+        ("xsel", &["-p"]),
+    ];
+    let mut last: Option<anyhow::Error> = None;
+    for (cmd, args) in candidates {
+        match pipe_to(cmd, args, data) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e.context(format!("{cmd} failed"))),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow!("no PRIMARY selection tool available")))
+}
+
 fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

@@ -752,6 +752,37 @@ fn criteria_from(p: &Value) -> Vec<DraftCriterion> {
     }
 }
 
+/// Per item of `criteria`/`constraints` (aligned with [`criteria_from`]/[`constraints_from`]):
+/// the `source_turns` it cites — set when the item came from an assistant suggestion whose
+/// citations point at turns of the tracked run. `task.track` resolves them against its
+/// selected turns; anything else is ignored.
+fn cited_turns_of(p: &Value, key: &str, alias: &str) -> Vec<Vec<u32>> {
+    let one = |v: &Value| -> Option<Vec<u32>> {
+        match v {
+            Value::String(t) if !t.trim().is_empty() => Some(vec![]),
+            Value::Object(_) => {
+                s(v, "text")?;
+                Some(
+                    v.get("source_turns")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_u64().map(|n| n as u32))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                )
+            }
+            _ => None,
+        }
+    };
+    match p.get(key).or_else(|| p.get(alias)) {
+        Some(Value::Array(a)) => a.iter().filter_map(one).collect(),
+        Some(v) => one(v).into_iter().collect(),
+        None => vec![],
+    }
+}
+
 fn constraints_from(p: &Value) -> Vec<DraftConstraint> {
     let one = |v: &Value| match v {
         Value::String(t) if !t.trim().is_empty() => Some(DraftConstraint {
@@ -890,22 +921,53 @@ async fn track(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             }),
         })
         .collect();
+    // Items citing selected turns (an applied assistant suggestion) carry those turns' refs.
+    let cited = |turns: &[u32]| -> Vec<SourceRef> {
+        source_refs
+            .iter()
+            .filter(|r| r.turn.is_some_and(|t| turns.contains(&t)))
+            .cloned()
+            .collect()
+    };
+    let cons_turns = cited_turns_of(p, "constraints", "constraint");
+    let crit_turns = cited_turns_of(p, "criteria", "criterion");
     let draft = IntentDraft {
         task_id: id.clone(),
         title: title.clone(),
         objective: s(p, "objective").unwrap_or("").to_string(),
-        constraints: constraints_from(p),
+        constraints: constraints_from(p)
+            .into_iter()
+            .zip(
+                cons_turns
+                    .iter()
+                    .map(Vec::as_slice)
+                    .chain(std::iter::repeat(&[][..])),
+            )
+            .map(|(mut c, turns)| {
+                c.source_refs = cited(turns);
+                c
+            })
+            .collect(),
         // A criterion quoted verbatim from the delivered request carries that source (15 §2.3).
         criteria: criteria_from(p)
             .into_iter()
-            .map(|mut cr| {
+            .zip(
+                crit_turns
+                    .iter()
+                    .map(Vec::as_slice)
+                    .chain(std::iter::repeat(&[][..])),
+            )
+            .map(|(mut cr, turns)| {
                 let norm = |x: &str| {
                     x.split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ")
                         .to_lowercase()
                 };
-                if cr.text.len() >= 8 && norm(&excerpt).contains(&norm(&cr.text)) {
+                let refs = cited(turns);
+                if !refs.is_empty() {
+                    cr.source_refs = refs;
+                } else if cr.text.len() >= 8 && norm(&excerpt).contains(&norm(&cr.text)) {
                     cr.source_refs = source_refs.clone();
                 }
                 cr
@@ -1396,7 +1458,9 @@ fn task_set(server: &Server, p: &Value) -> R {
     tx.event(
         "task.updated",
         json!({"task": task.id}),
-        json!({"priority": task.priority, "effort": task.effort}),
+        // `effort_source`: who proposed the applied value (user | heuristic | assistant:<request>);
+        // applying it is always this explicit user call (15 §8.2, T4).
+        json!({"priority": task.priority, "effort": task.effort, "effort_source": s(p, "effort").map(|_| s(p, "effort_source").unwrap_or("user"))}),
     );
     let result = json!({"task": task});
     record(&mut tx, "task.set", p, &result);

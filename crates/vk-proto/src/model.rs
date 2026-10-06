@@ -176,6 +176,93 @@ impl Pane {
     pub fn is_browser(&self) -> bool {
         self.browser.is_some()
     }
+    /// A Herdr plugin popup/overlay (07 §7.7), from its `created_by` tag.
+    pub fn plugin_surface(&self) -> Option<PluginSurface> {
+        PluginSurface::parse(&self.created_by)
+    }
+}
+
+/// Where a plugin surface sits (07 §7.7 placements that are not tiled panes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceKind {
+    /// Session-modal floating terminal: no pane id in the compat API, closes with its command.
+    Popup,
+    /// Full-area layer over the tab (an ordinary plugin pane that is not in the tiling).
+    Overlay,
+}
+
+/// A Herdr plugin popup or overlay. It runs in a floating pane of the tab it opened in; the
+/// floating pane's `created_by` carries this tag, so every client (and the compat projection)
+/// recognizes it from the model without a protocol change:
+/// `plugin-surface:<popup|overlay>:<width>:<height>:<plugin id>/<entrypoint>`, where width and
+/// height are as the manifest/request wrote them (`80%`, `64`) or empty for the default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginSurface {
+    pub kind: SurfaceKind,
+    pub width: String,
+    pub height: String,
+    pub plugin: String,
+    pub entrypoint: String,
+}
+
+impl PluginSurface {
+    pub const TAG: &'static str = "plugin-surface:";
+
+    pub fn tag(&self) -> String {
+        let clean = |s: &str| s.replace([':', '/', ' '], "");
+        format!(
+            "{}{}:{}:{}:{}/{}",
+            Self::TAG,
+            match self.kind {
+                SurfaceKind::Popup => "popup",
+                SurfaceKind::Overlay => "overlay",
+            },
+            clean(&self.width),
+            clean(&self.height),
+            self.plugin,
+            self.entrypoint
+        )
+    }
+
+    pub fn parse(created_by: &str) -> Option<Self> {
+        let rest = created_by.strip_prefix(Self::TAG)?;
+        let mut it = rest.splitn(4, ':');
+        let kind = match it.next()? {
+            "popup" => SurfaceKind::Popup,
+            "overlay" => SurfaceKind::Overlay,
+            _ => return None,
+        };
+        let width = it.next()?.to_string();
+        let height = it.next()?.to_string();
+        let (plugin, entrypoint) = it.next()?.split_once('/')?;
+        Some(PluginSurface {
+            kind,
+            width,
+            height,
+            plugin: plugin.to_string(),
+            entrypoint: entrypoint.to_string(),
+        })
+    }
+
+    pub fn is_popup(&self) -> bool {
+        self.kind == SurfaceKind::Popup
+    }
+
+    /// One dimension in cells: `"80%"` of `total`, `"64"` cells, or `default_pct` percent when
+    /// empty/unparseable; at least `min`, at most `total`.
+    pub fn cells(spec: &str, total: u16, default_pct: f32, min: u16) -> u16 {
+        let s = spec.trim();
+        let v = if let Some(p) = s.strip_suffix('%') {
+            p.trim()
+                .parse::<f32>()
+                .ok()
+                .map(|p| (p.clamp(0.0, 100.0) / 100.0 * total as f32).round() as u16)
+        } else {
+            s.parse::<u16>().ok()
+        };
+        let v = v.unwrap_or_else(|| (default_pct / 100.0 * total as f32).round() as u16);
+        v.clamp(min.min(total), total)
+    }
 }
 
 /// Persisted state of a browser pane (06 B3.2 "Lifecycle"). The pane lives in the layout of
@@ -731,5 +818,30 @@ mod tests {
         let bytes = crate::frame::encode(&m).unwrap();
         let back: SessionModel = crate::frame::decode(&bytes[4..]).unwrap();
         assert_eq!(back.panes[1], b);
+    }
+
+    #[test]
+    fn plugin_surface_tag_roundtrips_and_sizes() {
+        let s = PluginSurface {
+            kind: SurfaceKind::Popup,
+            width: "80%".into(),
+            height: "20".into(),
+            plugin: "acme.demo".into(),
+            entrypoint: "review:main".into(),
+        };
+        let tag = s.tag();
+        assert_eq!(tag, "plugin-surface:popup:80%:20:acme.demo/review:main");
+        assert_eq!(PluginSurface::parse(&tag), Some(s));
+        assert_eq!(PluginSurface::parse("user"), None);
+        assert_eq!(PluginSurface::parse("plugin-surface:split:::a/b"), None);
+        let o = PluginSurface::parse("plugin-surface:overlay:::a.b/c").unwrap();
+        assert_eq!(o.kind, SurfaceKind::Overlay);
+        assert!(!o.is_popup() && o.width.is_empty());
+        assert_eq!(PluginSurface::cells("80%", 100, 50.0, 4), 80);
+        assert_eq!(PluginSurface::cells("20", 100, 50.0, 4), 20);
+        assert_eq!(PluginSurface::cells("500", 100, 50.0, 4), 100);
+        assert_eq!(PluginSurface::cells("", 100, 50.0, 4), 50);
+        assert_eq!(PluginSurface::cells("1", 100, 50.0, 4), 4);
+        assert_eq!(PluginSurface::cells("x%", 10, 80.0, 4), 8);
     }
 }

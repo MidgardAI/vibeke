@@ -15,6 +15,8 @@ pub struct Reply {
     pub body: String,
     pub headers: Vec<(String, String)>,
     pub delay: Duration,
+    /// Announce a longer body than is sent, then close (a body cut off after the headers).
+    pub cut: bool,
 }
 
 impl Reply {
@@ -24,6 +26,7 @@ impl Reply {
             body: body.into(),
             headers: vec![],
             delay: Duration::ZERO,
+            cut: false,
         }
     }
     pub fn json(v: Value) -> Reply {
@@ -62,6 +65,10 @@ impl Reply {
     }
     pub fn with_header(mut self, k: &str, v: &str) -> Reply {
         self.headers.push((k.into(), v.into()));
+        self
+    }
+    pub fn cut_off(mut self) -> Reply {
+        self.cut = true;
         self
     }
     pub fn delayed(mut self, d: Duration) -> Reply {
@@ -211,7 +218,7 @@ async fn serve(mut sock: tokio::net::TcpStream, shared: Arc<Mutex<Shared>>) {
     let mut out = format!(
         "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
         reply.status,
-        reply.body.len()
+        reply.body.len() + if reply.cut { 4096 } else { 0 }
     );
     for (k, v) in &reply.headers {
         out.push_str(&format!("{k}: {v}\r\n"));

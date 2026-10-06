@@ -19,6 +19,14 @@
 //! - [`attention`]: inbox ranking, five-minute view, snooze wake-ups, stable selection and
 //!   batching (§8).
 //!
+//! T4 additions:
+//! - [`snapshot`]: validated, content-addressed dirty-work snapshots stored as immutable Git
+//!   commits under `refs/vibeke/snapshots/` (§5).
+//! - [`dependency`]: user-confirmed dependency edges with cycle checks (§8.1).
+//! - [`effort`]: the deterministic review-effort heuristic (§8.2).
+//! - [`reviewer`]: reviewable reviewer-run prompts and reviewer findings as attributed notes
+//!   (§6.1, §7).
+//!
 //! Conventions: timestamps are Unix epoch milliseconds (`i64`, fields suffixed `_ms`, as in
 //! `vk-proto`); every enum serializes as `snake_case`; ids are opaque strings (ULIDs where this
 //! crate mints them).
@@ -26,9 +34,13 @@
 pub mod attention;
 pub mod binding;
 pub mod checks;
+pub mod dependency;
+pub mod effort;
 pub mod intent;
 pub mod readiness;
+pub mod reviewer;
 pub mod screenshot;
+pub mod snapshot;
 pub mod subject;
 
 mod gitcmd;

@@ -15,14 +15,17 @@
 //!   as long as the pane.
 //!
 //! A watcher per binding polls liveness and the grant every second and closes the broker when
-//! either is gone; every request is re-checked against the registry as well.
+//! either is gone. Closing a broker also aborts every connection it accepted (requests in
+//! flight, `events.subscribe` streams, `events.wait`), so a child that connected before its
+//! action exited keeps no authority. Every request re-checks the binding's liveness and its
+//! exact grant (`grant_id`, so a revoke followed by a new grant never revives a connection).
 
 use super::{Caller, compat_root, private_dir, serve_wire, state};
 use crate::Server;
 use crate::api::Ctx;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vk_compat::herdr::registry::{self, Registry, Status};
 
@@ -53,6 +56,9 @@ pub struct Binding {
     /// `api`, `cli`, `event`, `startup`, `pane`.
     pub source: String,
     pub log_id: Option<String>,
+    /// The grant this invocation was started under ([`registry::Grant::grant_id`]).
+    #[serde(default)]
+    pub grant_id: String,
     pub life: Life,
     pub created_at_ms: i64,
     /// Output files of the invocation (actions, hooks, startup), tailed into its log record.
@@ -74,14 +80,18 @@ impl Binding {
             plugin: Some((self.plugin_id.clone(), self.digest.clone())),
             default_pane: self.default_pane.clone(),
             invocation: self.log_id.clone(),
+            broker: Some(self.path.clone()),
+            grant_id: Some(self.grant_id.clone()),
+            cross_session: false,
         }
     }
 }
 
-/// A live binding: its record and the accept loop.
+/// A live binding: its record, the accept loop and the connections it accepted.
 pub struct Live {
     pub binding: Binding,
     task: tokio::task::AbortHandle,
+    conns: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
 }
 
 fn store_path(server: &Server) -> PathBuf {
@@ -128,6 +138,8 @@ pub fn bind(server: &Arc<Server>, b: Binding) -> std::io::Result<()> {
     let listener = super::bind_socket(&b.path)?;
     let srv = server.clone();
     let path = b.path.clone();
+    let conns: Arc<Mutex<Vec<tokio::task::AbortHandle>>> = Arc::default();
+    let held = conns.clone();
     let task = tokio::spawn(async move {
         loop {
             let Ok((s, _)) = listener.accept().await else {
@@ -141,7 +153,10 @@ pub fn bind(server: &Arc<Server>, b: Binding) -> std::io::Result<()> {
                 return;
             };
             let srv = srv.clone();
-            tokio::spawn(async move { serve_wire(srv, s, c).await });
+            let h = tokio::spawn(async move { serve_wire(srv, s, c).await }).abort_handle();
+            let mut v = held.lock().unwrap();
+            v.retain(|x| !x.is_finished());
+            v.push(h);
         }
     })
     .abort_handle();
@@ -151,6 +166,7 @@ pub fn bind(server: &Arc<Server>, b: Binding) -> std::io::Result<()> {
         Live {
             binding: b,
             task: task.clone(),
+            conns,
         },
     );
     persist(server);
@@ -176,11 +192,15 @@ pub fn set_default_pane(server: &Server, path: &Path, pane: Option<String>) {
     persist(server);
 }
 
-/// Close a broker: stop accepting, remove the socket and the binding.
+/// Close a broker: stop accepting, drop every accepted connection (in-flight requests,
+/// subscriptions, waits), remove the socket and the binding.
 pub fn close(server: &Server, path: &Path) {
     let live = state(server).bindings.lock().unwrap().remove(path);
     if let Some(l) = live {
         l.task.abort();
+        for c in l.conns.lock().unwrap().drain(..) {
+            c.abort();
+        }
     }
     let _ = std::fs::remove_file(path);
     persist(server);
@@ -212,7 +232,7 @@ pub fn pid_alive(pid: i32) -> bool {
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-fn alive(server: &Server, life: &Life) -> bool {
+pub(super) fn alive(server: &Server, life: &Life) -> bool {
     match life {
         Life::Pending => true,
         Life::Process { pid } => pid_alive(*pid as i32),
@@ -221,16 +241,22 @@ fn alive(server: &Server, life: &Life) -> bool {
     }
 }
 
-/// The plugin is still registered, enabled and trusted with the same manifest digest.
-pub fn grant_ok(plugin: &str, digest: &str) -> bool {
+/// The plugin is still registered, enabled and trusted under the very same grant (manifest
+/// digest and grant id).
+pub fn grant_ok(plugin: &str, digest: &str, grant_id: &str) -> bool {
     Registry::load(&super::plugin_dirs()).is_ok_and(|reg| {
         reg.get(plugin).ok().is_some_and(|e| {
             matches!(registry::entry_status(e), (Status::Active, _))
-                && e.trust
-                    .as_ref()
-                    .is_some_and(|g| g.manifest_sha256 == digest)
+                && e.trust.as_ref().is_some_and(|g| {
+                    g.manifest_sha256 == digest && !grant_id.is_empty() && g.grant_id == grant_id
+                })
         })
     })
+}
+
+/// The broker at `path` is open and its invocation still alive.
+pub fn live(server: &Server, path: &Path) -> Option<Binding> {
+    get(server, path).filter(|b| alive(server, &b.life))
 }
 
 async fn watch(server: Arc<Server>, path: PathBuf) {
@@ -240,7 +266,7 @@ async fn watch(server: Arc<Server>, path: PathBuf) {
         let Some(b) = get(&server, &path) else {
             return;
         };
-        if !alive(&server, &b.life) || !grant_ok(&b.plugin_id, &b.digest) {
+        if !alive(&server, &b.life) || !grant_ok(&b.plugin_id, &b.digest, &b.grant_id) {
             tracing::debug!(broker = %path.display(), plugin = %b.plugin_id, "broker closed");
             close(&server, &path);
             if let Life::Pane { pane } = &b.life {
@@ -264,7 +290,7 @@ pub fn recover(server: &Arc<Server>) -> (usize, usize) {
     for b in list {
         let keep = !matches!(b.life, Life::Pending)
             && alive(server, &b.life)
-            && grant_ok(&b.plugin_id, &b.digest)
+            && grant_ok(&b.plugin_id, &b.digest, &b.grant_id)
             && b.path.starts_with(compat_root(server));
         if !keep {
             let _ = std::fs::remove_file(&b.path);

@@ -24,6 +24,8 @@ pub enum SubjectError {
     NotImmutable(String),
     #[error("subject id does not match its identity fields")]
     IdMismatch,
+    #[error("snapshot {0} does not match its recorded tree/parent")]
+    SnapshotMismatch(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -50,6 +52,29 @@ pub enum SubjectKind {
     Committed,
     /// The live checkout (head plus a dirty digest). Inspect-only in T2.
     CheckoutLive,
+    /// A validated, content-addressed snapshot of dirty work (staged + unstaged + untracked,
+    /// binary included) stored as an immutable Git commit under `refs/vibeke/snapshots/`
+    /// (15 §5, T4). Accept-capable and verifiable like a committed subject.
+    DirtySnapshot,
+}
+
+/// Where a [`SubjectKind::DirtySnapshot`]'s content lives: an immutable commit (parent = the
+/// checkout's HEAD at capture) in the repository's object store, kept reachable by a
+/// Vibeke-private ref (`refs/vibeke/snapshots/<commit>`, removed again by snapshot GC once
+/// nothing references it). The user's index, worktree, branches and tags are never touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotRef {
+    /// Snapshot commit; its tree is the full working-tree content.
+    pub commit: String,
+    pub tree: String,
+    /// Tree of the user's index at capture (the staged part), for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_tree: Option<String>,
+    /// `refs/vibeke/snapshots/<commit>`.
+    pub ref_name: String,
+    /// Capture attempts needed until the before/after digests agreed.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 /// Immutable, content-addressed description of what is under review.
@@ -65,6 +90,9 @@ pub struct ChangeSubject {
     pub dirty_state: DirtyState,
     pub captured_at_ms: i64,
     pub kind: SubjectKind,
+    /// Immutable content of a dirty snapshot (`kind = dirty_snapshot` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotRef>,
 }
 
 impl ChangeSubject {
@@ -94,6 +122,51 @@ impl ChangeSubject {
             dirty_state,
             captured_at_ms,
             kind,
+            snapshot: None,
+        }
+    }
+
+    /// A dirty-snapshot subject: `base..snapshot.commit`, with the live checkout's HEAD and
+    /// change digest at capture.
+    pub fn dirty_snapshot(
+        repo: RepoIdentity,
+        base_sha: String,
+        head_sha: String,
+        dirty_digest: String,
+        snapshot: SnapshotRef,
+        captured_at_ms: i64,
+    ) -> Self {
+        let mut s = ChangeSubject::new(
+            repo,
+            base_sha,
+            head_sha,
+            Some(dirty_digest),
+            DirtyState::Dirty,
+            SubjectKind::DirtySnapshot,
+            captured_at_ms,
+        );
+        s.snapshot = Some(snapshot);
+        s.id = s.identity();
+        s
+    }
+
+    /// Content address over every identity field (not capture time or attempt count).
+    fn identity(&self) -> String {
+        let base = Self::compute_id(
+            &self.repo,
+            &self.base_sha,
+            &self.head_sha,
+            self.dirty_digest.as_deref(),
+            self.dirty_state,
+            self.kind,
+        );
+        match &self.snapshot {
+            None => base,
+            Some(sn) => {
+                let mut h = FieldHasher::new("vk-review/change-subject/snapshot/v1");
+                h.str(&base).str(&sn.commit).str(&sn.tree);
+                h.finish()
+            }
         }
     }
 
@@ -119,26 +192,38 @@ impl ChangeSubject {
             .str(match kind {
                 SubjectKind::Committed => "committed",
                 SubjectKind::CheckoutLive => "checkout_live",
+                SubjectKind::DirtySnapshot => "dirty_snapshot",
             });
         h.finish()
     }
 
     /// The stored id matches the identity fields (detects tampering/corruption).
     pub fn verify_id(&self) -> bool {
-        self.id
-            == Self::compute_id(
-                &self.repo,
-                &self.base_sha,
-                &self.head_sha,
-                self.dirty_digest.as_deref(),
-                self.dirty_state,
-                self.kind,
-            )
+        self.id == self.identity()
     }
 
-    /// Accept-capable and verifiable in T2: a committed subject (§6.3 "Initial T2 scope").
+    /// A committed subject (`base..head` of commits).
     pub fn is_committed(&self) -> bool {
         self.kind == SubjectKind::Committed
+    }
+
+    /// Accept-capable and verifiable: a committed subject (T2) or a validated dirty snapshot
+    /// whose immutable content is recorded (T4, §5). The live checkout never is.
+    pub fn is_immutable(&self) -> bool {
+        match self.kind {
+            SubjectKind::Committed => true,
+            SubjectKind::DirtySnapshot => self.snapshot.is_some(),
+            SubjectKind::CheckoutLive => false,
+        }
+    }
+
+    /// The commit whose tree is this subject's content: the snapshot commit of a dirty
+    /// snapshot, else `head_sha`. Diffs, check definitions and disposable checkouts use it.
+    pub fn content_sha(&self) -> &str {
+        self.snapshot
+            .as_ref()
+            .map(|s| s.commit.as_str())
+            .unwrap_or(&self.head_sha)
     }
 
     /// Short head for display.
@@ -238,18 +323,32 @@ pub struct Baseline {
     pub may_include_preexisting_changes: bool,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Submodules and nested repositories with changes of their own (a moved gitlink, or
+    /// modified/untracked content inside). Their state is part of `change_digest`; a dirty
+    /// snapshot can't capture them and refuses (`unsupported_capture`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_submodules: Vec<String>,
 }
 
 /// Capture an observation baseline: `git status --porcelain=v2 -z --untracked-files=all`,
-/// `git diff --binary HEAD` and the contents of every untracked file, hashed together.
-/// Missing capture data yields `change_digest: None` / `DirtyState::Unknown`.
+/// `git diff --binary HEAD`, the contents and executable bit of every untracked file, and —
+/// recursively — the HEAD and change digest of every submodule or nested repository that has
+/// changes, hashed together. Missing capture data yields `change_digest: None` /
+/// `DirtyState::Unknown`.
 pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
+    baseline_at(repo, 0)
+}
+
+/// How deep submodules / nested repositories are followed into for the digest.
+const MAX_NESTING: u32 = 8;
+
+fn baseline_at(repo: &Path, depth: u32) -> Result<Baseline, SubjectError> {
     let identity = repo_identity(repo)?;
     let root = Path::new(&identity.root).to_path_buf();
     let head = rev_parse(&root, "HEAD").ok();
     let mut warnings = Vec::new();
 
-    let digest = (|| -> Result<(String, bool), String> {
+    let digest = (|| -> Result<(String, bool, Vec<String>), String> {
         let status = gitcmd::run_bytes(
             &root,
             &[
@@ -261,7 +360,7 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
             ],
         )
         .map_err(|e| e.to_string())?;
-        let mut h = FieldHasher::new("vk-review/baseline/v1");
+        let mut h = FieldHasher::new("vk-review/baseline/v2");
         h.field(&status);
         let dirty = !status.is_empty();
         if head.is_some() {
@@ -293,7 +392,16 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
             .map_err(|e| e.to_string())?;
             h.field(&diff);
         }
+        let mut nested = Vec::new();
         for path in untracked_paths(&status) {
+            // With `--untracked-files=all` Git lists a directory only when it is an embedded
+            // repository it does not descend into: its content is followed like a submodule's.
+            if let Some(dir) = path.strip_suffix('/') {
+                h.str("nested").str(dir);
+                hash_nested(&mut h, &root, dir, depth)?;
+                nested.push(dir.to_string());
+                continue;
+            }
             h.str(&path);
             let full = root.join(&path);
             match std::fs::symlink_metadata(&full) {
@@ -312,7 +420,9 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
                         }
                         fh.update(&buf[..n]);
                     }
-                    h.str("file").str(&fh.finalize().to_hex());
+                    // The mode Git records (100755 vs 100644): `chmod +x` changes the subject.
+                    h.str(if is_executable(&m) { "file+x" } else { "file" })
+                        .str(&fh.finalize().to_hex());
                 }
                 Ok(_) => {
                     h.str("other");
@@ -320,21 +430,30 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
                 Err(e) => return Err(format!("{path}: {e}")),
             }
         }
-        Ok((h.finish(), dirty))
+        // A submodule appears in the superproject's status/diff only as its commit (plus a
+        // `-dirty` marker): edits inside an already-dirty submodule would leave both unchanged,
+        // so its own state is part of the digest.
+        for path in submodule_paths(&status) {
+            h.str("submodule").str(&path);
+            hash_nested(&mut h, &root, &path, depth)?;
+            nested.push(path);
+        }
+        Ok((h.finish(), dirty, nested))
     })();
 
-    let (change_digest, dirty_state) = match digest {
-        Ok((d, dirty)) => (
+    let (change_digest, dirty_state, changed_submodules) = match digest {
+        Ok((d, dirty, nested)) => (
             Some(d),
             if dirty {
                 DirtyState::Dirty
             } else {
                 DirtyState::Clean
             },
+            nested,
         ),
         Err(e) => {
             warnings.push(format!("change capture incomplete: {e}"));
-            (None, DirtyState::Unknown)
+            (None, DirtyState::Unknown, vec![])
         }
     };
     if head.is_none() {
@@ -348,7 +467,76 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
         observed_at_ms: now_ms(),
         may_include_preexisting_changes: dirty_state != DirtyState::Clean,
         warnings,
+        changed_submodules,
     })
+}
+
+#[cfg(unix)]
+fn is_executable(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    // Git records a file as executable when its owner-execute bit is set.
+    m.permissions().mode() & 0o100 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_m: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Fold a submodule's / nested repository's own HEAD and change digest into `h`.
+fn hash_nested(h: &mut FieldHasher, root: &Path, rel: &str, depth: u32) -> Result<(), String> {
+    if depth >= MAX_NESTING {
+        return Err(format!(
+            "{rel}: repositories nested deeper than {MAX_NESTING} levels"
+        ));
+    }
+    let canon = root.join(rel).canonicalize().ok();
+    let sub = canon.as_ref().and_then(|c| {
+        baseline_at(c, depth + 1)
+            .ok()
+            // An uninitialized submodule directory resolves to the superproject: not its own.
+            .filter(|b| Path::new(&b.repo.root).canonicalize().ok().as_ref() == Some(c))
+    });
+    match sub {
+        Some(b) => {
+            let Some(d) = b.change_digest.as_deref() else {
+                return Err(format!("{rel}: {}", b.warnings.join("; ")));
+            };
+            h.str("repo").opt(b.head.as_deref()).str(d);
+        }
+        None => {
+            h.str("uninitialized");
+        }
+    }
+    Ok(())
+}
+
+/// Paths of submodule entries (`<sub>` field `S...`) in `git status --porcelain=v2 -z` output:
+/// a changed gitlink, or modified/untracked content inside the submodule.
+fn submodule_paths(status: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fields = status.split(|b| *b == 0);
+    while let Some(rec) = fields.next() {
+        let Some(&kind) = rec.first() else {
+            continue;
+        };
+        // Space-separated fields up to and including the path: `1` 9, `2` 10 (the original
+        // path follows as its own NUL field), `u` 11.
+        let n = match kind {
+            b'1' => 9,
+            b'2' => 10,
+            b'u' => 11,
+            _ => continue,
+        };
+        let parts: Vec<&[u8]> = rec.splitn(n, |b| *b == b' ').collect();
+        if parts.len() == n && parts[2].first() == Some(&b'S') {
+            out.push(String::from_utf8_lossy(parts[n - 1]).into_owned());
+        }
+        if kind == b'2' {
+            fields.next();
+        }
+    }
+    out
 }
 
 /// Paths of untracked entries (`? <path>`) in `git status --porcelain=v2 -z` output.
@@ -516,7 +704,7 @@ fn require_immutable(subject: &ChangeSubject) -> Result<(), SubjectError> {
     if !subject.verify_id() {
         return Err(SubjectError::IdMismatch);
     }
-    if !subject.is_committed() {
+    if !subject.is_immutable() {
         return Err(SubjectError::NotImmutable(subject.id.clone()));
     }
     let repo = Path::new(&subject.repo.root);
@@ -526,6 +714,33 @@ fn require_immutable(subject: &ChangeSubject) -> Result<(), SubjectError> {
         if out.code != Some(0) {
             return Err(SubjectError::BadRevision(sha.clone()));
         }
+    }
+    if let Some(sn) = &subject.snapshot {
+        verify_snapshot(repo, &subject.head_sha, sn)?;
+    }
+    Ok(())
+}
+
+/// The snapshot commit exists, has exactly the recorded tree and the capture-time HEAD as its
+/// only parent (so its content is what was validated, not something rewritten later).
+pub fn verify_snapshot(repo: &Path, head_sha: &str, sn: &SnapshotRef) -> Result<(), SubjectError> {
+    let out = gitcmd::run_raw(
+        repo,
+        &["cat-file", "commit", &sn.commit],
+        gitcmd::GIT_TIMEOUT,
+    )?;
+    if out.code != Some(0) {
+        return Err(SubjectError::BadRevision(sn.commit.clone()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let header: Vec<&str> = text.lines().take_while(|l| !l.is_empty()).collect();
+    let tree_ok = header.iter().any(|l| *l == format!("tree {}", sn.tree));
+    let parents: Vec<&str> = header
+        .iter()
+        .filter_map(|l| l.strip_prefix("parent "))
+        .collect();
+    if !tree_ok || parents != [head_sha] {
+        return Err(SubjectError::SnapshotMismatch(sn.commit.clone()));
     }
     Ok(())
 }
@@ -538,7 +753,7 @@ pub fn diff_stat(subject: &ChangeSubject) -> Result<DiffStat, SubjectError> {
     let repo = Path::new(&subject.repo.root);
     let mut args = vec!["diff", "--numstat", "-z"];
     args.extend(DIFF_FLAGS);
-    args.extend([subject.base_sha.as_str(), subject.head_sha.as_str()]);
+    args.extend([subject.base_sha.as_str(), subject.content_sha()]);
     let out = gitcmd::run_bytes(repo, &args)?;
     Ok(parse_numstat_z(&out))
 }
@@ -595,7 +810,7 @@ pub fn diff_text_path(
     let repo = Path::new(&subject.repo.root);
     let mut args = vec!["diff"];
     args.extend(DIFF_FLAGS);
-    args.extend([subject.base_sha.as_str(), subject.head_sha.as_str()]);
+    args.extend([subject.base_sha.as_str(), subject.content_sha()]);
     let spec = path.map(|p| format!(":(literal){p}"));
     if let Some(spec) = &spec {
         args.extend(["--", spec.as_str()]);
@@ -840,6 +1055,55 @@ mod tests {
         // Nothing was stashed/reset: staged change and untracked file still present.
         assert!(r.git(&["status", "--porcelain"]).contains("M  a.txt"));
         assert!(r.root().join("new/untracked.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_executable_bit_and_symlinks_change_the_digest() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = TestRepo::new();
+        r.write("a.txt", "base\n");
+        r.commit("1");
+        r.write("run.sh", "#!/bin/sh\n");
+        let plain = observation_baseline(r.root()).unwrap();
+        let p = r.root().join("run.sh");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let exec = observation_baseline(r.root()).unwrap();
+        assert_ne!(
+            plain.change_digest, exec.change_digest,
+            "chmod +x is a change"
+        );
+        // Group/other execute bits alone are not recorded by Git, so they are not a change.
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            observation_baseline(r.root()).unwrap().change_digest,
+            plain.change_digest
+        );
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o655)).unwrap();
+        assert_eq!(
+            observation_baseline(r.root()).unwrap().change_digest,
+            plain.change_digest
+        );
+        // A symlink with the same "content" as a file is a different entry.
+        std::fs::remove_file(&p).unwrap();
+        std::os::unix::fs::symlink("#!/bin/sh\n", &p).unwrap();
+        assert_ne!(
+            observation_baseline(r.root()).unwrap().change_digest,
+            plain.change_digest
+        );
+    }
+
+    #[test]
+    fn submodule_status_records_are_parsed() {
+        let status = b"1 .M S.M. 160000 160000 160000 aaa aaa sub dir\0\
+            1 .M N... 100644 100644 100644 bbb bbb plain.txt\0\
+            2 R. S... 160000 160000 160000 ccc ccc R100 new sub\0old sub\0\
+            ? untracked\0";
+        assert_eq!(
+            submodule_paths(status),
+            vec!["sub dir".to_string(), "new sub".to_string()]
+        );
+        assert_eq!(untracked_paths(status), vec!["untracked".to_string()]);
     }
 
     #[test]

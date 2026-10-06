@@ -14,6 +14,9 @@ use std::path::Path;
 
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
+/// `TIOCSTI` on Darwin: `_IOW('t', 114, char)`.
+pub const TIOCSTI: u64 = 0x8001_7472;
+
 /// Mach services a contained process tree may look up. Deliberately absent: LaunchServices
 /// (`open` would start apps outside the sandbox), the pasteboard, securityd/Keychain, DNS
 /// (`com.apple.dnssd.service`; the proxy resolves), and user preferences (`cfprefsd.agent`).
@@ -85,6 +88,19 @@ pub fn render(p: &Policy) -> String {
     );
     o.push_str("(allow pseudo-tty)\n");
     o.push_str("(allow file-ioctl (regex #\"^/dev/\"))\n");
+    // TIOCSTI pushes bytes into a terminal's *input* queue: a contained process sharing a
+    // terminal with an unsandboxed shell (an isolated agent typed into a host pane) could queue
+    // a command for that shell. XNU allows it on the caller's controlling tty, so deny it here
+    // (verified on macOS 26 by the real `sandbox-exec` test `tiocsti_cannot_inject_into_parent`).
+    // Seatbelt matches the low 16 bits of the request in some releases and the full value in
+    // others: deny every spelling.
+    let _ = writeln!(
+        o,
+        "(deny file-ioctl (ioctl-command {}) (ioctl-command {}) (ioctl-command {}))",
+        TIOCSTI & 0xffff,
+        TIOCSTI & !0x1fff_0000,
+        TIOCSTI
+    );
     o.push_str("(allow ipc-posix-sem)\n(allow ipc-posix-shm)\n");
     o.push_str("(allow system-socket)\n");
     let mach: Vec<String> = MACH_SERVICES
@@ -210,6 +226,16 @@ mod tests {
         assert!(sb.contains("refs/heads/vk/task(\\\\.lock)?$"));
         assert!(!sb.contains("com.apple.coreservices.launchservicesd"));
         assert!(!sb.contains("com.apple.pasteboard"));
+        // Terminal input injection is denied after the /dev ioctl allow.
+        let i_ioctl = sb.find("(allow file-ioctl").unwrap();
+        let i_sti = sb.find("(deny file-ioctl (ioctl-command 29810)").unwrap();
+        assert!(i_sti > i_ioctl);
+        // Git-executed files inside the checkout are in the final write deny.
+        let hooks = format!(
+            "(subpath \"{}\")",
+            root.join("home/code/repo-task/.githooks").display()
+        );
+        assert!(sb.rfind(&hooks).unwrap() > sb.rfind("(allow file-write*").unwrap());
         // Final deny block comes after every write allow.
         let last_allow = sb.rfind("(allow file-write*").unwrap();
         let final_deny = sb.rfind("(deny file-write*").unwrap();

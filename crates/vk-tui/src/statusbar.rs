@@ -44,7 +44,8 @@ fn at_top(app: &App) -> bool {
     )
 }
 
-/// Rows the status bar takes from the pane area: (below the tab bar, at the bottom).
+/// Rows the status bar takes from the pane area: (top side, bottom side). It sits next to the
+/// tab bar when both are on the same edge (08 §3, §4).
 pub fn reserved(app: &App) -> (u16, u16) {
     if !enabled(app) || app.size.1 < 6 {
         (0, 0)
@@ -57,15 +58,47 @@ pub fn reserved(app: &App) -> (u16, u16) {
 
 /// The screen row of the bar, when shown.
 pub fn row(app: &App) -> Option<u16> {
+    let (tt, tb) = crate::chrome::tab_rows(app);
     match reserved(app) {
-        (1, _) => Some(1),
-        (_, 1) => Some(app.size.1.saturating_sub(1)),
+        (1, _) => Some(tt),
+        (_, 1) => Some(app.size.1.saturating_sub(1 + tb)),
         _ => None,
     }
 }
 
 pub fn on_model(app: &mut App) {
     app.parity.status.stale = true;
+}
+
+/// Only while the bar is enabled: the clock's next minute (when a `clock` segment is shown)
+/// and the next `status.segments` request `tick` would make.
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if !enabled(app) {
+        return;
+    }
+    let bar = &app.config.ui.status_bar;
+    if [&bar.left, &bar.center, &bar.right]
+        .iter()
+        .any(|side| side.iter().any(|s| s == "clock"))
+    {
+        let into = now_ms().rem_euclid(60_000) as u64;
+        d.redraw(
+            "statusbar.clock",
+            now + Duration::from_millis(60_000 - into),
+        );
+    }
+    let mi = app.cur;
+    let st = &app.parity.status;
+    if st.inflight || st.unsupported.contains(&mi) || !app.machines[mi].connected() {
+        return;
+    }
+    let at = match st.last_req {
+        None => now,
+        Some(_) if st.data.as_ref().is_some_and(|(m, _)| *m != mi) => now,
+        Some(t) if st.stale => t + MIN_INTERVAL,
+        Some(t) => t + REFRESH,
+    };
+    d.at("statusbar", at);
 }
 
 /// Cheap refresh: one request in flight at most, after model changes (≥ 1 s apart) or every
@@ -346,9 +379,8 @@ type Placed = (String, String, Style, u16, u16, bool);
 fn layout(app: &App) -> Vec<Placed> {
     let cfg = &app.config.ui.status_bar;
     let d = data(app);
-    let x0 = if app.sidebar { app.sidebar_w + 1 } else { 0 };
-    let cols = app.size.0;
-    let span = cols.saturating_sub(x0);
+    let (x0, span) = crate::chrome::main_x(app);
+    let cols = x0 + span;
     let left = list(app, &cfg.left, &d);
     let center = list(app, &cfg.center, &d);
     let right = list(app, &cfg.right, &d);
@@ -377,13 +409,13 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let t = app.theme;
-    let x0 = if app.sidebar { app.sidebar_w + 1 } else { 0 };
-    let cols = app.size.0;
+    let (x0, span) = crate::chrome::main_x(app);
+    let cols = x0 + span;
     g.fill(
         SRect {
             x: x0,
             y,
-            w: cols.saturating_sub(x0),
+            w: span,
             h: 1,
         },
         t.text(),
@@ -404,7 +436,7 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
     let Some(y) = row(app) else {
         return false;
     };
-    if me.row != y || app.sidebar && me.column < app.sidebar_w {
+    if me.row != y || crate::chrome::in_sidebar(app, me.column) {
         return false;
     }
     if let MouseEventKind::Down(CtButton::Left) = me.kind {

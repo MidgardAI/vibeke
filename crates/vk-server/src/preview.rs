@@ -1,6 +1,8 @@
 //! Previews and the browser route, server side (06 B2, B3.1, B3.3, B3.4).
 //!
-//! - **Discovery** (every server): every 2 s (and on `pane.process_changed`) the LISTEN
+//! - **Discovery** (every server): every 2 s while panes are active or previews live, backing
+//!   off to 30 s when idle (and at once on `pane.process_changed`, or on output after a
+//!   back-off), the LISTEN
 //!   sockets of panes whose foreground process is not a shell; loopback/wildcard binds that
 //!   answer HTTP become suggestions. Pane output is split into lines on the feed path and
 //!   lines containing `://` are parsed here, off that path.
@@ -48,6 +50,8 @@ pub const METHODS: &[(&str, bool)] = &[
     ("preview.profile", true),
     ("preview.profile.list", false),
     ("preview.profile.reset", true),
+    ("preview.mirror", true),
+    ("preview.unmirror", true),
 ];
 
 /// `[preview]` keys used here (06 Part C). Unknown keys are ignored.
@@ -56,7 +60,7 @@ pub const METHODS: &[(&str, bool)] = &[
 pub struct PreviewConfig {
     /// suggest | promote | off
     pub auto_discover: String,
-    /// pane | window — Stage 1 builds the window only.
+    /// pane | window | proxy (B4).
     pub mode: String,
     /// machine | task
     pub profile_scope: String,
@@ -70,6 +74,11 @@ pub struct PreviewConfig {
     pub local_browser: String,
     /// Headless Chromium for browser panes (06 B3.2); "" = Playwright headless shell.
     pub pane_browser: String,
+    /// Window browser: auto | chrome | chromium | edge | brave | firefox | an absolute path.
+    pub profile_browser: String,
+    /// Reverse proxy listener port (B4), machine-wide: busy → proxy mode is refused (no
+    /// fallback; pick another port for this session). 0 = ephemeral.
+    pub proxy_port: u16,
 }
 
 impl Default for PreviewConfig {
@@ -83,7 +92,18 @@ impl Default for PreviewConfig {
             browser: String::new(),
             local_browser: "profile".into(),
             pane_browser: String::new(),
+            profile_browser: "auto".into(),
+            proxy_port: 47800,
         }
+    }
+}
+
+impl PreviewConfig {
+    /// The window uses Firefox (`profile_browser = "firefox"`, or a Firefox binary configured).
+    pub fn wants_firefox(&self) -> bool {
+        self.profile_browser == "firefox"
+            || (!self.browser.is_empty()
+                && browser::is_firefox_path(std::path::Path::new(&self.browser)))
     }
 }
 
@@ -158,8 +178,18 @@ pub struct Previews {
     link_factory: Mutex<Option<LinkFactory>>,
     clock: Mutex<Clock>,
     test_hooks: bool,
+    /// Pane activity pacing the discovery poll (fast while recent, backing off when idle).
+    pub(crate) pace: crate::timers::Activity,
     pub accepted: AtomicU64,
     pub rejected: AtomicU64,
+    /// The B4 reverse proxy (started on the first proxy open).
+    pub(crate) proxy: tokio::sync::Mutex<Option<Arc<vk_preview::proxy::Proxy>>>,
+    /// The same proxy for synchronous paths (route revocation from commits).
+    pub(crate) proxy_handle: Mutex<Option<Arc<vk_preview::proxy::Proxy>>>,
+    /// Test hook: the proxy port to use instead of `[preview] proxy_port`.
+    pub(crate) proxy_port_override: Mutex<Option<u16>>,
+    /// Explicit mirrors by local port (B4; never persisted, never automatic).
+    pub(crate) mirrors: Mutex<HashMap<u16, crate::preview_fabric::Mirror>>,
 }
 
 impl Default for Previews {
@@ -177,8 +207,13 @@ impl Default for Previews {
             link_factory: Mutex::new(None),
             clock: Mutex::new(Arc::new(vk_store::now_ms)),
             test_hooks: std::env::var("VIBEKE_TEST_HOOKS").is_ok_and(|v| v == "1"),
+            pace: Default::default(),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            proxy: tokio::sync::Mutex::new(None),
+            proxy_handle: Mutex::default(),
+            proxy_port_override: Mutex::default(),
+            mirrors: Mutex::default(),
         }
     }
 }
@@ -201,6 +236,11 @@ impl Previews {
         *self.clock.lock().unwrap() = c;
     }
 
+    /// Test hook / embedding: the proxy port to use instead of `[preview] proxy_port`.
+    pub fn set_proxy_port(&self, port: u16) {
+        *self.proxy_port_override.lock().unwrap() = Some(port);
+    }
+
     /// Test hook / embedding: how links to machines are made.
     pub fn set_link_factory(&self, f: LinkFactory) {
         *self.link_factory.lock().unwrap() = Some(f);
@@ -209,6 +249,7 @@ impl Previews {
 
     /// Hot path (pane feed): split into lines, queue the ones with `://`.
     pub fn on_output(&self, pane: &str, data: &[u8]) {
+        self.pace.touch();
         let mut lines = Vec::new();
         {
             let mut sc = self.scanners.lock().unwrap();
@@ -226,7 +267,7 @@ impl Previews {
         }
     }
 
-    fn link(&self, server: &Server, machine: &str) -> Option<Link> {
+    pub(crate) fn link(&self, server: &Server, machine: &str) -> Option<Link> {
         if let Some(l) = self.links.lock().unwrap().get(machine) {
             return Some(l.clone());
         }
@@ -357,7 +398,10 @@ pub fn start(server: &Arc<Server>) {
             && alive(b.root_pid, b.start)
             && vk_hold::procinfo::argv(b.root_pid)
                 .iter()
-                .any(|a| a == &format!("--user-data-dir={}", b.dir));
+                // Chromium: `--user-data-dir=<dir>`; Firefox: `-profile <dir>`.
+                .any(|a| {
+                    a == &format!("--user-data-dir={}", b.dir) || (!b.dir.is_empty() && a == &b.dir)
+                });
         if ok {
             adopted = true;
             server
@@ -388,6 +432,8 @@ pub fn status_json(server: &Server) -> Value {
     json!({
         "socks_port": port,
         "browsers": server.previews.browsers.lock().unwrap().len(),
+        "proxy_port": crate::preview_fabric::proxy_port(server),
+        "mirrors": server.previews.mirrors.lock().unwrap().len(),
         "previews": server.with_core(|c| c.model.previews.len()),
     })
 }
@@ -432,6 +478,10 @@ pub(crate) fn commit_previews(server: &Server, items: Vec<(Preview, Option<&'sta
     }
     if server.commit(&mut c, tx).is_ok() {
         for (p, _) in items {
+            // A gone preview loses its proxy origin and sessions, whatever retired it.
+            if p.status == PreviewStatus::Gone {
+                crate::preview_fabric::revoke_route(server, "local", &p.id);
+            }
             apply_model(&mut c, p);
         }
     }
@@ -515,19 +565,40 @@ fn significant(a: &Preview, b: &Preview) -> bool {
 
 // ---- discovery ------------------------------------------------------------------------------
 
+/// Discovery stays on the [`TICK`] period this long after the last pane output / foreground
+/// change, then backs off (doubling) to [`DISCOVERY_SLOW_MAX`] while nothing happens.
+const DISCOVERY_FAST_WINDOW: Duration = Duration::from_secs(30);
+const DISCOVERY_SLOW_MAX: Duration = Duration::from_secs(30);
+
 async fn discovery_loop(server: Arc<Server>) {
     let mut events = server.events.subscribe();
-    let mut tick = tokio::time::interval(TICK);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut cfg = PreviewConfig::load();
     let mut cfg_at = Instant::now();
     let mut last = Instant::now() - TICK;
+    // Paced by activity (spec 10 §1.3 wakeup budget): pane output, foreground changes and pane
+    // lifecycle keep the 2 s period (and output wakes a backed-off loop at once); with no
+    // activity and no live previews the period doubles up to 30 s.
+    let window = std::env::var("VIBEKE_PREVIEW_FAST_WINDOW_MS")
+        .ok()
+        .filter(|_| server.previews.test_hooks)
+        .and_then(|v| v.parse().ok())
+        .map_or(DISCOVERY_FAST_WINDOW, Duration::from_millis);
+    let mut pace = crate::timers::Backoff::new(TICK, window, DISCOVERY_SLOW_MAX);
+    let act = &server.previews.pace;
+    let mut every = TICK;
     loop {
+        if every > TICK {
+            act.park();
+        }
         tokio::select! {
-            _ = tick.tick() => {}
+            _ = tokio::time::sleep(every.saturating_sub(last.elapsed())) => {}
+            // Output while backed off: scan now.
+            _ = act.woken(), if every > TICK => {}
             ev = events.recv() => match ev {
-                Ok(e) if e.kind == "pane.process_changed" || e.kind == "pane.closed" => {
-                    // Foreground change: rescan now (debounced).
+                Ok(e) if matches!(e.kind.as_str(), "pane.process_changed" | "pane.closed" | "pane.created") => {
+                    // Foreground change: rescan now (debounced) and stay fast for a while.
+                    act.note();
+                    every = pace.reset();
                     if last.elapsed() < Duration::from_millis(300) { continue }
                 }
                 Ok(_) => continue,
@@ -535,12 +606,22 @@ async fn discovery_loop(server: Arc<Server>) {
                 Err(_) => return,
             }
         }
+        act.unpark();
         if cfg_at.elapsed() > Duration::from_secs(10) {
             cfg = PreviewConfig::load();
             cfg_at = Instant::now();
         }
         last = Instant::now();
         discover(&server, &cfg).await;
+        // Live previews need presence checks on the fast period (lifecycle timing).
+        let busy = server.with_core(|c| {
+            c.model
+                .previews
+                .iter()
+                .any(|p| p.status != PreviewStatus::Gone)
+        });
+        every = pace.next(act.since_touch(), busy);
+        act.pass_done(every);
     }
 }
 
@@ -635,19 +716,30 @@ pub async fn discover(server: &Arc<Server>, cfg: &PreviewConfig) {
             .collect()
     };
     if !candidates.is_empty() && existing.len() < MAX_PREVIEWS {
-        let probes = futures::future::join_all(
-            candidates
-                .iter()
-                .map(|(_, l)| probe::is_web_page(Some(l.addr), l.port, Duration::from_secs(1))),
-        )
+        // Plain HTTP first; a listener that isn't gets a TLS probe (self-signed accepted, no
+        // credentials sent) and becomes an `https` suggestion if a page answers over TLS.
+        let probes = futures::future::join_all(candidates.iter().map(|(_, l)| async move {
+            let t = Duration::from_secs(1);
+            if probe::is_web_page(Some(l.addr), l.port, t).await {
+                Some("http")
+            } else if vk_preview::tls::is_web_page(Some(l.addr), l.port, t).await {
+                Some("https")
+            } else {
+                None
+            }
+        }))
         .await;
         let promote = cfg.auto_discover == "promote";
         let mut items = Vec::new();
-        for ((pane, l), http) in candidates.iter().zip(probes) {
-            if !http {
+        for ((pane, l), scheme) in candidates.iter().zip(probes) {
+            let Some(scheme) = scheme else {
                 continue; // other TCP is hidden (06 B2)
-            }
+            };
             let mut p = new_preview(server, l.port, PreviewSource::Listener, now);
+            if scheme == "https" {
+                p.scheme = "https".into();
+                p.url = format!("https://localhost:{}/", l.port);
+            }
             p.pane = Some(pane.clone());
             p.task = scan
                 .iter()
@@ -791,7 +883,8 @@ fn on_found_url(server: &Arc<Server>, cfg: &PreviewConfig, pane: &str, f: scan::
         let mut up = false;
         for _ in 0..10 {
             up = if f.scheme == "https" {
-                probe::tcp_alive(None, f.port).await
+                // TLS handshake (self-signed accepted) + HTTP probe, no credentials.
+                vk_preview::tls::is_web_page(None, f.port, Duration::from_secs(1)).await
             } else {
                 probe::is_web_page(None, f.port, Duration::from_secs(1)).await
             };
@@ -1232,8 +1325,22 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                             .map_err(|e| invalid(e.to_string()))
                     })
             };
-            pv.map(|x| json!({"remote_url": x.url, "profile_url": open_url_of(&x)}))
+            let machine = if m.is_empty() { "local".to_string() } else { m };
+            match pv {
+                Ok(x) => {
+                    // No side effects: `proxy_url` only for an origin that already exists,
+                    // and never with a credential.
+                    let proxy_url =
+                        crate::preview_fabric::existing_proxy_url(server, &machine, &x).await;
+                    Ok(
+                        json!({"remote_url": x.url, "profile_url": open_url_of(&x), "proxy_url": proxy_url}),
+                    )
+                }
+                Err(e) => Err(e),
+            }
         }
+        "preview.mirror" => crate::preview_fabric::mirror(server, ctx, p).await,
+        "preview.unmirror" => crate::preview_fabric::unmirror(server, ctx, p),
         "preview.open" => open(server, ctx, p).await,
         "preview.status" => {
             let port = *server.previews.socks_port.lock().await;
@@ -1262,6 +1369,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 "links": lv,
                 "accepted": server.previews.accepted.load(Ordering::Relaxed),
                 "rejected": server.previews.rejected.load(Ordering::Relaxed),
+                "proxy": crate::preview_fabric::proxy_status(server).await,
+                "mirrors": crate::preview_fabric::mirrors_status(server),
             }))
         }
         "preview.profile" if s(p, "action").unwrap_or("list") == "list" => Ok(profile_list(server)),
@@ -1291,19 +1400,13 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     })
 }
 
-fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let port = port_param(p)?;
     let pane = match s(p, "pane") {
         Some(t) => Some(resolve_pane(server, ctx, Some(t))?.id),
         None => ctx.pane_scope.clone(),
     };
-    let mut path = s(p, "path").unwrap_or("/").to_string();
-    if !path.starts_with('/') {
-        path.insert(0, '/');
-    }
-    if path.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(invalid("path must not contain whitespace"));
-    }
+    let path = vk_tasks::normalize_preview_path(s(p, "path").unwrap_or("/")).map_err(invalid)?;
     let scheme = s(p, "scheme").unwrap_or("http");
     if scheme != "http" && scheme != "https" {
         return Err(invalid("scheme must be http or https"));
@@ -1440,6 +1543,9 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
     let t = s(p, "preview").ok_or_else(|| invalid("missing param `preview`"))?;
     let (m, t) = split_target(server, p, t);
     if !m.is_empty() {
+        // Revoke this server's origins for it first: the old link must not reach whatever
+        // listens on that remote port next, even if the remote call fails.
+        crate::preview_fabric::forget_remote_routes(server, &m, &t);
         return remote_call(server, &m, "preview.forget", json!({"preview": t})).await;
     }
     let mut x = find_local(server, &t)?;
@@ -1451,6 +1557,7 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
         .unwrap()
         .insert(x.port, x.pid);
     lifecycle::retire(&mut x);
+    crate::preview_fabric::forget_route(server, "local", &x.id).await;
     commit_previews(server, vec![(x, Some("preview.gone"))]);
     Ok(json!({}))
 }
@@ -1468,8 +1575,16 @@ pub(crate) fn profile_for(cfg: &PreviewConfig, machine_label: &str, task: Option
 
 pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let cfg = PreviewConfig::load();
-    let window =
-        b(p, "window").unwrap_or(false) || (cfg.mode == "window" && s(p, "split").is_none());
+    let explicit_view = b(p, "window").is_some() || s(p, "split").is_some();
+    // Proxy mode (B4): `--proxy`, `mode: "proxy"`, or `preview.mode = "proxy"` without an
+    // explicit window/pane request.
+    let proxy = b(p, "proxy").unwrap_or(false)
+        || s(p, "mode") == Some("proxy")
+        || (cfg.mode == "proxy" && !explicit_view && s(p, "mode").is_none());
+    let window = !proxy
+        && (b(p, "window").unwrap_or(false)
+            || s(p, "mode") == Some("window")
+            || (cfg.mode == "window" && s(p, "split").is_none()));
     // Resolve what to open and on which machine (`vibeke preview open <url>` passes the URL
     // positionally as `preview`).
     let url_param = s(p, "url").or_else(|| {
@@ -1502,6 +1617,11 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     } else {
         return Err(invalid("preview.open needs `preview` or `url`"));
     };
+    if proxy {
+        let pv = preview
+            .ok_or_else(|| invalid("proxy mode opens a preview (v4 or devbox/v4), not a URL"))?;
+        return crate::preview_fabric::open_proxy(server, ctx, p, &cfg, &machine, &pv).await;
+    }
     if !window {
         return crate::browser_pane::open_pane(server, ctx, p, &machine, preview.as_ref(), &url)
             .await;
@@ -1540,7 +1660,7 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }
     let task = preview.as_ref().and_then(|x| x.task.clone());
     // The browser pane's window handover passes its profile (task profiles included).
-    let profile = s(p, "profile")
+    let mut profile = s(p, "profile")
         .filter(|x| ctx.pane_scope.is_none() && browser::valid_profile_name(x))
         .map(str::to_string)
         .unwrap_or_else(|| profile_for(&cfg, &machine_label, task.as_deref()));
@@ -1549,14 +1669,33 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     } else {
         "loopback"
     };
-    let bin = browser::find_browser(Some(cfg.browser.as_str()).filter(|b| !b.is_empty()))
-        .ok_or_else(|| {
+    let firefox = cfg.wants_firefox();
+    let bin = if firefox {
+        browser::find_firefox(Some(cfg.browser.as_str())).ok_or_else(|| {
             err(
                 ErrorKind::Unsupported,
-                "no Chromium-family browser found (set [preview] browser = \"/path/to/chrome\")",
+                "Firefox not found (set [preview] browser = \"/path/to/firefox\")",
             )
-            .details(json!({"fallback": "install Chromium or Chrome"}))
-        })?;
+            .details(json!({"fallback": "profile_browser = \"auto\" (Chromium)"}))
+        })?
+    } else {
+        browser::find_browser(Some(cfg.browser.as_str()).filter(|b| !b.is_empty())).ok_or_else(
+            || {
+                err(
+                    ErrorKind::Unsupported,
+                    "no Chromium-family browser found (set [preview] browser = \"/path/to/chrome\")",
+                )
+                .details(json!({"fallback": "install Chromium or Chrome"}))
+            },
+        )?
+    };
+    if firefox {
+        // A Firefox profile never shares a directory with the Chromium profile (browser panes
+        // keep using Chromium on the plain name).
+        let mut f = profile.clone();
+        f.truncate(56);
+        profile = format!("{f}-firefox");
+    }
     let socks_port = if local {
         None
     } else {
@@ -1570,14 +1709,6 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let dir = root.join(&profile);
     browser::check_profile_dir(&dir, &root).map_err(|e| invalid(format!("{e:#}")))?;
     let headless = server.previews.test_hooks && b(p, "headless").unwrap_or(false);
-    let spec = browser::LaunchSpec {
-        bin: bin.path.clone(),
-        profile_dir: dir.clone(),
-        socks_port,
-        url: url.clone(),
-        headless,
-        extra_args: vec![],
-    };
     let log = server.paths.logs().join(format!("browser-{profile}.log"));
     // A headless browser-pane Chromium on this profile hands it over to the window (06 B3.3:
     // a profile can be open in only one process).
@@ -1601,6 +1732,16 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             ),
         ));
     }
+    let spec = browser::LaunchSpec {
+        bin: bin.path.clone(),
+        profile_dir: dir.clone(),
+        socks_port,
+        url: url.clone(),
+        headless,
+        extra_args: vec![],
+        firefox,
+        reuse: reused,
+    };
     let mut child = browser::launch(&spec, Some(&log))
         .map_err(|e| err(ErrorKind::Unsupported, format!("{e:#}")))?;
     let pid = child.id().unwrap_or(0);

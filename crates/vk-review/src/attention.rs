@@ -130,6 +130,10 @@ pub struct AttentionItem {
     pub risk: Option<Risk>,
     #[serde(default)]
     pub blocks_run: bool,
+    /// Open tasks waiting for this item's task through user-confirmed `blocks` dependency
+    /// edges (T4, §8.1). Inferred links never count.
+    #[serde(default)]
+    pub blocks_tasks: u32,
     #[serde(default)]
     pub effort: Effort,
     #[serde(default)]
@@ -268,6 +272,11 @@ fn explain(item: &AttentionItem, class: AttentionClass, now_ms: i64, woke: bool)
     if item.blocks_run {
         parts.push("blocks this run".into());
     }
+    match item.blocks_tasks {
+        0 => {}
+        1 => parts.push("blocks 1 linked task".into()),
+        n => parts.push(format!("blocks {n} linked tasks")),
+    }
     if item.priority != 0 {
         parts.push(format!("priority {:+}", item.priority));
     }
@@ -301,7 +310,11 @@ fn within_class(a: &RankedItem, b: &RankedItem) -> Ordering {
         .cmp(&y.opened_at_ms)
         .then_with(|| x.key.object_id.cmp(&y.key.object_id));
     let by_risk = risk_rank(y.risk).cmp(&risk_rank(x.risk));
-    let by_prio = y.priority.cmp(&x.priority);
+    // Explicit priority, then confirmed dependent tasks (§8.1 class 3).
+    let by_prio = y
+        .priority
+        .cmp(&x.priority)
+        .then_with(|| y.blocks_tasks.cmp(&x.blocks_tasks));
     match a.class {
         AttentionClass::DeliveryOrUnsafe => by_pin.then(by_risk).then(by_age),
         AttentionClass::DeadlineApproaching => by_pin
@@ -399,6 +412,7 @@ pub fn five_minute_view(ranked: &[RankedItem], budget_ms: i64) -> FiveMinuteView
         b.item
             .blocks_run
             .cmp(&a.item.blocks_run)
+            .then_with(|| b.item.blocks_tasks.cmp(&a.item.blocks_tasks))
             .then_with(|| a.item.effort.nominal_ms().cmp(&b.item.effort.nominal_ms()))
             .then(ia.cmp(ib))
     });
@@ -615,6 +629,7 @@ mod tests {
             priority: 0,
             risk: None,
             blocks_run: false,
+            blocks_tasks: 0,
             effort: Effort::Unknown,
             seen: false,
             snoozed_until_ms: None,
@@ -698,6 +713,26 @@ mod tests {
         assert_eq!(r[2].explanation, "Waiting 12m; blocks this run");
         assert!(r[3].explanation.contains("high risk"));
         assert!(!r[3].explanation.to_lowercase().contains("recommend"));
+    }
+
+    #[test]
+    fn confirmed_dependents_rank_after_priority_and_explain() {
+        let old = item("old", AttentionKind::ReviewCandidate, 30 * MIN);
+        let mut blocking = item("blocking", AttentionKind::ReviewCandidate, MIN);
+        blocking.blocks_tasks = 2;
+        let mut one = item("one", AttentionKind::Interaction, MIN);
+        one.blocks_tasks = 1;
+        let mut prio = item("prio", AttentionKind::ReviewCandidate, 0);
+        prio.priority = 1;
+        let r = rank(&[old, blocking, one, prio], NOW, &p());
+        assert_eq!(ids(&r), vec!["one", "prio", "blocking", "old"]);
+        assert_eq!(r[0].explanation, "Waiting 1m; blocks 1 linked task");
+        assert!(r[2].explanation.contains("blocks 2 linked tasks"));
+        assert!(!r[3].explanation.contains("blocks"));
+        // The five-minute view prefers unblock impact among equal effort.
+        let v = five_minute_view(&r, 60_000 * 3);
+        assert_eq!(v.items.len(), 1);
+        assert_eq!(v.items[0].ranked.item.key.object_id, "blocking");
     }
 
     #[test]

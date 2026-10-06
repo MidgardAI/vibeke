@@ -21,6 +21,7 @@ pub mod pane;
 pub mod parity;
 pub mod paths;
 pub mod preview;
+pub mod preview_fabric;
 pub mod render;
 pub mod review;
 pub mod run;
@@ -28,7 +29,11 @@ pub mod sandbox;
 pub mod screenshots;
 pub mod search;
 pub mod theme;
+pub mod timers;
 pub mod tracking;
+
+#[cfg(test)]
+mod scope_catalog_tests;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
@@ -96,6 +101,9 @@ pub struct Server {
     pub screen_dirty: Notify,
     pub clients: Mutex<HashMap<String, ClientState>>,
     pub geometry_leader: Mutex<Option<String>>,
+    /// Leased-port env of tasks being created (their first pane spawns before the task is in
+    /// the model), by task id.
+    pub pending_task_env: Mutex<HashMap<String, Vec<(String, String)>>>,
     pub boot_id: String,
     pub started: Instant,
     pub archive: Mutex<Archive>,
@@ -123,6 +131,11 @@ pub struct Server {
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
+    /// Coalesced pane deadlines (spec 10 §1.3 wakeup budget).
+    pub timers: Arc<timers::Scheduler>,
+    /// Wakes the housekeeping task: archive rows to flush, or storage degraded.
+    pub housekeeping_wake: Notify,
+    pub housekeeping_runs: AtomicU64,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -182,6 +195,7 @@ impl Server {
             screen_dirty: Notify::new(),
             clients: Mutex::new(HashMap::new()),
             geometry_leader: Mutex::new(None),
+            pending_task_env: Mutex::new(HashMap::new()),
             boot_id: ulid(),
             started: Instant::now(),
             fts_buf: Mutex::new(Vec::new()),
@@ -201,6 +215,9 @@ impl Server {
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
+            timers: Arc::default(),
+            housekeeping_wake: Notify::new(),
+            housekeeping_runs: AtomicU64::new(0),
         }))
     }
 
@@ -223,6 +240,8 @@ impl Server {
             Err(e) => {
                 let msg = format!("storage unavailable: {e:#}");
                 *self.degraded.lock().unwrap() = Some(msg.clone());
+                // Housekeeping probes storage until it recovers.
+                self.housekeeping_wake.notify_one();
                 core.model.degraded = Some(msg);
                 self.bump_model();
                 Err(e)
@@ -414,7 +433,9 @@ impl Server {
 
     fn respawn_pane(self: &Arc<Self>, old: &Pane, cwd: &str) -> Result<()> {
         let argv = shell_argv(&self.opts);
-        let (wsh, tabh, ws_task) = self.with_core(|c| {
+        let (wsh, tabh, ws_task, task_env) = self.with_core(|c| {
+            let ws_task = c.ws(&old.workspace).and_then(|w| w.task.clone());
+            let task_env = self.task_env_for(c, ws_task.as_deref());
             (
                 c.ws(&old.workspace)
                     .map(|w| w.handle.clone())
@@ -422,7 +443,8 @@ impl Server {
                 c.tab(&old.tab)
                     .map(|t| t.handle.clone())
                     .unwrap_or_default(),
-                c.ws(&old.workspace).and_then(|w| w.task.clone()),
+                ws_task,
+                task_env,
             )
         });
         let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
@@ -435,6 +457,7 @@ impl Server {
             old.cols,
             old.rows,
             ws_task.as_deref(),
+            task_env,
         )?;
         let mut c = self.core.lock().unwrap();
         let mut p = old.clone();
@@ -473,6 +496,7 @@ impl Server {
         cols: u16,
         rows: u16,
         ws_task: Option<&str>,
+        task_env: Vec<(String, String)>,
     ) -> Result<(u32, u32, String, Vec<u8>, Isolation)> {
         let socket = self
             .paths
@@ -480,7 +504,7 @@ impl Server {
             .to_string_lossy()
             .into_owned();
         let key: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
-        let env = self.pane_env(pane_id, handle, tab_handle, ws_handle);
+        let env = self.pane_env(pane_id, handle, tab_handle, ws_handle, &task_env);
         let cwd = if std::path::Path::new(cwd).is_dir() {
             cwd.to_string()
         } else {
@@ -520,8 +544,22 @@ impl Server {
         handle: &str,
         tab_handle: &str,
         ws_handle: &str,
+        task_env: &[(String, String)],
     ) -> Vec<(String, String)> {
-        self.pane_env(pane_id, handle, tab_handle, ws_handle)
+        self.pane_env(pane_id, handle, tab_handle, ws_handle, task_env)
+    }
+
+    /// Leased-port env for panes of task `ws_task` (empty for non-task workspaces).
+    pub(crate) fn task_env_for(&self, c: &Core, ws_task: Option<&str>) -> Vec<(String, String)> {
+        let Some(id) = ws_task else {
+            return vec![];
+        };
+        if let Some(e) = self.pending_task_env.lock().unwrap().get(id) {
+            return e.clone();
+        }
+        c.task(id)
+            .map(preview_fabric::task_port_env)
+            .unwrap_or_default()
     }
 
     /// Must not lock `core`: callers hold it while spawning.
@@ -531,6 +569,7 @@ impl Server {
         handle: &str,
         tab_handle: &str,
         ws_handle: &str,
+        task_env: &[(String, String)],
     ) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = self
             .opts
@@ -573,6 +612,10 @@ impl Server {
         );
         set(&mut env, "VIBEKE_PANE_TOKEN", self.token_for(pane_id));
         theme::pane_env(self, &mut env);
+        // Leased ports of an owned task workspace (`PORT`, `[ports] env` names).
+        for (k, v) in task_env {
+            set(&mut env, k, v.clone());
+        }
         if self.opts.shims {
             let shims = Paths::shims();
             if shims.is_dir() {
@@ -642,6 +685,7 @@ impl Server {
             cols,
             rows,
             ws.task.as_deref(),
+            self.task_env_for(c, ws.task.as_deref()),
         )?;
         let pane = Pane {
             id: id.clone(),
@@ -688,6 +732,19 @@ impl Server {
         command: Option<Vec<String>>,
         focus_client: Option<&str>,
     ) -> Result<(Workspace, Tab, Pane)> {
+        self.create_workspace_for(cwd, name, command, focus_client, None)
+    }
+
+    /// [`Self::create_workspace`] for a task's workspace: its first pane already gets the
+    /// task's leased-port env (the task is registered in the model afterwards).
+    pub fn create_workspace_for(
+        self: &Arc<Self>,
+        cwd: &str,
+        name: Option<String>,
+        command: Option<Vec<String>>,
+        focus_client: Option<&str>,
+        task: Option<&str>,
+    ) -> Result<(Workspace, Tab, Pane)> {
         let mut c = self.core.lock().unwrap();
         let id = ulid();
         let handle = c.next_ws_handle();
@@ -708,7 +765,7 @@ impl Server {
             name,
             auto_name: auto,
             root_path: cwd.to_string(),
-            task: None,
+            task: task.map(str::to_string),
             order,
             branch: None,
         };
@@ -1289,14 +1346,17 @@ impl Server {
             );
         }
         let _ = self.archive.lock().unwrap().append(pane, &rows);
+        self.housekeeping_wake.notify_one();
     }
 
     pub fn archive_last_line(&self, pane: &str) -> Option<u64> {
         self.archive.lock().unwrap().last_line(pane).ok().flatten()
     }
 
-    /// 1 Hz housekeeping: flush archive + FTS, probe storage when degraded, prune events.
+    /// Housekeeping: flush archive + FTS, probe storage when degraded. Runs at most once a
+    /// second while there is something to do ([`Server::housekeeping_wake`]), never when idle.
     pub fn housekeeping(&self) {
+        self.housekeeping_runs.fetch_add(1, Ordering::Relaxed);
         let _ = self.archive.lock().unwrap().flush();
         let rows = std::mem::take(&mut *self.fts_buf.lock().unwrap());
         if !rows.is_empty() {

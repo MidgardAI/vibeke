@@ -45,14 +45,26 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     tracing::info!(recovered, socket = %server.paths.socket().display(), "server ready");
     let hk = server.clone();
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        let mut n = 0u64;
+        // Event-driven (spec 10 §1.3): archived rows or a storage failure wake it, and writes
+        // are still batched at most once a second; an idle server only wakes for the hourly
+        // prune.
+        let hour = Duration::from_secs(3600);
+        let mut prune_at = tokio::time::Instant::now() + hour;
         loop {
-            tick.tick().await;
-            hk.housekeeping();
-            n += 1;
-            if n.is_multiple_of(3600) {
-                let _ = hk.with_core(|c| c.store.prune(7, 365));
+            tokio::select! {
+                _ = hk.housekeeping_wake.notified() => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    hk.housekeeping();
+                    if hk.degraded.lock().unwrap().is_some() {
+                        // Keep probing storage once a second until it recovers.
+                        hk.housekeeping_wake.notify_one();
+                    }
+                }
+                _ = tokio::time::sleep_until(prune_at) => {
+                    hk.housekeeping();
+                    let _ = hk.with_core(|c| c.store.prune(7, 365));
+                    prune_at += hour;
+                }
             }
         }
     });
@@ -121,6 +133,44 @@ pub fn ancestry_pane(server: &Server, pid: Option<i32>) -> Option<String> {
         pid = info.ppid;
     }
     None
+}
+
+/// Whether `pid` runs inside a pane of *any* session under the Vibeke runtime root
+/// `runtime_root` (every session of this installation on the machine): one of its ancestors is
+/// a pane holder (`vibeke hold --spec <runtime_root>/<session>/spawn-…`). Used where a pane of
+/// another session must not pass for an operator (the Herdr shim's session switch, 07 §8.2).
+pub fn inside_any_pane(pid: Option<i32>, runtime_root: &std::path::Path) -> bool {
+    let Some(mut pid) = pid.filter(|p| *p > 1).map(|p| p as u32) else {
+        return false;
+    };
+    let roots = [
+        Some(runtime_root.to_path_buf()),
+        runtime_root.canonicalize().ok(),
+    ];
+    let ours = |spec: &str| {
+        roots
+            .iter()
+            .flatten()
+            .any(|r| std::path::Path::new(spec).starts_with(r))
+    };
+    for _ in 0..64 {
+        let Some(info) = vk_hold::procinfo::info(pid) else {
+            return false;
+        };
+        let spec = info
+            .argv
+            .iter()
+            .position(|a| a == "--spec")
+            .and_then(|i| info.argv.get(i + 1));
+        if info.argv.get(1).is_some_and(|a| a == "hold") && spec.is_some_and(|s| ours(s)) {
+            return true;
+        }
+        if info.ppid <= 1 || info.ppid == pid {
+            return false;
+        }
+        pid = info.ppid;
+    }
+    false
 }
 
 /// Per-connection cleanup that must run however the connection ends (EOF, error, panic
@@ -200,6 +250,14 @@ where
                     "render.attach" => break Some(req),
                     "events.subscribe" => {
                         subscribe(&server, &req, out_tx.clone())?;
+                    }
+                    // The Herdr shim reaches another session through this method. A process
+                    // inside a pane of another session is not this session's operator, with or
+                    // without its pane token (07 §8.2, 09 §6).
+                    "compat.herdr.call" if ctx.pane_scope.is_none()
+                        && inside_any_pane(peer_pid, server.paths.runtime.parent().unwrap_or(&server.paths.runtime)) => {
+                        let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, "a pane cannot select another session"));
+                        let _ = out_tx.send(serde_json::to_string(&r)?);
                     }
                     _ => {
                         let (srv, c, tx, l) = (server.clone(), ctx.clone(), out_tx.clone(), l.to_string());
@@ -924,17 +982,29 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 .await?;
         isolation = b.isolation.clone();
     }
-    let (ws, _tab, pane) = server
-        .create_workspace(
-            &cwd,
-            Some(checkout.slug.clone()),
-            None,
-            p.get("focus")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                .then_some(ctx.client_id.as_str()),
-        )
-        .map_err(internal)?;
+    // The first pane spawns before the task is in the model: hand it the leased-port env.
+    let pre_task = Task {
+        port_range: lease.as_ref().map(|l| (l.start, l.end)),
+        worktree_path: Some(cwd.clone()),
+        ..Default::default()
+    };
+    server
+        .pending_task_env
+        .lock()
+        .unwrap()
+        .insert(id.clone(), crate::preview_fabric::task_port_env(&pre_task));
+    let created = server.create_workspace_for(
+        &cwd,
+        Some(checkout.slug.clone()),
+        None,
+        p.get("focus")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then_some(ctx.client_id.as_str()),
+        Some(&id),
+    );
+    server.pending_task_env.lock().unwrap().remove(&id);
+    let (ws, _tab, pane) = created.map_err(internal)?;
     let task = Task {
         id: id.clone(),
         handle,
@@ -978,6 +1048,16 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
         server.commit(&mut c, tx).map_err(internal)?;
     }
+    // Task `[previews]` with ports from the lease (06 B2): declared before anything starts.
+    let task_previews = crate::preview_fabric::declare_task_previews(
+        server,
+        ctx,
+        &task,
+        &pane.id,
+        &checkout.path,
+        lease.as_ref(),
+        p,
+    );
     // Setup script in the background (05 §7).
     let script = checkout
         .path
@@ -1075,7 +1155,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .map(|c| c.rel.clone())
         .collect();
     Ok(
-        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings}),
+        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings, "previews": task_previews["previews"], "preview_warnings": task_previews["warnings"]}),
     )
 }
 
@@ -1116,6 +1196,8 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
         vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?,
     );
     let _ = leases.release(&task.id);
+    // The lease is gone, so are the task's previews (06 B2 lifecycle).
+    crate::preview_fabric::retire_task_previews(server, &task.id);
     crate::sandbox::teardown(server, &task.id);
     let mut job = None;
     let kind = task.checkout.clone().unwrap_or_else(|| "worktree".into());

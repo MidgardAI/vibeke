@@ -79,11 +79,11 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn st<'a>(v: &'a Value, k: &str) -> &'a str {
+pub(crate) fn st<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
-fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
+pub(crate) fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
     v.get(k)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
@@ -91,7 +91,7 @@ fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
 }
 
 /// Text input: printable characters append, Backspace deletes, ctrl+u clears.
-fn edit(buf: &mut String, ev: &KeyEvent) -> bool {
+pub(crate) fn edit(buf: &mut String, ev: &KeyEvent) -> bool {
     match ev.key {
         Key::Named(NamedKey::Backspace) => {
             buf.pop();
@@ -168,6 +168,8 @@ pub enum Reply {
     TaskRuns {
         task: String,
     },
+    /// T4 surfaces (snapshot, reviewer, notes, dependencies, effort): `crate::tasks_t4`.
+    T4(crate::tasks_t4::T4Reply),
 }
 
 // ---- Track this work ----------------------------------------------------------------------------
@@ -192,11 +194,60 @@ pub enum TrackPhase {
 pub enum TrackField {
     Source,
     Title,
+    Constraint(usize),
     Criterion(usize),
     AddCriterion,
     Stop,
     Objective,
     Submit,
+}
+
+/// A Track-form criterion or constraint. A typed one is a required human criterion (sent as a
+/// plain string, as before); one filled from an assistant suggestion keeps its generated
+/// semantics — optional, its evaluation kind and the source turns it cites (14, 15 §2.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackItem {
+    pub text: String,
+    pub required: bool,
+    pub evaluation: Option<String>,
+    pub source_turns: Vec<u32>,
+}
+
+impl TrackItem {
+    pub fn typed(text: &str) -> Self {
+        TrackItem {
+            text: text.into(),
+            required: true,
+            evaluation: None,
+            source_turns: vec![],
+        }
+    }
+
+    fn plain(&self) -> bool {
+        self.required && self.evaluation.is_none() && self.source_turns.is_empty()
+    }
+
+    /// Wire form for `task.track`: a string when nothing but the text is set, else an object.
+    fn criterion_param(&self) -> Value {
+        if self.plain() {
+            return json!(self.text.trim());
+        }
+        let mut v = json!({"text": self.text.trim(), "required": self.required});
+        if let Some(e) = &self.evaluation {
+            v["evaluation"] = json!(e);
+        }
+        if !self.source_turns.is_empty() {
+            v["source_turns"] = json!(self.source_turns);
+        }
+        v
+    }
+
+    fn constraint_param(&self) -> Value {
+        if self.source_turns.is_empty() {
+            return json!(self.text.trim());
+        }
+        json!({"text": self.text.trim(), "source_turns": self.source_turns})
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,7 +263,9 @@ pub struct TrackForm {
     pub sel_turn: usize,
     pub title: String,
     pub title_edited: bool,
-    pub criteria: Vec<String>,
+    pub criteria: Vec<TrackItem>,
+    /// Constraints (filled from a suggestion; editable and removable, never criteria).
+    pub constraints: Vec<TrackItem>,
     pub stop: usize,
     pub objective: String,
     pub field: TrackField,
@@ -251,6 +304,7 @@ impl TrackForm {
             title: String::new(),
             title_edited: false,
             criteria: Vec::new(),
+            constraints: Vec::new(),
             stop: 0,
             objective: String::new(),
             field: TrackField::Source,
@@ -302,6 +356,7 @@ impl TrackForm {
 
     fn fields(&self) -> Vec<TrackField> {
         let mut f = vec![TrackField::Source, TrackField::Title];
+        f.extend((0..self.constraints.len()).map(TrackField::Constraint));
         f.extend((0..self.criteria.len()).map(TrackField::Criterion));
         f.extend([
             TrackField::AddCriterion,
@@ -372,21 +427,34 @@ impl TrackForm {
             (TrackField::Objective, _) => {
                 edit(&mut self.objective, ev);
             }
+            (TrackField::Constraint(_), Key::Named(NamedKey::Enter)) => self.step(true),
+            (TrackField::Constraint(i), _) if ctrl(ev, 'd') => self.remove_constraint(i),
+            (TrackField::Constraint(i), Key::Named(NamedKey::Backspace))
+                if self.constraints[i].text.is_empty() =>
+            {
+                self.remove_constraint(i)
+            }
+            (TrackField::Constraint(i), _) => {
+                edit(&mut self.constraints[i].text, ev);
+            }
             (TrackField::Criterion(i), Key::Named(NamedKey::Enter)) => {
-                self.criteria.insert(i + 1, String::new());
+                self.criteria.insert(i + 1, TrackItem::typed(""));
                 self.field = TrackField::Criterion(i + 1);
+            }
+            (TrackField::Criterion(i), _) if ctrl(ev, 'r') => {
+                self.criteria[i].required = !self.criteria[i].required
             }
             (TrackField::Criterion(i), _) if ctrl(ev, 'd') => self.remove_criterion(i),
             (TrackField::Criterion(i), Key::Named(NamedKey::Backspace))
-                if self.criteria[i].is_empty() =>
+                if self.criteria[i].text.is_empty() =>
             {
                 self.remove_criterion(i)
             }
             (TrackField::Criterion(i), _) => {
-                edit(&mut self.criteria[i], ev);
+                edit(&mut self.criteria[i].text, ev);
             }
             (TrackField::AddCriterion, Key::Named(NamedKey::Enter) | Key::Char(' ')) => {
-                self.criteria.push(String::new());
+                self.criteria.push(TrackItem::typed(""));
                 self.field = TrackField::Criterion(self.criteria.len() - 1);
             }
             (TrackField::Stop, Key::Named(NamedKey::Right) | Key::Char(' ' | 'l')) => {
@@ -401,6 +469,17 @@ impl TrackForm {
             _ => {}
         }
         FormOutcome::Stay
+    }
+
+    fn remove_constraint(&mut self, i: usize) {
+        if i < self.constraints.len() {
+            self.constraints.remove(i);
+        }
+        self.field = if self.constraints.is_empty() {
+            TrackField::Title
+        } else {
+            TrackField::Constraint(i.min(self.constraints.len() - 1))
+        };
     }
 
     fn remove_criterion(&mut self, i: usize) {
@@ -437,14 +516,23 @@ impl TrackForm {
         if let Some(t) = self.turns.get(self.sel_turn) {
             p["turn"] = json!(t.n);
         }
-        let crit: Vec<&str> = self
+        let crit: Vec<Value> = self
             .criteria
             .iter()
-            .map(|c| c.trim())
-            .filter(|c| !c.is_empty())
+            .filter(|c| !c.text.trim().is_empty())
+            .map(TrackItem::criterion_param)
             .collect();
         if !crit.is_empty() {
             p["criteria"] = json!(crit);
+        }
+        let cons: Vec<Value> = self
+            .constraints
+            .iter()
+            .filter(|c| !c.text.trim().is_empty())
+            .map(TrackItem::constraint_param)
+            .collect();
+        if !cons.is_empty() {
+            p["constraints"] = json!(cons);
         }
         if !self.objective.trim().is_empty() {
             p["objective"] = json!(self.objective.trim());
@@ -917,13 +1005,14 @@ fn criteria_of(pkg: &Value) -> &[Value] {
     }
 }
 
-fn subject_label(s: &Value) -> String {
+pub(crate) fn subject_label(s: &Value) -> String {
     let kind = st(s, "kind");
     let head = st(s, "head_sha");
     let short = &head[..head.len().min(8)];
     match kind {
         "committed" => format!("revision {short}"),
-        "dirty" => format!("uncommitted changes on {short}"),
+        "dirty" | "checkout_live" => format!("uncommitted changes on {short}"),
+        "dirty_snapshot" => format!("snapshot of uncommitted work on {short}"),
         "" if !short.is_empty() => format!("revision {short}"),
         "" => "no captured subject".into(),
         k => format!("{k} {short}"),
@@ -934,7 +1023,13 @@ fn accept_capable(pkg: &Value) -> bool {
     let s = pkg.get("subject").cloned().unwrap_or(Value::Null);
     s.get("accept_capable")
         .and_then(Value::as_bool)
-        .unwrap_or(st(&s, "kind") == "committed")
+        .or_else(|| {
+            // T4 packages say so at the top level; a validated snapshot is accept-capable.
+            (st(&s, "kind") == "dirty_snapshot")
+                .then(|| pkg.get("accept_capable").and_then(Value::as_bool))
+                .flatten()
+        })
+        .unwrap_or(matches!(st(&s, "kind"), "committed" | "dirty_snapshot"))
 }
 
 // ---- messages ----------------------------------------------------------------------------------------
@@ -989,8 +1084,12 @@ pub enum TaskSub {
     Edit(IntentForm),
     Exceptions(ExceptionForm),
     Message(MessageFlow),
-    CheckPick { sel: usize },
+    CheckPick {
+        sel: usize,
+    },
     Authorize(AuthDialog),
+    /// T4 screens (`crate::tasks_t4`).
+    T4(crate::tasks_t4::T4Sub),
 }
 
 /// The check authorization dialog (15 §6.3). It freezes the exact subject and check-definition
@@ -1079,6 +1178,8 @@ pub struct TaskView {
     pub last_poll: Option<Instant>,
     pub last_rev: u64,
     pub last_fetch: Option<Instant>,
+    /// T4 state (notes, dependencies, model estimate): `crate::tasks_t4`.
+    pub t4: crate::tasks_t4::T4State,
 }
 
 /// Open the task detail view (from the inbox, goto, peek or a palette action).
@@ -1106,12 +1207,13 @@ pub fn open_task(app: &mut App, mi: usize, task: &str) {
         last_poll: None,
         last_rev: rev,
         last_fetch: None,
+        t4: Default::default(),
     });
     app.mode = Mode::Popup(Popup::Task);
     fetch(app, true);
 }
 
-fn fetch(app: &mut App, all: bool) {
+pub(crate) fn fetch(app: &mut App, all: bool) {
     let Some(v) = &mut app.task_view else {
         return;
     };
@@ -1154,11 +1256,11 @@ fn revalidate_dialog(v: &mut TaskView, container: &Value) {
     }
 }
 
-fn view_of(app: &mut App, id: u64) -> Option<&mut TaskView> {
+pub(crate) fn view_of(app: &mut App, id: u64) -> Option<&mut TaskView> {
     app.task_view.as_mut().filter(|v| v.id == id)
 }
 
-fn package(v: &TaskView) -> Option<&Value> {
+pub(crate) fn package(v: &TaskView) -> Option<&Value> {
     match &v.review {
         Api::Ok(p) => Some(p.get("package").unwrap_or(p)),
         _ => None,
@@ -1331,10 +1433,20 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
             app.task_view = Some(v);
             return;
         }
+        TaskSub::T4(s) => {
+            app.task_view = Some(v);
+            crate::tasks_t4::sub_key(app, s, ev);
+            return;
+        }
         TaskSub::None => {}
     }
     let detail = v.detail.clone().unwrap_or(Value::Null);
     v.notice = None;
+    if crate::tasks_t4::is_main_key(&ev) {
+        app.task_view = Some(v);
+        crate::tasks_t4::main_key(app, ev);
+        return;
+    }
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') => {
             app.restore_return();
@@ -2044,6 +2156,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 Err(e) => v.notice = Some(format!("Check not run: {}", e.message)),
             }
         }
+        Reply::T4(r) => crate::tasks_t4::on_reply(app, mi, r, res),
         Reply::TaskRuns { task } => {
             let Ok(d) = res else {
                 return;
@@ -2100,6 +2213,19 @@ pub fn on_model(app: &mut App, mi: usize) {
         {
             fetch(app, false);
         }
+    }
+}
+
+/// The next poll of messages still sending (only while the task view is open).
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if let Some(v) = &app.task_view
+        && matches!(app.mode, Mode::Popup(Popup::Task))
+        && !v.watch.is_empty()
+    {
+        d.at(
+            "tasks",
+            v.last_poll.map_or(now, |t| t + Duration::from_secs(1)),
+        );
     }
 }
 
@@ -2161,9 +2287,9 @@ pub fn on_disconnect(app: &mut App, mi: usize) {
 
 // ---- drawing ----------------------------------------------------------------------------------------
 
-type Lines = Vec<(String, Style)>;
+pub(crate) type Lines = Vec<(String, Style)>;
 
-fn wrap_push(out: &mut Lines, text: &str, indent: &str, w: usize, style: Style) {
+pub(crate) fn wrap_push(out: &mut Lines, text: &str, indent: &str, w: usize, style: Style) {
     for raw in text.lines() {
         let mut line = String::new();
         for word in raw.split(' ') {
@@ -2403,6 +2529,12 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
                 .into(),
             t.s(t.yellow),
         ));
+        if p.pointer("/snapshot/available").and_then(Value::as_bool) == Some(true) {
+            out.push((
+                "  [s] Snapshot uncommitted work — an immutable, accept-capable candidate".into(),
+                t.dim(),
+            ));
+        }
     }
     if let Some(a) = acceptance {
         acceptance_lines(app, p, a, w, out);
@@ -2532,6 +2664,7 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
             ));
         }
     }
+    crate::tasks_t4::review_lines(app, p, v, w, out);
 }
 
 /// The acceptance block, from the server's shape `{acceptance: {subject_id, head_sha,
@@ -2638,7 +2771,7 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
     let t = app.theme;
     let sel = |on: bool| if on { t.sel(t.accent) } else { t.text() };
     match &v.sub {
-        TaskSub::None => None,
+        TaskSub::None | TaskSub::T4(_) => None,
         TaskSub::Edit(f) => {
             let mut l: Lines = Vec::new();
             l.push((
@@ -2910,6 +3043,7 @@ fn task_keys(v: &TaskView) -> String {
         k.push("v run check");
         k.push("m mark reviewed");
     }
+    k.extend(crate::tasks_t4::keys_hint(v));
     k.extend([
         "S summarize review",
         "D drafts",
@@ -2939,6 +3073,10 @@ pub fn draw_task(app: &App, g: &mut Grid) {
     if let Some(n) = &v.notice {
         g.put_str(r.x + 1, y, n, t.bold(t.yellow), r.w.saturating_sub(2));
         y += 1;
+    }
+    if let TaskSub::T4(s) = &v.sub {
+        crate::tasks_t4::draw_sub(app, g, v, s, r, y);
+        return;
     }
     if let Some((title, lines)) = sub_lines(app, v, w) {
         g.put_str(r.x + 1, y, &title, t.bold(t.accent), r.w.saturating_sub(2));
@@ -3046,13 +3184,34 @@ pub fn draw_track(app: &App, g: &mut Grid) {
         &format!("Title      {}", f.title),
         sel(f.field == TrackField::Title),
     );
+    if !f.constraints.is_empty() {
+        b.line("Constraints (ctrl+d removes)", t.dim());
+        for (i, c) in f.constraints.iter().enumerate() {
+            b.line(
+                &format!("  ◦ {}", c.text),
+                sel(f.field == TrackField::Constraint(i)),
+            );
+        }
+    }
     b.line(
-        "Criteria   optional (enter adds another, ctrl+d removes)",
+        "Criteria   optional (enter adds another, ctrl+r required/optional, ctrl+d removes)",
         t.dim(),
     );
     for (i, c) in f.criteria.iter().enumerate() {
+        let mut tags = vec![];
+        if !c.required {
+            tags.push("optional".to_string());
+        }
+        if let Some(e) = c.evaluation.as_deref().filter(|e| *e != "human") {
+            tags.push(e.to_string());
+        }
+        let tags = if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", tags.join(", "))
+        };
         b.line(
-            &format!("  • {c}"),
+            &format!("  • {}{tags}", c.text),
             sel(f.field == TrackField::Criterion(i)),
         );
     }
@@ -3180,7 +3339,7 @@ mod tests {
         f.key(&key(Key::Named(NamedKey::Enter)));
         assert_eq!(f.field, TrackField::Criterion(1));
         f.key(&key(Key::Named(NamedKey::Backspace)));
-        assert_eq!(f.criteria, vec!["Preserve SSO".to_string()]);
+        assert_eq!(f.criteria, vec![TrackItem::typed("Preserve SSO")]);
         assert_eq!(f.field, TrackField::Criterion(0));
         // Stop-at chooser cycles; objective; submit.
         f.key(&key(Key::Named(NamedKey::Tab)));

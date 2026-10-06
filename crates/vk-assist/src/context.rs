@@ -67,6 +67,32 @@ fn count(s: &str) -> usize {
     s.matches(vk_redact::REDACTED).count()
 }
 
+/// Redact every string inside a source's identity object with the same redactor as its text
+/// (14 §7.1: source metadata is sent in the preview and stored with the request).
+fn redact_value(v: &mut Value, redactor: &vk_redact::Redactor) -> usize {
+    match v {
+        Value::String(s) => {
+            let before = count(s);
+            let red = crate::sanitize(&redactor.redact(s));
+            let n = count(&red).saturating_sub(before);
+            *s = red;
+            n
+        }
+        Value::Array(a) => a.iter_mut().map(|x| redact_value(x, redactor)).sum(),
+        Value::Object(m) => m.values_mut().map(|x| redact_value(x, redactor)).sum(),
+        _ => 0,
+    }
+}
+
+/// A label as it may appear in the payload and the stored metadata: redacted, control
+/// characters stripped, bounded. Returns the label and its redaction count.
+fn redact_label(label: &str, redactor: &vk_redact::Redactor) -> (String, usize) {
+    let before = count(label);
+    let red = redactor.redact(label);
+    let n = count(&red).saturating_sub(before);
+    (crate::sanitize(&clip(&red, 200).0), n)
+}
+
 /// Neutralize the delimiters used around source text so content can't close its own block.
 fn fence(s: &str) -> String {
     s.replace("</source", "<\\/source")
@@ -104,13 +130,18 @@ impl Package {
         let mut texts = vec![];
         let mut omitted = vec![];
         let mut redactions = 0;
-        for (i, inp) in inputs.into_iter().enumerate() {
+        for (i, mut inp) in inputs.into_iter().enumerate() {
             let before = count(&inp.text);
             let red = redactor.redact(&inp.text).into_owned();
-            let r = count(&red).saturating_sub(before);
+            // Labels and identity metadata go through the same redactor as the text: a run
+            // name or a title can carry a token too.
+            let (label, label_r) = redact_label(&inp.label, redactor);
+            let object_r = redact_value(&mut inp.object, redactor);
+            let r = count(&red).saturating_sub(before) + label_r + object_r;
             let cap = fair.min(room.saturating_sub(160));
             if cap < 64 {
-                omitted.push(format!("{} ({})", inp.label, inp.kind));
+                omitted.push(format!("{label} ({})", inp.kind));
+                redactions += label_r;
                 continue;
             }
             let (text, truncated) = clip(&red, cap);
@@ -121,7 +152,7 @@ impl Package {
                 id: format!("s{}", i + 1),
                 kind: inp.kind,
                 object: inp.object,
-                label: crate::sanitize(&clip(&inp.label, 200).0),
+                label,
                 digest: digest(&text),
                 bytes: text.len(),
                 truncated,
@@ -246,6 +277,38 @@ mod tests {
         assert!(r.contains(vk_redact::REDACTED));
         assert!(p.redactions >= 1);
         assert_eq!(p.sources[0].id, "s1");
+    }
+
+    #[test]
+    fn labels_and_metadata_are_redacted() {
+        let custom = vk_redact::Redactor::new(&["ACME-[0-9]{6}".to_string()]).unwrap();
+        let mut i = inp("plain text");
+        i.label = "agent ghp_abcdefghijklmnopqrstuvwxyz0123456789 ACME-123456".into();
+        i.object = json!({"run": "r1", "name": "ACME-654321"});
+        let p = Package::build(
+            vec![i],
+            Limits {
+                max_input_bytes: 65536,
+                max_input_tokens: 12000,
+            },
+            100,
+            &custom,
+        )
+        .unwrap();
+        let all = format!(
+            "{}{}",
+            p.render(),
+            serde_json::to_string(&p.sources).unwrap()
+        );
+        for secret in [
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "ACME-123456",
+            "ACME-654321",
+        ] {
+            assert!(!all.contains(secret), "{secret} leaked: {all}");
+        }
+        assert_eq!(p.sources[0].redactions, 3);
+        assert_eq!(p.redactions, 3);
     }
 
     #[test]

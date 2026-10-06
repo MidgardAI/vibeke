@@ -10,8 +10,8 @@ mod watch;
 
 pub use binding::{Binding, parse_binding, parse_prefix_key};
 pub use keys::{
-    ACTION_ALIASES, Conflict, ConflictReason, DEFAULT_KEYMAP, canonical_action, check_keys,
-    default_bindings, is_known_action,
+    ACTION_ALIASES, COPY_MODE_ACTIONS, Conflict, ConflictReason, DEFAULT_KEYMAP, canonical_action,
+    check_keys, default_bindings, is_copy_mode_action, is_known_action,
 };
 pub use load::{
     ConfigError, Diagnostic, EXTERNAL_SECTIONS, Pos, Warning, config_path, config_path_with,

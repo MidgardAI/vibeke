@@ -108,7 +108,11 @@ pub fn visible(app: &App) -> Vec<VisibleFloat> {
         return vec![];
     };
     match m.model.tabs.iter().find(|t| &t.id == tid) {
-        Some(tab) => visible_in(tab, app.pane_area()),
+        // Plugin popups/overlays float too but are drawn by `crate::plugins`.
+        Some(tab) => visible_in(tab, app.pane_area())
+            .into_iter()
+            .filter(|f| !crate::plugins::is_surface(app, &f.pane))
+            .collect(),
         None => vec![],
     }
 }
@@ -116,6 +120,9 @@ pub fn visible(app: &App) -> Vec<VisibleFloat> {
 /// The focused pane's float entry, when it is floating in the focused tab.
 pub fn focused_float(app: &App) -> Option<FloatingPane> {
     let pane = app.focused_pane()?;
+    if crate::plugins::is_surface(app, &pane) {
+        return None;
+    }
     let tab = app.focused_tab()?;
     tab.floating.into_iter().find(|f| f.pane == pane)
 }

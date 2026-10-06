@@ -102,6 +102,7 @@ fn spec(fx: &Fx, network: NetMode) -> SandboxSpec {
         unix_sockets: vec![],
         network,
         allow_bind_localhost: true,
+        protected: vec![],
     }
 }
 
@@ -380,6 +381,187 @@ cat {h}/.codex/auth.json >/dev/null 2>&1 || echo R_HOST_CRED_DENIED
     assert_eq!(
         std::fs::read_to_string(fx.home.join(".codex/auth.json")).unwrap(),
         "{\"token\":\"FAKE-codex-token-123456\"}"
+    );
+}
+
+#[test]
+fn git_executed_files_inside_the_checkout_are_write_protected() {
+    let fx = fixture();
+    // The repo runs checkout-local hooks, an fsmonitor script and an included config file.
+    git(&fx.co, &["config", "core.hooksPath", ".githooks"]);
+    git(&fx.co, &["config", "core.fsmonitor", "./tools/fsmon.sh"]);
+    git(
+        &fx.co,
+        &["config", "include.path", "../../repo-t/.gitconfig.local"],
+    );
+    std::fs::create_dir_all(fx.co.join(".githooks")).unwrap();
+    std::fs::write(fx.co.join(".githooks/pre-commit"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::create_dir_all(fx.co.join("tools")).unwrap();
+    std::fs::write(fx.co.join("tools/fsmon.sh"), "#!/bin/sh\n").unwrap();
+    let mut sp = spec(&fx, NetMode::None);
+    sp.protected = vk_sandbox::gitexec::exec_targets(&fx.co, Some(&fx.home));
+    for want in [".githooks", "tools/fsmon.sh", ".gitconfig.local"] {
+        assert!(
+            sp.protected.contains(&fx.co.join(want)),
+            "{want} not protected: {:?}",
+            sp.protected
+        );
+    }
+    let out = lines(&run(
+        &fx,
+        &sp,
+        r#"
+echo 'touch /tmp/pwned' >> .githooks/pre-commit 2>/dev/null || echo HOOK_DENIED
+echo x > .githooks/post-checkout 2>/dev/null || echo NEW_HOOK_DENIED
+echo 'touch /tmp/pwned' > tools/fsmon.sh 2>/dev/null || echo FSMON_DENIED
+printf '[core]\n\tfsmonitor = /tmp/x\n' > .gitconfig.local 2>/dev/null || echo INCLUDE_DENIED
+echo ok > src.txt && echo NORMAL_WRITE_OK
+"#,
+    ));
+    for want in [
+        "HOOK_DENIED",
+        "NEW_HOOK_DENIED",
+        "FSMON_DENIED",
+        "INCLUDE_DENIED",
+        "NORMAL_WRITE_OK",
+    ] {
+        assert!(out.contains(want), "missing {want}:\n{out}");
+    }
+    assert!(!fx.co.join(".gitconfig.local").exists());
+}
+
+/// Helper re-executed inside the sandbox by [`tiocsti_cannot_inject_into_parent`]: pushes
+/// `$VK_STI_TEXT` into the terminal's input queue with `TIOCSTI`. A no-op in normal test runs.
+#[test]
+fn tiocsti_helper() {
+    let Ok(text) = std::env::var("VK_STI_TEXT") else {
+        return;
+    };
+    let mut denied = false;
+    for b in format!("{text}\n").bytes() {
+        // SAFETY: ioctl on stdin with a pointer to one valid byte.
+        let r = unsafe { libc::ioctl(0, seatbelt::TIOCSTI as libc::c_ulong, &b as *const u8) };
+        if r != 0 {
+            denied = true;
+        }
+    }
+    println!("{}", if denied { "STI_DENIED" } else { "STI_DONE" });
+}
+
+/// A host shell on its own pty runs `cmd`, then `exit`; returns everything it printed.
+fn host_shell_runs(cmd: &str, env: &[(&str, String)]) -> String {
+    use std::io::{Read, Write};
+    use std::os::unix::process::CommandExt;
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: openpty with valid out-pointers.
+    let r = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(r, 0);
+    let mut c = Command::new("/bin/sh");
+    c.arg("-i")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("PS1", "$ ");
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        c.pre_exec(move || {
+            libc::setsid();
+            libc::ioctl(slave, libc::TIOCSCTTY as libc::c_ulong, 0);
+            libc::dup2(slave, 0);
+            libc::dup2(slave, 1);
+            libc::dup2(slave, 2);
+            Ok(())
+        });
+    }
+    let mut child = c.spawn().unwrap();
+    // SAFETY: the parent no longer needs the slave end.
+    unsafe { libc::close(slave) };
+    // SAFETY: we own `master`.
+    let mut m = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(master) };
+    let mut rd = m.try_clone().unwrap();
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let o2 = out.clone();
+    std::thread::spawn(move || {
+        let mut b = [0u8; 4096];
+        while let Ok(n) = rd.read(&mut b) {
+            if n == 0 {
+                break;
+            }
+            o2.lock().unwrap().extend_from_slice(&b[..n]);
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    m.write_all(format!("{cmd}\n").as_bytes()).unwrap();
+    // Wait for the helper to finish (and for any injected line to run).
+    for _ in 0..100 {
+        let s = String::from_utf8_lossy(&out.lock().unwrap()).into_owned();
+        if s.contains("STI_DENIED") || s.contains("STI_DONE") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let _ = m.write_all(b"exit\n");
+    for _ in 0..50 {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    String::from_utf8_lossy(&out.lock().unwrap()).into_owned()
+}
+
+/// 13 §15 / review finding 5: an isolated command typed into an unsandboxed host shell shares
+/// that shell's terminal. `TIOCSTI` from inside the sandbox must not queue a command for the
+/// parent shell (host-side execution sentinel).
+#[test]
+fn tiocsti_cannot_inject_into_parent() {
+    let fx = fixture();
+    // The helper is this test binary, copied where the profile lets the box execute it.
+    let exe = fx.co.join("tiocsti-helper");
+    std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+    let sentinel = fx.root.join("sti-sentinel");
+    let helper = format!(
+        "{} --exact tiocsti_helper --nocapture --test-threads=1",
+        exe.display()
+    );
+    let env = [("VK_STI_TEXT", format!("touch {}", sentinel.display()))];
+    // Control: unsandboxed, the injection works on this OS (otherwise there is nothing to test).
+    let out = host_shell_runs(&helper, &env);
+    let control = sentinel.exists();
+    let _ = std::fs::remove_file(&sentinel);
+    if !control {
+        eprintln!("TIOCSTI injection does not work here even unsandboxed; skipping\n{out}");
+        return;
+    }
+    // Sandboxed with Vibeke's profile: denied, nothing runs in the parent shell.
+    let sp = spec(&fx, NetMode::None);
+    let profile = fx.private.join("sti.sb");
+    std::fs::write(&profile, seatbelt::render(&Policy::from_spec(&sp))).unwrap();
+    let out = host_shell_runs(
+        &format!(
+            "cd {} && {} -f {} {helper}",
+            fx.co.display(),
+            seatbelt::SANDBOX_EXEC,
+            profile.display()
+        ),
+        &env,
+    );
+    assert!(out.contains("STI_DENIED"), "{out}");
+    assert!(
+        !sentinel.exists(),
+        "a sandboxed process injected a command into its parent shell:\n{out}"
     );
 }
 
