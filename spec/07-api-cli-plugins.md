@@ -218,9 +218,11 @@ Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends na
 | `policy.add` | `{rule: PolicyRule}` → `{rule}` |
 | `policy.remove` | `{rule_id}` → `{}` |
 | `policy.test` | `{action: {tool, command?, paths?, url?}, scope}` → `{effect, rule?}` — dry-run |
-| `policy.trust` | `{path}` → `{trusted: true, digest}` — trust a repo-local `.vibeke/` directory at its current content digest (09 §4) |
+| `policy.trust` | `{path, digest?}` → `{repo, digest, setup_script}` — trust a repo-local `.vibeke/` directory at its current blake3 digest (09 §4); `digest` makes it conditional on the reviewed content (conflict if changed). Full scope only. |
 
-### 2.10 `task.*`, `worktree.*` [M1; remote tasks M3, jj M4]
+### 2.10 `task.*`, `worktree.*` [M1; remote tasks M3, jj M4; tracking per 15 T1–T3]
+
+Pane-scoped callers (agents) may read tasks but not `task.track`, `task.intent.update`, `task.bind/unbind`, `task.set`, `task.message.*` (except get), `task.review.accept`, `task.check.run/cancel` or `attention.update` (15 §11). All tracking mutations accept `idempotency_key`; a repeat with the same key and payload returns the recorded result with `replayed: true`, a different payload is `conflict{reason: idempotency_key_reused}`.
 
 | Method | Params → Result |
 |---|---|
@@ -231,6 +233,15 @@ Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends na
 | `task.finish` | `{task, remove_worktree?: ask|true|false, delete_branch?: false}` → `{task}` |
 | `task.archive` | `{task}` → `{task}` |
 | `task.setup_log` | `{task}` → `{text}` |
+| `task.track` | (15 T1) `{run | pane, turn? | turns?: [n], title?, objective?, criterion?: text | [text | {text, required?, evaluation?, checks?}], constraint?, stop_at?, stop_detail?, target_branch?, idempotency_key?}` → `{task, intent, binding, baseline, review_base}` — attached task + intent revision 1 + binding, atomically; `conflict{reason: binding_unverified}` unless the run's identity is deterministic (structured session id); never spawns, sends or runs setup |
+| `task.sources` | `{run | pane, limit?}` → `{run, identity_verified, native_conversation_id, turns: [{n, prompt, native_conversation_id, started_at_ms, ended_at_ms}]}` — exact recorded prompts for the Track form |
+| `task.detail` | `{task}` → `{task, intent, bindings, runs, baseline, uncommunicated, messages}` |
+| `task.intent.get` | `{task, revision?}` → `{intent, current_revision, revisions, uncommunicated: [criterion_id]}` |
+| `task.intent.update` | `{task, expected_revision?, title?, objective?, criterion?/criteria?, add_criterion?, constraint?, stop_at?, stop_detail?, idempotency_key?}` → `{task, intent, uncommunicated, note}` — record-only; never sends |
+| `task.bind` / `task.unbind` | `{task, run | pane, role?, start_turn?, end_turn?}` → `{binding, pending}` (a switch away from another task's active binding takes effect at the next turn boundary; a suspended binding is continued) / `{task, binding?}` → `{closed}` |
+| `task.set` | `{task, expected_rev?, priority?, effort?: quick|minutes|deep|unknown}` → `{task}` |
+| `task.message.prepare` / `.send` / `.get` / `.cancel` | `{task, text, communicates_intent?}` → `{message, recipient, send_path: prompt_input|open_pane_only, unsafe?}`; `{message, retry?, retry_despite_unknown?}` → `{message}` or `conflict{reason: send_unsafe, detail, fallback: open_pane_to_send}` with zero bytes written; delivery states `prepared|sending|delivered|delivery_unknown|failed|cancelled` (15 §9) |
+| `task.operation.get` | `{idempotency_key}` → `{known, method?, result?, at_ms?, expired?}` — mutation receipt (30-day window); unknown never means safe to repeat |
 | `worktree.list` | `{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}` |
 | `worktree.create` | `{repo|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}` |
 | `worktree.open` | `{path, focus?: false}` → `{workspace}` |
@@ -312,6 +323,7 @@ Server push (JSON-RPC notification):
 | `blob.put` | `{mime, data_b64}` (≤ 16 MiB) or `{mime, path}` (server reads local file) → `{hash, size}` |
 | `blob.get` | `{hash, range?}` → `{mime, data_b64}` |
 | `blob.stat` | `{hash}` → `{mime, size, created_at, refs}` |
+| `blob.begin` / `.append` / `.commit` / `.abort` | Chunked upload for drops/pastes into remote panes (06 A11): `{name, size, sha256?}` → `{upload_id}` (size ≤ `paste.max_auto_bytes`); `{upload_id, offset, data_b64}` (≤ 1 MiB decoded, offset must match); `{upload_id}` → `{path}` (inbox `<blake3-12>/<name>`, 0600); bound to the opening connection, ≤ 16 concurrent, idle uploads purged after 10 min |
 
 ### 2.16 `plugin.*` [M5]
 
