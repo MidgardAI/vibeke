@@ -618,3 +618,156 @@ fn suggest_task_details_without_background_runs_or_mutations() {
     assert_eq!(b["deduplicated"], true);
     assert_eq!(a["request"]["id"], b["request"]["id"]);
 }
+
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// 15 §8.2 (T4): the model effort estimate goes through 14's preview + confirm, comes back as
+/// a labelled draft and is never applied; the user applies it with an explicit `task.set`.
+#[test]
+fn effort_estimate_is_previewed_confirmed_and_never_applied() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let repo = s.dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "base"]);
+    let v = s.json(&["workspace", "create", "--cwd", &repo.to_string_lossy()]);
+    let ws = v["workspace"]["id"]
+        .as_str()
+        .or(v["id"].as_str())
+        .unwrap_or_else(|| v["root_pane"]["workspace"].as_str().unwrap())
+        .to_string();
+    let pane = v["root_pane"]["id"].as_str().unwrap().to_string();
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let script = s.dir.path().join("fake-claude");
+    std::fs::write(&script, FAKE_CLAUDE).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let _ = s
+        .cmd(&[
+            "pane",
+            "wait-idle",
+            &pane,
+            "--quiet-ms",
+            "500",
+            "--timeout-ms",
+            "10000",
+        ])
+        .output();
+    s.json(&["pane", "run", &pane, &script.to_string_lossy()]);
+    let run = s.until("hook-bound run", 15, || {
+        let v = s.api("task.sources", json!({"pane": pane})).ok()?;
+        (v["identity_verified"] == true).then(|| v["run"].as_str().unwrap().to_string())
+    });
+    s.json(&["pane", "run", &pane, "Fix the redirect"]);
+    s.until("recorded turn", 10, || {
+        let v = s.api("task.sources", json!({"run": run})).ok()?;
+        v["turns"].as_array()?.first()?["n"].as_u64()
+    });
+    let t = s
+        .api(
+            "task.track",
+            json!({"run": run, "criteria": ["Looks right"], "stop_at": "implementation"}),
+        )
+        .unwrap();
+    let task = t["task"]["id"].as_str().unwrap().to_string();
+    std::fs::write(repo.join("a.txt"), "base\nfix\n").unwrap();
+    git(&repo, &["commit", "-q", "-am", "fix"]);
+
+    // The deterministic heuristic is in the package, labelled as such.
+    let pkg = s.api("task.review.get", json!({"task": task})).unwrap();
+    assert_eq!(
+        pkg["effort"]["heuristic"]["source"], "heuristic",
+        "{}",
+        pkg["effort"]
+    );
+    assert_eq!(pkg["effort"]["heuristic"]["effort"], "quick");
+
+    // Preview first: nothing is sent until the exact payload is confirmed.
+    let g = s
+        .api(
+            "assistant.generate",
+            json!({"operation": "effort_estimate", "task": task}),
+        )
+        .unwrap();
+    assert_eq!(g["requires_confirmation"], true);
+    let user = g["preview"]["user"].as_str().unwrap();
+    assert!(
+        user.contains("heuristic"),
+        "the package (with the heuristic) is the input"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(fake.count(), 0);
+    let id = g["request"]["id"].as_str().unwrap().to_string();
+    fake.push(Reply::anthropic(
+        &json!({
+            "effort": "deep",
+            "rationale": "Touches the redirect logic; needs a careful look",
+            "source_refs": ["s2"],
+            "method": "task.set",
+            "params": {"task": task, "effort": "deep"},
+        })
+        .to_string(),
+        50,
+        20,
+    ));
+    s.json(&[
+        "assist",
+        "confirm",
+        &id,
+        g["preview"]["digest"].as_str().unwrap(),
+    ]);
+    let done = s.wait_state(&id, &["done", "failed"]);
+    let out = &done["output"];
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(out["effort"], "deep");
+    assert_eq!(out["applied"], false);
+    assert_eq!(out["estimate_source"], "assistant");
+    assert!(out.get("method").is_none() && out.get("params").is_none());
+    assert_eq!(fake.count(), 1);
+
+    // Not applied: the task's effort is unchanged until the user sets it.
+    let task_now = |s: &Session| {
+        s.api("task.list", json!({})).unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == task.as_str())
+            .cloned()
+            .unwrap()
+    };
+    assert!(task_now(&s)["effort"].is_null());
+    s.api(
+        "task.set",
+        json!({"task": task, "effort": "deep", "effort_source": format!("assistant:{id}")}),
+    )
+    .unwrap();
+    assert_eq!(task_now(&s)["effort"], "deep");
+    let set = s
+        .events()
+        .into_iter()
+        .rfind(|e| e["type"] == "task.updated")
+        .unwrap();
+    assert_eq!(set["data"]["effort_source"], format!("assistant:{id}"));
+}

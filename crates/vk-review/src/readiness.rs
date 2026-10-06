@@ -846,7 +846,7 @@ pub fn assess(
             "No captured change subject",
         )),
         Some(s) => {
-            if !s.is_committed() {
+            if !s.is_immutable() {
                 blockers.push(Blocker::new(
                     BlockerKind::SubjectNotCommitted,
                     Some(&s.id),
@@ -1130,7 +1130,7 @@ pub fn accept(
             subject.id.clone(),
         ));
     }
-    if !subject.is_committed() || !subject.verify_id() {
+    if !subject.is_immutable() || !subject.verify_id() {
         return Err(AcceptConflict::SubjectNotCommitted);
     }
     if !current.sources_verified {

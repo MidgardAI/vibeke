@@ -799,7 +799,9 @@ fn resolve_target(
             return Err(need("--run or --pane (the selected request)"));
         }
         Operation::PaneTitle if pane.is_none() => return Err(need("--pane")),
-        Operation::ReviewSummary if task.is_none() => return Err(need("--task")),
+        Operation::ReviewSummary | Operation::EffortEstimate if task.is_none() => {
+            return Err(need("--task"));
+        }
         Operation::Handoff if task.is_none() && run.is_none() => {
             return Err(need("--task or --run"));
         }
@@ -1099,6 +1101,11 @@ async fn gather(
             }
         }
         Operation::ReviewSummary => {
+            sources = review_source(server, ctx, t.task.as_ref().expect("checked")).await;
+        }
+        // 15 §8.2 (T4): the package (diff stat, checks, criteria, the deterministic heuristic)
+        // is the only input; the result is a labelled estimate the user applies explicitly.
+        Operation::EffortEstimate => {
             sources = review_source(server, ctx, t.task.as_ref().expect("checked")).await;
         }
         Operation::Handoff => {

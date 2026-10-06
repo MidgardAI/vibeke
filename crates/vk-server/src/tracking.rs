@@ -1396,7 +1396,9 @@ fn task_set(server: &Server, p: &Value) -> R {
     tx.event(
         "task.updated",
         json!({"task": task.id}),
-        json!({"priority": task.priority, "effort": task.effort}),
+        // `effort_source`: who proposed the applied value (user | heuristic | assistant:<request>);
+        // applying it is always this explicit user call (15 §8.2, T4).
+        json!({"priority": task.priority, "effort": task.effort, "effort_source": s(p, "effort").map(|_| s(p, "effort_source").unwrap_or("user"))}),
     );
     let result = json!({"task": task});
     record(&mut tx, "task.set", p, &result);

@@ -23,6 +23,7 @@
 //! and attention items of their pane's workspace.
 
 pub mod receipts;
+pub mod t4;
 
 use crate::Server;
 use crate::api::{Ctx, R, err, internal, invalid, not_found, req, s, u};
@@ -123,6 +124,10 @@ pub struct Projection {
     /// computed under. A reader whose current token differs must not show a cached Ready.
     #[serde(default)]
     pub live_token: Option<u64>,
+    /// Deterministic effort heuristic of the current candidate (T4, §8.2), shown as an
+    /// estimate labelled `heuristic`; never used as the user's effort.
+    #[serde(default)]
+    pub effort_heuristic: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -476,7 +481,7 @@ pub struct CheckEntry {
 /// (`subject.base_sha`): a definition that is new or differs there is `task_modified` (15 §6.3).
 pub fn resolve_checks(subject: &ChangeSubject) -> Vec<CheckEntry> {
     let root = PathBuf::from(&subject.repo.root);
-    let specs = check_specs_at(&root, &subject.head_sha);
+    let specs = check_specs_at(&root, subject.content_sha());
     if specs.is_empty() {
         return vec![];
     }
@@ -531,7 +536,7 @@ pub fn resolve_checks(subject: &ChangeSubject) -> Vec<CheckEntry> {
             "trust": def.trust,
             "definition_digest": def.definition_digest,
             "baseline_digest": base_digest,
-            "defined_at": subject.head_sha,
+            "defined_at": subject.content_sha(),
             "baseline_at": subject.base_sha,
             "defined_at_baseline": base_spec.is_some(),
             "command_changed": command_changed,
@@ -560,6 +565,9 @@ struct Candidates {
     live_subject: Option<ChangeSubject>,
     dirty_state: Option<DirtyState>,
     warnings: Vec<String>,
+    /// Further known candidates (T4): the task's dirty snapshots, and the committed candidate
+    /// when a matching snapshot supersedes it as current.
+    extra: Vec<(ChangeSubject, &'static str)>,
 }
 
 fn checkout_of(task: &Task) -> Option<PathBuf> {
@@ -646,6 +654,7 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
         live_subject: None,
         dirty_state: None,
         warnings: vec![],
+        extra: vec![],
     };
     let Some(path) = checkout else {
         // Historically inspectable, not currently verifiable (15 §4.3/§7): the retained end
@@ -693,7 +702,20 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
                             DirtyState::Dirty,
                             SubjectKind::CheckoutLive,
                             now(),
-                        ))
+                        ));
+                        // T4: a validated snapshot of exactly this content is the current,
+                        // accept-capable candidate (it includes any commits since the base).
+                        if let Some(sn) = t4::current_snapshot(
+                            server,
+                            &task.id,
+                            head.as_deref(),
+                            b.change_digest.as_deref(),
+                        ) {
+                            if let Some(committed) = out.current.take() {
+                                out.extra.push((committed, "current_head"));
+                            }
+                            out.current = Some(sn);
+                        }
                     }
                     DirtyState::Unknown => out
                         .warnings
@@ -705,6 +727,9 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
         }
     } else {
         out.current = out.ends.iter().rev().find_map(|(_, s)| s.clone());
+    }
+    for sn in t4::snapshot_subjects(server, &task.id) {
+        out.extra.push((sn, "dirty_snapshot"));
     }
     out
 }
@@ -833,6 +858,8 @@ pub fn on_turn_settled(server: &Arc<Server>, run: &str) {
     for t in tasks {
         enqueue_refresh(server, &t, Duration::from_millis(300));
     }
+    // A reviewer run's settled turn becomes attributed review notes (T4).
+    t4::on_reviewer_turn(server, run);
 }
 
 /// Recompute a task's package off the state path and persist label/projection/invalidation,
@@ -1119,6 +1146,7 @@ fn state_token(c: &Core, task_id: &str) -> Option<u64> {
         .collect();
     accs.sort();
     h.update(format!("acceptances {accs:?}\n").as_bytes());
+    h.update(t4::token_part(c, task_id).as_bytes());
     let snap = live_snap(c);
     let (_, live) = live_from(&snap, task_id, &bs, checkout_of(&task).as_deref());
     h.update(format!("live {live}\n").as_bytes());
@@ -1408,6 +1436,8 @@ pub struct Pkg {
     pub state_token: Option<u64>,
     /// Checkout and HEAD the current candidate was captured from, while a binding is live.
     pub live_head: Option<(PathBuf, String)>,
+    /// Change digest a current dirty-snapshot candidate requires of the live checkout (T4).
+    pub live_digest: Option<String>,
     subjects: Vec<ChangeSubject>,
     cand_recs: Vec<CandidateRec>,
     projection: Option<Projection>,
@@ -1481,7 +1511,7 @@ fn subject_json(s: &ChangeSubject, current: bool, source: &str, extra: Value) ->
         "base_sha": s.base_sha,
         "current": current,
         "source": source,
-        "accept_capable": s.is_committed() && current,
+        "accept_capable": s.is_immutable() && current,
     });
     if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
         for (k, x) in e {
@@ -1523,6 +1553,11 @@ pub fn build_package(
             && !known.iter().any(|(k, _, _)| k.id == s.id)
         {
             known.push((s.clone(), "binding_end", Some(e.binding.clone())));
+        }
+    }
+    for (s, src) in &cands.extra {
+        if !known.iter().any(|(k, _, _)| k.id == s.id) {
+            known.push((s.clone(), src, None));
         }
     }
     let selected = match want_subject {
@@ -1574,7 +1609,8 @@ pub fn build_package(
         .filter(|r| r.run.state.is_terminal())
         .map(|r| Evidence::from_check_run(&r.run))
         .collect();
-    let (observed, claims) = observed_table(server, &bs);
+    // Reviewer (role `review`) runs contribute notes, never evidence (T4).
+    let (observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
     for cmd in &observed {
         let mapped = entries
             .iter()
@@ -1626,7 +1662,7 @@ pub fn build_package(
     // revalidated now — the checkout exists and the subject's immutable objects are readable.
     let mut warnings = cands.warnings.clone();
     warnings.extend(env_errors);
-    let diff_stat = match selected.as_ref().filter(|s| s.is_committed()) {
+    let diff_stat = match selected.as_ref().filter(|s| s.is_immutable()) {
         Some(s) => match subject::diff_stat(s) {
             Ok(d) => Some(d),
             Err(e) => {
@@ -1639,11 +1675,22 @@ pub fn build_package(
         },
         None => None,
     };
-    let committed_selected = selected.as_ref().is_some_and(|s| s.is_committed());
+    let committed_selected = selected.as_ref().is_some_and(|s| s.is_immutable());
     let sources_verified = cands.checkout.is_some() && (!committed_selected || diff_stat.is_some());
     live.sources_verified = sources_verified;
     let acc = latest_acceptance(server, &task.id);
     live.acceptance = acc.as_ref().map(|a| a.acceptance.clone());
+    // Reviewer findings (T4): unassessed potentially blocking notes and user-marked blockers on
+    // the selected subject keep the stronger label away (15 §7).
+    let notes = t4::notes_of(server, &task.id);
+    live.open_blocking_concerns =
+        t4::open_concerns(&notes, selected.as_ref().map(|s| s.id.as_str()));
+    let effort_est = t4::effort_heuristic(
+        diff_stat.as_ref(),
+        &runs,
+        selected.as_ref(),
+        intent.as_ref(),
+    );
 
     let defined: BTreeSet<&str> = entries.iter().map(|e| e.def.id.as_str()).collect();
     let mappings_confirmed = intent.as_ref().is_some_and(|i| {
@@ -1848,7 +1895,7 @@ pub fn build_package(
         } else {
             "No committed candidate to accept"
         })
-    } else if selected.as_ref().is_some_and(|s| !s.is_committed()) {
+    } else if selected.as_ref().is_some_and(|s| !s.is_immutable()) {
         Some("Select a committed revision to record acceptance")
     } else if !subject_is_current {
         Some("Only the current candidate can be accepted; earlier candidates are inspect only")
@@ -1914,6 +1961,19 @@ pub fn build_package(
         "acceptance_history": history,
         "live": live_json,
         "mappings_confirmed": mappings_confirmed,
+        "review_notes": notes.iter().map(t4::note_json).collect::<Vec<_>>(),
+        "reviewer_runs": t4::reviewer_requests(server, &task.id).iter().map(t4::reviewer_json).collect::<Vec<_>>(),
+        "dependencies": t4::dependencies_json(server, &task.id),
+        "effort": {
+            "set": task.effort,
+            "heuristic": effort_est,
+            "note": "Estimates are labelled with their source and never applied; set effort with task.set.",
+        },
+        "snapshot": {
+            "available": cands.live && cands.dirty_state == Some(DirtyState::Dirty),
+            "method": "task.review.snapshot",
+            "note": "Capture the uncommitted work as an immutable, accept-capable subject (your files, index and branches stay as they are).",
+        },
         "actions": {
             "accept": {
                 "available": accept_reason.is_none(),
@@ -1964,6 +2024,8 @@ pub fn build_package(
             explanation: assessment.explanation.first().cloned(),
             updated_at_ms: now(),
             live_token: Some(live_token),
+            effort_heuristic: (effort_est.effort != Effort::Unknown)
+                .then(|| effort_str(effort_est.effort).to_string()),
         }
     });
     let live_head = (cands.live)
@@ -1974,11 +2036,21 @@ pub fn build_package(
                 .zip(cands.current.as_ref().map(|s| s.head_sha.clone()))
         })
         .flatten();
+    let live_digest = (cands.live)
+        .then(|| {
+            cands
+                .current
+                .as_ref()
+                .filter(|s| s.kind == SubjectKind::DirtySnapshot)
+                .and_then(|s| s.dirty_digest.clone())
+        })
+        .flatten();
 
     Ok(Pkg {
         sources_verified,
         state_token,
         live_head,
+        live_digest,
         task,
         intent,
         current: cands.current,
@@ -2359,7 +2431,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "task.check.run" => check_run(server, ctx, p).await,
         "task.check.cancel" => check_cancel(server, ctx, p),
         "task.check.get" => check_get(server, ctx, p),
-        _ => return None,
+        m => return t4::api(server, ctx, m, p).await,
     })
 }
 
@@ -2437,10 +2509,10 @@ async fn review_diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             })?
         }
     };
-    if !subj.is_committed() {
+    if !subj.is_immutable() {
         return Err(conflict(
             "subject_not_committed",
-            "Uncommitted work has no immutable diff; inspect the live checkout",
+            "Uncommitted work has no immutable diff; inspect the live checkout or take a snapshot",
         ));
     }
     let s2 = subj.clone();
@@ -2458,6 +2530,7 @@ async fn review_diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "subject": subj.id,
         "base_sha": subj.base_sha,
         "head_sha": subj.head_sha,
+        "content_sha": subj.content_sha(),
         "path": path,
         "diff": d.text,
         "truncated": d.truncated,
@@ -2515,7 +2588,7 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .get::<ChangeSubject>(K_SUBJECT, &subject_id)
             .ok()
             .flatten()
-            .is_some_and(|s| !s.is_committed())
+            .is_some_and(|s| !s.is_immutable())
     });
     if stored_live
         || pkg
@@ -2567,6 +2640,22 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             return Err(review_changed(
                 "the checkout moved to another revision during acceptance",
                 json!({"field": "subject", "expected": head, "actual": now_head}),
+            ));
+        }
+    }
+    // A current dirty snapshot is current only while the checkout still holds exactly its
+    // content (T4): a later edit is a known competing update.
+    if let (Some((path, _)), Some(want)) = (pkg.live_head.clone(), pkg.live_digest.clone()) {
+        let now_digest = blocking(move || {
+            subject::observation_baseline(&path)
+                .ok()
+                .and_then(|b| b.change_digest)
+        })
+        .await?;
+        if now_digest.as_deref() != Some(want.as_str()) {
+            return Err(review_changed(
+                "the uncommitted work changed since the snapshot; snapshot again and review",
+                json!({"field": "subject", "detail": "snapshot_outdated"}),
             ));
         }
     }
@@ -2666,7 +2755,7 @@ async fn check_authorize(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .selected
         .clone()
         .ok_or_else(|| not_found("subject", subject_id))?;
-    if !subj.is_committed() {
+    if !subj.is_immutable() {
         return Err(conflict(
             "verification_unbound",
             "Select a committed revision to verify",
@@ -3118,6 +3207,7 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
             priority: 0,
             risk: None,
             blocks_run: false,
+            blocks_tasks: 0,
             effort: Effort::Unknown,
             seen: false,
             snoozed_until_ms: None,
@@ -3430,6 +3520,16 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
         );
     }
 
+    // Confirmed dependency links (T4, §8.1): open tasks waiting for this item's task.
+    let blocked = server.with_core(|c| t4::blocked_counts(c));
+    if !blocked.is_empty() {
+        for it in items.iter_mut() {
+            if let Some(n) = it.task_id.as_ref().and_then(|t| blocked.get(t)) {
+                it.blocks_tasks = *n as u32;
+            }
+        }
+    }
+
     // Per-user preferences: seen, pin, snooze with material wake-ups.
     let aprefs = att::AttentionPrefs::default();
     let prefs: HashMap<&str, &Pref> = prefs.iter().map(|p| (p.key.as_str(), p)).collect();
@@ -3548,6 +3648,16 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }
     let aprefs = att::AttentionPrefs::default();
     let ranked = att::rank(&col.items, now_ms, &aprefs);
+    // T4 (§8.2): the deterministic estimate for tasks whose effort the user hasn't set, shown
+    // with its source; ranking and the five-minute view keep using the user's value.
+    let heuristics: HashMap<String, String> = server.with_core(|c| {
+        c.store
+            .load::<Projection>(K_PROJ)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| p.effort_heuristic.map(|e| (p.task, e)))
+            .collect()
+    });
     let items: Vec<Value> = ranked
         .iter()
         .filter_map(|r| {
@@ -3569,6 +3679,11 @@ pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 "age_ms": (now_ms - r.item.opened_at_ms).max(0),
                 "risk": r.item.risk.map(risk_str),
                 "effort": (r.item.kind != AttentionKind::FinishedTurn).then(|| effort_str(r.item.effort)),
+                "effort_estimate": (r.item.kind != AttentionKind::FinishedTurn && r.item.effort == Effort::Unknown)
+                    .then(|| m.task.as_ref().and_then(|t| heuristics.get(t)))
+                    .flatten()
+                    .map(|e| json!({"effort": e, "source": "heuristic"})),
+                "blocks_tasks": r.item.blocks_tasks,
                 "snoozed_until_ms": m.snoozed_until_ms,
                 "woke_from_snooze": woke,
                 "urgent": r.class.is_urgent(),

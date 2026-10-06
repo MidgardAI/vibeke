@@ -24,6 +24,8 @@ pub enum SubjectError {
     NotImmutable(String),
     #[error("subject id does not match its identity fields")]
     IdMismatch,
+    #[error("snapshot {0} does not match its recorded tree/parent")]
+    SnapshotMismatch(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -50,6 +52,28 @@ pub enum SubjectKind {
     Committed,
     /// The live checkout (head plus a dirty digest). Inspect-only in T2.
     CheckoutLive,
+    /// A validated, content-addressed snapshot of dirty work (staged + unstaged + untracked,
+    /// binary included) stored as an immutable Git commit under `refs/vibeke/snapshots/`
+    /// (15 §5, T4). Accept-capable and verifiable like a committed subject.
+    DirtySnapshot,
+}
+
+/// Where a [`SubjectKind::DirtySnapshot`]'s content lives: an immutable commit (parent = the
+/// checkout's HEAD at capture) in the repository's object store, kept reachable by a
+/// Vibeke-private ref. The user's index, worktree and refs are never touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotRef {
+    /// Snapshot commit; its tree is the full working-tree content.
+    pub commit: String,
+    pub tree: String,
+    /// Tree of the user's index at capture (the staged part), for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_tree: Option<String>,
+    /// `refs/vibeke/snapshots/<commit>`.
+    pub ref_name: String,
+    /// Capture attempts needed until the before/after digests agreed.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 /// Immutable, content-addressed description of what is under review.
@@ -65,6 +89,9 @@ pub struct ChangeSubject {
     pub dirty_state: DirtyState,
     pub captured_at_ms: i64,
     pub kind: SubjectKind,
+    /// Immutable content of a dirty snapshot (`kind = dirty_snapshot` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotRef>,
 }
 
 impl ChangeSubject {
@@ -94,6 +121,51 @@ impl ChangeSubject {
             dirty_state,
             captured_at_ms,
             kind,
+            snapshot: None,
+        }
+    }
+
+    /// A dirty-snapshot subject: `base..snapshot.commit`, with the live checkout's HEAD and
+    /// change digest at capture.
+    pub fn dirty_snapshot(
+        repo: RepoIdentity,
+        base_sha: String,
+        head_sha: String,
+        dirty_digest: String,
+        snapshot: SnapshotRef,
+        captured_at_ms: i64,
+    ) -> Self {
+        let mut s = ChangeSubject::new(
+            repo,
+            base_sha,
+            head_sha,
+            Some(dirty_digest),
+            DirtyState::Dirty,
+            SubjectKind::DirtySnapshot,
+            captured_at_ms,
+        );
+        s.snapshot = Some(snapshot);
+        s.id = s.identity();
+        s
+    }
+
+    /// Content address over every identity field (not capture time or attempt count).
+    fn identity(&self) -> String {
+        let base = Self::compute_id(
+            &self.repo,
+            &self.base_sha,
+            &self.head_sha,
+            self.dirty_digest.as_deref(),
+            self.dirty_state,
+            self.kind,
+        );
+        match &self.snapshot {
+            None => base,
+            Some(sn) => {
+                let mut h = FieldHasher::new("vk-review/change-subject/snapshot/v1");
+                h.str(&base).str(&sn.commit).str(&sn.tree);
+                h.finish()
+            }
         }
     }
 
@@ -119,26 +191,38 @@ impl ChangeSubject {
             .str(match kind {
                 SubjectKind::Committed => "committed",
                 SubjectKind::CheckoutLive => "checkout_live",
+                SubjectKind::DirtySnapshot => "dirty_snapshot",
             });
         h.finish()
     }
 
     /// The stored id matches the identity fields (detects tampering/corruption).
     pub fn verify_id(&self) -> bool {
-        self.id
-            == Self::compute_id(
-                &self.repo,
-                &self.base_sha,
-                &self.head_sha,
-                self.dirty_digest.as_deref(),
-                self.dirty_state,
-                self.kind,
-            )
+        self.id == self.identity()
     }
 
-    /// Accept-capable and verifiable in T2: a committed subject (§6.3 "Initial T2 scope").
+    /// A committed subject (`base..head` of commits).
     pub fn is_committed(&self) -> bool {
         self.kind == SubjectKind::Committed
+    }
+
+    /// Accept-capable and verifiable: a committed subject (T2) or a validated dirty snapshot
+    /// whose immutable content is recorded (T4, §5). The live checkout never is.
+    pub fn is_immutable(&self) -> bool {
+        match self.kind {
+            SubjectKind::Committed => true,
+            SubjectKind::DirtySnapshot => self.snapshot.is_some(),
+            SubjectKind::CheckoutLive => false,
+        }
+    }
+
+    /// The commit whose tree is this subject's content: the snapshot commit of a dirty
+    /// snapshot, else `head_sha`. Diffs, check definitions and disposable checkouts use it.
+    pub fn content_sha(&self) -> &str {
+        self.snapshot
+            .as_ref()
+            .map(|s| s.commit.as_str())
+            .unwrap_or(&self.head_sha)
     }
 
     /// Short head for display.
@@ -516,7 +600,7 @@ fn require_immutable(subject: &ChangeSubject) -> Result<(), SubjectError> {
     if !subject.verify_id() {
         return Err(SubjectError::IdMismatch);
     }
-    if !subject.is_committed() {
+    if !subject.is_immutable() {
         return Err(SubjectError::NotImmutable(subject.id.clone()));
     }
     let repo = Path::new(&subject.repo.root);
@@ -526,6 +610,33 @@ fn require_immutable(subject: &ChangeSubject) -> Result<(), SubjectError> {
         if out.code != Some(0) {
             return Err(SubjectError::BadRevision(sha.clone()));
         }
+    }
+    if let Some(sn) = &subject.snapshot {
+        verify_snapshot(repo, &subject.head_sha, sn)?;
+    }
+    Ok(())
+}
+
+/// The snapshot commit exists, has exactly the recorded tree and the capture-time HEAD as its
+/// only parent (so its content is what was validated, not something rewritten later).
+pub fn verify_snapshot(repo: &Path, head_sha: &str, sn: &SnapshotRef) -> Result<(), SubjectError> {
+    let out = gitcmd::run_raw(
+        repo,
+        &["cat-file", "commit", &sn.commit],
+        gitcmd::GIT_TIMEOUT,
+    )?;
+    if out.code != Some(0) {
+        return Err(SubjectError::BadRevision(sn.commit.clone()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let header: Vec<&str> = text.lines().take_while(|l| !l.is_empty()).collect();
+    let tree_ok = header.iter().any(|l| *l == format!("tree {}", sn.tree));
+    let parents: Vec<&str> = header
+        .iter()
+        .filter_map(|l| l.strip_prefix("parent "))
+        .collect();
+    if !tree_ok || parents != [head_sha] {
+        return Err(SubjectError::SnapshotMismatch(sn.commit.clone()));
     }
     Ok(())
 }
@@ -538,7 +649,7 @@ pub fn diff_stat(subject: &ChangeSubject) -> Result<DiffStat, SubjectError> {
     let repo = Path::new(&subject.repo.root);
     let mut args = vec!["diff", "--numstat", "-z"];
     args.extend(DIFF_FLAGS);
-    args.extend([subject.base_sha.as_str(), subject.head_sha.as_str()]);
+    args.extend([subject.base_sha.as_str(), subject.content_sha()]);
     let out = gitcmd::run_bytes(repo, &args)?;
     Ok(parse_numstat_z(&out))
 }
@@ -595,7 +706,7 @@ pub fn diff_text_path(
     let repo = Path::new(&subject.repo.root);
     let mut args = vec!["diff"];
     args.extend(DIFF_FLAGS);
-    args.extend([subject.base_sha.as_str(), subject.head_sha.as_str()]);
+    args.extend([subject.base_sha.as_str(), subject.content_sha()]);
     let spec = path.map(|p| format!(":(literal){p}"));
     if let Some(spec) = &spec {
         args.extend(["--", spec.as_str()]);
