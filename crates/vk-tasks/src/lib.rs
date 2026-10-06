@@ -24,6 +24,8 @@
 //!   JSON lease table shared by all processes; leases expire when their
 //!   owner pid dies; ports are bind-tested on 127.0.0.1 before being handed
 //!   out.
+//! * **Task previews** – [`parse_previews`] / [`resolve_previews`]: `[previews]`
+//!   entries (`port_env` / `offset` into the lease, 06 B2) resolved to ports.
 //! * **Removal** – [`start_remove`]`(path, `[`RemoveOptions`]`) -> `[`RemovalJob`]
 //!   (events channel + pollable [`RemovalState`]); [`reap_trash`].
 //! * **Status** – [`branch_status`], [`removal_blockers`].
@@ -52,6 +54,7 @@ mod git;
 mod jj;
 mod naming;
 mod ports;
+mod previews;
 mod remove;
 mod repo;
 mod setup;
@@ -69,6 +72,10 @@ pub use git::{
 pub use jj::{Jj, JjStatus, JjWorkspace, find_root as jj_root, is_colocated as jj_colocated};
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};
 pub use ports::{Lease, LeaseRequest, PortLeases, PortPool};
+pub use previews::{
+    MAX_TASK_PREVIEWS, PreviewSpec, ResolvedPreview, offset_of_env, parse_previews,
+    port_env_offsets, resolve_previews,
+};
 pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};
 pub use setup::{

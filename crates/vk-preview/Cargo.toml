@@ -15,6 +15,15 @@ anyhow.workspace = true
 tracing.workspace = true
 libc.workspace = true
 regex.workspace = true
+rand.workspace = true
+sha2.workspace = true
+# B4 reverse proxy and the TLS probe. All already in the tree (reqwest/axum), same features.
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [dev-dependencies]
 tempfile.workspace = true

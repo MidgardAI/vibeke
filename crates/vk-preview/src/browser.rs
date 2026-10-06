@@ -127,6 +127,121 @@ pub fn find_browser(configured: Option<&str>) -> Option<BrowserBin> {
         })
 }
 
+/// Firefox for the window (06 B3.4; the browser pane always uses Chromium): `configured` if it
+/// is a Firefox binary, else `$VIBEKE_FIREFOX`, else the installed app (`/Applications`,
+/// `~/Applications`) / `firefox` on `PATH`.
+pub fn find_firefox(configured: Option<&str>) -> Option<BrowserBin> {
+    let cand = configured
+        .filter(|c| !c.is_empty() && *c != "firefox")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("VIBEKE_FIREFOX")
+                .filter(|e| !e.is_empty())
+                .map(PathBuf::from)
+        });
+    if let Some(p) = cand {
+        return p.is_file().then(|| BrowserBin {
+            path: p,
+            kind: "firefox".into(),
+        });
+    }
+    let mut v: Vec<PathBuf> = Vec::new();
+    if cfg!(target_os = "macos") {
+        for base in [PathBuf::from("/Applications"), home().join("Applications")] {
+            for app in [
+                "Firefox.app",
+                "Firefox Developer Edition.app",
+                "Firefox Nightly.app",
+            ] {
+                v.push(base.join(app).join("Contents/MacOS/firefox"));
+            }
+        }
+    } else {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        for d in std::env::split_paths(&path) {
+            v.push(d.join("firefox"));
+        }
+    }
+    v.into_iter().find(|p| p.is_file()).map(|p| BrowserBin {
+        path: p,
+        kind: "firefox".into(),
+    })
+}
+
+/// A binary that is Firefox (by file name), for `[preview] browser = "/path/to/firefox"`.
+pub fn is_firefox_path(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().starts_with("firefox"))
+}
+
+/// `user.js` for a Vibeke Firefox profile (06 B3.4): the SOCKS route for remote machines
+/// (`network.proxy.type=1`, `socks_version=5`, `socks_remote_dns=true` so names resolve on the
+/// route, `allow_hijacking_localhost=true` so `localhost` is proxied too, no bypass list), or
+/// no proxy for local previews; plus first-run/telemetry suppression. Rewritten on every
+/// launch, so the route always matches the current SOCKS port.
+pub fn firefox_prefs(socks_port: Option<u16>) -> String {
+    let mut p: Vec<(String, String)> = vec![];
+    let mut set = |k: &str, v: String| p.push((k.to_string(), v));
+    match socks_port {
+        Some(port) => {
+            set("network.proxy.type", "1".into());
+            set("network.proxy.socks", "\"127.0.0.1\"".into());
+            set("network.proxy.socks_port", port.to_string());
+            set("network.proxy.socks_version", "5".into());
+            set("network.proxy.socks_remote_dns", "true".into());
+            set("network.proxy.allow_hijacking_localhost", "true".into());
+            set("network.proxy.no_proxies_on", "\"\"".into());
+            set("network.proxy.share_proxy_settings", "false".into());
+            set("network.proxy.http", "\"\"".into());
+            set("network.proxy.ssl", "\"\"".into());
+            // WebRTC must not send UDP around the route (same policy as Chromium).
+            set("media.peerconnection.ice.proxy_only", "true".into());
+            set("network.trr.mode", "5".into());
+        }
+        None => set("network.proxy.type", "0".into()),
+    }
+    for (k, v) in [
+        ("browser.shell.checkDefaultBrowser", "false"),
+        ("browser.aboutwelcome.enabled", "false"),
+        ("browser.startup.homepage_override.mstone", "\"ignore\""),
+        ("browser.tabs.warnOnClose", "false"),
+        ("datareporting.policy.dataSubmissionEnabled", "false"),
+        ("datareporting.healthreport.uploadEnabled", "false"),
+        ("toolkit.telemetry.reportingpolicy.firstRun", "false"),
+        ("app.normandy.enabled", "false"),
+        ("signon.rememberSignons", "false"),
+    ] {
+        set(k, v.into());
+    }
+    let mut out = String::from(
+        "// Written by Vibeke for this preview profile (06 B3.4). Edits are overwritten.\n",
+    );
+    for (k, v) in p {
+        out.push_str(&format!("user_pref(\"{k}\", {v});\n"));
+    }
+    out
+}
+
+/// Firefox command line: always an explicit `-profile` (never the user's default profile);
+/// `-new-instance` on the first launch so it can't hand off to a running Firefox of another
+/// profile; later opens on the same profile go to our running instance.
+pub fn firefox_args(spec: &LaunchSpec, first: bool) -> Vec<String> {
+    let mut a = vec![
+        "-profile".to_string(),
+        spec.profile_dir.display().to_string(),
+    ];
+    if first {
+        a.push("-new-instance".into());
+    }
+    if spec.headless {
+        a.push("-headless".into());
+    }
+    a.extend(spec.extra_args.iter().cloned());
+    a.push(spec.url.clone());
+    a
+}
+
 /// Profile names are path components: `[A-Za-z0-9_.-]{1,64}`, not `.`/`..`.
 pub fn valid_profile_name(s: &str) -> bool {
     (1..=64).contains(&s.len())
@@ -170,6 +285,10 @@ pub struct LaunchSpec {
     pub url: String,
     pub headless: bool,
     pub extra_args: Vec<String>,
+    /// Firefox instead of Chromium (`user.js` prefs instead of switches).
+    pub firefox: bool,
+    /// A browser already runs on this profile (the launch hands the URL to it).
+    pub reuse: bool,
 }
 
 /// WebRTC may not send UDP around the SOCKS route. The headless shell reads the force switch's
@@ -216,6 +335,18 @@ pub fn check_profile_dir(dir: &Path, root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    o.mode(0o600);
+    let mut f = o.open(path)?;
+    f.write_all(data)
+}
+
 /// Launch detached from the server's terminal (own process group, null stdio, stderr to
 /// `log`). The caller keeps the child to reap it and to know the root pid.
 pub fn launch(spec: &LaunchSpec, log: Option<&Path>) -> Result<tokio::process::Child> {
@@ -227,8 +358,16 @@ pub fn launch(spec: &LaunchSpec, log: Option<&Path>) -> Result<tokio::process::C
         let _ = std::fs::set_permissions(&spec.profile_dir, std::fs::Permissions::from_mode(0o700));
     }
     let mut c = tokio::process::Command::new(&spec.bin);
-    c.args(args(spec))
-        .stdin(std::process::Stdio::null())
+    if spec.firefox {
+        let prefs = spec.profile_dir.join("user.js");
+        write_private(&prefs, firefox_prefs(spec.socks_port).as_bytes())
+            .with_context(|| format!("write {}", prefs.display()))?;
+        c.args(firefox_args(spec, !spec.reuse))
+            .env("MOZ_CRASHREPORTER_DISABLE", "1");
+    } else {
+        c.args(args(spec));
+    }
+    c.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .kill_on_drop(false)
         .process_group(0);
@@ -259,6 +398,8 @@ mod tests {
             url: "http://localhost:5173/".into(),
             headless: false,
             extra_args: vec![],
+            firefox: false,
+            reuse: false,
         };
         let a = args(&spec);
         assert_eq!(a[0], "--user-data-dir=/state/browser-profiles/devbox");
@@ -299,6 +440,83 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn firefox_profile_prefs_and_args() {
+        let p = firefox_prefs(Some(41234));
+        for line in [
+            "user_pref(\"network.proxy.type\", 1);",
+            "user_pref(\"network.proxy.socks\", \"127.0.0.1\");",
+            "user_pref(\"network.proxy.socks_port\", 41234);",
+            "user_pref(\"network.proxy.socks_version\", 5);",
+            "user_pref(\"network.proxy.socks_remote_dns\", true);",
+            "user_pref(\"network.proxy.allow_hijacking_localhost\", true);",
+            "user_pref(\"network.proxy.no_proxies_on\", \"\");",
+            "user_pref(\"media.peerconnection.ice.proxy_only\", true);",
+        ] {
+            assert!(p.contains(line), "{line} missing:\n{p}");
+        }
+        let local = firefox_prefs(None);
+        assert!(local.contains("user_pref(\"network.proxy.type\", 0);"));
+        assert!(!local.contains("socks"));
+        let spec = LaunchSpec {
+            bin: "/Applications/Firefox.app/Contents/MacOS/firefox".into(),
+            profile_dir: "/state/browser-profiles/devbox-firefox".into(),
+            socks_port: Some(41234),
+            url: "http://localhost:5173/".into(),
+            headless: true,
+            extra_args: vec![],
+            firefox: true,
+            reuse: false,
+        };
+        let a = firefox_args(&spec, true);
+        assert_eq!(
+            a,
+            vec![
+                "-profile",
+                "/state/browser-profiles/devbox-firefox",
+                "-new-instance",
+                "-headless",
+                "http://localhost:5173/"
+            ]
+        );
+        assert!(!firefox_args(&spec, false).contains(&"-new-instance".to_string()));
+        assert!(is_firefox_path(Path::new("/usr/bin/firefox")));
+        assert!(is_firefox_path(Path::new("/x/firefox-esr")));
+        assert!(!is_firefox_path(Path::new("/x/chrome")));
+        assert_eq!(find_firefox(Some("/nonexistent/firefox")), None);
+    }
+
+    /// The prefs file lands in the Vibeke profile (0600), never anywhere else; the launch
+    /// itself is exercised with a stand-in binary (`/bin/echo`), so no Firefox is needed.
+    #[tokio::test]
+    async fn firefox_launch_writes_prefs_into_the_vibeke_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = profiles_root(root.path()).join("devbox-firefox");
+        let spec = LaunchSpec {
+            bin: "/bin/echo".into(),
+            profile_dir: dir.clone(),
+            socks_port: Some(5555),
+            url: "http://localhost:1/".into(),
+            headless: true,
+            extra_args: vec![],
+            firefox: true,
+            reuse: false,
+        };
+        check_profile_dir(&dir, &profiles_root(root.path())).unwrap();
+        let mut c = launch(&spec, None).unwrap();
+        let _ = c.wait().await;
+        let prefs = std::fs::read_to_string(dir.join("user.js")).unwrap();
+        assert!(prefs.contains("network.proxy.socks_port\", 5555"));
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("user.js"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let dmode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(dmode & 0o777, 0o700);
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub fn targets(bind: Option<IpAddr>, port: u16) -> Vec<SocketAddr> {
     }
 }
 
-async fn connect_any(addrs: &[SocketAddr], timeout: Duration) -> Option<TcpStream> {
+pub(crate) async fn connect_any(addrs: &[SocketAddr], timeout: Duration) -> Option<TcpStream> {
     for a in addrs {
         if let Ok(Ok(s)) = tokio::time::timeout(timeout, TcpStream::connect(a)).await {
             return Some(s);
