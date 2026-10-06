@@ -9,6 +9,7 @@ pub mod api;
 pub mod api_schema;
 pub mod assist;
 pub mod blob_api;
+pub mod blob_store;
 pub mod browser_pane;
 pub mod compat;
 pub mod config_api;
@@ -18,9 +19,12 @@ pub mod drafts;
 pub mod fs_api;
 pub mod gateway_api;
 pub mod git_api;
+pub mod hardening;
 pub mod inbox;
+pub mod items;
 pub mod layouts;
 pub mod limits;
+pub mod machines;
 pub mod notify;
 pub mod pane;
 pub mod pane_api;
@@ -185,6 +189,10 @@ pub struct Server {
     pub housekeeping_runs: AtomicU64,
     /// Audit log, token revocation and elevation, integration tamper state (09).
     pub security: security::State,
+    /// Degraded-mode bookkeeping, storage sweeps (02 §4a, 3D).
+    pub hardening: hardening::State,
+    /// Turn/Item stream recorder (02 §1.1, 3D).
+    pub items: items::State,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -279,6 +287,8 @@ impl Server {
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
             security: Default::default(),
+            hardening: Default::default(),
+            items: Default::default(),
         }))
     }
 
@@ -290,8 +300,16 @@ impl Server {
     pub fn commit(&self, core: &mut Core, tx: Tx) -> Result<Vec<Event>> {
         match core.commit(tx) {
             Ok(events) => {
+                if let Some(msg) = core.ephemeral_hit.take() {
+                    // The store refused the write and the transaction was a UI convenience
+                    // (focus, unread marks): applied in memory only (02 §4a).
+                    self.hardening.note_ephemeral();
+                    self.enter_degraded(core, msg);
+                    return Ok(events);
+                }
                 *self.degraded.lock().unwrap() = None;
                 core.model.degraded = None;
+                self.hardening.recovered();
                 for e in &events {
                     let _ = self.events.send(Arc::new(e.clone()));
                 }
@@ -299,15 +317,18 @@ impl Server {
                 Ok(events)
             }
             Err(e) => {
-                let msg = format!("storage unavailable: {e:#}");
-                *self.degraded.lock().unwrap() = Some(msg.clone());
-                // Housekeeping probes storage until it recovers.
-                self.housekeeping_wake.notify_one();
-                core.model.degraded = Some(msg);
-                self.bump_model();
+                self.enter_degraded(core, format!("storage unavailable: {e:#}"));
                 Err(e)
             }
         }
+    }
+
+    /// Mark the server degraded (02 §4a): housekeeping probes storage until it recovers.
+    pub fn enter_degraded(&self, core: &mut Core, msg: String) {
+        *self.degraded.lock().unwrap() = Some(msg.clone());
+        self.housekeeping_wake.notify_one();
+        core.model.degraded = Some(msg);
+        self.bump_model();
     }
 
     pub fn bump_model(&self) {
@@ -1265,6 +1286,8 @@ impl Server {
             tx.m.read_mark("local", &p.id, r.done_rev);
         }
         tx.event("pane.focused", subject_pane(&p), json!({"client": client}));
+        // Focus and unread marks are UI convenience: applied in memory when storage is down.
+        tx.ephemeral = true;
         let _ = self.commit(&mut c, tx);
         drop(c);
         if prev.as_deref() != Some(&p.id) {
@@ -1406,7 +1429,8 @@ impl Server {
             p.unread = true;
             let mut tx = Tx::new();
             tx.pane(p);
-            let _ = c.commit(tx);
+            tx.ephemeral = true;
+            let _ = self.commit(&mut c, tx);
             drop(c);
             self.bump_model();
         }
@@ -1497,6 +1521,10 @@ impl Server {
         blob: Vec<u8>,
         incarnation: &str,
     ) -> bool {
+        // Degraded: VT snapshots pause (the recovery guarantee is "ring only", 02 §4a).
+        if self.degraded.lock().unwrap().is_some() {
+            return false;
+        }
         let mut c = self.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.snapshot(
@@ -1513,6 +1541,11 @@ impl Server {
     pub fn archive_rows(&self, pane: &str, rows: Vec<ArchivedRow>) {
         // A browser console split is `no_archive` (06 B3.2): nothing on disk, nothing indexed.
         if crate::browser_pane::page_io::no_archive(self, pane) {
+            return;
+        }
+        // Degraded: archive writes pause with the snapshots (02 §4a); the rows stay in the ring.
+        if self.degraded.lock().unwrap().is_some() {
+            self.hardening.archive_skipped(rows.len());
             return;
         }
         let ts = now_ms();
@@ -1571,11 +1604,12 @@ impl Server {
             let _ = c.store.fts_register_panes(&ids);
         }
         drop(a);
-        if self.degraded.lock().unwrap().is_some() {
+        if self.degraded.lock().unwrap().is_some() && self.hardening.probe_due() {
             let ok = self.with_core(|c| c.store.probe().is_ok());
             if ok {
                 *self.degraded.lock().unwrap() = None;
                 self.with_core(|c| c.model.degraded = None);
+                self.hardening.recovered();
                 self.bump_model();
             }
         }

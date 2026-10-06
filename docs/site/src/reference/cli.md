@@ -15,6 +15,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 - `vibeke update`: update the binary.
 - `vibeke doctor`: check the installation.
 - `vibeke doctor --rebuild-index`: rebuild the scrollback search index. Stop the server first.
+- `vibeke doctor --list-backups` and `vibeke doctor --restore-backup NAME`: list the pre-migration copies of the state database (the last three) and restore one. Stop the server first. Restoring rotates the event-log epoch and keeps the replaced database as `state.db.pre-restore`.
 - `vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]`: delete archived scrollback through `scrollback.forget`.
 - `vibeke --skill`: print the agent instructions.
 - `vibeke --default-config`: print the configuration template.
@@ -192,6 +193,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `depend` | `<task>` `<depends_on>` | `task.dependency.add` | <task> <depends-on> [--kind blocks\|related] — confirm a dependency link (cycles refused) |
 | `undepend` | `<task>` `<depends_on>` | `task.dependency.remove` | <task> <depends-on> [--kind k] \| --edge e |
 | `deps` | `<task>` | `task.dependency.list` | [task] — confirmed links and how many open tasks each blocks |
+| `select` | `<task>` | `task.review.snapshot` | <task> --paths f [--paths g …] \| --patch <unified diff> — capture only these files or hunks as a selected-patch subject (checks on it verify the selection alone) |
+| `human-review` | `<task>` `<criterion>` `<verdict>` | `task.review.human_review` | <task> <criterion> supported\|failed\|withdrawn [--note n] [--subject s] [--screenshots id] — your judgment of a human criterion on the shown revision |
+| `forget` | - | `task.review.forget` | --task t \| --pane p \| --workspace w \| --before t \| --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs) |
+| `link` | - | `task.link.status` | --run r \| --pane p — why a run's identity is not verified, how to verify it, and verified runs to track instead |
 | `message` | `<task>` `<text>` | `task.message.prepare` | [--communicates-intent] — draft only |
 | `send` | `<message>` | `task.message.send` | send a prepared message (refuses with zero bytes when unsafe) |
 | `message-status` | `<message>` | `task.message.get` |  |
@@ -404,12 +409,34 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `providers` | - | `assistant.providers` | configured connections and profiles (no secrets) |
 | `consent` | `<workspace>` | `assistant.consent` | [workspace] [--connection c] [--classes selected_text,structured_state,review_package,screen] [--operations op,...] [--auto-send op,...] |
 | `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--connection c] — also cancels unfinished requests there |
-| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — Show the exact payload. Do not send it. |
+| `generate` | `<operation>` | `assistant.generate` | suggest_task_details\|review_summary\|pane_title\|briefing\|handoff\|effort_estimate\|navigate\|decision_card\|task_title [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--query text] [--interaction i] [--stream] [--priority background] [--include-screen] — Show the exact payload. Do not send it. |
 | `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
 | `show` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources and the generated draft |
 | `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |
 | `cancel` | `<request>` | `assistant.cancel` | <request> |
 | `purge` | `<request>` | `assistant.purge` | <request> \| --workspace w \| --all — forget generated outputs |
+| `models` | `<connection>` | `assistant.models` | [connection] [--profile p] [--refresh] — live\|cached\|bundled model list with capability records; --refresh asks the provider |
+| `test` | - | `assistant.test` | [--profile p] [--probe streaming,json_schema] — an explicit small generation, counted as usage; probes record what works |
+| `background` | `<action>` | `assistant.background` | [status\|tick] — the opt-in background sweeper (summaries, stall notices) |
+
+## `vibeke assistant`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `assistant.status` | enabled/configured state, coordinator, profile, budgets, consents (no secrets) |
+| `providers` | - | `assistant.providers` | configured connections and verified adapters (no secrets) |
+| `models` | `<connection>` | `assistant.models` | --connection <id> [--refresh] — model list with live\|cached\|bundled provenance and capability records |
+| `test` | - | `assistant.test` | [--profile p] [--probe streaming,json_schema] — explicit small generation, counted as usage |
+| `brief` | `<workspace>` | `assistant.generate` | [workspace] — preview a briefing request for a workspace (then `assistant confirm`) |
+| `generate` | `<operation>` | `assistant.generate` | <operation> [flags] — show the exact payload; nothing is sent |
+| `confirm` | `<request>` `<preview_digest>` | `assistant.confirm` | <request> <preview-digest> — send the previewed payload |
+| `get` | `<request>` | `assistant.get` | <request> — lifecycle, usage, cost, sources, staleness and the generated draft |
+| `list` | - | `assistant.list` | [--workspace w] [--state done] [--limit 50] |
+| `cancel` | `<request>` | `assistant.cancel` | <request> |
+| `consent` | `<workspace>` | `assistant.consent` | [workspace] [--remote-workspace machine:/path] [--connection c] [--classes ...] [--operations ...] [--auto-send ...] |
+| `revoke` | `<workspace>` | `assistant.revoke` | [workspace] [--remote-workspace machine:/path] [--connection c] |
+| `purge` | `<request>` | `assistant.purge` | <request> \| --workspace w \| --all — forget generated outputs and cached results |
+| `background` | `<action>` | `assistant.background` | [status\|tick] |
 
 ## `vibeke api`
 

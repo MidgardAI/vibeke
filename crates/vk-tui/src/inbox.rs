@@ -55,6 +55,23 @@ pub struct Item {
     pub fallback: bool,
     /// Last observed on a machine that is offline now: shown, never actionable.
     pub stale: bool,
+    /// The interaction's deadline (15 §8.1): epoch ms and source (`native` = the harness's
+    /// own timeout, `gate` = Vibeke's hook gate ends, the pane dialog shows afterwards).
+    pub deadline_ms: Option<i64>,
+    pub deadline_source: Option<String>,
+    /// Server-side batch of equivalent approvals (15 §8.3): (batch id, size).
+    pub batch: Option<(String, u64)>,
+}
+
+/// A busy agent without an open question, for the **Also working** footer (15 §8.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Working {
+    pub machine: usize,
+    pub run: String,
+    pub pane: String,
+    pub name: String,
+    pub task: Option<String>,
+    pub working_for_ms: i64,
 }
 
 impl Item {
@@ -86,6 +103,7 @@ pub enum Source {
         five: Option<Five>,
         at: Instant,
         at_ms: i64,
+        also_working: Vec<Working>,
     },
     Error(String),
 }
@@ -200,6 +218,14 @@ pub fn parse_item(machine: usize, v: &Value) -> Option<Item> {
         raw_key: key.clone(),
         fallback: false,
         stale: false,
+        deadline_ms: v.get("deadline_ms").and_then(Value::as_i64),
+        deadline_source: opt_str(v, "deadline_source"),
+        batch: v.get("batch").and_then(|b| {
+            Some((
+                b.get("id")?.as_str()?.to_string(),
+                b.get("size").and_then(Value::as_u64).unwrap_or(0),
+            ))
+        }),
     })
 }
 
@@ -241,6 +267,31 @@ pub fn parse_list(machine: usize, v: &Value, at: Instant, at_ms: i64) -> Source 
         omitted_count: f.get("omitted_count").and_then(Value::as_u64).unwrap_or(0) as usize,
         note: opt_str(f, "note").unwrap_or_default(),
     });
+    let also_working = v
+        .get("also_working")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|w| {
+                    Some(Working {
+                        machine,
+                        run: w.get("run")?.as_str()?.to_string(),
+                        pane: opt_str(w, "pane").unwrap_or_default(),
+                        name: opt_str(w, "name").unwrap_or_default(),
+                        task: w
+                            .get("task")
+                            .and_then(|t| t.get("title"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        working_for_ms: w
+                            .get("working_for_ms")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Source::Loaded {
         items,
         complete,
@@ -248,7 +299,36 @@ pub fn parse_list(machine: usize, v: &Value, at: Instant, at_ms: i64) -> Source 
         five,
         at,
         at_ms,
+        also_working,
     }
+}
+
+/// Busy agents without an open question from the session model (older servers, fallback).
+pub fn working_from_model(app: &App, mi: usize) -> Vec<Working> {
+    let m = &app.machines[mi];
+    let now = now_ms();
+    let mut v: Vec<Working> = m
+        .model
+        .runs
+        .iter()
+        .filter(|r| r.ended_at_ms.is_none() && r.execution.value == Execution::Working)
+        .filter(|r| {
+            !m.model
+                .interactions
+                .iter()
+                .any(|i| i.run == r.id && i.status == InteractionStatus::Open)
+        })
+        .map(|r| Working {
+            machine: mi,
+            run: r.id.clone(),
+            pane: r.pane.clone(),
+            name: r.name.clone().unwrap_or_else(|| r.harness.clone()),
+            task: None,
+            working_for_ms: (now - r.execution.since_ms).max(0),
+        })
+        .collect();
+    v.sort_by_key(|w| std::cmp::Reverse(w.working_for_ms));
+    v
 }
 
 // ---- M1 fallback --------------------------------------------------------------------------------
@@ -315,6 +395,9 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
             raw_key: json!({"kind": "interaction", "id": i.id}),
             fallback: true,
             stale: false,
+            deadline_ms: None,
+            deadline_source: None,
+            batch: None,
         });
     }
     for t in &m.model.tasks {
@@ -354,6 +437,9 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
             raw_key: json!({"kind": "review", "id": t.id}),
             fallback: true,
             stale: false,
+            deadline_ms: None,
+            deadline_source: None,
+            batch: None,
         });
     }
     v
@@ -381,6 +467,8 @@ pub struct View {
     /// Five-minute view: (omitted count, note).
     pub omitted: Option<(usize, String)>,
     pub snoozed: usize,
+    /// The **Also working** footer (15 §8.1; `ui.inbox.also_working`).
+    pub also_working: Vec<Working>,
 }
 
 fn rank_key(i: &Item) -> (u8, bool, std::cmp::Reverse<i64>) {
@@ -415,6 +503,7 @@ pub fn view(app: &App) -> View {
     let mut coverage = Vec::new();
     let mut omitted: Option<(usize, String)> = None;
     let mut snoozed = 0;
+    let mut working: Vec<Working> = Vec::new();
     for (mi, m) in app.machines.iter().enumerate() {
         let src = st.per_machine.get(mi).cloned().unwrap_or_default();
         let label = if m.label.is_empty() {
@@ -429,10 +518,17 @@ pub fn view(app: &App) -> View {
                 notes,
                 five,
                 at,
+                also_working,
                 ..
             } => {
                 let elapsed = at.elapsed().as_millis() as i64;
                 let offline = !m.connected();
+                if !offline {
+                    working.extend(also_working.into_iter().map(|mut w| {
+                        w.working_for_ms += elapsed;
+                        w
+                    }));
+                }
                 if offline {
                     coverage.push(format!(
                         "{label} offline · last observed {} ago · actions disabled",
@@ -485,6 +581,7 @@ pub fn view(app: &App) -> View {
                         "{label}: ranking unavailable (older server) — open questions in arrival order"
                     ));
                     lists.push(fallback_items(app, mi));
+                    working.extend(working_from_model(app, mi));
                 } else {
                     coverage.push(format!("{label} offline — not covered"));
                 }
@@ -493,12 +590,14 @@ pub fn view(app: &App) -> View {
                 coverage.push(format!("{label}: {e} — showing open questions only"));
                 if m.connected() {
                     lists.push(fallback_items(app, mi));
+                    working.extend(working_from_model(app, mi));
                 }
             }
             Source::Unknown => {
                 if m.connected() {
                     // Not answered yet: show what the session model knows without inventing ranks.
                     lists.push(fallback_items(app, mi));
+                    working.extend(working_from_model(app, mi));
                 } else {
                     coverage.push(format!("{label} {} — not covered", m.status));
                 }
@@ -508,11 +607,15 @@ pub fn view(app: &App) -> View {
     if st.five_minute && omitted.is_none() {
         coverage.push("five-minute view needs a newer server; showing all items".into());
     }
+    if !app.config.ui.inbox.also_working {
+        working.clear();
+    }
     View {
         items: merge(lists),
         coverage,
         omitted,
         snoozed,
+        also_working: working,
     }
 }
 
@@ -988,6 +1091,20 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         Key::Char('r') => refresh(app),
         _ if sel.is_none() => {}
+        // Batch view seeded with the selected approval (15 §8.3).
+        Key::Char('A') => {
+            let it = sel.unwrap();
+            match (&it.interaction, it.stale) {
+                (Some(int), false) => {
+                    app.return_to.push(Popup::Inbox);
+                    crate::batch::open(app, Some((it.key.machine, int.clone())));
+                    if matches!(app.mode, Mode::Popup(Popup::Inbox)) {
+                        app.return_to.pop();
+                    }
+                }
+                _ => app.inbox.notice = Some("only approvals can be batched".into()),
+            }
+        }
         Key::Char('s') => {
             let it = sel.unwrap();
             if it.stale || it.fallback {
@@ -1241,8 +1358,9 @@ pub fn draw(app: &App, g: &mut Grid) {
             2,
         );
         let line = format!(
-            "{urgent}{mlabel}{} · {}{}{}",
+            "{urgent}{mlabel}{}{} · {}{}{}",
             it.title,
+            batch_suffix(it),
             if it.explanation.is_empty() {
                 fmt_age(it.age_ms)
             } else {
@@ -1262,6 +1380,25 @@ pub fn draw(app: &App, g: &mut Grid) {
             t.dim(),
             list_w,
         );
+        y += 1;
+    }
+    // Also working (15 §8.1): routine busy agents, never ranked, never actionable here.
+    if !v.also_working.is_empty() && y + 1 < bottom {
+        g.put_str(r.x + 1, y, "─ Also working ─", t.dim(), list_w);
+        y += 1;
+        for w in &v.also_working {
+            if y >= bottom {
+                break;
+            }
+            g.put_str(
+                r.x + 2,
+                y,
+                &working_line(app, w),
+                t.dim(),
+                list_w.saturating_sub(1),
+            );
+            y += 1;
+        }
     }
     // Separator + detail.
     for yy in list_top.saturating_sub(1)..bottom {
@@ -1341,8 +1478,45 @@ pub fn draw(app: &App, g: &mut Grid) {
         }
         Sub::None => {}
     }
-    let keys = "j/k move · enter open · y/n/1-9 answer · o open pane · s snooze · e effort · f 5-minute view · esc close";
+    let keys = "j/k move · enter open · y/n/1-9 answer · A batch · o open pane · s snooze · e effort · f 5-minute view · esc close";
     g.put_str(r.x + 1, bottom, keys, t.dim(), r.w.saturating_sub(2));
+}
+
+/// One **Also working** footer row.
+pub fn working_line(app: &App, w: &Working) -> String {
+    let m = if app.machines.len() > 1 {
+        format!("[{}] ", app.machines[w.machine].label)
+    } else {
+        String::new()
+    };
+    match &w.task {
+        Some(t) => format!(
+            "{m}{} · working {} · {t}",
+            w.name,
+            fmt_age(w.working_for_ms)
+        ),
+        None => format!("{m}{} · working {}", w.name, fmt_age(w.working_for_ms)),
+    }
+}
+
+/// " ⧉N" for an item in a server-side batch of N equivalent approvals.
+pub fn batch_suffix(it: &Item) -> String {
+    match &it.batch {
+        Some((_, n)) if *n > 1 => format!(" ⧉{n}"),
+        _ => String::new(),
+    }
+}
+
+/// The deadline line of the detail view (15 §8.1): the actual deadline, honestly sourced.
+pub fn deadline_text(it: &Item, now: i64) -> Option<String> {
+    let d = it.deadline_ms?;
+    let left = fmt_age((d - now).max(0));
+    Some(match it.deadline_source.as_deref() {
+        Some("gate") => format!(
+            "Answer here within {left}; after that the question shows in the agent's own pane"
+        ),
+        _ => format!("The agent's request expires in {left} (its own deadline)"),
+    })
 }
 
 /// " · blocks N linked tasks" unless the server's explanation already says it (15 §8.1).
@@ -1400,6 +1574,18 @@ fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
     }
     if let Some(w) = &it.woke_from_snooze {
         out.push((format!("Woke from snooze: {w}"), t.s(t.yellow)));
+    }
+    if let Some(d) = deadline_text(it, now_ms()) {
+        out.push((d, t.s(if it.class <= 2 { t.red } else { t.fg })));
+    }
+    if let Some((_, n)) = it.batch.as_ref().filter(|(_, n)| *n > 1) {
+        out.push((
+            format!(
+                "Equivalent to {} other waiting approval(s) · [A] batch view (each is answered and delivered on its own)",
+                n - 1
+            ),
+            t.dim(),
+        ));
     }
     if it.stale {
         out.push((
@@ -1939,5 +2125,74 @@ mod tests {
         let mut cleared = item("review", "t3:x", json!(4), 1_000, false);
         cleared["snoozed_until_ms"] = Value::Null;
         assert!(!parse_item(0, &cleared).unwrap().snoozed(now_ms()));
+    }
+
+    /// Lane 2C (15 §8.1, §8.3): the actual deadline with its source, the server's batch
+    /// membership with `A` opening the batch view, and the Also working footer.
+    #[test]
+    fn deadline_batch_and_also_working_are_shown() {
+        let (mut app, mut rxs) = test_app(1);
+        app.size = (160, 36);
+        open(&mut app);
+        let c = commands(&mut rxs[0]);
+        let mut a = item("interaction", "i1", json!(2), 30_000, true);
+        a["interaction"] = json!("i1");
+        a["title"] = json!("Run cargo test?");
+        a["explanation"] = json!("Deadline in 40s · waiting 30s · blocks this run");
+        a["deadline_ms"] = json!(now_ms() + 40_000);
+        a["deadline_source"] = json!("native");
+        a["batch"] = json!({"id": "b_1", "size": 2});
+        let mut g2 = item("interaction", "i2", json!(3), 10_000, false);
+        g2["deadline_ms"] = json!(now_ms() + 1_800_000);
+        g2["deadline_source"] = json!("gate");
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"items": [a, g2], "coverage": {"complete": true, "notes": []},
+                   "also_working": [{"run": "r9", "pane": "p9", "name": "codex", "harness": "codex",
+                                     "task": {"id": "t9", "handle": "9", "title": "Migrate sessions"},
+                                     "since_ms": 0, "working_for_ms": 125_000}]}),
+        );
+        let v = view(&app);
+        assert_eq!(v.items[0].batch, Some(("b_1".to_string(), 2)));
+        assert_eq!(v.items[0].deadline_source.as_deref(), Some("native"));
+        assert_eq!(v.also_working.len(), 1);
+        let mut g = Grid::new(160, 36);
+        draw(&app, &mut g);
+        let text = crate::tasks::grid_text(&g);
+        assert!(text.contains("⧉2"), "{text}");
+        assert!(text.contains("expires in"), "{text}");
+        assert!(text.contains("[A] batch view"), "{text}");
+        assert!(text.contains("Also working"), "{text}");
+        assert!(text.contains("codex · working 2m"), "{text}");
+        assert!(text.contains("Migrate sessions"), "{text}");
+        // The gate deadline reads differently (the pane dialog follows).
+        let gate = parse_item(
+            0,
+            &json!({"key": {"kind": "interaction", "id": "x"}, "class": 3,
+            "deadline_ms": now_ms() + 60_000, "deadline_source": "gate"}),
+        )
+        .unwrap();
+        assert!(
+            deadline_text(&gate, now_ms())
+                .unwrap()
+                .contains("agent's own pane")
+        );
+        // ui.inbox.also_working = false hides the footer.
+        app.config.ui.inbox.also_working = false;
+        assert!(view(&app).also_working.is_empty());
+    }
+
+    #[test]
+    fn also_working_falls_back_to_the_session_model() {
+        let (mut app, _rxs) = test_app(1);
+        let mut r = crate::app::test_run("r1", "p1", "claude");
+        r.execution.value = Execution::Working;
+        app.machines[0].model.runs.push(r);
+        let w = working_from_model(&app, 0);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].run, "r1");
+        assert!(working_line(&app, &w[0]).contains("working"));
     }
 }

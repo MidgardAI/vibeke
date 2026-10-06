@@ -359,6 +359,7 @@ impl Agents {
     pub fn end_run_tx(&self, core: &mut Core, tx: &mut Tx, run: &AgentRun, reason: &str) {
         let mut r = run.clone();
         r.ended_at_ms = Some(now_ms());
+        crate::items::end_run_tx(core, tx, &r.id);
         let prev = r.execution.value.clone();
         r.execution = Facet {
             detail: Some(reason.to_string()),
@@ -1107,6 +1108,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
         crate::tracking::observe(server, &run, event, p);
     }
     usage::observe(server, &run, event, p);
+    crate::items::observe_hook(server, &run, event, p);
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
@@ -1443,6 +1445,13 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             .unwrap_or_default();
         return Ok(json!({"decision": json, "interaction": it.id, "idempotency_key": key}));
     }
+    // Native deadline from the payload, else the end of the hook gate (15 §8.1, lane 2C).
+    crate::review::attention_ext::on_gate_opened(
+        server,
+        &it.id,
+        p,
+        gate_mode.then_some(GATE_TIMEOUT),
+    );
     notify_interaction(server, &it, &run);
     if !gate_mode {
         return Ok(json!({"decision": null, "interaction": it.id, "mode": "observe"}));
@@ -1650,9 +1659,16 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .get("expected_decision_rev")
         .and_then(Value::as_u64)
         .map(|r| r as u32);
+    // Degraded storage: a decision that can't be recorded is never delivered (02 §4a).
+    crate::hardening::refuse_answer(server)?;
     let Some((native, key)) =
-        record_decision(server, id, answer.clone(), &by, actor, idem, expected)
-            .map_err(|e| err(ErrorKind::Conflict, e))?
+        record_decision(server, id, answer.clone(), &by, actor, idem, expected).map_err(|e| {
+            if e.contains("storage unavailable") {
+                crate::hardening::answer_refusal(&e)
+            } else {
+                err(ErrorKind::Conflict, e)
+            }
+        })?
     else {
         // Retry of an answer already recorded: report state, never deliver twice.
         let it = server.with_core(|c| c.interaction(id).cloned());

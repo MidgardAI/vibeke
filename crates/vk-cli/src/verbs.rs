@@ -139,7 +139,11 @@ where
                 Some("events.event") => {
                     let e = &msg["params"]["event"];
                     let seq = e["seq"].as_i64().unwrap_or(0);
-                    if seq > last {
+                    if seq == 0 && e["tier"] == "transient" {
+                        // A transient notification (`assistant.delta`): not outbox history,
+                        // so it never moves the cursor.
+                        print_event(e);
+                    } else if seq > last {
                         last = seq;
                         print_event(e);
                     }

@@ -885,6 +885,49 @@
         "detail"
       ]
     },
+    "FileChange": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "create",
+            "modify",
+            "delete",
+            "rename"
+          ]
+        },
+        "lines_added": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lines_removed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "op",
+        "lines_added",
+        "lines_removed"
+      ]
+    },
     "FloatingPane": {
       "type": "object",
       "properties": {
@@ -1176,6 +1219,100 @@
         "vm"
       ]
     },
+    "Item": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/ItemKind"
+        },
+        "started_at_ms": {
+          "type": "integer"
+        },
+        "ended_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "payload_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file_change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileChange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "turn_id",
+        "run_id",
+        "seq",
+        "kind",
+        "started_at_ms",
+        "ended_at_ms",
+        "summary",
+        "payload_ref",
+        "file_change",
+        "native_id"
+      ]
+    },
+    "ItemKind": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "assistant_message",
+        "reasoning",
+        "tool_call",
+        "tool_result",
+        "file_change",
+        "command",
+        "plan",
+        "subagent",
+        "error"
+      ]
+    },
     "LayoutNode": {
       "anyOf": [
         {
@@ -1229,6 +1366,73 @@
     },
     "LayoutSpec": {
       "type": "object"
+    },
+    "Machine": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/MachineKind"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "vibeke_version": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/MachineStatus"
+        },
+        "last_seen_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "address",
+        "os",
+        "arch",
+        "vibeke_version",
+        "status",
+        "last_seen_ms"
+      ]
+    },
+    "MachineKind": {
+      "type": "string",
+      "enum": [
+        "local",
+        "ssh",
+        "quic"
+      ]
+    },
+    "MachineStatus": {
+      "type": "string",
+      "enum": [
+        "connected",
+        "connecting",
+        "degraded",
+        "offline"
+      ]
     },
     "MaterializedFile": {
       "type": "object",
@@ -2006,6 +2210,57 @@
         "observed_at_ms"
       ]
     },
+    "ReviewPurge": {
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "integer"
+        },
+        "runs": {
+          "type": "integer"
+        },
+        "messages": {
+          "type": "integer"
+        },
+        "intent_excerpts": {
+          "type": "integer"
+        },
+        "turns": {
+          "type": "integer"
+        },
+        "tool_items": {
+          "type": "integer"
+        },
+        "reviewer_prompts": {
+          "type": "integer"
+        },
+        "notes": {
+          "type": "integer"
+        },
+        "human_notes": {
+          "type": "integer"
+        },
+        "check_logs": {
+          "type": "integer"
+        },
+        "projections": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tasks",
+        "runs",
+        "messages",
+        "intent_excerpts",
+        "turns",
+        "tool_items",
+        "reviewer_prompts",
+        "notes",
+        "human_notes",
+        "check_logs",
+        "projections"
+      ]
+    },
     "RpcError": {
       "type": "object",
       "properties": {
@@ -2190,6 +2445,37 @@
         "socket",
         "state",
         "current"
+      ]
+    },
+    "SessionInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "machine_id": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "server_pid": {
+          "type": "integer"
+        },
+        "server_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "machine_id",
+        "created_at_ms",
+        "server_pid",
+        "server_version"
       ]
     },
     "SyncGroup": {
@@ -2562,6 +2848,114 @@
         "handle",
         "lease",
         "env"
+      ]
+    },
+    "Turn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "started_at_ms": {
+          "type": "integer"
+        },
+        "ended_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_summary": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "interrupted",
+            "failed"
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage_baseline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "item_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "seq",
+        "started_at_ms",
+        "ended_at_ms",
+        "input_summary",
+        "status",
+        "usage",
+        "usage_baseline",
+        "item_count"
+      ]
+    },
+    "TurnUsage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "cache_read": {
+          "type": "integer"
+        },
+        "cache_write": {
+          "type": "integer"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "cost_usd"
       ]
     },
     "Workspace": {
@@ -3673,6 +4067,24 @@
         ]
       }
     },
+    "assistant.background": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "tick"
+            ]
+          }
+        }
+      },
+      "result": {}
+    },
     "assistant.cancel": {
       "mutating": true,
       "scope": "full",
@@ -3693,6 +4105,12 @@
         "properties": {
           "request": {
             "type": "object"
+          },
+          "detached": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -3746,6 +4164,9 @@
         "properties": {
           "workspace": {
             "$ref": "#/$defs/Target"
+          },
+          "remote_workspace": {
+            "type": "string"
           },
           "connection": {
             "type": "string"
@@ -3813,11 +4234,26 @@
               "pane_title",
               "briefing",
               "handoff",
-              "effort_estimate"
+              "effort_estimate",
+              "navigate",
+              "decision_card",
+              "stall_notice",
+              "background_summary",
+              "task_title"
             ]
           },
           "profile": {
             "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "interactive",
+              "background"
+            ]
+          },
+          "stream": {
+            "type": "boolean"
           },
           "idempotency_key": {
             "type": "string"
@@ -3845,6 +4281,18 @@
           },
           "workspace": {
             "$ref": "#/$defs/Target"
+          },
+          "interaction": {
+            "$ref": "#/$defs/Target"
+          },
+          "query": {
+            "type": "string"
+          },
+          "remote_sources": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
           },
           "include_screen": {
             "type": "boolean"
@@ -3913,6 +4361,15 @@
               "redactions": {},
               "notice": {
                 "type": "string"
+              },
+              "priority": {
+                "type": "string"
+              },
+              "coverage_notes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -3923,16 +4380,33 @@
             "type": "boolean"
           },
           "confirm_with": {
-            "type": "object"
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deduplicated": {
+            "type": "boolean"
+          },
+          "coalesced": {
+            "type": "boolean"
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
-          "request",
-          "preview",
-          "requires_confirmation"
+          "request"
         ]
       }
     },
@@ -3993,6 +4467,132 @@
         },
         "required": [
           "requests"
+        ]
+      }
+    },
+    "assistant.models": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "refresh": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string"
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "live",
+              "cached",
+              "bundled"
+            ]
+          },
+          "refreshed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "display_name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "created": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capabilities": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "id",
+                "capabilities"
+              ]
+            }
+          },
+          "note": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "execution_machine": {
+            "type": "string"
+          },
+          "current_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current_capabilities": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "explicit_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection",
+          "adapter",
+          "provenance",
+          "refreshed_at_ms",
+          "models",
+          "note"
         ]
       }
     },
@@ -4061,6 +4661,31 @@
                 "type": "null"
               }
             ]
+          },
+          "coordinator_note": {
+            "type": "string"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "adapter": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "adapter",
+                "endpoint"
+              ]
+            }
           }
         },
         "required": [
@@ -4111,6 +4736,9 @@
         "properties": {
           "workspace": {
             "$ref": "#/$defs/Target"
+          },
+          "remote_workspace": {
+            "type": "string"
           },
           "connection": {
             "type": "string"
@@ -4206,11 +4834,271 @@
               "reserved",
               "remaining"
             ]
+          },
+          "background": {
+            "type": "boolean"
+          },
+          "background_detail": {
+            "type": "object"
+          },
+          "scheduler": {
+            "type": "object",
+            "properties": {
+              "capacity": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "integer"
+              },
+              "waiting": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "capacity",
+              "running",
+              "waiting"
+            ]
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cache": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "entries": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "enabled",
+              "entries"
+            ]
+          },
+          "remote_sources": {
+            "type": "boolean"
+          },
+          "keychain_backend": {
+            "type": "string"
           }
         },
         "required": [
           "enabled",
           "configured"
+        ]
+      }
+    },
+    "assistant.test": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "probe": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "streaming",
+                    "json_schema"
+                  ]
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "execution_machine": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "usage": {
+            "type": "object"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counted": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "probes": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "ok",
+          "id",
+          "profile",
+          "connection",
+          "adapter",
+          "model",
+          "endpoint_host",
+          "execution_machine",
+          "latency_ms",
+          "attempts",
+          "usage",
+          "counted",
+          "probes"
+        ]
+      }
+    },
+    "attention.batch": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "interaction": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "interaction"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "interaction": {
+            "type": "string"
+          },
+          "batchable": {
+            "type": "boolean"
+          },
+          "batch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "interaction": {
+                  "type": "string"
+                },
+                "handle": {
+                  "type": "string"
+                },
+                "run": {
+                  "type": "string"
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "decision_rev": {
+                  "type": "integer"
+                },
+                "opened_at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "interaction",
+                "handle",
+                "run",
+                "pane",
+                "title",
+                "decision_rev",
+                "opened_at_ms"
+              ]
+            }
+          },
+          "facts": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "interaction",
+          "batchable",
+          "members"
         ]
       }
     },
@@ -4386,6 +5274,61 @@
                 },
                 "urgent": {
                   "type": "boolean"
+                },
+                "deadline_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "deadline_source": {
+                  "anyOf": [
+                    {
+                      "const": "native"
+                    },
+                    {
+                      "const": "gate"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "deadline_in_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "batch": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "size": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "size"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -4521,6 +5464,100 @@
                 "type": "null"
               }
             ]
+          },
+          "batches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "members"
+              ]
+            }
+          },
+          "also_working": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "task": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "handle": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "handle",
+                        "title"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "since_ms": {
+                  "type": "integer"
+                },
+                "working_for_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "run",
+                "pane",
+                "name",
+                "harness",
+                "task",
+                "since_ms",
+                "working_for_ms"
+              ]
+            }
           }
         },
         "required": [
@@ -16183,6 +17220,9 @@
           "archive_panes_dropped": {
             "type": "integer"
           },
+          "review": {
+            "$ref": "#/$defs/ReviewPurge"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -16409,6 +17449,9 @@
             "type": "string"
           },
           "degraded": {},
+          "ephemeral": {
+            "type": "integer"
+          },
           "preview": {
             "type": "object"
           },
@@ -18220,6 +19263,108 @@
         ]
       }
     },
+    "task.link.status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "handle": {
+                "type": "string"
+              },
+              "harness": {
+                "type": "string"
+              },
+              "integration": {
+                "type": "string"
+              },
+              "pane": {
+                "type": "string"
+              },
+              "session_reported": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "handle",
+              "harness",
+              "integration",
+              "pane",
+              "session_reported"
+            ]
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remedies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "label"
+              ]
+            }
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "verified",
+          "reasons",
+          "remedies",
+          "candidates",
+          "note"
+        ]
+      }
+    },
     "task.list": {
       "mutating": false,
       "scope": "pane",
@@ -18928,6 +20073,62 @@
         ]
       }
     },
+    "task.review.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "scope": {},
+          "dry_run": {
+            "type": "boolean"
+          },
+          "purged": {
+            "$ref": "#/$defs/ReviewPurge"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "scope",
+          "dry_run",
+          "purged"
+        ]
+      }
+    },
     "task.review.get": {
       "mutating": false,
       "scope": "pane",
@@ -19157,6 +20358,9 @@
               },
               "note": {
                 "type": "string"
+              },
+              "selection": {
+                "type": "object"
               }
             },
             "required": [
@@ -19196,7 +20400,14 @@
             "required": [
               "accept"
             ]
-          }
+          },
+          "human_reviews": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purged": {}
         },
         "required": [
           "task",
@@ -19239,6 +20450,71 @@
           "effort",
           "snapshot",
           "actions"
+        ]
+      }
+    },
+    "task.review.human_review": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "criterion": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "supported",
+              "failed",
+              "withdrawn"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          },
+          "expected_subject": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "screenshots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "criterion",
+          "verdict"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "review": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "review",
+          "note"
         ]
       }
     },
@@ -19440,6 +20716,15 @@
           "task": {
             "$ref": "#/$defs/Target"
           },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "patch": {
+            "type": "string"
+          },
           "idempotency_key": {
             "type": "string"
           }
@@ -19455,6 +20740,9 @@
             "type": "object"
           },
           "snapshot": {
+            "type": "object"
+          },
+          "selection": {
             "type": "object"
           },
           "label": {
@@ -19598,6 +20886,13 @@
           "direction": {
             "type": "string",
             "default": "right"
+          },
+          "checkout": {
+            "type": "string",
+            "enum": [
+              "disposable",
+              "task"
+            ]
           },
           "idempotency_key": {
             "type": "string"
@@ -20687,6 +21982,61 @@
         }
       }
     },
+    "agent.item": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/ItemKind"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          },
+          "turn": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "payload_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "summary",
+          "item",
+          "turn",
+          "seq",
+          "payload_ref"
+        ]
+      }
+    },
     "agent.named": {
       "subject": {
         "type": "object",
@@ -20891,6 +22241,84 @@
         ]
       }
     },
+    "agent.subagent_finished": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "agent_type"
+        ]
+      }
+    },
+    "agent.subagent_started": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "agent_type"
+        ]
+      }
+    },
     "agent.turn_completed": {
       "subject": {
         "type": "object",
@@ -21005,11 +22433,11 @@
         "properties": {
           "workspace": {
             "type": "string"
+          },
+          "remote_workspace": {
+            "type": "string"
           }
-        },
-        "required": [
-          "workspace"
-        ]
+        }
       },
       "data": {
         "type": "object",
@@ -21024,6 +22452,70 @@
         "required": [
           "grants",
           "cancelled"
+        ]
+      }
+    },
+    "assistant.delta": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request",
+          "seq",
+          "text"
+        ]
+      }
+    },
+    "assistant.models_refreshed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_connection": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_connection"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "models": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "adapter",
+          "endpoint_host",
+          "models"
         ]
       }
     },
@@ -21047,6 +22539,20 @@
         ]
       }
     },
+    "assistant.request_created": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {}
+    },
     "assistant.request_finished": {
       "subject": {
         "type": "object",
@@ -21057,6 +22563,59 @@
         },
         "required": [
           "assistant_request"
+        ]
+      },
+      "data": {}
+    },
+    "assistant.request_started": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {}
+    },
+    "assistant.stall_notice": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          },
+          "run": {}
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ]
+      }
+    },
+    "assistant.test_finished": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_connection": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_connection"
         ]
       },
       "data": {}
@@ -22147,6 +23706,163 @@
           "tabs",
           "panes",
           "new_workspace"
+        ]
+      }
+    },
+    "machine.added": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "kind",
+          "address"
+        ]
+      }
+    },
+    "machine.connected": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ]
+      }
+    },
+    "machine.degraded": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "reason"
+        ]
+      }
+    },
+    "machine.disconnected": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "reason"
+        ]
+      }
+    },
+    "machine.removed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
         ]
       }
     },
@@ -23593,6 +25309,46 @@
         ]
       }
     },
+    "review.human_reviewed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "criterion": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "criterion",
+          "subject"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "verdict": {
+            "type": "string"
+          },
+          "screenshots": {
+            "type": "integer"
+          },
+          "intent_revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "verdict",
+          "screenshots",
+          "intent_revision"
+        ]
+      }
+    },
     "review.invalidated": {
       "subject": {
         "type": "object",
@@ -23700,6 +25456,55 @@
           "count",
           "subject",
           "open_concerns"
+        ]
+      }
+    },
+    "review.purged": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "scope": {}
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "data": {
+        "$ref": "#/$defs/ReviewPurge"
+      }
+    },
+    "review.reviewer_checkout_removed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run"
         ]
       }
     },
@@ -24646,6 +26451,69 @@
             "type": "integer"
           }
         }
+      }
+    },
+    "session.started": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "machine": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prev_pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fresh": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pid",
+          "version",
+          "machine",
+          "name",
+          "prev_pid",
+          "fresh"
+        ]
+      }
+    },
+    "session.stopped": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pid",
+          "reason"
+        ]
       }
     },
     "tab.closed": {
