@@ -57,7 +57,38 @@ const MIGRATIONS: &[&str] = &[
     r#"
     CREATE INDEX entities_task ON entities(kind, json_extract(json, '$.task'));
     "#,
+    // 4: which workspace/pane an archived scrollback row belonged to, so archive search can
+    // apply read scope (09 §5.1 rule 4) and label hits of panes that have since closed.
+    r#"
+    CREATE TABLE archive_panes (pane_id TEXT PRIMARY KEY, workspace TEXT, tab TEXT,
+        handle TEXT, title TEXT, updated_at INTEGER NOT NULL);
+    "#,
 ];
+
+/// One archived-scrollback search hit (`search.query`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FtsHit {
+    pub pane: String,
+    pub line: u64,
+    pub ts: i64,
+    pub text: String,
+    pub workspace: Option<String>,
+    pub handle: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Filters for [`Store::fts_query`]; `None` = unrestricted.
+#[derive(Debug, Clone, Default)]
+pub struct FtsQuery {
+    pub q: String,
+    pub panes: Option<Vec<String>>,
+    pub workspaces: Option<Vec<String>>,
+    pub since_ms: Option<i64>,
+    pub limit: usize,
+}
+
+/// Pane identity recorded for archived rows: (pane, workspace, tab, handle, title).
+pub type ArchivePane = (String, String, String, String, String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Cursor {
@@ -732,6 +763,97 @@ impl Store {
         Ok(())
     }
 
+    /// Remember which workspace/tab an archived pane belongs to (upsert).
+    pub fn fts_register_panes(&self, panes: &[ArchivePane]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut st = tx.prepare(
+                "INSERT INTO archive_panes (pane_id, workspace, tab, handle, title, updated_at) VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(pane_id) DO UPDATE SET workspace=?2, tab=?3, handle=?4, title=?5, updated_at=?6",
+            )?;
+            for (p, w, t, h, ti) in panes {
+                st.execute(params![p, w, t, h, ti, now_ms()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The recorded identity of an archived pane (it may have closed).
+    pub fn archive_pane(&self, pane: &str) -> Result<Option<ArchivePane>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT pane_id, workspace, tab, handle, title FROM archive_panes WHERE pane_id=?1 OR handle=?1 ORDER BY updated_at DESC LIMIT 1",
+                [pane],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    ))
+                },
+            )
+            .optional()?)
+    }
+
+    /// Archive search with pane/workspace/time filters, newest first.
+    pub fn fts_query(&self, f: &FtsQuery) -> Result<Vec<FtsHit>> {
+        use rusqlite::types::Value as V;
+        let query = fts_quote(&f.q);
+        if query.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut sql = String::from(
+            "SELECT scrollback_fts.pane_id, scrollback_fts.line_no, scrollback_fts.ts, scrollback_fts.text,
+                    a.workspace, a.handle, a.title
+             FROM scrollback_fts LEFT JOIN archive_panes a ON a.pane_id = scrollback_fts.pane_id
+             WHERE scrollback_fts MATCH ?",
+        );
+        let mut args: Vec<V> = vec![V::Text(query)];
+        let list = |sql: &mut String, col: &str, items: &[String], args: &mut Vec<V>| {
+            if items.is_empty() {
+                sql.push_str(" AND 0");
+                return;
+            }
+            sql.push_str(&format!(" AND {col} IN ("));
+            for (i, it) in items.iter().enumerate() {
+                sql.push_str(if i == 0 { "?" } else { ",?" });
+                args.push(V::Text(it.clone()));
+            }
+            sql.push(')');
+        };
+        if let Some(p) = &f.panes {
+            list(&mut sql, "scrollback_fts.pane_id", p, &mut args);
+        }
+        if let Some(w) = &f.workspaces {
+            list(&mut sql, "a.workspace", w, &mut args);
+        }
+        if let Some(since) = f.since_ms {
+            sql.push_str(" AND scrollback_fts.ts >= ?");
+            args.push(V::Integer(since));
+        }
+        sql.push_str(" ORDER BY scrollback_fts.rowid DESC LIMIT ?");
+        args.push(V::Integer(f.limit.max(1) as i64));
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(args), |r| {
+                Ok(FtsHit {
+                    pane: r.get(0)?,
+                    line: r.get::<_, i64>(1)? as u64,
+                    ts: r.get(2)?,
+                    text: r.get(3)?,
+                    workspace: r.get(4)?,
+                    handle: r.get(5)?,
+                    title: r.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Full-text search over archived scrollback. Returns (pane, line, ts, text).
     pub fn fts_search(
         &self,
@@ -766,9 +888,22 @@ impl Store {
     }
 }
 
+/// Words become quoted FTS5 tokens (AND); a trailing `*` keeps prefix matching (`migr*`).
 fn fts_quote(q: &str) -> String {
     q.split_whitespace()
-        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .filter_map(|w| {
+            let (w, prefix) = match w.strip_suffix('*') {
+                Some(x) => (x, true),
+                None => (w, false),
+            };
+            (!w.is_empty()).then(|| {
+                format!(
+                    "\"{}\"{}",
+                    w.replace('"', "\"\""),
+                    if prefix { "*" } else { "" }
+                )
+            })
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -907,5 +1042,75 @@ mod tests {
         let r = s.fts_search("migration failed", None, 10).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, "p1");
+    }
+
+    #[test]
+    fn fts_query_filters() {
+        let s = Store::open_in_memory().unwrap();
+        s.fts_insert(&[
+            (
+                "p1".into(),
+                1,
+                100,
+                "migration failed: relation users".into(),
+            ),
+            ("p2".into(), 7, 200, "migration ok".into()),
+            ("p3".into(), 9, 300, "migrations pending".into()),
+        ])
+        .unwrap();
+        s.fts_register_panes(&[
+            (
+                "p1".into(),
+                "w1".into(),
+                "t1".into(),
+                "w1:p1".into(),
+                "a".into(),
+            ),
+            (
+                "p2".into(),
+                "w2".into(),
+                "t2".into(),
+                "w2:p2".into(),
+                "b".into(),
+            ),
+        ])
+        .unwrap();
+        let q = |f: FtsQuery| s.fts_query(&f).unwrap();
+        let base = FtsQuery {
+            q: "migration".into(),
+            limit: 10,
+            ..Default::default()
+        };
+        assert_eq!(q(base.clone()).len(), 2);
+        let w1 = q(FtsQuery {
+            workspaces: Some(vec!["w1".into()]),
+            ..base.clone()
+        });
+        assert_eq!(w1.len(), 1);
+        assert_eq!(w1[0].handle.as_deref(), Some("w1:p1"));
+        assert_eq!(
+            q(FtsQuery {
+                since_ms: Some(150),
+                ..base.clone()
+            })[0]
+                .pane,
+            "p2"
+        );
+        assert_eq!(
+            q(FtsQuery {
+                q: "migr*".into(),
+                ..base.clone()
+            })
+            .len(),
+            3
+        );
+        assert!(
+            q(FtsQuery {
+                panes: Some(vec![]),
+                ..base
+            })
+            .is_empty()
+        );
+        assert_eq!(s.archive_pane("w2:p2").unwrap().unwrap().1, "w2");
     }
 }

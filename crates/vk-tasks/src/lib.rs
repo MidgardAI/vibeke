@@ -41,13 +41,14 @@
 //! * Removal follows 05 §9 (rename into `.trash`, `git worktree prune`,
 //!   delete in background) and falls back to `git worktree remove` when the
 //!   rename fails. Reaping does not lower IO priority yet.
-//! * Only worktree/none backends, git, `copy` files and `setup.script` are
-//!   implemented (no `link`/`clone`/deps/jj/containers).
+//! * Backends: worktree, jj workspace ([`Jj`], M4) and none; `copy` files and
+//!   `setup.script` (no `link`/`clone`/deps/containers).
 
 mod error;
 mod files;
 mod finish;
 mod git;
+mod jj;
 mod naming;
 mod ports;
 mod remove;
@@ -59,6 +60,7 @@ mod worktree;
 pub use error::{Error, Result};
 pub use files::{CopyOutcome, CopyResult, copy_files, default_copy_files};
 pub use finish::{DiffStat, archive_worktree, diff_stat, is_merged, merged_branches};
+pub use jj::{Jj, JjStatus, JjWorkspace, find_root as jj_root, is_colocated as jj_colocated};
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};
 pub use ports::{Lease, LeaseRequest, PortLeases, PortPool};
 pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};

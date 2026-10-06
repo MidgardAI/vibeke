@@ -72,6 +72,72 @@ pub struct Tab {
     pub focused_pane: Option<String>,
     pub zoomed_pane: Option<String>,
     pub order: f64,
+    /// Floating panes of the tab (02 §1.1, 08 §5): not part of `layout`. Appended fields
+    /// (postcard is positional).
+    #[serde(default)]
+    pub floating: Vec<FloatingPane>,
+    /// `prefix+shift+f`: all floats of the tab hidden (they keep running).
+    #[serde(default)]
+    pub floats_hidden: bool,
+}
+
+/// A floating pane's geometry in percent of the tab's pane area (02 §1.1 `[{pane_id, rect%, z}]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FloatingPane {
+    pub pane: String,
+    /// Left edge, 0–100 (% of the pane area width).
+    pub x: f32,
+    /// Top edge, 0–100.
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// Stacking order; higher draws on top.
+    pub z: u32,
+}
+
+impl FloatingPane {
+    /// Default float: 70%×70%, centred (08 §5).
+    pub fn centred(pane: &str, z: u32) -> Self {
+        FloatingPane {
+            pane: pane.to_string(),
+            x: 15.0,
+            y: 15.0,
+            w: 70.0,
+            h: 70.0,
+            z,
+        }
+    }
+}
+
+/// Optional workspace hierarchy (02 §1.1). Membership is the ordered
+/// `workspaces` list here (a workspace is in at most one group); ungrouped workspaces are
+/// listed at the top level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct Group {
+    pub id: String,
+    /// `g<N>`.
+    pub handle: String,
+    pub name: String,
+    pub parent: Option<String>,
+    pub collapsed: bool,
+    pub order: f64,
+    /// Member workspace ids, in display order.
+    pub workspaces: Vec<String>,
+}
+
+/// Host appearance and the effective theme (08 §11 `[theme]`, 03 §10.4). Clients report the
+/// host terminal's background (OSC 11 / `CSI ? 996 n`) with `client.appearance`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct Appearance {
+    /// A client reported the host appearance, or `theme.mode` forces one.
+    pub known: bool,
+    pub dark: bool,
+    /// `auto | light | dark` (config `theme.mode`, or a runtime override).
+    pub mode: String,
+    /// Effective theme name (`dark_name`/`light_name` when `auto_switch`, else `name`).
+    pub theme: String,
+    /// Client id whose report decided `dark` (empty when forced by `mode`).
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -400,6 +466,10 @@ pub struct Notification {
     pub urgency: String,
     pub created_at_ms: i64,
     pub read: bool,
+    /// Channels the server delivered this notification to (`native`, …; 08 §7.1) and why
+    /// others were skipped (`suppressed:focused`, `coalesced`, `quiet_hours`, …).
+    #[serde(default)]
+    pub channels: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -440,6 +510,10 @@ pub struct Task {
     /// Execution isolation chosen at creation (13 §12); panes in the task inherit it.
     #[serde(default)]
     pub isolation: Isolation,
+    /// Code isolation backend (05 §4): `worktree` | `jj_workspace` | `none`. `None` on tasks
+    /// created before M4 means `worktree`. Appended (postcard).
+    #[serde(default)]
+    pub checkout: Option<String>,
 }
 
 /// Execution isolation level (13 §2.1). Append-only: postcard encodes the variant index.
@@ -534,6 +608,12 @@ pub struct SessionModel {
     /// positional, so new fields go after it.
     #[serde(default)]
     pub previews: Vec<Preview>,
+    /// Workspace groups (02 §1.1).
+    #[serde(default)]
+    pub groups: Vec<Group>,
+    /// Host appearance and effective theme (theme propagation, 08 §11).
+    #[serde(default)]
+    pub appearance: Appearance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

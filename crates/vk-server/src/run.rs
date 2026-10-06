@@ -167,6 +167,7 @@ where
                         if let Some(k) = req.params.get("kind").and_then(Value::as_str) { ctx.kind = k.into(); }
                         if let Some(c) = req.params.get("client_id").and_then(Value::as_str) { ctx.client_id = c.into(); }
                         ctx.remote = req.params.get("remote").and_then(Value::as_bool).unwrap_or(false);
+                        crate::notify::record_host(&server, &ctx.client_id, req.params.get("host"));
                         let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
                     }
                     "render.attach" => break Some(req),
@@ -232,7 +233,11 @@ where
         wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
         wr.write_all(b"\n").await?;
         wr.flush().await?;
-        render::serve(server, rd, wr, client_id, remote, max_fps).await?;
+        // Host terminal for click-to-focus raising and native notifications (08 §7.1).
+        crate::notify::record_host(&server, &client_id, req.params.get("host"));
+        let r = render::serve(server.clone(), rd, wr, client_id.clone(), remote, max_fps).await;
+        crate::theme::forget_client(&server, &client_id);
+        r?;
         return Ok(());
     }
     wr.flush().await?;
@@ -487,6 +492,9 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
             };
             match server.with_core(|c| c.task(t).cloned()) {
                 Some(task) => {
+                    if task.checkout.as_deref() == Some("jj_workspace") {
+                        return Some(Ok(crate::parity::jj_task_status(&task)));
+                    }
                     let status = task.worktree_path.as_ref().and_then(|w| {
                         vk_tasks::branch_status(Path::new(w), task.base_ref.as_deref()).ok()
                     });
@@ -563,8 +571,8 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 .and_then(|x| server.pane_cwd(&x.id))
         })
         .unwrap_or_else(|| ".".into());
-    let info = vk_tasks::repo_root(Path::new(&repo))
-        .ok_or_else(|| invalid(format!("{repo} is not inside a git repository")))?;
+    // Code isolation backend (05 §4): worktree | jj_workspace | none.
+    let info = crate::parity::resolve_checkout(&repo, p)?;
     // Execution isolation (13 §3): validate before creating anything.
     let mut iso_req = crate::sandbox::IsoRequest::from_params(p, &crate::sandbox::load_cfg())?;
     if iso_req.level == vk_proto::model::IsolationLevel::Vm {
@@ -581,10 +589,12 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         branch: s(p, "branch").map(str::to_string),
         slug: s(p, "slug").map(str::to_string),
     };
-    let checkout = tokio::task::spawn_blocking(move || vk_tasks::create_worktree(&creq, &cfg))
-        .await
-        .map_err(internal)?
-        .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
+    let kind = info.kind;
+    let checkout =
+        tokio::task::spawn_blocking(move || crate::parity::create_checkout(kind, &creq, &cfg))
+            .await
+            .map_err(internal)?
+            .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
     let copy = p
         .get("copy_files")
         .and_then(Value::as_array)
@@ -665,6 +675,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         created_at_ms: vk_store::now_ms(),
         owner_machine: server.opts.machine.clone(),
         isolation,
+        checkout: Some(info.kind.to_string()),
         ..Default::default()
     };
     {
@@ -820,7 +831,13 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
     let _ = leases.release(&task.id);
     crate::sandbox::teardown(server, &task.id);
     let mut job = None;
-    if remove && let Some(path) = task.worktree_path.clone() {
+    let kind = task.checkout.clone().unwrap_or_else(|| "worktree".into());
+    if remove && kind == "jj_workspace" {
+        job = crate::parity::remove_jj_task(server, &task);
+    } else if remove
+        && kind != "none"
+        && let Some(path) = task.worktree_path.clone()
+    {
         let srv = server.clone();
         let id = task.id.clone();
         job = Some(format!("j{}", &ulid()[20..]));

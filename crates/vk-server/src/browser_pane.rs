@@ -2029,6 +2029,8 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                     focused_pane: Some(id.clone()),
                     zoomed_pane: None,
                     order,
+                    floating: Default::default(),
+                    floats_hidden: false,
                 };
                 tx.event(
                     "tab.created",

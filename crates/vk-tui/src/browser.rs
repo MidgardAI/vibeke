@@ -1367,6 +1367,8 @@ mod tests {
             focused_pane: Some("bp".into()),
             zoomed_pane: None,
             order: 1.0,
+            floating: Default::default(),
+            floats_hidden: false,
         }];
         m.model.panes = vec![
             shell_pane("p1", "T"),

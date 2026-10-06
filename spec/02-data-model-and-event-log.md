@@ -18,13 +18,13 @@ Machine 1─* Session 1─* Group? 1─* Workspace 1─* Tab 1─* Pane ─? Age
 
 **Session** — `{ id, name, machine_id, created_at, server_pid, server_version }`
 
-**Group** — optional hierarchy for workspaces. `{ id, name, parent_group_id?, collapsed, order }`
+**Group** — optional hierarchy for workspaces. `{ id, name, parent_group_id?, collapsed, order }`. *Implemented (M4) as `{id, handle "g1", name, parent?, collapsed, order, workspaces: [workspace_id]}`: membership is the group's ordered list rather than `Workspace.group_id` (the `Workspace` struct is unchanged); events `group.created/renamed/moved/collapsed/closed`, `workspace.moved {group}`.*
 
 **Workspace** — `{ id, handle "w3", name?, root_path, repo: {vcs: git|jj|none, remote_url?, default_branch?}?, group_id?, task_id?, order, created_at }`. Name defaults to repo/folder name; identity is `root_path`.
 
 **Tab** — `{ id, handle "w3:t2", workspace_id, title?, auto_title, number, layout: LayoutNode, focused_pane_id, zoomed_pane_id?, order }`. Tabs show `number` alongside custom titles.
 
-**LayoutNode** — `Split{dir: h|v, children: [(LayoutNode, ratio)]} | Leaf{pane_id}`; floating panes are a separate list `[{pane_id, rect%, z}]` on the tab.
+**LayoutNode** — `Split{dir: h|v, children: [(LayoutNode, ratio)]} | Leaf{pane_id}`; floating panes are a separate list `[{pane_id, rect%, z}]` on the tab. *Implemented (M4): `Tab.floating: [{pane, x, y, w, h, z}]` + `Tab.floats_hidden`, appended to the postcard-encoded `Tab`.*
 
 **Pane** — `{ id, handle "w3:p5", tab_id, title?, cwd (tracked via OSC 7 / proc), shell_cmd, holder: {pid, socket, child_pid, fg_cmdline, exited?, exit_code?}, size, created_by: user|agent|plugin|api, created_by_ref?, unread: bool, marked_unread: bool, pinned: bool }`
 
@@ -196,8 +196,16 @@ CREATE TABLE pane_reads (user TEXT, pane_id TEXT, seen_rev INTEGER, seen_at INTE
 CREATE TABLE port_leases (machine_uuid TEXT, port INTEGER, task_id TEXT, session_uuid TEXT, expires_at INTEGER, PRIMARY KEY(machine_uuid, port));  -- see 05; machine-wide leases are also mirrored in a machine-level lock file
 CREATE TABLE plugin_kv (plugin_id TEXT, key TEXT, value BLOB, PRIMARY KEY(plugin_id, key));
 CREATE VIRTUAL TABLE scrollback_fts USING fts5(pane_id UNINDEXED, segment UNINDEXED, line_no UNINDEXED, text);
+CREATE TABLE archive_panes (pane_id TEXT PRIMARY KEY, workspace TEXT, tab TEXT, handle TEXT, title TEXT, updated_at INTEGER);
 CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER);
 ```
+
+*Archive search as implemented (M4):*
+- The shipped FTS table is `scrollback_fts(pane_id, line_no, ts, text)`. There is no `segment` column: `line_no` is the pane's absolute history line, which also names the zstd segment `scrollback/<pane>/<first-line>.zst`.
+- Migration 4 adds `archive_panes`, filled at each 1 Hz FTS flush. Archive hits therefore keep their workspace (for read scope, 09 §5.1) and their handle and title after the pane closes.
+- Queries quote each word as an FTS5 token, ANDed together; `word*` keeps prefix matching. Filters: panes, workspaces, `ts >= since`.
+- Retention (`archive_max_per_pane`, `archive_days`) deletes segments but not yet the matching FTS rows.
+- `vibeke forget` and `doctor --rebuild-index` are still open.
 
 Migrations are forward-only, embedded in the binary, run at server start inside a transaction; a pre-migration backup copy of `state.db` is kept (last 3). Restoring a backup always rotates `log_epoch`.
 

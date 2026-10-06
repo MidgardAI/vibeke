@@ -10,13 +10,18 @@ pub mod browser_pane;
 pub mod core;
 pub mod gateway_api;
 pub mod git_api;
+pub mod layouts;
+pub mod notify;
 pub mod pane;
+pub mod parity;
 pub mod paths;
 pub mod preview;
 pub mod render;
 pub mod review;
 pub mod run;
 pub mod sandbox;
+pub mod search;
+pub mod theme;
 pub mod tracking;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
@@ -99,6 +104,10 @@ pub struct Server {
     pub agent_browser: agent_browser::AgentBrowsers,
     /// Browser panes rendered on this machine (06 B3.2).
     pub browser: browser_pane::Host,
+    /// Native notifier, client host terminals, coalescing (08 §7).
+    pub notifier: notify::State,
+    /// Host appearance reports and the effective theme (08 §11 `[theme]`).
+    pub theme: theme::State,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -172,6 +181,8 @@ impl Server {
             sandbox: sandbox::State::default(),
             agent_browser: agent_browser::AgentBrowsers::default(),
             browser: browser_pane::Host::default(),
+            notifier: notify::State::default(),
+            theme: theme::State::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
@@ -546,6 +557,7 @@ impl Server {
             self.opts.bin.to_string_lossy().into_owned(),
         );
         set(&mut env, "VIBEKE_PANE_TOKEN", self.token_for(pane_id));
+        theme::pane_env(self, &mut env);
         if self.opts.shims {
             let shims = Paths::shims();
             if shims.is_dir() {
@@ -739,6 +751,8 @@ impl Server {
             focused_pane: Some(pane.id.clone()),
             zoomed_pane: None,
             order,
+            floating: vec![],
+            floats_hidden: false,
         };
         tx.event(
             "tab.created",
@@ -862,7 +876,17 @@ impl Server {
         }
         tx.close_pane(&p);
         tx.event("pane.closed", subject_pane(&p), json!({"reason": reason}));
-        if let Some(mut tab) = c.tab(&p.tab).cloned() {
+        // Floats left behind by a tab that closes with this pane (08 §5).
+        let mut orphan_floats: Vec<String> = Vec::new();
+        if let Some(mut tab) = c.tab(&p.tab).cloned()
+            && let Some(i) = tab.floating.iter().position(|f| f.pane == pane_id)
+        {
+            tab.floating.remove(i);
+            if tab.focused_pane.as_deref() == Some(pane_id) {
+                tab.focused_pane = tab.layout.panes().first().cloned();
+            }
+            tx.tab(tab);
+        } else if let Some(mut tab) = c.tab(&p.tab).cloned() {
             match layout::remove(&tab.layout, pane_id) {
                 Some(l) => {
                     if tab.focused_pane.as_deref() == Some(pane_id) {
@@ -875,6 +899,7 @@ impl Server {
                     tx.tab(tab);
                 }
                 None => {
+                    orphan_floats = tab.floating.iter().map(|f| f.pane.clone()).collect();
                     tx.event(
                         "tab.closed",
                         json!({"tab": tab.id, "workspace": tab.workspace}),
@@ -899,6 +924,9 @@ impl Server {
         self.persist_tokens(&mut tx);
         let _ = self.commit(&mut c, tx);
         drop(c);
+        for f in orphan_floats {
+            self.close_pane(&f);
+        }
         self.fix_client_focus();
     }
 
@@ -1208,6 +1236,8 @@ impl Server {
         );
         let _ = self.commit(&mut c, tx);
         drop(c);
+        // Pipeline: rules, presence, quiet hours, coalescing, native delivery (08 §7.1).
+        let n = notify::deliver(self, n);
         let _ = self.ui.send(UiEvent::Notify(n.clone()));
         n
     }
@@ -1257,6 +1287,24 @@ impl Server {
         if !rows.is_empty() {
             let c = self.core.lock().unwrap();
             let _ = c.store.fts_insert(&rows);
+            // Remember each archived pane's workspace for scoped archive search (09 §5.1).
+            let mut seen: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            let ids: Vec<vk_store::ArchivePane> = seen
+                .iter()
+                .filter_map(|id| c.pane(id))
+                .map(|p| {
+                    (
+                        p.id.clone(),
+                        p.workspace.clone(),
+                        p.tab.clone(),
+                        p.handle.clone(),
+                        p.display_title().to_string(),
+                    )
+                })
+                .collect();
+            let _ = c.store.fts_register_panes(&ids);
         }
         if self.degraded.lock().unwrap().is_some() {
             let ok = self.with_core(|c| c.store.probe().is_ok());
@@ -1281,6 +1329,8 @@ impl Server {
             "interactions": c.model.interactions,
             "tasks": c.model.tasks,
             "previews": c.model.previews,
+            "groups": c.model.groups,
+            "appearance": c.model.appearance,
         })
     }
 }

@@ -18,6 +18,8 @@ pub struct Counters {
     pub task: u32,
     pub notification: u32,
     pub tab: HashMap<String, u32>,
+    #[serde(default)]
+    pub group: u32,
 }
 
 pub struct Core {
@@ -38,6 +40,7 @@ pub struct Tx {
     pub runs: Vec<AgentRun>,
     pub interactions: Vec<Interaction>,
     pub tasks: Vec<Task>,
+    pub groups: Vec<Group>,
     pub removed: Vec<(&'static str, String)>,
     pub counters: bool,
 }
@@ -93,6 +96,16 @@ impl Tx {
         self.tasks.push(t);
         self
     }
+    pub fn group(&mut self, g: Group) -> &mut Self {
+        self.m.put("group", &g.id, Some(&g.handle), &g);
+        self.groups.push(g);
+        self
+    }
+    pub fn close_group(&mut self, g: &Group) -> &mut Self {
+        self.m.close("group", &g.id, Some(&g.handle), g);
+        self.removed.push(("group", g.id.clone()));
+        self
+    }
     pub fn close_ws(&mut self, w: &Workspace) -> &mut Self {
         self.m.close("workspace", &w.id, Some(&w.handle), w);
         self.removed.push(("workspace", w.id.clone()));
@@ -140,6 +153,8 @@ impl Core {
         model.runs = store.load("run")?;
         model.interactions = store.load("interaction")?;
         model.tasks = store.load("task")?;
+        model.groups = store.load("group")?;
+        model.groups.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.workspaces.sort_by(|a, b| a.order.total_cmp(&b.order));
         model.tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
         let counters = store
@@ -199,8 +214,12 @@ impl Core {
                 upsert(&mut self.model.tasks, t, |a, b| a.id == b.id);
             }
         }
+        for g in tx.groups {
+            upsert(&mut self.model.groups, g, |a, b| a.id == b.id);
+        }
         for (kind, id) in tx.removed {
             match kind {
+                "group" => self.model.groups.retain(|x| x.id != id),
                 "workspace" => self.model.workspaces.retain(|x| x.id != id),
                 "tab" => self.model.tabs.retain(|x| x.id != id),
                 "pane" => self.model.panes.retain(|x| x.id != id),
@@ -211,6 +230,9 @@ impl Core {
             .workspaces
             .sort_by(|a, b| a.order.total_cmp(&b.order));
         self.model.tabs.sort_by(|a, b| a.order.total_cmp(&b.order));
+        self.model
+            .groups
+            .sort_by(|a, b| a.order.total_cmp(&b.order));
         Ok(events)
     }
 
@@ -289,6 +311,16 @@ impl Core {
         self.counters.interaction += 1;
         format!("i{}", self.counters.interaction)
     }
+    pub fn next_group_handle(&mut self) -> String {
+        self.counters.group += 1;
+        format!("g{}", self.counters.group)
+    }
+    pub fn group(&self, id: &str) -> Option<&Group> {
+        self.model
+            .groups
+            .iter()
+            .find(|g| g.id == id || g.handle == id || g.name == id)
+    }
     pub fn next_task_handle(&mut self) -> String {
         self.counters.task += 1;
         format!("k{}", self.counters.task)
@@ -312,6 +344,7 @@ impl Core {
             urgency: urgency.into(),
             created_at_ms: now_ms(),
             read: false,
+            channels: vec![],
         };
         self.notifications.push(n.clone());
         if self.notifications.len() > 500 {
