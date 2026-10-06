@@ -27,7 +27,28 @@ fn spec(dir: &Path, argv: &[&str]) -> SpawnSpec {
     }
 }
 
-fn launch(dir: &Path, argv: &[&str]) -> (SpawnSpec, vk_hold::Launched) {
+/// A launched holder that is killed (with its child) when the test ends: holders whose child
+/// exited wait for an `AckExit` forever, so tests must not leave them behind.
+struct Held(vk_hold::Launched);
+
+impl std::ops::Deref for Held {
+    type Target = vk_hold::Launched;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // SAFETY: plain kill(2) of processes this test started.
+        unsafe {
+            libc::kill(self.0.child_pid as i32, libc::SIGKILL);
+            libc::kill(self.0.holder_pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
+fn launch(dir: &Path, argv: &[&str]) -> (SpawnSpec, Held) {
     let sp = spec(dir, argv);
     let l = vk_hold::launch(
         Path::new(env!("CARGO_BIN_EXE_vk-hold")),
@@ -37,7 +58,7 @@ fn launch(dir: &Path, argv: &[&str]) -> (SpawnSpec, vk_hold::Launched) {
         Some(&dir.join("holder.log")),
     )
     .unwrap();
-    (sp, l)
+    (sp, Held(l))
 }
 
 fn connect(sp: &SpawnSpec, epoch: u64) -> Srv {
@@ -330,4 +351,135 @@ fn resize_is_journaled() {
             ..
         }
     )));
+}
+
+fn next_ack(s: &mut Srv, acc: &mut Vec<u8>) -> (u64, InputStatus) {
+    loop {
+        match read_frame(&mut s.s).unwrap() {
+            FromHolder::InputAck {
+                input_id, status, ..
+            } => return (input_id, status),
+            FromHolder::Output { bytes, .. } => acc.extend(bytes),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn input_ack_waits_until_the_pty_accepted_every_byte() {
+    let (_d, dir) = tmp();
+    // Raw mode so the tty never edits/discards input; the child doesn't read for 2 s, so a
+    // 256 KiB input can't fit the PTY's input queue and must stay pending (partial writes).
+    let (sp, _l) = launch(
+        &dir,
+        &[
+            "/bin/sh",
+            "-c",
+            "stty raw -echo; echo ready; sleep 2; head -c 262144 | wc -c; sleep 5",
+        ],
+    );
+    let mut a = connect(&sp, 1);
+    let (replayed, _) = a.attach(0);
+    let mut acc = replayed;
+    a.read_until("ready", &mut acc);
+    a.s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let t = Instant::now();
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 7,
+            bytes: vec![b'a'; 262144],
+        },
+    )
+    .unwrap();
+    // A resend of the same id while the write is still pending gets no early ack.
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 7,
+            bytes: vec![b'a'; 262144],
+        },
+    )
+    .unwrap();
+    let (id, status) = next_ack(&mut a, &mut acc);
+    let waited = t.elapsed();
+    assert_eq!((id, status), (7, InputStatus::Written));
+    assert!(
+        waited >= Duration::from_millis(1500),
+        "acked after {waited:?}, before the child started reading"
+    );
+    // Exactly one copy reached the child.
+    a.read_until("262144", &mut acc);
+    // Now that it's written, a resend is a duplicate.
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 7,
+            bytes: b"x".to_vec(),
+        },
+    )
+    .unwrap();
+    assert_eq!(next_ack(&mut a, &mut acc), (7, InputStatus::Duplicate));
+}
+
+#[test]
+fn input_that_cannot_be_written_is_acked_as_failed() {
+    let (_d, dir) = tmp();
+    // The child never reads and exits after 1 s; the pending remainder can't be written.
+    let (sp, _l) = launch(
+        &dir,
+        &["/bin/sh", "-c", "stty raw -echo; echo ready; exec sleep 1"],
+    );
+    let mut a = connect(&sp, 1);
+    let (replayed, _) = a.attach(0);
+    let mut acc = replayed;
+    a.read_until("ready", &mut acc);
+    a.s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 9,
+            bytes: vec![b'a'; 262144],
+        },
+    )
+    .unwrap();
+    assert_eq!(next_ack(&mut a, &mut acc), (9, InputStatus::Failed));
+    // Later input is refused explicitly too.
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 10,
+            bytes: b"x".to_vec(),
+        },
+    )
+    .unwrap();
+    assert_eq!(next_ack(&mut a, &mut acc), (10, InputStatus::ChildExited));
+}
+
+#[test]
+fn sigusr1_drops_server_connections_but_keeps_the_child() {
+    let (_d, dir) = tmp();
+    let (sp, l) = launch(&dir, &["/bin/sh", "-c", "echo up; sleep 30"]);
+    let mut a = connect(&sp, 1);
+    let (replayed, _) = a.attach(0);
+    let mut acc = replayed;
+    a.read_until("up", &mut acc);
+    unsafe { libc::kill(l.holder_pid as i32, libc::SIGUSR1) };
+    // Frames already queued may still arrive; then the connection closes (not a timeout).
+    let t = Instant::now();
+    while read_frame::<_, FromHolder>(&mut a.s).is_ok() {}
+    assert!(
+        t.elapsed() < Duration::from_secs(4),
+        "connection not dropped"
+    );
+    assert_eq!(unsafe { libc::kill(l.child_pid as i32, 0) }, 0);
+    let mut b = connect(&sp, 2);
+    let (replayed, _) = b.attach(0);
+    assert!(String::from_utf8_lossy(&replayed).contains("up"));
+    unsafe { libc::kill(l.child_pid as i32, libc::SIGKILL) };
 }

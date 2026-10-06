@@ -19,6 +19,7 @@ use vk_proto::holder::*;
 const KEY_LISTENER: usize = 0;
 const KEY_MASTER: usize = 1;
 const KEY_SIGNAL: usize = 2;
+const KEY_USR1: usize = 3;
 const KEY_CONN_BASE: usize = 16;
 /// A server that stops reading is dropped once this much output is queued for it; it will
 /// re-attach from its last processed offset.
@@ -35,6 +36,15 @@ struct Conn {
     want_write: bool,
 }
 
+/// Bytes waiting to be written to the PTY master. Inputs from the server carry their id and
+/// are acknowledged only once their last byte was written (01 §1.2, 07 §4); holder-generated
+/// query replies carry none.
+struct PendingWrite {
+    bytes: Vec<u8>,
+    pos: usize,
+    input_id: Option<u64>,
+}
+
 struct Modes {
     bracketed_paste: bool,
     focus: bool,
@@ -47,10 +57,11 @@ pub struct Holder {
     poller: Poller,
     listener: UnixListener,
     master: Option<rustix::fd::OwnedFd>,
-    master_pending: Vec<u8>,
+    master_queue: VecDeque<PendingWrite>,
     child: std::process::Child,
     child_pid: u32,
     sig_rx: UnixStream,
+    usr1_rx: UnixStream,
     ring: Ring,
     scanner: Scanner,
     conns: HashMap<usize, Conn>,
@@ -133,6 +144,12 @@ impl Holder {
         sig_rx.set_nonblocking(true)?;
         sig_tx.set_nonblocking(true)?;
         signal_hook::low_level::pipe::register(signal_hook::consts::SIGCHLD, sig_tx)?;
+        // Chaos/diagnostic hook: SIGUSR1 drops every server connection (the holder and child
+        // keep running), simulating a connection loss without a process loss (10 §5).
+        let (usr1_rx, usr1_tx) = UnixStream::pair()?;
+        usr1_rx.set_nonblocking(true)?;
+        usr1_tx.set_nonblocking(true)?;
+        signal_hook::low_level::pipe::register(signal_hook::consts::SIGUSR1, usr1_tx)?;
         // SAFETY: ignoring SIGPIPE so writes to a dead server return EPIPE instead of killing us.
         unsafe {
             libc::signal(libc::SIGPIPE, libc::SIG_IGN);
@@ -144,6 +161,7 @@ impl Holder {
             poller.add_with_mode(&listener, Event::readable(KEY_LISTENER), PollMode::Level)?;
             poller.add_with_mode(&pty.master, Event::readable(KEY_MASTER), PollMode::Level)?;
             poller.add_with_mode(&sig_rx, Event::readable(KEY_SIGNAL), PollMode::Level)?;
+            poller.add_with_mode(&usr1_rx, Event::readable(KEY_USR1), PollMode::Level)?;
         }
         let mut ring = Ring::new(spec.ring_bytes as usize);
         ring.marker(MarkerKind::Resize {
@@ -158,10 +176,11 @@ impl Holder {
             poller,
             listener,
             master: Some(pty.master),
-            master_pending: Vec::new(),
+            master_queue: VecDeque::new(),
             child,
             child_pid,
             sig_rx,
+            usr1_rx,
             ring,
             scanner: Scanner::default(),
             conns: HashMap::new(),
@@ -214,6 +233,7 @@ impl Holder {
                         }
                     }
                     KEY_SIGNAL => self.on_sigchld(),
+                    KEY_USR1 => self.on_usr1(),
                     k => {
                         if w {
                             self.flush_conn(k);
@@ -270,6 +290,15 @@ impl Holder {
         }
     }
 
+    fn on_usr1(&mut self) {
+        let mut buf = [0u8; 64];
+        while matches!(self.usr1_rx.read(&mut buf), Ok(n) if n > 0) {}
+        let keys: Vec<usize> = self.conns.keys().copied().collect();
+        for k in keys {
+            self.drop_conn(k);
+        }
+    }
+
     fn drop_conn(&mut self, key: usize) {
         if let Some(c) = self.conns.remove(&key) {
             let _ = self.poller.delete(&c.stream);
@@ -290,6 +319,11 @@ impl Holder {
             return;
         }
         self.flush_conn(key);
+    }
+
+    /// The connection holding the lease (at most one: `Acquire` fences the others).
+    fn acquired_key(&self) -> Option<usize> {
+        self.conns.iter().find(|(_, c)| c.acquired).map(|(k, _)| *k)
     }
 
     fn attached_key(&self) -> Option<usize> {
@@ -467,24 +501,30 @@ impl Holder {
                 if !epoch_ok(epoch, self) {
                     return;
                 }
-                let status = if self.exit.is_some() || self.master.is_none() {
-                    InputStatus::ChildExited
-                } else if !self.seen_inputs.insert(input_id) {
-                    InputStatus::Duplicate
-                } else {
-                    self.input_order.push_back(input_id);
-                    if self.input_order.len() > INPUT_DEDUPE_WINDOW
-                        && let Some(old) = self.input_order.pop_front()
+                let status = if self.seen_inputs.contains(&input_id) {
+                    if self
+                        .master_queue
+                        .iter()
+                        .any(|w| w.input_id == Some(input_id))
                     {
-                        self.seen_inputs.remove(&old);
+                        // Still being written: the ack follows when the original completes.
+                        return;
                     }
-                    self.write_master(&bytes);
-                    InputStatus::Written
+                    InputStatus::Duplicate
+                } else if self.exit.is_some() || self.master.is_none() {
+                    InputStatus::ChildExited
+                } else {
+                    self.remember_input(input_id);
+                    self.master_queue.push_back(PendingWrite {
+                        bytes,
+                        pos: 0,
+                        input_id: Some(input_id),
+                    });
+                    // Acks (Written or Failed) are sent from `flush_master`.
+                    self.flush_master();
+                    return;
                 };
                 let at = self.ring.end();
-                if status == InputStatus::Written {
-                    self.ring.marker(MarkerKind::InputWritten { input_id });
-                }
                 self.send(
                     key,
                     &FromHolder::InputAck {
@@ -624,35 +664,102 @@ impl Holder {
         }
     }
 
+    fn remember_input(&mut self, input_id: u64) {
+        self.seen_inputs.insert(input_id);
+        self.input_order.push_back(input_id);
+        if self.input_order.len() > INPUT_DEDUPE_WINDOW
+            && let Some(old) = self.input_order.pop_front()
+        {
+            self.seen_inputs.remove(&old);
+        }
+    }
+
+    /// Holder-originated bytes (query replies): written in order with inputs, never acked.
     fn write_master(&mut self, bytes: &[u8]) {
-        self.master_pending.extend_from_slice(bytes);
+        self.master_queue.push_back(PendingWrite {
+            bytes: bytes.to_vec(),
+            pos: 0,
+            input_id: None,
+        });
         self.flush_master();
     }
 
+    /// Ack an input to whichever server holds the lease now (the one that sent it may be
+    /// gone; a successor resending the same id is waiting for exactly this ack).
+    fn ack_input(&mut self, input_id: u64, status: InputStatus) {
+        let at = self.ring.end();
+        if status == InputStatus::Written {
+            self.ring.marker(MarkerKind::InputWritten { input_id });
+        } else {
+            // Not (fully) written: a retry must not be reported as a duplicate.
+            self.seen_inputs.remove(&input_id);
+            self.input_order.retain(|i| *i != input_id);
+        }
+        if let Some(k) = self.acquired_key() {
+            self.send(
+                k,
+                &FromHolder::InputAck {
+                    input_id,
+                    offset_at_write: at,
+                    status,
+                },
+            );
+        }
+    }
+
+    /// Write queued bytes until the PTY would block. Partial writes keep the remainder (and
+    /// its ack) queued; the master is polled for writability until the queue drains. A
+    /// write error (EIO: the slave side is gone) fails every queued input explicitly.
     fn flush_master(&mut self) {
-        let Some(m) = &self.master else {
-            self.master_pending.clear();
-            return;
-        };
-        while !self.master_pending.is_empty() {
-            match rustix::io::write(m, &self.master_pending) {
-                Ok(n) => {
-                    self.master_pending.drain(..n);
+        let mut done = Vec::new();
+        let mut failed = false;
+        if let Some(m) = &self.master {
+            while let Some(w) = self.master_queue.front_mut() {
+                if w.pos >= w.bytes.len() {
+                    if let Some(id) = w.input_id {
+                        done.push(id);
+                    }
+                    self.master_queue.pop_front();
+                    continue;
                 }
-                Err(rustix::io::Errno::AGAIN) => break,
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(_) => {
-                    self.master_pending.clear();
-                    break;
+                match rustix::io::write(m, &w.bytes[w.pos..]) {
+                    Ok(n) => w.pos += n,
+                    Err(rustix::io::Errno::AGAIN) => break,
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(_) => {
+                        failed = true;
+                        break;
+                    }
                 }
             }
-        }
-        let ev = if self.master_pending.is_empty() {
-            Event::readable(KEY_MASTER)
+            let ev = if self.master_queue.is_empty() {
+                Event::readable(KEY_MASTER)
+            } else {
+                Event::all(KEY_MASTER)
+            };
+            let _ = self.poller.modify_with_mode(m, ev, PollMode::Level);
         } else {
-            Event::all(KEY_MASTER)
-        };
-        let _ = self.poller.modify_with_mode(m, ev, PollMode::Level);
+            failed = true;
+        }
+        for id in done {
+            self.ack_input(id, InputStatus::Written);
+        }
+        if failed {
+            self.fail_pending();
+        }
+    }
+
+    /// The PTY can no longer be written: report every queued input as failed (never drop
+    /// one silently).
+    fn fail_pending(&mut self) {
+        let ids: Vec<u64> = self
+            .master_queue
+            .drain(..)
+            .filter_map(|w| w.input_id)
+            .collect();
+        for id in ids {
+            self.ack_input(id, InputStatus::Failed);
+        }
     }
 
     fn fg(&self) -> Option<u32> {
@@ -706,6 +813,7 @@ impl Holder {
         if let Some(m) = self.master.take() {
             let _ = self.poller.delete(&m);
         }
+        self.fail_pending();
         self.on_sigchld();
     }
 

@@ -65,9 +65,20 @@ pub enum MarkerKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputStatus {
+    /// Every byte of this input has been written to the PTY master (01 §1.2). Sent only
+    /// after the write completed, not when the bytes were queued.
     Written,
+    /// The id is in the dedupe window and its bytes were already written; nothing was
+    /// written again. (A resend of an id whose bytes are still being written gets no
+    /// immediate reply; it is acked `Written` once the original write completes.)
     Duplicate,
+    /// The child had already exited (PTY closed) when the input arrived; nothing written.
     ChildExited,
+    /// The input was accepted but writing it to the PTY failed part-way (EIO: the child
+    /// and every slave fd are gone). Some prefix of the bytes may have reached the PTY, so
+    /// the client must treat it as unconfirmed. Added after holder/1 shipped as the last
+    /// variant so older servers' decoders stay aligned for every other status.
+    Failed,
 }
 
 /// A terminal query the holder could not answer itself because it depends on screen

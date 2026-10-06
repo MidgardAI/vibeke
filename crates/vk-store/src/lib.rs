@@ -47,6 +47,11 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE kv (scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope, key));
     CREATE VIRTUAL TABLE scrollback_fts USING fts5(pane_id UNINDEXED, line_no UNINDEXED, ts UNINDEXED, text);
     "#,
+    // 2: bind VT snapshots to the holder incarnation they were taken from (01 §1.2): a
+    // snapshot is only valid for the holder process whose ring its offset refers to.
+    r#"
+    ALTER TABLE vt_snapshots ADD COLUMN holder_incarnation TEXT;
+    "#,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +113,10 @@ enum Write {
         engine: String,
         version: String,
         blob: Vec<u8>,
+        incarnation: String,
+    },
+    SnapshotDelete {
+        pane: String,
     },
     Kv {
         scope: String,
@@ -200,6 +209,8 @@ impl Mutation {
         self.writes.push(Write::HolderDelete { pane: pane.into() });
         self
     }
+    /// Store a VT snapshot taken at holder ring `offset`; `incarnation` identifies the holder
+    /// process whose ring that offset refers to (see `SnapshotRecord::incarnation`).
     pub fn snapshot(
         &mut self,
         pane: &str,
@@ -207,6 +218,7 @@ impl Mutation {
         engine: &str,
         version: &str,
         blob: Vec<u8>,
+        incarnation: &str,
     ) -> &mut Self {
         self.writes.push(Write::Snapshot {
             pane: pane.into(),
@@ -214,7 +226,14 @@ impl Mutation {
             engine: engine.into(),
             version: version.into(),
             blob,
+            incarnation: incarnation.into(),
         });
+        self
+    }
+    /// Forget a pane's VT snapshot (its holder was replaced; the old screen must not return).
+    pub fn snapshot_delete(&mut self, pane: &str) -> &mut Self {
+        self.writes
+            .push(Write::SnapshotDelete { pane: pane.into() });
         self
     }
     pub fn kv(&mut self, scope: &str, key: &str, value: Option<String>) -> &mut Self {
@@ -274,6 +293,9 @@ pub struct SnapshotRecord {
     pub engine: String,
     pub version: String,
     pub blob: Vec<u8>,
+    /// Holder incarnation the snapshot belongs to (`"<child_pid>:<holder started_at_ms>"`);
+    /// `None` for snapshots written before migration 2, which are never trusted.
+    pub incarnation: Option<String>,
 }
 
 pub struct Store {
@@ -408,13 +430,17 @@ impl Store {
                     engine,
                     version,
                     blob,
+                    incarnation,
                 } => {
                     let blob = zstd::encode_all(&blob[..], 3)?;
                     tx.execute(
-                        "INSERT INTO vt_snapshots (pane_id, holder_offset, engine, engine_version, blob, taken_at) VALUES (?1,?2,?3,?4,?5,?6)
-                         ON CONFLICT(pane_id) DO UPDATE SET holder_offset=?2, engine=?3, engine_version=?4, blob=?5, taken_at=?6",
-                        params![pane, offset as i64, engine, version, blob, now],
+                        "INSERT INTO vt_snapshots (pane_id, holder_offset, engine, engine_version, blob, taken_at, holder_incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7)
+                         ON CONFLICT(pane_id) DO UPDATE SET holder_offset=?2, engine=?3, engine_version=?4, blob=?5, taken_at=?6, holder_incarnation=?7",
+                        params![pane, offset as i64, engine, version, blob, now, incarnation],
                     )?;
+                }
+                Write::SnapshotDelete { pane } => {
+                    tx.execute("DELETE FROM vt_snapshots WHERE pane_id=?1", [pane.as_str()])?;
                 }
                 Write::Kv { scope, key, value } => match value {
                     Some(v) => {
@@ -535,16 +561,17 @@ impl Store {
     pub fn snapshot_for(&self, pane: &str) -> Result<Option<SnapshotRecord>> {
         let r = self
             .conn
-            .query_row("SELECT holder_offset, engine, engine_version, blob FROM vt_snapshots WHERE pane_id=?1", [pane], |r| {
-                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Vec<u8>>(3)?))
+            .query_row("SELECT holder_offset, engine, engine_version, blob, holder_incarnation FROM vt_snapshots WHERE pane_id=?1", [pane], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Vec<u8>>(3)?, r.get::<_, Option<String>>(4)?))
             })
             .optional()?;
         Ok(match r {
-            Some((offset, engine, version, blob)) => Some(SnapshotRecord {
+            Some((offset, engine, version, blob, incarnation)) => Some(SnapshotRecord {
                 offset,
                 engine,
                 version,
                 blob: zstd::decode_all(&blob[..])?,
+                incarnation,
             }),
             None => None,
         })
@@ -774,13 +801,18 @@ mod tests {
         let mut s = Store::open_in_memory().unwrap();
         let mut m = Mutation::new();
         m.holder("p1", "/tmp/x.sock", &[1, 2, 3], 4, Some(10), Some(11));
-        m.snapshot("p1", 99, "e", "1", vec![7; 1000]);
+        m.snapshot("p1", 99, "e", "1", vec![7; 1000], "11:123");
         s.commit(m).unwrap();
         let h = s.holders().unwrap();
         assert_eq!(h[0].epoch, 4);
         let snap = s.snapshot_for("p1").unwrap().unwrap();
         assert_eq!(snap.offset, 99);
         assert_eq!(snap.blob, vec![7; 1000]);
+        assert_eq!(snap.incarnation.as_deref(), Some("11:123"));
+        let mut m = Mutation::new();
+        m.snapshot_delete("p1");
+        s.commit(m).unwrap();
+        assert!(s.snapshot_for("p1").unwrap().is_none());
     }
 
     #[test]

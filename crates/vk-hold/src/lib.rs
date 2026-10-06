@@ -18,6 +18,7 @@ use vk_proto::holder::SpawnSpec;
 /// Entry point for `vibeke hold --spec <file>`: double-fork, `setsid`, spawn the child,
 /// report `ready <holder_pid> <child_pid>` on stdout from the intermediate process, then run.
 pub fn main_daemon(spec_path: &Path, log_path: Option<&Path>) -> Result<()> {
+    close_inherited_fds();
     let (rd, wr) = rustix::pipe::pipe()?;
     // SAFETY: called at process start before any threads exist.
     let pid = unsafe { libc::fork() };
@@ -58,6 +59,27 @@ pub fn main_daemon(spec_path: &Path, log_path: Option<&Path>) -> Result<()> {
             writeln!(ready, "error {e:#}")?;
             Err(e)
         }
+    }
+}
+
+/// A long-lived holder must not keep descriptors it inherited by accident. On macOS a
+/// spawning process creates pipes non-atomically (`pipe` then `FD_CLOEXEC`), so a holder
+/// launched concurrently from another thread can inherit the write end of some unrelated
+/// `Command::output()` pipe and keep that caller waiting for EOF forever.
+fn close_inherited_fds() {
+    // SAFETY: getrlimit writes to the out-param; closing fds we don't own is the point and
+    // happens at process start before any are opened.
+    let mut rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let max = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0 {
+        rl.rlim_cur.min(8192) as i32
+    } else {
+        1024
+    };
+    for fd in 3..max {
+        unsafe { libc::close(fd) };
     }
 }
 
@@ -145,6 +167,23 @@ pub fn launch(
         holder_pid,
         child_pid,
     })
+}
+
+/// Is the holder behind `socket` still running? Its socket accepting a connection is proof;
+/// otherwise the recorded holder pid must exist *and* still look like a holder (`--spec` in
+/// its argv), so a pid reused after a reboot isn't mistaken for a live holder.
+pub fn holder_alive(socket: &Path, holder_pid: Option<u32>) -> bool {
+    if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+        return true;
+    }
+    let Some(pid) = holder_pid.filter(|p| *p > 0) else {
+        return false;
+    };
+    // SAFETY: signal 0 only checks existence.
+    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+        return false;
+    }
+    procinfo::argv(pid).iter().any(|a| a == "--spec")
 }
 
 /// Used by tests: a std::fs::File from a raw fd we own.
