@@ -168,6 +168,8 @@ impl IsoRequest {
 pub enum BoxRunner {
     Sandbox(Box<SandboxRunner>),
     Container(Box<container::CtrBox>),
+    /// The `vm` level (13 §2.1): off unless `[isolation.vm] enabled` (`orch_vm.rs`).
+    Vm(Box<vk_sandbox::vm::VmBoxRunner>),
 }
 
 impl BoxRunner {
@@ -175,6 +177,7 @@ impl BoxRunner {
         match self {
             BoxRunner::Sandbox(r) => r.as_ref(),
             BoxRunner::Container(c) => &c.runner,
+            BoxRunner::Vm(v) => v.as_ref(),
         }
     }
 }
@@ -624,10 +627,16 @@ pub async fn prepare_box_opts(
             (BoxRunner::Container(Box::new(c)), prov)
         }
         IsolationLevel::Vm => {
-            return Err(err(
-                ErrorKind::Unsupported,
-                vk_sandbox::VmRunner.check().unwrap_err().to_string(),
-            ));
+            if !crate::orch_vm::enabled(server) {
+                return Err(err(
+                    ErrorKind::Unsupported,
+                    vk_sandbox::VmRunner.check().unwrap_err().to_string(),
+                ));
+            }
+            let r = crate::orch_vm::build_runner(server, key, task, &checkout, req.network, start)
+                .await?;
+            let prov = r.provider();
+            (BoxRunner::Vm(Box::new(r)), prov)
         }
         IsolationLevel::Host => {
             return Err(invalid("host needs no sandbox context"));
@@ -1619,6 +1628,21 @@ pub fn teardown(server: &Arc<Server>, key: &str) {
         i.boxes.remove(key)
     };
     if let Some(b) = removed.clone()
+        && matches!(b.runner, BoxRunner::Vm(_))
+    {
+        // The task's VM goes with it (its snapshots and template stay).
+        let srv = server.clone();
+        let key = key.to_string();
+        std::thread::spawn(move || {
+            crate::orch_vm::destroy_for(&srv, &key);
+            emit(
+                &srv,
+                "sandbox.destroyed",
+                json!({"task": b.task, "sandbox": key}),
+                json!({"action": "removed", "level": "vm"}),
+            );
+        });
+    } else if let Some(b) = removed.clone()
         && matches!(b.runner, BoxRunner::Container(_))
     {
         let srv = server.clone();

@@ -133,6 +133,7 @@ fn a_write_inside_a_foreign_claim_is_high_at_once() {
         glob: "src/auth/**".into(),
         created_ms: 0,
         note: None,
+        also: vec![],
     };
     let mut t = Tracker::new();
     let f = t.record(

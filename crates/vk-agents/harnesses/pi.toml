@@ -66,3 +66,12 @@ allow = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.c
 env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"]
 files = ["~/.pi/agent/auth.json"]
 home_env = "PI_CODING_AGENT_DIR"
+
+[identity]
+sources = ["extension", "transcript_scan"]
+transcript_glob = "~/.pi/agent/sessions/--{cwd_slug}--/*_{session_id}.jsonl"
+cwd_slug = "replace:/,-;trim:-"
+
+[transcript]
+format = "pi_jsonl"
+usage = true

@@ -16,12 +16,16 @@ pub mod exec;
 pub mod fsafe;
 pub mod gitexec;
 pub mod linux;
+pub mod native_plugin;
 pub mod net;
 pub mod plugin;
 pub mod policy;
 pub mod proxy;
 pub mod runner;
 pub mod seatbelt;
+pub mod vm;
+pub mod vm_backends;
+pub mod vm_transport;
 
 pub use net::{EgressPolicy, NetworkProfile};
 pub use policy::{GitLayout, NetMode, Policy, SandboxSpec};

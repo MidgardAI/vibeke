@@ -251,6 +251,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # shims             = true
 # resume_on_restart = "ask"             # ask | always | never
 # name_from_task    = true
+# fail_closed       = true               # policy deny rules on yolo runs fail closed when the server is unreachable
+
+# [agents.approvals.claude]
+# persist_always      = false           # "allow always" edits Claude's settings (off: session-scoped rule)
+# persist_destination = "localSettings" # localSettings | projectSettings | userSettings
 
 # [agents.harness.claude]
 # enabled     = true
@@ -328,9 +333,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # [compat]
 # herdr_env    = true
 # herdr_socket = false
+# herdr_socket_path = ""                # "" = $RUNTIME/herdr-compat/herdr.sock; e.g. "~/.config/herdr/herdr.sock" once Herdr is gone (a live socket is never replaced)
 
-# [compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/<session>/herdr-compat/herdr.sock
+# [compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/herdr-compat/herdr.sock
 # enabled = false
+# allow_server_stop = false             # serve `server.stop` / `herdr server stop` (never from a plugin or pane)
 
 # Event log retention (02 §2.3). Read by the running server; changes apply at the next hourly
 # sweep (or `vibeke api call storage.prune`). Durations are `7d`/`36h` or a bare number of days.
@@ -380,6 +387,13 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # title = "edit"
 # pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
 
+# Secrets and privacy (09 §9.1-9.2; read by the server, shown here with their defaults):
+# [security]
+# encrypt_state           = false     # seal scrollback segments and session blobs with a key kept in the OS keychain
+# keychain                = "os"      # "os" (macOS Keychain or Secret Service via secret-tool) | "file:<path>" (0600 file; tests, headless hosts)
+# redact_scrollback_index = true      # the search index and search.query results hold redacted text; segments stay as shown
+# [security.redact]
+# patterns = []                       # extra regular expressions redacted in logs, events, bundles, index and assistant payloads
 # AI assistance (spec 14). Off by default: nothing is sent anywhere until you enable it, choose a
 # connection and a profile, and grant consent per workspace (`vibeke assist consent`). User config
 # only: a repository's own config cannot redirect assistant traffic. Requests run on the machine
@@ -398,7 +412,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # preview_ttl_seconds         = 600
 # auto_send                   = []          # operations that skip the preview; the workspace consent must list them too
 # result_cache                = false       # reuse a stored result for identical context under the same grants
-# keychain_backend            = "off"       # off | os (the system credential store through its own CLI) | fake (tests)
+# keychain_backend            = ""          # deprecated override of [security] keychain for assistant credentials: "" (inherit) | off | os | "file:<path>" | fake (tests)
 # remote_sources              = false       # accept source data a client collected from other machines
 # remote_stale_seconds        = 300
 # background_enabled          = false       # opt-in: background features (each also needs its own switch below)

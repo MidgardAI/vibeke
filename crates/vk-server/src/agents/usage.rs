@@ -18,6 +18,8 @@ use super::*;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
+use vk_agents::pricing::PriceTable;
+use vk_agents::transcript::TurnUsage;
 
 const MAX_TRANSCRIPT: u64 = 64 << 20;
 
@@ -69,6 +71,27 @@ fn store(server: &Server, run: &str, usage: Option<RunUsage>, limit: Option<Rate
     }
     let stream_usage = usage.clone();
     update_run(server, run, |r, tx| {
+        // No harness-reported cost: estimate it from the price table (04 §10), unless the run is
+        // subscription-billed.
+        let usage = usage.map(|mut u| {
+            if u.cost_usd.is_none() {
+                let tu = TurnUsage {
+                    input: u.input_tokens,
+                    output: u.output_tokens,
+                    cache_read: u.cache_read_tokens,
+                    cache_write: u.cache_write_tokens,
+                    cost_usd: None,
+                };
+                u.cost_usd = cost_for(
+                    server,
+                    billing_of(&r.harness).as_deref(),
+                    u.model.as_deref(),
+                    &tu,
+                )
+                .0;
+            }
+            u
+        });
         if let Some(u) = usage
             && u != r.usage
         {
@@ -164,6 +187,179 @@ pub(super) fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Val
         }
         _ => {}
     }
+}
+
+/// Tests set billing per harness id here instead of writing the shared config file.
+#[cfg(test)]
+pub(crate) static BILLING_OVERRIDE: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// `[agents.harness.<id>] billing` (`subscription` | `api`).
+pub(super) fn billing_of(harness: &str) -> Option<String> {
+    #[cfg(test)]
+    if let Some(b) = BILLING_OVERRIDE.lock().unwrap().get(harness) {
+        return Some(b.clone());
+    }
+    vk_config::Config::load(vk_config::config_path())
+        .ok()
+        .and_then(|(c, _)| {
+            c.agents
+                .harness
+                .get(harness)
+                .and_then(|h| h.billing.clone())
+        })
+}
+
+type PriceCache = Mutex<Option<(i64, PriceTable)>>;
+static PRICES: LazyLock<PriceCache> = LazyLock::new(|| Mutex::new(None));
+
+/// The price table in force: a signed `<state>/prices/prices.json` with a higher serial than the
+/// bundled one (verified like manifest channel indexes: embedded release keys; unsigned only
+/// with `VIBEKE_ALLOW_UNSIGNED_MANIFESTS=1`), else the bundled table.
+pub(super) fn price_table(server: &Server) -> PriceTable {
+    let file = server.paths.state.join("prices/prices.json");
+    let mtime = std::fs::metadata(&file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    {
+        let g = PRICES.lock().unwrap();
+        if let Some((t, tab)) = g.as_ref()
+            && *t == mtime
+        {
+            return tab.clone();
+        }
+    }
+    let chosen = load_signed_prices(&file, mtime)
+        .filter(|t| t.serial > PriceTable::bundled().serial)
+        .unwrap_or_else(|| PriceTable::bundled().clone());
+    *PRICES.lock().unwrap() = Some((mtime, chosen.clone()));
+    chosen
+}
+
+fn load_signed_prices(file: &Path, mtime: i64) -> Option<PriceTable> {
+    if mtime == 0 {
+        return None;
+    }
+    let bytes = std::fs::read(file).ok()?;
+    let sig = std::fs::read(file.with_extension("json.minisig")).ok();
+    match super::channel::verify_signature(&bytes, sig.as_deref()) {
+        Ok(()) => {}
+        Err(e) if super::channel::allow_unsigned_env() => {
+            tracing::warn!("price table: using an UNSIGNED table ({e})");
+        }
+        Err(e) => {
+            tracing::warn!("price table ignored: {e}");
+            return None;
+        }
+    }
+    PriceTable::parse(&String::from_utf8(bytes).ok()?).ok()
+}
+
+/// Cost of a token mix and where it came from (04 §10): the harness's own figure, else the price
+/// table by model id; subscription-billed runs keep tokens only.
+pub(super) fn cost_for(
+    server: &Server,
+    billing: Option<&str>,
+    model: Option<&str>,
+    u: &TurnUsage,
+) -> (Option<f64>, &'static str) {
+    // The table is only read when nothing else decides the cost.
+    if billing == Some("subscription") || u.cost_usd.is_some() || model.is_none() {
+        return cost_with(PriceTable::bundled(), billing, model, u);
+    }
+    cost_with(&price_table(server), billing, model, u)
+}
+
+/// [`cost_for`] against an explicit table.
+pub fn cost_with(
+    table: &PriceTable,
+    billing: Option<&str>,
+    model: Option<&str>,
+    u: &TurnUsage,
+) -> (Option<f64>, &'static str) {
+    if billing == Some("subscription") {
+        return (None, "subscription");
+    }
+    if let Some(c) = u.cost_usd {
+        return (Some(c), "harness");
+    }
+    let Some(m) = model else {
+        return (None, "none");
+    };
+    match table.cost(m, u.input, u.output, u.cache_read, u.cache_write) {
+        Some(c) => (Some(c), "price_table"),
+        None => (None, "none"),
+    }
+}
+
+/// The TranscriptTailer's running totals (every completed turn so far) become the run's usage.
+pub(super) fn from_tailer(
+    server: &Server,
+    run: &AgentRun,
+    t: &TurnUsage,
+    model: Option<&str>,
+    billing: Option<&str>,
+) {
+    let same_tokens = run.usage.input_tokens == t.input
+        && run.usage.output_tokens == t.output
+        && run.usage.cache_read_tokens == t.cache_read
+        && run.usage.cache_write_tokens == t.cache_write;
+    let (cost, _) = cost_for(server, billing, model.or(run.usage.model.as_deref()), t);
+    if same_tokens && (cost.is_none() || run.usage.cost_usd.is_some()) {
+        return;
+    }
+    let d = RunUsage {
+        input_tokens: t.input,
+        output_tokens: t.output,
+        cache_read_tokens: t.cache_read,
+        cache_write_tokens: t.cache_write,
+        cost_usd: cost,
+        model: model.map(str::to_string).or(run.usage.model.clone()),
+        source: "transcript".into(),
+        updated_at_ms: now_ms(),
+    };
+    store(server, &run.id, Some(d), None);
+}
+
+/// Per-harness limits status (04 §10 "limits" segment): the most recent observation per harness
+/// from live runs, most constrained window first.
+pub fn limits(server: &Server) -> Vec<Value> {
+    let runs: Vec<AgentRun> = server.with_core(|c| {
+        c.model
+            .runs
+            .iter()
+            .filter(|r| r.ended_at_ms.is_none() && r.rate_limit.is_some())
+            .cloned()
+            .collect()
+    });
+    let mut by: std::collections::BTreeMap<String, RateLimitInfo> = Default::default();
+    for r in runs {
+        let Some(l) = r.rate_limit else { continue };
+        match by.get(&r.harness) {
+            Some(cur) if cur.observed_at_ms >= l.observed_at_ms => {}
+            _ => {
+                by.insert(r.harness, l);
+            }
+        }
+    }
+    let mut v: Vec<Value> = by
+        .into_iter()
+        .map(|(h, l)| {
+            json!({
+                "harness": h, "scope": l.scope, "limited": l.limited,
+                "used_percent": l.used_percent, "resets_at_ms": l.resets_at_ms,
+                "message": l.message, "observed_at_ms": l.observed_at_ms,
+            })
+        })
+        .collect();
+    v.sort_by(|a, b| {
+        let p = |x: &Value| x["used_percent"].as_f64().unwrap_or(0.0);
+        p(b).total_cmp(&p(a))
+    });
+    v
 }
 
 fn u64_of(v: &Value, keys: &[&str]) -> u64 {
@@ -600,6 +796,41 @@ mod tests {
         std::fs::write(&p, &t).unwrap();
         assert!(transcript_usage(&p).unwrap().1.is_some());
         assert_eq!(parse_rfc3339_ms("1970-01-02T00:00:01.5Z"), Some(86_401_500));
+    }
+
+    #[test]
+    fn cost_prefers_the_harness_figure_then_the_table_and_hides_subscriptions() {
+        let table = PriceTable::parse(
+            r#"{"serial":1,"prices":[{"model":"claude-sonnet-4","input":3.0,"output":15.0,"cache_read":0.3,"cache_write":3.75}]}"#,
+        )
+        .unwrap();
+        let mut u = TurnUsage {
+            input: 1_000_000,
+            output: 100_000,
+            ..Default::default()
+        };
+        let (c, src) = cost_with(&table, None, Some("claude-sonnet-4-20250514"), &u);
+        assert_eq!(src, "price_table");
+        assert!((c.unwrap() - 4.5).abs() < 1e-9);
+        assert_eq!(
+            cost_with(&table, Some("subscription"), Some("claude-sonnet-4"), &u),
+            (None, "subscription")
+        );
+        assert_eq!(
+            cost_with(&table, Some("api"), Some("unknown-model"), &u),
+            (None, "none")
+        );
+        assert_eq!(cost_with(&table, None, None, &u), (None, "none"));
+        u.cost_usd = Some(0.5);
+        assert_eq!(
+            cost_with(&table, None, Some("claude-sonnet-4"), &u),
+            (Some(0.5), "harness")
+        );
+        // Subscription wins even over a harness figure: tokens only.
+        assert_eq!(
+            cost_with(&table, Some("subscription"), Some("claude-sonnet-4"), &u),
+            (None, "subscription")
+        );
     }
 
     #[test]

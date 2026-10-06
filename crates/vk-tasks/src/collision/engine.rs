@@ -140,11 +140,20 @@ pub struct Claim {
     pub created_ms: i64,
     #[serde(default)]
     pub note: Option<String>,
+    /// More runs the claim belongs to (a task's claim binds every run of the task): a write by
+    /// any of them is the owner's.
+    #[serde(default)]
+    pub also: Vec<String>,
 }
 
 impl Claim {
     pub fn covers(&self, path: &str) -> bool {
         glob_match(&self.glob, path)
+    }
+
+    /// Every run the claim belongs to.
+    pub fn owners(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.run.as_str()).chain(self.also.iter().map(String::as_str))
     }
 }
 
@@ -359,15 +368,13 @@ impl Tracker {
 
         // A write inside someone else's claim.
         for c in claims.iter().filter(|c| c.covers(&t.path)) {
-            if mine.contains(c.run.as_str()) && t.is_certain() {
-                continue;
-            }
-            // Ambiguous writer who might be the owner: not a violation we can state.
-            if !t.is_certain() && mine.contains(c.run.as_str()) {
+            // The owner writing (or an ambiguous writer who might be the owner): not a
+            // violation we can state.
+            if c.owners().any(|o| mine.contains(o)) {
                 continue;
             }
             let mut runs: BTreeSet<String> = mine.iter().map(|r| (*r).to_string()).collect();
-            runs.insert(c.run.clone());
+            runs.extend(c.owners().map(str::to_string));
             out.push(Finding {
                 severity: Severity::High,
                 reason: Reason::Claim {

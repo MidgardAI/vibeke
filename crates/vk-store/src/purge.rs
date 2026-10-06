@@ -288,6 +288,17 @@ impl Store {
     /// `archive_panes` keeps rows for panes that still have segments, adds missing ones from the
     /// pane entities in `state.db` when present, and drops rows for panes with no segments.
     pub fn rebuild_archive_index(&self, root: &Path) -> Result<RebuildReport> {
+        self.rebuild_archive_index_with(root, &|t| t.to_string())
+    }
+
+    /// [`Store::rebuild_archive_index`] with each row's text passed through `index_text` before
+    /// it is indexed (`security.redact_scrollback_index`, 09 §9.2: the index holds redacted
+    /// text while the segments keep what the terminal showed).
+    pub fn rebuild_archive_index_with(
+        &self,
+        root: &Path,
+        index_text: &dyn Fn(&str) -> String,
+    ) -> Result<RebuildReport> {
         let archive = Archive::new(root);
         let mut rep = RebuildReport {
             fts_rows_before: scalar(&self.conn, "SELECT COUNT(*) FROM scrollback_fts", [])?,
@@ -326,7 +337,7 @@ impl Store {
                         rep.damaged.push(name);
                     }
                     for r in read.rows.iter().filter(|r| !r.t.is_empty()) {
-                        ins.execute(params![pane, r.n as i64, s.mtime_ms, r.t])?;
+                        ins.execute(params![pane, r.n as i64, s.mtime_ms, index_text(&r.t)])?;
                         rep.rows_indexed += 1;
                     }
                 }

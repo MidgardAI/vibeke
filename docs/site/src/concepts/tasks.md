@@ -54,7 +54,7 @@ A pane in a collision shows `⚠`, and the sidebar names the paths ("2 agents ed
 - **Start a fresh task from here.** Vibeke creates a task from the shared checkout's `HEAD` and starts a new run there with a hand-off prompt. The original runs keep working and nothing is moved.
 - **Ignore** a path.
 
-`vibeke claim add "src/auth/**" --run a12` says which part of the checkout a run works in. Another run writing there raises a `high` collision at once. With `[collision] enforce_claims = true`, Claude also denies its reported edit tools inside another run's claim. This is a courtesy guardrail: shell commands and other harnesses are unaffected. Claims end with their run.
+`vibeke claim add "src/auth/**" --run a12` says which part of the checkout a run works in (a run without a task gets a run claim; `vibeke collision claim` is the same call, and a task's own claims count too). Another run writing there raises a `high` collision at once. With `[collision] enforce_claims = true`, Claude also denies its reported edit tools inside another run's claim. This is a courtesy guardrail: shell commands and other harnesses are unaffected. Claims end with their run.
 
 Use `vibeke collision list` and `vibeke task get <task> --collisions` to read collisions from the command line. See [the `[collision]` settings](../reference/config.md).
 

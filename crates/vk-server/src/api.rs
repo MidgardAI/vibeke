@@ -309,6 +309,11 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "worktree.remove",
     "render.attach",
     "policy.trust",
+    // 2F: the approval history behind `policy.suggest`, and the manifest channel (network fetch,
+    // pins), are the user's.
+    "policy.suggest",
+    "agent.manifests_check",
+    "agent.manifest_pin",
     // 15 §11: agents can report observations but not confirm intent, bind, send, accept,
     // authorize verification or change priorities.
     "task.track",
@@ -432,6 +437,9 @@ impl PaneScope {
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
+        || crate::plugin_native::PANE_FORBIDDEN.contains(&method)
+        || crate::privacy::PANE_FORBIDDEN.contains(&method)
+        || crate::orch::PANE_FORBIDDEN.contains(&method)
         || crate::blob_store::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
         || crate::machines::PANE_FORBIDDEN.contains(&method)
@@ -481,6 +489,7 @@ pub fn is_run_targeted(method: &str) -> bool {
 /// the caller's own pane and panes it created; authorizing actions (answering interactions),
 /// server control and other workspaces' layout are forbidden.
 pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
+    crate::plugin_native::authorize(server, ctx, method, p)?;
     let Some(scope) = &ctx.pane_scope else {
         return Ok(());
     };
@@ -560,6 +569,14 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    // Lane 3E: search result redaction, state.forget, encryption status/migrate.
+    if let Some(r) = crate::privacy::api(server, ctx, method, p).await {
+        return r;
+    }
+    // Batch 4 orchestration (best-of-N, split, learned policy, merge, goals, quota, vm).
+    if let Some(r) = crate::orch::api(server, ctx, method, p).await {
+        return r;
+    }
     // Batch 2A API surface: one hook per module.
     if let Some(r) = crate::config_api::api(server, method, p).await {
         return r;
@@ -646,6 +663,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::drafts::api(server, ctx, method, p).await {
         return r;
     }
+    // Native plugins (lane 3B): its own methods and the merged shared `plugin.*` views.
+    if (method.starts_with("plugin.") || method.starts_with("ui.") || method == "compat.ui.state")
+        && let Some(r) = Box::pin(crate::plugin_native::api(server, ctx, method, p)).await
+    {
+        return r;
+    }
     if (method.starts_with("plugin.") || method.starts_with("compat."))
         && let Some(r) = crate::compat::api(server, ctx, method, p).await
     {
@@ -698,6 +721,8 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::task_lifecycle::METHODS)
                     .chain(crate::task_park::METHODS)
                     .chain(crate::security::METHODS)
+                    .chain(crate::plugin_native::METHODS)
+                    .chain(crate::orch::METHODS)
                     .chain(crate::review::pr::METHODS)
                     .chain(crate::review::interval::METHODS)
                     .chain(crate::collision::METHODS)

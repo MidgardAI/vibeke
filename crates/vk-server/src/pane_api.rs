@@ -554,7 +554,7 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         crate::agent_browser::store_blob(server, &data, ext, &meta).map_err(internal)?;
     let rev = rt.rev();
     let mut out = json!({
-        "blob": {"hash": hash, "size": data.len(), "mime": mime, "path": path},
+        "blob": {"hash": hash, "size": data.len(), "mime": mime, "path": crate::privacy::readable_path(server, &path)},
         "format": format,
         "source": source,
         "cols": cols,

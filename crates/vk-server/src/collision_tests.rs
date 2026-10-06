@@ -561,7 +561,7 @@ async fn claims_raise_high_at_once_and_have_a_lifecycle() {
     let r = ok(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         json!({"run": "ra", "glob": "src/auth/**", "note": "auth rewrite"}),
     )
     .await;
@@ -572,12 +572,12 @@ async fn claims_raise_high_at_once_and_have_a_lifecycle() {
     let again = ok(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         json!({"run": "ra", "glob": "src/auth/**"}),
     )
     .await;
     assert_eq!(again["claim"]["id"], r["claim"]["id"]);
-    assert_eq!(events(&f.s, "task.claim_added").len(), 1);
+    assert_eq!(events(&f.s, "task.collision_claim_added").len(), 1);
     // The owner writing inside its own claim: nothing. A foreign run: high, with one write.
     post(&f, &a, "Edit", "src/auth/login.ts");
     assert!(open(&f.s).is_empty());
@@ -591,33 +591,39 @@ async fn claims_raise_high_at_once_and_have_a_lifecycle() {
         "claim"
     );
     // Listing.
-    let l = ok(&f.s, &user(), "task.claims", json!({})).await;
+    let l = ok(&f.s, &user(), "collision.claims", json!({})).await;
     assert_eq!(l["claims"].as_array().unwrap().len(), 1);
-    let l = ok(&f.s, &user(), "task.claims", json!({"run": "rb"})).await;
+    let l = ok(&f.s, &user(), "collision.claims", json!({"run": "rb"})).await;
     assert!(l["claims"].as_array().unwrap().is_empty());
     // A competing overlapping claim is reported, not refused.
     let c2 = ok(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         json!({"run": "rb", "glob": "src/auth/login.ts"}),
     )
     .await;
     assert_eq!(c2["conflicts"].as_array().unwrap().len(), 1);
     // Release.
-    let rel = ok(&f.s, &user(), "task.claim_release", json!({"run": "rb"})).await;
+    let rel = ok(
+        &f.s,
+        &user(),
+        "collision.claim_release",
+        json!({"run": "rb"}),
+    )
+    .await;
     assert_eq!(rel["released"].as_array().unwrap().len(), 1);
     let rel = ok(
         &f.s,
         &user(),
-        "task.claim_release",
+        "collision.claim_release",
         json!({"claim": r["claim"]["id"]}),
     )
     .await;
     assert_eq!(rel["released"].as_array().unwrap().len(), 1);
-    assert_eq!(events(&f.s, "task.claim_released").len(), 2);
+    assert_eq!(events(&f.s, "task.collision_claim_released").len(), 2);
     assert!(
-        dispatch(&f.s, &user(), "task.claim_release", &json!({}))
+        dispatch(&f.s, &user(), "collision.claim_release", &json!({}))
             .await
             .is_err(),
         "a release must name what it releases"
@@ -632,18 +638,18 @@ async fn claim_input_is_validated() {
         let r = dispatch(
             &f.s,
             &user(),
-            "task.claim",
+            "collision.claim",
             &json!({"run": "ra", "glob": glob}),
         )
         .await;
         assert!(r.is_err(), "glob {glob:?} refused");
     }
-    let r = dispatch(&f.s, &user(), "task.claim", &json!({"glob": "src/**"})).await;
+    let r = dispatch(&f.s, &user(), "collision.claim", &json!({"glob": "src/**"})).await;
     assert!(r.is_err(), "no run named");
     let r = dispatch(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         &json!({"run": "nope", "glob": "src/**"}),
     )
     .await;
@@ -652,7 +658,7 @@ async fn claim_input_is_validated() {
     let c = ok(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         json!({"run": "ra", "glob": format!("{}/src/auth", f.root)}),
     )
     .await;
@@ -668,7 +674,7 @@ async fn an_agent_manages_its_own_claims_only() {
     let c = ok(
         &f.s,
         &pane_ctx("pa"),
-        "task.claim",
+        "collision.claim",
         json!({"glob": "docs/**"}),
     )
     .await;
@@ -677,7 +683,7 @@ async fn an_agent_manages_its_own_claims_only() {
     let r = dispatch(
         &f.s,
         &pane_ctx("pa"),
-        "task.claim",
+        "collision.claim",
         &json!({"run": "rb", "glob": "x/**"}),
     )
     .await;
@@ -689,20 +695,20 @@ async fn an_agent_manages_its_own_claims_only() {
     let cb = ok(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         json!({"run": "rb", "glob": "web/**"}),
     )
     .await;
     let rel = ok(
         &f.s,
         &pane_ctx("pa"),
-        "task.claim_release",
+        "collision.claim_release",
         json!({"claim": cb["claim"]["id"]}),
     )
     .await;
     assert!(rel["released"].as_array().unwrap().is_empty());
     // Reads: the claims of the agent's own checkout.
-    let l = ok(&f.s, &pane_ctx("pa"), "task.claims", json!({})).await;
+    let l = ok(&f.s, &pane_ctx("pa"), "collision.claims", json!({})).await;
     assert_eq!(l["claims"].as_array().unwrap().len(), 2);
 }
 
@@ -715,7 +721,7 @@ async fn enforced_claims_deny_reported_edit_tools_for_cooperating_adapters_only(
     ok(
         &f.s,
         &user(),
-        "task.claim",
+        "collision.claim",
         json!({"run": "ra", "glob": "src/auth/**"}),
     )
     .await;
@@ -1162,6 +1168,7 @@ fn quiet_records_runs_ended_and_claims_are_swept() {
             glob: "src/**".into(),
             created_ms: 1,
             note: None,
+            also: vec![],
         });
     }
     end_run(&f.s, "rb");
@@ -1170,7 +1177,7 @@ fn quiet_records_runs_ended_and_claims_are_swept() {
         events(&f.s, "task.collision_cleared")[0].data["reason"],
         "runs_ended"
     );
-    let rel = events(&f.s, "task.claim_released");
+    let rel = events(&f.s, "task.collision_claim_released");
     assert_eq!(rel.len(), 1);
     assert_eq!(rel[0].data["reason"], "run_ended");
     assert!(f.s.collision.inner.lock().unwrap().claims.is_empty());
@@ -1220,6 +1227,7 @@ fn claims_and_ignores_survive_a_restart() {
         glob: "src/**".into(),
         created_ms: 1,
         note: None,
+        also: vec![],
     };
     let ig = Ignore {
         id: "ign_p".into(),
@@ -1395,9 +1403,9 @@ fn every_method_is_registered_with_a_shape_and_a_declared_pane_scope() {
         "collision.pause",
         "collision.tell",
         "collision.start_task",
-        "task.claim",
-        "task.claims",
-        "task.claim_release",
+        "collision.claim",
+        "collision.claims",
+        "collision.claim_release",
     ] {
         assert!(METHODS.iter().any(|(n, _)| *n == m));
     }
@@ -1448,4 +1456,211 @@ fn task_get_lists_the_open_collisions_of_a_task() {
         ..task
     };
     assert!(for_task(&f.s, &other).is_empty());
+}
+
+#[tokio::test]
+async fn forget_removes_the_records_and_claims_of_the_runs_in_scope() {
+    let f = fx("forget");
+    let (_a, _b, _rec) = collided(&f);
+    ok(
+        &f.s,
+        &user(),
+        "collision.claim",
+        json!({"run": "ra", "glob": "src/**"}),
+    )
+    .await;
+    // The record closes (history); the claim of a live run stays until released.
+    sweep(&f.s, now_ms() + 31 * 60_000);
+    assert!(open(&f.s).is_empty());
+    // Out of scope: nothing.
+    assert_eq!(forget(&f.s, &|run, _| run == "zzz", false), 0);
+    // A dry run only counts: one record and one claim.
+    assert_eq!(forget(&f.s, &|run, _| run == "ra", true), 2);
+    let l = ok(&f.s, &user(), "collision.list", json!({"status": "all"})).await;
+    assert_eq!(l["collisions"].as_array().unwrap().len(), 1);
+    assert_eq!(forget(&f.s, &|run, _| run == "ra", false), 2);
+    let l = ok(&f.s, &user(), "collision.list", json!({"status": "all"})).await;
+    assert!(l["collisions"].as_array().unwrap().is_empty());
+    let c = ok(&f.s, &user(), "collision.claims", json!({})).await;
+    assert!(c["claims"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_enforcement_path_applies_the_claim_guardrail_too() {
+    let f = fx("enforcegate");
+    let _a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let _b = add_run(&f, "rb", "pb", "claude", Execution::Working);
+    ok(
+        &f.s,
+        &user(),
+        "collision.claim",
+        json!({"run": "ra", "glob": "src/auth/**"}),
+    )
+    .await;
+    let edit = json!({"tool_name": "Write", "tool_input": {"file_path": abs(&f, "src/auth/x.ts")}});
+    assert!(
+        pre_tool_claim(&f.s, "pb", &edit).is_none(),
+        "off by default"
+    );
+    set_config(
+        &f.s,
+        vk_config::Collision {
+            enforce_claims: true,
+            ..test_cfg()
+        },
+    );
+    let d = pre_tool_claim(&f.s, "pb", &edit).expect("denied");
+    assert_eq!(d["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(pre_tool_claim(&f.s, "pa", &edit).is_none(), "the owner");
+    // The same decision is what `adapter.gate` hands the shim for a pre-tool enforcement call.
+    let r = dispatch(
+        &f.s,
+        &pane_ctx("pb"),
+        "adapter.gate",
+        &json!({"harness": "claude", "event": "PreToolUse", "payload": edit}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        r["decision"]["hookSpecificOutput"]["permissionDecision"],
+        "deny"
+    );
+}
+
+fn put_task_claim(f: &Fx, id: &str, task: &str, glob: &str) {
+    let claim = vk_orchestrate::merge::Claim {
+        id: id.into(),
+        task: task.into(),
+        glob: glob.into(),
+        note: None,
+        created_at_ms: 1,
+    };
+    let mut c = f.s.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.m.put("orch_claim", id, Some(id), &claim);
+    f.s.commit(&mut c, tx).unwrap();
+}
+
+fn set_task(s: &Server, run: &str, task: &str) {
+    let mut c = s.core.lock().unwrap();
+    let mut r = c.run(run).cloned().unwrap();
+    r.task = Some(task.into());
+    let mut tx = Tx::new();
+    tx.run(r);
+    s.commit(&mut c, tx).unwrap();
+}
+
+#[test]
+fn a_tasks_claim_binds_the_runs_of_other_tasks_in_the_same_checkout() {
+    let f = fx("taskclaim");
+    let a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let b = add_run(&f, "rb", "pb", "claude", Execution::Working);
+    let c = add_run(&f, "rc", "pc", "claude", Execution::Working);
+    // ra and rc work for task-1 (which claimed src/**); rb is another task's (or nobody's) run.
+    set_task(&f.s, "ra", "task-1");
+    set_task(&f.s, "rc", "task-1");
+    put_task_claim(&f, "c-1", "task-1", "src/**");
+    let eff = effective_claims(&f.s, Some(&f.root));
+    assert_eq!(
+        eff.len(),
+        1,
+        "one claim per checkout, owned by every run of the task"
+    );
+    let mut owners: Vec<&str> = eff[0].owners().collect();
+    owners.sort_unstable();
+    assert_eq!(owners, ["ra", "rc"]);
+    // The task's own runs write inside it: nothing.
+    post(&f, &a, "Edit", "src/x.ts");
+    post(&f, &c, "Edit", "src/y.ts");
+    assert!(
+        open(&f.s).iter().all(|r| r.severity < vc::Severity::High),
+        "{:?}",
+        open(&f.s)
+    );
+    // Another task's run: high at once, naming the owner.
+    post(&f, &b, "Edit", "src/z.ts");
+    let high: Vec<vc::CollisionRec> = open(&f.s)
+        .into_iter()
+        .filter(|r| r.severity == vc::Severity::High)
+        .collect();
+    assert_eq!(high.len(), 1);
+    assert!(
+        matches!(&high[0].paths.iter().find(|p| p.path == "src/z.ts").unwrap().reason, vc::Reason::Claim { owner, claim, .. } if owner == "ra" && claim == "c-1")
+    );
+    // A claim whose task has no live run in this checkout binds nothing here.
+    put_task_claim(&f, "c-2", "task-9", "docs/**");
+    assert_eq!(effective_claims(&f.s, Some(&f.root)).len(), 1);
+}
+
+#[tokio::test]
+async fn task_claim_of_a_run_without_a_task_is_a_run_claim() {
+    let f = fx("claimhook");
+    let _a = add_run(&f, "ra", "pa", "claude", Execution::Working);
+    let _b = add_run(&f, "rb", "pb", "claude", Execution::Working);
+    // Merge orchestration is off, yet an untasked run can claim: the hook takes it first.
+    let r = ok(
+        &f.s,
+        &user(),
+        "task.claim",
+        json!({"run": "ra", "glob": "src/auth/**"}),
+    )
+    .await;
+    let id = r["claim"]["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("clm_"), "{r}");
+    assert_eq!(r["claim"]["kind"], "run");
+    assert_eq!(r["claim"]["task"], Value::Null);
+    // The pane token of ra may claim for itself, without naming a run.
+    let r2 = ok(
+        &f.s,
+        &pane_ctx("pa"),
+        "task.claim",
+        json!({"glob": "docs/**"}),
+    )
+    .await;
+    assert_eq!(r2["claim"]["run"], "ra");
+    // It is listed with the task claims and removable with `task.claim.remove`.
+    let l = ok(&f.s, &user(), "task.claim.list", json!({})).await;
+    let ids: Vec<&str> = l["claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&id.as_str()), "{l}");
+    // Another run's write inside it is a high collision.
+    let b = run_by_id(&f.s, "rb").unwrap();
+    post(&f, &b, "Edit", "src/auth/x.ts");
+    assert_eq!(open(&f.s)[0].severity, vc::Severity::High);
+    let rm = ok(&f.s, &user(), "task.claim.remove", json!({"claim": id})).await;
+    assert_eq!(rm["removed"], id);
+    assert!(
+        dispatch(
+            &f.s,
+            &user(),
+            "task.claim.remove",
+            &json!({"claim": "clm_nope"})
+        )
+        .await
+        .is_err()
+    );
+    // A claim for a named task is merge orchestration's: refused while it is off, not ours.
+    let t = dispatch(
+        &f.s,
+        &user(),
+        "task.claim",
+        &json!({"task": "k9", "glob": "x/**"}),
+    )
+    .await;
+    assert!(t.is_err());
+    // `collision.claims` shows run claims and the task claims that bind the checkout.
+    put_task_claim(&f, "c-7", "task-7", "web/**");
+    set_task(&f.s, "rb", "task-7");
+    let all = ok(&f.s, &user(), "collision.claims", json!({})).await;
+    let kinds: Vec<&str> = all["claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"run") && kinds.contains(&"task"), "{all}");
 }

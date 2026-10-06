@@ -27,6 +27,15 @@ pub mod layouts;
 pub mod limits;
 pub mod machines;
 pub mod notify;
+pub mod orch;
+pub mod orch_family;
+pub mod orch_goal;
+pub mod orch_learn;
+pub mod orch_merge;
+pub mod orch_quota;
+pub mod orch_shapes;
+pub mod orch_split;
+pub mod orch_vm;
 pub mod pane;
 pub mod pane_api;
 pub mod parity;
@@ -61,9 +70,13 @@ pub mod user_popup;
 // v1 server/API/CLI remainder: one module per item, hooked with one line each.
 pub mod audit_retention;
 pub mod pane_render;
+pub mod plugin_native;
 pub mod sync_input;
 pub mod tab_renumber;
 pub mod task_lifecycle;
+// Lane 3E: encryption at rest, index redaction, forget coverage (09 §9).
+pub mod forget_scope;
+pub mod privacy;
 
 #[cfg(test)]
 mod scope_catalog_tests;
@@ -189,6 +202,8 @@ pub struct Server {
     pub housekeeping_runs: AtomicU64,
     /// Audit log, token revocation and elevation, integration tamper state (09).
     pub security: security::State,
+    /// Encryption at rest and redaction settings (09 §9.1–9.2).
+    pub privacy: privacy::State,
     /// Degraded-mode bookkeeping, storage sweeps (02 §4a, 3D).
     pub hardening: hardening::State,
     /// Turn/Item stream recorder (02 §1.1, 3D).
@@ -250,7 +265,7 @@ impl Server {
         let (model_rev, _) = watch::channel(1);
         let (events, _) = broadcast::channel(4096);
         let (ui, _) = broadcast::channel(256);
-        Ok(Arc::new(Server {
+        let server = Arc::new(Server {
             archive: Mutex::new(Archive::new(&paths.scrollback())),
             paths,
             opts,
@@ -289,10 +304,14 @@ impl Server {
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
             security: Default::default(),
+            privacy: Default::default(),
             hardening: Default::default(),
             items: Default::default(),
             collision: Default::default(),
-        }))
+        });
+        // Unlock the state key before anything is archived (09 §9.1).
+        privacy::init(&server);
+        Ok(server)
     }
 
     pub fn with_core<T>(&self, f: impl FnOnce(&mut Core) -> T) -> T {
@@ -723,7 +742,16 @@ impl Server {
             self.opts.bin.to_string_lossy().into_owned(),
         );
         set(&mut env, "VIBEKE_PANE_TOKEN", self.token_for(pane_id));
+        // Vibeke-only enforcement fails closed in the pre-tool hook of a yolo run (04 §2.7).
+        if vk_config::Config::load(vk_config::config_path())
+            .map(|(c, _)| c.agents.fail_closed)
+            .unwrap_or(true)
+        {
+            set(&mut env, "VIBEKE_ENFORCE", "1".into());
+        }
         theme::pane_env(self, &mut env);
+        // `HERDR_*` aliases when `compat.herdr_env` and the compat listener are on (07 §8.2).
+        compat::extend_pane_env(self, &mut env, handle, tab_handle, ws_handle);
         // Leased ports of an owned task workspace (`PORT`, `[ports] env` names).
         for (k, v) in task_env {
             set(&mut env, k, v.clone());
@@ -1586,6 +1614,7 @@ impl Server {
         }
         if !rows.is_empty() {
             let c = self.core.lock().unwrap();
+            let rows = crate::privacy::index_rows(self, rows);
             let _ = c.store.fts_insert(&rows);
             // Remember each archived pane's workspace for scoped archive search (09 §5.1).
             let mut seen: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();

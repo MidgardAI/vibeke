@@ -29,8 +29,10 @@ pub const PANE_FORBIDDEN: &[&str] = &["blob.stats", "blob.gc"];
 /// this are never collected.
 pub const DEFAULT_GC_DAYS: i64 = 30;
 
+/// The session store; blobs written through it are sealed while `security.encrypt_state` is
+/// active (09 §9.1, `privacy::cipher`).
 pub fn store(server: &Server) -> BlobStore {
-    BlobStore::new(server.paths.blobs())
+    BlobStore::new(server.paths.blobs()).with_cipher(crate::privacy::cipher(server))
 }
 
 fn ext_of(name: &str) -> String {

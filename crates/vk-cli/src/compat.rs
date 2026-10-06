@@ -254,6 +254,31 @@ fn local(g: &Global, op: Local) -> i32 {
             .and_then(|r| r.get(id).ok().cloned())
     };
     match op {
+        Local::PluginUpdate { id, yes } => {
+            // Update = reinstall from the recorded repository and requested ref. A new commit
+            // or manifest leaves the plugin inactive until it is reviewed again.
+            let e = match reg.get(&id) {
+                Ok(e) => e.clone(),
+                Err(e) => return reg_fail(e),
+            };
+            let Some(repo) = e.origin.repo.clone() else {
+                return fail(
+                    "invalid_params",
+                    format!(
+                        "{id} was not installed from a repository; there is nothing to re-fetch"
+                    ),
+                    EXIT_API,
+                );
+            };
+            local(
+                g,
+                Local::PluginInstall {
+                    source: repo,
+                    git_ref: e.origin.requested_ref.clone(),
+                    yes,
+                },
+            )
+        }
         Local::PluginList => {
             let list: Vec<Value> = reg.plugins.values().map(|e| entry_json(&dirs, e)).collect();
             print(g, &json!({"plugins": list}), || {
@@ -824,6 +849,8 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
                 | "untrust"
                 | "revoke"
                 | "migrate"
+                | "consent"
+                | "import"
         )
     {
         notify_registry(g).await;
@@ -838,7 +865,31 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
     code
 }
 
+/// A fetched repository turned out to hold a Herdr manifest: install it the Herdr way.
+pub fn install_herdr_fallback(
+    g: &Global,
+    src: &str,
+    git_ref: Option<&str>,
+    args: &[String],
+) -> i32 {
+    if flag(args, "--dry-run") {
+        return install_dry_run(g, src, git_ref);
+    }
+    local(
+        g,
+        Local::PluginInstall {
+            source: src.to_string(),
+            git_ref: git_ref.map(str::to_string),
+            yes: flag(args, "--yes") || flag(args, "-y"),
+        },
+    )
+}
+
 async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
+    // Native plugins (vibeke-plugin.toml) first; Herdr verbs fall through.
+    if let Some(code) = crate::plugin_native::cmd(g, args).await {
+        return code;
+    }
     let verb = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let one = |what: &str| -> Result<String, i32> {
@@ -849,7 +900,7 @@ async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
     };
     match verb {
         "" | "help" | "--help" | "-h" => {
-            println!("{PLUGIN_HELP}");
+            println!("{PLUGIN_HELP}\n\n{}", crate::plugin_native::HELP);
             if verb.is_empty() { EXIT_USAGE } else { EXIT_OK }
         }
         "list" | "ls" => local(g, Local::PluginList),
@@ -1015,9 +1066,11 @@ fn request_line(sock: &Path, id: &str, method: &str, params: Value) -> String {
     req.to_string() + "\n"
 }
 
-/// Server lifecycle methods are never forwarded by the shim (to Vibeke or anything else).
+/// Server lifecycle methods are never forwarded by the shim (to Vibeke or anything else), except
+/// `server.stop`, which only ever reaches Vibeke's own session and is refused by the server
+/// unless `[compat.herdr] allow_server_stop` is set (and always from a plugin or a pane).
 fn lifecycle(method: &str) -> bool {
-    method.starts_with("server.") && method != "server.reload_config"
+    method.starts_with("server.") && !matches!(method, "server.reload_config" | "server.stop")
 }
 
 /// A single-use ticket from our own broker that proves this invocation to another session.
@@ -1050,8 +1103,8 @@ async fn invocation_ticket(broker: &Path) -> Result<String, String> {
 
 /// A session's public compat listener (Herdr layout under `$RUNTIME/herdr-compat`), if running.
 fn listener(session: &str) -> Option<PathBuf> {
-    let root = vk_server::paths::runtime_root().join("herdr-compat");
-    let p = herdr::session_socket(&root, session);
+    // Honors `compat.herdr_socket_path`.
+    let p = vk_server::compat::listener_for(session);
     p.exists().then_some(p)
 }
 
@@ -1179,6 +1232,20 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             format!("herdr {command}: {reason}"),
             EXIT_API,
         ),
+        Parsed::Native { method, params } => {
+            if in_plugin() {
+                return fail(
+                    "permission_denied",
+                    "native Vibeke methods are not available to a plugin invocation through the shim",
+                    EXIT_PERMISSION,
+                );
+            }
+            let g = Global {
+                json: Some(true),
+                ..g.clone()
+            };
+            api_call(&g, &method, params).await
+        }
         Parsed::Local(op) => {
             // The Herdr CLI prints JSON; so does the shim. The registry is per user, shared by
             // every session, so session selection does not change it.
@@ -1187,6 +1254,7 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
                 ..g.clone()
             };
             let mutating = !matches!(op, Local::PluginList | Local::PluginConfigDir { .. });
+            // The shim in a plugin invocation can never accept trust on the user's behalf.
             let code = local(&g, op);
             if mutating && code == EXIT_OK {
                 notify_registry(&g).await;

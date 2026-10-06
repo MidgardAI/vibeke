@@ -7,13 +7,13 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | Area | Implemented | Partial | Missing | Total |
 |---|---|---|---|---|
 | Socket wire protocol and endpoints | 12 | 5 | 0 | 17 |
-| Socket methods | 28 | 45 | 1 | 74 |
-| Events (subscriptions and `[[events]]` hooks) | 15 | 9 | 1 | 25 |
-| CLI commands | 7 | 20 | 4 | 31 |
+| Socket methods | 28 | 47 | 0 | 75 |
+| Events (subscriptions and `[[events]]` hooks) | 15 | 10 | 0 | 25 |
+| CLI commands | 7 | 25 | 1 | 33 |
 | Plugin manifest fields | 9 | 5 | 0 | 14 |
-| Plugin invocation environment | 9 | 5 | 1 | 15 |
+| Plugin invocation environment | 9 | 6 | 0 | 15 |
 | Plugin lifecycle, registry and trust | 14 | 6 | 1 | 21 |
-| **All** | **94** | **95** | **8** | **197** |
+| **All** | **94** | **104** | **2** | **200** |
 
 ## Socket wire protocol and endpoints
 
@@ -27,7 +27,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `events.subscribe` streams `{event, data}` lines | partial | spec | projected subset of events; loss/reconnect behavior not reproduced |
 | invalid UTF-8 / invalid JSON handling | partial | spec | `parse_error`; exact baseline codes unverified |
 | line limit | partial | spec | 16 MiB; baseline limit unverified |
-| socket path `<herdr_root>/herdr.sock` | implemented | spec | `<herdr_root>` = `$RUNTIME/herdr-compat` (shared by sessions): default session `herdr.sock`, named sessions `sessions/<name>/herdr.sock`; never under ~/.config/herdr; `compat.herdr_socket_path` not built |
+| socket path `<herdr_root>/herdr.sock` | implemented | spec | `<herdr_root>` = `$RUNTIME/herdr-compat` (shared by sessions): default session `herdr.sock`, named sessions `sessions/<name>/herdr.sock`; never under ~/.config/herdr unless `compat.herdr_socket_path` names it (then named sessions sit next to it); a live socket at the path is never replaced |
 | socket removed on clean stop | implemented | spec | on SIGTERM/SIGINT and `server.stop`; a stale socket after a crash is replaced at the next start |
 | caller identity from peer credentials (pane scope) | implemented | spec | same ancestry rule as the native socket |
 | private broker endpoint per plugin invocation | implemented | spec | 0600 socket in a 0700 dir, bound server-side to plugin id, grant digest and grant id |
@@ -75,6 +75,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `agent.prompt` | partial | spec | text + Enter (native `agent.prompt`), `wait`, `timeout_ms` |
 | `agent.wait` | partial | spec | `status`/`until` in Herdr statuses mapped to Vibeke wait conditions; `timeout` |
 | `agent.rename` | partial | spec | result `agent_info` unverified |
+| `agent.explain` | partial | corpus | `agent explain`: result `agent_explain` {agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source}; Vibeke's own shape, baseline unverified |
 | `worktree.list` | partial | spec | native shape under `worktree_list` |
 | `worktree.repo_root` | partial | spec |  |
 | `worktree.create` | partial | spec | `git worktree add` under `[tasks] root`, opens a workspace (`open` defaults to true); no `path` param; emits `worktree.created` |
@@ -110,7 +111,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `ping` | partial | spec | reports the emulated baseline |
 | `api.schema` | partial | spec | lists inventory methods, not the baseline JSON schema |
 | `server.reload_config` | partial | corpus | acknowledged; Vibeke reloads config itself |
-| `server.stop` | missing | corpus | refused on the compat endpoint |
+| `server.stop` | partial | corpus | stops this Vibeke session when `[compat.herdr] allow_server_stop = true` (default off: `unsupported`); never from a plugin, a sandboxed invocation or a pane; never reaches a Herdr server |
 | `workspace.close` | partial | corpus | inferred from CLI usage |
 | `workspace.get` | partial | corpus | inferred |
 | `notification.show` | partial | corpus | `herdr notification show`; maps to a Vibeke notification |
@@ -136,7 +137,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `pane.focused` | implemented | spec |  |
 | `pane.moved` | implemented | spec | from `pane.move`/`pane.swap`; `from_tab_id`/`to_tab_id` payload unverified |
 | `pane.exited` | implemented | spec |  |
-| `pane.agent_detected` | partial | spec | no 250 ms debounce |
+| `pane.agent_detected` | partial | spec | 250 ms debounce per pane; payload shape unverified |
 | `pane.agent_status_changed` | partial | spec | fires on mapped-status change only; status enumeration unverified |
 | `pane.output_matched` | partial | spec | fires when a compat `pane.wait_for_output` matcher matches |
 | `pane.scroll_changed` | partial | spec | from the TUI's copy-mode viewport (`ClientFrame::ScrollView`, coalesced to 150 ms); `scroll` = rows above the live screen, also in `pane.list`; payload shape unverified |
@@ -144,7 +145,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `worktree.created` | implemented | spec | from `worktree.create` and `task.create` worktree checkouts; used by 8 corpus plugins |
 | `worktree.opened` | implemented | spec | from `worktree.open`; used by 5 corpus plugins |
 | `worktree.removed` | partial | spec | payload `worktree {path}` |
-| `workspace.reordered` | missing | corpus | declared by one plugin; not named by the spec (may not exist in the baseline) |
+| `workspace.reordered` | partial | corpus | declared by one plugin, not named by the spec; emitted after every `workspace.move` (the only reordering Vibeke has); payload unverified |
 
 ## CLI commands
 
@@ -164,7 +165,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | plugin action list / invoke | partial | corpus | argument grammar unverified |
 | plugin log list | partial | corpus |  |
 | plugin pane open|focus|close | partial | corpus | `--plugin --entrypoint --placement --direction --cwd --focus`; all placements |
-| plugin update | missing | corpus |  |
+| plugin update | partial | corpus | re-fetches the recorded repository and ref (`upgrade` alias); a new commit or manifest leaves the plugin inactive until reviewed again; a link or local install is refused |
 | pane list|get|current|read | partial | corpus | flag grammar unverified |
 | pane send-text|send-keys|run|focus|split|close|rename|wait-output | partial | corpus |  |
 | pane report-metadata|process-info|move | partial | corpus | flag grammar unverified |
@@ -172,15 +173,17 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | workspace report-metadata | partial | corpus | flag grammar unverified |
 | tab list|create|rename|focus|move|close | partial | corpus |  |
 | agent list|get|send|read | partial | corpus |  |
-| agent start|prompt|wait|explain | partial | corpus | `explain` missing |
+| agent start|prompt|wait|explain | partial | corpus | `explain` maps to `agent.explain`; flag grammar unverified |
 | worktree list|repo-root | partial | corpus |  |
 | worktree create|open | partial | corpus | flag grammar unverified |
 | notification show | partial | corpus |  |
 | server reload-config | partial | corpus |  |
-| server stop | missing | corpus | refused |
+| server stop | partial | corpus | forwarded as `server.stop` (see there); a plugin invocation is refused by the shim |
 | api schema | partial | corpus |  |
-| integration install|status | missing | corpus | refused by design: never installs into Herdr; use `vibeke integration` |
-| config check, completion, update/upgrade, web ui | missing | corpus | refused; Vibeke equivalents exist for some |
+| integration install|status | partial | corpus | served by the vibeke binary on Vibeke's own harness integrations (`status`, `doctor`, `list`; `install`/`uninstall` only with `--yes` or `--dry-run`); never touches Herdr's hooks; an unconfirmed install is refused |
+| config check | partial | corpus | validates Vibeke's config (`config.validate`, optional path); output shape unverified |
+| completion | partial | corpus | bash, zsh and fish scripts generated from the shim grammar |
+| update/upgrade, web ui | missing | corpus | refused: Vibeke has `vibeke update` and the gateway; the shim never upgrades or serves on Herdr's behalf |
 
 ## Plugin manifest fields
 
@@ -218,7 +221,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | HERDR_PLUGIN_CLICKED_URL, HERDR_PLUGIN_LINK_HANDLER_ID | implemented | spec | set for link-handler invocations (`plugin.link.open`), also `clicked_url`/`link_handler_id` in the context JSON |
 | stale context variables cleared | implemented | spec |  |
 | build steps without socket/context/authority | implemented | spec |  |
-| HERDR_* in ordinary panes (`compat.herdr_env`) | missing | spec | still stripped |
+| HERDR_* in ordinary panes (`compat.herdr_env`) | partial | spec | with `compat.herdr_env` and the compat listener enabled every pane gets HERDR_ENV, HERDR_SOCKET_PATH (the listener), HERDR_PANE_ID, HERDR_WORKSPACE_ID, HERDR_TAB_ID and HERDR_BIN_PATH (the private launcher); inherited HERDR_* are still stripped first; off while the listener is off |
 | HERDR_SESSION | partial | corpus | selects the session in the shim; semantics otherwise unverified |
 
 ## Plugin lifecycle, registry and trust

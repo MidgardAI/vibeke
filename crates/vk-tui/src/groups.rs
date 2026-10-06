@@ -389,6 +389,14 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
     let Some((mi, gid)) = group else {
         return false;
     };
+    // Native plugin sidebar rows (crate::plugin_ui).
+    if crate::plugin_ui::is_plugin_row(&gid) {
+        if matches!(ev.key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+            crate::plugin_ui::activate(app, mi, &gid);
+        }
+        stay(app);
+        return true;
+    }
     match ev.key {
         Key::Named(NamedKey::Enter) | Key::Char(' ') => collapse(app, mi, &gid, None),
         Key::Char('l') | Key::Named(NamedKey::Right) => collapse(app, mi, &gid, Some(false)),
@@ -528,6 +536,10 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
     match me.kind {
         MouseEventKind::Down(CtButton::Left) => {
             if let Some((mi, gid)) = row.and_then(|r| r.group.clone()) {
+                if crate::plugin_ui::is_plugin_row(&gid) {
+                    crate::plugin_ui::activate(app, mi, &gid);
+                    return true;
+                }
                 // A click (release on the same row) toggles; a drag reorders.
                 app.parity.groups.group_drag = Some((mi, gid, y));
                 app.parity.groups.group_over = None;

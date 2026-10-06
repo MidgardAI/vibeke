@@ -127,6 +127,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `resume` | `<run>` | `agent.resume` | [--pane p] |
 | `resumable` | - | `agent.resumable` | ended runs that can be resumed |
 | `harnesses` | - | `agent.harnesses` |  |
+| `turn-usage` | `<run>` | `agent.turn_usage` | <run> [--limit 200] — per-turn tokens and cost from the transcript |
+| `limits` | - | `agent.limits` | latest rate-limit observation per harness |
+| `drift` | - | `agent.drift` | disagreement/answer-failure counters per harness version |
 
 ## `vibeke interaction`
 
@@ -171,6 +174,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 |---|---|---|---|
 | `new` | `<title>` | `task.create` | [--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree\|jj_workspace\|none\|auto] [--yolo] [--isolate host\|sandbox\|container] [--confirm-host-yolo] [--network none\|harness-apis\|package-registries\|dev\|open] [--image ref] [--code clone\|worktree] [--devcontainer] [--build] |
 | `list` | - | `task.list` |  |
+| `compare` | `<family>` | `task.compare` | <family> [--pair k7.1 --pair k7.2]: side-by-side diff stats, checks and ranking of a best-of-N family (orchestrate.best_of_n) |
+| `pick` | `<family>` `<child>` | `task.pick` | <family> <child> [--merge] [--discard] [--force] [--target branch]: pick the winner of a best-of-N family |
+| `split` | - | `task.split` | [--run a12 \| --pane p] [--paths a,b] [--title t] [--dry-run] [--resume]: move a running agent's uncommitted changes into a new task (orchestrate.split) |
 | `park` | `<task>` | `task.park` | <task> stop its agents gracefully, keep the worktree |
 | `resume` | `<task>` | `task.resume` | <task> restart the parked agents from their sessions |
 | `sync` | `<task>` | `task.sync` | <task> [--direction pull\|push\|both] [--force]: host-side fetch of a container task's commits (push = host commits into the box) |
@@ -212,6 +218,91 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `forget` | `<task>` | `task.forget` | <task> [--force] drop a missing (or finished) task's record; touches no files |
 | `ports` | `<task>` | `task.ports` | <task> [--re-lease] the leased port block and its env; --re-lease moves to another block |
 
+## `vibeke family`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `list` | - | `family.list` |  |
+| `get` | `<family>` | `family.get` |  |
+| `check` | `<family>` | `family.check` | <family> [--child k7.1]: run the family's check command in each child |
+
+## `vibeke claim`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `add` | `<glob>` | `task.claim` | <glob> --task k7 \| --run a12 [--note text]: claim files for a task (advisory; orchestrate.merge); a run with no task gets a run claim for the collision tracker |
+| `list` | - | `task.claim.list` | [--task k7] |
+| `remove` | `<claim>` | `task.claim.remove` |  |
+
+## `vibeke merge`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `predict` | - | `merge.predict` | [--repo path] [--tasks k1,k2]: predicted conflicts between live worktrees |
+| `add` | `<task>` | `merge.queue.add` | <task> [--target main] [--priority n] [--run] [--allow-dirty]: queue a task branch |
+| `list` | - | `merge.queue.list` | [--all] |
+| `cancel` | `<entry>` | `merge.queue.cancel` |  |
+| `requeue` | `<entry>` | `merge.queue.requeue` |  |
+| `run` | - | `merge.queue.run` | [--entry id] [--count n \| --all]: merge the next queue entries |
+
+## `vibeke goal`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `create` | `<title>` | `goal.create` | <title> [--text t \| --text-file f] [--repo .] [--no-plan] |
+| `list` | - | `goal.list` |  |
+| `get` | `<goal>` | `goal.get` |  |
+| `plan` | `<goal>` | `goal.plan` | <goal> [--backend heuristic\|agent\|external] |
+| `plan-submit` | `<goal>` | `goal.plan_submit` | <goal> --file plan.json \| --plan '<json>' |
+| `approve` | `<goal>` | `goal.approve` | <goal> [--no-start]: approve the plan and start its ready steps |
+| `start` | `<goal>` | `goal.start` |  |
+| `step-done` | `<goal>` `<step>` | `goal.step_done` | <goal> <step> [--no-ok] [--error text] |
+| `cancel` | `<goal>` | `goal.cancel` | <goal> [--stop-tasks] |
+| `briefing` | - | `goal.briefing` | [--since 12h\|epoch-ms]: what happened while you were away |
+
+## `vibeke quota`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `quota.status` |  |
+| `tick` | - | `quota.tick` | [--dry-run] |
+| `route` | - | `quota.route` | [--harnesses claude,codex] |
+| `resume` | `<key>` | `quota.resume` | <task-or-run> resume work the scheduler paused |
+
+## `vibeke vm`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `vm.status` |  |
+| `list` | - | `vm.list` |  |
+| `create` | - | `vm.create` | [--name n] [--task t] [--checkout dir] [--no-template] |
+| `start` | `<vm>` | `vm.start` |  |
+| `stop` | `<vm>` | `vm.stop` |  |
+| `suspend` | `<vm>` | `vm.suspend` |  |
+| `resume` | `<vm>` | `vm.resume` |  |
+| `destroy` | `<vm>` | `vm.destroy` |  |
+| `snapshot` | `<vm>` | `vm.snapshot` | <vm> [--label l] |
+| `snapshot-delete` | `<snapshot>` | `vm.snapshot.delete` | <vm/label> [--force] |
+| `fork` | `<snapshot>` | `vm.fork` | <vm/label> [--count n] [--prefix p] |
+| `transport` | `<vm>` | `vm.transport` |  |
+| `template-list` | - | `vm.template.list` |  |
+| `template-build` | - | `vm.template.build` |  |
+| `template-delete` | `<key>` | `vm.template.delete` |  |
+
+## `vibeke policy`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `learned` | - | `policy.learned.list` | [--repo path]: rule suggestions learned from repeated approvals (orchestrate.learned_policy) |
+| `learned-accept` | `<id>` | `policy.learned.accept` | <id> [--target user\|repo] |
+| `learned-dismiss` | `<id>` | `policy.learned.dismiss` |  |
+| `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
+| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
+| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
+| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
+| `suggest` | - | `policy.suggest` | [--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml |
+| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
+
 ## `vibeke sandbox`
 
 | Verb | Positionals | Method | Description |
@@ -232,28 +323,13 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `request` | `<kind>` | `sandbox.request` | push\|copy_out [--path p] [--remote r]: from inside a box, ask the host for a boundary action |
 | `setup-token` | - | `sandbox.setup_token` | store `claude setup-token` output read from stdin (projected as CLAUDE_CODE_OAUTH_TOKEN) |
 
-## `vibeke policy`
-
-| Verb | Positionals | Method | Description |
-|---|---|---|---|
-| `trust` | `<path>` | `policy.trust` | Trust repository automation at its current digest. Print the setup script. |
-| `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
-| `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
-| `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
-| `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
-
-## `vibeke claim`
-
-| Verb | Positionals | Method | Description |
-|---|---|---|---|
-| `add` | `<glob>` | `task.claim` | <glob> [--run r\|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; other runs writing there raise a high collision) |
-| `list` | - | `task.claims` | [--task t\|--run r\|--root dir] |
-| `rm` | `<claim>` | `task.claim_release` | <claim> \| --run r [--glob g]: release a claim |
-
 ## `vibeke collision`
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
+| `claim` | `<glob>` | `collision.claim` | <glob> [--run r\|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; another run writing there raises a high collision) |
+| `claims` | - | `collision.claims` | [--task t\|--run r\|--root dir]: run claims and the task claims that bind each checkout |
+| `unclaim` | `<claim>` | `collision.claim_release` | <claim> \| --run r [--glob g]: release a run claim |
 | `list` | - | `collision.list` | [--task t] [--run r] [--status open\|cleared\|ignored\|all]: shared-checkout collisions (advisory) |
 | `get` | `<collision>` | `collision.get` | <collision>: paths, runs, timeline and how each run can be told |
 | `status` | - | `collision.status` | tracker config, the checkouts followed, claims |
@@ -482,4 +558,11 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `tail` | - | `audit.tail` | [--limit 50] [--types policy.*,auth.*] |
 | `search` | `<query>` | `audit.search` | <text> [--types t] [--since-ms ms] [--limit 200] |
 | `verify` | - | `audit.verify` | recompute the audit log's hash chain (also part of `vibeke doctor`) |
+
+## `vibeke security`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `security.encryption.status` | state encryption (security.encrypt_state): key, keychain, sealed/plain file counts |
+| `migrate` | `<to>` | `security.encryption.migrate` | sealed\|plain [--dry-run] — rewrite existing scrollback segments and blobs |
 

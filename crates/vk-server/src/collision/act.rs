@@ -313,7 +313,7 @@ fn claim_denial(server: &Arc<Server>, run: &AgentRun, p: &Value) -> Option<Value
     }
     super::ensure_loaded(server);
     let root = root_of(server, run)?;
-    let claims: Vec<vc::Claim> = server.collision.inner.lock().unwrap().claims.clone();
+    let claims = super::effective_claims(server, Some(&root));
     for (path, _) in edits {
         let Some(rel) = vc::relativize(Path::new(&root), &path) else {
             continue;

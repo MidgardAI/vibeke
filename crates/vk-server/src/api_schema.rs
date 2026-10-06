@@ -51,9 +51,12 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("sync_input", sync_input::METHODS),
         ("tab_renumber", tab_renumber::METHODS),
         ("task_lifecycle", task_lifecycle::METHODS),
+        ("plugin_native", plugin_native::METHODS),
+        ("orch", orch::METHODS),
         ("review::pr", review::pr::METHODS),
         ("review::interval", review::interval::METHODS),
         ("collision", collision::METHODS),
+        ("privacy", privacy::METHODS),
     ]
 }
 
@@ -174,8 +177,10 @@ fn build() -> Result<Registry, Vec<String>> {
         &[
             EVENT_SHAPES,
             BATCH_3D_EVENT_SHAPES,
+            BATCH_3B_EVENT_SHAPES,
             BATCH_3F_EVENT_SHAPES,
             BATCH_3A_EVENT_SHAPES,
+            crate::orch_shapes::EVENTS,
         ],
         "event",
         &mut errs,
@@ -486,10 +491,27 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_2A_SHAPES,
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
+    crate::orch_shapes::SHAPES,
+    ADAPTER_POLISH_SHAPES,
+    PRIVACY_SHAPES,
     BATCH_3D_SHAPES,
+    BATCH_3B_SHAPES,
     BATCH_3F_SHAPES,
     BATCH_3A_SHAPES,
 ];
+
+/// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.
+pub const PRIVACY_SHAPES: &str = r##"
+# vibeke forget: scrollback.forget's scope, plan and counts, then everything else stored for the scope (full scope only)
+state.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string, scrollback_only?: bool = false}
+  => {scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, collisions?: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}
+# security.encrypt_state (09 §9.1): what is sealed, with which key, and how many files are in each mode (full scope only)
+security.encryption.status :: {}
+  => {encrypt_state: bool, active: bool, key_id: string|null, keychain: string|null, readable: bool, error: string|null, files: {sealed: int, plain: int}, covers: [string], not_covered: [string], redact_scrollback_index: bool, note: string}
+# rewrite existing scrollback segments and session blobs sealed or plain (full scope only)
+security.encryption.migrate :: {to?: sealed|plain|encrypted|decrypted = sealed, dry_run?: bool = false}
+  => {to: sealed|plain, dry_run: bool, files: int, changed: int, unchanged: int, failed: [string]}
+"##;
 
 const CORE_SHAPES: &str = r##"
 # --- client.*, api.*, server.*, status, theme ---
@@ -626,9 +648,9 @@ notification.send :: {title: string, body?: string, urgency?: string = normal, s
 notification.config :: {} => {channels: [string], rules: any, native?: object, hosts?: any}
 blob.put :: {mime: string, data_b64?: string, path?: string} => {hash: string, size: int}
 image.upload :: {pane: Target, mime: string, data_b64?: string, path_on_client?: string} => {path_on_machine: string, blob?: string}
-search.query :: {q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false} => {hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}
+search.query :: {q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false} => {hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}], redacted?: bool}
 scrollback.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}
-  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}
+  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, review?: ReviewPurge}
 
 # --- fs, git ---
 fs.list :: {pane?: Target, path?: string = ''} => {path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}
@@ -738,7 +760,7 @@ browser.pane.console :: {pane?: Target, toggle?: bool = true, focus?: bool = fal
 browser.pane.console_push :: {pane: Target, entries: [object]} => {pane: string, stored: int}
 
 # --- plugins ---
-plugin.list :: {} => {plugins: [{id: string, version?: string, enabled: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}
+plugin.list :: {} => {plugins: [{id?: string, plugin_id?: string, version?: string|null, enabled: bool, native?: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}
 "##;
 
 /// Methods outside spec 07 §2's tables (tasks' review/check/dependency surface, adapters,
@@ -841,7 +863,7 @@ compat.herdr.call :: {method: string, params?: object, as_plugin?: {session: str
 # not available from a pane
 compat.invocation.verify :: {ticket: string} => {plugin_id: string, digest: string, grant_id: string, log_id: string, session: string, sandboxed: bool}
 compat.status :: {} => {baseline: {herdr: string, commit: string}, support: string, listener: {enabled: bool, path: string, live: bool}, inventory: {implemented: int, partial: int, missing: int}, brokers: int, herdr_root: string, registry: string}
-compat.ui.state :: {} => {window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}
+compat.ui.state :: {} => {window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, contributions?: [object], agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}
 plugin.action.list :: {plugin?: string} => {actions: [{plugin_id: string, action_id: string, qualified_id: string, title: string, description?: string, contexts: any, available: bool, status: string}], keybindings: [{plugin_id: string, key: string, action: string, description?: string, installed: bool, reason?: string, conflicts_with?: any}]}
 # source only honoured as palette|keybinding, otherwise cli; context ids (pane_id/pane, tab_id/tab, workspace_id/workspace) may be given at top level or under context
 plugin.action.run :: {plugin: string, action: string, source?: palette|keybinding, context?: {pane_id?: Target, pane?: Target, tab_id?: Target, tab?: Target, workspace_id?: Target, workspace?: Target}, pane_id?: Target, tab_id?: Target, workspace_id?: Target}
@@ -965,6 +987,26 @@ task.ports.re_lease :: {task: Target}
   => {task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object, old_lease: {start: int, end: int}|null, note: string}
 "##;
 
+/// Adapter polish (04 §7.7, §10, §12.3, §13; `crate::agents::polish`).
+const ADAPTER_POLISH_SHAPES: &str = r##"
+# --- 2F adapter polish ---
+# fingerprints approved at least min_count times with at most max_denials denials, as ready-to-paste
+# rules (04 §7.7); `rule` is null (and `blocked` says why) for risky or compound commands
+policy.suggest :: {min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}
+  => {suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}
+# compact per-turn records written by the transcript tailer (04 §10); cost_source: harness|price_table|subscription|none
+agent.turn_usage :: {run?: Target, target?: Target, limit?: int = 200}
+  => {run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}
+# the "limits" status segment's data: the latest rate-limit observation per harness
+agent.limits :: {} => {limits: [{harness: string, scope: string|null, limited: bool, used_percent: number|null, resets_at_ms: int|null, message: string|null, observed_at_ms: int}]}
+# drift telemetry (04 §12.3), local only
+agent.drift :: {} => {versions: [{harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number, drifting: bool}]}
+# poll the signed manifest channel now (04 §13); refused unless the index verifies
+agent.manifests_check :: {url?: string} => {serial: int, applied: [string], skipped?: [string], unsigned?: bool, warnings?: [string], announced?: int, unchanged?: bool, index_serial?: int}
+# freeze a cached remote manifest at its version, or release the pin
+agent.manifest_pin :: {id: string, version?: string, unpin?: bool = false} => {id: string, version?: string, pinned_at_ms?: int, unpinned?: bool}
+"##;
+
 /// Server security (09, `crate::security`): policy, auth, audit, integration integrity.
 const SECURITY_SHAPES: &str = r##"
 # --- policy.* (07 §2.9, 09 §4); full scope only ---
@@ -1052,12 +1094,12 @@ pane.scroll_changed :: {pane: string, tab?: string, workspace?: string} => {offs
 pane.output_matched :: {pane: string, tab?: string, workspace?: string} => {matched: any, revision: any}
 pane.isolation_changed :: {pane: string} => {level: string, scope: string, network: string}
 pane.input_unconfirmed :: {pane: string, run?: string} => {input_id: string, reason?: string, preview_chars?: int}
-adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string}
-adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string}
+adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string, reason?: string}
+adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string, source?: string}
 agent.detected :: {run: string, pane: string} => {harness: string, via: string, argv0?: string|null}
 agent.started :: {run: string, pane: string} => {harness: string, via?: string}
 agent.identified :: {run: string, pane: string} => {harness_session_id?: any, transcript_path?: any}
-agent.state_changed :: {run: string, pane: string} => {facet: string, from?: string, to: string, source?: string, confidence?: number}
+agent.state_changed :: {run: string, pane: string} => {facet: string, from?: string, to: string, source?: string, confidence?: number, inferred?: bool}
 agent.named :: {run: string} => {name: string|null}
 agent.turn_started :: {run: string, pane: string} => any
 agent.turn_completed :: {run: string, pane: string} => {stop_reason?: any, usage?: any}
@@ -1067,6 +1109,11 @@ agent.rate_limited :: {run: string, pane: string} => {resets_at_ms: int|null, me
 agent.resume_handle :: {run: string} => {argv: [string]}
 agent.session_ended :: {run: string, pane: string} => {reason: string}
 agent.harness_version_unvalidated :: {run: string, pane: string} => {harness: string, version: any}
+agent.turn_usage :: {run: string, pane: string} => {turn: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, source: string}
+agent.cwd_changed :: {run: string, pane: string} => {cwd: string, old_cwd: string|null}
+agent.tool_blocked :: {run: string, pane: string} => {tool: string, effect: string, rule: string|null, command: string|null}
+agent.drift_detected :: {run: string, pane: string} => {harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number}
+harness.manifest_loaded :: {manifest: string} => {id: string, version: string, source: string, serial: int, verified: string}
 agent.exited :: {run: string, pane: string} => {reason: string, harness: string}
 interaction.opened :: {interaction?: string, pane?: string, run?: string} => any
 interaction.updated :: {interaction: string, pane: string} => {gate?: bool, reason?: string}
@@ -1139,6 +1186,9 @@ draft.sending :: {draft?: string} => {send: string, run: string, include_notes: 
 draft.delivery_unknown :: {draft?: string} => any
 desk.forgotten :: {scope: any} => {rows: int, sessions: int}
 scrollback.forgotten :: {scope: any} => {panes: int, segments: int, bytes: int, fts_rows: int, panes_dropped: int}
+state.forgotten :: {scope: any} => {counts: object}
+security.encryption_migrated :: {} => {to: sealed|plain, files: int, failed: int}
+tombstone :: {} => {}
 layout.applied :: {workspace: string} => {name: string|null, tabs: int, panes: int, new_workspace: any}
 attention.preference_changed :: {key: {kind: string, id: string}} => {seen: bool, snoozed_until_ms: int|null, pinned: bool}
 assistant.consent_granted :: {workspace?: string} => any
@@ -1249,6 +1299,55 @@ agent.subagent_started :: {run: string, pane: string} => {agent_id: string|null,
 agent.subagent_finished :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
 "##;
 
+/// Native plugin runtime (07 §7.1–7.6, lane 3B; `crate::plugin_native`).
+const BATCH_3B_SHAPES: &str = r##"
+# --- registry over the API (full scope only; 07 §2.16) ---
+# native: refused with permission_denied capabilities_not_accepted (details.requested_capabilities) until accept_capabilities covers every requested item; Herdr manifests need trust herdr_legacy
+plugin.install :: {source: string, ref?: string, accept_capabilities?: [string], trust?: scoped|herdr_legacy = scoped}
+  => {plugin: string, kind: native|herdr, requested_capabilities: [object], entrypoints?: [string], status: string}
+plugin.link :: {path: string} => {plugin: string, kind: native|herdr, requested_capabilities?: [object]}
+plugin.enable :: {plugin: string} => {plugin: string, enabled: bool}
+plugin.disable :: {plugin: string} => {plugin: string, enabled: bool}
+plugin.remove :: {plugin: string, purge_data?: bool = false} => {plugin: string, removed: bool, kind: native|herdr}
+# re-consent after a widening update; runs [[build]] when the managed checkout needs it
+plugin.consent :: {plugin: string, accept_capabilities: [string]} => {plugin: string, consent_id: string, capabilities: object}
+plugin.restart :: {plugin: string} => {plugin: string, restarted: bool}
+# waits for the action (07 §7.2): last 4 KiB of stdout; an action without a command is sent to the process
+plugin.action :: {plugin?: string, action: string, context?: {workspace?: Target, pane?: Target, tab?: Target}, source?: string}
+  => {exit_code: int|null, stdout_tail: string|null, status: string, log: object}
+# --- plugin-only (a plugin token) ---
+plugin.kv.get :: {key: string} => {key: string, found: bool, value?: any, value_b64?: string}
+plugin.kv.set :: {key: string, value?: any, value_b64?: string} => {key: string, bytes: int, used: int, quota: int}
+plugin.kv.delete :: {key: string} => {key: string, deleted: bool}
+plugin.kv.list :: {prefix?: string, after?: string, limit?: int = 100} => {keys: [{key: string, bytes: int}], next: string|null}
+ui.contribute :: {contributions?: [object], replace?: bool = false, remove?: [{kind: string, id: string}]} => {plugin: string, contributions: int}
+# --- clients ---
+ui.contributions :: {} => {contributions: [object]}
+ui.pane.open :: {plugin: string, pane: string, target?: Target, direction?: right|down|left|up = right} => {pane: Pane}
+"##;
+
+const BATCH_3B_EVENT_SHAPES: &str = r##"
+plugin.installed :: {plugin: string} => {kind: string, update?: bool}
+plugin.linked :: {plugin: string} => {kind: string, update?: bool}
+plugin.unlinked :: {plugin: string} => {kind: string}
+plugin.uninstalled :: {plugin: string} => {kind: string}
+plugin.enabled :: {plugin: string} => {kind: string}
+plugin.disabled :: {plugin: string} => {kind: string}
+plugin.trust_changed :: {plugin: string} => {kind: string, trusted: bool}
+plugin.registry_observed :: {} => {generation: int, plugins: int}
+plugin.reloaded :: {plugin: string} => {reason: string}
+plugin.crashed :: {plugin: string} => {exit_code: int|null, reason: string, crashes_in_window: int, restart: bool, restart_in_ms: int|null, disabled: bool, stderr_tail: string}
+plugin.process_started :: {plugin: string} => {pid: int, sandbox: bool, restarts: int}
+plugin.process_stopped :: {plugin: string} => {exit_code: int|null, signal: int|null, requested: bool}
+plugin.action_invoked :: {plugin: string} => {action: string, log: string, source: string, via: argv|process}
+plugin.command_finished :: {plugin: string} => {log: string, what: string, status: completed|failed, exit_code: int|null}
+plugin.capability_violation :: {plugin: string} => {method: string, reason: string, token?: string}
+plugin.api_call :: {plugin: string} => {method: string, token?: string, ok?: bool, error_code?: string|null}
+plugin.launch_failed :: {plugin: string} => {what: string, error: string}
+plugin.pane_opened :: {plugin: string, pane?: string} => {entrypoint?: string}
+ui.contributions_changed :: {plugin: string} => {contributions: int}
+"##;
+
 /// Evidence and PR integration (15 §6.3, §6.4; 3F).
 const BATCH_3F_DEFS: &str = r##"
 PrObservation = {id: string, task: string, requested?: string, lookup: object, observed_at_ms: int, authorization_scope: string, provider: string, observed_by: object, criterion_ids: [string], current?: bool, assessment?: object}
@@ -1285,7 +1384,7 @@ const BATCH_3A_DEFS: &str = r##"
 CollisionRunInfo = {run: string, handle: string|null, name: string|null, harness: string|null, pane: string|null, task: string|null, state: string|null, alive: bool}
 CollisionPath = {path: string, severity: low|medium|high, reason: object, runs: [string], ambiguous: bool, first_ms: int, last_ms: int}
 Collision = {id: string, root: string, severity: low|medium|high, status: open|cleared|ignored, runs: [string], run_info: [CollisionRunInfo], paths: [CollisionPath], ambiguous: bool, first_ms: int, last_ms: int, headline: string, cleared_ms: int|null, cleared_reason: string|null, timeline?: [object]}
-CollisionClaim = {id: string, run: string, run_handle: string|null, root: string, glob: string, created_ms: int, note: string|null, task: string|null}
+CollisionClaim = {id: string, run: string, run_handle: string|null, root: string, glob: string, created_ms: int, created_at_ms: int, note: string|null, task: string|null, kind: run|task}
 CollisionIgnore = {id: string, root: string, path: string, created_ms: int, expires_ms: int|null, by: string}
 "##;
 
@@ -1307,19 +1406,20 @@ collision.tell :: {collision: string, runs?: [Target], text?: string} => {result
 # a task from the shared checkout's HEAD with a new run and a hand-off prompt; nothing is moved
 collision.start_task :: {collision: string, run?: Target, title?: string, harness?: string, prompt?: string, dry_run?: bool = false} => {created: bool, base: string, title: string, harness: string, prompt: string, source_run: string|null, result: any}
 
-# --- advisory claims ---
-# a pane-scoped agent claims for its own run only
-task.claim :: {glob: string, run?: Target, task?: Target, root?: string, note?: string} => {claim: CollisionClaim, conflicts: [CollisionClaim], label: string}
-task.claims :: {task?: Target, run?: Target, root?: string} => {claims: [CollisionClaim]}
-task.claim_release :: {claim?: string, run?: Target, glob?: string} => {released: [string]}
+# --- advisory run claims (a task's claims are `task.claim`, merge orchestration; the tracker reads both) ---
+# a pane-scoped agent claims for its own run only; `task.claim {run}` of a run without a task is the same call
+collision.claim :: {glob: string, run?: Target, task?: Target, root?: string, note?: string} => {claim: CollisionClaim, conflicts: [CollisionClaim], label: string}
+# run claims and the task claims that bind each checkout
+collision.claims :: {task?: Target, run?: Target, root?: string} => {claims: [CollisionClaim]}
+collision.claim_release :: {claim?: string, run?: Target, glob?: string} => {released: [string]}
 "##;
 
 const BATCH_3A_EVENT_SHAPES: &str = r##"
 task.collision_detected :: {collision: string} => {repo: string, severity: low|medium|high, reason: same_file|same_dir|read_then_edited|claim, paths: [string], new_paths: [string], runs: [string], new_runs: [string], ambiguous: bool, created: bool, raised: bool}
 task.collision_cleared :: {collision: string} => {repo: string, reason: quiet|runs_ended|ignored|restart, severity: low|medium|high, runs: [string], paths: [string]}
 task.collision_action :: {collision?: string|null} => {action: ignore|pause|tell|tell_delivered|start_task|claim_denied, path?: string, repo?: string, ignore?: string, run?: string, by?: string, results?: [object], text?: string, via?: string, messages?: int, base?: string, task?: any, source_run?: string|null, claim?: string, owner?: string}
-task.claim_added :: {claim: string, run: string} => {glob: string, repo: string, note: string|null, conflicts: [string], by: string}
-task.claim_released :: {claim: string, run: string} => {glob: string, repo: string, reason: released|run_ended}
+task.collision_claim_added :: {claim: string, run: string} => {glob: string, repo: string, note: string|null, conflicts: [string], by: string}
+task.collision_claim_released :: {claim: string, run: string} => {glob: string, repo: string, reason: released|run_ended}
 "##;
 
 #[cfg(test)]

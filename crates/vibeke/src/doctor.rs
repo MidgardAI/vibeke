@@ -1404,11 +1404,20 @@ async fn rebuild_index(g: &Global) -> i32 {
         }
     };
     test_pause_rebuild();
+    // Sealed segments (09 §9.1) need the state key; the index gets the same redaction as the
+    // live indexer (`security.redact_scrollback_index`, 09 §9.2).
+    if let Err(e) = vk_store::crypt::unlock_for_reading(&p.state) {
+        eprintln!("warning: sealed segments can't be read ({e}); they are left out of the index");
+    }
+    let cfg = vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| c)
+        .unwrap_or_default();
+    let index_text = vk_server::privacy::index_transform(&cfg);
     let report = match vk_store::Store::open(&p.db()).and_then(|s| {
         // Settle purges a crash interrupted first: their staged segments belong back in (or
         // out of) the archive before it is re-indexed.
         s.recover_archive_purges(&p.scrollback())?;
-        s.rebuild_archive_index(&p.scrollback())
+        s.rebuild_archive_index_with(&p.scrollback(), &index_text)
     }) {
         Ok(r) => r,
         Err(e) => {

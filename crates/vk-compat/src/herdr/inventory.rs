@@ -158,7 +158,7 @@ pub const ENTRIES: &[Entry] = &[
         "socket path `<herdr_root>/herdr.sock`",
         Implemented,
         "spec",
-        "`<herdr_root>` = `$RUNTIME/herdr-compat` (shared by sessions): default session `herdr.sock`, named sessions `sessions/<name>/herdr.sock`; never under ~/.config/herdr; `compat.herdr_socket_path` not built",
+        "`<herdr_root>` = `$RUNTIME/herdr-compat` (shared by sessions): default session `herdr.sock`, named sessions `sessions/<name>/herdr.sock`; never under ~/.config/herdr unless `compat.herdr_socket_path` names it (then named sessions sit next to it); a live socket at the path is never replaced",
     ),
     e(
         Wire,
@@ -352,6 +352,13 @@ pub const ENTRIES: &[Entry] = &[
         Partial,
         "spec",
         "result `agent_info` unverified",
+    ),
+    e(
+        Method,
+        "agent.explain",
+        Partial,
+        "corpus",
+        "`agent explain`: result `agent_explain` {agent, agent_status, reason, execution, blocked, unseen_turn, turns_completed, last_tool, last_message, source}; Vibeke's own shape, baseline unverified",
     ),
     e(
         Method,
@@ -578,9 +585,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Method,
         "server.stop",
-        Missing,
+        Partial,
         "corpus",
-        "refused on the compat endpoint",
+        "stops this Vibeke session when `[compat.herdr] allow_server_stop = true` (default off: `unsupported`); never from a plugin, a sandboxed invocation or a pane; never reaches a Herdr server",
     ),
     e(
         Method,
@@ -656,7 +663,7 @@ pub const ENTRIES: &[Entry] = &[
         "pane.agent_detected",
         Partial,
         "spec",
-        "no 250 ms debounce",
+        "250 ms debounce per pane; payload shape unverified",
     ),
     e(
         Event,
@@ -710,9 +717,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Event,
         "workspace.reordered",
-        Missing,
+        Partial,
         "corpus",
-        "declared by one plugin; not named by the spec (may not exist in the baseline)",
+        "declared by one plugin, not named by the spec; emitted after every `workspace.move` (the only reordering Vibeke has); payload unverified",
     ),
     // ---- CLI --------------------------------------------------------------------------------
     e(
@@ -789,7 +796,13 @@ pub const ENTRIES: &[Entry] = &[
         "corpus",
         "`--plugin --entrypoint --placement --direction --cwd --focus`; all placements",
     ),
-    e(Cli, "plugin update", Missing, "corpus", ""),
+    e(
+        Cli,
+        "plugin update",
+        Partial,
+        "corpus",
+        "re-fetches the recorded repository and ref (`upgrade` alias); a new commit or manifest leaves the plugin inactive until reviewed again; a link or local install is refused",
+    ),
     e(
         Cli,
         "pane list|get|current|read",
@@ -838,7 +851,7 @@ pub const ENTRIES: &[Entry] = &[
         "agent start|prompt|wait|explain",
         Partial,
         "corpus",
-        "`explain` missing",
+        "`explain` maps to `agent.explain`; flag grammar unverified",
     ),
     e(Cli, "worktree list|repo-root", Partial, "corpus", ""),
     e(
@@ -850,21 +863,41 @@ pub const ENTRIES: &[Entry] = &[
     ),
     e(Cli, "notification show", Partial, "corpus", ""),
     e(Cli, "server reload-config", Partial, "corpus", ""),
-    e(Cli, "server stop", Missing, "corpus", "refused"),
+    e(
+        Cli,
+        "server stop",
+        Partial,
+        "corpus",
+        "forwarded as `server.stop` (see there); a plugin invocation is refused by the shim",
+    ),
     e(Cli, "api schema", Partial, "corpus", ""),
     e(
         Cli,
         "integration install|status",
-        Missing,
+        Partial,
         "corpus",
-        "refused by design: never installs into Herdr; use `vibeke integration`",
+        "served by the vibeke binary on Vibeke's own harness integrations (`status`, `doctor`, `list`; `install`/`uninstall` only with `--yes` or `--dry-run`); never touches Herdr's hooks; an unconfirmed install is refused",
     ),
     e(
         Cli,
-        "config check, completion, update/upgrade, web ui",
+        "config check",
+        Partial,
+        "corpus",
+        "validates Vibeke's config (`config.validate`, optional path); output shape unverified",
+    ),
+    e(
+        Cli,
+        "completion",
+        Partial,
+        "corpus",
+        "bash, zsh and fish scripts generated from the shim grammar",
+    ),
+    e(
+        Cli,
+        "update/upgrade, web ui",
         Missing,
         "corpus",
-        "refused; Vibeke equivalents exist for some",
+        "refused: Vibeke has `vibeke update` and the gateway; the shim never upgrades or serves on Herdr's behalf",
     ),
     // ---- manifest ---------------------------------------------------------------------------
     e(
@@ -1048,9 +1081,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Env,
         "HERDR_* in ordinary panes (`compat.herdr_env`)",
-        Missing,
+        Partial,
         "spec",
-        "still stripped",
+        "with `compat.herdr_env` and the compat listener enabled every pane gets HERDR_ENV, HERDR_SOCKET_PATH (the listener), HERDR_PANE_ID, HERDR_WORKSPACE_ID, HERDR_TAB_ID and HERDR_BIN_PATH (the private launcher); inherited HERDR_* are still stripped first; off while the listener is off",
     ),
     e(
         Env,

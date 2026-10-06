@@ -7,6 +7,7 @@ pub mod browser_console;
 pub mod client;
 pub mod compat;
 pub mod mcp;
+pub mod plugin_native;
 pub mod shell_integration;
 pub mod show;
 pub mod verbs;
@@ -345,6 +346,27 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     ("agent", "harnesses", "agent.harnesses", &[], ""),
     (
+        "agent",
+        "turn-usage",
+        "agent.turn_usage",
+        &["run"],
+        "<run> [--limit 200] — per-turn tokens and cost from the transcript",
+    ),
+    (
+        "agent",
+        "limits",
+        "agent.limits",
+        &[],
+        "latest rate-limit observation per harness",
+    ),
+    (
+        "agent",
+        "drift",
+        "agent.drift",
+        &[],
+        "disagreement/answer-failure counters per harness version",
+    ),
+    (
         "interaction",
         "list",
         "interaction.list",
@@ -423,6 +445,191 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "[--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree|jj_workspace|none|auto] [--yolo] [--isolate host|sandbox|container] [--confirm-host-yolo] [--network none|harness-apis|package-registries|dev|open] [--image ref] [--code clone|worktree] [--devcontainer] [--build]",
     ),
     ("task", "list", "task.list", &[], ""),
+    (
+        "task",
+        "compare",
+        "task.compare",
+        &["family"],
+        "<family> [--pair k7.1 --pair k7.2]: side-by-side diff stats, checks and ranking of a best-of-N family (orchestrate.best_of_n)",
+    ),
+    (
+        "task",
+        "pick",
+        "task.pick",
+        &["family", "child"],
+        "<family> <child> [--merge] [--discard] [--force] [--target branch]: pick the winner of a best-of-N family",
+    ),
+    (
+        "task",
+        "split",
+        "task.split",
+        &[],
+        "[--run a12 | --pane p] [--paths a,b] [--title t] [--dry-run] [--resume]: move a running agent's uncommitted changes into a new task (orchestrate.split)",
+    ),
+    ("family", "list", "family.list", &[], ""),
+    ("family", "get", "family.get", &["family"], ""),
+    (
+        "family",
+        "check",
+        "family.check",
+        &["family"],
+        "<family> [--child k7.1]: run the family's check command in each child",
+    ),
+    (
+        "claim",
+        "add",
+        "task.claim",
+        &["glob"],
+        "<glob> --task k7 | --run a12 [--note text]: claim files for a task (advisory; orchestrate.merge); a run with no task gets a run claim for the collision tracker",
+    ),
+    ("claim", "list", "task.claim.list", &[], "[--task k7]"),
+    ("claim", "remove", "task.claim.remove", &["claim"], ""),
+    (
+        "merge",
+        "predict",
+        "merge.predict",
+        &[],
+        "[--repo path] [--tasks k1,k2]: predicted conflicts between live worktrees",
+    ),
+    (
+        "merge",
+        "add",
+        "merge.queue.add",
+        &["task"],
+        "<task> [--target main] [--priority n] [--run] [--allow-dirty]: queue a task branch",
+    ),
+    ("merge", "list", "merge.queue.list", &[], "[--all]"),
+    ("merge", "cancel", "merge.queue.cancel", &["entry"], ""),
+    ("merge", "requeue", "merge.queue.requeue", &["entry"], ""),
+    (
+        "merge",
+        "run",
+        "merge.queue.run",
+        &[],
+        "[--entry id] [--count n | --all]: merge the next queue entries",
+    ),
+    (
+        "goal",
+        "create",
+        "goal.create",
+        &["title"],
+        "<title> [--text t | --text-file f] [--repo .] [--no-plan]",
+    ),
+    ("goal", "list", "goal.list", &[], ""),
+    ("goal", "get", "goal.get", &["goal"], ""),
+    (
+        "goal",
+        "plan",
+        "goal.plan",
+        &["goal"],
+        "<goal> [--backend heuristic|agent|external]",
+    ),
+    (
+        "goal",
+        "plan-submit",
+        "goal.plan_submit",
+        &["goal"],
+        "<goal> --file plan.json | --plan '<json>'",
+    ),
+    (
+        "goal",
+        "approve",
+        "goal.approve",
+        &["goal"],
+        "<goal> [--no-start]: approve the plan and start its ready steps",
+    ),
+    ("goal", "start", "goal.start", &["goal"], ""),
+    (
+        "goal",
+        "step-done",
+        "goal.step_done",
+        &["goal", "step"],
+        "<goal> <step> [--no-ok] [--error text]",
+    ),
+    (
+        "goal",
+        "cancel",
+        "goal.cancel",
+        &["goal"],
+        "<goal> [--stop-tasks]",
+    ),
+    (
+        "goal",
+        "briefing",
+        "goal.briefing",
+        &[],
+        "[--since 12h|epoch-ms]: what happened while you were away",
+    ),
+    ("quota", "status", "quota.status", &[], ""),
+    ("quota", "tick", "quota.tick", &[], "[--dry-run]"),
+    (
+        "quota",
+        "route",
+        "quota.route",
+        &[],
+        "[--harnesses claude,codex]",
+    ),
+    (
+        "quota",
+        "resume",
+        "quota.resume",
+        &["key"],
+        "<task-or-run> resume work the scheduler paused",
+    ),
+    ("vm", "status", "vm.status", &[], ""),
+    ("vm", "list", "vm.list", &[], ""),
+    (
+        "vm",
+        "create",
+        "vm.create",
+        &[],
+        "[--name n] [--task t] [--checkout dir] [--no-template]",
+    ),
+    ("vm", "start", "vm.start", &["vm"], ""),
+    ("vm", "stop", "vm.stop", &["vm"], ""),
+    ("vm", "suspend", "vm.suspend", &["vm"], ""),
+    ("vm", "resume", "vm.resume", &["vm"], ""),
+    ("vm", "destroy", "vm.destroy", &["vm"], ""),
+    ("vm", "snapshot", "vm.snapshot", &["vm"], "<vm> [--label l]"),
+    (
+        "vm",
+        "snapshot-delete",
+        "vm.snapshot.delete",
+        &["snapshot"],
+        "<vm/label> [--force]",
+    ),
+    (
+        "vm",
+        "fork",
+        "vm.fork",
+        &["snapshot"],
+        "<vm/label> [--count n] [--prefix p]",
+    ),
+    ("vm", "transport", "vm.transport", &["vm"], ""),
+    ("vm", "template-list", "vm.template.list", &[], ""),
+    ("vm", "template-build", "vm.template.build", &[], ""),
+    ("vm", "template-delete", "vm.template.delete", &["key"], ""),
+    (
+        "policy",
+        "learned",
+        "policy.learned.list",
+        &[],
+        "[--repo path]: rule suggestions learned from repeated approvals (orchestrate.learned_policy)",
+    ),
+    (
+        "policy",
+        "learned-accept",
+        "policy.learned.accept",
+        &["id"],
+        "<id> [--target user|repo]",
+    ),
+    (
+        "policy",
+        "learned-dismiss",
+        "policy.learned.dismiss",
+        &["id"],
+        "",
+    ),
     (
         "task",
         "park",
@@ -563,27 +770,28 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["task"],
         "<task> [--collisions: only the open shared-checkout collisions (05 §10)]",
     ),
-    // 05 §10: advisory claims and the shared-checkout collision tracker (3A).
+    // 05 §10: the shared-checkout collision tracker and run claims (3A). `claim add --run r`
+    // of a run without a task reaches the same run claims.
     (
+        "collision",
         "claim",
-        "add",
-        "task.claim",
+        "collision.claim",
         &["glob"],
-        "<glob> [--run r|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; other runs writing there raise a high collision)",
+        "<glob> [--run r|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; another run writing there raises a high collision)",
     ),
     (
-        "claim",
-        "list",
-        "task.claims",
+        "collision",
+        "claims",
+        "collision.claims",
         &[],
-        "[--task t|--run r|--root dir]",
+        "[--task t|--run r|--root dir]: run claims and the task claims that bind each checkout",
     ),
     (
-        "claim",
-        "rm",
-        "task.claim_release",
+        "collision",
+        "unclaim",
+        "collision.claim_release",
         &["claim"],
-        "<claim> | --run r [--glob g]: release a claim",
+        "<claim> | --run r [--glob g]: release a run claim",
     ),
     (
         "collision",
@@ -1692,6 +1900,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "policy",
+        "suggest",
+        "policy.suggest",
+        &[],
+        "[--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml",
+    ),
+    (
+        "policy",
         "test",
         "policy.test",
         &[],
@@ -1752,6 +1967,21 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "audit.verify",
         &[],
         "recompute the audit log's hash chain (also part of `vibeke doctor`)",
+    ),
+    // Lane 3E (09 §9.1): state encryption.
+    (
+        "security",
+        "status",
+        "security.encryption.status",
+        &[],
+        "state encryption (security.encrypt_state): key, keychain, sealed/plain file counts",
+    ),
+    (
+        "security",
+        "migrate",
+        "security.encryption.migrate",
+        &["to"],
+        "sealed|plain [--dry-run] — rewrite existing scrollback segments and blobs",
     ),
 ];
 
@@ -2278,7 +2508,10 @@ pub fn pretty(method: &str, v: &Value) -> String {
             .iter()
             .map(|r| {
                 let src = r["execution"]["source"].as_str().unwrap_or("");
-                let inferred = if src == "Structured" || src == "SelfReport" {
+                let marked = r["execution"]["detail"]
+                    .as_str()
+                    .is_some_and(|d| d == "inferred" || d.starts_with("inferred:"));
+                let inferred = if (src == "Structured" || src == "SelfReport") && !marked {
                     ""
                 } else {
                     "~"
@@ -2470,7 +2703,7 @@ pub fn pretty(method: &str, v: &Value) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        "task.claims" => rows("claims")
+        "collision.claims" => rows("claims")
             .iter()
             .map(|c| {
                 format!(
@@ -2528,6 +2761,42 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 ));
             }
             out
+        }
+        "policy.suggest" => {
+            let list = rows("suggestions");
+            if list.is_empty() {
+                format!(
+                    "no approval was repeated {} times without a denial yet ({} answered approvals seen)",
+                    v["min_count"], v["samples"]
+                )
+            } else {
+                let mut out = String::new();
+                for s in &list {
+                    out.push_str(&format!(
+                        "# {} {} {:?}: approved {}x, denied {}x, risk {}{}\n",
+                        s["harness"].as_str().unwrap_or(""),
+                        s["tool"].as_str().unwrap_or(""),
+                        s["subject"].as_str().unwrap_or(""),
+                        s["approvals"],
+                        s["denials"],
+                        s["risk"].as_str().unwrap_or(""),
+                        if s["covered"].as_bool() == Some(true) {
+                            ", already covered by a rule"
+                        } else {
+                            ""
+                        }
+                    ));
+                    match (s["toml"].as_str(), s["blocked"].as_str()) {
+                        (Some(t), _) => out.push_str(t),
+                        (None, why) => out.push_str(&format!(
+                            "# no rule offered: {}\n",
+                            why.unwrap_or("not expressible")
+                        )),
+                    }
+                    out.push('\n');
+                }
+                out.trim_end().to_string()
+            }
         }
         "preview.mirror" => format!(
             "{}/{} mirrored on {} — {}",
@@ -2852,7 +3121,7 @@ where
     }
 }
 
-pub const FORGET_USAGE: &str = "vibeke forget --pane <p> | --workspace <w> | --before <time> | --all  [--yes] [--dry-run]\n  Deletes archived scrollback (segments, search index rows, archive metadata) for the scope.\n  Does not delete the event log, blobs, the session desk index, drafts, notes, or what a live pane still holds in memory.\n  --before takes a date, an RFC 3339 time or a duration back from now (7d, 12h); it is segment-granular.";
+pub const FORGET_USAGE: &str = "vibeke forget --pane <p> | --workspace <w> | --before <time> | --all  [--yes] [--dry-run] [--scrollback-only]\n  Deletes what Vibeke stored for the scope: archived scrollback (segments, search index rows, archive metadata),\n  screenshots and other session blobs, inbox uploads, drafts and workspace notes, assistant requests, session desk rows,\n  VT snapshots of closed panes; events in scope become tombstones (sequence numbers stay gapless).\n  Pane scope leaves per-workspace drafts and notes. Never touches what a live pane holds in memory,\n  task/review records, the audit log or native harness transcripts. --scrollback-only deletes only the archive.\n  --before takes a date, an RFC 3339 time or a duration back from now (7d, 12h); it is segment-granular for scrollback.";
 
 /// `vibeke forget`: preview the scope with `scrollback.forget {dry_run}`, ask (or require
 /// `--yes` without a terminal), then delete. Idempotent.
@@ -2868,6 +3137,7 @@ where
     };
     let yes = flag(&mut params, &["yes", "y"]);
     let dry = flag(&mut params, &["dry_run"]);
+    let scrollback_only = flag(&mut params, &["scrollback_only"]);
     for k in ["pane", "workspace"] {
         if let Some(v) = params.get_mut(k)
             && v.is_number()
@@ -2893,7 +3163,10 @@ where
     }
     let mut plan_params = params.clone();
     plan_params["dry_run"] = json!(true);
-    let plan = match client.call("scrollback.forget", plan_params).await {
+    if scrollback_only {
+        plan_params["scrollback_only"] = json!(true);
+    }
+    let plan = match client.call("state.forget", plan_params).await {
         Ok(v) => v,
         Err(e) => {
             print_error(&e);
@@ -2901,8 +3174,11 @@ where
         }
     };
     let n = |k: &str| plan[k].as_u64().unwrap_or(0);
-    let empty =
-        n("segments_deleted") == 0 && n("fts_rows_deleted") == 0 && n("archive_panes_dropped") == 0;
+    let also = forget_also_summary(&plan["also"]);
+    let empty = n("segments_deleted") == 0
+        && n("fts_rows_deleted") == 0
+        && n("archive_panes_dropped") == 0
+        && also.is_none();
     let where_ = g.machine.as_deref().unwrap_or("this machine");
     eprintln!(
         "vibeke forget {} on {where_} {} {} segments ({} bytes) of {} panes, {} search rows and {} archive records.",
@@ -2914,6 +3190,9 @@ where
         n("fts_rows_deleted"),
         n("archive_panes_dropped"),
     );
+    if let Some(a) = &also {
+        eprintln!("Also: {a}.");
+    }
     if dry {
         if !g.quiet {
             println!(
@@ -2944,10 +3223,11 @@ where
     // Execute exactly the plan that was shown: its resolved scope (pane/workspace id, absolute
     // cutoff) and digest, never the original `@focused` or relative `--before` again. The
     // server refuses if the scope no longer resolves to that plan.
-    match client
-        .call("scrollback.forget", forget_confirmed_params(&plan))
-        .await
-    {
+    let mut confirmed = forget_confirmed_params(&plan);
+    if scrollback_only {
+        confirmed["scrollback_only"] = json!(true);
+    }
+    match client.call("state.forget", confirmed).await {
         Ok(v) => {
             if !g.quiet {
                 println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -2961,8 +3241,39 @@ where
     }
 }
 
-/// The confirmed `scrollback.forget` call for a dry run's result: its canonical `scope` plus
-/// its `plan` digest.
+/// One line for `state.forget`'s `also` counts, `None` when nothing else is in scope.
+fn forget_also_summary(also: &Value) -> Option<String> {
+    let n = |v: &Value| v.as_u64().unwrap_or(0);
+    let parts: Vec<String> = [
+        ("screenshots", n(&also["blobs"]["screenshots"])),
+        ("blob files", n(&also["blobs"]["files"])),
+        ("uploads", n(&also["uploads"]["removed"])),
+        ("drafts", n(&also["drafts"]["drafts"])),
+        ("notes", n(&also["drafts"]["notes"])),
+        ("assistant requests", n(&also["assistant"]["purged"])),
+        ("snapshots", n(&also["snapshots"])),
+        ("events (tombstoned)", n(&also["events_tombstoned"])),
+    ]
+    .iter()
+    .filter(|(_, c)| *c > 0)
+    .map(|(k, c)| format!("{c} {k}"))
+    .collect();
+    let desk = n(&also["desk"]["calls"]) > 0;
+    if parts.is_empty() && !desk {
+        return None;
+    }
+    let mut s = parts.join(", ");
+    if desk {
+        if !s.is_empty() {
+            s.push_str(", ");
+        }
+        s.push_str("matching session desk rows");
+    }
+    Some(s)
+}
+
+/// The confirmed `state.forget` call for a dry run's result: its canonical `scope` plus its
+/// `plan` digest.
 fn forget_confirmed_params(plan: &Value) -> Value {
     let mut p = match &plan["scope"] {
         Value::Object(o) => Value::Object(o.clone()),
@@ -3129,8 +3440,8 @@ mod tests {
 
     #[test]
     fn claim_and_collision_verbs_map_to_their_methods() {
-        let (m, pos) = lookup("claim", "add").unwrap();
-        assert_eq!(m, "task.claim");
+        let (m, pos) = lookup("collision", "claim").unwrap();
+        assert_eq!(m, "collision.claim");
         let mut p = build_params(
             pos,
             &[
@@ -3147,8 +3458,13 @@ mod tests {
             p,
             json!({"glob": "src/auth/**", "run": "a12", "note": "auth"})
         );
-        assert_eq!(lookup("claim", "list").unwrap().0, "task.claims");
-        assert_eq!(lookup("claim", "rm").unwrap().0, "task.claim_release");
+        assert_eq!(lookup("collision", "claims").unwrap().0, "collision.claims");
+        assert_eq!(
+            lookup("collision", "unclaim").unwrap().0,
+            "collision.claim_release"
+        );
+        // Merge orchestration's `claim add --run r` reaches run claims of untasked runs.
+        assert_eq!(lookup("claim", "add").unwrap().0, "task.claim");
         let (m, pos) = lookup("collision", "ignore").unwrap();
         assert_eq!(m, "collision.ignore");
         let p = build_params(
@@ -3184,7 +3500,7 @@ mod tests {
             out.contains("col_1") && out.contains("high") && out.contains("2 agents editing a.rs")
         );
         let c = json!({"claims": [{"id": "clm_1", "run": "r1", "run_handle": "a12", "glob": "src/**", "note": "auth"}]});
-        let out = pretty("task.claims", &c);
+        let out = pretty("collision.claims", &c);
         assert!(out.contains("a12") && out.contains("src/**") && out.contains("# auth"));
         let t = json!({"results": [{"run": "a12", "status": "queued", "channel": "hook_context"}], "text": "Note: x"});
         let out = pretty("collision.tell", &t);
@@ -3300,7 +3616,7 @@ mod tests {
                 let mut lines = BufReader::new(rd).lines();
                 while let Ok(Some(l)) = lines.next_line().await {
                     let req: Value = serde_json::from_str(&l).unwrap();
-                    let result = if req["method"] == "scrollback.forget" {
+                    let result = if req["method"] == "state.forget" {
                         rec.lock().unwrap().push(req["params"].clone());
                         json!({"scope": plan_scope, "pane_ids": null, "plan": "fp1-abc",
                             "dry_run": req["params"]["dry_run"] == true, "panes": 1,

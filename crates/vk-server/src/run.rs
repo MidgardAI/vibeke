@@ -77,9 +77,12 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::desk::start(&server);
     crate::sandbox::restore(&server).await;
     crate::compat::start(&server);
+    crate::plugin_native::start(&server);
     crate::inbox::start(&server);
     crate::config_api::start(&server);
     crate::security::start(&server);
+    crate::privacy::start(&server);
+    crate::orch::start(&server);
     crate::machines::start(&server);
     // Uploads made before the blob stores were unified are ingested off the async threads.
     let adopt = server.clone();
@@ -365,6 +368,8 @@ where
                 match req.method.as_str() {
                     "client.hello" => {
                         if let Some(tok) = req.params.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                            // A native plugin's capability-scoped token (07 §7.3, 09 §3.2).
+                            if let Some(k) = crate::plugin_native::hello(&server, tok) { ctx.kind = k; ctx.pane_scope = None; foreign = false; let _ = out_tx.send(api::handle_line(&server, &ctx, l).await); continue; }
                             // An approved elevation (09 §3.2): full scope, bound to the pane it was
                             // issued to. Never for a pane of another session.
                             let elevated = (!foreign)
@@ -386,7 +391,7 @@ where
                                 }
                             }
                         }
-                        if let Some(k) = req.params.get("kind").and_then(Value::as_str).filter(|_| !ctx.kind.starts_with(crate::auth::ELEVATED_KIND)) { ctx.kind = k.into(); }
+                        if let Some(k) = req.params.get("kind").and_then(Value::as_str).filter(|_| !ctx.kind.starts_with(crate::auth::ELEVATED_KIND) && !crate::plugin_native::is_plugin_kind(&ctx.kind)) { ctx.kind = k.into(); }
                         if let Some(c) = req.params.get("client_id").and_then(Value::as_str) {
                             ctx.client_id = c.into();
                             guard.client_ids.lock().unwrap().push(c.into());
@@ -1174,7 +1179,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let info = crate::parity::resolve_checkout(&repo, p)?;
     // Execution isolation (13 §3): validate before creating anything.
     let mut iso_req = crate::sandbox::IsoRequest::from_params(p, &crate::sandbox::load_cfg())?;
-    if iso_req.level == vk_proto::model::IsolationLevel::Vm {
+    if iso_req.level == vk_proto::model::IsolationLevel::Vm && !crate::orch_vm::enabled(server) {
         return Err(err(
             ErrorKind::Unsupported,
             "the vm isolation level ships in M4; use --isolate sandbox",

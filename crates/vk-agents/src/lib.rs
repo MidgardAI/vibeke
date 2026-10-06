@@ -6,8 +6,10 @@ pub mod fingerprint;
 pub mod install;
 pub mod manifest;
 pub mod mcp;
+pub mod pricing;
 pub mod risk;
 pub(crate) mod shell;
+pub mod transcript;
 
 pub use fingerprint::{Subject, fingerprint, fingerprint_subject};
 pub use install::{

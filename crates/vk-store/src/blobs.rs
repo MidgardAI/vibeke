@@ -3,6 +3,10 @@
 //! files (the pane inbox keeps its path for the agent but is ingested here), tool outputs and
 //! large diffs all land in this one store, so `blob.get/stat/stats/gc` see every one of them.
 //!
+//! With `security.encrypt_state` (09 §9.1) the store carries a cipher ([`BlobStore::with_cipher`]):
+//! every blob written then is sealed ([`crate::crypt`]); sizes report the plaintext and readers
+//! decrypt with [`crate::crypt::read_file`]. Sidecars stay plain (they hold ids and times).
+//!
 //! The store never decides what is referenced: callers pass the set of hashes they still need to
 //! [`BlobStore::gc`], and only blobs whose sidecar names a collectable `source` are ever removed.
 
@@ -12,6 +16,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::crypt::{self, StateCipher};
 
 /// What to do with an existing metadata sidecar when a blob is stored again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +73,8 @@ pub struct GcReport {
 #[derive(Debug, Clone)]
 pub struct BlobStore {
     root: PathBuf,
+    /// Seal new blobs (09 §9.1).
+    cipher: Option<Arc<StateCipher>>,
 }
 
 pub fn valid_hash(h: &str) -> bool {
@@ -86,7 +95,21 @@ fn mtime_ms(md: &std::fs::Metadata) -> i64 {
 
 impl BlobStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        BlobStore { root: root.into() }
+        BlobStore {
+            root: root.into(),
+            cipher: None,
+        }
+    }
+
+    /// Seal blobs written through this handle (`None`: plain).
+    pub fn with_cipher(mut self, cipher: Option<Arc<StateCipher>>) -> Self {
+        self.cipher = cipher;
+        self
+    }
+
+    /// Read a stored blob's plaintext (sealed or plain).
+    pub fn read(&self, hash: &str, ext: &str) -> std::io::Result<Vec<u8>> {
+        crypt::read_file(&self.path_of(hash, ext))
     }
 
     pub fn root(&self) -> &Path {
@@ -142,10 +165,8 @@ impl BlobStore {
         let dir = self.ensure_dir(&hash)?;
         let path = dir.join(format!("{hash}.{ext}"));
         if !path.exists() {
-            let tmp = dir.join(format!(".{hash}.tmp-{}", std::process::id()));
-            std::fs::write(&tmp, data)?;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-            std::fs::rename(&tmp, &path)?;
+            // Atomic, 0600, sealed while a cipher is set.
+            crypt::write_file(&path, data, self.cipher.as_deref())?;
         }
         self.write_meta(&dir, &hash, meta, mode)?;
         Ok((hash, path))
@@ -164,6 +185,14 @@ impl BlobStore {
         let hash = hash_file(src)?;
         let dir = self.ensure_dir(&hash)?;
         let path = dir.join(format!("{hash}.{ext}"));
+        if !path.exists() && self.cipher.is_some() {
+            // Sealing needs the bytes: read the source once and verify it still hashes the same.
+            let data = std::fs::read(src)?;
+            if blake3::hash(&data).to_hex().as_str() != hash {
+                return Err(std::io::Error::other("source changed while ingesting"));
+            }
+            crypt::write_file(&path, &data, self.cipher.as_deref())?;
+        }
         if !path.exists() {
             let tmp = dir.join(format!(".{hash}.tmp-{}", std::process::id()));
             let _ = std::fs::remove_file(&tmp);
@@ -198,7 +227,9 @@ impl BlobStore {
                 continue;
             }
             if let Ok(md) = e.metadata() {
-                size = size.max(md.len());
+                // Plaintext size for a sealed blob.
+                let len = crypt::plain_len(&e.path()).unwrap_or(md.len());
+                size = size.max(len);
                 mtime = mtime.max(mtime_ms(&md));
             }
             exts.push(ext.to_string());
@@ -455,6 +486,34 @@ mod tests {
         assert_eq!(r.removed, 2);
         assert!(s.find(&ha).is_some() && s.find(&hc).is_some());
         assert!(s.find(&hb).is_none() && s.find(&hd).is_none());
+    }
+
+    #[test]
+    fn a_cipher_seals_put_and_put_file_and_reads_back() {
+        let (d, plain) = store();
+        let (c, _) = StateCipher::generate();
+        let c = Arc::new(c);
+        crypt::register(c.clone());
+        let s = plain.clone().with_cipher(Some(c));
+        let (h, p) = s
+            .put(b"SECRET-BYTES", "png", &Value::Null, MetaMode::Replace)
+            .unwrap();
+        assert!(crypt::file_is_sealed(&p));
+        assert!(
+            !std::fs::read(&p)
+                .unwrap()
+                .windows(6)
+                .any(|w| w == b"SECRET")
+        );
+        assert_eq!(s.read(&h, "png").unwrap(), b"SECRET-BYTES");
+        assert_eq!(s.find(&h).unwrap().size, 12);
+        let src = d.path().join("up.txt");
+        std::fs::write(&src, b"uploaded").unwrap();
+        let (h2, p2) = s
+            .put_file(&src, "txt", &Value::Null, MetaMode::IfAbsent)
+            .unwrap();
+        assert!(crypt::file_is_sealed(&p2));
+        assert_eq!(plain.read(&h2, "txt").unwrap(), b"uploaded");
     }
 
     #[test]

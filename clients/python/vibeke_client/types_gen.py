@@ -180,8 +180,10 @@ CollisionClaim = TypedDict("CollisionClaim", {
     "root": str,
     "glob": str,
     "created_ms": int,
+    "created_at_ms": int,
     "note": Optional[str],
     "task": Optional[str],
+    "kind": Literal["run", "task"],
 })
 
 CollisionIgnore = TypedDict("CollisionIgnore", {
@@ -813,6 +815,23 @@ AdapterSignalResult = TypedDict("AdapterSignalResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentDriftParams: TypeAlias = Dict[str, Any]
+
+AgentDriftResultVersionsItem = TypedDict("AgentDriftResultVersionsItem", {
+    "harness": str,
+    "version": str,
+    "observations": int,
+    "disagreements": int,
+    "unknown_resolutions": int,
+    "answer_failures": int,
+    "rate": float,
+    "drifting": bool,
+})
+
+AgentDriftResult = TypedDict("AgentDriftResult", {
+    "versions": List["AgentDriftResultVersionsItem"],
+})
+
 AgentGetParams = TypedDict("AgentGetParams", {
     "target": "Target",
 })
@@ -847,6 +866,22 @@ AgentInterruptResult = TypedDict("AgentInterruptResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentLimitsParams: TypeAlias = Dict[str, Any]
+
+AgentLimitsResultLimitsItem = TypedDict("AgentLimitsResultLimitsItem", {
+    "harness": str,
+    "scope": Optional[str],
+    "limited": bool,
+    "used_percent": Optional[float],
+    "resets_at_ms": Optional[int],
+    "message": Optional[str],
+    "observed_at_ms": int,
+})
+
+AgentLimitsResult = TypedDict("AgentLimitsResult", {
+    "limits": List["AgentLimitsResultLimitsItem"],
+})
+
 AgentListParams = TypedDict("AgentListParams", {
     "workspace": NotRequired["Target"],
     "state": NotRequired[List["AgentState"]],
@@ -855,6 +890,20 @@ AgentListParams = TypedDict("AgentListParams", {
 
 AgentListResult = TypedDict("AgentListResult", {
     "runs": List["AgentRun"],
+})
+
+AgentManifestPinParams = TypedDict("AgentManifestPinParams", {
+    "id": str,
+    "version": NotRequired[str],
+    "unpin": NotRequired[bool],
+})
+
+AgentManifestPinResult = TypedDict("AgentManifestPinResult", {
+    "id": str,
+    "version": NotRequired[str],
+    "pinned_at_ms": NotRequired[int],
+    "unpinned": NotRequired[bool],
+    "cursor": NotRequired["Cursor"],
 })
 
 AgentManifestsParams: TypeAlias = Dict[str, Any]
@@ -876,6 +925,22 @@ AgentManifestsResultManifestsItem = TypedDict("AgentManifestsResultManifestsItem
 AgentManifestsResult = TypedDict("AgentManifestsResult", {
     "manifests": List["AgentManifestsResultManifestsItem"],
     "warnings": List[str],
+})
+
+AgentManifestsCheckParams = TypedDict("AgentManifestsCheckParams", {
+    "url": NotRequired[str],
+})
+
+AgentManifestsCheckResult = TypedDict("AgentManifestsCheckResult", {
+    "serial": int,
+    "applied": List[str],
+    "skipped": NotRequired[List[str]],
+    "unsigned": NotRequired[bool],
+    "warnings": NotRequired[List[str]],
+    "announced": NotRequired[int],
+    "unchanged": NotRequired[bool],
+    "index_serial": NotRequired[int],
+    "cursor": NotRequired["Cursor"],
 })
 
 AgentManifestsReloadParams: TypeAlias = Dict[str, Any]
@@ -1016,6 +1081,46 @@ AgentStartParams = TypedDict("AgentStartParams", {
 AgentStartResult = TypedDict("AgentStartResult", {
     "run": "AgentRun",
     "cursor": NotRequired["Cursor"],
+})
+
+AgentTurnUsageParams = TypedDict("AgentTurnUsageParams", {
+    "run": NotRequired["Target"],
+    "target": NotRequired["Target"],
+    "limit": NotRequired[int],
+})
+
+AgentTurnUsageResultTurnsItem = TypedDict("AgentTurnUsageResultTurnsItem", {
+    "id": str,
+    "run": str,
+    "harness": str,
+    "n": int,
+    "native_id": str,
+    "model": Optional[str],
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+    "cost_source": str,
+    "stop": Optional[str],
+    "ended_at_ms": Optional[int],
+    "source": str,
+})
+
+AgentTurnUsageResultTotals = TypedDict("AgentTurnUsageResultTotals", {
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+})
+
+AgentTurnUsageResult = TypedDict("AgentTurnUsageResult", {
+    "run": str,
+    "turns": List["AgentTurnUsageResultTurnsItem"],
+    "turn_count": int,
+    "totals": "AgentTurnUsageResultTotals",
+    "usage": Any,
 })
 
 AgentWaitParams = TypedDict("AgentWaitParams", {
@@ -2498,6 +2603,42 @@ ClientListResult = TypedDict("ClientListResult", {
     "clients": List["ClientListResultClientsItem"],
 })
 
+CollisionClaimParams = TypedDict("CollisionClaimParams", {
+    "glob": str,
+    "run": NotRequired["Target"],
+    "task": NotRequired["Target"],
+    "root": NotRequired[str],
+    "note": NotRequired[str],
+})
+
+CollisionClaimResult = TypedDict("CollisionClaimResult", {
+    "claim": "CollisionClaim",
+    "conflicts": List["CollisionClaim"],
+    "label": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CollisionClaimReleaseParams = TypedDict("CollisionClaimReleaseParams", {
+    "claim": NotRequired[str],
+    "run": NotRequired["Target"],
+    "glob": NotRequired[str],
+})
+
+CollisionClaimReleaseResult = TypedDict("CollisionClaimReleaseResult", {
+    "released": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+CollisionClaimsParams = TypedDict("CollisionClaimsParams", {
+    "task": NotRequired["Target"],
+    "run": NotRequired["Target"],
+    "root": NotRequired[str],
+})
+
+CollisionClaimsResult = TypedDict("CollisionClaimsResult", {
+    "claims": List["CollisionClaim"],
+})
+
 CollisionGetParams = TypedDict("CollisionGetParams", {
     "collision": str,
 })
@@ -2714,6 +2855,7 @@ CompatUiStateResultAgentViewsItem = TypedDict("CompatUiStateResultAgentViewsItem
 CompatUiStateResult = TypedDict("CompatUiStateResult", {
     "window_title": NotRequired[str],
     "popup": NotRequired["CompatUiStateResultPopup"],
+    "contributions": NotRequired[List[Dict[str, Any]]],
     "agent_views": List["CompatUiStateResultAgentViewsItem"],
 })
 
@@ -3092,6 +3234,45 @@ EventsWaitResult = TypedDict("EventsWaitResult", {
     "event": "EventRecord",
 })
 
+FamilyCheckParams = TypedDict("FamilyCheckParams", {
+    "family": str,
+    "child": NotRequired[str],
+})
+
+FamilyCheckResultResultsItem = TypedDict("FamilyCheckResultResultsItem", {
+    "child": str,
+    "outcome": Dict[str, Any],
+})
+
+FamilyCheckResult = TypedDict("FamilyCheckResult", {
+    "family": str,
+    "results": List["FamilyCheckResultResultsItem"],
+    "cursor": NotRequired["Cursor"],
+})
+
+FamilyGetParams = TypedDict("FamilyGetParams", {
+    "family": str,
+})
+
+FamilyGetResultChildrenItem = TypedDict("FamilyGetResultChildrenItem", {
+    "handle": str,
+    "harness": str,
+    "task": Optional["Task"],
+    "run": Optional[Dict[str, Any]],
+    "discarded": bool,
+})
+
+FamilyGetResult = TypedDict("FamilyGetResult", {
+    "family": Dict[str, Any],
+    "children": List["FamilyGetResultChildrenItem"],
+})
+
+FamilyListParams: TypeAlias = Dict[str, Any]
+
+FamilyListResult = TypedDict("FamilyListResult", {
+    "families": List[Dict[str, Any]],
+})
+
 FsListParams = TypedDict("FsListParams", {
     "pane": NotRequired["Target"],
     "path": NotRequired[str],
@@ -3188,6 +3369,181 @@ GitStatusResult = TypedDict("GitStatusResult", {
     "clean": bool,
     "truncated": bool,
     "files": List["GitStatusResultFilesItem"],
+})
+
+GoalApproveParams = TypedDict("GoalApproveParams", {
+    "goal": str,
+    "by": NotRequired[str],
+    "start": NotRequired[bool],
+})
+
+GoalApproveResultProgress = TypedDict("GoalApproveResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalApproveResult = TypedDict("GoalApproveResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalApproveResultProgress",
+    "cursor": NotRequired["Cursor"],
+})
+
+GoalBriefingParams = TypedDict("GoalBriefingParams", {
+    "since": NotRequired[Union[int, str]],
+    "until": NotRequired[int],
+})
+
+GoalBriefingResultBriefingSectionsItem = TypedDict("GoalBriefingResultBriefingSectionsItem", {
+    "title": str,
+    "items": List[str],
+})
+
+GoalBriefingResultBriefing = TypedDict("GoalBriefingResultBriefing", {
+    "since_ms": int,
+    "until_ms": int,
+    "sections": List["GoalBriefingResultBriefingSectionsItem"],
+    "counts": Dict[str, Any],
+    "text": str,
+})
+
+GoalBriefingResult = TypedDict("GoalBriefingResult", {
+    "briefing": "GoalBriefingResultBriefing",
+})
+
+GoalCancelParams = TypedDict("GoalCancelParams", {
+    "goal": str,
+    "stop_tasks": NotRequired[bool],
+})
+
+GoalCancelResultProgress = TypedDict("GoalCancelResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalCancelResult = TypedDict("GoalCancelResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalCancelResultProgress",
+    "parked": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+GoalCreateParams = TypedDict("GoalCreateParams", {
+    "title": str,
+    "text": NotRequired[str],
+    "text_file": NotRequired[str],
+    "repo": NotRequired[str],
+    "base": NotRequired[str],
+    "plan": NotRequired[bool],
+})
+
+GoalCreateResultProgress = TypedDict("GoalCreateResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalCreateResult = TypedDict("GoalCreateResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalCreateResultProgress",
+    "cursor": NotRequired["Cursor"],
+})
+
+GoalGetParams = TypedDict("GoalGetParams", {
+    "goal": str,
+})
+
+GoalGetResultProgress = TypedDict("GoalGetResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalGetResult = TypedDict("GoalGetResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalGetResultProgress",
+})
+
+GoalListParams: TypeAlias = Dict[str, Any]
+
+GoalListResultGoalsItemProgress = TypedDict("GoalListResultGoalsItemProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalListResultGoalsItem = TypedDict("GoalListResultGoalsItem", {
+    "goal": Dict[str, Any],
+    "progress": "GoalListResultGoalsItemProgress",
+})
+
+GoalListResult = TypedDict("GoalListResult", {
+    "goals": List["GoalListResultGoalsItem"],
+})
+
+GoalPlanParams = TypedDict("GoalPlanParams", {
+    "goal": str,
+    "backend": NotRequired[Literal["heuristic", "agent", "external"]],
+})
+
+GoalPlanResult = TypedDict("GoalPlanResult", {
+    "goal": Dict[str, Any],
+    "progress": NotRequired[Dict[str, Any]],
+    "backend": NotRequired[str],
+    "prompt": NotRequired[str],
+    "submit_command": NotRequired[str],
+    "plan_file": NotRequired[str],
+    "planning_run": NotRequired[Optional[str]],
+    "agent_error": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+GoalPlanSubmitParams = TypedDict("GoalPlanSubmitParams", {
+    "goal": str,
+    "plan": NotRequired[Union[Dict[str, Any], str]],
+    "file": NotRequired[str],
+    "planner": NotRequired[str],
+})
+
+GoalPlanSubmitResultProgress = TypedDict("GoalPlanSubmitResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalPlanSubmitResult = TypedDict("GoalPlanSubmitResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalPlanSubmitResultProgress",
+    "cursor": NotRequired["Cursor"],
+})
+
+GoalStartParams = TypedDict("GoalStartParams", {
+    "goal": str,
+})
+
+GoalStartResultProgress = TypedDict("GoalStartResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalStartResult = TypedDict("GoalStartResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalStartResultProgress",
+    "started": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+GoalStepDoneParams = TypedDict("GoalStepDoneParams", {
+    "goal": str,
+    "step": str,
+    "ok": NotRequired[bool],
+    "error": NotRequired[str],
+})
+
+GoalStepDoneResultProgress = TypedDict("GoalStepDoneResultProgress", {
+    "done": int,
+    "total": int,
+})
+
+GoalStepDoneResult = TypedDict("GoalStepDoneResult", {
+    "goal": Dict[str, Any],
+    "progress": "GoalStepDoneResultProgress",
+    "cursor": NotRequired["Cursor"],
 })
 
 GroupAddParams = TypedDict("GroupAddParams", {
@@ -3426,6 +3782,87 @@ LayoutListResultXV1 = TypedDict("LayoutListResultXV1", {
 })
 
 LayoutListResult: TypeAlias = Union["LayoutListResultXV0", "LayoutListResultXV1"]
+
+MergePredictParams = TypedDict("MergePredictParams", {
+    "repo": NotRequired[str],
+    "tasks": NotRequired[List[str]],
+})
+
+MergePredictResultConflictsItem = TypedDict("MergePredictResultConflictsItem", {
+    "a": str,
+    "b": str,
+    "kind": Literal["overlap", "textual", "claim"],
+    "severity": Literal["low", "medium", "high"],
+    "paths": List[str],
+    "detail": str,
+})
+
+MergePredictResult = TypedDict("MergePredictResult", {
+    "conflicts": List["MergePredictResultConflictsItem"],
+    "tasks": List[str],
+    "at_ms": int,
+})
+
+MergeQueueAddParams = TypedDict("MergeQueueAddParams", {
+    "task": "Target",
+    "target": NotRequired[str],
+    "priority": NotRequired[int],
+    "note": NotRequired[str],
+    "allow_dirty": NotRequired[bool],
+    "run": NotRequired[bool],
+})
+
+MergeQueueAddResult = TypedDict("MergeQueueAddResult", {
+    "entry": Dict[str, Any],
+    "position": Optional[int],
+    "run": NotRequired[Dict[str, Any]],
+    "cursor": NotRequired["Cursor"],
+})
+
+MergeQueueCancelParams = TypedDict("MergeQueueCancelParams", {
+    "entry": str,
+})
+
+MergeQueueCancelResult = TypedDict("MergeQueueCancelResult", {
+    "entry": Optional[Dict[str, Any]],
+    "cursor": NotRequired["Cursor"],
+})
+
+MergeQueueListParams = TypedDict("MergeQueueListParams", {
+    "all": NotRequired[bool],
+})
+
+MergeQueueListResult = TypedDict("MergeQueueListResult", {
+    "entries": List[Dict[str, Any]],
+    "order": List[str],
+})
+
+MergeQueueRequeueParams = TypedDict("MergeQueueRequeueParams", {
+    "entry": str,
+})
+
+MergeQueueRequeueResult = TypedDict("MergeQueueRequeueResult", {
+    "entry": Optional[Dict[str, Any]],
+    "cursor": NotRequired["Cursor"],
+})
+
+MergeQueueRunParams = TypedDict("MergeQueueRunParams", {
+    "entry": NotRequired[str],
+    "count": NotRequired[int],
+    "all": NotRequired[bool],
+})
+
+MergeQueueRunResultResultsItem = TypedDict("MergeQueueRunResultResultsItem", {
+    "entry": Dict[str, Any],
+    "event": str,
+    "detail": Dict[str, Any],
+})
+
+MergeQueueRunResult = TypedDict("MergeQueueRunResult", {
+    "ran": int,
+    "results": List["MergeQueueRunResultResultsItem"],
+    "cursor": NotRequired["Cursor"],
+})
 
 NotesGetParams = TypedDict("NotesGetParams", {
     "workspace": NotRequired["Target"],
@@ -3926,6 +4363,27 @@ PasteTranslatedResult = TypedDict("PasteTranslatedResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PluginActionParamsContext = TypedDict("PluginActionParamsContext", {
+    "workspace": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "tab": NotRequired["Target"],
+})
+
+PluginActionParams = TypedDict("PluginActionParams", {
+    "plugin": NotRequired[str],
+    "action": str,
+    "context": NotRequired["PluginActionParamsContext"],
+    "source": NotRequired[str],
+})
+
+PluginActionResult = TypedDict("PluginActionResult", {
+    "exit_code": Optional[int],
+    "stdout_tail": Optional[str],
+    "status": str,
+    "log": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
 PluginActionListParams = TypedDict("PluginActionListParams", {
     "plugin": NotRequired[str],
 })
@@ -4009,6 +4467,116 @@ PluginActionRunResult = TypedDict("PluginActionRunResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PluginConsentParams = TypedDict("PluginConsentParams", {
+    "plugin": str,
+    "accept_capabilities": List[str],
+})
+
+PluginConsentResult = TypedDict("PluginConsentResult", {
+    "plugin": str,
+    "consent_id": str,
+    "capabilities": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginDisableParams = TypedDict("PluginDisableParams", {
+    "plugin": str,
+})
+
+PluginDisableResult = TypedDict("PluginDisableResult", {
+    "plugin": str,
+    "enabled": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginEnableParams = TypedDict("PluginEnableParams", {
+    "plugin": str,
+})
+
+PluginEnableResult = TypedDict("PluginEnableResult", {
+    "plugin": str,
+    "enabled": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginInstallParams = TypedDict("PluginInstallParams", {
+    "source": str,
+    "ref": NotRequired[str],
+    "accept_capabilities": NotRequired[List[str]],
+    "trust": NotRequired[Literal["scoped", "herdr_legacy"]],
+})
+
+PluginInstallResult = TypedDict("PluginInstallResult", {
+    "plugin": str,
+    "kind": Literal["native", "herdr"],
+    "requested_capabilities": List[Dict[str, Any]],
+    "entrypoints": NotRequired[List[str]],
+    "status": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginKvDeleteParams = TypedDict("PluginKvDeleteParams", {
+    "key": str,
+})
+
+PluginKvDeleteResult = TypedDict("PluginKvDeleteResult", {
+    "key": str,
+    "deleted": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginKvGetParams = TypedDict("PluginKvGetParams", {
+    "key": str,
+})
+
+PluginKvGetResult = TypedDict("PluginKvGetResult", {
+    "key": str,
+    "found": bool,
+    "value": NotRequired[Any],
+    "value_b64": NotRequired[str],
+})
+
+PluginKvListParams = TypedDict("PluginKvListParams", {
+    "prefix": NotRequired[str],
+    "after": NotRequired[str],
+    "limit": NotRequired[int],
+})
+
+PluginKvListResultKeysItem = TypedDict("PluginKvListResultKeysItem", {
+    "key": str,
+    "bytes": int,
+})
+
+PluginKvListResult = TypedDict("PluginKvListResult", {
+    "keys": List["PluginKvListResultKeysItem"],
+    "next": Optional[str],
+})
+
+PluginKvSetParams = TypedDict("PluginKvSetParams", {
+    "key": str,
+    "value": NotRequired[Any],
+    "value_b64": NotRequired[str],
+})
+
+PluginKvSetResult = TypedDict("PluginKvSetResult", {
+    "key": str,
+    "bytes": int,
+    "used": int,
+    "quota": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginLinkParams = TypedDict("PluginLinkParams", {
+    "path": str,
+})
+
+PluginLinkResult = TypedDict("PluginLinkResult", {
+    "plugin": str,
+    "kind": Literal["native", "herdr"],
+    "requested_capabilities": NotRequired[List[Dict[str, Any]]],
+    "cursor": NotRequired["Cursor"],
+})
+
 PluginLinkOpenParamsContext = TypedDict("PluginLinkOpenParamsContext", {
     "pane_id": NotRequired["Target"],
     "tab_id": NotRequired["Target"],
@@ -4049,9 +4617,11 @@ PluginLinkHandlerListResult = TypedDict("PluginLinkHandlerListResult", {
 PluginListParams: TypeAlias = Dict[str, Any]
 
 PluginListResultPluginsItem = TypedDict("PluginListResultPluginsItem", {
-    "id": str,
-    "version": NotRequired[str],
+    "id": NotRequired[str],
+    "plugin_id": NotRequired[str],
+    "version": NotRequired[Optional[str]],
     "enabled": bool,
+    "native": NotRequired[bool],
     "kind": NotRequired[Union[Literal["actions"], Literal["process"], str]],
     "capabilities": NotRequired[Any],
     "status": NotRequired[Any],
@@ -4074,6 +4644,28 @@ PluginRegistryNotifyParams: TypeAlias = Dict[str, Any]
 
 PluginRegistryNotifyResult = TypedDict("PluginRegistryNotifyResult", {
     "ok": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginRemoveParams = TypedDict("PluginRemoveParams", {
+    "plugin": str,
+    "purge_data": NotRequired[bool],
+})
+
+PluginRemoveResult = TypedDict("PluginRemoveResult", {
+    "plugin": str,
+    "removed": bool,
+    "kind": Literal["native", "herdr"],
+    "cursor": NotRequired["Cursor"],
+})
+
+PluginRestartParams = TypedDict("PluginRestartParams", {
+    "plugin": str,
+})
+
+PluginRestartResult = TypedDict("PluginRestartResult", {
+    "plugin": str,
+    "restarted": bool,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4113,6 +4705,64 @@ PolicyAddResult = TypedDict("PolicyAddResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PolicyLearnedAcceptParams = TypedDict("PolicyLearnedAcceptParams", {
+    "id": str,
+    "target": NotRequired[Literal["user", "repo"]],
+})
+
+PolicyLearnedAcceptResult = TypedDict("PolicyLearnedAcceptResult", {
+    "accepted": Dict[str, Any],
+    "result": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+PolicyLearnedDismissParams = TypedDict("PolicyLearnedDismissParams", {
+    "id": str,
+})
+
+PolicyLearnedDismissResult = TypedDict("PolicyLearnedDismissResult", {
+    "dismissed": str,
+    "total": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+PolicyLearnedListParams = TypedDict("PolicyLearnedListParams", {
+    "repo": NotRequired[str],
+})
+
+PolicyLearnedListResultSuggestionsItem = TypedDict("PolicyLearnedListResultSuggestionsItem", {
+    "id": str,
+    "effect": Literal["allow", "deny"],
+    "harness": str,
+    "tool": str,
+    "workspace": str,
+    "pattern": str,
+    "rule": Dict[str, Any],
+    "toml": str,
+    "approvals": int,
+    "denials": int,
+    "first_at_ms": int,
+    "last_at_ms": int,
+    "max_risk": str,
+    "samples": List[str],
+    "reason": str,
+})
+
+PolicyLearnedListResultStats = TypedDict("PolicyLearnedListResultStats", {
+    "decisions": int,
+    "fingerprints": int,
+    "min_approvals": int,
+    "max_denials": int,
+    "window_ms": int,
+    "suggest_deny": bool,
+    "dismissed": int,
+})
+
+PolicyLearnedListResult = TypedDict("PolicyLearnedListResult", {
+    "suggestions": List["PolicyLearnedListResultSuggestionsItem"],
+    "stats": "PolicyLearnedListResultStats",
+})
+
 PolicyListParams = TypedDict("PolicyListParams", {
     "scope": NotRequired["PolicyScope"],
 })
@@ -4130,6 +4780,37 @@ PolicyRemoveResult = TypedDict("PolicyRemoveResult", {
     "removed": bool,
     "rule": "PolicyRuleInfo",
     "cursor": NotRequired["Cursor"],
+})
+
+PolicySuggestParams = TypedDict("PolicySuggestParams", {
+    "min_count": NotRequired[int],
+    "max_denials": NotRequired[int],
+    "limit": NotRequired[int],
+    "harness": NotRequired[str],
+    "include_covered": NotRequired[bool],
+})
+
+PolicySuggestResultSuggestionsItem = TypedDict("PolicySuggestResultSuggestionsItem", {
+    "fingerprint": str,
+    "harness": str,
+    "tool": str,
+    "subject": str,
+    "workspace": str,
+    "approvals": int,
+    "denials": int,
+    "last_at_ms": int,
+    "risk": Literal["low", "medium", "high", "unknown"],
+    "rule": Optional[Dict[str, Any]],
+    "toml": Optional[str],
+    "blocked": Optional[str],
+    "covered": bool,
+})
+
+PolicySuggestResult = TypedDict("PolicySuggestResult", {
+    "suggestions": List["PolicySuggestResultSuggestionsItem"],
+    "min_count": int,
+    "max_denials": int,
+    "samples": int,
 })
 
 PolicyTestParamsAction = TypedDict("PolicyTestParamsAction", {
@@ -4467,6 +5148,50 @@ PreviewUrlResult = TypedDict("PreviewUrlResult", {
     "remote_url": str,
     "profile_url": str,
     "proxy_url": Optional[str],
+})
+
+QuotaResumeParams = TypedDict("QuotaResumeParams", {
+    "key": NotRequired[str],
+    "task": NotRequired[str],
+})
+
+QuotaResumeResult = TypedDict("QuotaResumeResult", {
+    "resumed": str,
+    "handle": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+QuotaRouteParams = TypedDict("QuotaRouteParams", {
+    "harnesses": NotRequired[List[str]],
+})
+
+QuotaRouteResultRankingItem = TypedDict("QuotaRouteResultRankingItem", {
+    "harness": str,
+    "headroom": float,
+    "account": str,
+})
+
+QuotaRouteResult = TypedDict("QuotaRouteResult", {
+    "ranking": List["QuotaRouteResultRankingItem"],
+})
+
+QuotaStatusParams: TypeAlias = Dict[str, Any]
+
+QuotaStatusResult = TypedDict("QuotaStatusResult", {
+    "enabled": bool,
+    "accounts": List[Dict[str, Any]],
+    "paused": List[Dict[str, Any]],
+    "config": Dict[str, Any],
+})
+
+QuotaTickParams = TypedDict("QuotaTickParams", {
+    "dry_run": NotRequired[bool],
+})
+
+QuotaTickResult = TypedDict("QuotaTickResult", {
+    "dry_run": bool,
+    "actions": List[Dict[str, Any]],
+    "cursor": NotRequired["Cursor"],
 })
 
 SandboxAllowParams = TypedDict("SandboxAllowParams", {
@@ -4818,6 +5543,7 @@ ScrollbackForgetResult = TypedDict("ScrollbackForgetResult", {
     "bytes_deleted": NotRequired[int],
     "fts_rows_deleted": NotRequired[int],
     "archive_panes_dropped": NotRequired[int],
+    "assistant_purged": NotRequired[int],
     "review": NotRequired["ReviewPurge"],
     "cursor": NotRequired["Cursor"],
 })
@@ -4848,6 +5574,43 @@ SearchQueryResultHitsItem = TypedDict("SearchQueryResultHitsItem", {
 
 SearchQueryResult = TypedDict("SearchQueryResult", {
     "hits": List["SearchQueryResultHitsItem"],
+    "redacted": NotRequired[bool],
+})
+
+SecurityEncryptionMigrateParams = TypedDict("SecurityEncryptionMigrateParams", {
+    "to": NotRequired[Literal["sealed", "plain", "encrypted", "decrypted"]],
+    "dry_run": NotRequired[bool],
+})
+
+SecurityEncryptionMigrateResult = TypedDict("SecurityEncryptionMigrateResult", {
+    "to": Literal["sealed", "plain"],
+    "dry_run": bool,
+    "files": int,
+    "changed": int,
+    "unchanged": int,
+    "failed": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+SecurityEncryptionStatusParams: TypeAlias = Dict[str, Any]
+
+SecurityEncryptionStatusResultFiles = TypedDict("SecurityEncryptionStatusResultFiles", {
+    "sealed": int,
+    "plain": int,
+})
+
+SecurityEncryptionStatusResult = TypedDict("SecurityEncryptionStatusResult", {
+    "encrypt_state": bool,
+    "active": bool,
+    "key_id": Optional[str],
+    "keychain": Optional[str],
+    "readable": bool,
+    "error": Optional[str],
+    "files": "SecurityEncryptionStatusResultFiles",
+    "covers": List[str],
+    "not_covered": List[str],
+    "redact_scrollback_index": bool,
+    "note": str,
 })
 
 ServerReloadConfigParams: TypeAlias = Dict[str, Any]
@@ -4961,6 +5724,73 @@ SessionStopParams = TypedDict("SessionStopParams", {
 SessionStopResult = TypedDict("SessionStopResult", {
     "session": Dict[str, Any],
     "stopped": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+StateForgetParams = TypedDict("StateForgetParams", {
+    "pane": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "before": NotRequired[Union[str, int]],
+    "all": NotRequired[bool],
+    "dry_run": NotRequired[bool],
+    "plan": NotRequired[str],
+    "scrollback_only": NotRequired[bool],
+})
+
+StateForgetResultAlsoBlobs = TypedDict("StateForgetResultAlsoBlobs", {
+    "screenshots": int,
+    "files": int,
+})
+
+StateForgetResultAlsoUploads = TypedDict("StateForgetResultAlsoUploads", {
+    "removed": int,
+    "kept_shared": int,
+})
+
+StateForgetResultAlsoDrafts = TypedDict("StateForgetResultAlsoDrafts", {
+    "drafts": int,
+    "notes": int,
+    "failed": int,
+})
+
+StateForgetResultAlsoAssistant = TypedDict("StateForgetResultAlsoAssistant", {
+    "purged": Optional[int],
+    "by": str,
+})
+
+StateForgetResultAlsoDesk = TypedDict("StateForgetResultAlsoDesk", {
+    "calls": int,
+    "rows": Optional[int],
+    "errors": NotRequired[List[str]],
+})
+
+StateForgetResultAlso = TypedDict("StateForgetResultAlso", {
+    "items": int,
+    "collisions": NotRequired[int],
+    "blobs": "StateForgetResultAlsoBlobs",
+    "uploads": "StateForgetResultAlsoUploads",
+    "drafts": "StateForgetResultAlsoDrafts",
+    "assistant": "StateForgetResultAlsoAssistant",
+    "desk": "StateForgetResultAlsoDesk",
+    "snapshots": int,
+    "events_tombstoned": int,
+})
+
+StateForgetResult = TypedDict("StateForgetResult", {
+    "scope": Any,
+    "pane_ids": Optional[List[str]],
+    "plan": Any,
+    "dry_run": bool,
+    "panes": NotRequired[int],
+    "segments_deleted": NotRequired[int],
+    "bytes_deleted": NotRequired[int],
+    "fts_rows_deleted": NotRequired[int],
+    "archive_panes_dropped": NotRequired[int],
+    "assistant_purged": NotRequired[int],
+    "scrollback_only": NotRequired[bool],
+    "review": NotRequired["ReviewPurge"],
+    "also": NotRequired["StateForgetResultAlso"],
+    "not_covered": NotRequired[List[str]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -5091,6 +5921,35 @@ TaskArchiveResult = TypedDict("TaskArchiveResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TaskBestOfNParams = TypedDict("TaskBestOfNParams", {
+    "title": str,
+    "agents": Union[str, List[Union[str, Dict[str, Any]]]],
+    "repo": NotRequired[str],
+    "base": NotRequired[str],
+    "prompt": NotRequired[str],
+    "prompt_file": NotRequired[str],
+    "suffix": NotRequired[str],
+    "check_command": NotRequired[str],
+    "isolate": NotRequired[str],
+    "yolo": NotRequired[bool],
+    "network": NotRequired[str],
+    "image": NotRequired[str],
+    "setup": NotRequired[bool],
+    "ports": NotRequired[int],
+    "isolation": NotRequired[str],
+    "checkout": NotRequired[str],
+    "root": NotRequired[str],
+    "fetch": NotRequired[bool],
+})
+
+TaskBestOfNResult = TypedDict("TaskBestOfNResult", {
+    "family": Dict[str, Any],
+    "tasks": List[Optional["Task"]],
+    "runs": List["AgentRun"],
+    "warnings": List[Any],
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskCheckAuthorizeParams = TypedDict("TaskCheckAuthorizeParams", {
     "task": "Target",
     "check": str,
@@ -5169,39 +6028,73 @@ TaskCheckRunResult = TypedDict("TaskCheckRunResult", {
 })
 
 TaskClaimParams = TypedDict("TaskClaimParams", {
-    "glob": str,
-    "run": NotRequired["Target"],
     "task": NotRequired["Target"],
-    "root": NotRequired[str],
+    "run": NotRequired["Target"],
+    "glob": str,
     "note": NotRequired[str],
+    "root": NotRequired[str],
+})
+
+TaskClaimResultClaim = TypedDict("TaskClaimResultClaim", {
+    "id": str,
+    "task": Optional[str],
+    "glob": str,
+    "note": Optional[str],
+    "created_at_ms": int,
+    "run": NotRequired[str],
+    "root": NotRequired[str],
+    "kind": NotRequired[Literal["run", "task"]],
 })
 
 TaskClaimResult = TypedDict("TaskClaimResult", {
-    "claim": "CollisionClaim",
-    "conflicts": List["CollisionClaim"],
-    "label": str,
+    "claim": "TaskClaimResultClaim",
+    "conflicts": List[Dict[str, Any]],
+    "label": NotRequired[str],
     "cursor": NotRequired["Cursor"],
 })
 
-TaskClaimReleaseParams = TypedDict("TaskClaimReleaseParams", {
-    "claim": NotRequired[str],
-    "run": NotRequired["Target"],
-    "glob": NotRequired[str],
-})
-
-TaskClaimReleaseResult = TypedDict("TaskClaimReleaseResult", {
-    "released": List[str],
-    "cursor": NotRequired["Cursor"],
-})
-
-TaskClaimsParams = TypedDict("TaskClaimsParams", {
+TaskClaimListParams = TypedDict("TaskClaimListParams", {
     "task": NotRequired["Target"],
-    "run": NotRequired["Target"],
-    "root": NotRequired[str],
 })
 
-TaskClaimsResult = TypedDict("TaskClaimsResult", {
-    "claims": List["CollisionClaim"],
+TaskClaimListResult = TypedDict("TaskClaimListResult", {
+    "claims": List[Dict[str, Any]],
+})
+
+TaskClaimRemoveParams = TypedDict("TaskClaimRemoveParams", {
+    "claim": str,
+})
+
+TaskClaimRemoveResult = TypedDict("TaskClaimRemoveResult", {
+    "removed": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskCompareParams = TypedDict("TaskCompareParams", {
+    "family": str,
+    "pair": NotRequired[List[str]],
+})
+
+TaskCompareResultRankingItem = TypedDict("TaskCompareResultRankingItem", {
+    "handle": str,
+    "score": int,
+    "reasons": List[str],
+})
+
+TaskCompareResultPair = TypedDict("TaskCompareResultPair", {
+    "a": str,
+    "b": str,
+    "summary": Dict[str, Any],
+})
+
+TaskCompareResult = TypedDict("TaskCompareResult", {
+    "family": str,
+    "state": str,
+    "picked": Optional[str],
+    "reports": List[Dict[str, Any]],
+    "ranking": List["TaskCompareResultRankingItem"],
+    "text": str,
+    "pair": NotRequired["TaskCompareResultPair"],
 })
 
 TaskCreateParamsAgentsItem = TypedDict("TaskCreateParamsAgentsItem", {
@@ -5473,6 +6366,29 @@ TaskParkResult = TypedDict("TaskParkResult", {
     "task": "Task",
     "stopped": List["TaskParkResultStoppedItem"],
     "note": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskPickParams = TypedDict("TaskPickParams", {
+    "family": str,
+    "child": str,
+    "merge": NotRequired[bool],
+    "discard": NotRequired[bool],
+    "force": NotRequired[bool],
+    "target": NotRequired[str],
+})
+
+TaskPickResultDiscardedItem = TypedDict("TaskPickResultDiscardedItem", {
+    "child": str,
+    "ok": bool,
+    "error": NotRequired[str],
+})
+
+TaskPickResult = TypedDict("TaskPickResult", {
+    "family": Dict[str, Any],
+    "picked": str,
+    "merge": Any,
+    "discarded": List["TaskPickResultDiscardedItem"],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -5963,6 +6879,45 @@ TaskSetupLogResult = TypedDict("TaskSetupLogResult", {
     "setup_status": Optional[str],
 })
 
+TaskSplitParams = TypedDict("TaskSplitParams", {
+    "run": NotRequired[str],
+    "pane": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "paths": NotRequired[List[str]],
+    "title": NotRequired[str],
+    "slug": NotRequired[str],
+    "dry_run": NotRequired[bool],
+    "resume": NotRequired[bool],
+    "keep_recovery": NotRequired[bool],
+})
+
+TaskSplitResultChangesItem = TypedDict("TaskSplitResultChangesItem", {
+    "path": str,
+    "staged": bool,
+    "unstaged": bool,
+    "untracked": bool,
+    "deleted": bool,
+})
+
+TaskSplitResultStepsItem = TypedDict("TaskSplitResultStepsItem", {
+    "step": str,
+    "detail": str,
+})
+
+TaskSplitResult = TypedDict("TaskSplitResult", {
+    "dry_run": NotRequired[bool],
+    "source": str,
+    "changes": NotRequired[List["TaskSplitResultChangesItem"]],
+    "steps": NotRequired[List["TaskSplitResultStepsItem"]],
+    "blocked_by": NotRequired[Optional[List[str]]],
+    "runs": List[Dict[str, Any]],
+    "task": NotRequired[Optional["Task"]],
+    "moved": NotRequired[List[str]],
+    "recovery_ref": NotRequired[str],
+    "recovery_kept": NotRequired[bool],
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskSyncParams = TypedDict("TaskSyncParams", {
     "task": "Target",
     "direction": NotRequired[Literal["pull", "push", "both"]],
@@ -6001,6 +6956,204 @@ ThemeSetModeResult = TypedDict("ThemeSetModeResult", {
     "colorfgbg": str,
     "reports": NotRequired[Any],
     "cursor": NotRequired["Cursor"],
+})
+
+UiContributeParamsRemoveItem = TypedDict("UiContributeParamsRemoveItem", {
+    "kind": str,
+    "id": str,
+})
+
+UiContributeParams = TypedDict("UiContributeParams", {
+    "contributions": NotRequired[List[Dict[str, Any]]],
+    "replace": NotRequired[bool],
+    "remove": NotRequired[List["UiContributeParamsRemoveItem"]],
+})
+
+UiContributeResult = TypedDict("UiContributeResult", {
+    "plugin": str,
+    "contributions": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+UiContributionsParams: TypeAlias = Dict[str, Any]
+
+UiContributionsResult = TypedDict("UiContributionsResult", {
+    "contributions": List[Dict[str, Any]],
+})
+
+UiPaneOpenParams = TypedDict("UiPaneOpenParams", {
+    "plugin": str,
+    "pane": str,
+    "target": NotRequired["Target"],
+    "direction": NotRequired[Literal["right", "down", "left", "up"]],
+})
+
+UiPaneOpenResult = TypedDict("UiPaneOpenResult", {
+    "pane": "Pane",
+    "cursor": NotRequired["Cursor"],
+})
+
+VmCreateParams = TypedDict("VmCreateParams", {
+    "name": NotRequired[str],
+    "task": NotRequired[str],
+    "checkout": NotRequired[str],
+    "template": NotRequired[bool],
+})
+
+VmCreateResult = TypedDict("VmCreateResult", {
+    "vm": Dict[str, Any],
+    "fork_ms": Optional[int],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmDestroyParams = TypedDict("VmDestroyParams", {
+    "vm": str,
+})
+
+VmDestroyResult = TypedDict("VmDestroyResult", {
+    "vm": str,
+    "state": Optional[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmForkParams = TypedDict("VmForkParams", {
+    "snapshot": str,
+    "count": NotRequired[int],
+    "prefix": NotRequired[str],
+    "tasks": NotRequired[List[str]],
+    "checkouts": NotRequired[List[str]],
+})
+
+VmForkResult = TypedDict("VmForkResult", {
+    "vms": List[Dict[str, Any]],
+    "ms": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+VmListParams: TypeAlias = Dict[str, Any]
+
+VmListResultVmsItem = TypedDict("VmListResultVmsItem", {
+    "name": str,
+    "task": Optional[str],
+    "template": Optional[str],
+    "created_ms": int,
+    "state": str,
+})
+
+VmListResult = TypedDict("VmListResult", {
+    "vms": List["VmListResultVmsItem"],
+    "snapshots": List[Dict[str, Any]],
+})
+
+VmResumeParams = TypedDict("VmResumeParams", {
+    "vm": str,
+})
+
+VmResumeResult = TypedDict("VmResumeResult", {
+    "vm": str,
+    "state": Optional[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmSnapshotParams = TypedDict("VmSnapshotParams", {
+    "vm": str,
+    "label": NotRequired[str],
+})
+
+VmSnapshotResult = TypedDict("VmSnapshotResult", {
+    "snapshot": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmSnapshotDeleteParams = TypedDict("VmSnapshotDeleteParams", {
+    "snapshot": str,
+    "force": NotRequired[bool],
+})
+
+VmSnapshotDeleteResult = TypedDict("VmSnapshotDeleteResult", {
+    "deleted": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+VmStartParams = TypedDict("VmStartParams", {
+    "vm": str,
+})
+
+VmStartResult = TypedDict("VmStartResult", {
+    "vm": str,
+    "state": Optional[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmStatusParams: TypeAlias = Dict[str, Any]
+
+VmStatusResultProvidersItem = TypedDict("VmStatusResultProvidersItem", {
+    "provider": str,
+    "status": str,
+    "note": str,
+})
+
+VmStatusResult = TypedDict("VmStatusResult", {
+    "enabled": bool,
+    "provider": str,
+    "available": bool,
+    "detail": str,
+    "config": Dict[str, Any],
+    "providers": List["VmStatusResultProvidersItem"],
+})
+
+VmStopParams = TypedDict("VmStopParams", {
+    "vm": str,
+})
+
+VmStopResult = TypedDict("VmStopResult", {
+    "vm": str,
+    "state": Optional[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmSuspendParams = TypedDict("VmSuspendParams", {
+    "vm": str,
+})
+
+VmSuspendResult = TypedDict("VmSuspendResult", {
+    "vm": str,
+    "state": Optional[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmTemplateBuildParams: TypeAlias = Dict[str, Any]
+
+VmTemplateBuildResult = TypedDict("VmTemplateBuildResult", {
+    "template": Dict[str, Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+VmTemplateDeleteParams = TypedDict("VmTemplateDeleteParams", {
+    "key": str,
+})
+
+VmTemplateDeleteResult = TypedDict("VmTemplateDeleteResult", {
+    "deleted": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+VmTemplateListParams: TypeAlias = Dict[str, Any]
+
+VmTemplateListResult = TypedDict("VmTemplateListResult", {
+    "templates": List[Dict[str, Any]],
+})
+
+VmTransportParams = TypedDict("VmTransportParams", {
+    "vm": str,
+})
+
+VmTransportResult = TypedDict("VmTransportResult", {
+    "vm": str,
+    "offered": List[str],
+    "chain": List[str],
+    "configured": str,
+    "link": str,
 })
 
 WorkspaceCloseParams = TypedDict("WorkspaceCloseParams", {
@@ -6160,11 +7313,15 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "adapter.gate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.report_self": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.signal": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "agent.drift": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.interrupt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.limits": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.manifest_pin": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.manifests_check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6176,6 +7333,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6245,6 +7403,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "client.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "client.hello": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "client.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "collision.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "collision.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "collision.claims": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "collision.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "collision.ignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "collision.ignores": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
@@ -6284,11 +7445,24 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "events.subscribe": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "events.unsubscribe": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "events.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "family.check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "family.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "family.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "fs.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "fs.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "goal.approve": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "goal.briefing": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "goal.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "goal.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "goal.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "goal.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "goal.plan": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "goal.plan_submit": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "goal.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "goal.step_done": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "group.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "group.collapse": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "group.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -6307,6 +7481,12 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "layout.export": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "layout.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "layout.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "merge.predict": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "merge.queue.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "merge.queue.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "merge.queue.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "merge.queue.requeue": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "merge.queue.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "notes.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "notes.set": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "notification.config": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6343,17 +7523,33 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "paste.translated": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.action": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.action.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.action.run": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "plugin.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.disable": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.enable": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.install": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.kv.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.link": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.link.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "plugin.link_handler.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.log.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.registry.notify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "plugin.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.surface.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.learned.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.learned.dismiss": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.learned.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.suggest": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -6370,6 +7566,10 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "preview.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "preview.unmirror": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.url": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "quota.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "quota.route": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "quota.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "quota.tick": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.allow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.copy_out": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.disallow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -6392,6 +7592,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "screenshot.open": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "scrollback.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "search.query": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "security.encryption.migrate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "security.encryption.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "server.reload_config": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6401,6 +7603,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "state.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -6412,14 +7615,16 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "tab.renumber": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.archive": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.best_of_n": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.check.authorize": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.check.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.check.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.check.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.check.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open"},
-    "task.claims": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.claim.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.claim.remove": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.compare": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "task.dependency.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.dependency.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6431,6 +7636,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.link.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.park": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.pick": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.ports.re_lease": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6456,9 +7662,28 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.review.start_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.setup": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.setup_log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.split": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.sync": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "theme.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "theme.set_mode": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "ui.contribute": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "ui.contributions": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "ui.pane.open": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.destroy": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.fork": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "vm.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.snapshot": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.snapshot.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "vm.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.suspend": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.template.build": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.template.delete": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "vm.template.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "vm.transport": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "workspace.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "workspace.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "workspace.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -6483,6 +7708,7 @@ AdapterDisagreementData = TypedDict("AdapterDisagreementData", {
     "facet": str,
     "structured": str,
     "other": str,
+    "source": NotRequired[str],
 })
 
 AdapterHealthChangedSubject = TypedDict("AdapterHealthChangedSubject", {
@@ -6493,6 +7719,17 @@ AdapterHealthChangedData = TypedDict("AdapterHealthChangedData", {
     "to": str,
     "from": NotRequired[str],
     "transport": NotRequired[str],
+    "reason": NotRequired[str],
+})
+
+AgentCwdChangedSubject = TypedDict("AgentCwdChangedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentCwdChangedData = TypedDict("AgentCwdChangedData", {
+    "cwd": str,
+    "old_cwd": Optional[str],
 })
 
 AgentDetectedSubject = TypedDict("AgentDetectedSubject", {
@@ -6504,6 +7741,21 @@ AgentDetectedData = TypedDict("AgentDetectedData", {
     "harness": str,
     "via": str,
     "argv0": NotRequired[Optional[str]],
+})
+
+AgentDriftDetectedSubject = TypedDict("AgentDriftDetectedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentDriftDetectedData = TypedDict("AgentDriftDetectedData", {
+    "harness": str,
+    "version": str,
+    "observations": int,
+    "disagreements": int,
+    "unknown_resolutions": int,
+    "answer_failures": int,
+    "rate": float,
 })
 
 AgentExitedSubject = TypedDict("AgentExitedSubject", {
@@ -6616,6 +7868,7 @@ AgentStateChangedData = TypedDict("AgentStateChangedData", {
     "to": str,
     "source": NotRequired[str],
     "confidence": NotRequired[float],
+    "inferred": NotRequired[bool],
 })
 
 AgentSubagentFinishedSubject = TypedDict("AgentSubagentFinishedSubject", {
@@ -6638,6 +7891,18 @@ AgentSubagentStartedData = TypedDict("AgentSubagentStartedData", {
     "agent_type": str,
 })
 
+AgentToolBlockedSubject = TypedDict("AgentToolBlockedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentToolBlockedData = TypedDict("AgentToolBlockedData", {
+    "tool": str,
+    "effect": str,
+    "rule": Optional[str],
+    "command": Optional[str],
+})
+
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {
     "run": str,
     "pane": str,
@@ -6654,6 +7919,24 @@ AgentTurnStartedSubject = TypedDict("AgentTurnStartedSubject", {
 })
 
 AgentTurnStartedData: TypeAlias = Any
+
+AgentTurnUsageSubject = TypedDict("AgentTurnUsageSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentTurnUsageData = TypedDict("AgentTurnUsageData", {
+    "turn": int,
+    "native_id": str,
+    "model": Optional[str],
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+    "cost_source": str,
+    "source": str,
+})
 
 AgentUsageSubject = TypedDict("AgentUsageSubject", {
     "run": str,
@@ -6975,6 +8258,126 @@ DraftUpdatedSubject = TypedDict("DraftUpdatedSubject", {
 
 DraftUpdatedData: TypeAlias = Any
 
+FamilyCheckedSubject = TypedDict("FamilyCheckedSubject", {
+    "family": str,
+    "child": str,
+})
+
+FamilyCheckedData = TypedDict("FamilyCheckedData", {
+    "ok": bool,
+    "exit_code": Optional[int],
+    "timed_out": bool,
+    "duration_ms": int,
+})
+
+FamilyCreatedSubject = TypedDict("FamilyCreatedSubject", {
+    "family": str,
+})
+
+FamilyCreatedDataChildrenItem = TypedDict("FamilyCreatedDataChildrenItem", {
+    "handle": str,
+    "task": str,
+    "harness": str,
+})
+
+FamilyCreatedData = TypedDict("FamilyCreatedData", {
+    "title": str,
+    "children": List["FamilyCreatedDataChildrenItem"],
+    "check_command": Optional[str],
+})
+
+FamilyPickedSubject = TypedDict("FamilyPickedSubject", {
+    "family": str,
+})
+
+FamilyPickedData = TypedDict("FamilyPickedData", {
+    "picked": str,
+    "discarded": int,
+})
+
+GoalApprovedSubject = TypedDict("GoalApprovedSubject", {
+    "goal": str,
+})
+
+GoalApprovedData = TypedDict("GoalApprovedData", {
+    "by": str,
+    "rev": int,
+})
+
+GoalCancelledSubject = TypedDict("GoalCancelledSubject", {
+    "goal": str,
+})
+
+GoalCancelledData = TypedDict("GoalCancelledData", {
+    "stop_tasks": bool,
+})
+
+GoalCreatedSubject = TypedDict("GoalCreatedSubject", {
+    "goal": str,
+})
+
+GoalCreatedData = TypedDict("GoalCreatedData", {
+    "handle": str,
+    "title": str,
+})
+
+GoalFinishedSubject = TypedDict("GoalFinishedSubject", {
+    "goal": str,
+})
+
+GoalFinishedData = TypedDict("GoalFinishedData", {
+    "state": str,
+})
+
+GoalPlannedSubject = TypedDict("GoalPlannedSubject", {
+    "goal": str,
+})
+
+GoalPlannedData = TypedDict("GoalPlannedData", {
+    "steps": int,
+    "planner": str,
+    "rev": int,
+})
+
+GoalPlanningStartedSubject = TypedDict("GoalPlanningStartedSubject", {
+    "goal": str,
+})
+
+GoalPlanningStartedData = TypedDict("GoalPlanningStartedData", {
+    "harness": str,
+    "run": Optional[str],
+})
+
+GoalStepFinishedSubject = TypedDict("GoalStepFinishedSubject", {
+    "goal": str,
+    "step": str,
+})
+
+GoalStepFinishedData = TypedDict("GoalStepFinishedData", {
+    "status": str,
+    "error": Optional[str],
+})
+
+GoalStepStartedSubject = TypedDict("GoalStepStartedSubject", {
+    "goal": str,
+    "step": str,
+})
+
+GoalStepStartedData = TypedDict("GoalStepStartedData", {
+    "task": str,
+    "harness": str,
+    "reasons": List[str],
+})
+
+GoalStepWaitingSubject = TypedDict("GoalStepWaitingSubject", {
+    "goal": str,
+    "step": str,
+})
+
+GoalStepWaitingData = TypedDict("GoalStepWaitingData", {
+    "reason": str,
+})
+
 GroupClosedSubject = TypedDict("GroupClosedSubject", {
     "group": str,
 })
@@ -7013,6 +8416,18 @@ GroupRenamedSubject = TypedDict("GroupRenamedSubject", {
 
 GroupRenamedData = TypedDict("GroupRenamedData", {
     "name": str,
+})
+
+HarnessManifestLoadedSubject = TypedDict("HarnessManifestLoadedSubject", {
+    "manifest": str,
+})
+
+HarnessManifestLoadedData = TypedDict("HarnessManifestLoadedData", {
+    "id": str,
+    "version": str,
+    "source": str,
+    "serial": int,
+    "verified": str,
 })
 
 IntegrationTamperedSubject = TypedDict("IntegrationTamperedSubject", {
@@ -7134,6 +8549,105 @@ MachineRemovedSubject = TypedDict("MachineRemovedSubject", {
 
 MachineRemovedData = TypedDict("MachineRemovedData", {
     "label": str,
+})
+
+MergeBlockedSubject = TypedDict("MergeBlockedSubject", {
+    "entry": str,
+    "task": str,
+})
+
+MergeBlockedData = TypedDict("MergeBlockedData", {
+    "handle": str,
+    "target": str,
+    "reason": str,
+})
+
+MergeCancelledSubject = TypedDict("MergeCancelledSubject", {
+    "entry": NotRequired[Optional[str]],
+})
+
+MergeCancelledData = TypedDict("MergeCancelledData", {
+    "handle": Optional[str],
+})
+
+MergeCheckFailedSubject = TypedDict("MergeCheckFailedSubject", {
+    "entry": str,
+    "task": str,
+})
+
+MergeCheckFailedData = TypedDict("MergeCheckFailedData", {
+    "handle": str,
+    "target": str,
+    "exit_code": Optional[int],
+    "timed_out": bool,
+})
+
+MergeConflictSubject = TypedDict("MergeConflictSubject", {
+    "entry": str,
+    "task": str,
+})
+
+MergeConflictData = TypedDict("MergeConflictData", {
+    "handle": str,
+    "target": str,
+    "paths": List[str],
+})
+
+MergeConflictPredictedSubject = TypedDict("MergeConflictPredictedSubject", {
+    "a": str,
+    "b": str,
+})
+
+MergeConflictPredictedData = TypedDict("MergeConflictPredictedData", {
+    "a": str,
+    "b": str,
+    "kind": str,
+    "severity": str,
+    "paths": List[str],
+    "detail": str,
+})
+
+MergeFailedSubject = TypedDict("MergeFailedSubject", {
+    "entry": str,
+    "task": str,
+})
+
+MergeFailedData = TypedDict("MergeFailedData", {
+    "handle": str,
+    "target": str,
+    "error": str,
+})
+
+MergeMergedSubject = TypedDict("MergeMergedSubject", {
+    "entry": str,
+    "task": str,
+})
+
+MergeMergedData = TypedDict("MergeMergedData", {
+    "handle": str,
+    "target": str,
+    "commit": str,
+    "already": bool,
+    "via": str,
+})
+
+MergeQueuedSubject = TypedDict("MergeQueuedSubject", {
+    "entry": str,
+    "task": str,
+})
+
+MergeQueuedData = TypedDict("MergeQueuedData", {
+    "handle": str,
+    "target": str,
+    "priority": int,
+})
+
+MergeRequeuedSubject = TypedDict("MergeRequeuedSubject", {
+    "entry": NotRequired[Optional[str]],
+})
+
+MergeRequeuedData = TypedDict("MergeRequeuedData", {
+    "handle": Optional[str],
 })
 
 NotesUpdatedSubject = TypedDict("NotesUpdatedSubject", {
@@ -7362,6 +8876,193 @@ PasteTranslatedData = TypedDict("PasteTranslatedData", {
     "target_namespace": str,
 })
 
+PluginActionInvokedSubject = TypedDict("PluginActionInvokedSubject", {
+    "plugin": str,
+})
+
+PluginActionInvokedData = TypedDict("PluginActionInvokedData", {
+    "action": str,
+    "log": str,
+    "source": str,
+    "via": Literal["argv", "process"],
+})
+
+PluginApiCallSubject = TypedDict("PluginApiCallSubject", {
+    "plugin": str,
+})
+
+PluginApiCallData = TypedDict("PluginApiCallData", {
+    "method": str,
+    "token": NotRequired[str],
+    "ok": NotRequired[bool],
+    "error_code": NotRequired[Optional[str]],
+})
+
+PluginCapabilityViolationSubject = TypedDict("PluginCapabilityViolationSubject", {
+    "plugin": str,
+})
+
+PluginCapabilityViolationData = TypedDict("PluginCapabilityViolationData", {
+    "method": str,
+    "reason": str,
+    "token": NotRequired[str],
+})
+
+PluginCommandFinishedSubject = TypedDict("PluginCommandFinishedSubject", {
+    "plugin": str,
+})
+
+PluginCommandFinishedData = TypedDict("PluginCommandFinishedData", {
+    "log": str,
+    "what": str,
+    "status": Literal["completed", "failed"],
+    "exit_code": Optional[int],
+})
+
+PluginCrashedSubject = TypedDict("PluginCrashedSubject", {
+    "plugin": str,
+})
+
+PluginCrashedData = TypedDict("PluginCrashedData", {
+    "exit_code": Optional[int],
+    "reason": str,
+    "crashes_in_window": int,
+    "restart": bool,
+    "restart_in_ms": Optional[int],
+    "disabled": bool,
+    "stderr_tail": str,
+})
+
+PluginDisabledSubject = TypedDict("PluginDisabledSubject", {
+    "plugin": str,
+})
+
+PluginDisabledData = TypedDict("PluginDisabledData", {
+    "kind": str,
+})
+
+PluginEnabledSubject = TypedDict("PluginEnabledSubject", {
+    "plugin": str,
+})
+
+PluginEnabledData = TypedDict("PluginEnabledData", {
+    "kind": str,
+})
+
+PluginInstalledSubject = TypedDict("PluginInstalledSubject", {
+    "plugin": str,
+})
+
+PluginInstalledData = TypedDict("PluginInstalledData", {
+    "kind": str,
+    "update": NotRequired[bool],
+})
+
+PluginLaunchFailedSubject = TypedDict("PluginLaunchFailedSubject", {
+    "plugin": str,
+})
+
+PluginLaunchFailedData = TypedDict("PluginLaunchFailedData", {
+    "what": str,
+    "error": str,
+})
+
+PluginLinkedSubject = TypedDict("PluginLinkedSubject", {
+    "plugin": str,
+})
+
+PluginLinkedData = TypedDict("PluginLinkedData", {
+    "kind": str,
+    "update": NotRequired[bool],
+})
+
+PluginPaneOpenedSubject = TypedDict("PluginPaneOpenedSubject", {
+    "plugin": str,
+    "pane": NotRequired[str],
+})
+
+PluginPaneOpenedData = TypedDict("PluginPaneOpenedData", {
+    "entrypoint": NotRequired[str],
+})
+
+PluginProcessStartedSubject = TypedDict("PluginProcessStartedSubject", {
+    "plugin": str,
+})
+
+PluginProcessStartedData = TypedDict("PluginProcessStartedData", {
+    "pid": int,
+    "sandbox": bool,
+    "restarts": int,
+})
+
+PluginProcessStoppedSubject = TypedDict("PluginProcessStoppedSubject", {
+    "plugin": str,
+})
+
+PluginProcessStoppedData = TypedDict("PluginProcessStoppedData", {
+    "exit_code": Optional[int],
+    "signal": Optional[int],
+    "requested": bool,
+})
+
+PluginRegistryObservedSubject: TypeAlias = Dict[str, Any]
+
+PluginRegistryObservedData = TypedDict("PluginRegistryObservedData", {
+    "generation": int,
+    "plugins": int,
+})
+
+PluginReloadedSubject = TypedDict("PluginReloadedSubject", {
+    "plugin": str,
+})
+
+PluginReloadedData = TypedDict("PluginReloadedData", {
+    "reason": str,
+})
+
+PluginTrustChangedSubject = TypedDict("PluginTrustChangedSubject", {
+    "plugin": str,
+})
+
+PluginTrustChangedData = TypedDict("PluginTrustChangedData", {
+    "kind": str,
+    "trusted": bool,
+})
+
+PluginUninstalledSubject = TypedDict("PluginUninstalledSubject", {
+    "plugin": str,
+})
+
+PluginUninstalledData = TypedDict("PluginUninstalledData", {
+    "kind": str,
+})
+
+PluginUnlinkedSubject = TypedDict("PluginUnlinkedSubject", {
+    "plugin": str,
+})
+
+PluginUnlinkedData = TypedDict("PluginUnlinkedData", {
+    "kind": str,
+})
+
+PolicyLearnedAcceptedSubject = TypedDict("PolicyLearnedAcceptedSubject", {
+    "suggestion": str,
+})
+
+PolicyLearnedAcceptedData = TypedDict("PolicyLearnedAcceptedData", {
+    "target": str,
+    "effect": str,
+    "pattern": str,
+    "workspace": str,
+    "approvals": int,
+})
+
+PolicyLearnedDismissedSubject = TypedDict("PolicyLearnedDismissedSubject", {
+    "suggestion": str,
+})
+
+PolicyLearnedDismissedData: TypeAlias = Any
+
 PolicyRepoTrustedSubject: TypeAlias = Dict[str, Any]
 
 PolicyRepoTrustedData = TypedDict("PolicyRepoTrustedData", {
@@ -7508,6 +9209,28 @@ PreviewUpSubject = TypedDict("PreviewUpSubject", {
 
 PreviewUpData = TypedDict("PreviewUpData", {
     "preview": "Preview",
+})
+
+QuotaPausedSubject = TypedDict("QuotaPausedSubject", {
+    "key": str,
+})
+
+QuotaPausedData = TypedDict("QuotaPausedData", {
+    "handle": str,
+    "account": str,
+    "reason": str,
+    "resumes_at_ms": Optional[int],
+    "task": Optional[str],
+})
+
+QuotaResumedSubject = TypedDict("QuotaResumedSubject", {
+    "key": str,
+})
+
+QuotaResumedData = TypedDict("QuotaResumedData", {
+    "handle": str,
+    "reason": str,
+    "task": Optional[str],
 })
 
 ReviewAcceptedSubject = TypedDict("ReviewAcceptedSubject", {
@@ -7880,6 +9603,14 @@ ScrollbackForgottenData = TypedDict("ScrollbackForgottenData", {
     "panes_dropped": int,
 })
 
+SecurityEncryptionMigratedSubject: TypeAlias = Dict[str, Any]
+
+SecurityEncryptionMigratedData = TypedDict("SecurityEncryptionMigratedData", {
+    "to": Literal["sealed", "plain"],
+    "files": int,
+    "failed": int,
+})
+
 SecurityRateLimitedSubject = TypedDict("SecurityRateLimitedSubject", {
     "pane": str,
 })
@@ -7928,6 +9659,14 @@ SessionStoppedSubject: TypeAlias = Dict[str, Any]
 SessionStoppedData = TypedDict("SessionStoppedData", {
     "pid": int,
     "reason": str,
+})
+
+StateForgottenSubject = TypedDict("StateForgottenSubject", {
+    "scope": Any,
+})
+
+StateForgottenData = TypedDict("StateForgottenData", {
+    "counts": Dict[str, Any],
 })
 
 TabClosedSubject = TypedDict("TabClosedSubject", {
@@ -8042,27 +9781,22 @@ TaskBranchChangedData = TypedDict("TaskBranchChangedData", {
 })
 
 TaskClaimAddedSubject = TypedDict("TaskClaimAddedSubject", {
+    "task": str,
     "claim": str,
-    "run": str,
 })
 
 TaskClaimAddedData = TypedDict("TaskClaimAddedData", {
     "glob": str,
-    "repo": str,
     "note": Optional[str],
-    "conflicts": List[str],
-    "by": str,
 })
 
-TaskClaimReleasedSubject = TypedDict("TaskClaimReleasedSubject", {
+TaskClaimRemovedSubject = TypedDict("TaskClaimRemovedSubject", {
+    "task": str,
     "claim": str,
-    "run": str,
 })
 
-TaskClaimReleasedData = TypedDict("TaskClaimReleasedData", {
+TaskClaimRemovedData = TypedDict("TaskClaimRemovedData", {
     "glob": str,
-    "repo": str,
-    "reason": Literal["released", "run_ended"],
 })
 
 TaskCleanupSuggestedSubject = TypedDict("TaskCleanupSuggestedSubject", {
@@ -8096,6 +9830,30 @@ TaskCollisionActionData = TypedDict("TaskCollisionActionData", {
     "source_run": NotRequired[Optional[str]],
     "claim": NotRequired[str],
     "owner": NotRequired[str],
+})
+
+TaskCollisionClaimAddedSubject = TypedDict("TaskCollisionClaimAddedSubject", {
+    "claim": str,
+    "run": str,
+})
+
+TaskCollisionClaimAddedData = TypedDict("TaskCollisionClaimAddedData", {
+    "glob": str,
+    "repo": str,
+    "note": Optional[str],
+    "conflicts": List[str],
+    "by": str,
+})
+
+TaskCollisionClaimReleasedSubject = TypedDict("TaskCollisionClaimReleasedSubject", {
+    "claim": str,
+    "run": str,
+})
+
+TaskCollisionClaimReleasedData = TypedDict("TaskCollisionClaimReleasedData", {
+    "glob": str,
+    "repo": str,
+    "reason": Literal["released", "run_ended"],
 })
 
 TaskCollisionClearedSubject = TypedDict("TaskCollisionClearedSubject", {
@@ -8322,6 +10080,18 @@ TaskSetupUntrustedData = TypedDict("TaskSetupUntrustedData", {
     "commands": NotRequired[List["TaskSetupUntrustedDataCommandsItem"]],
 })
 
+TaskSplitSubject = TypedDict("TaskSplitSubject", {
+    "task": str,
+})
+
+TaskSplitData = TypedDict("TaskSplitData", {
+    "source": str,
+    "moved": int,
+    "recovery_ref": str,
+    "recovery_kept": bool,
+    "runs": int,
+})
+
 TaskStatusChangedSubject = TypedDict("TaskStatusChangedSubject", {
     "task": str,
 })
@@ -8354,6 +10124,95 @@ TaskUpdatedData = TypedDict("TaskUpdatedData", {
 ThemeChangedSubject: TypeAlias = Dict[str, Any]
 
 ThemeChangedData: TypeAlias = Any
+
+TombstoneSubject: TypeAlias = Dict[str, Any]
+
+TombstoneData: TypeAlias = Dict[str, Any]
+
+UiContributionsChangedSubject = TypedDict("UiContributionsChangedSubject", {
+    "plugin": str,
+})
+
+UiContributionsChangedData = TypedDict("UiContributionsChangedData", {
+    "contributions": int,
+})
+
+VmCreatedSubject = TypedDict("VmCreatedSubject", {
+    "vm": str,
+})
+
+VmCreatedData = TypedDict("VmCreatedData", {
+    "provider": str,
+    "template": bool,
+    "fork_ms": Optional[int],
+})
+
+VmDestroyedSubject = TypedDict("VmDestroyedSubject", {
+    "vm": str,
+})
+
+VmDestroyedData = TypedDict("VmDestroyedData", {
+    "state": Optional[str],
+})
+
+VmForkedSubject = TypedDict("VmForkedSubject", {
+    "snapshot": str,
+})
+
+VmForkedData = TypedDict("VmForkedData", {
+    "vms": List[str],
+    "ms": int,
+})
+
+VmResumedSubject = TypedDict("VmResumedSubject", {
+    "vm": str,
+})
+
+VmResumedData = TypedDict("VmResumedData", {
+    "state": Optional[str],
+})
+
+VmSnapshotCreatedSubject = TypedDict("VmSnapshotCreatedSubject", {
+    "vm": str,
+})
+
+VmSnapshotCreatedData = TypedDict("VmSnapshotCreatedData", {
+    "snapshot": str,
+    "memory": bool,
+})
+
+VmStartedSubject = TypedDict("VmStartedSubject", {
+    "vm": str,
+})
+
+VmStartedData = TypedDict("VmStartedData", {
+    "state": Optional[str],
+})
+
+VmStoppedSubject = TypedDict("VmStoppedSubject", {
+    "vm": str,
+})
+
+VmStoppedData = TypedDict("VmStoppedData", {
+    "state": Optional[str],
+})
+
+VmSuspendedSubject = TypedDict("VmSuspendedSubject", {
+    "vm": str,
+})
+
+VmSuspendedData = TypedDict("VmSuspendedData", {
+    "state": Optional[str],
+})
+
+VmTemplateBuiltSubject = TypedDict("VmTemplateBuiltSubject", {
+    "template": str,
+})
+
+VmTemplateBuiltData = TypedDict("VmTemplateBuiltData", {
+    "snapshot": str,
+    "setup_digest": str,
+})
 
 WorkspaceClosedSubject = TypedDict("WorkspaceClosedSubject", {
     "workspace": str,
@@ -8427,7 +10286,9 @@ WorktreeRemovedData = TypedDict("WorktreeRemovedData", {
 EVENT_TYPES = (
     "adapter.disagreement",
     "adapter.health_changed",
+    "agent.cwd_changed",
     "agent.detected",
+    "agent.drift_detected",
     "agent.exited",
     "agent.file_changed",
     "agent.harness_version_unvalidated",
@@ -8441,8 +10302,10 @@ EVENT_TYPES = (
     "agent.state_changed",
     "agent.subagent_finished",
     "agent.subagent_started",
+    "agent.tool_blocked",
     "agent.turn_completed",
     "agent.turn_started",
+    "agent.turn_usage",
     "agent.usage",
     "assistant.consent_granted",
     "assistant.consent_revoked",
@@ -8479,11 +10342,24 @@ EVENT_TYPES = (
     "draft.reordered",
     "draft.sending",
     "draft.updated",
+    "family.checked",
+    "family.created",
+    "family.picked",
+    "goal.approved",
+    "goal.cancelled",
+    "goal.created",
+    "goal.finished",
+    "goal.planned",
+    "goal.planning_started",
+    "goal.step_finished",
+    "goal.step_started",
+    "goal.step_waiting",
     "group.closed",
     "group.collapsed",
     "group.created",
     "group.moved",
     "group.renamed",
+    "harness.manifest_loaded",
     "integration.tampered",
     "interaction.cancelled",
     "interaction.decided",
@@ -8497,6 +10373,15 @@ EVENT_TYPES = (
     "machine.degraded",
     "machine.disconnected",
     "machine.removed",
+    "merge.blocked",
+    "merge.cancelled",
+    "merge.check_failed",
+    "merge.conflict",
+    "merge.conflict_predicted",
+    "merge.failed",
+    "merge.merged",
+    "merge.queued",
+    "merge.requeued",
     "notes.updated",
     "notification.created",
     "pane.closed",
@@ -8518,6 +10403,26 @@ EVENT_TYPES = (
     "pane.sync_input_changed",
     "pane.title_changed",
     "paste.translated",
+    "plugin.action_invoked",
+    "plugin.api_call",
+    "plugin.capability_violation",
+    "plugin.command_finished",
+    "plugin.crashed",
+    "plugin.disabled",
+    "plugin.enabled",
+    "plugin.installed",
+    "plugin.launch_failed",
+    "plugin.linked",
+    "plugin.pane_opened",
+    "plugin.process_started",
+    "plugin.process_stopped",
+    "plugin.registry_observed",
+    "plugin.reloaded",
+    "plugin.trust_changed",
+    "plugin.uninstalled",
+    "plugin.unlinked",
+    "policy.learned_accepted",
+    "policy.learned_dismissed",
     "policy.repo_trusted",
     "policy.rule_added",
     "policy.rule_matched",
@@ -8531,6 +10436,8 @@ EVENT_TYPES = (
     "preview.opened",
     "preview.unmirrored",
     "preview.up",
+    "quota.paused",
+    "quota.resumed",
     "review.accepted",
     "review.candidate_created",
     "review.end_candidate_pinned",
@@ -8568,12 +10475,14 @@ EVENT_TYPES = (
     "screenshot.captured",
     "screenshot.deleted",
     "scrollback.forgotten",
+    "security.encryption_migrated",
     "security.rate_limited",
     "session.config_rejected",
     "session.config_reloaded",
     "session.server_restarted",
     "session.started",
     "session.stopped",
+    "state.forgotten",
     "tab.closed",
     "tab.created",
     "tab.layout_changed",
@@ -8586,9 +10495,11 @@ EVENT_TYPES = (
     "task.binding_changed",
     "task.branch_changed",
     "task.claim_added",
-    "task.claim_released",
+    "task.claim_removed",
     "task.cleanup_suggested",
     "task.collision_action",
+    "task.collision_claim_added",
+    "task.collision_claim_released",
     "task.collision_cleared",
     "task.collision_detected",
     "task.created",
@@ -8610,10 +10521,22 @@ EVENT_TYPES = (
     "task.setup_finished",
     "task.setup_started",
     "task.setup_untrusted",
+    "task.split",
     "task.status_changed",
     "task.tracked",
     "task.updated",
     "theme.changed",
+    "tombstone",
+    "ui.contributions_changed",
+    "vm.created",
+    "vm.destroyed",
+    "vm.forked",
+    "vm.resumed",
+    "vm.snapshot_created",
+    "vm.started",
+    "vm.stopped",
+    "vm.suspended",
+    "vm.template_built",
     "workspace.closed",
     "workspace.created",
     "workspace.moved",

@@ -141,6 +141,7 @@ fn elevated_valid(server: &Server, kind: &str) -> bool {
 /// Per-call check (09 §3.2), before dispatch: revoked panes and expired elevations get
 /// nothing, and an elevated connection can't decide elevation requests.
 pub fn authorize(server: &Server, ctx: &Ctx, method: &str) -> Result<(), RpcError> {
+    crate::plugin_native::authorize_live(server, ctx)?;
     if let Some(p) = &ctx.pane_scope
         && is_revoked(server, p)
     {

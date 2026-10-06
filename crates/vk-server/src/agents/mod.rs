@@ -3,7 +3,9 @@
 //! release-on-focus (§7.2), screen fallback (§9) and best-effort verified keystrokes (§8).
 
 pub mod acp;
+pub mod arbiter;
 pub mod channel;
+pub mod enforce;
 mod gemini;
 #[cfg(test)]
 mod golden;
@@ -12,9 +14,11 @@ pub mod headless;
 pub mod hook;
 pub mod manifests;
 mod opencode;
+mod polish;
 mod route;
 pub mod screen;
 mod selfreport;
+pub mod tailer;
 pub mod usage;
 
 use crate::Server;
@@ -61,6 +65,13 @@ pub const METHODS: &[(&str, bool)] = &[
     ("pane.report_agent_session", true),
     ("agent.manifests", false),
     ("agent.manifests_reload", true),
+    // 2F adapter polish (04 §7.7, §10, §12.3, §13): see `polish.rs`.
+    ("agent.turn_usage", false),
+    ("agent.limits", false),
+    ("agent.drift", false),
+    ("agent.manifests_check", true),
+    ("agent.manifest_pin", true),
+    ("policy.suggest", false),
 ];
 
 /// Gate timeout (04 §7.2): after this the hook returns no decision and the native dialog shows.
@@ -87,6 +98,8 @@ struct Inner {
     /// Panes whose input is locked while a verified keystroke sequence runs (04 §8).
     locks: HashMap<String, Instant>,
     screen_eval: HashMap<String, Instant>,
+    /// Per pane: since when each `hold_ms` screen rule has matched (04 §9.1).
+    holds: HashMap<String, vk_agents::manifest::HoldTracker>,
     resume_mode: String,
 }
 
@@ -99,6 +112,13 @@ pub struct Agents {
 
 pub fn start(server: &Arc<Server>) {
     manifests::init();
+    // Built-ins are written out for reference (04 §5), the transcript tailer starts, drift
+    // counters come back from the store and the manifest channel poller is armed.
+    let _ = vk_agents::manifest::write_builtin(&server.paths.state.join("harnesses/builtin"));
+    arbiter::load_persisted(server);
+    tailer::start(server);
+    channel::announce_loaded(server);
+    channel::start_polling(server);
     let cfg = vk_config::Config::load(vk_config::config_path())
         .map(|(c, _)| c)
         .unwrap_or_default();
@@ -428,19 +448,62 @@ impl Agents {
         let Some(rt) = server.pane_rt(pane) else {
             return;
         };
-        let text = {
+        let snap = {
             let sc = rt.screen.lock().unwrap();
-            sc.engine.screen_text()
+            screen::snapshot_of(&sc.engine)
         };
-        let m = screen::evaluate(h, &text);
+        let (m, pending) = {
+            let mut i = self.inner.lock().unwrap();
+            let hold = i.holds.entry(pane.to_string()).or_default();
+            screen::evaluate_snapshot(h, &snap, now_ms(), Some(hold))
+        };
+        // A `hold_ms` rule that matches but has not held long enough yet: look again then.
+        if let Some(ms) = pending {
+            let (srv, pane2) = (server.clone(), pane.to_string());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(ms + 120)).await;
+                srv.agents.on_screen(&srv, &pane2);
+            });
+        }
         let structured = run.execution.source == StateSource::Structured
             && run.health != AdapterHealth::Disconnected;
-        // Execution state from the screen only when no structured transport drives the run.
-        if !structured
-            && let Some((state, conf)) = m.state.clone()
+        // §2.5: the screen only adds information while a structured transport drives the run
+        // (counted as a disagreement when it names another state); with the channel gone it
+        // drives, marked inferred (rule 4).
+        if let Some((state, conf)) = m.state.clone()
             && state != run.execution.value
         {
-            set_execution(server, &run.id, state, StateSource::Screen, conf, None);
+            match arbiter::judge(
+                &run.execution,
+                &state,
+                StateSource::Screen,
+                conf,
+                arbiter::ctx_of(&run),
+            ) {
+                arbiter::Verdict::Apply {
+                    confidence,
+                    inferred,
+                } => set_execution(
+                    server,
+                    &run.id,
+                    state,
+                    StateSource::Screen,
+                    confidence,
+                    inferred.then(|| arbiter::INFERRED.to_string()),
+                ),
+                arbiter::Verdict::Keep { disagrees } => {
+                    if disagrees {
+                        arbiter::disagreement(
+                            server,
+                            &run,
+                            "execution",
+                            run.execution.value.as_str(),
+                            state.as_str(),
+                            "screen",
+                        );
+                    }
+                }
+            }
         }
         let open_screen = server.with_core(|c| {
             c.model
@@ -486,7 +549,9 @@ impl Agents {
                     kind: d.kind,
                     status: InteractionStatus::Open,
                     title: d.title.clone(),
-                    body_md: None,
+                    body_md: d.is_unknown().then(|| {
+                        "Vibeke can't read this dialog; answer it in the pane.".to_string()
+                    }),
                     action: d.command.as_ref().map(|cmd| ActionInfo {
                         tool: d.tool.clone().unwrap_or_else(|| "Bash".into()),
                         summary: cmd.lines().next().unwrap_or("").to_string(),
@@ -507,7 +572,7 @@ impl Agents {
                     native_ref: Some(format!("screen:{}", d.fingerprint)),
                     source: StateSource::Screen,
                     confidence: d.confidence,
-                    answerable: !d.options.is_empty(),
+                    answerable: !d.options.is_empty() && !d.is_unknown(),
                     gate: false,
                     decision_rev: 0,
                     delivery: DeliveryState::None,
@@ -521,12 +586,19 @@ impl Agents {
                 let mut tx = Tx::new();
                 tx.counters = true;
                 tx.event("interaction.opened", json!({"interaction": it.id, "pane": pane, "run": run.id}), json!({"kind": it.kind.as_str(), "source": "screen", "confidence": d.confidence}));
-                if structured {
-                    tx.event("adapter.disagreement", json!({"run": run.id}), json!({"facet": "interaction", "structured": run.execution.value.as_str(), "other": "dialog"}));
-                }
                 tx.interaction(it.clone());
                 let _ = server.commit(&mut c, tx);
                 drop(c);
+                if structured {
+                    arbiter::disagreement(
+                        server,
+                        &run,
+                        "interaction",
+                        run.execution.value.as_str(),
+                        "dialog",
+                        "screen",
+                    );
+                }
                 notify_interaction(server, &it, &run);
             }
             (None, Some(it)) if it.source == StateSource::Screen => {
@@ -604,10 +676,12 @@ fn set_execution(
     conf: f32,
     detail: Option<String>,
 ) {
+    let changed = std::cell::Cell::new(false);
     update_run(server, run, |r, tx| {
         if r.execution.value == to && r.execution.source == source {
             return;
         }
+        changed.set(true);
         let from = r.execution.value.clone();
         // Done marker: idle after work bumps done_rev (rendered as ✓ until seen, 08 §2.2).
         if to == Execution::Idle
@@ -631,8 +705,14 @@ fn set_execution(
             StateSource::SelfReport => "self_report",
             StateSource::User => "user",
         };
-        tx.event("agent.state_changed", json!({"run": r.id, "pane": r.pane}), json!({"facet": "execution", "from": from.as_str(), "to": to.as_str(), "source": src, "confidence": conf}));
+        tx.event("agent.state_changed", json!({"run": r.id, "pane": r.pane}), json!({"facet": "execution", "from": from.as_str(), "to": to.as_str(), "source": src, "confidence": conf, "inferred": arbiter::is_inferred(r.execution.detail.as_deref())}));
     });
+    // Drift telemetry denominator (04 §12.3).
+    if changed.get()
+        && let Some(r) = server.with_core(|c| c.run(run).cloned())
+    {
+        arbiter::note(server, &r, arbiter::Kind::Observation);
+    }
 }
 
 fn notify_interaction(server: &Server, it: &Interaction, run: &AgentRun) {
@@ -683,6 +763,10 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
             _ => "interaction.resolved_elsewhere",
         }
     };
+    let unknown_path = status == InteractionStatus::ResolvedElsewhere
+        && event == "interaction.resolved_elsewhere"
+        && !arbiter::resolution_known(reason);
+    let run_id = it.run.clone();
     let mut tx = Tx::new();
     tx.event(
         event,
@@ -691,6 +775,10 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
     );
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
+    drop(c);
+    if unknown_path && let Some(r) = server.with_core(|c| c.run(&run_id).cloned()) {
+        arbiter::note(server, &r, arbiter::Kind::UnknownResolution);
+    }
 }
 
 /// Hold a gate for an Interaction answered outside the hook path (sandbox egress, 13 §7).
@@ -793,6 +881,7 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
                 h.transport().to_string()
             };
             if r.integration != transport || r.health != want {
+                let was_disconnected = r.health == AdapterHealth::Disconnected;
                 let mut r2 = r.clone();
                 r2.integration = transport;
                 r2.health = want;
@@ -804,6 +893,10 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
                 );
                 tx.run(r2.clone());
                 let _ = server.commit(&mut c, tx);
+                drop(c);
+                if was_disconnected {
+                    arbiter::structured_restored(server, &r2.id);
+                }
                 return r2;
             }
             return r;
@@ -1343,6 +1436,22 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 );
             }
         }
+        // Claude `CwdChanged {cwd, old_cwd?}` (04 §6.1): the session moved (a `cd` the agent ran).
+        "CwdChanged" => {
+            if let Some(cwd) = p.get("cwd").and_then(Value::as_str) {
+                let old = run.cwd.clone();
+                update_run(server, &run.id, |r, tx| {
+                    r.cwd = Some(cwd.to_string());
+                    if old.as_deref() != Some(cwd) {
+                        tx.event(
+                            "agent.cwd_changed",
+                            json!({"run": r.id, "pane": r.pane}),
+                            json!({"cwd": cwd, "old_cwd": p.get("old_cwd").and_then(Value::as_str).map(str::to_string).or(old.clone())}),
+                        );
+                    }
+                });
+            }
+        }
         "PreCompact" => update_run(server, &run.id, |r, _| {
             r.execution.detail = Some("compacting".into())
         }),
@@ -1371,6 +1480,13 @@ fn last_assistant_message(p: &Value) -> Option<String> {
 /// `adapter.gate`: open an interaction and either answer by policy, hold until a client
 /// decides (gate mode), or return at once so the native dialog shows (observe mode).
 async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) -> R {
+    // A pre-tool hook of a yolo run is enforcement only Vibeke provides (04 §2.7): policy deny
+    // and ask rules, answered at once. AskUserQuestion keeps the interaction path below.
+    if event == "PreToolUse"
+        && p.get("tool_name").and_then(Value::as_str) != Some("AskUserQuestion")
+    {
+        return enforce::pre_tool(server, pane, h, p).await;
+    }
     let run = bound_run(server, pane, h);
     let Some(mut it) = harness::interaction_from_hook(h, event, p) else {
         return Ok(json!({"decision": null}));
@@ -1379,7 +1495,8 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     it.pane = pane.to_string();
     // Questions are answered natively only where the capability is verified (04 §2.3).
     let validated = run.health != AdapterHealth::UnvalidatedVersion;
-    let native = validated && h.answer_native(it.kind);
+    // An MCP elicitation has no keystroke form: the hook's `action`/`content` is its answer.
+    let native = harness::is_elicitation(&it) || (validated && h.answer_native(it.kind));
     // Policy fast path (02 §4): only for approvals the harness lets us gate.
     let policy = if it.kind == InteractionKind::Approval && native {
         match_policy(server, &it)
@@ -1411,7 +1528,7 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
             if existing.status == InteractionStatus::Answered
                 && let Some(ans) = existing.answer.clone()
             {
-                let json = harness::decision_json(h, &existing, &ans);
+                let json = harness::decision_json_cfg(h, &existing, &ans);
                 let key = format!("{}:{}", existing.id, existing.decision_rev);
                 return Ok(
                     json!({"decision": json, "interaction": existing.id, "idempotency_key": key, "resumed": true}),
@@ -1543,7 +1660,7 @@ fn record_decision(
     }
     let h = c.run(&it.run).and_then(|r| Harness::from_id(&r.harness));
     let native = h
-        .map(|h| harness::decision_json(h, &it, &answer))
+        .map(|h| harness::decision_json_cfg(h, &it, &answer))
         .unwrap_or(Value::Null);
     it.status = InteractionStatus::Answered;
     it.decision_rev += 1;
@@ -1595,6 +1712,7 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
         DeliveryState::Failed => "interaction.delivery_failed",
         _ => "interaction.updated",
     };
+    let run_id = it.run.clone();
     let mut tx = Tx::new();
     tx.event(
         ev,
@@ -1603,6 +1721,14 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
     );
     tx.interaction(it);
     let _ = server.commit(&mut c, tx);
+    drop(c);
+    if matches!(
+        state,
+        DeliveryState::Failed | DeliveryState::DeliveryUnknown
+    ) && let Some(r) = server.with_core(|c| c.run(&run_id).cloned())
+    {
+        arbiter::note(server, &r, arbiter::Kind::AnswerFailure);
+    }
 }
 
 /// `interaction.answer`: record, then deliver natively (held gate) or by verified keystrokes.
@@ -2223,6 +2349,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     if let Some(r) = route::api(server, ctx, method, p).await {
         return Some(r);
     }
+    if let Some(r) = polish::api(server, ctx, method, p).await {
+        return Some(r);
+    }
     Some(match method {
         "agent.list" => {
             let ws = s(p, "workspace")
@@ -2664,6 +2793,41 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 #[allow(dead_code)]
 fn subject(p: &Pane) -> Value {
     subject_pane(p)
+}
+
+#[cfg(test)]
+mod polish_tests;
+
+#[cfg(test)]
+pub(crate) fn harness_tests_run() -> AgentRun {
+    AgentRun {
+        id: "r1".into(),
+        handle: "r1".into(),
+        name: None,
+        pane: "p1".into(),
+        harness: "claude".into(),
+        harness_version: None,
+        integration: "hooks".into(),
+        harness_session_id: None,
+        transcript_path: None,
+        resume_argv: vec![],
+        cwd: None,
+        model: None,
+        task: None,
+        execution: facet(Execution::Idle, StateSource::Structured, 1.0),
+        health: AdapterHealth::Healthy,
+        yolo: false,
+        permission_mode: None,
+        last_message: None,
+        last_tool: None,
+        turns_completed: 0,
+        done_rev: 0,
+        started_at_ms: 0,
+        ended_at_ms: None,
+        capabilities: vec![],
+        usage: Default::default(),
+        rate_limit: None,
+    }
 }
 
 #[cfg(test)]

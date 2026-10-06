@@ -386,9 +386,15 @@ fn layout(app: &App) -> Vec<Placed> {
     let d = data(app);
     let (x0, span) = crate::chrome::main_x(app);
     let cols = x0 + span;
-    let left = list(app, &cfg.left, &d);
+    let mut left = list(app, &cfg.left, &d);
     let center = list(app, &cfg.center, &d);
-    let right = list(app, &cfg.right, &d);
+    let mut right = list(app, &cfg.right, &d);
+    // Native plugin segments (07 §7.4): after the configured ones on the left, before them on
+    // the right.
+    left.extend(crate::plugin_ui::segments(app, "left"));
+    let mut pr = crate::plugin_ui::segments(app, "right");
+    pr.append(&mut right);
+    let right = pr;
     let mut out = Vec::new();
     let place = |segs: Vec<(String, String, Style)>, start: u16, out: &mut Vec<Placed>| {
         let mut x = start;
@@ -451,6 +457,8 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
             .map(|(id, ..)| id);
         if hit.as_deref() == Some("attention") {
             crate::inbox::next_attention(app, false);
+        } else if let Some(id) = hit.as_deref().filter(|h| h.starts_with("plugin:")) {
+            crate::plugin_ui::click_segment(app, id);
         }
     }
     true

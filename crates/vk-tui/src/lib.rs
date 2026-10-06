@@ -40,6 +40,7 @@ pub mod parity;
 mod parity_tests;
 pub mod paste;
 pub mod pending;
+pub mod plugin_ui;
 pub mod plugins;
 pub mod popup_pane;
 pub mod popups;

@@ -552,6 +552,39 @@ pub fn prune(server: &Server, cutoff_ms: i64) -> usize {
     removed
 }
 
+/// `vibeke forget` (09 §9.3, lane 3E `forget_scope`): remove the turns (and their items) for
+/// which `covers(run_id, started_at_ms)` holds, plus items of those runs without a turn.
+/// `dry_run` only counts. Returns the rows (turns and items) removed.
+pub fn forget(server: &Server, covers: &dyn Fn(&str, i64) -> bool, dry_run: bool) -> usize {
+    let mut c = server.core.lock().unwrap();
+    let turns: Vec<Turn> = c.store.load::<Turn>(K_TURN).unwrap_or_default();
+    let items: Vec<Item> = c.store.load::<Item>(K_ITEM).unwrap_or_default();
+    let gone_turns: HashSet<String> = turns
+        .iter()
+        .filter(|t| covers(&t.run_id, t.started_at_ms))
+        .map(|t| t.id.clone())
+        .collect();
+    let gone_items: Vec<&Item> = items
+        .iter()
+        .filter(|i| gone_turns.contains(&i.turn_id) || covers(&i.run_id, i.started_at_ms))
+        .collect();
+    let n = gone_turns.len() + gone_items.len();
+    if dry_run || n == 0 {
+        return n;
+    }
+    let mut tx = Tx::new();
+    for t in &gone_turns {
+        tx.m.delete(K_TURN, t);
+    }
+    for i in &gone_items {
+        tx.m.delete(K_ITEM, &i.id);
+    }
+    if server.commit(&mut c, tx).is_err() {
+        return 0;
+    }
+    n
+}
+
 fn resolve_run(server: &Server, t: &str) -> String {
     server
         .with_core(|c| c.run(t).map(|r| r.id.clone()))

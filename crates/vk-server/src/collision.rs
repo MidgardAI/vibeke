@@ -55,9 +55,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("collision.pause", true),
     ("collision.tell", true),
     ("collision.start_task", true),
-    ("task.claim", true),
-    ("task.claims", false),
-    ("task.claim_release", true),
+    ("collision.claim", true),
+    ("collision.claims", false),
+    ("collision.claim_release", true),
 ];
 
 /// Full scope only: silencing, pausing, steering and splitting are the user's decisions; an agent
@@ -368,17 +368,15 @@ pub fn file_changed(server: &Arc<Server>, run: &AgentRun, path: &str, op: &str) 
 /// Record a touch of `root` and turn what the rules say into records, events and notifications.
 pub(crate) fn record(server: &Server, cfg: &vk_config::Collision, root: &str, touch: vc::Touch) {
     let now = touch.at_ms;
+    // Read before the collision lock is taken (it needs the model and the store).
+    let task_claims = task_claims(server, Some(root));
     let findings = {
         let mut g = server.collision.inner.lock().unwrap();
         if ignored(&g, root, &touch.path, now) {
             return;
         }
-        let claims: Vec<vc::Claim> = g
-            .claims
-            .iter()
-            .filter(|c| c.root == root)
-            .cloned()
-            .collect();
+        let mut claims = own_claims(&g, Some(root));
+        claims.extend(task_claims);
         g.roots.entry(root.to_string()).or_default().tracker.record(
             &rules(cfg),
             &claims,
@@ -624,7 +622,7 @@ fn release_claim_store(server: &Server, c: &vc::Claim, reason: &str) {
     let mut tx = Tx::new();
     tx.m.delete(K_CLAIM, &c.id);
     tx.event(
-        "task.claim_released",
+        "task.collision_claim_released",
         json!({"claim": c.id, "run": c.run}),
         json!({"glob": c.glob, "repo": c.root, "reason": reason}),
     );
@@ -678,7 +676,8 @@ pub(crate) fn claim_json(server: &Server, c: &vc::Claim) -> Value {
     });
     json!({
         "id": c.id, "run": c.run, "run_handle": handle, "root": c.root, "glob": c.glob,
-        "created_ms": c.created_ms, "note": c.note, "task": task,
+        "created_ms": c.created_ms, "created_at_ms": c.created_ms, "note": c.note, "task": task,
+        "kind": if c.id.starts_with("clm_") { "run" } else { "task" },
     })
 }
 
@@ -775,9 +774,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "collision.pause" => act::pause(server, ctx, p).await,
         "collision.tell" => act::tell(server, ctx, p).await,
         "collision.start_task" => act::start_task(server, ctx, p).await,
-        "task.claim" => claim_add(server, ctx, p),
-        "task.claims" => claims_list(server, ctx, p),
-        "task.claim_release" => claim_release(server, ctx, p),
+        "collision.claim" => claim_add(server, ctx, p),
+        "collision.claims" => claims_list(server, ctx, p),
+        "collision.claim_release" => claim_release(server, ctx, p),
         _ => return None,
     })
 }
@@ -833,16 +832,7 @@ fn get(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             return Err(not_found("collision", id));
         }
     }
-    let in_root: Vec<vc::Claim> = server
-        .collision
-        .inner
-        .lock()
-        .unwrap()
-        .claims
-        .iter()
-        .filter(|c| c.root == rec.root)
-        .cloned()
-        .collect();
+    let in_root = effective_claims(server, Some(&rec.root));
     let claims: Vec<Value> = in_root.iter().map(|c| claim_json(server, c)).collect();
     let steer = act::steer_report(server, &rec);
     Ok(json!({
@@ -856,10 +846,8 @@ fn status(server: &Arc<Server>) -> Value {
     ensure_loaded(server);
     let cfg = config(server);
     let roots = watch::roots_status(server);
-    let (claims, ignores) = {
-        let g = server.collision.inner.lock().unwrap();
-        (g.claims.len(), g.ignores.len())
-    };
+    let claims = effective_claims(server, None).len();
+    let ignores = server.collision.inner.lock().unwrap().ignores.len();
     let pending: usize = server
         .collision
         .pending_ctx
@@ -994,6 +982,119 @@ fn unignore(server: &Arc<Server>, p: &Value) -> R {
 }
 
 // ---- claims ---------------------------------------------------------------------------------
+//
+// Two kinds of claim bind the tracker. **Run claims** (`collision.claim`, ids `clm_…`) belong to
+// one run, wherever it works, and exist for the runs that have no task (panes in one repository).
+// **Task claims** (`task.claim`, merge orchestration, 12) belong to a task; the tracker reads them
+// too: a task's claim binds, in each checkout where a run of the task works, every run that is not
+// of that task. `task.claim --run r` of a run without a task creates a run claim (the hooks
+// below), so one command serves both.
+
+/// Run claims, optionally of one checkout.
+fn own_claims(inner: &Inner, root: Option<&str>) -> Vec<vc::Claim> {
+    inner
+        .claims
+        .iter()
+        .filter(|c| root.is_none_or(|r| c.root == r))
+        .cloned()
+        .collect()
+}
+
+/// Task claims (merge orchestration) as seen from the checkouts of the task's live runs: one
+/// claim per (task claim, checkout), owned by all the task's runs there. Takes no collision lock.
+fn task_claims(server: &Server, root: Option<&str>) -> Vec<vc::Claim> {
+    let tcs = crate::orch_merge::claims(server);
+    if tcs.is_empty() {
+        return vec![];
+    }
+    let runs = live_runs(server);
+    let mut out = Vec::new();
+    for tc in &tcs {
+        let mut by_root: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for r in runs
+            .iter()
+            .filter(|r| r.task.as_deref() == Some(tc.task.as_str()))
+        {
+            if let Some(rr) = root_of(server, r).filter(|rr| root.is_none_or(|x| x == rr)) {
+                by_root.entry(rr).or_default().push(r.id.clone());
+            }
+        }
+        for (rr, mut owners) in by_root {
+            owners.sort();
+            let first = owners.remove(0);
+            out.push(vc::Claim {
+                id: tc.id.clone(),
+                run: first,
+                root: rr,
+                glob: tc.glob.clone(),
+                created_ms: tc.created_at_ms,
+                note: tc.note.clone(),
+                also: owners,
+            });
+        }
+    }
+    out
+}
+
+/// Every claim that binds `root` (or all checkouts): run claims and task claims.
+pub(crate) fn effective_claims(server: &Server, root: Option<&str>) -> Vec<vc::Claim> {
+    ensure_loaded(server);
+    let mut v = own_claims(&server.collision.inner.lock().unwrap(), root);
+    v.extend(task_claims(server, root));
+    v
+}
+
+/// `task.claim {run}` of a run that belongs to no task (merge orchestration claims need a task):
+/// a run claim. `None` for everything else, which merge orchestration handles.
+pub fn run_claim_hook(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Option<R> {
+    if s(p, "task").is_some() {
+        return None;
+    }
+    // The named run, or the run of the calling pane.
+    let run = match s(p, "run") {
+        Some(r) => run_by_id(server, r)?,
+        None => caller_run(server, ctx)??,
+    };
+    if run.task.is_some() {
+        return None;
+    }
+    let mut q = p.clone();
+    q["run"] = json!(run.id);
+    Some(claim_add(server, ctx, &q))
+}
+
+/// `task.claim.list` also lists the run claims (`kind: run`; the task filter matches the run's
+/// task).
+pub fn extend_claim_list(server: &Server, p: &Value, out: &mut Value) {
+    ensure_loaded(server);
+    let task = s(p, "task").and_then(|t| server.with_core(|c| c.task(t).map(|t| t.id.clone())));
+    let mine = own_claims(&server.collision.inner.lock().unwrap(), None);
+    let Some(list) = out.get_mut("claims").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for c in mine {
+        let of_task = run_by_id(server, &c.run).and_then(|r| r.task);
+        if s(p, "task").is_some() && of_task != task {
+            continue;
+        }
+        list.push(claim_json(server, &c));
+    }
+}
+
+/// `task.claim.remove {claim: clm_…}` releases a run claim.
+pub fn claim_remove_hook(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Option<R> {
+    let id = s(p, "claim")?;
+    if !id.starts_with("clm_") {
+        return None;
+    }
+    Some(claim_release(server, ctx, p).and_then(|v| {
+        if v["released"].as_array().is_some_and(|a| a.is_empty()) {
+            Err(not_found("claim", id))
+        } else {
+            Ok(json!({"removed": id}))
+        }
+    }))
+}
 
 fn resolve_claim_run(
     server: &Server,
@@ -1071,6 +1172,7 @@ fn claim_add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 glob: glob.clone(),
                 created_ms: now,
                 note: s(p, "note").map(|n| n.chars().take(200).collect()),
+                also: vec![],
             };
             let conflicts: Vec<vc::Claim> = g
                 .claims
@@ -1091,7 +1193,7 @@ fn claim_add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         let mut tx = Tx::new();
         tx.m.put(K_CLAIM, &claim.id, None, &claim);
         tx.event(
-            "task.claim_added",
+            "task.collision_claim_added",
             json!({"claim": claim.id, "run": claim.run}),
             json!({"glob": claim.glob, "repo": claim.root, "note": claim.note, "conflicts": conflicts.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), "by": ctx.client_id}),
         );
@@ -1116,16 +1218,16 @@ fn claim_add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 
 fn claims_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     ensure_loaded(server);
-    let mut claims: Vec<vc::Claim> = server.collision.inner.lock().unwrap().claims.clone();
+    let mut claims = effective_claims(server, None);
     if let Some(t) = s(p, "task") {
         let runs = task_runs(server, t)?;
-        claims.retain(|c| runs.contains(&c.run));
+        claims.retain(|c| c.owners().any(|o| runs.iter().any(|r| r == o)));
     }
     if let Some(rt) = s(p, "run") {
         let id = run_by_id(server, rt)
             .map(|r| r.id)
             .ok_or_else(|| not_found("run", rt))?;
-        claims.retain(|c| c.run == id);
+        claims.retain(|c| c.owners().any(|o| o == id));
     }
     if let Some(r) = s(p, "root") {
         let root = vc::repo_root_of(Path::new(r))
@@ -1190,6 +1292,75 @@ pub fn signal_reply(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p
         Some(out) => json!({"hook_output": out}),
         None => json!({}),
     }
+}
+
+/// `vibeke forget` (09 §9.3, `forget_scope`): remove the collision records (open and closed) with
+/// a run for which `covers(run, first_ms)` holds, the claims of such runs, and their remembered
+/// touches. `dry_run` only counts. Returns the rows (records and claims) removed. Path-set
+/// ignores name no run and stay (reported by `collision.ignores`).
+pub fn forget(server: &Server, covers: &dyn Fn(&str, i64) -> bool, dry_run: bool) -> usize {
+    ensure_loaded(server);
+    let (mut recs, claims): (Vec<vc::CollisionRec>, Vec<vc::Claim>) = {
+        let g = server.collision.inner.lock().unwrap();
+        (g.open.clone(), g.claims.clone())
+    };
+    let closed: Vec<vc::CollisionRec> =
+        server.with_core(|c| c.store.load_closed(K_COLLISION, 5000).unwrap_or_default());
+    let stored_open: Vec<vc::CollisionRec> =
+        server.with_core(|c| c.store.load(K_COLLISION).unwrap_or_default());
+    recs.extend(closed);
+    recs.extend(stored_open);
+    let mut seen = std::collections::HashSet::new();
+    recs.retain(|r| seen.insert(r.id.clone()));
+    let gone_recs: Vec<&vc::CollisionRec> = recs
+        .iter()
+        .filter(|r| r.runs.iter().any(|run| covers(run, r.first_ms)))
+        .collect();
+    let gone_claims: Vec<&vc::Claim> = claims
+        .iter()
+        .filter(|c| covers(&c.run, c.created_ms))
+        .collect();
+    let n = gone_recs.len() + gone_claims.len();
+    if dry_run || n == 0 {
+        return n;
+    }
+    {
+        let mut g = server.collision.inner.lock().unwrap();
+        let ids: std::collections::HashSet<&str> =
+            gone_recs.iter().map(|r| r.id.as_str()).collect();
+        g.open.retain(|r| !ids.contains(r.id.as_str()));
+        let cids: std::collections::HashSet<&str> =
+            gone_claims.iter().map(|c| c.id.as_str()).collect();
+        g.claims.retain(|c| !cids.contains(c.id.as_str()));
+        for rs in g.roots.values_mut() {
+            for rec in &gone_recs {
+                for run in &rec.runs {
+                    if covers(run, rec.first_ms) {
+                        rs.tracker.forget_run(run);
+                    }
+                }
+            }
+        }
+    }
+    let mut c = server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    for r in &gone_recs {
+        tx.m.delete(K_COLLISION, &r.id);
+    }
+    for cl in &gone_claims {
+        tx.m.delete(K_CLAIM, &cl.id);
+    }
+    if server.commit(&mut c, tx).is_err() {
+        return 0;
+    }
+    n
+}
+
+/// The claim guardrail for the enforcement path (`adapter.gate` of a pre-tool hook): the
+/// `decision` to print when a reported edit tool lies inside another live run's claim and
+/// `[collision] enforce_claims` is on, else `None`.
+pub fn pre_tool_claim(server: &Arc<Server>, pane: &str, p: &Value) -> Option<Value> {
+    act::hook_output(server, pane, "PreToolUse", p)
 }
 
 #[cfg(test)]

@@ -1,8 +1,11 @@
 //! Signed manifest update channel, client side (04 §13).
 //!
-//! `vibeke integration update [--url U]` is the only trigger: there is no background polling
-//! and nothing enables it automatically (`VIBEKE_MANIFEST_CHANNEL=0` refuses even explicit
-//! updates). Flow: fetch `index.json` + `index.json.minisig` → verify the signature against keys
+//! Triggers: `vibeke integration update [--url U]`, and the server's poller ([`start_polling`]):
+//! every 6 h (first poll 15 minutes after start) unless `[update] manifest_check = false` or
+//! `VIBEKE_MANIFEST_CHANNEL=0` (which also refuses explicit updates). A manifest can be frozen
+//! with `vibeke integration pin <id>` ([`pin`]): updates leave a pinned id as it is. Every applied
+//! update is announced once as `harness.manifest_loaded {id, version, source: remote, serial}`
+//! ([`announce_loaded`]). Flow: fetch `index.json` + `index.json.minisig` → verify the signature against keys
 //! compiled into the binary → `serial` must strictly increase (no rollback) → fetch each listed
 //! manifest whose id is a built-in harness and whose `min_vibeke..max_vibeke` covers this build
 //! → sha256 must match the index → stage, then swap into `<state>/manifests/remote/` atomically.
@@ -100,6 +103,96 @@ pub struct State {
     pub verified: String,
     pub applied: Vec<String>,
     pub url: String,
+    /// Provenance per manifest id (`vibeke integration list --sources`).
+    #[serde(default)]
+    pub sources: std::collections::BTreeMap<String, SourceInfo>,
+}
+
+/// Where one cached remote manifest came from.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct SourceInfo {
+    pub version: String,
+    pub sha256: String,
+    /// Index serial it was fetched with.
+    pub serial: u64,
+    pub fetched_at_ms: i64,
+}
+
+/// A frozen manifest: updates keep the cached copy as it is.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct Pin {
+    pub version: String,
+    pub pinned_at_ms: i64,
+}
+
+pub fn pins_path(root: &Path) -> PathBuf {
+    root.join("pins.json")
+}
+
+pub fn read_pins(root: &Path) -> std::collections::BTreeMap<String, Pin> {
+    std::fs::read_to_string(pins_path(root))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_pins(
+    root: &Path,
+    pins: &std::collections::BTreeMap<String, Pin>,
+) -> Result<(), ChannelError> {
+    std::fs::create_dir_all(root).map_err(|e| ChannelError::Fetch(e.to_string()))?;
+    let tmp = root.join("pins.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(pins).unwrap_or_default())
+        .and_then(|_| std::fs::rename(&tmp, pins_path(root)))
+        .map_err(|e| ChannelError::Fetch(e.to_string()))
+}
+
+/// Freeze the cached remote manifest `id` at `version` (`None` or `"current"`: whatever is
+/// cached now). Only a version that is actually cached can be pinned.
+pub fn pin(root: &Path, id: &str, version: Option<&str>) -> Result<Pin, ChannelError> {
+    let state = read_state(root).ok_or_else(|| {
+        ChannelError::Invalid(
+            "no remote manifests installed (run `vibeke integration update`)".into(),
+        )
+    })?;
+    let have = state
+        .sources
+        .get(id)
+        .map(|s| s.version.clone())
+        .or_else(|| {
+            state
+                .applied
+                .iter()
+                .find_map(|a| a.strip_prefix(&format!("{id}@")).map(str::to_string))
+        })
+        .ok_or_else(|| ChannelError::Invalid(format!("{id} has no cached remote manifest")))?;
+    let want = match version {
+        None | Some("") | Some("current") => have.clone(),
+        Some(v) => v.to_string(),
+    };
+    if want != have {
+        return Err(ChannelError::Invalid(format!(
+            "{id}: version {want} is not cached (cached: {have})"
+        )));
+    }
+    let mut pins = read_pins(root);
+    let p = Pin {
+        version: want,
+        pinned_at_ms: vk_store::now_ms(),
+    };
+    pins.insert(id.to_string(), p.clone());
+    write_pins(root, &pins)?;
+    Ok(p)
+}
+
+/// Remove a pin; `true` when there was one.
+pub fn unpin(root: &Path, id: &str) -> Result<bool, ChannelError> {
+    let mut pins = read_pins(root);
+    let had = pins.remove(id).is_some();
+    if had {
+        write_pins(root, &pins)?;
+    }
+    Ok(had)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,9 +330,28 @@ pub fn update_with(url: &str, root: &Path, keys: &[String]) -> Result<Report, Ch
     let staging = root.join(format!("remote.staging-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| ChannelError::Fetch(e.to_string()))?;
+    let pins = read_pins(root);
+    let prev = read_state(root).unwrap_or_default();
+    let mut sources = prev.sources.clone();
+    // Frozen manifests keep their cached file, whatever the index says.
+    for (id, pin) in &pins {
+        let cached = root.join("remote").join(format!("{id}.toml"));
+        if cached.is_file() {
+            std::fs::copy(&cached, staging.join(format!("{id}.toml")))
+                .map_err(|e| ChannelError::Fetch(e.to_string()))?;
+            report
+                .skipped
+                .push(format!("{id} (pinned at {})", pin.version));
+        } else {
+            sources.remove(id);
+        }
+    }
+    sources.retain(|id, _| {
+        pins.contains_key(id) && root.join("remote").join(format!("{id}.toml")).is_file()
+    });
     for e in &index.manifests {
         // Unknown harness ids are skipped silently (04 §13).
-        if !builtin.contains(&e.id) {
+        if !builtin.contains(&e.id) || pins.contains_key(&e.id) {
             continue;
         }
         if !version_ok(e) {
@@ -274,6 +386,15 @@ pub fn update_with(url: &str, root: &Path, keys: &[String]) -> Result<Report, Ch
         std::fs::write(staging.join(format!("{}.toml", e.id)), text)
             .map_err(|err| ChannelError::Fetch(err.to_string()))?;
         report.applied.push(format!("{}@{}", e.id, e.version));
+        sources.insert(
+            e.id.clone(),
+            SourceInfo {
+                version: e.version.clone(),
+                sha256: got,
+                serial: index.serial,
+                fetched_at_ms: vk_store::now_ms(),
+            },
+        );
     }
     let dest = root.join("remote");
     let old = root.join(format!("remote.old-{}", std::process::id()));
@@ -293,6 +414,7 @@ pub fn update_with(url: &str, root: &Path, keys: &[String]) -> Result<Report, Ch
         .into(),
         applied: report.applied.clone(),
         url: url.to_string(),
+        sources,
     };
     let tmp = root.join("remote-state.json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(&st).unwrap_or_default())
@@ -302,11 +424,135 @@ pub fn update_with(url: &str, root: &Path, keys: &[String]) -> Result<Report, Ch
     Ok(report)
 }
 
+/// kv scope/key remembering the last serial announced as `harness.manifest_loaded`.
+const KV_ANNOUNCED: (&str, &str) = ("manifests", "announced_serial");
+
+/// Emit `harness.manifest_loaded {id, version, source: remote, serial}` once per applied
+/// manifest of the cached update (04 §13 audit). Returns the number of events.
+pub fn announce_loaded(server: &crate::Server) -> usize {
+    announce_loaded_from(server, &root())
+}
+
+pub fn announce_loaded_from(server: &crate::Server, root: &Path) -> usize {
+    let Some(st) = read_state(root) else { return 0 };
+    let seen: u64 = server
+        .with_core(|c| {
+            c.store
+                .kv_get(KV_ANNOUNCED.0, KV_ANNOUNCED.1)
+                .ok()
+                .flatten()
+        })
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if st.serial <= seen {
+        return 0;
+    }
+    let mut n = 0;
+    server.with_core(|c| {
+        let mut tx = crate::core::Tx::new();
+        for a in &st.applied {
+            let (id, version) = a.split_once('@').unwrap_or((a, ""));
+            tx.event(
+                "harness.manifest_loaded",
+                serde_json::json!({"manifest": id}),
+                serde_json::json!({"id": id, "version": version, "source": "remote", "serial": st.serial, "verified": st.verified}),
+            );
+            n += 1;
+        }
+        tx.m.kv(KV_ANNOUNCED.0, KV_ANNOUNCED.1, Some(st.serial.to_string()));
+        let _ = c.commit(tx);
+    });
+    n
+}
+
+/// Seconds between polls (6 h, 04 §13); `VIBEKE_MANIFEST_POLL_SECS` overrides for tests.
+pub fn poll_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(
+        std::env::var("VIBEKE_MANIFEST_POLL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(6 * 3600),
+    )
+}
+
+/// First poll comes this long after the server starts.
+pub fn first_poll_delay() -> std::time::Duration {
+    std::time::Duration::from_secs(
+        std::env::var("VIBEKE_MANIFEST_FIRST_POLL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15 * 60),
+    )
+}
+
+/// `[update] channel` (`stable` | `preview`) → index URL.
+pub fn channel_url(cfg: &vk_config::Config) -> String {
+    match cfg.update.channel {
+        vk_config::UpdateChannel::Stable => DEFAULT_URL.to_string(),
+        _ => DEFAULT_URL.replace("/stable/", "/preview/"),
+    }
+}
+
+/// One poll: fetch, verify and apply, then announce what was loaded. Failures are logged, never
+/// fatal (the cached set stays in force).
+pub fn poll_once(
+    server: &crate::Server,
+    url: &str,
+    root: &Path,
+    keys: &[String],
+) -> Option<Report> {
+    match update_with(url, root, keys) {
+        Ok(r) => {
+            tracing::info!(serial = r.serial, applied = ?r.applied, "manifest channel updated");
+            let n = announce_loaded_from(server, root);
+            // The registry re-reads the cache on the next reload.
+            if n > 0 || !r.applied.is_empty() {
+                let _ = super::manifests::reload();
+            }
+            Some(r)
+        }
+        // Not newer than the cache is the normal quiet case.
+        Err(ChannelError::Rollback { .. }) => None,
+        Err(e) => {
+            tracing::debug!("manifest poll: {e}");
+            None
+        }
+    }
+}
+
+/// Background poller (`[update] manifest_check`, default on). Never runs in unit tests, and
+/// `VIBEKE_MANIFEST_CHANNEL=0` switches it off.
+pub fn start_polling(server: &std::sync::Arc<crate::Server>) {
+    if cfg!(test) {
+        return;
+    }
+    let srv = server.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(first_poll_delay()).await;
+        loop {
+            let cfg = vk_config::Config::load(vk_config::config_path())
+                .map(|(c, _)| c)
+                .unwrap_or_default();
+            if cfg.update.manifest_check
+                && !std::env::var("VIBEKE_MANIFEST_CHANNEL").is_ok_and(|v| v == "0")
+            {
+                let url = channel_url(&cfg);
+                let s2 = srv.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    poll_once(&s2, &url, &root(), &vk_remote::bootstrap::trusted_keys())
+                })
+                .await;
+            }
+            tokio::time::sleep(poll_interval()).await;
+        }
+    });
+}
+
 /// `vibeke integration channel` status as JSON.
 pub fn status_json(root: &Path) -> Value {
     match read_state(root) {
         Some(s) => {
-            serde_json::json!({"serial": s.serial, "created_at": s.created_at, "verified": s.verified, "applied": s.applied, "url": s.url})
+            serde_json::json!({"serial": s.serial, "created_at": s.created_at, "verified": s.verified, "applied": s.applied, "url": s.url, "sources": s.sources, "pins": read_pins(root)})
         }
         None => {
             serde_json::json!({"serial": null, "note": "no remote manifests installed (run `vibeke integration update`)"})

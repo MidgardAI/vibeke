@@ -1,54 +1,48 @@
 //! Keychain credential references (14 §6): `credential = { keychain = "vibeke/assistant/primary" }`.
 //!
-//! Behind `[assistant] keychain_backend` (default `off`, which keeps reporting the reference as
-//! unsupported):
+//! The keychain itself is `vk_store::keychain` (shared with state encryption, 09 §9.1); this
+//! module picks the backend for assistant credentials and maps results to assistant error
+//! categories. The backend string is the effective setting:
 //!
-//! - `os`: macOS `security find-generic-password -s <item> -w`; elsewhere `secret-tool lookup
-//!   service <item>`. The tool is executed directly (no shell), with a ten second limit, and the
-//!   secret is read from its stdout only. A missing item or tool is an authentication failure;
-//!   there is **no fallback** to another credential source or to ambient provider credentials.
-//! - `fake`: tests. `VIBEKE_ASSISTANT_FAKE_KEYCHAIN` names a 0600 JSON object `{item: secret}`
-//!   owned by the user. Never used unless selected explicitly.
+//! - `""` or `"os"`: the system credential store (macOS `security`, Linux `secret-tool`). An
+//!   empty `[assistant] keychain_backend` inherits `[security] keychain`, which the server fills
+//!   in before resolving (so `"file:<path>"` can arrive here too).
+//! - `"file:<path>"`: the 0600 JSON file backend.
+//! - `"off"`: deprecated override that keeps reporting keychain references as unsupported.
+//! - `"fake"`: deprecated alias for tests: the file named by `VIBEKE_ASSISTANT_FAKE_KEYCHAIN`.
 //!
-//! Which store is primary (keychain, env or file) is a product decision that stays with the
-//! user (audit section 4, item 21); this module only makes the path available.
+//! A missing item or tool is an authentication failure; there is **no fallback** to another
+//! credential source or to ambient provider credentials. Which store is primary (keychain, env
+//! or file) is a product decision that stays with the user (audit section 4, item 21).
 
 use crate::{AssistError, Category, Result};
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use vk_store::keychain::{Keychain, KeychainError};
+
+pub use vk_store::keychain::valid_item;
 
 pub const FAKE_ENV: &str = "VIBEKE_ASSISTANT_FAKE_KEYCHAIN";
-const TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
     Off,
     Os,
+    /// Deprecated test alias: the file named by [`FAKE_ENV`].
     Fake,
+    File(std::path::PathBuf),
 }
 
+/// Parse an effective backend string (`None` when invalid).
 pub fn parse_backend(s: &str) -> Option<Backend> {
-    match s {
-        "off" | "" => Some(Backend::Off),
-        "os" => Some(Backend::Os),
+    match s.trim() {
+        "off" => Some(Backend::Off),
+        "" | "os" | "auto" => Some(Backend::Os),
         "fake" => Some(Backend::Fake),
-        _ => None,
+        other => match Keychain::from_setting(other) {
+            Ok(Keychain::File(p)) => Some(Backend::File(p)),
+            Ok(Keychain::Os) => Some(Backend::Os),
+            Err(_) => None,
+        },
     }
-}
-
-/// Item names are `[A-Za-z0-9._/-]` up to 128 bytes: they reach a child process's argv.
-pub fn valid_item(item: &str) -> bool {
-    !item.is_empty()
-        && item.len() <= 128
-        && !item.starts_with('-')
-        && item
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
-}
-
-fn unsupported(msg: &str) -> AssistError {
-    AssistError::new(Category::UnsupportedCapability, msg)
 }
 
 fn auth(msg: &str) -> AssistError {
@@ -60,118 +54,62 @@ pub fn lookup(backend: &str, item: &str) -> Result<String> {
     let Some(b) = parse_backend(backend) else {
         return Err(AssistError::new(
             Category::NotConfigured,
-            "[assistant] keychain_backend must be off, os or fake",
+            "the keychain backend must be os or file:<path> ([security] keychain), or off/fake in [assistant] keychain_backend",
         ));
     };
-    match b {
-        Backend::Off => Err(unsupported(
-            "keychain credentials are off; set [assistant] keychain_backend = \"os\" to use the system credential store, or use an env or file credential",
+    let kc = match b {
+        Backend::Off => {
+            return Err(AssistError::new(
+                Category::UnsupportedCapability,
+                "keychain credentials are off ([assistant] keychain_backend = \"off\"); remove that override to use [security] keychain, or use an env or file credential",
+            ));
+        }
+        Backend::Os => Keychain::Os,
+        Backend::File(p) => Keychain::File(p),
+        Backend::Fake => match std::env::var_os(FAKE_ENV) {
+            Some(p) => Keychain::File(p.into()),
+            None => {
+                return Err(auth(
+                    "the fake keychain is not configured (VIBEKE_ASSISTANT_FAKE_KEYCHAIN)",
+                ));
+            }
+        },
+    };
+    if !valid_item(item) {
+        return Err(AssistError::new(
+            Category::NotConfigured,
+            "the keychain item name has characters outside [A-Za-z0-9._/-]",
+        ));
+    }
+    match kc.get_item(item) {
+        Ok(Some(s)) => {
+            let s = s.lines().next().unwrap_or("").trim().to_string();
+            if s.is_empty() {
+                Err(auth("the keychain item is empty"))
+            } else {
+                Ok(s)
+            }
+        }
+        Ok(None) => Err(auth("the keychain item was not found")),
+        Err(KeychainError::Unsupported(_)) => {
+            Err(auth("the system credential tool is not available"))
+        }
+        Err(KeychainError::Permission(_)) => Err(AssistError::new(
+            Category::PermissionDenied,
+            "the keychain file must be a regular file owned by you with mode 0600",
         )),
-        _ if !valid_item(item) => Err(AssistError::new(
+        Err(KeychainError::Timeout) => Err(AssistError::new(
+            Category::Timeout,
+            "the system credential tool did not answer in time",
+        )),
+        Err(KeychainError::Invalid(_)) => Err(AssistError::new(
             Category::NotConfigured,
             "the keychain item name has characters outside [A-Za-z0-9._/-]",
         )),
-        Backend::Os => os_lookup(item),
-        Backend::Fake => fake_lookup(item),
-    }
-}
-
-fn clean(secret: &str) -> Result<String> {
-    let s = secret.lines().next().unwrap_or("").trim().to_string();
-    if s.is_empty() {
-        return Err(auth("the keychain item is empty"));
-    }
-    Ok(s)
-}
-
-fn fake_lookup(item: &str) -> Result<String> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let path = std::env::var_os(FAKE_ENV).ok_or_else(|| {
-        auth("the fake keychain is not configured (VIBEKE_ASSISTANT_FAKE_KEYCHAIN)")
-    })?;
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|_| auth("the fake keychain file is not readable"))?;
-    let meta = f
-        .metadata()
-        .map_err(|_| auth("the fake keychain file is not readable"))?;
-    // SAFETY: getuid has no preconditions.
-    let uid = unsafe { libc::getuid() };
-    if !meta.is_file() || meta.uid() != uid || meta.mode() & 0o077 != 0 || meta.len() > 65_536 {
-        return Err(AssistError::new(
-            Category::PermissionDenied,
-            "the fake keychain file must be a regular file owned by you with mode 0600",
-        ));
-    }
-    let mut text = String::new();
-    (&mut f)
-        .take(65_537)
-        .read_to_string(&mut text)
-        .map_err(|_| auth("the fake keychain file is unreadable"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|_| auth("the fake keychain file is not JSON"))?;
-    match v.get(item).and_then(|s| s.as_str()) {
-        Some(s) => clean(s),
-        None => Err(auth("the keychain item was not found")),
-    }
-}
-
-fn os_command(item: &str) -> Command {
-    if cfg!(target_os = "macos") {
-        let mut c = Command::new("/usr/bin/security");
-        c.args(["find-generic-password", "-s", item, "-w"]);
-        c
-    } else {
-        let mut c = Command::new("secret-tool");
-        c.args(["lookup", "service", item]);
-        c
-    }
-}
-
-fn os_lookup(item: &str) -> Result<String> {
-    let mut child = os_command(item)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| auth("the system credential tool is not available"))?;
-    let deadline = Instant::now() + TIMEOUT;
-    let mut out = child.stdout.take();
-    // Read on a thread so a tool that never exits can't block past the deadline.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        if let Some(o) = out.as_mut() {
-            let _ = o.take(65_537).read_to_string(&mut buf);
+        Err(KeychainError::Failed(_)) => {
+            Err(auth("the keychain item was not found or access was denied"))
         }
-        let _ = tx.send(buf);
-    });
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AssistError::new(
-                    Category::Timeout,
-                    "the system credential tool did not answer in time",
-                ));
-            }
-        }
-    };
-    if !status.success() {
-        return Err(auth("the keychain item was not found or access was denied"));
     }
-    let left = deadline.saturating_duration_since(Instant::now());
-    let text = rx
-        .recv_timeout(left.max(Duration::from_millis(200)))
-        .map_err(|_| auth("the system credential tool returned nothing"))?;
-    clean(&text)
 }
 
 #[cfg(test)]
@@ -199,6 +137,11 @@ mod tests {
             lookup("bogus", "x").unwrap_err().category,
             Category::NotConfigured
         );
+        assert_eq!(parse_backend(""), Some(Backend::Os));
+        assert_eq!(
+            parse_backend("file:/x/kc.json"),
+            Some(Backend::File("/x/kc.json".into()))
+        );
     }
 
     #[test]
@@ -208,37 +151,44 @@ mod tests {
             assert!(!valid_item(bad), "{bad:?}");
         }
         assert_eq!(
-            lookup("fake", "-bad").unwrap_err().category,
+            lookup("file:/nonexistent/kc.json", "-bad")
+                .unwrap_err()
+                .category,
             Category::NotConfigured
         );
     }
 
     #[test]
-    fn fake_backend_resolves_items_without_fallback() {
-        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    fn file_backend_resolves_items_without_fallback() {
         let d = tempfile::tempdir().unwrap();
         let f = fake_file(
             d.path(),
             r#"{"vibeke/assistant/primary": "sk-fake-1\n"}"#,
             0o600,
         );
-        // SAFETY: serialized by ENV; no other thread reads this variable concurrently.
-        unsafe { std::env::set_var(FAKE_ENV, &f) };
-        assert_eq!(
-            lookup("fake", "vibeke/assistant/primary").unwrap(),
-            "sk-fake-1"
-        );
-        let e = lookup("fake", "vibeke/assistant/other").unwrap_err();
+        let b = format!("file:{}", f.display());
+        assert_eq!(lookup(&b, "vibeke/assistant/primary").unwrap(), "sk-fake-1");
+        let e = lookup(&b, "vibeke/assistant/other").unwrap_err();
         assert_eq!(e.category, Category::AuthenticationFailed);
         assert!(!e.message.contains("sk-fake"));
         // Wrong mode is refused.
         let f2 = fake_file(d.path(), r#"{"a": "b"}"#, 0o644);
-        // SAFETY: as above.
-        unsafe { std::env::set_var(FAKE_ENV, &f2) };
         assert_eq!(
-            lookup("fake", "a").unwrap_err().category,
+            lookup(&format!("file:{}", f2.display()), "a")
+                .unwrap_err()
+                .category,
             Category::PermissionDenied
         );
+    }
+
+    #[test]
+    fn fake_alias_reads_the_env_file() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let f = fake_file(d.path(), r#"{"a": "sk-env"}"#, 0o600);
+        // SAFETY: serialized by ENV; no other thread reads this variable concurrently.
+        unsafe { std::env::set_var(FAKE_ENV, &f) };
+        assert_eq!(lookup("fake", "a").unwrap(), "sk-env");
         // SAFETY: as above.
         unsafe { std::env::remove_var(FAKE_ENV) };
         assert_eq!(
@@ -250,15 +200,13 @@ mod tests {
     #[test]
     fn credential_resolution_uses_the_selected_backend() {
         use crate::config::{Adapter, Connection, Credential, resolve_credential_with};
-        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let f = fake_file(
             d.path(),
             r#"{"vibeke/assistant/primary": "sk-fake-2"}"#,
             0o600,
         );
-        // SAFETY: serialized by ENV.
-        unsafe { std::env::set_var(FAKE_ENV, &f) };
+        let b = format!("file:{}", f.display());
         let c = Connection {
             adapter: Adapter::Anthropic,
             endpoint: None,
@@ -268,7 +216,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            resolve_credential_with(&c, "fake").unwrap().as_deref(),
+            resolve_credential_with(&c, &b).unwrap().as_deref(),
             Some("sk-fake-2")
         );
         assert_eq!(
@@ -276,8 +224,7 @@ mod tests {
             Category::UnsupportedCapability
         );
         // An env fallback never happens: the unresolvable reference stays an error.
-        // SAFETY: serialized by ENV.
-        unsafe { std::env::remove_var(FAKE_ENV) };
-        assert!(resolve_credential_with(&c, "fake").is_err());
+        std::fs::remove_file(&f).unwrap();
+        assert!(resolve_credential_with(&c, &b).is_err());
     }
 }

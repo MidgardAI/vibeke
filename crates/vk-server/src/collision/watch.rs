@@ -36,11 +36,16 @@ const MAX_STATUS: usize = 20_000;
 /// Minimum time between two sweeps.
 const SWEEP_EVERY_MS: i64 = 2000;
 
-/// Pids writing a file, and the chain of parents of a pid (`[pid, ppid, ...]`).
+/// Pids holding a file open for writing.
+pub type Writers = Arc<dyn Fn(&Path) -> Vec<u32> + Send + Sync>;
+/// The chain of parents of a pid (`[pid, ppid, ...]`).
+pub type Ancestry = Arc<dyn Fn(u32) -> Vec<u32> + Send + Sync>;
+
+/// Pids writing a file, and the chain of parents of a pid.
 #[derive(Clone)]
 pub struct FdProbe {
-    pub writers: Arc<dyn Fn(&Path) -> Vec<u32> + Send + Sync>,
-    pub ancestry: Arc<dyn Fn(u32) -> Vec<u32> + Send + Sync>,
+    pub writers: Writers,
+    pub ancestry: Ancestry,
 }
 
 impl FdProbe {
@@ -253,18 +258,15 @@ pub(super) fn shared_roots(server: &Server) -> BTreeMap<String, Vec<AgentRun>> {
             by_root.entry(root).or_default().push(r);
         }
     }
-    let claimed: BTreeSet<String> = {
-        let g = server.collision.inner.lock().unwrap();
-        g.claims
-            .iter()
-            .filter(|c| {
-                by_root
-                    .get(&c.root)
-                    .is_some_and(|rs| rs.iter().any(|r| r.id == c.run))
-            })
-            .map(|c| c.root.clone())
-            .collect()
-    };
+    let claimed: BTreeSet<String> = super::effective_claims(server, None)
+        .iter()
+        .filter(|c| {
+            by_root
+                .get(&c.root)
+                .is_some_and(|rs| rs.iter().any(|r| r.id == c.run))
+        })
+        .map(|c| c.root.clone())
+        .collect();
     by_root.retain(|root, runs| runs.len() >= 2 || claimed.contains(root));
     by_root
 }
