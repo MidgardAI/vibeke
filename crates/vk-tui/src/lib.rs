@@ -31,6 +31,7 @@ pub mod screen;
 pub mod search;
 pub mod statusbar;
 pub mod tasks;
+pub mod tasks_t4;
 pub mod term;
 pub mod theme;
 pub mod upload;

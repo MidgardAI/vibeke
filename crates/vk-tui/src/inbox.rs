@@ -41,6 +41,11 @@ pub struct Item {
     pub age_ms: i64,
     pub risk: Option<String>,
     pub effort: Option<String>,
+    /// Open tasks transitively waiting for this item's task through confirmed `blocks` links
+    /// (15 §8.1, T4).
+    pub blocks_tasks: u64,
+    /// `effort_estimate {effort, source}` when the user hasn't set effort (T4): (effort, source).
+    pub effort_estimate: Option<(String, String)>,
     pub snoozed_until_ms: Option<i64>,
     pub woke_from_snooze: Option<String>,
     pub urgent: bool,
@@ -179,6 +184,16 @@ pub fn parse_item(machine: usize, v: &Value) -> Option<Item> {
         age_ms: v.get("age_ms").and_then(Value::as_i64).unwrap_or(0),
         risk: opt_str(v, "risk"),
         effort: opt_str(v, "effort"),
+        blocks_tasks: v.get("blocks_tasks").and_then(Value::as_u64).unwrap_or(0),
+        effort_estimate: v.get("effort_estimate").and_then(|e| {
+            let eff = e.get("effort")?.as_str()?.to_string();
+            let src = e
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("heuristic")
+                .to_string();
+            Some((eff, src))
+        }),
         snoozed_until_ms: v.get("snoozed_until_ms").and_then(Value::as_i64),
         woke_from_snooze: opt_str(v, "woke_from_snooze"),
         urgent: v.get("urgent").and_then(Value::as_bool).unwrap_or(false),
@@ -292,6 +307,8 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
                 .to_string()
             }),
             effort: None,
+            blocks_tasks: 0,
+            effort_estimate: None,
             snoozed_until_ms: None,
             woke_from_snooze: None,
             urgent: false,
@@ -329,6 +346,8 @@ pub fn fallback_items(app: &App, mi: usize) -> Vec<Item> {
             age_ms: age,
             risk: None,
             effort: t.effort.clone(),
+            blocks_tasks: 0,
+            effort_estimate: None,
             snoozed_until_ms: None,
             woke_from_snooze: None,
             urgent: false,
@@ -1215,13 +1234,14 @@ pub fn draw(app: &App, g: &mut Grid) {
             2,
         );
         let line = format!(
-            "{urgent}{mlabel}{} · {}{}",
+            "{urgent}{mlabel}{} · {}{}{}",
             it.title,
             if it.explanation.is_empty() {
                 fmt_age(it.age_ms)
             } else {
                 it.explanation.clone()
             },
+            blocks_suffix(it),
             crate::gateway::row_suffix(app, it.key.machine, it.interaction.as_deref())
         );
         g.put_str(x, y, &line, base, (r.x + list_w).saturating_sub(x));
@@ -1318,6 +1338,15 @@ pub fn draw(app: &App, g: &mut Grid) {
     g.put_str(r.x + 1, bottom, keys, t.dim(), r.w.saturating_sub(2));
 }
 
+/// " · blocks N linked tasks" unless the server's explanation already says it (15 §8.1).
+pub fn blocks_suffix(it: &Item) -> String {
+    if it.blocks_tasks == 0 || it.explanation.contains("blocks ") {
+        String::new()
+    } else {
+        format!(" · {}", crate::tasks_t4::blocks_text(it.blocks_tasks))
+    }
+}
+
 fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
     let t = app.theme;
     let mi = it.key.machine;
@@ -1341,6 +1370,17 @@ fn detail_lines(app: &App, it: &Item, out: &mut Vec<(String, Style)>) {
                 .map(|(_, l)| *l)
                 .unwrap_or(e)
         ));
+    }
+    if it.effort.as_deref().is_none_or(|e| e == "unknown")
+        && let Some((e, src)) = &it.effort_estimate
+    {
+        facts.push(format!(
+            "estimate: {} ({src} — not set)",
+            crate::tasks_t4::effort_label(e)
+        ));
+    }
+    if it.blocks_tasks > 0 && !it.explanation.contains("blocks ") {
+        facts.push(crate::tasks_t4::blocks_text(it.blocks_tasks));
     }
     if app.machines.len() > 1 {
         facts.push(format!("on {}", app.machines[mi].label));
