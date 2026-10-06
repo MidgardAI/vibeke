@@ -201,6 +201,13 @@ export type Facet = {
   detail: string | null;
 };
 
+export type FileChange = {
+  path: string;
+  op: "create" | "modify" | "delete" | "rename";
+  lines_added: number | null;
+  lines_removed: number | null;
+};
+
 export type FloatingPane = {
   pane: string;
   x: number;
@@ -259,6 +266,22 @@ export type Isolation = {
 
 export type IsolationLevel = "host" | "sandbox" | "container" | "vm";
 
+export type Item = {
+  id: string;
+  turn_id: string;
+  run_id: string;
+  seq: number;
+  kind: ItemKind;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  summary: string;
+  payload_ref: string | null;
+  file_change: FileChange | null;
+  native_id: string | null;
+};
+
+export type ItemKind = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "file_change" | "command" | "plan" | "subagent" | "error";
+
 export type LayoutNode = {
   Leaf: {
     pane: string;
@@ -271,6 +294,22 @@ export type LayoutNode = {
 };
 
 export type LayoutSpec = Record<string, unknown>;
+
+export type Machine = {
+  id: string;
+  label: string;
+  kind: MachineKind;
+  address: string | null;
+  os: string;
+  arch: string;
+  vibeke_version: string;
+  status: MachineStatus;
+  last_seen_ms: number;
+};
+
+export type MachineKind = "local" | "ssh" | "quic";
+
+export type MachineStatus = "connected" | "connecting" | "degraded" | "offline";
 
 export type MaterializedFile = {
   path: string;
@@ -478,6 +517,15 @@ export type SessionEntry = {
   pid?: number;
 };
 
+export type SessionInfo = {
+  id: string;
+  name: string;
+  machine_id: string;
+  created_at_ms: number;
+  server_pid: number;
+  server_version: string;
+};
+
 export type SyncGroup = {
   id: string;
   panes: string[];
@@ -542,6 +590,27 @@ export type TaskPorts = {
     count: number;
   } | null;
   env: Record<string, unknown>;
+};
+
+export type Turn = {
+  id: string;
+  run_id: string;
+  seq: number;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  input_summary: string;
+  status: "running" | "completed" | "interrupted" | "failed";
+  usage: TurnUsage | null;
+  usage_baseline: TurnUsage | null;
+  item_count: number;
+};
+
+export type TurnUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
 };
 
 export type Workspace = {
@@ -4207,6 +4276,7 @@ export type ServerStatusResult = {
   event_seq: number;
   socket?: string;
   degraded?: unknown;
+  ephemeral?: number;
   preview?: Record<string, unknown>;
   timers?: Record<string, unknown>;
   db_size?: number;
@@ -5885,6 +5955,20 @@ export type AgentIdentifiedData = {
   transcript_path?: unknown;
 };
 
+export type AgentItemSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentItemData = {
+  kind: ItemKind;
+  summary: string;
+  item: string;
+  turn: string;
+  seq: number;
+  payload_ref: string | null;
+};
+
 export type AgentNamedSubject = {
   run: string;
 };
@@ -5941,6 +6025,26 @@ export type AgentStateChangedData = {
   to: string;
   source?: string;
   confidence?: number;
+};
+
+export type AgentSubagentFinishedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentSubagentFinishedData = {
+  agent_id: string | null;
+  agent_type: string;
+};
+
+export type AgentSubagentStartedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentSubagentStartedData = {
+  agent_id: string | null;
+  agent_type: string;
 };
 
 export type AgentTurnCompletedSubject = {
@@ -6393,6 +6497,50 @@ export type LayoutAppliedData = {
   tabs: number;
   panes: number;
   new_workspace: unknown;
+};
+
+export type MachineAddedSubject = {
+  machine: string;
+};
+
+export type MachineAddedData = {
+  label: string;
+  kind: string;
+  address: string | null;
+};
+
+export type MachineConnectedSubject = {
+  machine: string;
+};
+
+export type MachineConnectedData = {
+  label: string;
+};
+
+export type MachineDegradedSubject = {
+  machine: string;
+};
+
+export type MachineDegradedData = {
+  label: string;
+  reason: string | null;
+};
+
+export type MachineDisconnectedSubject = {
+  machine: string;
+};
+
+export type MachineDisconnectedData = {
+  label: string;
+  reason: string | null;
+};
+
+export type MachineRemovedSubject = {
+  machine: string;
+};
+
+export type MachineRemovedData = {
+  label: string;
 };
 
 export type NotesUpdatedSubject = {
@@ -7105,6 +7253,24 @@ export type SessionServerRestartedData = {
   prev_pid?: number;
 };
 
+export type SessionStartedSubject = Record<string, unknown>;
+
+export type SessionStartedData = {
+  pid: number;
+  version: string;
+  machine: string;
+  name: string;
+  prev_pid: number | null;
+  fresh: boolean;
+};
+
+export type SessionStoppedSubject = Record<string, unknown>;
+
+export type SessionStoppedData = {
+  pid: number;
+  reason: string;
+};
+
 export type TabClosedSubject = {
   tab: string;
   workspace: string;
@@ -7526,12 +7692,15 @@ export interface EventMap {
   "agent.file_changed": { subject: AgentFileChangedSubject; data: AgentFileChangedData };
   "agent.harness_version_unvalidated": { subject: AgentHarnessVersionUnvalidatedSubject; data: AgentHarnessVersionUnvalidatedData };
   "agent.identified": { subject: AgentIdentifiedSubject; data: AgentIdentifiedData };
+  "agent.item": { subject: AgentItemSubject; data: AgentItemData };
   "agent.named": { subject: AgentNamedSubject; data: AgentNamedData };
   "agent.rate_limited": { subject: AgentRateLimitedSubject; data: AgentRateLimitedData };
   "agent.resume_handle": { subject: AgentResumeHandleSubject; data: AgentResumeHandleData };
   "agent.session_ended": { subject: AgentSessionEndedSubject; data: AgentSessionEndedData };
   "agent.started": { subject: AgentStartedSubject; data: AgentStartedData };
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
+  "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
+  "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
   "agent.usage": { subject: AgentUsageSubject; data: AgentUsageData };
@@ -7583,6 +7752,11 @@ export interface EventMap {
   "interaction.opened": { subject: InteractionOpenedSubject; data: InteractionOpenedData };
   "interaction.updated": { subject: InteractionUpdatedSubject; data: InteractionUpdatedData };
   "layout.applied": { subject: LayoutAppliedSubject; data: LayoutAppliedData };
+  "machine.added": { subject: MachineAddedSubject; data: MachineAddedData };
+  "machine.connected": { subject: MachineConnectedSubject; data: MachineConnectedData };
+  "machine.degraded": { subject: MachineDegradedSubject; data: MachineDegradedData };
+  "machine.disconnected": { subject: MachineDisconnectedSubject; data: MachineDisconnectedData };
+  "machine.removed": { subject: MachineRemovedSubject; data: MachineRemovedData };
   "notes.updated": { subject: NotesUpdatedSubject; data: NotesUpdatedData };
   "notification.created": { subject: NotificationCreatedSubject; data: NotificationCreatedData };
   "pane.closed": { subject: PaneClosedSubject; data: PaneClosedData };
@@ -7652,6 +7826,8 @@ export interface EventMap {
   "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
   "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
+  "session.started": { subject: SessionStartedSubject; data: SessionStartedData };
+  "session.stopped": { subject: SessionStoppedSubject; data: SessionStoppedData };
   "tab.closed": { subject: TabClosedSubject; data: TabClosedData };
   "tab.created": { subject: TabCreatedSubject; data: TabCreatedData };
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };
