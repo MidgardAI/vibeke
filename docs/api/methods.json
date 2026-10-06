@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 281,
+  "method_count": 291,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -2842,8 +2842,36 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{task: Target, host: string}",
-      "result": "{task: string, allowed: string}"
+      "params": "{task?: Target, host: string, global?: bool = false}",
+      "result": "{task: string, allowed: string} | {allowed: string, scope: 'global'}"
+    },
+    {
+      "name": "sandbox.copy_out",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, path: string}",
+      "result": "{kind: 'copy_out', outcome: 'applied', detail: {path: string}}"
+    },
+    {
+      "name": "sandbox.disallow",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{host: string, task?: Target, global?: bool = false}",
+      "result": "{host: string, scope: 'global'|'task', removed: bool, task?: string|null}"
     },
     {
       "name": "sandbox.list",
@@ -2857,7 +2885,77 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{sandboxes: [{sandbox: string, task?: string, checkout?: string, level: string, provider?: string, network: any, yolo: bool, proxy_port?: int, task_allow?: any, credentials: any, container?: {container: string, state: string, image: any, code: any, workdir: any, clone?: {branch: string, base: string}, devcontainer: any, warnings: any, in_box_vibeke: any}}]}"
+      "result": "{sandboxes: [{sandbox: string, task?: string, checkout?: string, level: string, provider?: string, network: any, yolo: bool, proxy_port?: int, task_allow?: any, credentials: any, container?: {container: string, state: string, image: any, code: any, workdir: any, clone?: {branch: string, base: string}, devcontainer: any, warnings: any, in_box_vibeke: any}, usage?: any, forwards?: [{box_port: int, host_port: int}], idle_suspended?: bool, slot?: string|null}], global_allow?: [string]}"
+    },
+    {
+      "name": "sandbox.logs",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, tail?: int = 200}",
+      "result": "{sandbox: string, task: string|null, level: string, container: string|null, setup: string|null, events: [{seq: int, ts: int, type: string, data: any}]}"
+    },
+    {
+      "name": "sandbox.prune",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{dry_run?: bool = false}",
+      "result": "{dry_run: bool, containers: [{container: string, key: string, state: string, removed: bool}], dirs: [{dir: string, removed: bool}], warnings: [string]}"
+    },
+    {
+      "name": "sandbox.push",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, remote?: string = origin}",
+      "result": "{kind: 'push', outcome: 'applied', detail: {remote: string, branch: string, synced: any, output: string}}"
+    },
+    {
+      "name": "sandbox.recover",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{task: string, created: bool, synced: any, resumed: [any], skipped: [{run: string, reason: string}]}"
+    },
+    {
+      "name": "sandbox.relaunch",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run: Target, isolate?: sandbox|container, network?: none|harness-apis|package-registries|dev|open}",
+      "result": "{run: AgentRun, from: string, level: string}"
     },
     {
       "name": "sandbox.remove",
@@ -2872,6 +2970,48 @@
       "spec": null,
       "params": "{task: Target, force?: bool = false}",
       "result": "{container: string, action: string, sync: any, leftovers: any, error?: string, unsynced_kept: bool}"
+    },
+    {
+      "name": "sandbox.request",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{kind: push|copy_out, remote?: string = origin, path?: string, pane?: Target}",
+      "result": "{interaction: string, kind: string, status: 'pending'}"
+    },
+    {
+      "name": "sandbox.setup_token",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{token: string}",
+      "result": "{stored: bool, path: string, env: string}"
+    },
+    {
+      "name": "sandbox.shell",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{sandbox: string, level: container|sandbox, argv: [string], env: [[string]], cwd: any}"
     },
     {
       "name": "sandbox.start",
