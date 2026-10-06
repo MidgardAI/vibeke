@@ -211,6 +211,20 @@ pub fn resumable_runs(server: &Server) -> Vec<AgentRun> {
 
 impl Agents {
     /// Reject client input while a verified keystroke sequence owns the pane (04 §8).
+    /// Hold the pane's input lock (other clients' and API input is refused) while Vibeke itself
+    /// delivers input (keystroke answers, task messages).
+    pub fn lock_input(&self, pane: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .locks
+            .insert(pane.to_string(), Instant::now());
+    }
+
+    pub fn unlock_input(&self, pane: &str) {
+        self.inner.lock().unwrap().locks.remove(pane);
+    }
+
     pub fn input_blocked(&self, pane: &str) -> Option<&'static str> {
         let i = self.inner.lock().unwrap();
         match i.locks.get(pane) {
@@ -732,7 +746,8 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
             pane,
             h,
             "UserPromptSubmit",
-            &json!({"prompt": p.get("prompt").or_else(|| p.get("prompt_preview"))}),
+            // A preview-only payload (older extensions) is marked truncated, never "verbatim".
+            &json!({"prompt": p.get("prompt").or_else(|| p.get("prompt_preview")), "prompt_truncated": p.get("prompt").is_none() || p.get("prompt_truncated").and_then(Value::as_bool).unwrap_or(false)}),
         ),
         "Working" | "Settling" => {
             let run = bound_run(server, pane, h);

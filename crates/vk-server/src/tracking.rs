@@ -147,6 +147,9 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
             {
                 conversation_changed(&c, &mut tx, run, new, n);
             }
+            if let Some(sid) = new_sid {
+                resume_binding(&c, &mut tx, run, sid, n, &server.opts.machine);
+            }
         }
         "UserPromptSubmit" => {
             let Some(text) = p.get("prompt").and_then(Value::as_str) else {
@@ -180,7 +183,10 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
             };
             let (prompt, cut) = truncate(&joined, MAX_PROMPT_BYTES);
             t.prompt = prompt;
-            t.prompt_truncated |= cut;
+            t.prompt_truncated |= cut
+                || p.get("prompt_truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
             tx.m.put(K_TURN, &t.id, None, &t);
             // A queued binding switch takes effect at this boundary.
             closed.extend(apply_pending_switches(&c, &mut tx, run, n));
@@ -398,6 +404,81 @@ fn conversation_changed(c: &crate::core::Core, tx: &mut Tx, run: &AgentRun, new_
     }
 }
 
+/// Verified same-session resume (15 §4.2): a new run reporting the native session of an ended
+/// run with an open binding continues that binding (continuation edge, history untouched).
+/// Several candidates → no automatic choice (`task.binding_changed` with `ambiguous`).
+fn resume_binding(
+    c: &crate::core::Core,
+    tx: &mut Tx,
+    run: &AgentRun,
+    sid: &str,
+    n: u32,
+    machine: &str,
+) {
+    let all = bindings(c);
+    if all
+        .iter()
+        .any(|b| b.run_id == run.id && b.state != BindingState::Closed)
+    {
+        return;
+    }
+    let facts = |r: &AgentRun, sid: Option<&str>, active: bool| binding::RunFacts {
+        run_id: r.id.clone(),
+        harness: r.harness.clone(),
+        native_session_id: sid.map(str::to_string),
+        repo_root: r.cwd.clone().unwrap_or_default(),
+        owner: machine.to_string(),
+        active,
+        identity_verified: true,
+    };
+    let preds: Vec<(TaskRunBinding, binding::RunFacts)> = all
+        .into_iter()
+        .filter(|b| {
+            b.state != BindingState::Closed && b.native_conversation_id == sid && b.run_id != run.id
+        })
+        .filter_map(|b| {
+            let live = c.run(&b.run_id).cloned();
+            let old = live
+                .clone()
+                .or_else(|| c.store.find::<AgentRun>("run", &b.run_id).ok().flatten())?;
+            let f = facts(
+                &old,
+                old.harness_session_id.as_deref(),
+                live.is_some_and(|r| r.ended_at_ms.is_none()),
+            );
+            Some((b, f))
+        })
+        .collect();
+    if preds.is_empty() {
+        return;
+    }
+    let new_facts = facts(run, Some(sid), true);
+    match binding::resume_continuation(&preds, &new_facts, n, now()) {
+        binding::ContinuationDecision::Continue { binding: nb } => {
+            if let Some((old, _)) = preds.iter().find(|(b, _)| b.task_id == nb.task_id) {
+                let mut closed = old.clone();
+                closed.state = BindingState::Closed;
+                closed.end_turn = closed.end_turn.or(Some(closed.start_turn + 1));
+                put_binding(tx, &closed);
+            }
+            put_binding(tx, &nb);
+            tx.event(
+                "task.binding_changed",
+                json!({"task": nb.task_id, "run": run.id, "binding": nb.id}),
+                json!({"state": "active", "reason": "resume_continuation"}),
+            );
+        }
+        binding::ContinuationDecision::Ambiguous { candidates } => {
+            tx.event(
+                "task.binding_changed",
+                json!({"run": run.id}),
+                json!({"state": "ambiguous", "candidates": candidates, "offers": ["link_run"]}),
+            );
+        }
+        binding::ContinuationDecision::NoMatch => {}
+    }
+}
+
 pub fn pending_key(run: &str) -> String {
     format!("pending_switch:{run}")
 }
@@ -484,6 +565,11 @@ pub fn record(tx: &mut Tx, method: &str, p: &Value, result: &Value) {
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
+        m if ctx.pane_scope.is_some()
+            && let Err(e) = scope_check(server, ctx, m, p) =>
+        {
+            Err(e)
+        }
         "task.sources" => sources(server, ctx, p),
         "task.track" => track(server, ctx, p)
             .await
@@ -501,6 +587,58 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "task.set" => task_set(server, p),
         _ => return None,
     })
+}
+
+/// Authorization before retrieval for pane-scoped callers (15 §11): only tasks and runs in the
+/// caller pane's workspace; receipts belong to full-scope callers only.
+fn scope_check(
+    server: &Server,
+    ctx: &Ctx,
+    method: &str,
+    p: &Value,
+) -> Result<(), vk_proto::rpc::RpcError> {
+    let Some(scope) = &ctx.pane_scope else {
+        return Ok(());
+    };
+    let denied = || {
+        err(
+            ErrorKind::PermissionDenied,
+            format!("{method}: outside this pane's workspace"),
+        )
+        .details(json!({"scope": "pane"}))
+    };
+    if method == "task.operation.get" {
+        return Err(denied());
+    }
+    let my_ws = server
+        .with_core(|c| c.pane(scope).map(|x| x.workspace.clone()))
+        .ok_or_else(denied)?;
+    let ws_of_run = |r: &str| {
+        server.with_core(|c| {
+            c.run(r)
+                .and_then(|r| c.pane(&r.pane))
+                .map(|x| x.workspace.clone())
+        })
+    };
+    if let Some(r) = s(p, "run")
+        && ws_of_run(r).as_deref() != Some(my_ws.as_str())
+    {
+        return Err(denied());
+    }
+    let task = s(p, "task").map(str::to_string).or_else(|| {
+        s(p, "message").and_then(|m| {
+            server
+                .with_core(|c| c.store.find::<TaskMessage>(K_MESSAGE, m).ok().flatten())
+                .map(|m| m.task)
+        })
+    });
+    if let Some(t) = task {
+        let t = find_task(server, &t)?;
+        if t.workspace.as_deref() != Some(my_ws.as_str()) {
+            return Err(denied());
+        }
+    }
+    Ok(())
 }
 
 fn find_run(server: &Server, ctx: &Ctx, p: &Value) -> Result<AgentRun, vk_proto::rpc::RpcError> {
@@ -971,6 +1109,21 @@ fn intent_update(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }
     let uncomm = uncommunicated(server, &task.id, &next);
     let mut c = server.core.lock().unwrap();
+    // Recheck under the state lock: a concurrent edit must never overwrite a revision.
+    let now_rev = c.task(&task.id).and_then(|t| t.intent_revision);
+    let taken = c
+        .store
+        .find::<TaskIntent>(K_INTENT, &format!("{}:{}", task.id, next.revision))
+        .ok()
+        .flatten()
+        .is_some();
+    if now_rev != Some(cur) || taken {
+        return Err(conflict(
+            "review_changed",
+            "the intent changed while you were editing; reload",
+        )
+        .details(json!({"reason": "intent_revision_changed", "current": now_rev})));
+    }
     let mut tx = Tx::new();
     tx.task(t2.clone());
     tx.m.close(
@@ -1177,6 +1330,9 @@ fn detail(server: &Server, p: &Value) -> R {
 }
 
 fn task_set(server: &Server, p: &Value) -> R {
+    if let Some(r) = replay(server, "task.set", p) {
+        return r;
+    }
     let mut task = find_task(server, req(p, "task")?)?;
     if let Some(exp) = u(p, "expected_rev")
         && exp != task.rev
@@ -1204,8 +1360,10 @@ fn task_set(server: &Server, p: &Value) -> R {
         json!({"task": task.id}),
         json!({"priority": task.priority, "effort": task.effort}),
     );
+    let result = json!({"task": task});
+    record(&mut tx, "task.set", p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
-    Ok(json!({"task": task}))
+    Ok(result)
 }
 
 /// Attached-task lifecycle: only the record changes (15 §4.3).
@@ -1331,24 +1489,36 @@ fn message_prepare(server: &Server, p: &Value) -> R {
     Ok(result)
 }
 
-/// The text after the input prompt on screen: `Some("")` when the input is provably empty.
+/// The text in the agent's input box: `Some("")` only when the prompt line *and* every
+/// continuation line inside the box are empty. Placeholder hints count as text: refusing is
+/// the safe failure (the user gets "Open pane to send").
 fn input_text(screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().collect();
-    for l in lines.iter().rev().take(30) {
-        let t = l
-            .trim()
+    let start = lines.len().saturating_sub(30);
+    let strip = |l: &str| {
+        l.trim()
             .trim_matches(|c| c == '│' || c == '┃' || c == '|')
-            .trim();
-        for pre in ["> ", "›", ">"] {
-            if let Some(rest) = t.strip_prefix(pre) {
-                let rest = rest.trim();
-                // Claude shows a dim placeholder hint in an empty prompt ("Try …").
-                if rest.starts_with("Try \"") || rest.starts_with("Try '") {
-                    return Some(String::new());
-                }
-                return Some(rest.to_string());
+            .trim()
+            .to_string()
+    };
+    for i in (start..lines.len()).rev() {
+        let t = strip(lines[i]);
+        let Some(rest) = ["> ", "›", ">"].iter().find_map(|pre| t.strip_prefix(pre)) else {
+            continue;
+        };
+        let mut text = rest.trim().to_string();
+        for l in &lines[i + 1..] {
+            let raw = l.trim();
+            if raw.starts_with('╰') || raw.starts_with('└') || raw.starts_with('─') {
+                break;
+            }
+            let more = strip(l);
+            if !more.is_empty() {
+                text.push('\n');
+                text.push_str(&more);
             }
         }
+        return Some(text);
     }
     None
 }
@@ -1395,6 +1565,16 @@ fn send_safety(server: &Server, m: &TaskMessage) -> Result<(), String> {
 }
 
 async fn message_send(server: &Arc<Server>, p: &Value) -> R {
+    // A repeated request with the same key reports the message as it is now (15 §10.3).
+    if let Some(r) = replay(server, "task.message.send", p) {
+        let id = req(p, "message")?;
+        return r
+            .and_then(|_| message_get(server, &json!({"message": id})))
+            .map(|mut v| {
+                v["replayed"] = json!(true);
+                v
+            });
+    }
     let id = req(p, "message")?;
     let m = server
         .with_core(|c| c.store.find::<TaskMessage>(K_MESSAGE, id).ok().flatten())
@@ -1414,11 +1594,33 @@ async fn message_send(server: &Arc<Server>, p: &Value) -> R {
     if let Err(why) = send_safety(server, &m) {
         return Err(err(ErrorKind::Conflict, format!("not sent (zero bytes written): {why}")).details(json!({"reason": "send_unsafe", "detail": why, "fallback": "open_pane_to_send", "pane": server.with_core(|c| c.run(&m.run).map(|r| r.pane.clone()))})));
     }
-    let mut m = m;
-    m.state = MessageState::Sending;
-    m.updated_at_ms = now();
+    if !server
+        .tracking
+        .inflight
+        .lock()
+        .unwrap()
+        .insert(m.id.clone())
     {
+        return Err(conflict(
+            "send_in_progress",
+            "this message is already being sent",
+        ));
+    }
+    // Conditional transition: only from the state we validated, under the state lock.
+    let m = {
         let mut c = server.core.lock().unwrap();
+        let cur = c.store.find::<TaskMessage>(K_MESSAGE, &m.id).ok().flatten();
+        if cur.as_ref().map(|x| x.state) != Some(m.state) {
+            drop(c);
+            server.tracking.inflight.lock().unwrap().remove(&m.id);
+            return Err(conflict(
+                "message_changed",
+                "the message changed state; reload it",
+            ));
+        }
+        let mut m = m;
+        m.state = MessageState::Sending;
+        m.updated_at_ms = now();
         let mut tx = Tx::new();
         put_message(&mut tx, &m);
         tx.event(
@@ -1426,14 +1628,14 @@ async fn message_send(server: &Arc<Server>, p: &Value) -> R {
             json!({"task": m.task, "message": m.id}),
             json!({}),
         );
-        server.commit(&mut c, tx).map_err(internal)?;
-    }
-    server
-        .tracking
-        .inflight
-        .lock()
-        .unwrap()
-        .insert(m.id.clone());
+        record(&mut tx, "task.message.send", p, &json!({"message": m.id}));
+        if let Err(e) = server.commit(&mut c, tx) {
+            drop(c);
+            server.tracking.inflight.lock().unwrap().remove(&m.id);
+            return Err(internal(e));
+        }
+        m
+    };
     let srv = server.clone();
     let m2 = m.clone();
     tokio::spawn(async move {
@@ -1500,8 +1702,55 @@ async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option
     } else {
         m.text.replace('\n', " ").into_bytes()
     };
-    crate::render::write_and_ack(server, &run.pane, server.next_internal_input_id(), bytes).await;
+    // Hold the pane's input lock from paste to Enter so no client or API caller can interleave.
+    server.agents.lock_input(&run.pane);
+    let st =
+        crate::render::write_and_ack(server, &run.pane, server.next_internal_input_id(), bytes)
+            .await;
+    if st != vk_proto::holder::InputStatus::Written
+        && st != vk_proto::holder::InputStatus::Duplicate
+    {
+        server.agents.unlock_input(&run.pane);
+        return (
+            MessageState::DeliveryUnknown,
+            Some(format!(
+                "the paste was not confirmed ({st:?}); nothing was submitted"
+            )),
+        );
+    }
     tokio::time::sleep(Duration::from_millis(80)).await;
+    // Recheck before submitting: still idle, nothing opened, nobody focused, and the input box
+    // holds exactly our text (never a user draft merged with it).
+    let ok = {
+        let focus_free = !server
+            .clients
+            .lock()
+            .unwrap()
+            .values()
+            .any(|cl| cl.focus.pane.as_deref() == Some(run.pane.as_str()) && cl.kind == "tui");
+        let quiet = server.with_core(|c| {
+            c.run(&m.run)
+                .is_some_and(|r| r.execution.value == Execution::Idle)
+                && !c
+                    .model
+                    .interactions
+                    .iter()
+                    .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
+        });
+        let shown = server
+            .pane_rt(&run.pane)
+            .and_then(|rt| input_text(&rt.screen.lock().unwrap().engine.screen_text()));
+        let norm = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
+        focus_free
+            && quiet
+            && shown.is_some_and(|t| {
+                norm(&t) == norm(&m.text) || norm(&m.text).starts_with(&norm(&t)) && !t.is_empty()
+            })
+    };
+    if !ok {
+        server.agents.unlock_input(&run.pane);
+        return (MessageState::DeliveryUnknown, Some("conditions changed after pasting; the text may be in the input box but was not submitted — check the pane".into()));
+    }
     crate::render::write_and_ack(
         server,
         &run.pane,
@@ -1509,6 +1758,7 @@ async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option
         b"\r".to_vec(),
     )
     .await;
+    server.agents.unlock_input(&run.pane);
     let want: String = m.text.split_whitespace().collect::<Vec<_>>().join(" ");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -1556,6 +1806,9 @@ fn message_get(server: &Server, p: &Value) -> R {
 }
 
 fn message_cancel(server: &Server, p: &Value) -> R {
+    if let Some(r) = replay(server, "task.message.cancel", p) {
+        return r;
+    }
     let id = req(p, "message")?;
     let mut m = server
         .with_core(|c| c.store.find::<TaskMessage>(K_MESSAGE, id).ok().flatten())
@@ -1571,8 +1824,10 @@ fn message_cancel(server: &Server, p: &Value) -> R {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     put_message(&mut tx, &m);
+    let result = json!({"message": m});
+    record(&mut tx, "task.message.cancel", p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
-    Ok(json!({"message": m}))
+    Ok(result)
 }
 
 /// Startup: sends that were in flight when the server died become `delivery_unknown`.
@@ -1612,6 +1867,18 @@ pub fn bindings_by_task(server: &Server) -> HashMap<String, Vec<TaskRunBinding>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drafts_are_never_empty() {
+        // A draft that happens to start like Claude's placeholder is still a draft.
+        assert_eq!(
+            input_text("│ > Try \"fix the bug\" │").as_deref(),
+            Some("Try \"fix the bug\"")
+        );
+        // Multiline drafts: continuation lines inside the box count.
+        let t = input_text("╭────╮\n│ > \n│   second line of my draft\n╰────╯").unwrap();
+        assert!(!t.is_empty());
+    }
 
     #[test]
     fn input_box_detection() {

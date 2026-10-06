@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # Minimal stand-in for an interactive harness: an input box, prompts reported via hooks.
-SID=sess-1
+SID=${FAKE_SID:-sess-1}
 h() { printf '%s' "$2" | "$VIBEKE_BIN" hook claude "$1" >/dev/null 2>&1; }
 q() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 h SessionStart "{\"session_id\":\"$SID\",\"source\":\"startup\"}"
@@ -264,6 +264,64 @@ fn track_after_the_fact() {
         .api("task.bind", json!({"task": task, "run": run}))
         .unwrap();
     assert_eq!(cont["binding"]["native_conversation_id"], "sess-2");
+
+    // Pane-scoped reads: a pane in another workspace can't read this task or any receipt.
+    let other = s.json(&["workspace", "create", "--cwd", "/tmp"])["root_pane"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let _ = s
+        .cmd(&[
+            "pane",
+            "wait-idle",
+            &other,
+            "--quiet-ms",
+            "600",
+            "--timeout-ms",
+            "10000",
+        ])
+        .output();
+    s.json(&["pane", "run", &other, &format!("$VIBEKE_BIN --json api call task.detail '{{\"task\":\"{task}\"}}' 2>&1 | head -c 300; $VIBEKE_BIN --json api call task.operation.get '{{\"idempotency_key\":\"track-1\"}}' 2>&1 | head -c 300; echo; echo scope-done")]);
+    let _ = s
+        .cmd(&[
+            "pane",
+            "wait-output",
+            &other,
+            "--regex",
+            "(?m)^scope-done$",
+            "--timeout-ms",
+            "10000",
+        ])
+        .output();
+    let txt = s.json(&[
+        "pane", "read", &other, "--source", "recent", "--lines", "20",
+    ])["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(txt.matches("permission_denied").count(), 2, "{txt}");
+
+    // Same-session resume: the harness exits and comes back on sess-2 → the binding follows.
+    let _ = s.cmd(&["pane", "send-keys", &pane, "ctrl+d"]).output();
+    std::thread::sleep(Duration::from_millis(800));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("FAKE_SID=sess-2 {}", script.to_string_lossy()),
+    ]);
+    s.until("binding resumed on the new run", 15, || {
+        let d = s.api("task.detail", json!({"task": task})).ok()?;
+        d["bindings"]
+            .as_array()?
+            .iter()
+            .any(|b| {
+                b["state"] == "active"
+                    && b["run_id"] != run.as_str()
+                    && b["native_conversation_id"] == "sess-2"
+            })
+            .then_some(())
+    });
 
     // Finishing an attached task never touches the pane.
     let fin = s.json(&["task", "finish", &task]);
