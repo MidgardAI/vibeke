@@ -64,12 +64,24 @@ impl Keymap {
         for (i, c) in cfg.keys.command.iter().enumerate() {
             add(&format!("command:{i}"), &c.key);
         }
-        Keymap {
+        let mut km = Keymap {
             prefix,
             bindings,
             prefix_timeout_ms: cfg.keys.prefix_timeout_ms as u64,
             passthrough: cfg.keys.prefix_passthrough,
+        };
+        // `ctrl+shift+p` opens the palette directly when the host reports it unambiguously
+        // (kitty keyboard; legacy hosts send plain ctrl+p, which never matches). A user binding
+        // on the chord wins (08 §6.3).
+        if cfg
+            .keys
+            .bindings
+            .get("command_palette")
+            .is_none_or(|b| !b.is_empty())
+        {
+            km.add_plugin_binding("command_palette", "ctrl+shift+p");
         }
+        km
     }
 
     /// Add a plugin's default binding for `action`. Existing bindings (the user's, the

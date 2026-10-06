@@ -12,6 +12,8 @@ base64 = { workspace = true }
 anyhow = { workspace = true }
 vk-term = { workspace = true }
 vk-config = { workspace = true }
+vk-agents = { workspace = true }
+toml_edit = { workspace = true }
 vk-compat = { workspace = true }
 vk-browser = { workspace = true }
 # Directory drops are packed with the same rules the server unpacks with (06 A11.2).

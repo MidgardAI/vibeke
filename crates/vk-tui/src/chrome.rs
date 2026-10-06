@@ -44,8 +44,10 @@ pub fn in_sidebar(app: &App, x: u16) -> bool {
 /// The main area's columns (tab bar, status bar, panes): (first column, width).
 pub fn main_x(app: &App) -> (u16, u16) {
     let cols = app.size.0;
+    let rail = crate::sidebar::rail_w(app).min(cols);
     match (app.sidebar, sidebar_right(app)) {
-        (false, _) => (0, cols),
+        (false, false) => (rail, cols - rail),
+        (false, true) => (0, cols - rail),
         (true, false) => {
             let x = (app.sidebar_w + 1).min(cols);
             (x, cols - x)

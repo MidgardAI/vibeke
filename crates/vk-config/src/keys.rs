@@ -66,6 +66,12 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("review_clipboard", "prefix+y"),
     ("last_workspace", "prefix+shift+l"),
     ("url_hints", "prefix+shift+u"),
+    // Batch 2B (08 §5, §6.6, §8, §9, §11.1).
+    ("sync_input_pane", "prefix+alt+s"),
+    ("fleet", "prefix+shift+m"),
+    ("batch_approvals", ""),
+    ("setup", ""),
+    ("trust_repo", ""),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty

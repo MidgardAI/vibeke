@@ -437,10 +437,15 @@ pub fn surfaces(app: &App) -> Vec<Surface> {
     let Some(tid) = m.focus.tab.as_ref() else {
         return vec![];
     };
-    match m.model.tabs.iter().find(|t| &t.id == tid) {
+    let mut v = match m.model.tabs.iter().find(|t| &t.id == tid) {
         Some(tab) => surfaces_in(&m.model.panes, tab, app.pane_area()),
         None => vec![],
+    };
+    // This client's move/resize of a popup (08 §5).
+    for s in &mut v {
+        crate::popup_pane::adjust(app, s);
     }
+    v
 }
 
 /// Whether `pane` (on the focused machine) is a plugin popup/overlay.

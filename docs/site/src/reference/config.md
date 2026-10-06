@@ -136,6 +136,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # preview_list             = "prefix+shift+o"
 # last_workspace           = "prefix+shift+l" # toggle to the previously focused workspace
 # url_hints                = "prefix+shift+u" # label URLs/IDs in the focused pane: open or copy
+# sync_input_pane          = "prefix+alt+s"   # add/remove the focused pane from the tab's sync set
+# fleet                    = "prefix+shift+m" # fleet grid: every agent on every machine
+# batch_approvals          = ""               # batch view of equivalent approvals (also `A` on a card)
+# setup                    = ""               # onboarding: terminal check, integrations, notifications, theme
+# trust_repo               = ""               # review and trust this repo's .vibeke/ (repo-local config)
 
 # [keys.copy_mode]
 # mode = "vi"                           # vi | emacs

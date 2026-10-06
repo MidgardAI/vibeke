@@ -147,6 +147,9 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Drafts => crate::drafts::key(app, ev),
         Popup::Assist => crate::assist::key(app, ev),
         Popup::Scrollback => crate::scrollback::key(app, ev),
+        p @ (Popup::Onboarding | Popup::Batch | Popup::Fleet | Popup::TrustRepo) => {
+            crate::ux::popup_key(app, ev, p)
+        }
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -188,10 +191,8 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                     .map(|i| i.id.clone());
                 match int {
                     Some(i) => {
-                        app.mode = Mode::Popup(Popup::Card {
-                            interaction: i,
-                            sel: 0,
-                        })
+                        let mi = app.cur;
+                        crate::popup_pane::open_card(app, mi, &i);
                     }
                     None => app.mode = Mode::Popup(Popup::Peek { pane }),
                 }
@@ -301,6 +302,8 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
                         );
                     }
                 }
+                // The batch view of equivalent approvals (08 §8).
+                (_, Key::Char('A')) => crate::batch::open(app, Some((mi, it.id.clone()))),
                 (_, Key::Char(']')) => {
                     let items = inbox(app);
                     let pos = items.iter().position(|(_, x)| x.id == it.id).unwrap_or(0);
@@ -498,6 +501,9 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Drafts => crate::drafts::draw(app, g),
             Popup::Assist => crate::assist::draw(app, g),
             Popup::Scrollback => crate::scrollback::draw(app, g),
+            p @ (Popup::Onboarding | Popup::Batch | Popup::Fleet | Popup::TrustRepo) => {
+                crate::ux::popup_draw(app, g, p)
+            }
             Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),
             Popup::Peek { pane } => {
                 let m = app.m();
@@ -640,7 +646,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                         .to_string()
                 } else {
                     match it.kind {
-                        InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [o] open  [esc] later".into(),
+                        InteractionKind::Approval => "[y] allow once  [s] allow for session  [n] deny  [e] deny with message  [A] batch  [o] open  [esc] later".into(),
                         InteractionKind::PlanReview => "[y] approve  [e] request changes  [n] reject  [o] open  [esc] later".into(),
                         InteractionKind::Question => "[j/k] choose  [enter] answer  [1-9] pick  [o] open  [esc] later".into(),
                         InteractionKind::Notice => "[o] open  [esc] close".into(),

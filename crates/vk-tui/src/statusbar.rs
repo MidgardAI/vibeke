@@ -344,7 +344,9 @@ pub fn segment(app: &App, id: &str, d: &Value) -> (String, Style) {
             (m.to_string(), t.dim())
         }
         "sync_input" => {
-            if d.pointer("/sync_input/enabled").and_then(Value::as_bool) == Some(true) {
+            if let Some(b) = crate::sync_input::badge(app) {
+                (b.trim().to_string(), t.bold(t.yellow))
+            } else if d.pointer("/sync_input/enabled").and_then(Value::as_bool) == Some(true) {
                 ("SYNC".into(), t.bold(t.yellow))
             } else {
                 (String::new(), t.text())

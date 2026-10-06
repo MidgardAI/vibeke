@@ -447,7 +447,8 @@ fn open_editor(app: &mut App) {
         Ok(file) => {
             let argv = editor_argv(&editor, &file, v.top + 1);
             v.message = Some("Opened in the editor (a read-only copy, deleted on exit)".into());
-            app.external = Some(External { argv, file });
+            let mi = v.machine;
+            crate::popup_pane::editor(app, mi, argv, file);
         }
         Err(e) => v.message = Some(format!("couldn't write the temp file: {e}")),
     }
@@ -455,6 +456,12 @@ fn open_editor(app: &mut App) {
 
 /// Run an [`External`] with inherited stdio (the caller suspended the TUI), then delete its file
 /// (dropping the [`External`] would too; this deletes it as soon as the program exits).
+/// Tests: a temp file guard for an existing path.
+#[cfg(test)]
+pub(crate) fn test_temp_file(p: PathBuf) -> TempFile {
+    TempFile::new(p)
+}
+
 pub fn run_external(x: &External) -> Result<(), String> {
     let status = std::process::Command::new(&x.argv[0])
         .args(&x.argv[1..])

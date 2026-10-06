@@ -508,7 +508,29 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ("pin_pane", "Pin the pane"),
     ("float_new", "New floating pane"),
     ("toggle_floats", "Show/hide floating panes"),
-    ("sync_input", "Synchronized input"),
+    ("sync_input", "Synchronized input for this tab (on/off)"),
+    (
+        "sync_input_pane",
+        "Add/remove this pane from the tab's sync set",
+    ),
+    ("sync_input_off", "Stop synchronized input"),
+    ("fleet", "Fleet grid: every agent on every machine"),
+    (
+        "batch_approvals",
+        "Batch view: answer equivalent approvals at once",
+    ),
+    (
+        "setup",
+        "Setup: terminal check, integrations, notifications, theme",
+    ),
+    (
+        "trust_repo",
+        "Review and trust this repo's .vibeke/config.toml",
+    ),
+    (
+        "sidebar_width_reset",
+        "Sidebar width back to the config value",
+    ),
     ("new_task", "New task (git worktree)"),
     ("preview_list", "Previews"),
     ("cancel_transfer", "Cancel file transfers"),
@@ -594,6 +616,8 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
 
 /// Actions only reachable from the palette (no keymap entry).
 const EXTRA_ACTIONS: &[&str] = &[
+    "sync_input_off",
+    "sidebar_width_reset",
     "track_work",
     "task_details",
     "pending_operations",
@@ -719,6 +743,10 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
             e.disabled = disabled;
         }
     }
+    // A trusted repo's `[[keys.command]]` entries (08 §11.1).
+    for (id, desc, b) in crate::trust::palette_entries(app) {
+        push(&mut out, id, desc, b);
+    }
     let multi = app.machines.len() > 1;
     let mut mis: Vec<&usize> = app.nav.sessions.keys().collect();
     mis.sort();
@@ -791,6 +819,10 @@ pub fn run_palette(app: &mut App, id: &str) {
         if let (Some(h), true) = (it.next(), mi < app.machines.len()) {
             watch_session(app, mi, json!({"session": h}));
         }
+        return;
+    }
+    // Actions with an argument ask for it inline (08 §6.3).
+    if crate::navkeys::wants_arg(app, id) {
         return;
     }
     app.action(id, None);

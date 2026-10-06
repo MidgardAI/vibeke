@@ -693,6 +693,9 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
         {
             r
         }
+        "policy.trust" if p.get("check").and_then(Value::as_bool) == Some(true) => {
+            crate::repo_config::check(server, p)
+        }
         "policy.trust" => policy_trust(server, p),
         "task.list" => Ok(json!({"tasks": server.with_core(|c| c.model.tasks.clone())})),
         "task.get" => {
@@ -985,7 +988,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .map_err(internal)?
             .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
     // `.vibeke/task.toml` of the new checkout plus the user's per-repo override (05 §5).
-    let tcfg = crate::task_workspace::load_tasks_cfg();
+    let tcfg = crate::repo_config::tasks_cfg(server, &info.root);
     let resolved = crate::task_workspace::resolve(&info.root, &checkout.path, &tcfg);
     let mut files = resolved.file.files.clone();
     files.copy = match p.get("copy_files").and_then(Value::as_array) {

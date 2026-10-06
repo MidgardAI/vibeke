@@ -469,6 +469,7 @@ fn pane_float(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         Some(x) => format!("agent:{x}"),
         None => "user".into(),
     };
+    let created_by = crate::user_popup::created_by(ctx, p).unwrap_or(created_by);
     let mut c = server.core.lock().unwrap();
     let mut tab = c
         .tab(&tab.id)
