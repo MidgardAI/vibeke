@@ -424,6 +424,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                     .chain(crate::preview::METHODS)
                     .chain(crate::sandbox::METHODS)
                     .chain(crate::agent_browser::METHODS)
+                    .chain(crate::browser_pane::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

@@ -21,6 +21,8 @@
 
 pub mod cdp;
 pub mod fake;
+/// Fake Chromium speaking CDP over the pipe (browser-pane tests, `vibeke debug fake-chromium`).
+pub mod fake_chromium;
 pub mod frame;
 pub mod headless;
 pub mod input;

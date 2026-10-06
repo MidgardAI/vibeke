@@ -155,6 +155,7 @@ impl Env {
             created_by: created_by.into(),
             recovered: None,
             isolation: Default::default(),
+            browser: None,
         };
         let mut c = self.server.core.lock().unwrap();
         let mut tx = Tx::new();

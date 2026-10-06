@@ -360,6 +360,9 @@ pub struct Header {
     pub zlib: bool,
     /// `U=1,c=,r=`: create a virtual placement of `cols × rows` cells.
     pub virtual_cells: Option<(u16, u16)>,
+    /// `p=`: placement id, so re-sending a tile replaces its virtual placement instead of
+    /// adding another one.
+    pub placement: Option<u32>,
     /// `q=`: 0 all replies, 1 errors only, 2 none.
     pub quiet: u8,
 }
@@ -374,6 +377,7 @@ impl Header {
             height,
             zlib: false,
             virtual_cells: None,
+            placement: None,
             quiet: 2,
         }
     }
@@ -398,6 +402,9 @@ impl Header {
         }
         if let Some((c, r)) = self.virtual_cells {
             s.push_str(&format!(",U=1,c={c},r={r}"));
+            if let Some(p) = self.placement {
+                s.push_str(&format!(",p={p}"));
+            }
         }
         s
     }
@@ -408,6 +415,16 @@ pub fn zlib(data: &[u8], level: u32) -> Vec<u8> {
     let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(level));
     e.write_all(data).expect("in-memory write");
     e.finish().expect("in-memory finish")
+}
+
+/// Inflate a zlib stream (the client side of `o=z` tiles).
+pub fn unzlib(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(data)
+        .read_to_end(&mut out)
+        .context("inflate")?;
+    Ok(out)
 }
 
 /// Write `ESC _ G <control> ; <base64 payload> ESC \`, split into chunks of at most

@@ -41,6 +41,8 @@ pub struct Session {
     remote: bool,
     /// Holder acks for this client's inputs, forwarded as `InputAck` by the session loop.
     acks: mpsc::UnboundedSender<(u64, AckStatus)>,
+    /// Media channel (browser panes rendered on this server, 06 B3.2).
+    media: crate::browser_pane::MediaSession,
 }
 
 /// Client-facing status for a holder ack (07 §3.2). `Duplicate` means the bytes were written
@@ -123,6 +125,7 @@ where
         bg_fps: if remote { 1 } else { 4 },
         remote,
         acks: ack_tx,
+        media: crate::browser_pane::MediaSession::new(&server, remote),
     };
     let hello = ServerFrame::Hello {
         protocol: PROTOCOL,
@@ -134,6 +137,7 @@ where
     asyncio::write_frame(&mut wr, &hello).await?;
     let mut model_rx = server.model_rev.subscribe();
     let mut ui_rx = server.ui.subscribe();
+    let media_wake = s.media.notify.clone();
     let result: Result<()> = async {
         s.send_model(&mut wr).await?;
         wr.flush().await?;
@@ -155,6 +159,7 @@ where
                 }
                 _ = model_rx.changed() => {}
                 _ = server.screen_dirty.notified() => {}
+                _ = media_wake.notified() => {}
                 ev = ui_rx.recv() => {
                     if let Ok(ev) = ev && !s.on_ui(ev, &mut wr).await? { break }
                 }
@@ -169,12 +174,15 @@ where
                 s.send_model(&mut wr).await?;
             }
             s.send_panes(&mut wr).await?;
+            // Media after cells: a busy page never delays text panes (03 §5).
+            s.media.flush(&s.server, &mut wr).await?;
             wr.flush().await?;
         }
         Ok(())
     }
     .await;
     reader.abort();
+    s.media.close(&server);
     // Remember focus for the next attach.
     let focus = server.client_focus(&client_id);
     server.with_core(|c| {
@@ -408,6 +416,30 @@ impl Session {
                 .await?;
             }
             ClientFrame::Detach => return Ok(false),
+            ClientFrame::MediaView {
+                panes,
+                shm,
+                key_releases,
+            } => {
+                self.media.on_view(&self.server, panes, shm, key_releases);
+            }
+            ClientFrame::MediaAck { pane, seq } => self.media.on_ack(&pane, seq),
+            ClientFrame::Browser {
+                input_id,
+                pane,
+                cmd,
+            } => {
+                self.touch();
+                self.media.on_cmd(&self.server, &pane, cmd);
+                asyncio::write_frame(
+                    wr,
+                    &ServerFrame::InputAck {
+                        input_id,
+                        status: AckStatus::Written,
+                    },
+                )
+                .await?;
+            }
         }
         Ok(true)
     }

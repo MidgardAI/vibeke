@@ -6,6 +6,7 @@
 pub mod agent_browser;
 pub mod agents;
 pub mod api;
+pub mod browser_pane;
 pub mod core;
 pub mod gateway_api;
 pub mod git_api;
@@ -96,6 +97,8 @@ pub struct Server {
     /// Execution isolation contexts (13).
     pub sandbox: sandbox::State,
     pub agent_browser: agent_browser::AgentBrowsers,
+    /// Browser panes rendered on this machine (06 B3.2).
+    pub browser: browser_pane::Host,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -168,6 +171,7 @@ impl Server {
             previews: preview::Previews::default(),
             sandbox: sandbox::State::default(),
             agent_browser: agent_browser::AgentBrowsers::default(),
+            browser: browser_pane::Host::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
@@ -250,6 +254,10 @@ impl Server {
         let mut recovered = 0;
         let mut lost = Vec::new();
         for p in &panes {
+            if p.is_browser() {
+                // No holder: the viewing client's server re-creates the page (06 B3.2).
+                continue;
+            }
             let h = holders.iter().find(|h| h.pane == p.id);
             // Alive = its socket accepts, or its recorded pid is still a holder (a busy or
             // briefly unreachable holder must be reattached, never respawned over).
@@ -631,6 +639,7 @@ impl Server {
             created_by: created_by.into(),
             recovered: None,
             isolation,
+            browser: None,
         };
         tx.m.holder(&id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
         tx.event(

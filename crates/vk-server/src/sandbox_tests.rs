@@ -142,6 +142,7 @@ impl Env {
             created_by: "user".into(),
             recovered: None,
             isolation: iso.clone(),
+            browser: None,
         });
         tx.task(Task {
             id: task.into(),

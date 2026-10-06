@@ -600,6 +600,15 @@ impl ScreencastFrame {
 }
 
 impl Page {
+    /// A page for an already attached flattened session.
+    pub fn attached(cdp: Arc<Cdp>, session: String, target_id: String) -> Page {
+        Page {
+            cdp,
+            session,
+            target_id,
+        }
+    }
+
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
         self.cdp.call(Some(&self.session), method, params)
     }

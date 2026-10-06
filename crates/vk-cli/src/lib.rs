@@ -489,7 +489,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "open",
         "preview.open",
         &["preview"],
-        "<v4|devbox/v4|url> --window [--machine m]",
+        "<v4|devbox/v4|url> [--split right|down|tab|float | --window] [--pane p] [--machine m]",
     ),
     ("preview", "url", "preview.url", &["preview"], ""),
     (
@@ -622,6 +622,34 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "agent calls fail with human_control until release",
     ),
     ("browser", "release", "browser.release", &["session"], ""),
+    (
+        "browser",
+        "pane-status",
+        "browser.pane.status",
+        &[],
+        "browser panes rendered here: browsers, targets, fps",
+    ),
+    (
+        "browser",
+        "panes",
+        "browser.pane.list",
+        &[],
+        "browser panes in this server's layout",
+    ),
+    (
+        "browser",
+        "pane",
+        "browser.pane.create",
+        &["url"],
+        "<url> [--pane p] [--split right|down|tab]",
+    ),
+    (
+        "browser",
+        "command",
+        "browser.command",
+        &["pane", "cmd"],
+        "<pane> back|forward|reload|stop|navigate --url u|screenshot|window|pane",
+    ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
 ];

@@ -54,6 +54,12 @@ pub struct ProbeResult {
 /// Queries to write before entering the alternate screen. Replies arrive in query order; the
 /// trailing DA1 is the sentinel (every terminal answers it, and answers it last).
 pub fn probe_queries() -> Vec<u8> {
+    probe_queries_with(&[])
+}
+
+/// [`probe_queries`] with `extra` queries (browser-pane graphics probes, 03 §6.1) inserted
+/// before the DA1 sentinel.
+pub fn probe_queries_with(extra: &[u8]) -> Vec<u8> {
     let mut q = Vec::new();
     q.extend_from_slice(b"\x1b[c"); // DA1
     q.extend_from_slice(b"\x1b[>c"); // DA2
@@ -61,6 +67,7 @@ pub fn probe_queries() -> Vec<u8> {
     q.extend_from_slice(b"\x1b[?u"); // kitty keyboard flags
     q.extend_from_slice(b"\x1b[?2026$p"); // DECRQM synchronized output
     q.extend_from_slice(b"\x1b]11;?\x1b\\"); // OSC 11 background colour
+    q.extend_from_slice(extra);
     q.extend_from_slice(b"\x1b[c"); // DA1 sentinel
     q
 }

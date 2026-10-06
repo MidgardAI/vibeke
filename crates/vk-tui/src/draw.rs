@@ -401,6 +401,22 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
             });
         }
     }
+    // Previews (06 B2): last section, so `browser::preview_hit` can map rows back.
+    let previews = crate::browser::preview_entries(app);
+    if !previews.is_empty() {
+        rows.push(SideRow {
+            segs: vec![("─ previews ─".into(), t.dim())],
+            target: None,
+            focused: false,
+        });
+        for (mi, p) in &previews {
+            rows.push(SideRow {
+                segs: crate::browser::preview_segs(app, *mi, p),
+                target: None,
+                focused: false,
+            });
+        }
+    }
     rows
 }
 
@@ -475,6 +491,14 @@ fn tab_entries(app: &App) -> Vec<(Tab, String, u16, u16)> {
         x += w + 1;
     }
     out
+}
+
+/// First column after the last tab entry.
+pub fn tabs_end(app: &App) -> u16 {
+    tab_entries(app)
+        .last()
+        .map(|(_, _, _, b)| *b)
+        .unwrap_or(if app.sidebar { app.sidebar_w + 1 } else { 0 } + 1)
 }
 
 pub fn tabbar_hit(app: &App, x: u16) -> Option<String> {
@@ -565,6 +589,8 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         };
         g.put_str(x, 0, &label, st, cols.saturating_sub(x));
     }
+    // Preview chips for the focused tab's panes (06 B2).
+    crate::browser::draw_chips(app, g, tabs_end(app), cols);
     // Right side of the tab bar: mode, toasts, connection.
     let mut right: Vec<(String, Style)> = Vec::new();
     match &app.mode {
@@ -658,6 +684,10 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             && let Mode::Copy(cm) = &app.mode
         {
             cm.draw(g, *r, &t);
+            continue;
+        }
+        if crate::browser::browser_of(app, app.cur, pid).is_some() {
+            crate::browser::draw_pane(app, g, pid, *r);
             continue;
         }
         let Some(buf) = app.m().panes.get(pid) else {

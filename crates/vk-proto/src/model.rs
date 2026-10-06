@@ -97,12 +97,41 @@ pub struct Pane {
     /// Execution isolation of this pane's process tree (13 §12). Host by default.
     #[serde(default)]
     pub isolation: Isolation,
+    /// Set for a browser pane (06 B3.2): a non-PTY pane whose content is a live Chromium
+    /// viewport rendered on the viewing client's machine. Last field (postcard is positional).
+    #[serde(default)]
+    pub browser: Option<BrowserPane>,
 }
 
 impl Pane {
     pub fn display_title(&self) -> &str {
         self.title.as_deref().unwrap_or(&self.auto_title)
     }
+    pub fn is_browser(&self) -> bool {
+        self.browser.is_some()
+    }
+}
+
+/// Persisted state of a browser pane (06 B3.2 "Lifecycle"). The pane lives in the layout of
+/// the machine that owns its tab; the Chromium that renders it runs on the viewing client's
+/// machine, which reports navigation back so the URL and history survive restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserPane {
+    /// Last committed URL; the page reloads here after a server restart or reattach.
+    pub url: String,
+    /// Machine whose loopback `localhost` means (the route target). Empty = the machine that
+    /// owns this pane.
+    pub machine: String,
+    /// Task whose profile to use when `preview.profile_scope = "task"`.
+    pub task: Option<String>,
+    /// Preview id this pane was opened for.
+    pub preview: Option<String>,
+    /// Pane the browser was opened next to.
+    pub source_pane: Option<String>,
+    /// Navigation history (most recent last, capped) and the current index into it.
+    pub history: Vec<String>,
+    pub history_index: u32,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -575,4 +604,46 @@ pub struct Preview {
     pub pid: Option<u32>,
     pub first_seen_ms: i64,
     pub last_seen_ms: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pane records stored before browser panes existed load with `browser: None`; browser panes
+    /// round-trip through JSON (the store) and postcard (the render stream).
+    #[test]
+    fn browser_pane_persistence() {
+        let old = serde_json::json!({
+            "id": "P", "handle": "w1:p1", "tab": "T", "workspace": "W", "title": null,
+            "auto_title": "zsh", "cwd": "/tmp", "cols": 80, "rows": 24, "child_pid": 1,
+            "fg_cmdline": [], "exited": false, "exit_code": null, "unread": false,
+            "marked_unread": false, "pinned": false, "created_by": "user", "recovered": null
+        });
+        let p: Pane = serde_json::from_value(old).unwrap();
+        assert!(p.browser.is_none() && !p.is_browser());
+        let mut b = p.clone();
+        b.child_pid = None;
+        b.browser = Some(BrowserPane {
+            url: "http://localhost:5173/".into(),
+            machine: String::new(),
+            task: Some("K".into()),
+            preview: Some("V".into()),
+            source_pane: Some("P".into()),
+            history: vec!["http://localhost:5173/".into()],
+            history_index: 0,
+            title: "app".into(),
+        });
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["browser"]["url"], "http://localhost:5173/");
+        let back: Pane = serde_json::from_value(j).unwrap();
+        assert_eq!(back, b);
+        let m = SessionModel {
+            panes: vec![p, b.clone()],
+            ..Default::default()
+        };
+        let bytes = crate::frame::encode(&m).unwrap();
+        let back: SessionModel = crate::frame::decode(&bytes[4..]).unwrap();
+        assert_eq!(back.panes[1], b);
+    }
 }
