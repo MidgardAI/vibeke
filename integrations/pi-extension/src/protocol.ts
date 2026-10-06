@@ -1,7 +1,9 @@
 // JSON-RPC 2.0 client to Vibeke over a Unix socket (DESIGN §2, PROTOCOL.md).
-// One persistent connection for signals; one short-lived connection per dialog gate.
+// One persistent connection for signals and delivery acks; one connection per dialog gate,
+// reconnected (same payload, same dialog_id) if it drops while the dialog is still pending.
 // Nothing here ever blocks the host: signal() only serializes and queues.
 import * as net from "node:net";
+import { StringDecoder } from "node:string_decoder";
 
 export interface ClientOptions {
   socketPath: string;
@@ -17,16 +19,26 @@ export interface ClientOptions {
   maxTries?: number;
 }
 
+export interface GateAnswer {
+  value: unknown;
+  /** The server's interaction id and delivery key (`"<interaction>:<decision_rev>"`), for the ack. */
+  interaction?: string;
+  idempotencyKey?: string;
+}
+
 export interface GateHandle {
-  /** `{value}` when Vibeke answered, `null` for "no Vibeke answer" (or any failure). */
-  answer: Promise<{ value: unknown } | null>;
+  /** The decision when Vibeke answered, `null` for "no Vibeke answer" (or a definitive failure). */
+  answer: Promise<GateAnswer | null>;
   close(): void;
 }
 
+const MAX_PENDING_ACKS = 100;
+
 function lineReader(onLine: (line: string) => void): (chunk: Buffer | string) => void {
   let buf = "";
+  const dec = new StringDecoder("utf8"); // a UTF-8 sequence may span chunks
   return (chunk) => {
-    buf += chunk.toString();
+    buf += typeof chunk === "string" ? chunk : dec.write(chunk);
     let i: number;
     while ((i = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, i);
@@ -49,9 +61,13 @@ export class VibekeClient {
   private tries = 0;
   private lastBurstEnd = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** Delivery acks awaiting the server's response, by JSON-RPC id (re-sent after a reconnect). */
+  private acks = new Map<number, string>();
   /** Number of times the queue overflowed and was cleared (diagnostics/tests). */
   dropped = 0;
   connects = 0;
+  /** Gate connections re-established after a drop (diagnostics/tests). */
+  gateReconnects = 0;
 
   private readonly cap: number;
   private readonly minMs: number;
@@ -132,7 +148,19 @@ export class VibekeClient {
     s.unref();
     s.setNoDelay?.(true);
     s.on("error", () => {});
-    s.on("data", lineReader(() => {})); // responses are acks; ignored
+    s.on(
+      "data",
+      lineReader((line) => {
+        // Signal responses are plain acks; only delivery-ack responses matter (any answer,
+        // success or a definitive refusal, ends the retry).
+        try {
+          const m = JSON.parse(line);
+          if (typeof m?.id === "number") this.acks.delete(m.id);
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
     s.on("connect", () => {
       this.connecting = false;
       this.tries = 0;
@@ -171,6 +199,8 @@ export class VibekeClient {
             payload: { ...snap, seq },
           }),
         );
+        // Acks not yet answered (lost with the previous connection) go out again.
+        for (const line of this.acks.values()) s.write(line);
         this.everReady = true;
         this.ready = true;
         this.blocked = false;
@@ -226,6 +256,38 @@ export class VibekeClient {
     }
   }
 
+  /**
+   * `adapter.delivery_ack` on the main (pane-token) connection: Vibeke's answer was applied to
+   * the native dialog. Retried after reconnects until the server responds. Never throws.
+   */
+  deliveryAck(interaction: string, idempotencyKey: string): void {
+    if (this.closed) return;
+    try {
+      const id = ++this.rpcId;
+      const line =
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "adapter.delivery_ack",
+          params: { interaction, idempotency_key: idempotencyKey, applied: true },
+        }) + "\n";
+      if (this.acks.size >= MAX_PENDING_ACKS) {
+        const oldest = this.acks.keys().next().value;
+        if (oldest !== undefined) this.acks.delete(oldest);
+      }
+      this.acks.set(id, line);
+      if (this.ready && this.sock) this.sock.write(line);
+      else this.ensureConnecting();
+    } catch {
+      /* never affect the host */
+    }
+  }
+
+  /** Delivery acks still awaiting a server response (tests/diagnostics). */
+  get pendingAcks(): number {
+    return this.acks.size;
+  }
+
   /** Resolve when the queue and socket buffer are drained, or after `timeoutMs`. */
   flush(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
@@ -256,13 +318,16 @@ export class VibekeClient {
   }
 
   /**
-   * Blocking long-poll call on its own connection (adapter.gate). The server
-   * treats a closed connection as "resolved elsewhere".
+   * Blocking long-poll call on its own connection (adapter.gate). The server treats a closed
+   * connection as "resolved elsewhere" for that attempt; if the connection drops before a
+   * response, the same request (same payload, so the same `dialog_id`) is issued again on a new
+   * connection and the server re-attaches the interaction by its native ref. Stops on a
+   * response or `close()`.
    */
   gate(event: string, payload: Record<string, unknown>): GateHandle {
-    let settle!: (v: { value: unknown } | null) => void;
+    let settle!: (v: GateAnswer | null) => void;
     let done = false;
-    const answer = new Promise<{ value: unknown } | null>((r) => {
+    const answer = new Promise<GateAnswer | null>((r) => {
       settle = (v) => {
         if (!done) {
           done = true;
@@ -271,60 +336,101 @@ export class VibekeClient {
       };
     });
     let s: net.Socket | null = null;
-    try {
-      s = net.createConnection(this.o.socketPath);
-    } catch {
-      settle(null);
-      return { answer, close: () => {} };
-    }
-    s.unref();
-    s.on("error", () => settle(null));
-    s.on("close", () => settle(null));
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let tries = 0;
+    let attempts = 0;
     const gateId = 2;
-    s.on(
-      "data",
-      lineReader((line) => {
-        try {
-          const m = JSON.parse(line);
-          if (m.id !== gateId) return;
-          const d = m.result?.decision;
-          settle(d && typeof d === "object" && "value" in d ? { value: d.value } : null);
-        } catch {
-          settle(null);
-        }
-      }),
-    );
-    s.on("connect", () => {
+    const stop = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
       try {
-        s!.write(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "client.hello",
-            params: { client: "vibeke-pi-extension", kind: "agent", token: this.o.token, version: this.o.version },
-          }) + "\n",
-        );
-        s!.write(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: gateId,
-            method: "adapter.gate",
-            params: { harness: this.harness, event, payload },
-          }) + "\n",
-        );
+        s?.destroy();
       } catch {
-        settle(null);
+        /* ignore */
       }
-    });
+      s = null;
+    };
+    const retry = () => {
+      if (done || timer) return;
+      if (this.closed) return settle(null);
+      const delay = Math.min(this.minMs * 2 ** tries, this.maxMs);
+      tries++;
+      timer = setTimeout(() => {
+        timer = null;
+        attempt();
+      }, delay);
+      timer.unref?.();
+    };
+    const attempt = () => {
+      if (done) return;
+      if (this.closed) return settle(null);
+      if (attempts++ > 0) this.gateReconnects++;
+      let sock: net.Socket;
+      try {
+        sock = net.createConnection(this.o.socketPath);
+      } catch {
+        retry();
+        return;
+      }
+      s = sock;
+      sock.unref();
+      sock.on("error", () => {});
+      sock.on("close", () => {
+        if (s === sock) s = null;
+        retry(); // no-op once settled
+      });
+      sock.on(
+        "data",
+        lineReader((line) => {
+          try {
+            const m = JSON.parse(line);
+            if (m.id !== gateId) return;
+            const r = m.result;
+            const d = r?.decision;
+            if (d && typeof d === "object" && "value" in d) {
+              settle({
+                value: d.value,
+                interaction: typeof r.interaction === "string" ? r.interaction : undefined,
+                idempotencyKey: typeof r.idempotency_key === "string" ? r.idempotency_key : undefined,
+              });
+            } else {
+              settle(null);
+            }
+          } catch {
+            settle(null);
+          }
+          stop();
+        }),
+      );
+      sock.on("connect", () => {
+        try {
+          sock.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "client.hello",
+              params: { client: "vibeke-pi-extension", kind: "agent", token: this.o.token, version: this.o.version },
+            }) + "\n",
+          );
+          sock.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: gateId,
+              method: "adapter.gate",
+              params: { harness: this.harness, event, payload },
+            }) + "\n",
+          );
+        } catch {
+          sock.destroy();
+        }
+      });
+    };
+    attempt();
     return {
       answer,
       close: () => {
         settle(null);
-        try {
-          s?.destroy();
-        } catch {
-          /* ignore */
-        }
+        stop();
       },
     };
   }

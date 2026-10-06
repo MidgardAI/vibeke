@@ -109,6 +109,9 @@ describe("event mapping", () => {
       extension_version: EXTENSION_VERSION,
     });
     expect(by("TurnStarted").prompt_preview).toHaveLength(200);
+    // The full request goes along (Codex G02 #16): tracking must not treat the preview as it.
+    expect(by("TurnStarted").prompt).toBe("x".repeat(300));
+    expect(by("TurnStarted").prompt_truncated).toBe(false);
     expect(by("ToolStarted")).toMatchObject({ call_id: "t1", tool: "bash" });
     // input was cached from tool_call (carries the secret key), so it must be redacted
     expect(by("ToolStarted").input).toEqual({ command: "ls", apiKey: "[redacted]" });
@@ -117,6 +120,25 @@ describe("event mapping", () => {
     expect(by("Usage")).toMatchObject({ input: 10, output: 5, cache_read: 3, cache_write: 2, cost: 0.01 });
     expect(by("TurnEnded")).toMatchObject({ stop_reason: "stop", last_message: "done!" });
     expect(by("SessionEnded").reason).toBe("quit");
+  });
+
+  test("TurnStarted carries the full prompt bounded at 8 KiB, flagged when cut", async () => {
+    const { pi } = setup(server, "pi");
+    const c = ctx();
+    const tail = " — and never touch the SSO config";
+    const long = "é".repeat(5000) + tail; // 10000+ bytes of UTF-8
+    await pi.emit("input", { source: "interactive", text: long }, c);
+    await pi.emit("agent_settled", {}, c);
+    await pi.emit("input", { source: "interactive", text: "short request" }, c);
+    await waitFor(() => server.events().filter((e) => e === "TurnStarted").length === 2);
+    const [cut, whole] = server.signals().filter((x) => x.event === "TurnStarted").map((x) => x.payload);
+    expect(new TextEncoder().encode(cut.prompt).length).toBeLessThanOrEqual(8 * 1024);
+    expect(cut.prompt.length).toBe(4096); // cut on a character boundary, no replacement chars
+    expect(cut.prompt).not.toContain("\uFFFD");
+    expect(long.startsWith(cut.prompt)).toBe(true);
+    expect(cut.prompt_truncated).toBe(true);
+    expect(cut.prompt_preview).toHaveLength(200);
+    expect(whole).toMatchObject({ prompt: "short request", prompt_truncated: false, prompt_preview: "short request" });
   });
 
   test("input from an extension is not a user turn; agent_start alone opens one", async () => {
@@ -399,6 +421,103 @@ describe("uiContext wrapper", () => {
     expect(calls[2].aborts).toBe(0);
     calls[2].resolve("a");
     expect(await p3).toBe("a");
+  });
+
+  test("Vibeke answer applied: delivery ack with the gate's interaction and key on the main connection", async () => {
+    const { ui } = await wrapUi();
+    const p = ui.select("Pick", ["Allow", "Deny"]);
+    await waitFor(() => server.gates.length === 1);
+    server.respondGate(0, { value: "Deny" }, { interaction: "int-7", idempotency_key: "int-7:2" });
+    expect(await p).toBe("Deny");
+    await waitFor(() => server.calls("adapter.delivery_ack").length === 1, 3000, "delivery ack");
+    const ack = server.calls("adapter.delivery_ack")[0];
+    expect(ack.msg.params).toEqual({ interaction: "int-7", idempotency_key: "int-7:2", applied: true });
+    // Sent over the extension's main connection (the one carrying signals), with the pane token.
+    const main = server.calls("adapter.signal")[0].conn;
+    expect(ack.conn).toBe(main);
+    expect(ack.conn).not.toBe(server.gates[0].conn);
+    expect(server.hello(ack.conn).token).toBe("tok");
+  });
+
+  test("native answer first: no delivery ack", async () => {
+    const { ui, calls, h } = await wrapUi();
+    const p = ui.confirm("t", "m");
+    await waitFor(() => server.gates.length === 1);
+    calls[0].resolve(true);
+    expect(await p).toBe(true);
+    await sleep(40);
+    expect(server.calls("adapter.delivery_ack")).toHaveLength(0);
+    expect(h.client.pendingAcks).toBe(0);
+  });
+
+  test("an unanswered delivery ack is re-sent after the main connection reconnects", async () => {
+    const { ui, pi, c, h } = await wrapUi();
+    server.noReply.add("adapter.delivery_ack");
+    const p = ui.confirm("t", "m");
+    await waitFor(() => server.gates.length === 1);
+    server.respondGate(0, { value: true }, { interaction: "int-1", idempotency_key: "int-1:1" });
+    expect(await p).toBe(true);
+    await waitFor(() => server.calls("adapter.delivery_ack").length === 1);
+    expect(h.client.pendingAcks).toBe(1);
+    server.noReply.clear();
+    await server.kill();
+    await server.listen();
+    await pi.emit("agent_start", {}, c); // any signal drives the reconnect
+    await waitFor(() => server.calls("adapter.delivery_ack").length === 2, 3000, "re-sent ack");
+    const again = server.calls("adapter.delivery_ack")[1];
+    expect(again.msg.params).toEqual({ interaction: "int-1", idempotency_key: "int-1:1", applied: true });
+    expect(server.hello(again.conn).token).toBe("tok");
+    await waitFor(() => h.client.pendingAcks === 0, 3000, "ack answered");
+  });
+
+  test("gate connection dropped while the dialog is pending: re-issued with the same dialog_id", async () => {
+    const { ui, calls, h } = await wrapUi();
+    const p = ui.confirm("Allow rm?", "rm -rf x");
+    await waitFor(() => server.gates.length === 1);
+    const first = server.gates[0];
+    server.dropGate(0);
+    await waitFor(() => server.gates.length === 2, 3000, "gate re-issued");
+    const second = server.gates[1];
+    expect(second.conn).not.toBe(first.conn);
+    expect(second.params).toEqual(first.params); // same payload, so the server re-attaches by native ref
+    expect(second.params.payload.dialog_id).toBe(first.params.payload.dialog_id);
+    expect(server.hello(second.conn).token).toBe("tok");
+    expect(h.client.gateReconnects).toBe(1);
+    expect(calls[0].aborts).toBe(0); // the native dialog stayed up throughout
+    server.respondGate(1, { value: true }, { interaction: "int-2", idempotency_key: "int-2:1" });
+    expect(await p).toBe(true);
+    expect(calls[0].aborts).toBe(1);
+    await waitFor(() => server.calls("adapter.delivery_ack").length === 1);
+    // Settled: a later drop does not reconnect again.
+    await sleep(60);
+    expect(server.gates).toHaveLength(2);
+  });
+
+  test("snapshot after reconnect lists pending wrapper dialogs (and drops resolved ones)", async () => {
+    const { ui, calls, pi, c } = await wrapUi();
+    const p = ui.select("Pick a branch", ["main", "dev"]);
+    await waitFor(() => server.gates.length === 1);
+    const dialogId = server.gates[0].params.payload.dialog_id;
+    await server.kill();
+    await server.listen();
+    await pi.emit("agent_start", {}, c);
+    const snapsBefore = server.signals().filter((s) => s.event === "Snapshot").length;
+    await waitFor(() => server.signals().filter((s) => s.event === "Snapshot").length > snapsBefore, 3000, "snapshot");
+    const snap = server.signals().filter((s) => s.event === "Snapshot").at(-1)!.payload;
+    expect(snap.pending_dialogs).toEqual([
+      { method: "select", title: "Pick a branch", dialog_id: dialogId, options: ["main", "dev"] },
+    ]);
+    // The gate came back too, for the same dialog.
+    await waitFor(() => server.gates.some((g) => g.params.payload.dialog_id === dialogId), 3000, "gate back");
+    calls[0].resolve("dev");
+    expect(await p).toBe("dev");
+    const snaps = () => server.signals().filter((s) => s.event === "Snapshot");
+    const before = snaps().length;
+    await server.kill();
+    await server.listen();
+    await pi.emit("agent_start", {}, c);
+    await waitFor(() => snaps().length > before, 3000, "snapshot 2");
+    expect(snaps().at(-1)!.payload.pending_dialogs).toEqual([]);
   });
 
   test("a null decision keeps waiting for the native dialog", async () => {

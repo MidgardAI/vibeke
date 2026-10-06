@@ -40,6 +40,22 @@ export function redactInput(input: unknown): unknown {
   }
 }
 
+export const MAX_PROMPT_BYTES = 8 * 1024;
+
+/**
+ * The user's request text, bounded at `maxBytes` of UTF-8 (cut on a character boundary).
+ * `truncated` is true only when something was cut, so tracking never mistakes a cut prompt for
+ * the verbatim request.
+ */
+export function boundedPrompt(s: unknown, maxBytes = MAX_PROMPT_BYTES): { prompt?: string; truncated: boolean } {
+  if (typeof s !== "string" || s.length === 0) return { truncated: false };
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length <= maxBytes) return { prompt: s, truncated: false };
+  let end = maxBytes;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--; // don't split a UTF-8 sequence
+  return { prompt: new TextDecoder().decode(bytes.subarray(0, end)), truncated: true };
+}
+
 export function preview(s: unknown, n: number): string | undefined {
   return typeof s === "string" && s.length > 0 ? s.slice(0, n) : undefined;
 }

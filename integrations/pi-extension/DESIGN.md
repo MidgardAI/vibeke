@@ -38,7 +38,7 @@ This is the single extension that gives **pi** (`@earendil-works/pi-coding-agent
 |---|---|
 | load | send `hello {host, host_version, extension_version, pid, cwd}` |
 | `session_start`, `session_switch`, `session_branch` | read `ctx.sessionManager.getSessionFile()` (absolute path) and `getSessionId()` → `SessionStarted {harness_session_id, transcript_path, source: event.reason ?? "startup", model: ctx.model?.id}` |
-| `input` (source ≠ `"extension"`) | `TurnStarted {prompt_preview: first 200 chars}` |
+| `input` (source ≠ `"extension"`) | `TurnStarted {prompt (≤ 8 KiB), prompt_truncated, prompt_preview: first 200 chars}` |
 | `agent_start` | `state working` (as a `TurnStarted` without preview if `input` didn't fire, e.g. RPC prompt) |
 | `turn_start` / `turn_end` | turn records; `turn_end.message.usage` → `Usage {input, output, cacheRead, cacheWrite, cost.total}` |
 | `tool_execution_start` | cache `args` by `toolCallId` (if not already cached from `tool_call`); `ToolStarted {call_id: toolCallId, tool: toolName, input: redacted(args)}` |

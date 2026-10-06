@@ -437,7 +437,7 @@ async fn run_inner(
     );
     app.cur = opts.initial_machine.min(specs.len().saturating_sub(1));
     app.pending_ops =
-        crate::pending::PendingStore::load(crate::pending::default_path(&opts.session));
+        crate::pending::PendingStore::open(crate::pending::default_dir(&opts.session), &client_id);
     if let Some(e) = app.pending_ops.load_error.clone() {
         app.toast(format!("pending operations unreadable: {e}"));
     }
@@ -775,6 +775,14 @@ impl App {
 
     pub(crate) fn on_connected(&mut self, i: usize) {
         crate::inbox::on_connected(self, i);
+        // Another client of this session may have crashed since we started: adopt its pending
+        // operations (never a live client's) so their outcomes get asked for too.
+        let n = self.pending_ops.adopt_orphans();
+        if n > 0 {
+            self.toast(format!(
+                "{n} pending operation(s) from a closed client — checking outcomes"
+            ));
+        }
         self.reconcile(i);
     }
 
@@ -2478,10 +2486,10 @@ mod pending_tests {
     #[test]
     fn restart_reconciles_and_never_auto_resubmits() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sess/client-pending.json");
+        let sess = dir.path().join("sess");
         {
             let (mut app, mut rxs) = test_app(1);
-            app.pending_ops = crate::pending::PendingStore::load(path.clone());
+            app.pending_ops = crate::pending::PendingStore::open(sess.clone(), "crashed");
             assert!(app.mutate(
                 0,
                 "task.track",
@@ -2498,8 +2506,11 @@ mod pending_tests {
             // The client dies here: no responses.
         }
         let (mut app, mut rxs) = test_app(1);
-        app.pending_ops = crate::pending::PendingStore::load(path.clone());
+        app.pending_ops = crate::pending::PendingStore::open(sess.clone(), "restarted");
+        app.pending_ops.adopt_settled(2);
         assert_eq!(app.pending_ops.ops.len(), 2);
+        assert_eq!(app.pending_ops.adopted, 2);
+        let path = sess.join("client-pending-restarted.json");
         app.on_connected(0);
         let c = commands(&mut rxs[0]);
         assert_eq!(c.len(), 2);
@@ -2540,9 +2551,9 @@ mod pending_tests {
         app.on_disconnected(0);
         app.on_connected(0);
         assert!(commands(&mut rxs[0]).is_empty());
-        let again = crate::pending::PendingStore::load(path.clone());
-        assert_eq!(again.ops.len(), 1);
-        assert_eq!(again.ops[0].status, crate::pending::OpStatus::Unknown);
+        let again = crate::pending::read_ops(&path).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].status, crate::pending::OpStatus::Unknown);
         // The banner points at the review popup; retry needs an explicit, warned confirmation.
         let mut g = Grid::new(120, 40);
         draw::compose(&app, &mut g);

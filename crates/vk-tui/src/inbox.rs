@@ -52,6 +52,15 @@ pub struct Item {
     pub stale: bool,
 }
 
+impl Item {
+    /// Hidden by a snooze right now. The server's latest word wins: an item it returned with
+    /// `woke_from_snooze` (a material change, deadline or escalation woke it, 15 §8.3) is shown
+    /// even if its old snooze deadline is still in the future.
+    pub fn snoozed(&self, now: i64) -> bool {
+        self.woke_from_snooze.is_none() && self.snoozed_until_ms.is_some_and(|u| u > now)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Five {
     pub keys: Vec<(String, String)>,
@@ -432,7 +441,7 @@ pub fn view(app: &App) -> View {
                     })
                     .collect();
                 let before = v.len();
-                v.retain(|i| i.snoozed_until_ms.is_none_or(|u| u <= now) || i.urgent);
+                v.retain(|i| !i.snoozed(now) || i.urgent);
                 snoozed += before - v.len();
                 if st.five_minute
                     && let Some(f) = &five
@@ -681,10 +690,7 @@ fn act_on_first(app: &mut App, focus: bool) {
     let v = view(app);
     app.inbox.five_minute = was_five;
     let now = now_ms();
-    let first = v
-        .items
-        .into_iter()
-        .find(|i| !i.stale && i.snoozed_until_ms.is_none_or(|u| u <= now));
+    let first = v.items.into_iter().find(|i| !i.stale && !i.snoozed(now));
     let Some(it) = first else {
         // Nothing ranked: the M1 fallback still focuses an unseen finished turn.
         app.next_attention_m1(focus);
@@ -1831,5 +1837,59 @@ mod tests {
         assert!(text.contains("one required check missing"), "{text}");
         assert!(text.contains("[enter] Open task"), "{text}");
         assert!(text.contains("m1 offline"), "{text}");
+    }
+
+    /// 15 §8.3 / Codex G02 #19: the server woke a snoozed item after a material change but kept
+    /// the old (future) deadline in the metadata; the item must be visible again, even though the
+    /// previous listing said it was snoozed.
+    #[test]
+    fn snooze_wake_from_server_is_visible_despite_old_deadline() {
+        let (mut app, mut rxs) = test_app(1);
+        open(&mut app);
+        let c = commands(&mut rxs[0]);
+        let until = now_ms() + 3_600_000;
+        let mut it = item("review", "t1:abc", json!(4), 120_000, false);
+        it["task"] = json!("t1");
+        it["title"] = json!("Fix login redirect");
+        it["snoozed_until_ms"] = json!(until);
+        let mut other = item("review", "t2:def", json!(4), 60_000, false);
+        other["title"] = json!("Still snoozed");
+        other["snoozed_until_ms"] = json!(until);
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"items": [it.clone(), other.clone()], "coverage": {"complete": true, "notes": []}}),
+        );
+        let v = view(&app);
+        assert!(v.items.is_empty());
+        assert_eq!(v.snoozed, 2);
+        // Evidence changed: the server wakes t1 (deadline left in place) and leaves t2 snoozed.
+        it["woke_from_snooze"] = json!("New check failure on this subject");
+        refresh(&mut app);
+        let c = commands(&mut rxs[0]);
+        reply(
+            &mut app,
+            0,
+            c[0].0,
+            json!({"items": [it, other], "coverage": {"complete": true, "notes": []}}),
+        );
+        let v = view(&app);
+        assert_eq!(v.items.len(), 1);
+        assert_eq!(v.items[0].title, "Fix login redirect");
+        assert_eq!(v.snoozed, 1);
+        let mut g = Grid::new(150, 32);
+        draw(&app, &mut g);
+        let text = crate::tasks::grid_text(&g);
+        assert!(text.contains("Fix login redirect"), "{text}");
+        assert!(
+            text.contains("Woke from snooze: New check failure"),
+            "{text}"
+        );
+        assert!(!text.contains("Still snoozed"), "{text}");
+        // A null deadline is never hidden either.
+        let mut cleared = item("review", "t3:x", json!(4), 1_000, false);
+        cleared["snoozed_until_ms"] = Value::Null;
+        assert!(!parse_item(0, &cleared).unwrap().snoozed(now_ms()));
     }
 }

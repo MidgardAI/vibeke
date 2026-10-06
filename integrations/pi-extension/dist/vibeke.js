@@ -40,6 +40,18 @@ function redactInput(input) {
     return { _unserializable: true };
   }
 }
+var MAX_PROMPT_BYTES = 8 * 1024;
+function boundedPrompt(s, maxBytes = MAX_PROMPT_BYTES) {
+  if (typeof s !== "string" || s.length === 0)
+    return { truncated: false };
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length <= maxBytes)
+    return { prompt: s, truncated: false };
+  let end = maxBytes;
+  while (end > 0 && (bytes[end] & 192) === 128)
+    end--;
+  return { prompt: new TextDecoder().decode(bytes.subarray(0, end)), truncated: true };
+}
 function preview(s, n) {
   return typeof s === "string" && s.length > 0 ? s.slice(0, n) : undefined;
 }
@@ -57,10 +69,13 @@ var RATE_LIMIT_RE = /overloaded|rate.?limit|429|5\d\d|timeout/i;
 
 // src/protocol.ts
 import * as net from "node:net";
+import { StringDecoder } from "node:string_decoder";
+var MAX_PENDING_ACKS = 100;
 function lineReader(onLine) {
   let buf = "";
+  const dec = new StringDecoder("utf8");
   return (chunk) => {
-    buf += chunk.toString();
+    buf += typeof chunk === "string" ? chunk : dec.write(chunk);
     let i;
     while ((i = buf.indexOf(`
 `)) >= 0) {
@@ -86,8 +101,10 @@ class VibekeClient {
   tries = 0;
   lastBurstEnd = 0;
   timer = null;
+  acks = new Map;
   dropped = 0;
   connects = 0;
+  gateReconnects = 0;
   cap;
   minMs;
   maxMs;
@@ -160,7 +177,13 @@ class VibekeClient {
     s.unref();
     s.setNoDelay?.(true);
     s.on("error", () => {});
-    s.on("data", lineReader(() => {}));
+    s.on("data", lineReader((line) => {
+      try {
+        const m = JSON.parse(line);
+        if (typeof m?.id === "number")
+          this.acks.delete(m.id);
+      } catch {}
+    }));
     s.on("connect", () => {
       this.connecting = false;
       this.tries = 0;
@@ -190,6 +213,8 @@ class VibekeClient {
           event: "Snapshot",
           payload: { ...snap, seq }
         }));
+        for (const line of this.acks.values())
+          s.write(line);
         this.everReady = true;
         this.ready = true;
         this.blocked = false;
@@ -245,6 +270,33 @@ class VibekeClient {
       }
     } catch {}
   }
+  deliveryAck(interaction, idempotencyKey) {
+    if (this.closed)
+      return;
+    try {
+      const id = ++this.rpcId;
+      const line = JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "adapter.delivery_ack",
+        params: { interaction, idempotency_key: idempotencyKey, applied: true }
+      }) + `
+`;
+      if (this.acks.size >= MAX_PENDING_ACKS) {
+        const oldest = this.acks.keys().next().value;
+        if (oldest !== undefined)
+          this.acks.delete(oldest);
+      }
+      this.acks.set(id, line);
+      if (this.ready && this.sock)
+        this.sock.write(line);
+      else
+        this.ensureConnecting();
+    } catch {}
+  }
+  get pendingAcks() {
+    return this.acks.size;
+  }
   flush(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve) => {
@@ -282,54 +334,102 @@ class VibekeClient {
       };
     });
     let s = null;
-    try {
-      s = net.createConnection(this.o.socketPath);
-    } catch {
-      settle(null);
-      return { answer, close: () => {} };
-    }
-    s.unref();
-    s.on("error", () => settle(null));
-    s.on("close", () => settle(null));
+    let timer = null;
+    let tries = 0;
+    let attempts = 0;
     const gateId = 2;
-    s.on("data", lineReader((line) => {
+    const stop = () => {
+      if (timer)
+        clearTimeout(timer);
+      timer = null;
       try {
-        const m = JSON.parse(line);
-        if (m.id !== gateId)
-          return;
-        const d = m.result?.decision;
-        settle(d && typeof d === "object" && "value" in d ? { value: d.value } : null);
-      } catch {
-        settle(null);
-      }
-    }));
-    s.on("connect", () => {
+        s?.destroy();
+      } catch {}
+      s = null;
+    };
+    const retry = () => {
+      if (done || timer)
+        return;
+      if (this.closed)
+        return settle(null);
+      const delay = Math.min(this.minMs * 2 ** tries, this.maxMs);
+      tries++;
+      timer = setTimeout(() => {
+        timer = null;
+        attempt();
+      }, delay);
+      timer.unref?.();
+    };
+    const attempt = () => {
+      if (done)
+        return;
+      if (this.closed)
+        return settle(null);
+      if (attempts++ > 0)
+        this.gateReconnects++;
+      let sock;
       try {
-        s.write(JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "client.hello",
-          params: { client: "vibeke-pi-extension", kind: "agent", token: this.o.token, version: this.o.version }
-        }) + `
-`);
-        s.write(JSON.stringify({
-          jsonrpc: "2.0",
-          id: gateId,
-          method: "adapter.gate",
-          params: { harness: this.harness, event, payload }
-        }) + `
-`);
+        sock = net.createConnection(this.o.socketPath);
       } catch {
-        settle(null);
+        retry();
+        return;
       }
-    });
+      s = sock;
+      sock.unref();
+      sock.on("error", () => {});
+      sock.on("close", () => {
+        if (s === sock)
+          s = null;
+        retry();
+      });
+      sock.on("data", lineReader((line) => {
+        try {
+          const m = JSON.parse(line);
+          if (m.id !== gateId)
+            return;
+          const r = m.result;
+          const d = r?.decision;
+          if (d && typeof d === "object" && "value" in d) {
+            settle({
+              value: d.value,
+              interaction: typeof r.interaction === "string" ? r.interaction : undefined,
+              idempotencyKey: typeof r.idempotency_key === "string" ? r.idempotency_key : undefined
+            });
+          } else {
+            settle(null);
+          }
+        } catch {
+          settle(null);
+        }
+        stop();
+      }));
+      sock.on("connect", () => {
+        try {
+          sock.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "client.hello",
+            params: { client: "vibeke-pi-extension", kind: "agent", token: this.o.token, version: this.o.version }
+          }) + `
+`);
+          sock.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: gateId,
+            method: "adapter.gate",
+            params: { harness: this.harness, event, payload }
+          }) + `
+`);
+        } catch {
+          sock.destroy();
+        }
+      });
+    };
+    attempt();
     return {
       answer,
       close: () => {
         settle(null);
-        try {
-          s?.destroy();
-        } catch {}
+        stop();
       }
     };
   }
@@ -366,6 +466,7 @@ function createExtension(pi, opts = {}) {
   let lastEnd = {};
   const calls = new Map;
   const approvals = new Map;
+  const dialogs = new Map;
   const sessionId = () => safe(() => lastCtx?.sessionManager?.getSessionId?.()) ?? null;
   const sessionFile = () => safe(() => lastCtx?.sessionManager?.getSessionFile?.()) ?? null;
   const client = new VibekeClient({
@@ -387,7 +488,8 @@ function createExtension(pi, opts = {}) {
         call_id,
         tool: a.tool,
         reason: a.reason
-      }))
+      })),
+      pending_dialogs: [...dialogs.values()]
     }),
     ...opts.clientOverrides
   });
@@ -471,8 +573,10 @@ function createExtension(pi, opts = {}) {
         payload.options = args[1].map(String);
       if (m === "input" && typeof args[1] === "string")
         payload.message = preview(args[1], 2000);
+      dialogs.set(dialogId, payload);
       gate = client.gate("Dialog", payload);
     } catch {
+      dialogs.delete(dialogId);
       return native;
     }
     const g = gate;
@@ -484,11 +588,18 @@ function createExtension(pi, opts = {}) {
       return new Promise(() => {});
     });
     const nativeFirst = native.then((v) => ({ by: "native", v }), (e) => ({ by: "native-error", e }));
-    return Promise.race([nativeFirst, vibekeFirst.then((a) => ({ by: "vibeke", v: a.value }))]).then((w) => {
+    return Promise.race([nativeFirst, vibekeFirst.then((a) => ({ by: "vibeke", v: a.value, a }))]).then((w) => {
+      dialogs.delete(dialogId);
       if (w.by === "vibeke") {
         ac.abort();
         native.catch(() => {});
         g.close();
+        const { interaction, idempotencyKey } = w.a;
+        if (interaction && idempotencyKey) {
+          try {
+            client.deliveryAck(interaction, idempotencyKey);
+          } catch {}
+        }
         return w.v;
       }
       g.close();
@@ -577,7 +688,12 @@ function createExtension(pi, opts = {}) {
       endTurn();
     turnOpen = true;
     promptSent = true;
-    emit("TurnStarted", { prompt_preview: preview(e?.text ?? e?.prompt, 200) });
+    const raw = e?.text ?? e?.prompt;
+    const { prompt, truncated } = boundedPrompt(raw);
+    emit("TurnStarted", {
+      prompt_preview: preview(raw, 200),
+      ...prompt !== undefined ? { prompt, prompt_truncated: truncated } : {}
+    });
   });
   on("agent_start", () => {
     cancelEnd();

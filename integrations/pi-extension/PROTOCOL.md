@@ -24,7 +24,7 @@ Connection behaviour: one persistent connection, queue cap 500 (overflow clears 
 | event | payload |
 |---|---|
 | `SessionStart` | `session_id, transcript_path` (absolute session file), `source` (`startup`/`new`/`resume`/`fork`/`switch`/`branch`), `model?`, `host` (`pi`/`omp`), `host_version?`, `extension_version`. Sent on `session_start`, `session_switch`, `session_branch`. |
-| `TurnStarted` | `prompt_preview?` (<= 200 chars; from `input` with source != `extension`; absent when the turn begins from `agent_start`) |
+| `TurnStarted` | `prompt?` (the full request text, bounded at 8 KiB of UTF-8, cut on a character boundary), `prompt_truncated` (true only when `prompt` was cut; present with `prompt`), `prompt_preview?` (<= 200 chars, kept for older servers). From `input` with source != `extension`; all absent when the turn begins from `agent_start` |
 | `Working` | `{}` (`agent_start`, `auto_retry_end`) |
 | `TurnEnded` | `stop_reason?, last_message?` (<= 2000 chars). pi: `agent_settled` (immediate); both hosts: `agent_end` debounced 250 ms, cancelled by `agent_start`/`input`. At most one per turn. |
 | `Settling` | `{}` (omp `session_stop` only; does not end the turn) |
@@ -36,7 +36,7 @@ Connection behaviour: one persistent connection, queue cap 500 (overflow clears 
 | `SessionEnded` | `reason` (`session_shutdown`; queue flushed with a 300 ms cap, then the connection is closed) |
 | `ApprovalRequested` | `call_id, tool, reason, approval_mode` (omp `tool_approval_requested`) |
 | `ApprovalResolved` | `call_id, approved` |
-| `Snapshot` | `session_id, session_file, is_streaming, turn_index, model, host, host_version?, extension_version, pending_tool_calls: [{call_id, tool, input}], open_approvals: [{call_id, tool, reason}]` (values null when unknown) |
+| `Snapshot` | `session_id, session_file, is_streaming, turn_index, model, host, host_version?, extension_version, pending_tool_calls: [{call_id, tool, input}], open_approvals: [{call_id, tool, reason}], pending_dialogs: [{dialog_id, method, title, message?, options?}]` (values null when unknown; `pending_dialogs` = wrapper dialogs whose native dialog is still open, same fields as their gate payload) |
 | `DialogResolved` | `dialog_id, by: "native", value` (the native dialog answered first) |
 
 With `VIBEKE_HEADLESS_OWNER=1` only `Snapshot`, `SessionStart` and `ToolEnded` are sent and the uiContext wrapper is off.
@@ -47,9 +47,10 @@ On each wrapped `confirm`/`select`/`input` call the extension opens a **separate
 
 `adapter.gate {harness, event: "Dialog", payload: {method: "confirm"|"select"|"input", title, message?, options?: string[], dialog_id}}`
 
-The server parks the request until a decision exists. Reply: `{decision: {value: boolean|string} | null, interaction?}`.
+The server parks the request until a decision exists. Reply: `{decision: {value: boolean|string} | null, interaction?, idempotency_key?}` (`idempotency_key` = `"<interaction>:<decision_rev>"`).
 
-- `decision.value` of the right type (boolean for confirm, one of `options` for select, string for input): the extension aborts pi's native dialog (its linked `AbortController`, exactly once) and returns the value to the calling extension.
+- `decision.value` of the right type (boolean for confirm, one of `options` for select, string for input): the extension aborts pi's native dialog (its linked `AbortController`, exactly once) and returns the value to the calling extension, then sends `adapter.delivery_ack {interaction, idempotency_key, applied: true}` on its **main** connection (pane-token hello). Unanswered acks are re-sent after each reconnect of the main connection (up to 100 kept).
+- Gate connection dropped before a reply while the native dialog is still open: the extension reconnects (50 ms -> 2 s backoff, until the dialog settles) and re-issues the identical request (same `dialog_id`); the server re-attaches the interaction by its native ref (an already-decided one returns its recorded decision).
 - `decision: null` or an invalid value: keep waiting for the native dialog.
 - The native dialog answering first: the extension closes the gate connection (the server must treat that as "resolved elsewhere") and sends `DialogResolved`.
 - Server unreachable: native dialog only (fail-open).

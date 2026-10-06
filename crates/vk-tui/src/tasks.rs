@@ -161,6 +161,8 @@ pub enum Reply {
     },
     CheckRun {
         view: u64,
+        /// The subject the run was submitted for.
+        subject: String,
     },
     /// `task.detail` for the run → task map behind sidebar markers and peek.
     TaskRuns {
@@ -979,7 +981,77 @@ pub enum TaskSub {
     Exceptions(ExceptionForm),
     Message(MessageFlow),
     CheckPick { sel: usize },
-    Authorize { check: Value },
+    Authorize(AuthDialog),
+}
+
+/// The check authorization dialog (15 §6.3). It freezes the exact subject and check-definition
+/// digest it shows; confirming authorizes those, never whatever the package says by then. A
+/// refresh that installs a different subject or definition invalidates it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthDialog {
+    pub check: Value,
+    /// Subject id shown (and sent on confirm).
+    pub subject: String,
+    /// Human label of that subject, frozen with it.
+    pub subject_label: String,
+    /// Definition digest shown (and sent on confirm as `definition_digest`).
+    pub digest: String,
+    /// The candidate or definition changed while the dialog was open: confirm is refused.
+    pub stale: bool,
+}
+
+pub const CANDIDATE_CHANGED: &str = "The candidate changed — review again";
+
+fn check_digest(c: &Value) -> String {
+    let d = c
+        .get("definition")
+        .map(|d| st(d, "definition_digest"))
+        .unwrap_or("");
+    if d.is_empty() {
+        st(c, "definition_digest").to_string()
+    } else {
+        d.to_string()
+    }
+}
+
+fn subject_id_of(container: &Value) -> String {
+    match container.get("subject") {
+        Some(Value::String(s)) => s.clone(),
+        Some(s @ Value::Object(_)) => st(s, "id").to_string(),
+        _ => String::new(),
+    }
+}
+
+impl AuthDialog {
+    fn new(check: Value, pkg: Option<&Value>) -> Self {
+        let subj = pkg
+            .and_then(|p| p.get("subject"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        AuthDialog {
+            digest: check_digest(&check),
+            subject: st(&subj, "id").to_string(),
+            subject_label: subject_label(&subj),
+            check,
+            stale: false,
+        }
+    }
+
+    /// Validate against a refreshed listing (a review package or a `task.check.list` reply):
+    /// the subject and this check's definition digest must be the ones shown.
+    fn revalidate(&mut self, container: &Value) {
+        if self.stale {
+            return;
+        }
+        let id = st(&self.check, "id");
+        let same_def = arr(container, "checks")
+            .iter()
+            .find(|c| st(c, "id") == id)
+            .is_some_and(|c| check_digest(c) == self.digest);
+        if subject_id_of(container) != self.subject || !same_def {
+            self.stale = true;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1059,6 +1131,17 @@ fn fetch(app: &mut App, all: bool) {
             json!({"task": task}),
             Pending::Task(Reply::Checks { view: id }),
         );
+    }
+}
+
+/// A refreshed listing replaced what the authorization dialog shows: invalidate it visibly.
+fn revalidate_dialog(v: &mut TaskView, container: &Value) {
+    if let TaskSub::Authorize(d) = &mut v.sub {
+        let was = d.stale;
+        d.revalidate(container);
+        if d.stale && !was {
+            v.notice = Some(CANDIDATE_CHANGED.into());
+        }
     }
 }
 
@@ -1211,7 +1294,7 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
                 Key::Named(NamedKey::Enter) => {
                     if let Some(c) = checks.get(sel).cloned() {
                         app.task_view = Some(v);
-                        run_check(app, c, false);
+                        run_check(app, c);
                         return;
                     }
                 }
@@ -1220,17 +1303,21 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
             app.task_view = Some(v);
             return;
         }
-        TaskSub::Authorize { check } => {
+        TaskSub::Authorize(d) => {
             match ev.key {
+                Key::Char('y' | 'Y') if d.stale => {
+                    v.notice = Some(CANDIDATE_CHANGED.into());
+                    v.sub = TaskSub::Authorize(d);
+                }
                 Key::Char('y' | 'Y') => {
                     app.task_view = Some(v);
-                    run_check(app, check, true);
+                    submit_check(app, &d.check, &d.subject, &d.digest, true);
                     return;
                 }
                 Key::Named(NamedKey::Escape) | Key::Char('n' | 'N') => {
                     v.notice = Some("Check not run".into())
                 }
-                _ => v.sub = TaskSub::Authorize { check },
+                _ => v.sub = TaskSub::Authorize(d),
             }
             app.task_view = Some(v);
             return;
@@ -1332,7 +1419,7 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
                     }
                     1 => {
                         app.task_view = Some(v);
-                        run_check(app, checks[0].clone(), false);
+                        run_check(app, checks[0].clone());
                         return;
                     }
                     _ => v.sub = TaskSub::CheckPick { sel: 0 },
@@ -1359,8 +1446,9 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
     app.task_view = Some(v);
 }
 
-/// Run a defined check; the first run for a candidate needs explicit authorization.
-fn run_check(app: &mut App, check: Value, authorize: bool) {
+/// Run a defined check; the first run for a candidate needs explicit authorization, which
+/// opens the dialog (freezing subject + definition digest) instead of sending anything.
+fn run_check(app: &mut App, check: Value) {
     let Some(v) = &mut app.task_view else {
         return;
     };
@@ -1370,20 +1458,31 @@ fn run_check(app: &mut App, check: Value, authorize: bool) {
         v.notice = Some(format!("Can't run: {}", st(&auth, "reason")));
         return;
     }
-    if !authorize && status != "authorized" {
-        v.sub = TaskSub::Authorize { check };
+    if status != "authorized" {
+        v.sub = TaskSub::Authorize(AuthDialog::new(check, package(v)));
         return;
     }
-    let subject = package(v)
-        .and_then(|p| p.get("subject"))
-        .map(|s| st(s, "id").to_string())
-        .unwrap_or_default();
-    let check_id = st(&check, "id").to_string();
+    let subject = package(v).map(subject_id_of).unwrap_or_default();
+    let digest = check_digest(&check);
+    submit_check(app, &check, &subject, &digest, false);
+}
+
+/// Submit `task.check.run` for exactly `subject` and the definition `digest` the user saw;
+/// with `authorize`, this is the confirmed per-candidate authorization too.
+fn submit_check(app: &mut App, check: &Value, subject: &str, digest: &str, authorize: bool) {
+    let Some(v) = &mut app.task_view else {
+        return;
+    };
+    let auth = check.get("authorization").cloned().unwrap_or(Value::Null);
+    let check_id = st(check, "id").to_string();
     let (mi, id, task) = (v.machine, v.id, v.task.clone());
-    v.notice = Some(format!("Submitting check {}…", st(&check, "name")));
+    v.notice = Some(format!("Submitting check {}…", st(check, "name")));
     let mut params = json!({"task": task, "check": check_id});
     if !subject.is_empty() {
-        params["subject_id"] = json!(subject);
+        params["subject"] = json!(subject);
+    }
+    if !digest.is_empty() {
+        params["definition_digest"] = json!(digest);
     }
     if authorize {
         params["authorize"] = json!(true);
@@ -1399,7 +1498,10 @@ fn run_check(app: &mut App, check: Value, authorize: bool) {
         mi,
         "task.check.run",
         params,
-        Pending::Task(Reply::CheckRun { view: id }),
+        Pending::Task(Reply::CheckRun {
+            view: id,
+            subject: subject.to_string(),
+        }),
     );
 }
 
@@ -1631,6 +1733,9 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 Err(e) if e.is_method_not_found() => Api::Unsupported,
                 Err(e) => Api::Err(e.message),
             };
+            if let Some(p) = package(v).cloned() {
+                revalidate_dialog(v, &p);
+            }
         }
         Reply::Checks { view } => {
             let Some(v) = view_of(app, view) else {
@@ -1641,6 +1746,12 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 Err(e) if e.is_method_not_found() => Api::Unsupported,
                 Err(e) => Api::Err(e.message),
             };
+            if let Api::Ok(c) = &v.checks
+                && !arr(c, "checks").is_empty()
+            {
+                let c = c.clone();
+                revalidate_dialog(v, &c);
+            }
         }
         Reply::IntentSaved { view, send } => {
             let msg_key = app.new_idempotency_key("msg");
@@ -1874,7 +1985,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 }
             }
         }
-        Reply::CheckRun { view } => {
+        Reply::CheckRun { view, subject } => {
             let Some(v) = view_of(app, view) else {
                 return;
             };
@@ -1884,11 +1995,25 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     fetch(app, false);
                 }
                 Err(e) if e.reason() == Some("authorization_required") => {
-                    let mut check = e.details.get("check").cloned().unwrap_or(json!({}));
+                    let def = e.details.get("definition").cloned().unwrap_or(Value::Null);
+                    let mut check = e.details.get("check").cloned().unwrap_or_else(|| {
+                        json!({"id": st(&def, "id"), "name": st(&def, "name"),
+                               "command": def.get("command").cloned().unwrap_or(Value::Null)})
+                    });
+                    if check.get("definition").is_none() && !def.is_null() {
+                        check["definition"] = def;
+                    }
                     check["authorization"] = json!({"status": "required",
                         "confirmation_label": e.details.get("confirmation_label").cloned().unwrap_or(json!("Runs code modified by this task")),
                         "reasons": e.details.get("reasons").cloned().unwrap_or(json!([]))});
-                    v.sub = TaskSub::Authorize { check };
+                    // Frozen to the subject this run was submitted for and the definition the
+                    // server reported, not to whatever the package shows later.
+                    let mut d = AuthDialog::new(check, package(v));
+                    if d.subject != subject {
+                        d.subject_label = format!("subject {}", truncate(&subject, 10));
+                        d.subject = subject;
+                    }
+                    v.sub = TaskSub::Authorize(d);
                 }
                 Err(e) => v.notice = Some(format!("Check not run: {}", e.message)),
             }
@@ -2254,15 +2379,7 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
         ));
     }
     if let Some(a) = acceptance {
-        let n = arr(a, "exceptions").len();
-        out.push((
-            if n > 0 {
-                format!("  Reviewed with exceptions ({n}) on this subject")
-            } else {
-                "  Reviewed on this subject".into()
-            },
-            t.s(t.green),
-        ));
+        acceptance_lines(app, p, a, w, out);
     }
     for b in arr(p, "blockers") {
         out.push((format!("  · {}", st(b, "message")), t.dim()));
@@ -2388,6 +2505,81 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
                 t.s(color),
             ));
         }
+    }
+}
+
+/// The acceptance block, from the server's shape `{acceptance: {subject_id, head_sha,
+/// exceptions, ...}, label, status: current|outdated, outdated_reasons}` (15 §7). Green
+/// **Reviewed on this subject** only for a current acceptance of the displayed subject with no
+/// exceptions; exceptions are listed and never green; outdated is amber with its reasons.
+fn acceptance_lines(app: &App, p: &Value, a: &Value, w: usize, out: &mut Lines) {
+    let t = app.theme;
+    let inner = a.get("acceptance").filter(|i| i.is_object()).unwrap_or(a);
+    let displayed = subject_id_of(p);
+    let accepted = st(inner, "subject_id");
+    let head = st(inner, "head_sha");
+    let short = &head[..head.len().min(8)];
+    let exceptions = arr(inner, "exceptions");
+    let status = st(a, "status");
+    let same_subject = !accepted.is_empty() && accepted == displayed;
+    let with_exc = if exceptions.is_empty() {
+        String::new()
+    } else {
+        format!(" with exceptions ({})", exceptions.len())
+    };
+    let on = if short.is_empty() {
+        format!("subject {}", truncate(accepted, 10))
+    } else {
+        format!("revision {short}")
+    };
+    let (line, color) = match status {
+        "outdated" => (
+            format!("  Review outdated — reviewed{with_exc} on {on}"),
+            t.yellow,
+        ),
+        "current" if same_subject && exceptions.is_empty() => {
+            ("  Reviewed on this subject".to_string(), t.green)
+        }
+        "current" if same_subject => (format!("  Reviewed{with_exc} on this subject"), t.yellow),
+        "current" => (
+            format!("  Reviewed{with_exc} on a different subject ({on}) — not the one shown"),
+            t.muted,
+        ),
+        _ => (
+            format!("  Reviewed{with_exc} on {on} — currency unknown"),
+            t.muted,
+        ),
+    };
+    out.push((line, t.bold(color)));
+    if status == "outdated" {
+        let reasons = arr(a, "outdated_reasons");
+        if reasons.is_empty() {
+            out.push(("    · reason not reported".into(), t.s(t.yellow)));
+        }
+        for r in reasons {
+            let r = r
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| r.to_string());
+            wrap_push(out, &r, "    · ", w.saturating_sub(6), t.s(t.yellow));
+        }
+    }
+    let crit = criteria_of(p);
+    for e in exceptions {
+        let id = st(e, "criterion_id");
+        let name = crit
+            .iter()
+            .find(|c| crit_id(c) == id)
+            .map(|c| st(c, "text").to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| id.to_string());
+        wrap_push(
+            out,
+            &format!("exception: {name} — {}", st(e, "reason")),
+            "    ",
+            w.saturating_sub(4),
+            t.s(t.yellow),
+        );
     }
 }
 
@@ -2632,14 +2824,14 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
             }
             Some(("Run check".into(), l))
         }
-        TaskSub::Authorize { check } => {
+        TaskSub::Authorize(d) => {
+            let check = &d.check;
             let auth = check.get("authorization").cloned().unwrap_or(Value::Null);
             let label = match st(&auth, "confirmation_label") {
                 "" => "Runs code modified by this task",
                 s => s,
             };
-            let p = package(v).cloned().unwrap_or(Value::Null);
-            let subject = subject_label(&p.get("subject").cloned().unwrap_or(Value::Null));
+            let subject = &d.subject_label;
             let mut l: Lines = vec![
                 (format!("Check: {}", st(check, "name")), t.bold(t.fg)),
                 (format!("Command: {}", command_text(check)), t.text()),
@@ -2661,10 +2853,21 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
                     l.push((format!("  · {s}"), t.dim()));
                 }
             }
-            l.push((
-                "[y] Authorize for this revision and run   [esc] cancel".into(),
-                t.dim(),
-            ));
+            if !d.digest.is_empty() {
+                l.push((format!("Definition {}", truncate(&d.digest, 16)), t.dim()));
+            }
+            if d.stale {
+                l.push((format!("✗ {CANDIDATE_CHANGED}"), t.bold(t.red)));
+                l.push((
+                    "Nothing will be authorized from this dialog   [esc] close".into(),
+                    t.dim(),
+                ));
+            } else {
+                l.push((
+                    "[y] Authorize for this revision and run   [esc] cancel".into(),
+                    t.dim(),
+                ));
+            }
             Some(("Authorize check".into(), l))
         }
     }
@@ -3005,8 +3208,8 @@ mod tests {
     fn track_flow_persists_key_and_reuses_it_after_a_refusal() {
         let (mut app, mut rxs) = app_with_run();
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("client-pending.json");
-        app.pending_ops = crate::pending::PendingStore::load(path.clone());
+        let path = dir.path().join("client-pending-c.json");
+        app.pending_ops = crate::pending::PendingStore::open(dir.path().to_path_buf(), "c");
         open_track(&mut app, 0, "p1");
         let c = commands(&mut rxs[0]);
         assert_eq!(c[0].1["method"], "task.sources");
@@ -3233,14 +3436,14 @@ mod tests {
         app.on_key(ch('v'));
         assert!(matches!(
             app.task_view.as_ref().unwrap().sub,
-            TaskSub::Authorize { .. }
+            TaskSub::Authorize(_)
         ));
         assert!(commands(&mut rxs[0]).is_empty());
         app.on_key(ch('y'));
         let c = commands(&mut rxs[0]);
         assert_eq!(c[0].1["method"], "task.check.run");
         assert_eq!(c[0].1["params"]["authorize"], true);
-        assert_eq!(c[0].1["params"]["subject_id"], "subj-1");
+        assert_eq!(c[0].1["params"]["subject"], "subj-1");
         assert_eq!(c[0].1["params"]["check"], "ck1");
     }
 
@@ -3346,5 +3549,155 @@ mod tests {
         assert_ne!(app.focused_pane().as_deref(), Some("p1"));
         app.on_key(ch('o'));
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn package_with(subject: &str, digest: &str) -> Value {
+        let mut p = package(false);
+        p["package"]["subject"]["id"] = json!(subject);
+        p["package"]["checks"][0]["definition"] = json!({"id": "ck1", "definition_digest": digest});
+        p
+    }
+
+    /// Answer the refresh `fetch` sends (detail + review; check.list is unsupported here).
+    fn answer_refresh(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<ClientFrame>,
+        review: Value,
+    ) {
+        for (req, v) in commands(rx) {
+            match v["method"].as_str().unwrap() {
+                "task.detail" => reply(app, 0, req, detail()),
+                "task.review.get" => reply(app, 0, req, review.clone()),
+                m => panic!("unexpected {m}"),
+            }
+        }
+    }
+
+    fn auth_dialog(app: &App) -> AuthDialog {
+        match &app.task_view.as_ref().unwrap().sub {
+            TaskSub::Authorize(d) => d.clone(),
+            s => panic!("not authorizing: {s:?}"),
+        }
+    }
+
+    /// Codex G02 #1: the dialog freezes the subject and definition digest it shows; a refresh
+    /// that changes either invalidates it, and confirming sends exactly what was shown.
+    #[test]
+    fn authorization_dialog_is_frozen_and_invalidated_by_a_changed_candidate() {
+        // Unchanged refresh: confirm sends the frozen subject + digest.
+        let (mut app, mut rxs) = app_with_run();
+        open_view(&mut app, &mut rxs[0], Some(package_with("subj-A", "dig-1")));
+        app.on_key(ch('v'));
+        let d = auth_dialog(&app);
+        assert_eq!((d.subject.as_str(), d.digest.as_str()), ("subj-A", "dig-1"));
+        assert!(!d.stale);
+        fetch(&mut app, false);
+        answer_refresh(&mut app, &mut rxs[0], package_with("subj-A", "dig-1"));
+        assert!(!auth_dialog(&app).stale);
+        app.on_key(ch('y'));
+        let c = commands(&mut rxs[0]);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].1["method"], "task.check.run");
+        assert_eq!(c[0].1["params"]["authorize"], true);
+        assert_eq!(c[0].1["params"]["subject"], "subj-A");
+        assert_eq!(c[0].1["params"]["definition_digest"], "dig-1");
+
+        // Candidate B installed while the dialog is open: invalidated, nothing authorized.
+        for changed in [
+            package_with("subj-B", "dig-1"),
+            package_with("subj-A", "dig-2"),
+        ] {
+            let (mut app, mut rxs) = app_with_run();
+            app.size = (140, 50);
+            open_view(&mut app, &mut rxs[0], Some(package_with("subj-A", "dig-1")));
+            app.on_key(ch('v'));
+            fetch(&mut app, false);
+            answer_refresh(&mut app, &mut rxs[0], changed);
+            let d = auth_dialog(&app);
+            assert!(d.stale);
+            // The dialog still names what it showed, never the new candidate.
+            assert_eq!(d.subject, "subj-A");
+            assert_eq!(d.digest, "dig-1");
+            let mut g = Grid::new(140, 50);
+            crate::draw::compose(&app, &mut g);
+            let text = grid_text(&g);
+            assert!(text.contains(CANDIDATE_CHANGED), "{text}");
+            assert!(!text.contains("[y] Authorize"), "{text}");
+            app.on_key(ch('y'));
+            assert!(commands(&mut rxs[0]).is_empty());
+            assert!(auth_dialog(&app).stale);
+            app.on_key(key(Key::Named(NamedKey::Escape)));
+            assert_eq!(app.task_view.as_ref().unwrap().sub, TaskSub::None);
+            assert!(commands(&mut rxs[0]).is_empty());
+        }
+    }
+
+    fn with_acceptance(acc: Value) -> Value {
+        let mut p = package(false);
+        p["package"]["acceptance"] = acc;
+        p
+    }
+
+    fn acceptance_block(acc: Value) -> (Vec<(String, Style)>, crate::theme::Theme) {
+        let (mut app, mut rxs) = app_with_run();
+        open_view(&mut app, &mut rxs[0], Some(with_acceptance(acc)));
+        let v = app.task_view.as_ref().unwrap();
+        (task_lines(&app, v, 120), app.theme)
+    }
+
+    fn find<'a>(lines: &'a [(String, Style)], s: &str) -> Option<&'a (String, Style)> {
+        lines.iter().find(|(l, _)| l.contains(s))
+    }
+
+    /// Codex G02 #11: acceptance rendered from the server's real shape.
+    #[test]
+    fn acceptance_renders_current_excepted_outdated_and_other_subject_honestly() {
+        let inner = |subject: &str, exceptions: Value| {
+            json!({"id": "acc1", "subject_id": subject, "head_sha": "0ld5ha99aa", "intent_revision": 2,
+                   "package_revision": 4, "exceptions": exceptions})
+        };
+        let exc = json!([{"criterion_id": "c2", "reason": "SSO verified manually on staging"}]);
+
+        // Current, this subject, no exceptions: the only green case.
+        let (l, t) = acceptance_block(json!({"acceptance": inner("subj-1", json!([])),
+            "label": "Reviewed", "status": "current", "outdated_reasons": []}));
+        let line = find(&l, "Reviewed on this subject").expect("reviewed line");
+        assert_eq!(line.1, t.bold(t.green));
+
+        // Current, this subject, with exceptions: listed, never green.
+        let (l, t) = acceptance_block(json!({"acceptance": inner("subj-1", exc.clone()),
+            "label": "Reviewed with exceptions", "status": "current", "outdated_reasons": []}));
+        assert!(find(&l, "Reviewed on this subject").is_none());
+        let line = find(&l, "Reviewed with exceptions (1) on this subject").expect("excepted");
+        assert_ne!(line.1, t.bold(t.green));
+        let e = find(
+            &l,
+            "exception: Preserve SSO — SSO verified manually on staging",
+        )
+        .expect("exception listed");
+        assert_eq!(e.1, t.s(t.yellow));
+
+        // Outdated: amber with its reasons, even on the same subject.
+        let (l, t) = acceptance_block(json!({"acceptance": inner("subj-1", exc.clone()),
+            "label": "Reviewed with exceptions", "status": "outdated",
+            "outdated_reasons": ["check definition changed: sso-smoke"]}));
+        assert!(find(&l, "Reviewed on this subject").is_none());
+        let line = find(
+            &l,
+            "Review outdated — reviewed with exceptions (1) on revision 0ld5ha99",
+        )
+        .expect("outdated line");
+        assert_eq!(line.1, t.bold(t.yellow));
+        assert!(find(&l, "check definition changed: sso-smoke").is_some());
+        assert!(find(&l, "exception: Preserve SSO").is_some());
+
+        // Current, but accepted on another subject (A) while B is displayed.
+        let (l, t) = acceptance_block(json!({"acceptance": inner("subj-A", exc),
+            "label": "Reviewed with exceptions", "status": "current", "outdated_reasons": []}));
+        assert!(find(&l, "Reviewed on this subject").is_none());
+        assert!(find(&l, "on this subject").is_none());
+        let line = find(&l, "on a different subject (revision 0ld5ha99)").expect("other subject");
+        assert_ne!(line.1, t.bold(t.green));
+        assert!(find(&l, "exception: Preserve SSO").is_some());
     }
 }
