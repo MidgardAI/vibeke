@@ -200,7 +200,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `agent.interrupt` | `{target}` → `{run}` — native abort where available (`abort` RPC, Esc for TUIs) |
 | `agent.send_keys` | `{target, keys}` → `{}` |
 | `agent.read` | `{target, source?: visible|recent|transcript, lines?, format?}` → as `pane.read`, plus `transcript` returns the last N turns from the structured log |
-| `agent.transcript` | `{target, after_turn?, limit?: 20, include_items?: summary|full}` → `{turns: [Turn + {items}]}` — structured adapters only (`unsupported` + fallback hint otherwise) |
+| `agent.transcript` | `{target, after_turn?, limit?: 20, include_items?: summary|full}` → `{turns: [Turn + {items}]}` — structured adapters only (`unsupported` + fallback hint otherwise). As built (gateway and `before`/`items` callers): `{target, before?, limit?}` → `{run, turns: [{n, ts, items: [{kind: text|thinking|tool_call|tool_result, ts (epoch ms or null), …}], duration_ms (last item ts − turn start, null when unknown), tool_count, subagent_count}], next_before}`; `subagent_count` counts tool calls that start a subagent (`Task`/`Agent`, or the agent-spawning tool in Codex rollouts) |
 | `agent.rename` | `{target, name: string|null}` → `{run}` |
 | `agent.release` | `{target}` → `{}` — stop tracking (the process keeps running as an untracked pane occupant) |
 | `agent.resume` | `{pane?, run: ended_run_id, mode?}` → `{run}` — re-launches via the harness resume argv in the same or a new pane |
@@ -523,6 +523,12 @@ Read-only views of a pane's working tree, used by the gateway's Changes screen (
 |---|---|
 | `git.status` | `{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository |
 | `git.diff` | `{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB |
+| `git.diff` with `base` or `range` | `{pane|path, base: <ref>, file?}` diffs that revision against the working tree; `{pane|path, range: "a..b"|"a...b", file?}` diffs committed history. With `file` → `{file, rev, diff, truncated, binary, untracked: false, secret?}` (any safe relative path, not only changed ones); without → `{rev, files: [{path, adds?, dels?, binary, secret}], truncated}` (≤ 2000). `base` and `range` are exclusive |
+| `git.log` | `{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first; with `base`, only commits in `base..HEAD` |
+| `fs.list` | `{pane, path?: ""}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd; directories first, then by name; ≤ 2000 entries. Symlinks are listed, never followed; `.git` is not listed; secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}` |
+| `fs.read` | `{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary); `binary` (NUL in the first 8 KiB) returns no text; secret-looking files return `{secret: true}` without content |
+
+Refs (`base`, both sides of `range`) must match `^[A-Za-z0-9][A-Za-z0-9._/@{}^~-]{0,200}$` and contain no `..`; a range is exactly two refs joined by `..` or `...`. They are passed after `--end-of-options`, so a ref can never be read as an option (`invalid_params` otherwise). `fs.*` paths must be relative with only normal components (no `..`, no absolute paths, no `.git` component) and are opened with an `openat` walk using `O_NOFOLLOW` at every component, so a symlink anywhere in the path is refused (`permission_denied`). `ignored` comes from `git check-ignore`. Every git call uses the same hardened runner as `git.status` (also `log.showSignature=false`). Pane-scope callers may only target their own pane.
 
 ### 2.15b `assistant.*` [14; as built 2026-10-06]
 

@@ -265,7 +265,18 @@ Default for `pair` is `full` (your own phone); `approve`/`view` are for shared o
 | `interaction.list` / `interaction.get` | server params | view | server; normalized |
 | `interaction.answer` | `{interaction, decision_rev, decision?, choices?: {question_id: [option_id]}, text?, op_id}` → `{interaction, delivery: {channel}}`; the delivery **state** is `interaction.delivery`, updated by `interaction.delivery_*` events | approve | gateway refetches the interaction; `stale` unless `status == open` and `decision_rev` matches; then `interaction.answer` |
 | `interaction.answer_batch` | `{items[{interaction, decision_rev}], decision, op_id}` → `{results[]}` | approve | eligibility re-checked in the gateway (§7.6); each item answered individually; partial results reported |
-| `git.status` / `git.diff` | §7.7 params | view | new server methods |
+| `git.status` / `git.diff` | §7.7 params; `git.diff` also takes `base` or `range` (07 §2.15a) | view | new server methods |
+| `git.log` | `{pane, base?, limit?}` → `{commits[{sha, short, author, ts, subject}], truncated}` | view | server (07 §2.15a) |
+| `fs.list` / `fs.read` | `{pane, path?}` → `{path, entries[{name, kind, size?, ignored, secret}], truncated}` / `{pane, path}` → `{path, text?, binary, truncated, size, secret}` | view | server (07 §2.15a) |
+| `attention.list` | `{budget_ms?, effort?}` → server result | view | server (spec 15); limited devices get items of their panes/tasks only |
+| `attention.update` | `{key, seen?, snooze_until_ms?, pin?, item_rev?, op_id}` | approve | server; `snooze_until_ms: null` is passed through (clears) |
+| `task.review.get` / `task.review.candidates` / `task.review.diff` | `{task, subject?}` / `{task}` / `{task, subject?, path?, max_bytes?}` | view | server |
+| `task.check.list` / `task.check.get` | `{task, subject?}` / `{check_run}` | view | server |
+| `task.check.run` | `{task, subject, check, definition_digest?, authorize?, op_id}` | full | server; `idempotency_key = "gw:<device_id>:<op_id>"` |
+| `preview.list` / `preview.get` / `preview.url` / `preview.status` | `{machine?, status?, all?, task?, pane?}` / `{preview, machine?}` / same / `{}` | view | server |
+| `preview.open` / `preview.promote` / `preview.forget` | `{preview?, url?, machine?, window?, split?, focus?, pane?, op_id}` / `{preview, machine?, op_id}` | full | server |
+| `worktree.list` | `{pane}` or `{workspace}` (or `{cwd}` for devices without a limit) → `{worktrees}` | view | server `worktree.list {cwd}` with the pane's cwd or the workspace root |
+| `tab.rename` / `tab.close` / `tab.focus` | `{tab, title?, op_id}` / `{tab, op_id}` | full | server |
 | `attachment.put` | `{name, mime, data_b64, op_id}` → `{path}` (≤ 8 MiB) | full | `image.upload` |
 | `notification.list` / `notification.read` | server params | view / approve | server |
 | `events.subscribe` | `{after?}` → `{at}`; then `event` notifications | view | gateway ring buffer (§7.5) |
@@ -301,6 +312,8 @@ The UI only offers a batch the gateway would accept, and the gateway re-checks a
 | `git.status {pane}` → `{repo_root, branch?, upstream?, ahead, behind, files[{path, x, y, kind, adds?, dels?, binary}], clean}` | Runs in the pane's cwd. Pane-scope callers may only target their own pane; `path` targets are allowed only for full-scope callers. |
 | `git.diff {pane, file, staged?}` → `{diff, truncated, binary, untracked}` | Unified diff against `HEAD` (or the index if `staged`). Untracked files are rendered as additions by reading the file. Output capped at 512 KiB. |
 | `interaction.answer` gains optional `actor` | Full-scope callers may label the answer (`answered_by = actor`); otherwise unchanged. Separates attribution from `idempotency_key`. |
+| `git.log`, `git.diff {base|range}`, `fs.list`, `fs.read` | Read-only repository browsing for the workspace views; contracts in 07 §2.15a. Same execution and filesystem rules as below; refs are validated and passed after `--end-of-options`. |
+| `agent.transcript` items gain `ts`; turns gain `duration_ms`, `tool_count`, `subagent_count` | Additive (07 §2.7). |
 
 Git execution rules (git can run configured programs):
 - Every git call: `git -c core.fsmonitor=false -c core.untrackedCache=false -c diff.external= -c core.pager=cat -c color.ui=false`, `--no-ext-diff --no-textconv`, `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, stdin closed, 5 s timeout, 4 MiB stdout cap, killed on timeout.
@@ -466,6 +479,7 @@ The gateway, relay and web apps live in new crates and `web/`. What they still n
 | # | Where | Work | Why |
 |---|---|---|---|
 | — | status | X1–X5 landed on main (d3323b7, `vk-server/src/gateway_api.rs`) and are consumed by the gateway; X6 and the TUI confirm overlay are in progress in the TUI session; X7 waits until the new crates are committed; X8 exists (`attention.list`) |
+| — | workspace views | Built on the `workspace-ui` branch: transcript timing (`ts`, `duration_ms`, `tool_count`, `subagent_count`), `git.log`, `git.diff {base|range}`, `fs.list`, `fs.read` (`vk-server/src/fs_api.rs`), and the §7.4 passthroughs for attention, review, checks, previews, worktrees and tabs with share-limit checks |
 | X1 | server | `pane.read {source: "styled"}` → rows of `{text, runs: [{start, len, fg, bg, bold, italic, underline, inverse}]}` from the VT engine (or ANSI SGR text) | Colour terminal mirror in the apps |
 | X2 | server | `agent.transcript` turns carry `kind: text|thinking|tool_call|tool_result`, `tool`, `summary`; native paging with `before` | History screen separates tool calls; no gateway-side slicing |
 | X3 | server | `client.list` reports per-client `last_input_ms` and focus (TUI attached, active in the last N s) | Presence-aware push: no phone pushes while the user is typing in the TUI (spec 12 attention inbox) |
@@ -563,7 +577,7 @@ A share is a **scoped, expiring pairing invitation** for someone else (or anothe
 
 - `share.create {kind: "share", scope: view|approve, ttl_s, workspace?, pane?, name?, op_id}` (full scope) → `{link, pid, expires_at}`; CLI `vibeke-gateway share [--scope view|approve] [--ttl 2h] [--workspace W | --pane P]`.
 - The link is a pairing link (§4.1) with `share: {scope, until, label}` in its payload so the app can say "the maintainer shared *samplehub* with you, view-only, until 16:00". It is a **bearer invitation** (no fingerprint confirmation; the owner created it deliberately), single use, and must be opened within 15 min.
-- The resulting device record carries `kind: "share"`, `expires_at` and `limit {workspace?, pane?}`. The gateway enforces the limit on every call: `dashboard.get`, `interaction.list` and `notification.list` are filtered; any method naming a pane, run or interaction outside the limit returns `forbidden`; events are forwarded only when their subject's pane/workspace is inside it; `tab.create`/`agent.start` only inside the limited workspace; `devices.*`, `share.*` and `handoff.*` are never available to share devices. Expired devices are refused at the handshake and disconnected within 5 s.
+- The resulting device record carries `kind: "share"`, `expires_at` and `limit {workspace?, pane?}`. The gateway enforces the limit on every call: `dashboard.get`, `interaction.list`, `notification.list`, `attention.list` and `preview.list` are filtered; any method naming a pane, run, interaction, task (by its workspace; pane-only shares see no tasks), check run (by its task), tab or preview (by its pane) outside the limit returns `forbidden`; `worktree.list` only takes the shared pane or workspace, never a path; `task.check.run`, `attention.update`, `preview.status` and `tab.rename/close/focus` are never available to share devices; events are forwarded only when their subject's pane/workspace is inside it; `tab.create`/`agent.start` only inside the limited workspace; `devices.*`, `share.*` and `handoff.*` are never available to share devices. Expired devices are refused at the handshake and disconnected within 5 s.
 - Shares are listed and revoked like devices (`devices.list` shows `kind`, `expires_at`, `limit`).
 
 ### 15.2 Handoff
