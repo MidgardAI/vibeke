@@ -2,6 +2,7 @@
 //! checks, hot-reload diffing and a debounced file watcher.
 
 mod binding;
+pub mod edit;
 mod keys;
 mod load;
 #[macro_use]

@@ -41,6 +41,11 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("notify", notify::METHODS),
         ("theme", theme::METHODS),
         ("layouts", layouts::METHODS),
+        ("session_api", session_api::METHODS),
+        ("config_api", config_api::METHODS),
+        ("blob_api", blob_api::METHODS),
+        ("pane_api", pane_api::METHODS),
+        ("task_park", task_park::METHODS),
     ]
 }
 
@@ -402,6 +407,9 @@ pub const DEFS: &str = r##"
 # never null; a field that can be null says `T|null` (`f?: T|null`: absent or null).
 Target = string
 Cursor = {machine_uuid: string, session_uuid: string, log_epoch: string, seq: int}
+ConfigDiagnostic = {line: int, col: int, message: string}
+ConfigWarning = {key: string, line: int|null, col: int|null, message: string}
+SessionEntry = {name: string, running: bool, socket: string, state: string, current: bool, pid?: int}
 Event = {seq: int, ts: int, v: int, tier: sync|history, type: string, subject: object, actor: object, data: any}
 IsolationLevel = host|sandbox|container|vm
 Isolation = {level: IsolationLevel, provider: string, network: string, yolo: bool, scope: string, visible_roots: [string]}
@@ -439,7 +447,7 @@ RpcError = {code: int, message: string, data: RpcErrorData}
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
 /// the handler. Optional (`?`) fields may be absent; only `|null` types may be null.
-pub const METHOD_SHAPES: &[&str] = &[CORE_SHAPES, MORE_SHAPES, INTERNAL_SHAPES];
+pub const METHOD_SHAPES: &[&str] = &[CORE_SHAPES, MORE_SHAPES, INTERNAL_SHAPES, BATCH_2A_SHAPES];
 
 const CORE_SHAPES: &str = r##"
 # --- client.*, api.*, server.*, status, theme ---
@@ -458,7 +466,8 @@ api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: strin
 api.schema :: {method?: string} => {schema: object}
 server.status :: {}
   => {pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, preview?: object, timers?: object, db_size?: int, rss?: int}
-server.reload_config :: {} => {changed: [string], errors: [any]}
+# re-read config.toml (runtime overrides on top); errors leave the applied config in force; full scope only
+server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
 # with kill_panes false the holders keep running and the next server reattaches; full scope only
 server.stop :: {kill_panes?: bool = false} => {}
 session.snapshot :: {include?: [workspaces|tabs|panes|runs|interactions|tasks|previews|layouts|machines|groups|string]}
@@ -547,8 +556,9 @@ interaction.cancel :: {interaction: Target} => {interaction: Interaction}
 # --- tasks, worktrees ---
 task.list :: {status?: string, repo?: string} => {tasks: [Task]}
 task.get :: {task: Target} => {task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null}
-task.create :: {title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool}
+task.create :: {title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool, dry_run?: bool = false}
   => {task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun], copied?: [string], files?: [MaterializedFile], deps?: any, setup?: {pane: string|null, status: string|null, agents_pending: bool, commands: [{source: string, command: string}]}, warnings?: [string]}
+  | {dry_run: true, title: string, repo_root: string, slug: string, plan: object, agents: any, setup: bool}
 task.setup :: {task: Target, setup_script?: string} => {task: string, started: bool, pane: string|null, setup_status: string|null, commands: [{source: string, command: string}], needs_trust: bool}
 task.pr :: {task: Target, refresh?: bool = false} => {task: string, pr: PrLookup}
 task.reconcile :: {repo?: string} => {reports: [{repo: string, missing: [{task_id: string, path: string, reason: string}], branch_moved: [{task_id: string, path: string, expected: string|null, actual: string|null}], orphans: [{path: string, kind: string, branch: string|null}]}]}
@@ -556,7 +566,9 @@ task.finish :: {task: Target, remove_worktree?: ask|bool = false, force?: bool =
 worktree.list :: {repo?: string, cwd?: string} => {worktrees: [{path: string, branch: string|null, head: string, task?: string|null, workspace?: string|null, locked: bool, prunable: bool}]}
 worktree.create :: {repo?: string, cwd?: string, branch: string, path?: string, base?: string, open?: bool, focus?: bool = false} => {worktree: any, workspace?: Workspace}
 worktree.open :: {path: string, focus?: bool = false} => {workspace: Workspace}
-worktree.remove :: {path: string, force?: bool = false} => {job: any}
+# with dry_run nothing is removed: the result says whether it would proceed
+worktree.remove :: {path: string, force?: bool = false, dry_run?: bool = false}
+  => {job: any} | {dry_run: true, path: string, branch: string|null, dirty_files: int, unpushed_commits: int, would_remove: bool, force: bool}
 worktree.repo_root :: {cwd: string} => {repo_root: string, vcs: string}
 
 # --- layouts, notes, notifications, blobs, search ---
@@ -800,12 +812,59 @@ sandbox.status :: {} => {levels: [{level: string, available: bool, detail?: any,
 sandbox.stop :: {task: Target} => {state: string}
 "##;
 
+/// Batch 2A API surface (07 §2.1, §2.2, §2.6, §2.10, §2.14, §2.15): `session_api`, `config_api`,
+/// `blob_api`, `pane_api` and `task_park`.
+const BATCH_2A_SHAPES: &str = r##"
+# --- session.* (runtime-dir scan; create spawns a server; create/stop/rename full scope only) ---
+session.list :: {} => {sessions: [SessionEntry]}
+session.create :: {name: string} => {session: SessionEntry}
+session.stop :: {name: string, kill_panes?: bool = false} => {session: object, stopped: bool}
+# only a stopped session without live holders can be renamed (conflict session_running | holders_live | name_taken)
+session.rename :: {name: string, new_name: string} => {session: SessionEntry, previous_name: string}
+# exec the server binary in place (holders keep running, the pid stays); full scope only
+server.restart :: {binary?: string} => {new_pid: int, binary: string}
+
+# --- config.* (source: default | user | runtime) ---
+config.get :: {key?: string}
+  => {key?: string, value: any, source: default|user|runtime, path: string, overrides: [string], errors: [ConfigDiagnostic]}
+# runtime override unless persist (written to config.toml atomically, comments kept); value null resets the key; full scope only
+config.set :: {key: string, value: any, persist?: bool = false}
+  => {key: string, value: any, persisted: bool, path: string, changed: [string]}
+config.validate :: {path?: string} => {path: string, valid: bool, errors: [ConfigDiagnostic], warnings: [ConfigWarning]}
+# same as server.reload_config; full scope only
+config.reload :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
+
+# --- blob.* (blake3 hashes; session blob store and pane inbox) ---
+blob.get :: {hash: string, range?: {offset?: int, length?: int}}
+  => {hash: string, mime: string, size: int, offset: int, length: int, data_b64: string}
+blob.stat :: {hash: string} => {hash: string, mime: string, size: int, created_at: int, refs: int, path: string}
+
+# --- pane.move / scroll / screenshot ---
+pane.move :: {pane?: Target, to: {tab?: Target, workspace?: Target, new_tab_in?: Target}, direction?: right|down|left|up = right, anchor?: Target, position?: {pane?: Target, direction?: string}, focus?: bool = false}
+  => {pane: Pane, tab: Tab, previous_pane_handle: string, source_tab_closed: bool}
+# asks attached clients to scroll their view (event pane.scroll_requested); offset = rows above the live screen
+pane.scroll :: {pane?: Target, to?: bottom|top|line, line?: int, delta?: int, client?: string}
+  => {scroll: {offset: int, total: int, at_bottom: bool}}
+pane.screenshot :: {pane?: Target, format?: text|ansi|html|png|svg = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}
+  => {blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, cursor?: {row: int, col: int, visible: bool}, data?: string}
+
+# --- task.park / resume (full scope only) ---
+task.park :: {task: Target} => {task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}
+task.resume :: {task: Target} => {task: Task, resumed: [AgentRun], skipped: [{run: string, reason: string}]}
+"##;
+
 /// `type :: subject => data` for every event type the server emits.
 pub const EVENT_SHAPES: &str = r##"
 # type :: subject => data. Subjects name the objects an event is about (the `subjects` filter of
 # events.subscribe matches these keys); data is the type-specific payload. Unlisted fields may
 # appear (clients ignore unknown fields); high-frequency signals are not events.
 session.server_restarted :: {} => {recovered_panes?: int, pid?: int, prev_pid?: int}
+session.config_reloaded :: {} => {changed_keys: [string], new_panes_only: [string], source: watch|api|set|set_persist}
+session.config_rejected :: {} => {errors: [ConfigDiagnostic], source: watch}
+security.rate_limited :: {pane: string} => {method: string, limit: requests|spawn|depth|descendants}
+pane.scroll_requested :: {pane: string, tab?: string, workspace?: string} => {offset: int, total: int, client: string|null}
+task.parked :: {task: string} => {runs: int, attached?: bool}
+task.resumed :: {task: string} => {runs: int, skipped: int}
 group.created :: {group: string} => {name: string, parent: string|null}
 group.renamed :: {group: string} => {name: string}
 group.moved :: {group: string} => {parent: string|null, index: int}

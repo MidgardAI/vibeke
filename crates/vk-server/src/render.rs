@@ -452,6 +452,15 @@ impl Session {
         f: ClientFrame,
         wr: &mut W,
     ) -> Result<bool> {
+        let f = match crate::session_api::readonly_filter(&self.client_id, f) {
+            Ok(f) => f,
+            Err(reply) => {
+                if let Some(r) = reply {
+                    asyncio::write_frame(wr, &r).await?;
+                }
+                return Ok(true);
+            }
+        };
         match f {
             ClientFrame::Ack { pane, epoch, rev } => {
                 if let Some(v) = self.views.get_mut(&pane)

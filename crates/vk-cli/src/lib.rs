@@ -8,6 +8,7 @@ pub mod client;
 pub mod compat;
 pub mod mcp;
 pub mod show;
+pub mod verbs;
 
 use anyhow::Result;
 use client::{CallError, Client};
@@ -63,6 +64,63 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &[],
         "full session state",
     ),
+    (
+        "session",
+        "list",
+        "session.list",
+        &[],
+        "sessions in the runtime and state dirs",
+    ),
+    (
+        "session",
+        "new",
+        "session.create",
+        &["name"],
+        "<name>: start a server for a new session",
+    ),
+    (
+        "session",
+        "stop",
+        "session.stop",
+        &["name"],
+        "<name> [--kill-panes]",
+    ),
+    (
+        "session",
+        "rename",
+        "session.rename",
+        &["name", "new_name"],
+        "<old> <new> (stopped sessions only)",
+    ),
+    (
+        "config",
+        "get",
+        "config.get",
+        &["key"],
+        "[key] effective value and its source (default|user|runtime)",
+    ),
+    (
+        "config",
+        "set",
+        "config.set",
+        &["key", "value"],
+        "<key> <value> [--persist]  (null resets; --persist writes config.toml, comments kept)",
+    ),
+    (
+        "config",
+        "reload",
+        "config.reload",
+        &[],
+        "re-read config.toml",
+    ),
+    (
+        "blob",
+        "get",
+        "blob.get",
+        &["hash"],
+        "<hash> [--range '{\"offset\":0,\"length\":N}'] [--out file]",
+    ),
+    ("blob", "stat", "blob.stat", &["hash"], "<hash>"),
     (
         "workspace",
         "list",
@@ -181,6 +239,27 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     ("pane", "mark-unread", "pane.mark_unread", &["pane"], ""),
     ("pane", "pin", "pane.pin", &["pane"], ""),
+    (
+        "pane",
+        "move",
+        "pane.move",
+        &["pane"],
+        "[pane] --to-tab t | --to-workspace w | --new-tab-in w [--direction right] [--anchor p] [--focus]",
+    ),
+    (
+        "pane",
+        "scroll",
+        "pane.scroll",
+        &["pane", "to"],
+        "[pane] bottom|top|line [--line n] | --delta n",
+    ),
+    (
+        "pane",
+        "screenshot",
+        "pane.screenshot",
+        &["pane"],
+        "[pane] [--format ansi|text|html] [--source visible|recent] [--out file]",
+    ),
     (
         "agent",
         "list",
@@ -329,6 +408,20 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "[--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree|jj_workspace|none|auto] [--yolo] [--isolate host|sandbox|container] [--network none|harness-apis|package-registries|dev|open] [--image ref] [--code clone|worktree] [--devcontainer] [--build]",
     ),
     ("task", "list", "task.list", &[], ""),
+    (
+        "task",
+        "park",
+        "task.park",
+        &["task"],
+        "<task> stop its agents gracefully, keep the worktree",
+    ),
+    (
+        "task",
+        "resume",
+        "task.resume",
+        &["task"],
+        "<task> restart the parked agents from their sessions",
+    ),
     (
         "task",
         "sync",
@@ -569,7 +662,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "remove",
         "worktree.remove",
         &["path"],
-        "[--force] (async)",
+        "[--force] [--dry-run] (async)",
     ),
     ("worktree", "repo-root", "worktree.repo_root", &["cwd"], ""),
     (
@@ -1366,6 +1459,31 @@ fn adjust(method: &str, p: &mut Value) {
         o.insert("pane".into(), json!("@current"));
     }
     match method {
+        "pane.move" => {
+            let mut to = Map::new();
+            for (flag, key) in [
+                ("to_tab", "tab"),
+                ("to_workspace", "workspace"),
+                ("new_tab_in", "new_tab_in"),
+            ] {
+                if let Some(v) = o.remove(flag) {
+                    let v = match v {
+                        Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    to.insert(key.into(), Value::String(v));
+                }
+            }
+            if !to.is_empty() {
+                o.insert("to".into(), Value::Object(to));
+            }
+        }
+        "config.set" => {
+            // `config set key null` resets the key to its default.
+            if o.get("value").and_then(Value::as_str) == Some("null") {
+                o.insert("value".into(), Value::Null);
+            }
+        }
         "browser.open" => {
             if let Some(Value::String(t)) = o.remove("target") {
                 let k = if t.contains("://") { "url" } else { "preview" };
@@ -1844,7 +1962,12 @@ where
     // a temp file and opens it.
     let images = matches!(
         method,
-        "browser.screenshot" | "browser.diff" | "screenshot.get" | "screenshot.open"
+        "browser.screenshot"
+            | "browser.diff"
+            | "screenshot.get"
+            | "screenshot.open"
+            | "blob.get"
+            | "pane.screenshot"
     );
     let mut out = images
         .then(|| params.as_object_mut().and_then(|o| o.remove("out")))
@@ -1876,7 +1999,13 @@ where
                     .as_object_mut()
                     .and_then(|o| o.remove("data_b64"))
                     .and_then(|d| d.as_str().map(str::to_string))
-                    .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+                    .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+                    // `pane.screenshot {inline}` returns the capture as text.
+                    .or_else(|| {
+                        v.as_object_mut()
+                            .and_then(|o| o.remove("data"))
+                            .and_then(|d| d.as_str().map(|t| t.as_bytes().to_vec()))
+                    });
                 match data {
                     Some(bytes) => {
                         if let Err(e) = std::fs::write(path, bytes) {

@@ -203,6 +203,12 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         .iter()
         .find(|m| m.label == target.label)
         .is_some_and(|m| m.auto_upgrade);
+    let remote_download = cfg
+        .remote
+        .machine
+        .iter()
+        .find(|m| m.label == target.label)
+        .is_some_and(|m| m.bootstrap == vk_config::Bootstrap::RemoteDownload);
     eprintln!("vibeke: probing {} …", target.address);
     let probe = match bootstrap::probe(&target).await {
         Ok(p) => p,
@@ -211,7 +217,11 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             return EXIT_API;
         }
     };
-    let artifact = artifact_for(&probe.target());
+    let artifact = if remote_download {
+        None
+    } else {
+        artifact_for(&probe.target())
+    };
     if let Some(a) = &artifact
         && a.trust != bootstrap::Trust::Signed
     {
@@ -220,7 +230,12 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
             bootstrap::unsigned_warning(&a.path, &a.sha256)
         );
     }
-    match bootstrap::ensure(&target, &probe, artifact.as_ref(), upgrade || auto_upgrade).await {
+    let ensured = if remote_download {
+        ensure_via_download(&target, &probe, upgrade || auto_upgrade).await
+    } else {
+        bootstrap::ensure(&target, &probe, artifact.as_ref(), upgrade || auto_upgrade).await
+    };
+    match ensured {
         Ok(bootstrap::Outcome::AlreadyCurrent) => {}
         Ok(o) => {
             eprintln!(
@@ -571,6 +586,45 @@ async fn machine_disconnect(g: &Global, args: &[String]) -> i32 {
         },
     );
     EXIT_OK
+}
+
+/// `bootstrap = "remote-download"`: fetch and verify the signed release manifest here (never
+/// unsigned: the opt-in does not apply, there is no local file to checksum), then let the
+/// remote download the binary and check the manifest's sha256. `GITHUB_TOKEN` /
+/// `VIBEKE_GITHUB_TOKEN` (private release repo) is used for the manifest and the asset lookup
+/// on this machine, and sent to the remote only on stdin, never on a command line.
+async fn ensure_via_download(
+    target: &Target,
+    probe: &bootstrap::Probe,
+    upgrade_ok: bool,
+) -> anyhow::Result<bootstrap::Outcome> {
+    use vk_remote::download;
+    let base = download::release_base_url(vk_proto::VERSION);
+    let token = download::github_token();
+    let api = download::github_api_base();
+    let (t2, base2) = (token.clone(), base.clone());
+    let (manifest, sig) = tokio::task::spawn_blocking(move || {
+        let manifest = download::fetch(&format!("{base2}/manifest.json"), t2.as_ref(), &api)?;
+        let sig = download::fetch(&format!("{base2}/manifest.json.minisig"), t2.as_ref(), &api)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "no manifest.json.minisig ({e}); expected a signature by {}",
+                    bootstrap::expected_keys_hint()
+                )
+            })?;
+        anyhow::Ok((manifest, sig))
+    })
+    .await??;
+    let m = bootstrap::verify_manifest(&manifest, &String::from_utf8_lossy(&sig))
+        .map_err(|e| anyhow::anyhow!("release manifest from {base} is not trusted: {e}"))?;
+    if m.version != vk_proto::VERSION {
+        anyhow::bail!(
+            "release manifest is for vibeke {}, this is {}",
+            m.version,
+            vk_proto::VERSION
+        );
+    }
+    bootstrap::ensure_download(target, probe, &m, token.as_ref(), upgrade_ok).await
 }
 
 /// `vibeke machine upgrade <m> [--from <artifact> [--version v]] [--stage-only] [--force]`:

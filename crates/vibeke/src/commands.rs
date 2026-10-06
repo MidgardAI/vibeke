@@ -20,7 +20,10 @@ pub fn load_config() -> vk_config::Config {
 
 // ---- attach ---------------------------------------------------------------------------------
 
-pub async fn attach(g: &Global, _args: &[String]) -> i32 {
+pub async fn attach(g: &Global, args: &[String]) -> i32 {
+    // `--readonly`: watch without input (07 §5.3); the server refuses this client's input and
+    // mutating commands.
+    let readonly = args.iter().any(|a| a == "--readonly" || a == "--read-only");
     if let Some(m) = &g.machine {
         // `vibeke --machine host attach` attaches to that machine (with the remote focused).
         return crate::remote::ssh(g, std::slice::from_ref(m)).await;
@@ -40,8 +43,10 @@ pub async fn attach(g: &Global, _args: &[String]) -> i32 {
         eprintln!("{e:#}");
         return vk_cli::EXIT_NO_SERVER;
     }
-    let mut specs = vec![local_spec(&g.session, socket.clone())];
-    specs.extend(crate::remote_specs(&config, g));
+    let mut specs = vec![local_spec_with(&g.session, socket.clone(), readonly)];
+    if !readonly {
+        specs.extend(crate::remote_specs(&config, g));
+    }
     let opts = vk_tui::app::Opts {
         session: g.session.clone(),
         config,
@@ -64,6 +69,27 @@ pub async fn attach(g: &Global, _args: &[String]) -> i32 {
 }
 
 pub fn local_spec(session: &str, socket: PathBuf) -> vk_tui::app::MachineSpec {
+    local_spec_with(session, socket, false)
+}
+
+/// Say `client.hello {readonly: true}` on a fresh connection before the TUI uses it. Reads the
+/// response byte by byte so nothing after it is consumed.
+async fn readonly_prelude(mut s: tokio::net::UnixStream) -> anyhow::Result<tokio::net::UnixStream> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let hello = json!({"jsonrpc": "2.0", "id": "readonly-hello", "method": "client.hello", "params": {"client": "vibeke-tui", "version": vk_proto::VERSION, "api": vk_proto::API_VERSION, "kind": "tui", "readonly": true}});
+    s.write_all(format!("{hello}\n").as_bytes()).await?;
+    let mut b = [0u8; 1];
+    loop {
+        if s.read(&mut b).await? == 0 {
+            anyhow::bail!("server closed the connection");
+        }
+        if b[0] == b'\n' {
+            return Ok(s);
+        }
+    }
+}
+
+pub fn local_spec_with(session: &str, socket: PathBuf, readonly: bool) -> vk_tui::app::MachineSpec {
     let session = session.to_string();
     vk_tui::app::MachineSpec {
         label: hostname(),
@@ -72,7 +98,10 @@ pub fn local_spec(session: &str, socket: PathBuf) -> vk_tui::app::MachineSpec {
             let socket = socket.clone();
             let session = session.clone();
             Box::pin(async move {
-                let s = client::connect_or_spawn(&session, &socket, false).await?;
+                let mut s = client::connect_or_spawn(&session, &socket, false).await?;
+                if readonly {
+                    s = readonly_prelude(s).await?;
+                }
                 Ok(Box::new(s) as vk_tui::app::Stream)
             })
         }),
@@ -98,6 +127,8 @@ pub fn hostname() -> String {
 pub async fn server(g: &Global, args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         None | Some("start") | Some("--foreground") | Some("run") => run_server(g).await,
+        // Local: the server execs itself (`server.restart`, holders untouched, same pid).
+        Some("restart") if g.machine.is_none() => restart_local(g, &args[1..]).await,
         Some("restart") => {
             let _ = crate::with_client(g, |mut c| async move {
                 vk_cli::run_api(&mut c, g, "server.stop", json!({})).await
@@ -156,6 +187,78 @@ pub async fn server(g: &Global, args: &[String]) -> i32 {
                 .await
             }
         }
+    }
+}
+
+/// `vibeke server restart [--binary PATH]`: `server.restart`, then wait until the new image
+/// answers.
+async fn restart_local(g: &Global, args: &[String]) -> i32 {
+    let params = match vk_cli::build_params(&[], args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}\nvibeke server restart [--binary PATH]");
+            return EXIT_USAGE;
+        }
+    };
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let s = match client::connect(&socket).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("server not running: {e:#}");
+            return vk_cli::EXIT_NO_SERVER;
+        }
+    };
+    let mut c = Client::new(s);
+    let before = match c.hello("cli").await {
+        Ok(_) => c
+            .call("server.status", json!({}))
+            .await
+            .ok()
+            .and_then(|v| v["uptime_ms"].as_u64()),
+        Err(e) => {
+            vk_cli::print_error(&e);
+            return vk_cli::exit_code_for(&e);
+        }
+    };
+    let r = match c.call("server.restart", params).await {
+        Ok(r) => r,
+        Err(e) => {
+            vk_cli::print_error(&e);
+            return vk_cli::exit_code_for(&e);
+        }
+    };
+    drop(c);
+    // The same pid comes back with a fresh uptime once the new image serves.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Ok(s) = client::connect(&socket).await {
+            let mut c = Client::new(s);
+            if c.hello("cli").await.is_ok()
+                && let Ok(st) = c.call("server.status", json!({})).await
+                && st["uptime_ms"].as_u64() < before
+            {
+                if g.json == Some(true) || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                    println!(
+                        "{}",
+                        json!({"restarted": true, "pid": st["pid"], "binary": r["binary"], "panes": st["panes"]})
+                    );
+                } else {
+                    println!(
+                        "server restarted (pid {}, {} panes)",
+                        st["pid"], st["panes"]
+                    );
+                }
+                return EXIT_OK;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            eprintln!(
+                "server did not come back within 15 s (see {})",
+                Paths::new(&g.session).logs().join("server.log").display()
+            );
+            return EXIT_API;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 

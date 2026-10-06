@@ -34,6 +34,11 @@ fn tables() -> Vec<&'static [(&'static str, bool)]> {
         crate::notify::METHODS,
         crate::theme::METHODS,
         crate::layouts::METHODS,
+        crate::session_api::METHODS,
+        crate::config_api::METHODS,
+        crate::blob_api::METHODS,
+        crate::pane_api::METHODS,
+        crate::task_park::METHODS,
     ]
 }
 
@@ -57,6 +62,9 @@ const CONDITIONAL_DENIALS: &[(&str, &str)] = &[(
 fn init_env() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
+        // The sweep calls hundreds of methods with one pane token: test authorization, not
+        // the request budget (limits.rs has its own tests).
+        crate::limits::UNLIMITED.store(true, std::sync::atomic::Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!("vk-scope-tests-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         // SAFETY: set once, before any server in this test binary reads them.

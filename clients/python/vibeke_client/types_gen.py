@@ -145,6 +145,19 @@ BrowserSession = TypedDict("BrowserSession", {
     "title": NotRequired[str],
 })
 
+ConfigDiagnostic = TypedDict("ConfigDiagnostic", {
+    "line": int,
+    "col": int,
+    "message": str,
+})
+
+ConfigWarning = TypedDict("ConfigWarning", {
+    "key": str,
+    "line": Optional[int],
+    "col": Optional[int],
+    "message": str,
+})
+
 Cursor = TypedDict("Cursor", {
     "machine_uuid": str,
     "session_uuid": str,
@@ -414,6 +427,15 @@ ScreenshotMeta = TypedDict("ScreenshotMeta", {
     "blob": NotRequired[str],
     "environment": NotRequired[Dict[str, Any]],
     "code": NotRequired[Dict[str, Any]],
+})
+
+SessionEntry = TypedDict("SessionEntry", {
+    "name": str,
+    "running": bool,
+    "socket": str,
+    "state": str,
+    "current": bool,
+    "pid": NotRequired[int],
 })
 
 Tab = TypedDict("Tab", {
@@ -1070,6 +1092,25 @@ BlobCommitResult = TypedDict("BlobCommitResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+BlobGetParamsRange = TypedDict("BlobGetParamsRange", {
+    "offset": NotRequired[int],
+    "length": NotRequired[int],
+})
+
+BlobGetParams = TypedDict("BlobGetParams", {
+    "hash": str,
+    "range": NotRequired["BlobGetParamsRange"],
+})
+
+BlobGetResult = TypedDict("BlobGetResult", {
+    "hash": str,
+    "mime": str,
+    "size": int,
+    "offset": int,
+    "length": int,
+    "data_b64": str,
+})
+
 BlobPutParams = TypedDict("BlobPutParams", {
     "mime": str,
     "data_b64": NotRequired[str],
@@ -1080,6 +1121,19 @@ BlobPutResult = TypedDict("BlobPutResult", {
     "hash": str,
     "size": int,
     "cursor": NotRequired["Cursor"],
+})
+
+BlobStatParams = TypedDict("BlobStatParams", {
+    "hash": str,
+})
+
+BlobStatResult = TypedDict("BlobStatResult", {
+    "hash": str,
+    "mime": str,
+    "size": int,
+    "created_at": int,
+    "refs": int,
+    "path": str,
 })
 
 BrowserAttachScreencastParams = TypedDict("BrowserAttachScreencastParams", {
@@ -2017,6 +2071,54 @@ CompatUiStateResult = TypedDict("CompatUiStateResult", {
     "agent_views": List["CompatUiStateResultAgentViewsItem"],
 })
 
+ConfigGetParams = TypedDict("ConfigGetParams", {
+    "key": NotRequired[str],
+})
+
+ConfigGetResult = TypedDict("ConfigGetResult", {
+    "key": NotRequired[str],
+    "value": Any,
+    "source": Literal["default", "user", "runtime"],
+    "path": str,
+    "overrides": List[str],
+    "errors": List["ConfigDiagnostic"],
+})
+
+ConfigReloadParams: TypeAlias = Dict[str, Any]
+
+ConfigReloadResult = TypedDict("ConfigReloadResult", {
+    "changed": List[str],
+    "errors": List["ConfigDiagnostic"],
+    "warnings": NotRequired[List["ConfigWarning"]],
+    "cursor": NotRequired["Cursor"],
+})
+
+ConfigSetParams = TypedDict("ConfigSetParams", {
+    "key": str,
+    "value": Any,
+    "persist": NotRequired[bool],
+})
+
+ConfigSetResult = TypedDict("ConfigSetResult", {
+    "key": str,
+    "value": Any,
+    "persisted": bool,
+    "path": str,
+    "changed": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+ConfigValidateParams = TypedDict("ConfigValidateParams", {
+    "path": NotRequired[str],
+})
+
+ConfigValidateResult = TypedDict("ConfigValidateResult", {
+    "path": str,
+    "valid": bool,
+    "errors": List["ConfigDiagnostic"],
+    "warnings": List["ConfigWarning"],
+})
+
 DeskContextParams = TypedDict("DeskContextParams", {
     "session": str,
     "turns": NotRequired[Union[List[int], str]],
@@ -2832,6 +2934,34 @@ PaneMarkUnreadResult = TypedDict("PaneMarkUnreadResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PaneMoveParamsTo = TypedDict("PaneMoveParamsTo", {
+    "tab": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "new_tab_in": NotRequired["Target"],
+})
+
+PaneMoveParamsPosition = TypedDict("PaneMoveParamsPosition", {
+    "pane": NotRequired["Target"],
+    "direction": NotRequired[str],
+})
+
+PaneMoveParams = TypedDict("PaneMoveParams", {
+    "pane": NotRequired["Target"],
+    "to": "PaneMoveParamsTo",
+    "direction": NotRequired[Literal["right", "down", "left", "up"]],
+    "anchor": NotRequired["Target"],
+    "position": NotRequired["PaneMoveParamsPosition"],
+    "focus": NotRequired[bool],
+})
+
+PaneMoveResult = TypedDict("PaneMoveResult", {
+    "pane": "Pane",
+    "tab": "Tab",
+    "previous_pane_handle": str,
+    "source_tab_closed": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
 PanePinParams = TypedDict("PanePinParams", {
     "pane": NotRequired["Target"],
     "pinned": bool,
@@ -2933,6 +3063,59 @@ PaneRunParams = TypedDict("PaneRunParams", {
 PaneRunResult = TypedDict("PaneRunResult", {
     "exit_code": NotRequired[Optional[int]],
     "output_tail": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+PaneScreenshotParams = TypedDict("PaneScreenshotParams", {
+    "pane": NotRequired["Target"],
+    "format": NotRequired[Literal["text", "ansi", "html", "png", "svg"]],
+    "source": NotRequired[Literal["visible", "recent"]],
+    "lines": NotRequired[int],
+    "include_cursor": NotRequired[bool],
+    "inline": NotRequired[bool],
+})
+
+PaneScreenshotResultBlob = TypedDict("PaneScreenshotResultBlob", {
+    "hash": str,
+    "size": int,
+    "mime": str,
+    "path": str,
+})
+
+PaneScreenshotResultCursor = TypedDict("PaneScreenshotResultCursor", {
+    "row": int,
+    "col": int,
+    "visible": bool,
+})
+
+PaneScreenshotResult = TypedDict("PaneScreenshotResult", {
+    "blob": "PaneScreenshotResultBlob",
+    "format": str,
+    "source": str,
+    "cols": int,
+    "rows": int,
+    "lines": int,
+    "revision": int,
+    "cursor": NotRequired["PaneScreenshotResultCursor"],
+    "data": NotRequired[str],
+})
+
+PaneScrollParams = TypedDict("PaneScrollParams", {
+    "pane": NotRequired["Target"],
+    "to": NotRequired[Literal["bottom", "top", "line"]],
+    "line": NotRequired[int],
+    "delta": NotRequired[int],
+    "client": NotRequired[str],
+})
+
+PaneScrollResultScroll = TypedDict("PaneScrollResultScroll", {
+    "offset": int,
+    "total": int,
+    "at_bottom": bool,
+})
+
+PaneScrollResult = TypedDict("PaneScrollResult", {
+    "scroll": "PaneScrollResultScroll",
     "cursor": NotRequired["Cursor"],
 })
 
@@ -3693,7 +3876,18 @@ ServerReloadConfigParams: TypeAlias = Dict[str, Any]
 
 ServerReloadConfigResult = TypedDict("ServerReloadConfigResult", {
     "changed": List[str],
-    "errors": List[Any],
+    "errors": List["ConfigDiagnostic"],
+    "warnings": NotRequired[List["ConfigWarning"]],
+    "cursor": NotRequired["Cursor"],
+})
+
+ServerRestartParams = TypedDict("ServerRestartParams", {
+    "binary": NotRequired[str],
+})
+
+ServerRestartResult = TypedDict("ServerRestartResult", {
+    "new_pid": int,
+    "binary": str,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -3730,6 +3924,32 @@ ServerStopResult = TypedDict("ServerStopResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+SessionCreateParams = TypedDict("SessionCreateParams", {
+    "name": str,
+})
+
+SessionCreateResult = TypedDict("SessionCreateResult", {
+    "session": "SessionEntry",
+    "cursor": NotRequired["Cursor"],
+})
+
+SessionListParams: TypeAlias = Dict[str, Any]
+
+SessionListResult = TypedDict("SessionListResult", {
+    "sessions": List["SessionEntry"],
+})
+
+SessionRenameParams = TypedDict("SessionRenameParams", {
+    "name": str,
+    "new_name": str,
+})
+
+SessionRenameResult = TypedDict("SessionRenameResult", {
+    "session": "SessionEntry",
+    "previous_name": str,
+    "cursor": NotRequired["Cursor"],
+})
+
 SessionSnapshotParams = TypedDict("SessionSnapshotParams", {
     "include": NotRequired[List[Union[Literal["workspaces"], Literal["tabs"], Literal["panes"], Literal["runs"], Literal["interactions"], Literal["tasks"], Literal["previews"], Literal["layouts"], Literal["machines"], Literal["groups"], str]]],
 })
@@ -3752,6 +3972,17 @@ SessionSnapshotResult = TypedDict("SessionSnapshotResult", {
     "previews": NotRequired[List["Preview"]],
     "layouts": NotRequired[List[Any]],
     "focused": NotRequired[Dict[str, "SessionSnapshotResultFocusedValue"]],
+})
+
+SessionStopParams = TypedDict("SessionStopParams", {
+    "name": str,
+    "kill_panes": NotRequired[bool],
+})
+
+SessionStopResult = TypedDict("SessionStopResult", {
+    "session": Dict[str, Any],
+    "stopped": bool,
+    "cursor": NotRequired["Cursor"],
 })
 
 StatusSegmentsParams = TypedDict("StatusSegmentsParams", {
@@ -3936,21 +4167,22 @@ TaskCreateParams = TypedDict("TaskCreateParams", {
     "root": NotRequired[str],
     "branch_template": NotRequired[str],
     "fetch": NotRequired[bool],
+    "dry_run": NotRequired[bool],
 })
 
-TaskCreateResultSetupCommandsItem = TypedDict("TaskCreateResultSetupCommandsItem", {
+TaskCreateResultXV0SetupCommandsItem = TypedDict("TaskCreateResultXV0SetupCommandsItem", {
     "source": str,
     "command": str,
 })
 
-TaskCreateResultSetup = TypedDict("TaskCreateResultSetup", {
+TaskCreateResultXV0Setup = TypedDict("TaskCreateResultXV0Setup", {
     "pane": Optional[str],
     "status": Optional[str],
     "agents_pending": bool,
-    "commands": List["TaskCreateResultSetupCommandsItem"],
+    "commands": List["TaskCreateResultXV0SetupCommandsItem"],
 })
 
-TaskCreateResult = TypedDict("TaskCreateResult", {
+TaskCreateResultXV0 = TypedDict("TaskCreateResultXV0", {
     "task": "Task",
     "workspace": "Workspace",
     "panes": List["Pane"],
@@ -3958,10 +4190,23 @@ TaskCreateResult = TypedDict("TaskCreateResult", {
     "copied": NotRequired[List[str]],
     "files": NotRequired[List["MaterializedFile"]],
     "deps": NotRequired[Any],
-    "setup": NotRequired["TaskCreateResultSetup"],
+    "setup": NotRequired["TaskCreateResultXV0Setup"],
     "warnings": NotRequired[List[str]],
     "cursor": NotRequired["Cursor"],
 })
+
+TaskCreateResultXV1 = TypedDict("TaskCreateResultXV1", {
+    "dry_run": Literal[True],
+    "title": str,
+    "repo_root": str,
+    "slug": str,
+    "plan": Dict[str, Any],
+    "agents": Any,
+    "setup": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskCreateResult: TypeAlias = Union["TaskCreateResultXV0", "TaskCreateResultXV1"]
 
 TaskDependencyAddParams = TypedDict("TaskDependencyAddParams", {
     "task": "Target",
@@ -4111,6 +4356,27 @@ TaskListResult = TypedDict("TaskListResult", {
     "tasks": List["Task"],
 })
 
+TaskParkParams = TypedDict("TaskParkParams", {
+    "task": "Target",
+})
+
+TaskParkResultStoppedItem = TypedDict("TaskParkResultStoppedItem", {
+    "run": str,
+    "handle": str,
+    "pane": str,
+    "harness": str,
+    "name": Optional[str],
+    "pane_closed": bool,
+    "resumable": bool,
+})
+
+TaskParkResult = TypedDict("TaskParkResult", {
+    "task": "Task",
+    "stopped": List["TaskParkResultStoppedItem"],
+    "note": NotRequired[str],
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskPrParams = TypedDict("TaskPrParams", {
     "task": "Target",
     "refresh": NotRequired[bool],
@@ -4153,6 +4419,22 @@ TaskReconcileResultReportsItem = TypedDict("TaskReconcileResultReportsItem", {
 
 TaskReconcileResult = TypedDict("TaskReconcileResult", {
     "reports": List["TaskReconcileResultReportsItem"],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskResumeParams = TypedDict("TaskResumeParams", {
+    "task": "Target",
+})
+
+TaskResumeResultSkippedItem = TypedDict("TaskResumeResultSkippedItem", {
+    "run": str,
+    "reason": str,
+})
+
+TaskResumeResult = TypedDict("TaskResumeResult", {
+    "task": "Task",
+    "resumed": List["AgentRun"],
+    "skipped": List["TaskResumeResultSkippedItem"],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4582,12 +4864,26 @@ WorktreeOpenResult = TypedDict("WorktreeOpenResult", {
 WorktreeRemoveParams = TypedDict("WorktreeRemoveParams", {
     "path": str,
     "force": NotRequired[bool],
+    "dry_run": NotRequired[bool],
 })
 
-WorktreeRemoveResult = TypedDict("WorktreeRemoveResult", {
+WorktreeRemoveResultXV0 = TypedDict("WorktreeRemoveResultXV0", {
     "job": Any,
     "cursor": NotRequired["Cursor"],
 })
+
+WorktreeRemoveResultXV1 = TypedDict("WorktreeRemoveResultXV1", {
+    "dry_run": Literal[True],
+    "path": str,
+    "branch": Optional[str],
+    "dirty_files": int,
+    "unpushed_commits": int,
+    "would_remove": bool,
+    "force": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+WorktreeRemoveResult: TypeAlias = Union["WorktreeRemoveResultXV0", "WorktreeRemoveResultXV1"]
 
 WorktreeRepoRootParams = TypedDict("WorktreeRepoRootParams", {
     "cwd": str,
@@ -4639,7 +4935,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "blob.append": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.begin": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.commit": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "blob.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "blob.put": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "blob.stat": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.attach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.click": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.close": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -4680,6 +4978,10 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "compat.invocation.verify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "compat.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "compat.ui.state": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "config.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "config.reload": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "config.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "config.validate": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "desk.context": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "desk.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "desk.index": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -4741,6 +5043,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.mark_seen": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.mark_unread": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "pane.move": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.pin": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.rename": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
@@ -4748,6 +5051,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.report_agent_session": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.resize": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.run": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "pane.screenshot": {"mutating": False, "scope": "pane", "pane_scope": "own_target"},
+    "pane.scroll": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.send_bytes": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.send_text": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
@@ -4791,9 +5096,14 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "scrollback.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "search.query": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "server.reload_config": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "server.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "server.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "session.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "session.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -4815,8 +5125,10 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.finish": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.park": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -5492,6 +5804,18 @@ PaneScrollChangedData = TypedDict("PaneScrollChangedData", {
     "client": NotRequired[str],
 })
 
+PaneScrollRequestedSubject = TypedDict("PaneScrollRequestedSubject", {
+    "pane": str,
+    "tab": NotRequired[str],
+    "workspace": NotRequired[str],
+})
+
+PaneScrollRequestedData = TypedDict("PaneScrollRequestedData", {
+    "offset": int,
+    "total": int,
+    "client": Optional[str],
+})
+
 PaneSeenSubject = TypedDict("PaneSeenSubject", {
     "pane": str,
     "tab": NotRequired[str],
@@ -5816,6 +6140,30 @@ ScrollbackForgottenData = TypedDict("ScrollbackForgottenData", {
     "panes_dropped": int,
 })
 
+SecurityRateLimitedSubject = TypedDict("SecurityRateLimitedSubject", {
+    "pane": str,
+})
+
+SecurityRateLimitedData = TypedDict("SecurityRateLimitedData", {
+    "method": str,
+    "limit": Literal["requests", "spawn", "depth", "descendants"],
+})
+
+SessionConfigRejectedSubject: TypeAlias = Dict[str, Any]
+
+SessionConfigRejectedData = TypedDict("SessionConfigRejectedData", {
+    "errors": List["ConfigDiagnostic"],
+    "source": Literal["watch"],
+})
+
+SessionConfigReloadedSubject: TypeAlias = Dict[str, Any]
+
+SessionConfigReloadedData = TypedDict("SessionConfigReloadedData", {
+    "changed_keys": List[str],
+    "new_panes_only": List[str],
+    "source": Literal["watch", "api", "set", "set_persist"],
+})
+
 SessionServerRestartedSubject: TypeAlias = Dict[str, Any]
 
 SessionServerRestartedData = TypedDict("SessionServerRestartedData", {
@@ -5982,12 +6330,30 @@ TaskMissingData = TypedDict("TaskMissingData", {
     "hint": str,
 })
 
+TaskParkedSubject = TypedDict("TaskParkedSubject", {
+    "task": str,
+})
+
+TaskParkedData = TypedDict("TaskParkedData", {
+    "runs": int,
+    "attached": NotRequired[bool],
+})
+
 TaskRecoveredSubject = TypedDict("TaskRecoveredSubject", {
     "task": str,
 })
 
 TaskRecoveredData = TypedDict("TaskRecoveredData", {
     "path": Optional[str],
+})
+
+TaskResumedSubject = TypedDict("TaskResumedSubject", {
+    "task": str,
+})
+
+TaskResumedData = TypedDict("TaskResumedData", {
+    "runs": int,
+    "skipped": int,
 })
 
 TaskSetupFailedSubject = TypedDict("TaskSetupFailedSubject", {
@@ -6216,6 +6582,7 @@ EVENT_TYPES = (
     "pane.process_changed",
     "pane.recovered",
     "pane.scroll_changed",
+    "pane.scroll_requested",
     "pane.seen",
     "pane.title_changed",
     "paste.translated",
@@ -6246,6 +6613,9 @@ EVENT_TYPES = (
     "screenshot.captured",
     "screenshot.deleted",
     "scrollback.forgotten",
+    "security.rate_limited",
+    "session.config_rejected",
+    "session.config_reloaded",
     "session.server_restarted",
     "tab.closed",
     "tab.created",
@@ -6264,7 +6634,9 @@ EVENT_TYPES = (
     "task.message_prepared",
     "task.message_sending",
     "task.missing",
+    "task.parked",
     "task.recovered",
+    "task.resumed",
     "task.setup_failed",
     "task.setup_finished",
     "task.setup_started",

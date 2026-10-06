@@ -134,6 +134,19 @@ export type BrowserSession = {
   title?: string;
 };
 
+export type ConfigDiagnostic = {
+  line: number;
+  col: number;
+  message: string;
+};
+
+export type ConfigWarning = {
+  key: string;
+  line: number | null;
+  col: number | null;
+  message: string;
+};
+
 export type Cursor = {
   machine_uuid: string;
   session_uuid: string;
@@ -389,6 +402,15 @@ export type ScreenshotMeta = {
   blob?: string;
   environment?: Record<string, unknown>;
   code?: Record<string, unknown>;
+};
+
+export type SessionEntry = {
+  name: string;
+  running: boolean;
+  socket: string;
+  state: string;
+  current: boolean;
+  pid?: number;
 };
 
 export type Tab = {
@@ -1007,6 +1029,23 @@ export type BlobCommitResult = {
   cursor?: Cursor;
 };
 
+export type BlobGetParams = {
+  hash: string;
+  range?: {
+    offset?: number;
+    length?: number;
+  };
+};
+
+export type BlobGetResult = {
+  hash: string;
+  mime: string;
+  size: number;
+  offset: number;
+  length: number;
+  data_b64: string;
+};
+
 export type BlobPutParams = {
   mime: string;
   data_b64?: string;
@@ -1017,6 +1056,19 @@ export type BlobPutResult = {
   hash: string;
   size: number;
   cursor?: Cursor;
+};
+
+export type BlobStatParams = {
+  hash: string;
+};
+
+export type BlobStatResult = {
+  hash: string;
+  mime: string;
+  size: number;
+  created_at: number;
+  refs: number;
+  path: string;
 };
 
 export type BrowserAttachScreencastParams = {
@@ -1854,6 +1906,54 @@ export type CompatUiStateResult = {
   }[];
 };
 
+export type ConfigGetParams = {
+  key?: string;
+};
+
+export type ConfigGetResult = {
+  key?: string;
+  value: unknown;
+  source: "default" | "user" | "runtime";
+  path: string;
+  overrides: string[];
+  errors: ConfigDiagnostic[];
+};
+
+export type ConfigReloadParams = Record<string, unknown>;
+
+export type ConfigReloadResult = {
+  changed: string[];
+  errors: ConfigDiagnostic[];
+  warnings?: ConfigWarning[];
+  cursor?: Cursor;
+};
+
+export type ConfigSetParams = {
+  key: string;
+  value: unknown;
+  persist?: boolean;
+};
+
+export type ConfigSetResult = {
+  key: string;
+  value: unknown;
+  persisted: boolean;
+  path: string;
+  changed: string[];
+  cursor?: Cursor;
+};
+
+export type ConfigValidateParams = {
+  path?: string;
+};
+
+export type ConfigValidateResult = {
+  path: string;
+  valid: boolean;
+  errors: ConfigDiagnostic[];
+  warnings: ConfigWarning[];
+};
+
 export type DeskContextParams = {
   session: string;
   turns?: number[] | string;
@@ -2633,6 +2733,30 @@ export type PaneMarkUnreadResult = {
   cursor?: Cursor;
 };
 
+export type PaneMoveParams = {
+  pane?: Target;
+  to: {
+    tab?: Target;
+    workspace?: Target;
+    new_tab_in?: Target;
+  };
+  direction?: "right" | "down" | "left" | "up";
+  anchor?: Target;
+  position?: {
+    pane?: Target;
+    direction?: string;
+  };
+  focus?: boolean;
+};
+
+export type PaneMoveResult = {
+  pane: Pane;
+  tab: Tab;
+  previous_pane_handle: string;
+  source_tab_closed: boolean;
+  cursor?: Cursor;
+};
+
 export type PanePinParams = {
   pane?: Target;
   pinned: boolean;
@@ -2734,6 +2858,53 @@ export type PaneRunParams = {
 export type PaneRunResult = {
   exit_code?: number | null;
   output_tail?: string;
+  cursor?: Cursor;
+};
+
+export type PaneScreenshotParams = {
+  pane?: Target;
+  format?: "text" | "ansi" | "html" | "png" | "svg";
+  source?: "visible" | "recent";
+  lines?: number;
+  include_cursor?: boolean;
+  inline?: boolean;
+};
+
+export type PaneScreenshotResult = {
+  blob: {
+    hash: string;
+    size: number;
+    mime: string;
+    path: string;
+  };
+  format: string;
+  source: string;
+  cols: number;
+  rows: number;
+  lines: number;
+  revision: number;
+  cursor?: {
+    row: number;
+    col: number;
+    visible: boolean;
+  };
+  data?: string;
+};
+
+export type PaneScrollParams = {
+  pane?: Target;
+  to?: "bottom" | "top" | "line";
+  line?: number;
+  delta?: number;
+  client?: string;
+};
+
+export type PaneScrollResult = {
+  scroll: {
+    offset: number;
+    total: number;
+    at_bottom: boolean;
+  };
   cursor?: Cursor;
 };
 
@@ -3430,7 +3601,18 @@ export type ServerReloadConfigParams = Record<string, unknown>;
 
 export type ServerReloadConfigResult = {
   changed: string[];
-  errors: unknown[];
+  errors: ConfigDiagnostic[];
+  warnings?: ConfigWarning[];
+  cursor?: Cursor;
+};
+
+export type ServerRestartParams = {
+  binary?: string;
+};
+
+export type ServerRestartResult = {
+  new_pid: number;
+  binary: string;
   cursor?: Cursor;
 };
 
@@ -3465,6 +3647,32 @@ export type ServerStopResult = {
   cursor?: Cursor;
 };
 
+export type SessionCreateParams = {
+  name: string;
+};
+
+export type SessionCreateResult = {
+  session: SessionEntry;
+  cursor?: Cursor;
+};
+
+export type SessionListParams = Record<string, unknown>;
+
+export type SessionListResult = {
+  sessions: SessionEntry[];
+};
+
+export type SessionRenameParams = {
+  name: string;
+  new_name: string;
+};
+
+export type SessionRenameResult = {
+  session: SessionEntry;
+  previous_name: string;
+  cursor?: Cursor;
+};
+
 export type SessionSnapshotParams = {
   include?: ("workspaces" | "tabs" | "panes" | "runs" | "interactions" | "tasks" | "previews" | "layouts" | "machines" | "groups" | string)[];
 };
@@ -3485,6 +3693,17 @@ export type SessionSnapshotResult = {
     tab: string | null;
     pane: string | null;
   } };
+};
+
+export type SessionStopParams = {
+  name: string;
+  kill_panes?: boolean;
+};
+
+export type SessionStopResult = {
+  session: Record<string, unknown>;
+  stopped: boolean;
+  cursor?: Cursor;
 };
 
 export type StatusSegmentsParams = {
@@ -3665,6 +3884,7 @@ export type TaskCreateParams = {
   root?: string;
   branch_template?: string;
   fetch?: boolean;
+  dry_run?: boolean;
 };
 
 export type TaskCreateResult = {
@@ -3685,6 +3905,15 @@ export type TaskCreateResult = {
     }[];
   };
   warnings?: string[];
+  cursor?: Cursor;
+} | {
+  dry_run: true;
+  title: string;
+  repo_root: string;
+  slug: string;
+  plan: Record<string, unknown>;
+  agents: unknown;
+  setup: boolean;
   cursor?: Cursor;
 };
 
@@ -3808,6 +4037,25 @@ export type TaskListResult = {
   tasks: Task[];
 };
 
+export type TaskParkParams = {
+  task: Target;
+};
+
+export type TaskParkResult = {
+  task: Task;
+  stopped: {
+    run: string;
+    handle: string;
+    pane: string;
+    harness: string;
+    name: string | null;
+    pane_closed: boolean;
+    resumable: boolean;
+  }[];
+  note?: string;
+  cursor?: Cursor;
+};
+
 export type TaskPrParams = {
   task: Target;
   refresh?: boolean;
@@ -3841,6 +4089,20 @@ export type TaskReconcileResult = {
       kind: string;
       branch: string | null;
     }[];
+  }[];
+  cursor?: Cursor;
+};
+
+export type TaskResumeParams = {
+  task: Target;
+};
+
+export type TaskResumeResult = {
+  task: Task;
+  resumed: AgentRun[];
+  skipped: {
+    run: string;
+    reason: string;
   }[];
   cursor?: Cursor;
 };
@@ -4245,10 +4507,20 @@ export type WorktreeOpenResult = {
 export type WorktreeRemoveParams = {
   path: string;
   force?: boolean;
+  dry_run?: boolean;
 };
 
 export type WorktreeRemoveResult = {
   job: unknown;
+  cursor?: Cursor;
+} | {
+  dry_run: true;
+  path: string;
+  branch: string | null;
+  dirty_files: number;
+  unpushed_commits: number;
+  would_remove: boolean;
+  force: boolean;
   cursor?: Cursor;
 };
 
@@ -4302,7 +4574,9 @@ export interface Methods {
   "blob.append": { params: BlobAppendParams; result: BlobAppendResult };
   "blob.begin": { params: BlobBeginParams; result: BlobBeginResult };
   "blob.commit": { params: BlobCommitParams; result: BlobCommitResult };
+  "blob.get": { params: BlobGetParams; result: BlobGetResult };
   "blob.put": { params: BlobPutParams; result: BlobPutResult };
+  "blob.stat": { params: BlobStatParams; result: BlobStatResult };
   "browser.attach_screencast": { params: BrowserAttachScreencastParams; result: BrowserAttachScreencastResult };
   "browser.click": { params: BrowserClickParams; result: BrowserClickResult };
   "browser.close": { params: BrowserCloseParams; result: BrowserCloseResult };
@@ -4343,6 +4617,10 @@ export interface Methods {
   "compat.invocation.verify": { params: CompatInvocationVerifyParams; result: CompatInvocationVerifyResult };
   "compat.status": { params: CompatStatusParams; result: CompatStatusResult };
   "compat.ui.state": { params: CompatUiStateParams; result: CompatUiStateResult };
+  "config.get": { params: ConfigGetParams; result: ConfigGetResult };
+  "config.reload": { params: ConfigReloadParams; result: ConfigReloadResult };
+  "config.set": { params: ConfigSetParams; result: ConfigSetResult };
+  "config.validate": { params: ConfigValidateParams; result: ConfigValidateResult };
   "desk.context": { params: DeskContextParams; result: DeskContextResult };
   "desk.forget": { params: DeskForgetParams; result: DeskForgetResult };
   "desk.index": { params: DeskIndexParams; result: DeskIndexResult };
@@ -4404,6 +4682,7 @@ export interface Methods {
   "pane.list": { params: PaneListParams; result: PaneListResult };
   "pane.mark_seen": { params: PaneMarkSeenParams; result: PaneMarkSeenResult };
   "pane.mark_unread": { params: PaneMarkUnreadParams; result: PaneMarkUnreadResult };
+  "pane.move": { params: PaneMoveParams; result: PaneMoveResult };
   "pane.pin": { params: PanePinParams; result: PanePinResult };
   "pane.read": { params: PaneReadParams; result: PaneReadResult };
   "pane.rename": { params: PaneRenameParams; result: PaneRenameResult };
@@ -4411,6 +4690,8 @@ export interface Methods {
   "pane.report_agent_session": { params: PaneReportAgentSessionParams; result: PaneReportAgentSessionResult };
   "pane.resize": { params: PaneResizeParams; result: PaneResizeResult };
   "pane.run": { params: PaneRunParams; result: PaneRunResult };
+  "pane.screenshot": { params: PaneScreenshotParams; result: PaneScreenshotResult };
+  "pane.scroll": { params: PaneScrollParams; result: PaneScrollResult };
   "pane.send_bytes": { params: PaneSendBytesParams; result: PaneSendBytesResult };
   "pane.send_keys": { params: PaneSendKeysParams; result: PaneSendKeysResult };
   "pane.send_text": { params: PaneSendTextParams; result: PaneSendTextResult };
@@ -4454,9 +4735,14 @@ export interface Methods {
   "scrollback.forget": { params: ScrollbackForgetParams; result: ScrollbackForgetResult };
   "search.query": { params: SearchQueryParams; result: SearchQueryResult };
   "server.reload_config": { params: ServerReloadConfigParams; result: ServerReloadConfigResult };
+  "server.restart": { params: ServerRestartParams; result: ServerRestartResult };
   "server.status": { params: ServerStatusParams; result: ServerStatusResult };
   "server.stop": { params: ServerStopParams; result: ServerStopResult };
+  "session.create": { params: SessionCreateParams; result: SessionCreateResult };
+  "session.list": { params: SessionListParams; result: SessionListResult };
+  "session.rename": { params: SessionRenameParams; result: SessionRenameResult };
   "session.snapshot": { params: SessionSnapshotParams; result: SessionSnapshotResult };
+  "session.stop": { params: SessionStopParams; result: SessionStopResult };
   "status.segments": { params: StatusSegmentsParams; result: StatusSegmentsResult };
   "tab.close": { params: TabCloseParams; result: TabCloseResult };
   "tab.create": { params: TabCreateParams; result: TabCreateResult };
@@ -4478,8 +4764,10 @@ export interface Methods {
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
+  "task.park": { params: TaskParkParams; result: TaskParkResult };
   "task.pr": { params: TaskPrParams; result: TaskPrResult };
   "task.reconcile": { params: TaskReconcileParams; result: TaskReconcileResult };
+  "task.resume": { params: TaskResumeParams; result: TaskResumeResult };
   "task.review.accept": { params: TaskReviewAcceptParams; result: TaskReviewAcceptResult };
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
   "task.review.diff": { params: TaskReviewDiffParams; result: TaskReviewDiffResult };
@@ -4551,7 +4839,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "blob.append": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.begin": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.commit": { mutating: true, scope: "pane", paneScope: "open" },
+  "blob.get": { mutating: false, scope: "pane", paneScope: "open" },
   "blob.put": { mutating: true, scope: "pane", paneScope: "open" },
+  "blob.stat": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.attach_screencast": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.click": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.close": { mutating: true, scope: "pane", paneScope: "open" },
@@ -4592,6 +4882,10 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "compat.invocation.verify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "compat.status": { mutating: false, scope: "pane", paneScope: "open" },
   "compat.ui.state": { mutating: false, scope: "pane", paneScope: "open" },
+  "config.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "config.reload": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "config.set": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "config.validate": { mutating: false, scope: "pane", paneScope: "open" },
   "desk.context": { mutating: false, scope: "pane", paneScope: "open" },
   "desk.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "desk.index": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -4653,6 +4947,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "pane.list": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.mark_seen": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.mark_unread": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "pane.move": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.pin": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.read": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.rename": { mutating: true, scope: "pane", paneScope: "own_target" },
@@ -4660,6 +4955,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "pane.report_agent_session": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.resize": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.run": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "pane.screenshot": { mutating: false, scope: "pane", paneScope: "own_target" },
+  "pane.scroll": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.send_bytes": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.send_text": { mutating: true, scope: "pane", paneScope: "own_target" },
@@ -4703,9 +5000,14 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "scrollback.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "search.query": { mutating: false, scope: "pane", paneScope: "open" },
   "server.reload_config": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "server.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
   "server.status": { mutating: false, scope: "pane", paneScope: "open" },
   "server.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "session.create": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "session.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "session.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
   "session.snapshot": { mutating: false, scope: "pane", paneScope: "open" },
+  "session.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
   "status.segments": { mutating: false, scope: "pane", paneScope: "open" },
   "tab.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "tab.create": { mutating: true, scope: "pane", paneScope: "open" },
@@ -4727,8 +5029,10 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.get": { mutating: false, scope: "pane", paneScope: "open" },
   "task.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.park": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
   "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5402,6 +5706,18 @@ export type PaneScrollChangedData = {
   client?: string;
 };
 
+export type PaneScrollRequestedSubject = {
+  pane: string;
+  tab?: string;
+  workspace?: string;
+};
+
+export type PaneScrollRequestedData = {
+  offset: number;
+  total: number;
+  client: string | null;
+};
+
 export type PaneSeenSubject = {
   pane: string;
   tab?: string;
@@ -5724,6 +6040,30 @@ export type ScrollbackForgottenData = {
   panes_dropped: number;
 };
 
+export type SecurityRateLimitedSubject = {
+  pane: string;
+};
+
+export type SecurityRateLimitedData = {
+  method: string;
+  limit: "requests" | "spawn" | "depth" | "descendants";
+};
+
+export type SessionConfigRejectedSubject = Record<string, unknown>;
+
+export type SessionConfigRejectedData = {
+  errors: ConfigDiagnostic[];
+  source: "watch";
+};
+
+export type SessionConfigReloadedSubject = Record<string, unknown>;
+
+export type SessionConfigReloadedData = {
+  changed_keys: string[];
+  new_panes_only: string[];
+  source: "watch" | "api" | "set" | "set_persist";
+};
+
 export type SessionServerRestartedSubject = Record<string, unknown>;
 
 export type SessionServerRestartedData = {
@@ -5890,12 +6230,30 @@ export type TaskMissingData = {
   hint: string;
 };
 
+export type TaskParkedSubject = {
+  task: string;
+};
+
+export type TaskParkedData = {
+  runs: number;
+  attached?: boolean;
+};
+
 export type TaskRecoveredSubject = {
   task: string;
 };
 
 export type TaskRecoveredData = {
   path: string | null;
+};
+
+export type TaskResumedSubject = {
+  task: string;
+};
+
+export type TaskResumedData = {
+  runs: number;
+  skipped: number;
 };
 
 export type TaskSetupFailedSubject = {
@@ -6120,6 +6478,7 @@ export interface EventMap {
   "pane.process_changed": { subject: PaneProcessChangedSubject; data: PaneProcessChangedData };
   "pane.recovered": { subject: PaneRecoveredSubject; data: PaneRecoveredData };
   "pane.scroll_changed": { subject: PaneScrollChangedSubject; data: PaneScrollChangedData };
+  "pane.scroll_requested": { subject: PaneScrollRequestedSubject; data: PaneScrollRequestedData };
   "pane.seen": { subject: PaneSeenSubject; data: PaneSeenData };
   "pane.title_changed": { subject: PaneTitleChangedSubject; data: PaneTitleChangedData };
   "paste.translated": { subject: PasteTranslatedSubject; data: PasteTranslatedData };
@@ -6150,6 +6509,9 @@ export interface EventMap {
   "screenshot.captured": { subject: ScreenshotCapturedSubject; data: ScreenshotCapturedData };
   "screenshot.deleted": { subject: ScreenshotDeletedSubject; data: ScreenshotDeletedData };
   "scrollback.forgotten": { subject: ScrollbackForgottenSubject; data: ScrollbackForgottenData };
+  "security.rate_limited": { subject: SecurityRateLimitedSubject; data: SecurityRateLimitedData };
+  "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
+  "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
   "tab.closed": { subject: TabClosedSubject; data: TabClosedData };
   "tab.created": { subject: TabCreatedSubject; data: TabCreatedData };
@@ -6168,7 +6530,9 @@ export interface EventMap {
   "task.message_prepared": { subject: TaskMessagePreparedSubject; data: TaskMessagePreparedData };
   "task.message_sending": { subject: TaskMessageSendingSubject; data: TaskMessageSendingData };
   "task.missing": { subject: TaskMissingSubject; data: TaskMissingData };
+  "task.parked": { subject: TaskParkedSubject; data: TaskParkedData };
   "task.recovered": { subject: TaskRecoveredSubject; data: TaskRecoveredData };
+  "task.resumed": { subject: TaskResumedSubject; data: TaskResumedData };
   "task.setup_failed": { subject: TaskSetupFailedSubject; data: TaskSetupFailedData };
   "task.setup_finished": { subject: TaskSetupFinishedSubject; data: TaskSetupFinishedData };
   "task.setup_started": { subject: TaskSetupStartedSubject; data: TaskSetupStartedData };

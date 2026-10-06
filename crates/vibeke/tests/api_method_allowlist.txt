@@ -15,7 +15,6 @@ agent.release
 agent.send_keys
 agent.spawn
 blob.abort
-blob.put
 browser.detach_screencast
 browser.dom
 browser.session_close
@@ -44,4 +43,3 @@ tab.focus
 tab.move
 worktree.create
 worktree.open
-worktree.remove

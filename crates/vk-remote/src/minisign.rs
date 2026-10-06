@@ -194,7 +194,7 @@ pub fn verify(keys: &[&str], data: &[u8], sig_text: &str) -> Result<String, Mini
 
 /// Test-only signer producing real minisign files, so the verifier is exercised against the
 /// exact format. Never compiled into release builds.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};

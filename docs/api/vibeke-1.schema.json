@@ -621,6 +621,62 @@
         "environment"
       ]
     },
+    "ConfigDiagnostic": {
+      "type": "object",
+      "properties": {
+        "line": {
+          "type": "integer"
+        },
+        "col": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "line",
+        "col",
+        "message"
+      ]
+    },
+    "ConfigWarning": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "col": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "line",
+        "col",
+        "message"
+      ]
+    },
     "Cursor": {
       "type": "object",
       "properties": {
@@ -1864,6 +1920,36 @@
       },
       "required": [
         "id"
+      ]
+    },
+    "SessionEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "socket": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "running",
+        "socket",
+        "state",
+        "current"
       ]
     },
     "Tab": {
@@ -4366,6 +4452,64 @@
         ]
       }
     },
+    "blob.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "range": {
+            "type": "object",
+            "properties": {
+              "offset": {
+                "type": "integer"
+              },
+              "length": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "required": [
+          "hash"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "length": {
+            "type": "integer"
+          },
+          "data_b64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "mime",
+          "size",
+          "offset",
+          "length",
+          "data_b64"
+        ]
+      }
+    },
     "blob.put": {
       "mutating": true,
       "scope": "pane",
@@ -4403,6 +4547,53 @@
         "required": [
           "hash",
           "size"
+        ]
+      }
+    },
+    "blob.stat": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "refs": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "mime",
+          "size",
+          "created_at",
+          "refs",
+          "path"
         ]
       }
     },
@@ -7702,6 +7893,191 @@
         ]
       }
     },
+    "config.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {},
+          "source": {
+            "type": "string",
+            "enum": [
+              "default",
+              "user",
+              "runtime"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigDiagnostic"
+            }
+          }
+        },
+        "required": [
+          "value",
+          "source",
+          "path",
+          "overrides",
+          "errors"
+        ]
+      }
+    },
+    "config.reload": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigDiagnostic"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigWarning"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "changed",
+          "errors"
+        ]
+      }
+    },
+    "config.set": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {},
+          "persist": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {},
+          "persisted": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "persisted",
+          "path",
+          "changed"
+        ]
+      }
+    },
+    "config.validate": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigDiagnostic"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigWarning"
+            }
+          }
+        },
+        "required": [
+          "path",
+          "valid",
+          "errors",
+          "warnings"
+        ]
+      }
+    },
     "desk.context": {
       "mutating": false,
       "scope": "pane",
@@ -10610,6 +10986,90 @@
         ]
       }
     },
+    "pane.move": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "to": {
+            "type": "object",
+            "properties": {
+              "tab": {
+                "$ref": "#/$defs/Target"
+              },
+              "workspace": {
+                "$ref": "#/$defs/Target"
+              },
+              "new_tab_in": {
+                "$ref": "#/$defs/Target"
+              }
+            }
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "right",
+              "down",
+              "left",
+              "up"
+            ],
+            "default": "right"
+          },
+          "anchor": {
+            "$ref": "#/$defs/Target"
+          },
+          "position": {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "$ref": "#/$defs/Target"
+              },
+              "direction": {
+                "type": "string"
+              }
+            }
+          },
+          "focus": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "to"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Pane"
+          },
+          "tab": {
+            "$ref": "#/$defs/Tab"
+          },
+          "previous_pane_handle": {
+            "type": "string"
+          },
+          "source_tab_closed": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "pane",
+          "tab",
+          "previous_pane_handle",
+          "source_tab_closed"
+        ]
+      }
+    },
     "pane.pin": {
       "mutating": true,
       "scope": "pane",
@@ -10985,6 +11445,185 @@
             "$ref": "#/$defs/Cursor"
           }
         }
+      }
+    },
+    "pane.screenshot": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "ansi",
+              "html",
+              "png",
+              "svg"
+            ],
+            "default": "ansi"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "visible",
+              "recent"
+            ],
+            "default": "visible"
+          },
+          "lines": {
+            "type": "integer",
+            "default": 200
+          },
+          "include_cursor": {
+            "type": "boolean"
+          },
+          "inline": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "blob": {
+            "type": "object",
+            "properties": {
+              "hash": {
+                "type": "string"
+              },
+              "size": {
+                "type": "integer"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hash",
+              "size",
+              "mime",
+              "path"
+            ]
+          },
+          "format": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "cols": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
+          },
+          "lines": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": "object",
+            "properties": {
+              "row": {
+                "type": "integer"
+              },
+              "col": {
+                "type": "integer"
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "row",
+              "col",
+              "visible"
+            ]
+          },
+          "data": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "blob",
+          "format",
+          "source",
+          "cols",
+          "rows",
+          "lines",
+          "revision"
+        ]
+      }
+    },
+    "pane.scroll": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "top",
+              "line"
+            ]
+          },
+          "line": {
+            "type": "integer"
+          },
+          "delta": {
+            "type": "integer"
+          },
+          "client": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "scroll": {
+            "type": "object",
+            "properties": {
+              "offset": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "at_bottom": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "offset",
+              "total",
+              "at_bottom"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "scroll"
+        ]
       }
     },
     "pane.send_bytes": {
@@ -13627,7 +14266,15 @@
           },
           "errors": {
             "type": "array",
-            "items": {}
+            "items": {
+              "$ref": "#/$defs/ConfigDiagnostic"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigWarning"
+            }
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -13636,6 +14283,37 @@
         "required": [
           "changed",
           "errors"
+        ]
+      }
+    },
+    "server.restart": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "binary": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "new_pid": {
+            "type": "integer"
+          },
+          "binary": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "new_pid",
+          "binary"
         ]
       }
     },
@@ -13737,6 +14415,96 @@
             "$ref": "#/$defs/Cursor"
           }
         }
+      }
+    },
+    "session.create": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionEntry"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      }
+    },
+    "session.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SessionEntry"
+            }
+          }
+        },
+        "required": [
+          "sessions"
+        ]
+      }
+    },
+    "session.rename": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "new_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "new_name"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionEntry"
+          },
+          "previous_name": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "session",
+          "previous_name"
+        ]
       }
     },
     "session.snapshot": {
@@ -13892,6 +14660,44 @@
         },
         "required": [
           "at_seq"
+        ]
+      }
+    },
+    "session.stop": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kill_panes": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object"
+          },
+          "stopped": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "session",
+          "stopped"
         ]
       }
     },
@@ -14525,6 +15331,10 @@
           },
           "fetch": {
             "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -14533,106 +15343,146 @@
         ]
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "task": {
-            "$ref": "#/$defs/Task"
-          },
-          "workspace": {
-            "$ref": "#/$defs/Workspace"
-          },
-          "panes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/Pane"
-            }
-          },
-          "runs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/AgentRun"
-            }
-          },
-          "copied": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "files": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/MaterializedFile"
-            }
-          },
-          "deps": {},
-          "setup": {
+        "anyOf": [
+          {
             "type": "object",
             "properties": {
-              "pane": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "task": {
+                "$ref": "#/$defs/Task"
               },
-              "status": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "workspace": {
+                "$ref": "#/$defs/Workspace"
               },
-              "agents_pending": {
-                "type": "boolean"
-              },
-              "commands": {
+              "panes": {
                 "type": "array",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "source": {
-                      "type": "string"
-                    },
-                    "command": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "source",
-                    "command"
-                  ]
+                  "$ref": "#/$defs/Pane"
                 }
+              },
+              "runs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/AgentRun"
+                }
+              },
+              "copied": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/MaterializedFile"
+                }
+              },
+              "deps": {},
+              "setup": {
+                "type": "object",
+                "properties": {
+                  "pane": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "agents_pending": {
+                    "type": "boolean"
+                  },
+                  "commands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "command": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "source",
+                        "command"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "pane",
+                  "status",
+                  "agents_pending",
+                  "commands"
+                ]
+              },
+              "warnings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
               }
             },
             "required": [
-              "pane",
-              "status",
-              "agents_pending",
-              "commands"
+              "task",
+              "workspace",
+              "panes",
+              "runs"
             ]
           },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+          {
+            "type": "object",
+            "properties": {
+              "dry_run": {
+                "const": true
+              },
+              "title": {
+                "type": "string"
+              },
+              "repo_root": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "plan": {
+                "type": "object"
+              },
+              "agents": {},
+              "setup": {
+                "type": "boolean"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "dry_run",
+              "title",
+              "repo_root",
+              "slug",
+              "plan",
+              "agents",
+              "setup"
+            ]
           }
-        },
-        "required": [
-          "task",
-          "workspace",
-          "panes",
-          "runs"
         ]
       }
     },
@@ -15174,6 +16024,85 @@
         ]
       }
     },
+    "task.park": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "stopped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "handle": {
+                  "type": "string"
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pane_closed": {
+                  "type": "boolean"
+                },
+                "resumable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "run",
+                "handle",
+                "pane",
+                "harness",
+                "name",
+                "pane_closed",
+                "resumable"
+              ]
+            }
+          },
+          "note": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "stopped"
+        ]
+      }
+    },
     "task.pr": {
       "mutating": false,
       "scope": "pane",
@@ -15338,6 +16267,62 @@
         },
         "required": [
           "reports"
+        ]
+      }
+    },
+    "task.resume": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "resumed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AgentRun"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "reason"
+              ]
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "resumed",
+          "skipped"
         ]
       }
     },
@@ -16934,6 +17919,10 @@
           "force": {
             "type": "boolean",
             "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -16941,15 +17930,64 @@
         ]
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "job": {},
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "job": {},
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "job"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "dry_run": {
+                "const": true
+              },
+              "path": {
+                "type": "string"
+              },
+              "branch": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "dirty_files": {
+                "type": "integer"
+              },
+              "unpushed_commits": {
+                "type": "integer"
+              },
+              "would_remove": {
+                "type": "boolean"
+              },
+              "force": {
+                "type": "boolean"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "dry_run",
+              "path",
+              "branch",
+              "dirty_files",
+              "unpushed_commits",
+              "would_remove",
+              "force"
+            ]
           }
-        },
-        "required": [
-          "job"
         ]
       }
     },
@@ -18983,6 +20021,51 @@
         ]
       }
     },
+    "pane.scroll_requested": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "tab": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "offset",
+          "total",
+          "client"
+        ]
+      }
+    },
     "pane.seen": {
       "subject": {
         "type": "object",
@@ -20149,6 +21232,99 @@
         ]
       }
     },
+    "security.rate_limited": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string",
+            "enum": [
+              "requests",
+              "spawn",
+              "depth",
+              "descendants"
+            ]
+          }
+        },
+        "required": [
+          "method",
+          "limit"
+        ]
+      }
+    },
+    "session.config_rejected": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigDiagnostic"
+            }
+          },
+          "source": {
+            "const": "watch"
+          }
+        },
+        "required": [
+          "errors",
+          "source"
+        ]
+      }
+    },
+    "session.config_reloaded": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "changed_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "new_panes_only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "watch",
+              "api",
+              "set",
+              "set_persist"
+            ]
+          }
+        },
+        "required": [
+          "changed_keys",
+          "new_panes_only",
+          "source"
+        ]
+      }
+    },
     "session.server_restarted": {
       "subject": {
         "type": "object"
@@ -20695,6 +21871,33 @@
         ]
       }
     },
+    "task.parked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "integer"
+          },
+          "attached": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "runs"
+        ]
+      }
+    },
     "task.recovered": {
       "subject": {
         "type": "object",
@@ -20723,6 +21926,34 @@
         },
         "required": [
           "path"
+        ]
+      }
+    },
+    "task.resumed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runs",
+          "skipped"
         ]
       }
     },

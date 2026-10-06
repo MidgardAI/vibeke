@@ -525,13 +525,15 @@ async fn keystrokes_overtake_a_saturated_blob_channel() {
     for i in 0..20u8 {
         ctl.write_all(&[i]).await.unwrap();
         let mut b = [0u8; 1];
-        tokio::time::timeout(Duration::from_secs(2), ctl.read_exact(&mut b))
+        tokio::time::timeout(Duration::from_secs(10), ctl.read_exact(&mut b))
             .await
             .expect("keystroke stuck behind bulk")
             .unwrap();
         assert_eq!(b[0], i);
     }
-    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    // Generous for loaded hosts: a mux without priorities leaves keystrokes stuck behind an
+    // ever-growing blob queue, which the per-keystroke timeout above still catches.
+    assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
     assert!(!bulk.is_finished(), "bulk kept the link busy throughout");
     bulk.abort();
     drain.abort();

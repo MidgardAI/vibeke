@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 243,
+  "method_count": 259,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -557,6 +557,20 @@
       "result": "{hash: string, sha256: string, size: int, path_on_machine: string, path: string, unpacked?: bool}"
     },
     {
+      "name": "blob.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "blob_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{hash, range?}` → `{mime, data_b64}`",
+      "params": "{hash: string, range?: {offset?: int, length?: int}}",
+      "result": "{hash: string, mime: string, size: int, offset: int, length: int, data_b64: string}"
+    },
+    {
       "name": "blob.put",
       "mutating": true,
       "scope": "pane",
@@ -569,6 +583,20 @@
       "spec": "`{mime, data_b64}` (≤ 16 MiB) or `{mime, path}` (server reads local file) → `{hash, size}`",
       "params": "{mime: string, data_b64?: string, path?: string}",
       "result": "{hash: string, size: int}"
+    },
+    {
+      "name": "blob.stat",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "blob_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{hash}` → `{mime, size, created_at, refs}`",
+      "params": "{hash: string}",
+      "result": "{hash: string, mime: string, size: int, created_at: int, refs: int, path: string}"
     },
     {
       "name": "browser.attach_screencast",
@@ -1131,6 +1159,62 @@
       "spec": null,
       "params": "{}",
       "result": "{window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}"
+    },
+    {
+      "name": "config.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "config_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{key?}` → `{value, source: default|user|repo|cli}`",
+      "params": "{key?: string}",
+      "result": "{key?: string, value: any, source: default|user|runtime, path: string, overrides: [string], errors: [ConfigDiagnostic]}"
+    },
+    {
+      "name": "config.reload",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "config_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}"
+    },
+    {
+      "name": "config.set",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "config_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{key, value, persist?: false}` → `{}` — runtime override",
+      "params": "{key: string, value: any, persist?: bool = false}",
+      "result": "{key: string, value: any, persisted: bool, path: string, changed: [string]}"
+    },
+    {
+      "name": "config.validate",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "config_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{path?}` → `{errors: [{line, col, message}]}`",
+      "params": "{path?: string}",
+      "result": "{path: string, valid: bool, errors: [ConfigDiagnostic], warnings: [ConfigWarning]}"
     },
     {
       "name": "desk.context",
@@ -1992,6 +2076,20 @@
       "result": "{pane: Pane}"
     },
     {
+      "name": "pane.move",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "pane_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, to: {tab} | {workspace} | {new_tab_in: workspace}, position?}` → `{pane, previous_pane_handle}`",
+      "params": "{pane?: Target, to: {tab?: Target, workspace?: Target, new_tab_in?: Target}, direction?: right|down|left|up = right, anchor?: Target, position?: {pane?: Target, direction?: string}, focus?: bool = false}",
+      "result": "{pane: Pane, tab: Tab, previous_pane_handle: string, source_tab_closed: bool}"
+    },
+    {
       "name": "pane.pin",
       "mutating": true,
       "scope": "pane",
@@ -2088,6 +2186,34 @@
       "spec": "`{pane, command: string, wait?: bool, timeout_ms?}` → `{}` or (with wait) `{exit_code?, output_tail}` — sends text + Enter. With `wait`, uses OSC 133 prompt marks when the shell integration is active, else falls back to \"foreground process returns to shell\"",
       "params": "{pane?: Target, command: string, wait?: bool, timeout_ms?: int}",
       "result": "{exit_code?: int|null, output_tail?: string}"
+    },
+    {
+      "name": "pane.screenshot",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "open",
+      "tables": [
+        "pane_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, format?: png|svg|html}` → `{blob}` — renders the pane grid (for bug reports and Phase 2) [M3]",
+      "params": "{pane?: Target, format?: text|ansi|html|png|svg = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}",
+      "result": "{blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, cursor?: {row: int, col: int, visible: bool}, data?: string}"
+    },
+    {
+      "name": "pane.scroll",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "pane_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, to: bottom|top|line, line?, delta?}` → `{scroll}`",
+      "params": "{pane?: Target, to?: bottom|top|line, line?: int, delta?: int, client?: string}",
+      "result": "{scroll: {offset: int, total: int, at_bottom: bool}}"
     },
     {
       "name": "pane.send_bytes",
@@ -2689,7 +2815,21 @@
       "milestone": "M1",
       "spec": "`{}` → `{changed: [keys], errors: []}`",
       "params": "{}",
-      "result": "{changed: [string], errors: [any]}"
+      "result": "{changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}"
+    },
+    {
+      "name": "server.restart",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "session_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{binary?: path}` → `{new_pid}` — exec's the new server. Holders untouched (01 §1.2)",
+      "params": "{binary?: string}",
+      "result": "{new_pid: int, binary: string}"
     },
     {
       "name": "server.status",
@@ -2720,6 +2860,48 @@
       "result": "{}"
     },
     {
+      "name": "session.create",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "session_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{name}` → `{session}` (spawns a server)",
+      "params": "{name: string}",
+      "result": "{session: SessionEntry}"
+    },
+    {
+      "name": "session.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "session_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{sessions: [{name, running, pid?, socket}]}` (scans the runtime dir)",
+      "params": "{}",
+      "result": "{sessions: [SessionEntry]}"
+    },
+    {
+      "name": "session.rename",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "session_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{name, new_name}` → `{session}`",
+      "params": "{name: string, new_name: string}",
+      "result": "{session: SessionEntry, previous_name: string}"
+    },
+    {
       "name": "session.snapshot",
       "mutating": false,
       "scope": "pane",
@@ -2732,6 +2914,20 @@
       "spec": "`{include?: [workspaces, tabs, panes, runs, interactions, tasks, previews, layouts, machines]}` → `{at_seq, workspaces[], groups[], tabs[], panes[], runs[], interactions[], tasks[], previews[], layouts[], focused: {client_id → {workspace, tab, pane}}}`",
       "params": "{include?: [workspaces|tabs|panes|runs|interactions|tasks|previews|layouts|machines|groups|string]}",
       "result": "{at_seq: int, workspaces?: [Workspace], groups?: [Group], tabs?: [Tab], panes?: [Pane], runs?: [AgentRun], interactions?: [Interaction], tasks?: [Task], previews?: [Preview], layouts?: [any], focused?: {*: {workspace: string|null, tab: string|null, pane: string|null}}}"
+    },
+    {
+      "name": "session.stop",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "session_api"
+      ],
+      "milestone": "M1",
+      "spec": "`{name, kill_panes?: false}` → `{}`",
+      "params": "{name: string, kill_panes?: bool = false}",
+      "result": "{session: object, stopped: bool}"
     },
     {
       "name": "status.segments",
@@ -2926,8 +3122,8 @@
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`. `auto` is a worktree). The choice is recorded as `Task.checkout`. `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06). `task.finish {remove_worktree}` removes the worktree (never for `none`)",
-      "params": "{title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool}",
-      "result": "{task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun], copied?: [string], files?: [MaterializedFile], deps?: any, setup?: {pane: string|null, status: string|null, agents_pending: bool, commands: [{source: string, command: string}]}, warnings?: [string]}"
+      "params": "{title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool, dry_run?: bool = false}",
+      "result": "{task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun], copied?: [string], files?: [MaterializedFile], deps?: any, setup?: {pane: string|null, status: string|null, agents_pending: bool, commands: [{source: string, command: string}]}, warnings?: [string]} | {dry_run: true, title: string, repo_root: string, slug: string, plan: object, agents: any, setup: bool}"
     },
     {
       "name": "task.dependency.add",
@@ -3032,6 +3228,20 @@
       "result": "{tasks: [Task]}"
     },
     {
+      "name": "task.park",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_park"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task}` → `{task}` — park = stop agents gracefully, keep worktree",
+      "params": "{task: Target}",
+      "result": "{task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}"
+    },
+    {
       "name": "task.pr",
       "mutating": false,
       "scope": "pane",
@@ -3058,6 +3268,20 @@
       "spec": null,
       "params": "{repo?: string}",
       "result": "{reports: [{repo: string, missing: [{task_id: string, path: string, reason: string}], branch_moved: [{task_id: string, path: string, expected: string|null, actual: string|null}], orphans: [{path: string, kind: string, branch: string|null}]}]}"
+    },
+    {
+      "name": "task.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_park"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task}` → `{task}` — park = stop agents gracefully, keep worktree",
+      "params": "{task: Target}",
+      "result": "{task: Task, resumed: [AgentRun], skipped: [{run: string, reason: string}]}"
     },
     {
       "name": "task.review.accept",
@@ -3414,8 +3638,8 @@
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{path, force?: false}` → `{job}` — Runs asynchronously. Reports progress through the `worktree.removed` event",
-      "params": "{path: string, force?: bool = false}",
-      "result": "{job: any}"
+      "params": "{path: string, force?: bool = false, dry_run?: bool = false}",
+      "result": "{job: any} | {dry_run: true, path: string, branch: string|null, dirty_files: int, unpushed_commits: int, would_remove: bool, force: bool}"
     },
     {
       "name": "worktree.repo_root",
