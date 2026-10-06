@@ -44,7 +44,8 @@ fn at_top(app: &App) -> bool {
     )
 }
 
-/// Rows the status bar takes from the pane area: (below the tab bar, at the bottom).
+/// Rows the status bar takes from the pane area: (top side, bottom side). It sits next to the
+/// tab bar when both are on the same edge (08 §3, §4).
 pub fn reserved(app: &App) -> (u16, u16) {
     if !enabled(app) || app.size.1 < 6 {
         (0, 0)
@@ -57,9 +58,10 @@ pub fn reserved(app: &App) -> (u16, u16) {
 
 /// The screen row of the bar, when shown.
 pub fn row(app: &App) -> Option<u16> {
+    let (tt, tb) = crate::chrome::tab_rows(app);
     match reserved(app) {
-        (1, _) => Some(1),
-        (_, 1) => Some(app.size.1.saturating_sub(1)),
+        (1, _) => Some(tt),
+        (_, 1) => Some(app.size.1.saturating_sub(1 + tb)),
         _ => None,
     }
 }
@@ -346,9 +348,8 @@ type Placed = (String, String, Style, u16, u16, bool);
 fn layout(app: &App) -> Vec<Placed> {
     let cfg = &app.config.ui.status_bar;
     let d = data(app);
-    let x0 = if app.sidebar { app.sidebar_w + 1 } else { 0 };
-    let cols = app.size.0;
-    let span = cols.saturating_sub(x0);
+    let (x0, span) = crate::chrome::main_x(app);
+    let cols = x0 + span;
     let left = list(app, &cfg.left, &d);
     let center = list(app, &cfg.center, &d);
     let right = list(app, &cfg.right, &d);
@@ -377,13 +378,13 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let t = app.theme;
-    let x0 = if app.sidebar { app.sidebar_w + 1 } else { 0 };
-    let cols = app.size.0;
+    let (x0, span) = crate::chrome::main_x(app);
+    let cols = x0 + span;
     g.fill(
         SRect {
             x: x0,
             y,
-            w: cols.saturating_sub(x0),
+            w: span,
             h: 1,
         },
         t.text(),
@@ -404,7 +405,7 @@ pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
     let Some(y) = row(app) else {
         return false;
     };
-    if me.row != y || app.sidebar && me.column < app.sidebar_w {
+    if me.row != y || crate::chrome::in_sidebar(app, me.column) {
         return false;
     }
     if let MouseEventKind::Down(CtButton::Left) = me.kind {

@@ -551,6 +551,8 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
     ("layout_save", "Save this tab's layout…"),
     ("layout_apply", "Apply a saved layout…"),
     ("status_bar_toggle", "Show/hide the status bar"),
+    ("sidebar_side", "Move the sidebar left ⇄ right"),
+    ("tab_bar_position", "Tab bar top → bottom → hidden"),
     (
         "theme_detect",
         "Re-detect the terminal's light/dark appearance",
@@ -591,6 +593,8 @@ const EXTRA_ACTIONS: &[&str] = &[
     "layout_save",
     "layout_apply",
     "status_bar_toggle",
+    "sidebar_side",
+    "tab_bar_position",
     "theme_detect",
     "screenshots",
     "screenshot_pane",

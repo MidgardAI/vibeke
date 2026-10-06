@@ -85,12 +85,15 @@ Tasks:
     - **Groups: built.** Sidebar group level with aggregate badges, collapse/expand (`group.collapse`), navigate-mode keys (`enter`/`h`/`l`/`r`, `m` move picker, `G` new), drag a workspace onto a group, palette `group_new/move/rename/collapse` (08 §2.1).
     - **Floating panes: built.** Drawn over the tiling in z order with a frame and title, mouse move/resize/raise, resize-mode keys (`m` move), `prefix+f`/`prefix+shift+f`, palette `float_pane`/`embed_pane`; floats are in `pane_rects`/`ViewHint`, so their PTYs get real sizes and browser tiles clip (08 §5).
     - **Status bar: built.** Top/bottom row from `[ui.status_bar]`, data from `status.segments` (refresh ≥ 1 s after model changes, every 10 s otherwise), local fallback, local clock/mode/prefix, attention click (08 §4).
-    - **Search: built.** Copy-mode `/` falls back to `search.query` + `pane.read` loading; archive paging with `pane.read` past memory; global search popup (`prefix+alt+/`) with jump-to (08 §13 copy mode). Edit-scrollback popup still open.
+    - **Search: built.** Copy-mode `/` falls back to `search.query` + `pane.read` loading; archive paging with `pane.read` past memory; global search popup (`prefix+alt+/`) with jump-to (08 §13 copy mode).
+    - **Edit scrollback: built.** `prefix+e` opens a read-only viewer over the pane's whole history (`pane.read {source: archive}`, soft wraps joined, search); `e` opens it in `$VISUAL`/`$EDITOR` from a private read-only temp file with the TUI suspended, deleted afterwards (08 §13 copy mode).
+    - **Sidebar left/right, bottom tab bar: built.** `ui.sidebar.position`, `ui.tabs.position = top | bottom | hidden` through one geometry module (`vk-tui::chrome`); palette `sidebar_side`, `tab_bar_position` (08 §2.4, §3).
+    - **Copy-on-select/PRIMARY, configurable copy-mode keys: built.** Drag-to-select into copy mode, copy on release with `clipboard.copy_on_select`, PRIMARY via OSC 52 `p` (or wl-copy/xclip/xsel) with `primary_selection`; `[keys.copy_mode]` vi/emacs base tables with per-key overrides validated by `vk-config` (08 §14 D#748, D#587).
     - **Theme auto: built, with a limit.** Startup OSC 11 + `CSI ? 996 n`, `client.appearance` to every machine, `dark_name`/`light_name` switching; re-query on focus regain instead of mode 2031 (crossterm can't parse unsolicited 997 reports). Panes' OSC 10/11 queries are answered once, server-side, from the appearance's palette (small server change in `theme.rs`/`pane.rs`).
     - **Notifications: built.** `host` in `render.attach` (local machine only), no OSC forward when `delivered` has `native`, coalesced `(×n)` toasts. The signed helper bundle is still open.
     - **Layout save/apply: built** as palette entries; save prints/copies a `[layouts.<name>]` snippet (no config-write API).
     - Server change for paging: `pane.read {source: archive}` also returns `mem_first`.
-    - Still open (TUI-only): sidebar left/right, bottom tab bar, copy-on-select/PRIMARY, configurable copy-mode keys, edit-scrollback popup, goto improvements (`ctrl+enter`), jj bookmark display. Verified with fake machines and the unit/draw tests only — not yet driven in a real terminal against a live server.
+    - Still open (TUI-only): goto improvements (`ctrl+enter`), jj bookmark display. Verified with fake machines and the unit/draw tests only — not yet driven in a real terminal against a live server (the editor hand-off in particular).
 
 ## M5 — Full Herdr plugin/automation compatibility + plugins
 

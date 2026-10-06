@@ -291,6 +291,44 @@ fn diff_and_new_pane_classification() {
 }
 
 #[test]
+fn copy_mode_keys_parse_and_bad_entries_warn() {
+    let src = "[keys.copy_mode]\nmode = \"emacs\"\ny = \"copy\"\n\"ctrl+e\" = \"edit_scrollback\"\nq = \"\"\nz = \"teleport\"\n\"prefix+x\" = \"exit\"\n";
+    let (c, w) = parse(src).unwrap();
+    assert_eq!(c.keys.copy_mode.mode, CopyModeKind::Emacs);
+    assert_eq!(c.keys.copy_mode.overrides["y"], "copy");
+    assert_eq!(c.keys.copy_mode.overrides["ctrl+e"], "edit_scrollback");
+    assert_eq!(c.keys.copy_mode.overrides["q"], "");
+    let msgs: Vec<String> = w
+        .iter()
+        .map(|w| format!("{}: {}", w.key, w.message))
+        .collect();
+    assert!(
+        msgs.iter()
+            .any(|m| m.starts_with("keys.copy_mode.z: unknown copy-mode action `teleport`")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter()
+            .any(|m| m.starts_with("keys.copy_mode.prefix+x: `prefix+x` must be a single key")),
+        "{msgs:?}"
+    );
+    // Valid entries (and the empty unbind) don't warn; no unknown-key warnings either.
+    assert_eq!(msgs.len(), 2, "{msgs:?}");
+    assert!(COPY_MODE_ACTIONS.contains(&"copy") && is_copy_mode_action("select_block"));
+}
+
+#[test]
+fn placement_and_clipboard_options_parse() {
+    let src = "[ui.sidebar]\nposition = \"right\"\n[ui.tabs]\nposition = \"hidden\"\n[clipboard]\ncopy_on_select = true\nprimary_selection = true\n";
+    let (c, w) = parse(src).unwrap();
+    assert!(w.is_empty(), "{w:?}");
+    assert_eq!(c.ui.sidebar.position, SidebarPosition::Right);
+    assert_eq!(c.ui.tabs.position, TabsPosition::Hidden);
+    assert!(c.clipboard.copy_on_select && c.clipboard.primary_selection);
+    assert!(parse("[ui.tabs]\nposition = \"left\"\n").is_err());
+}
+
+#[test]
 fn config_path_resolution() {
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |k: &str| {

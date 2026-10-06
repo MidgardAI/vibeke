@@ -144,6 +144,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Desk => crate::desk::key(app, ev),
         Popup::Drafts => crate::drafts::key(app, ev),
         Popup::Assist => crate::assist::key(app, ev),
+        Popup::Scrollback => crate::scrollback::key(app, ev),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -493,6 +494,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Desk => crate::desk::draw(app, g),
             Popup::Drafts => crate::drafts::draw(app, g),
             Popup::Assist => crate::assist::draw(app, g),
+            Popup::Scrollback => crate::scrollback::draw(app, g),
             Popup::Peek { pane } => {
                 let m = app.m();
                 let run = m.model.runs.iter().find(|r| &r.pane == pane);
