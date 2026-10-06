@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 259,
+  "method_count": 272,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -499,6 +499,104 @@
       "spec": null,
       "params": "{key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool}",
       "result": "{key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, warning: string | null}"
+    },
+    {
+      "name": "audit.search",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{query?: string, types?: [string]|string, since_ms?: int, limit?: int = 200}",
+      "result": "{entries: [AuditEntry], path: string}"
+    },
+    {
+      "name": "audit.tail",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{limit?: int = 50, types?: [string]|string}",
+      "result": "{entries: [AuditEntry], path: string}"
+    },
+    {
+      "name": "audit.verify",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string}"
+    },
+    {
+      "name": "auth.elevate",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{reason?: string, timeout_ms?: int = 120000, request?: string, wait?: bool = true}",
+      "result": "{request: string, token: string, expires_at_ms: int, ttl_s: int, env: string} | ElevationRequest"
+    },
+    {
+      "name": "auth.elevate.decide",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{request: string, decision: approve|deny}",
+      "result": "{request: string, pane: string, decision: approved|denied, expires_at_ms: int|null}"
+    },
+    {
+      "name": "auth.list",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{pending: [ElevationRequest], elevated: [{pane: string, request: string, expires_at_ms: int}], revoked: [{pane: string}]}"
+    },
+    {
+      "name": "auth.revoke_token",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane: Target}",
+      "result": "{pane: string, revoked: true, tokens_removed: int, elevations_removed: int}"
     },
     {
       "name": "blob.abort",
@@ -1721,6 +1819,20 @@
       "result": "{path_on_machine: string, blob?: string}"
     },
     {
+      "name": "integration.doctor",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": "M1",
+      "spec": "`{harness?}` → `{checks: [{name, ok, detail}]}`",
+      "params": "{harness?: claude|codex|pi|omp|opencode|gemini}",
+      "result": "{checks: [{name: string, harness: string, ok: bool, status: ok|changed|removed|unrecorded|not_installed, detail: string, file: string, fingerprint: string|null, recorded: string|null}]}"
+    },
+    {
       "name": "interaction.answer",
       "mutating": true,
       "scope": "full",
@@ -2438,6 +2550,76 @@
       "spec": null,
       "params": "{pane: Target}",
       "result": "{closed: Target | null}"
+    },
+    {
+      "name": "policy.add",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": "M1",
+      "spec": "`{rule: PolicyRule}` → `{rule}`",
+      "params": "{rule?: {match?: PolicyMatch, tool?: string, command_regex?: string, path_glob?: string, url_glob?: string, effect: allow|deny|ask, scope?: string, note?: string}, tool?: string, command_regex?: string, path_glob?: string, url_glob?: string, effect?: allow|deny|ask, scope?: string, note?: string}",
+      "result": "{rule: PolicyRuleInfo}"
+    },
+    {
+      "name": "policy.list",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": "M1",
+      "spec": "`{scope?}` → `{rules}` (merged view: global, user, trusted repo files)",
+      "params": "{scope?: PolicyScope}",
+      "result": "{rules: [PolicyRuleInfo], repos: [PolicyRepo]}"
+    },
+    {
+      "name": "policy.remove",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": "M1",
+      "spec": "`{rule_id}` → `{}`",
+      "params": "{rule_id: string}",
+      "result": "{removed: bool, rule: PolicyRuleInfo}"
+    },
+    {
+      "name": "policy.test",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "security"
+      ],
+      "milestone": "M1",
+      "spec": "`{action: {tool, command?, paths?, url?}, scope}` → `{effect, rule?}` — dry-run",
+      "params": "{action: {tool: string, command?: string, paths?: [string], url?: string}, scope?: PolicyScope}",
+      "result": "{effect: allow|deny|ask, rule: PolicyRuleInfo|null, user_rule: PolicyRuleInfo|null, repo_rule: PolicyRuleInfo|null, repo: string|null, reason: string}"
+    },
+    {
+      "name": "policy.trust",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "security"
+      ],
+      "milestone": "M1",
+      "spec": "`{path, digest?}` → `{repo, digest, setup_script}` — trust a repo-local `.vibeke/` directory at its current blake3 digest (09 §4). `digest` makes it conditional on the reviewed content (conflict if changed). Full scope only.",
+      "params": "{path?: string = \".\", digest?: string, devcontainer_digest?: string, allow_policy_grants?: bool = false}",
+      "result": "{repo: string, digest: string|null, setup_script: string|null, task_file: any, devcontainer: any, harness_manifests: [any], allow_policy_grants: bool, policy_rules: [PolicyRuleInfo], policy_errors?: [string]}"
     },
     {
       "name": "preview.declare",
