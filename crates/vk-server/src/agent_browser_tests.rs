@@ -1269,3 +1269,153 @@ fn browser_config_section_parses() {
     );
     assert!(parse("").own_previews_only());
 }
+
+/// Review finding 5: a pane denied `foreign_preview` can't make the preview its own by
+/// redeclaring the port: the declare is refused, the owner stays, and the retry is still denied
+/// at all three layers (the `browser.open`/`navigate` pre-check, the session proxy, Fetch).
+/// An unowned preview is claimable only on the caller's own listener; full scope can reassign.
+#[tokio::test(flavor = "multi_thread")]
+async fn redeclaring_a_foreign_preview_does_not_take_it_over() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let e = Env::new();
+    e.put_preview("v2", 6000);
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut().filter(|p| p.handle == "v2") {
+            p.pane = Some("pane-b".into());
+        }
+    });
+    let a = ctx_pane("pane-a");
+    let declare = async |ctx: &Ctx, p: Value| {
+        crate::api::dispatch(&e.server, ctx, "preview.declare", &p).await
+    };
+    let owner = |port: u16| {
+        e.server.with_core(|c| {
+            c.model
+                .previews
+                .iter()
+                .find(|p| p.port == port)
+                .map(|p| (p.pane.clone(), p.task.clone()))
+        })
+    };
+
+    let err = e
+        .call(&a, "browser.open", json!({"preview": "v2"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+
+    // Redeclaring, with or without naming itself as the owner, is refused.
+    for p in [
+        json!({"port": 6000}),
+        json!({"port": 6000, "pane": "pane-a"}),
+        json!({"port": 6000, "label": "mine now"}),
+    ] {
+        let err = declare(&a, p.clone()).await.unwrap_err();
+        assert_eq!(kind(&err), "permission_denied", "{p}");
+        assert_eq!(err.data.details["reason"], "foreign_preview");
+    }
+    // Nor may a pane declare on behalf of a pane it doesn't own.
+    let err = declare(&a, json!({"port": 6200, "pane": "pane-b"}))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "permission_denied");
+    assert_eq!(owner(6000), Some((Some("pane-b".into()), None)));
+    assert_eq!(owner(6200), None);
+
+    // Retry: layer 1, the pre-check.
+    let err = e
+        .call(&a, "browser.open", json!({"preview": "v2"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    let r = e
+        .call(&a, "browser.open", json!({"preview": "v1"}))
+        .await
+        .unwrap();
+    let err = e
+        .call(
+            &a,
+            "browser.navigate",
+            json!({"session": "b1", "url": "http://localhost:6000/"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    // Layer 2: the session's filtering proxy.
+    let proxy_port = r["proxy_port"].as_u64().unwrap() as u16;
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port))
+        .await
+        .unwrap();
+    sock.write_all(b"GET http://127.0.0.1:6000/ HTTP/1.1\r\nHost: 127.0.0.1:6000\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = sock.read(&mut buf).await.unwrap();
+    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+    assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+    assert!(head.contains("foreign_preview"), "{head}");
+    // Layer 3: Fetch.
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    assert_eq!(
+        fetch_decision(
+            &e.server,
+            sess.scope.as_ref(),
+            "http://127.0.0.1:6000/a.js",
+            "Script",
+            false
+        )
+        .await,
+        Some("foreign_preview")
+    );
+
+    // Its own preview redeclares fine and keeps its owner.
+    declare(&a, json!({"port": 5173, "label": "web"}))
+        .await
+        .unwrap();
+    assert_eq!(owner(5173), Some((Some("pane-a".into()), None)));
+
+    // A machine-level preview nobody in pane-a listens on: refused.
+    e.put_preview("v4", 6300);
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut().filter(|p| p.handle == "v4") {
+            p.pane = None;
+        }
+    });
+    let err = declare(&a, json!({"port": 6300})).await.unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    assert_eq!(owner(6300), Some((None, None)));
+
+    // A machine-level preview on pane-a's own listener (this test process): claimable.
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mine = l.local_addr().unwrap().port();
+    e.put_preview("v5", mine);
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut().filter(|p| p.handle == "v5") {
+            p.pane = None;
+        }
+        for p in c.model.panes.iter_mut().filter(|p| p.id == "pane-a") {
+            p.child_pid = Some(std::process::id());
+        }
+    });
+    declare(&a, json!({"port": mine})).await.unwrap();
+    assert_eq!(owner(mine), Some((Some("pane-a".into()), None)));
+    // A fresh port on another pane's listener can't be declared by pane-b either.
+    let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let theirs = l2.local_addr().unwrap().port();
+    let err = declare(&ctx_pane("pane-b"), json!({"port": theirs}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "foreign_preview");
+    drop((l, l2));
+
+    // Full scope moves ownership; then pane-a reaches it.
+    declare(&ctx_full(), json!({"port": 6000, "pane": "pane-a"}))
+        .await
+        .unwrap();
+    assert_eq!(owner(6000), Some((Some("pane-a".into()), None)));
+    assert!(
+        e.call(&a, "browser.open", json!({"preview": "v2"}))
+            .await
+            .is_ok()
+    );
+}

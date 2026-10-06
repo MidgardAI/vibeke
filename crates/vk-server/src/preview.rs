@@ -552,6 +552,42 @@ pub(crate) fn task_of_pane(c: &Core, pane: &str) -> Option<String> {
     c.ws(&p.workspace).and_then(|w| w.task.clone())
 }
 
+/// Does the pane-scoped caller `pane` (whose workspace task is `task`) own `pv`? Its own
+/// task's previews, its own pane's and those of panes it created (06 B5 "own previews only").
+/// The one ownership rule shared by `preview.declare` and the browser session policy.
+pub(crate) fn pane_owns_preview(c: &Core, pane: &str, task: Option<&str>, pv: &Preview) -> bool {
+    if pv.task.is_some() && pv.task.as_deref() == task {
+        return true;
+    }
+    let Some(owner) = &pv.pane else { return false };
+    owner == pane
+        || c.pane(owner)
+            .is_some_and(|p| p.created_by == format!("agent:{pane}"))
+}
+
+/// The pane whose process tree listens on `port` (loopback or wildcard bind), if any. Blocking:
+/// one procinfo walk per live pane.
+fn listener_pane(server: &Server, port: u16) -> Option<String> {
+    let roots: Vec<(String, u32)> = server.with_core(|c| {
+        c.model
+            .panes
+            .iter()
+            .filter(|p| !p.exited)
+            .filter_map(|p| p.child_pid.map(|pid| (p.id.clone(), pid)))
+            .collect()
+    });
+    roots.into_iter().find_map(|(pane, root)| {
+        let pids: Vec<u32> = vk_hold::procinfo::tree(root, 8)
+            .into_iter()
+            .map(|i| i.pid)
+            .collect();
+        sockets::listeners(&pids)
+            .iter()
+            .any(|l| l.port == port && sockets::is_local_bind(&l.addr))
+            .then_some(pane)
+    })
+}
+
 fn significant(a: &Preview, b: &Preview) -> bool {
     a.status != b.status
         || a.pid != b.pid
@@ -1430,6 +1466,56 @@ pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .find(|x| x.port == port && x.status != PreviewStatus::Gone)
             .cloned()
     });
+    // Pane scope (06 B5): a pane declares only for itself, and never takes over a preview that
+    // belongs to another pane or task: the browser pre-check, the session proxy and the Fetch
+    // layer all trust this ownership record. Ownership moves only from full scope.
+    let pane_scoped = ctx.pane_scope.is_some();
+    if let Some(caller) = &ctx.pane_scope {
+        let refuse = |why: &str| {
+            Err(err(
+                ErrorKind::PermissionDenied,
+                format!("preview.declare is not allowed from a pane ({why})"),
+            )
+            .details(json!({"scope": "pane", "reason": "foreign_preview", "port": port})))
+        };
+        let is_mine = |c: &Core, x: &str| {
+            x == caller
+                || c.pane(x)
+                    .is_some_and(|q| q.created_by == format!("agent:{caller}"))
+        };
+        let (caller_task, pane_ok, owns_existing) = server.with_core(|c| {
+            let t = task_of_pane(c, caller);
+            let pane_ok = pane.as_ref().is_none_or(|x| is_mine(c, x));
+            let owns = existing
+                .as_ref()
+                .is_some_and(|x| pane_owns_preview(c, caller, t.as_deref(), x));
+            (t, pane_ok, owns)
+        });
+        if !pane_ok {
+            return refuse("the pane is not yours");
+        }
+        if task.is_some() && task != caller_task {
+            return refuse("the task is not yours");
+        }
+        let unowned = existing
+            .as_ref()
+            .is_none_or(|x| x.pane.is_none() && x.task.is_none());
+        if !owns_existing && !unowned {
+            return refuse("the preview on that port belongs to another pane or task");
+        }
+        if !owns_existing {
+            // A new or machine-level preview: never on another pane's listener, and an
+            // existing machine-level one only on the caller's own.
+            let listener = listener_pane(server, port);
+            let mine = listener
+                .as_deref()
+                .map(|l| server.with_core(|c| is_mine(c, l)));
+            match (existing.is_some(), mine) {
+                (_, Some(true)) | (false, None) => {}
+                _ => return refuse("the port is not your listener"),
+            }
+        }
+    }
     server.previews.dismissed.lock().unwrap().remove(&port);
     let pv = match existing {
         Some(mut x) => {
@@ -1443,10 +1529,13 @@ pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             if label.is_some() {
                 x.label = label;
             }
-            if pane.is_some() {
+            // From a pane, only an unowned preview (on the caller's own listener, checked
+            // above) gets an owner; an owned one keeps its attribution.
+            let reattribute = !pane_scoped || (x.pane.is_none() && x.task.is_none());
+            if reattribute && pane.is_some() {
                 x.pane = pane;
             }
-            if task.is_some() {
+            if reattribute && task.is_some() {
                 x.task = task;
             }
             commit_previews(server, vec![(x.clone(), Some("preview.declared"))]);
