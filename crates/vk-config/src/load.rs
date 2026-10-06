@@ -453,6 +453,28 @@ impl Config {
         if t.root.trim().is_empty() {
             errs.push(problem("tasks.root", "must not be empty"));
         }
+        for (key, o) in &t.repos {
+            let at = format!("tasks.repos.{key}");
+            if key.trim().is_empty() {
+                errs.push(problem("tasks.repos", "empty repo key"));
+            }
+            if let Some(c) = o.ports.count
+                && (c == 0 || u32::from(c) > t.port_pool.len())
+            {
+                errs.push(problem(
+                    format!("{at}.ports.count"),
+                    "must be between 1 and the size of tasks.port_pool",
+                ));
+            }
+            if let Some(tm) = &o.setup.timeout
+                && !valid_duration(tm)
+            {
+                errs.push(problem(
+                    format!("{at}.setup.timeout"),
+                    "expected a duration like \"10m\"",
+                ));
+            }
+        }
 
         let mut labels = BTreeSet::new();
         for (i, m) in self.remote.machine.iter().enumerate() {
@@ -713,6 +735,39 @@ fn check_elements(val: &toml::Value, schema_path: &str, key_path: &str, out: &mu
     }
 }
 
+/// `[tasks.repos."<key>"]` mirrors `.vibeke/task.toml`. `Option` keys are absent from the
+/// default serialization, so the shape is spelled out here.
+fn check_repo_override(raw: &toml::Table, path: &str, out: &mut Vec<Warning>) {
+    fn keys(rel: &str) -> Option<&'static [&'static str]> {
+        Some(match rel {
+            "" => &["files", "deps", "setup", "ports", "env"],
+            "files" => &["copy", "link", "clone", "ignore_missing"],
+            "deps" => &["strategy", "install"],
+            "setup" => &[
+                "script",
+                "run",
+                "timeout",
+                "start_agents_on_failure",
+                "parallel_agent",
+            ],
+            "ports" => &["count", "env"],
+            _ => return None,
+        })
+    }
+    fn go(raw: &toml::Table, rel: &str, path: &str, out: &mut Vec<Warning>) {
+        let Some(allowed) = keys(rel) else { return };
+        for (k, v) in raw {
+            let p = join(path, k);
+            if !allowed.contains(&k.as_str()) {
+                out.push(Warning::new(&p, format!("unknown key `{p}`")));
+            } else if let toml::Value::Table(t) = v {
+                go(t, k, &p, out);
+            }
+        }
+    }
+    go(raw, "", path, out);
+}
+
 fn walk(raw: &toml::Table, known: &toml::Table, path: &str, out: &mut Vec<Warning>) {
     for (k, v) in raw {
         let p = join(path, k);
@@ -726,6 +781,13 @@ fn walk(raw: &toml::Table, known: &toml::Table, path: &str, out: &mut Vec<Warnin
         if path == "agents.harness" {
             // Any harness id is allowed; its keys are checked against the harness schema.
             check_elements(v, "agents.harness.*", &p, out);
+            continue;
+        }
+        if path == "tasks.repos" {
+            // Keys are repo URLs or paths; the value has the task.toml shape.
+            if let toml::Value::Table(t) = v {
+                check_repo_override(t, &p, out);
+            }
             continue;
         }
         let Some(kv) = known.get(k) else {
@@ -795,4 +857,11 @@ pub fn default_config_toml() -> String {
 /// The same document with nothing commented out (used by tests; also handy for `--print`).
 pub fn default_config_toml_uncommented() -> &'static str {
     DEFAULT_TEMPLATE
+}
+
+/// `"90s"`, `"10m"`, `"2h"`, `"1d"` or bare seconds; non-zero.
+fn valid_duration(s: &str) -> bool {
+    let s = s.trim();
+    let digits = s.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(s);
+    digits.parse::<u64>().is_ok_and(|n| n > 0)
 }

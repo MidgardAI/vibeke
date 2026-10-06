@@ -34,8 +34,12 @@ impl CancelToken {
 pub struct SetupOptions {
     /// Run with this cwd.
     pub worktree: PathBuf,
-    /// Script path, relative to `worktree` (or absolute). Run as `sh <script>`.
+    /// Script path, relative to `worktree` (or absolute). Run as `sh <script>`
+    /// after `commands`; an empty path or a missing file means no script.
     pub script: PathBuf,
+    /// Shell commands (`sh -c`) run first, in order: the dependency install,
+    /// then `setup.run`. The first failing step ends setup.
+    pub commands: Vec<String>,
     pub task_id: String,
     pub lease: Option<Lease>,
     /// Extra environment (e.g. the `[env]` table), applied last.
@@ -47,7 +51,7 @@ pub struct SetupOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupStatus {
-    /// The script does not exist; nothing ran.
+    /// There is nothing to run (no commands, no script); nothing ran.
     Skipped,
     Succeeded,
     Failed {
@@ -100,67 +104,85 @@ fn signal_group(pid: u32, sig: libc::c_int) {
 /// `cancel`. The whole process group is terminated (SIGTERM, then SIGKILL
 /// after 2 s) on timeout or cancellation.
 pub fn run_setup(opts: &SetupOptions, cancel: &CancelToken) -> Result<SetupOutcome> {
-    let script = opts.worktree.join(&opts.script);
+    let script = (!opts.script.as_os_str().is_empty())
+        .then(|| opts.worktree.join(&opts.script))
+        .filter(|p| p.is_file());
     let start = Instant::now();
     let done = |status| SetupOutcome {
         status,
         duration: start.elapsed(),
         log_path: opts.log_path.clone(),
     };
-    if !script.is_file() {
+    if script.is_none() && opts.commands.is_empty() {
         return Ok(done(SetupStatus::Skipped));
     }
     if let Some(p) = opts.log_path.parent() {
         std::fs::create_dir_all(p)?;
     }
-    let log = File::create(&opts.log_path)?;
-    let mut cmd = Command::new("sh");
-    cmd.arg(&script)
-        .current_dir(&opts.worktree)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log))
-        .process_group(0);
-    for (k, v) in setup_env(&opts.task_id, &opts.worktree, opts.lease.as_ref())
+    let mut log = File::create(&opts.log_path)?;
+    let env: Vec<(String, String)> = setup_env(&opts.task_id, &opts.worktree, opts.lease.as_ref())
         .into_iter()
         .chain(opts.extra_env.iter().cloned())
-    {
-        cmd.env(k, v);
+        .collect();
+    let mut steps: Vec<(String, Vec<String>)> = opts
+        .commands
+        .iter()
+        .map(|c| (c.clone(), vec!["-c".to_string(), c.clone()]))
+        .collect();
+    if let Some(sc) = &script {
+        steps.push((
+            format!("sh {}", opts.script.display()),
+            vec![sc.to_string_lossy().into_owned()],
+        ));
     }
-    let mut child = cmd.spawn()?;
-    let pid = child.id();
-    loop {
-        if let Some(st) = child.try_wait()? {
-            return Ok(done(if st.success() {
-                SetupStatus::Succeeded
-            } else {
-                SetupStatus::Failed {
-                    exit_code: st.code(),
-                }
-            }));
+    for (label, args) in steps {
+        use std::io::Write;
+        let _ = writeln!(log, "$ {label}");
+        let mut cmd = Command::new("sh");
+        cmd.args(&args)
+            .current_dir(&opts.worktree)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log.try_clone()?))
+            .process_group(0);
+        for (k, v) in &env {
+            cmd.env(k, v);
         }
-        let timed_out = opts.timeout.is_some_and(|t| start.elapsed() >= t);
-        if timed_out || cancel.is_cancelled() {
-            signal_group(pid, libc::SIGTERM);
-            let grace = Instant::now();
-            while child.try_wait()?.is_none() {
-                if grace.elapsed() > Duration::from_secs(2) {
-                    signal_group(pid, libc::SIGKILL);
-                    child.wait()?;
+        let mut child = cmd.spawn()?;
+        let pid = child.id();
+        loop {
+            if let Some(st) = child.try_wait()? {
+                if st.success() {
                     break;
                 }
-                thread::sleep(Duration::from_millis(20));
+                return Ok(done(SetupStatus::Failed {
+                    exit_code: st.code(),
+                }));
             }
-            // Reap any stragglers in the group.
-            signal_group(pid, libc::SIGKILL);
-            return Ok(done(if cancel.is_cancelled() && !timed_out {
-                SetupStatus::Cancelled
-            } else {
-                SetupStatus::TimedOut
-            }));
+            let timed_out = opts.timeout.is_some_and(|t| start.elapsed() >= t);
+            if timed_out || cancel.is_cancelled() {
+                signal_group(pid, libc::SIGTERM);
+                let grace = Instant::now();
+                while child.try_wait()?.is_none() {
+                    if grace.elapsed() > Duration::from_secs(2) {
+                        signal_group(pid, libc::SIGKILL);
+                        child.wait()?;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                // Reap any stragglers in the group.
+                signal_group(pid, libc::SIGKILL);
+                return Ok(done(if cancel.is_cancelled() && !timed_out {
+                    SetupStatus::Cancelled
+                } else {
+                    SetupStatus::TimedOut
+                }));
+            }
+            thread::sleep(Duration::from_millis(20));
         }
-        thread::sleep(Duration::from_millis(20));
     }
+    Ok(done(SetupStatus::Succeeded))
 }
 
 /// A setup running on a background thread.
