@@ -84,13 +84,22 @@ impl Dirs {
         Dirs {
             claude: pick("CLAUDE_CONFIG_DIR", ".claude"),
             codex: pick("CODEX_HOME", ".codex"),
-            pi: match std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from) {
-                Some(a) if a.file_name().is_some_and(|n| n == "agent") && a.parent().is_some() => {
+            // VIBEKE_PI_HOME / VIBEKE_OMP_HOME redirect to scratch copies (tests, pre-switch-over).
+            pi: match (
+                std::env::var_os("VIBEKE_PI_HOME"),
+                std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from),
+            ) {
+                (Some(root), _) => PathBuf::from(root),
+                (None, Some(a))
+                    if a.file_name().is_some_and(|n| n == "agent") && a.parent().is_some() =>
+                {
                     a.parent().map(Path::to_path_buf).unwrap_or_default()
                 }
                 _ => home.join(".pi"),
             },
-            omp: home.join(".omp"),
+            omp: std::env::var_os("VIBEKE_OMP_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".omp")),
         }
     }
     pub fn config_file(&self, h: Harness) -> PathBuf {

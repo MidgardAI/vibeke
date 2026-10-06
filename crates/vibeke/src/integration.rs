@@ -1,4 +1,4 @@
-//! `vibeke integration install|status|uninstall|doctor <claude|codex|all>` (04 §11).
+//! `vibeke integration install|status|uninstall|doctor <claude|codex|pi|omp|all>` (04 §11).
 //!
 //! Writing the user's real `~/.claude` / `~/.codex` needs explicit consent: without `--yes` the
 //! command shows the planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` redirect it (e.g. to
@@ -11,7 +11,14 @@ fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
     match arg {
         Some("claude") => Some(vec![Harness::Claude]),
         Some("codex") => Some(vec![Harness::Codex]),
-        Some("all") | None => Some(vec![Harness::Claude, Harness::Codex]),
+        Some("pi") => Some(vec![Harness::Pi]),
+        Some("omp") => Some(vec![Harness::Omp]),
+        Some("all") | None => Some(vec![
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Pi,
+            Harness::Omp,
+        ]),
         _ => None,
     }
 }
@@ -35,12 +42,19 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let dry = args.iter().any(|a| a == "--dry-run");
     let Some(hs) = harnesses(target) else {
-        eprintln!("vibeke integration {verb} <claude|codex|all> [--dry-run] [--yes]");
+        eprintln!("vibeke integration {verb} <claude|codex|pi|omp|all> [--dry-run] [--yes]");
         return EXIT_USAGE;
     };
     let dirs = Dirs::from_env();
-    let redirected =
-        std::env::var_os("CLAUDE_CONFIG_DIR").is_some() || std::env::var_os("CODEX_HOME").is_some();
+    let redirected = [
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "PI_CODING_AGENT_DIR",
+        "VIBEKE_PI_HOME",
+        "VIBEKE_OMP_HOME",
+    ]
+    .iter()
+    .any(|k| std::env::var_os(k).is_some());
     match verb {
         "list" | "status" => {
             for h in hs {
@@ -164,7 +178,9 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
             EXIT_OK
         }
         _ => {
-            eprintln!("vibeke integration list|status|install|uninstall|doctor <claude|codex|all>");
+            eprintln!(
+                "vibeke integration list|status|install|uninstall|doctor <claude|codex|pi|omp|all>"
+            );
             EXIT_USAGE
         }
     }
