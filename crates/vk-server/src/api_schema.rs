@@ -644,14 +644,17 @@ screenshot.delete :: {id: string, force?: bool} => {id: string, handle: string, 
 
 const MORE_SHAPES: &str = r##"
 # --- assistant (14) ---
-assistant.status :: {} => {enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}}
-assistant.providers :: {} => {connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null}
-assistant.consent :: {workspace?: Target, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]} => {consent: object, notice: string}
-assistant.revoke :: {workspace?: Target, connection?: string} => {revoked: int, cancelled_requests: int}
-assistant.generate :: {operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate, profile?: string, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, include_screen?: bool}
-  => {request: object, preview: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string}, requires_confirmation: bool, confirm_with?: object}
+assistant.status :: {} => {enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}, background?: bool, background_detail?: object, scheduler?: {capacity: int, running: int, waiting: int}, capabilities?: object|null, cache?: {enabled: bool, entries: int}, remote_sources?: bool, keychain_backend?: string}
+assistant.providers :: {} => {connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null, coordinator_note?: string, targets?: [{name: string, adapter: string, endpoint: string}]}
+assistant.consent :: {workspace?: Target, remote_workspace?: string, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]} => {consent: object, notice: string}
+assistant.revoke :: {workspace?: Target, remote_workspace?: string, connection?: string} => {revoked: int, cancelled_requests: int}
+assistant.generate :: {operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate|navigate|decision_card|stall_notice|background_summary|task_title, profile?: string, priority?: interactive|background, stream?: bool, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, interaction?: Target, query?: string, remote_sources?: [object], include_screen?: bool}
+  => {request: object, preview?: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string, priority?: string, coverage_notes?: [string]}, requires_confirmation?: bool, confirm_with?: object|null, deduplicated?: bool, coalesced?: bool, cached?: bool, note?: string}
 assistant.confirm :: {request: string, preview_digest: string} => {request: object}
-assistant.cancel :: {request: string} => {request: object}
+assistant.cancel :: {request: string} => {request: object, detached?: bool, note?: string}
+assistant.models :: {connection?: string, profile?: string, refresh?: bool} => {connection: string, adapter: string, provenance: live|cached|bundled, refreshed_at_ms: int|null, models: [{id: string, display_name?: string|null, created?: string|null, capabilities: object}], note: string, endpoint_host?: string, execution_machine?: string, current_model?: string|null, current_capabilities?: object|null, explicit_model?: string}
+assistant.test :: {profile?: string, probe?: [streaming|json_schema] | string} => {ok: bool, id: string, profile: string, connection: string, adapter: string, model: string, endpoint_host: string, execution_machine: string, latency_ms: int, attempts: int, usage: object, estimated_cost_usd?: number|null, counted: bool, error?: object|null, probes: [object]}
+assistant.background :: {action?: status|tick} => any
 assistant.get :: {request: string} => {request: object}
 assistant.list :: {workspace?: Target, state?: string, limit?: int} => {requests: [object]}
 assistant.purge :: {request?: string, workspace?: Target, all?: bool} => {purged: int}
@@ -1100,9 +1103,16 @@ scrollback.forgotten :: {scope: any} => {panes: int, segments: int, bytes: int, 
 layout.applied :: {workspace: string} => {name: string|null, tabs: int, panes: int, new_workspace: any}
 attention.preference_changed :: {key: {kind: string, id: string}} => {seen: bool, snoozed_until_ms: int|null, pinned: bool}
 assistant.consent_granted :: {workspace?: string} => any
-assistant.consent_revoked :: {workspace: string} => {grants: int, cancelled: int}
+assistant.consent_revoked :: {workspace?: string, remote_workspace?: string} => {grants: int, cancelled: int}
 assistant.purged :: {} => {count: int, reason: string}
+assistant.request_created :: {assistant_request: string} => any
+assistant.request_started :: {assistant_request: string} => any
 assistant.request_finished :: {assistant_request: string} => any
+assistant.models_refreshed :: {assistant_connection: string} => {adapter: string, endpoint_host: string, models: int}
+assistant.test_finished :: {assistant_connection: string} => any
+assistant.stall_notice :: {assistant_request: string, run?: any} => {request: string}
+# transient (seq 0, tier "transient"): streamed text of a running request; not outbox history, never replayed, full-scope subscribers only
+assistant.delta :: {assistant_request: string} => {request: string, seq: int, text: string}
 sandbox.created :: {task: string, sandbox: string} => {level: string, provider: string, network: string, yolo: bool, proxy_port?: int|null, credentials?: any}
 sandbox.boundary_action :: {task?: string|null, sandbox: string} => {kind: push|copy_out|credential_use, interaction: string|null, outcome: applied|failed|denied|expired|cancelled, detail?: any, credentials?: [string], harnesses?: [string]}
 sandbox.runner_lost :: {task: string, sandbox: string} => {state: string, runs: [string], resumable: [string]}

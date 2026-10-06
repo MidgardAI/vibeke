@@ -605,6 +605,10 @@ pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
         }
         r
     };
+    if !dry_run {
+        // Derived assistant results and cached excerpts for this scope go too (14 §8).
+        crate::assist::forget_scope(server, &scope);
+    }
     Ok(json!({
         "scope": scope,
         "pane_ids": pane_ids,

@@ -638,6 +638,42 @@ retention_days = 90
 interval_s     = 15
 pass_bytes     = 8388608              # bytes read per indexing pass
 
+[assistant]                           # see 14 — user config only; repository config cannot set or redirect it
+enabled                     = false   # off by default: no provider is contacted until enabled, a profile is complete and a workspace consented
+default_profile             = "interactive"
+max_concurrent_requests     = 2       # applies immediately
+max_queued_requests         = 16
+daily_request_limit         = 100     # provider attempts per UTC day on this machine
+daily_token_limit           = 200000
+# daily_cost_limit_usd      = 1.0     # optional; needs known pricing
+requests_per_minute         = 6
+request_timeout_seconds     = 60
+result_retention_hours      = 24
+preview_ttl_seconds         = 600
+auto_send                   = []      # operations that skip the preview (the workspace consent must list them too)
+result_cache                = false   # reuse a stored result for identical context under the same grants
+keychain_backend            = "off"   # off | os | fake (tests)
+remote_sources              = false   # accept source data a client collected from other machines
+remote_stale_seconds        = 300
+background_enabled          = false   # opt-in for background features; each also needs its own switch
+background_summaries        = false
+stall_notices               = false
+background_interval_seconds = 300
+stall_repeat_threshold      = 3
+[assistant.connections.primary]
+adapter    = "anthropic"              # anthropic | openai_compatible | ollama | gemini
+# endpoint = "https://api.anthropic.com"   # defaults to the adapter's endpoint; https, or http on loopback
+credential = { env = "VIBEKE_ASSISTANT_API_KEY" }   # or { file = "~/.config/vibeke/assistant.key" } (0600) or { keychain = "vibeke/assistant/primary" }
+[assistant.profiles.interactive]      # optional `background` and `review` profiles serve those features
+connection        = "primary"
+model             = "<selected-model-id>"
+max_input_tokens  = 12000
+max_input_bytes   = 65536
+max_output_tokens = 1024
+# capabilities    = { streaming = "supported", json_schema = "supported" }   # declared support; unknown otherwise
+# input_usd_per_mtok = 1.0            # price overrides for models without built-in pricing
+# output_usd_per_mtok = 5.0
+
 [plugins]                             # see 07
 enabled = ["acme.example"]
 

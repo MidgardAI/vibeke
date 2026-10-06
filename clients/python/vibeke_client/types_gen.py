@@ -882,12 +882,20 @@ ApiSchemaResult = TypedDict("ApiSchemaResult", {
     "schema": Dict[str, Any],
 })
 
+AssistantBackgroundParams = TypedDict("AssistantBackgroundParams", {
+    "action": NotRequired[Literal["status", "tick"]],
+})
+
+AssistantBackgroundResult: TypeAlias = Any
+
 AssistantCancelParams = TypedDict("AssistantCancelParams", {
     "request": str,
 })
 
 AssistantCancelResult = TypedDict("AssistantCancelResult", {
     "request": Dict[str, Any],
+    "detached": NotRequired[bool],
+    "note": NotRequired[str],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -903,6 +911,7 @@ AssistantConfirmResult = TypedDict("AssistantConfirmResult", {
 
 AssistantConsentParams = TypedDict("AssistantConsentParams", {
     "workspace": NotRequired["Target"],
+    "remote_workspace": NotRequired[str],
     "connection": NotRequired[str],
     "profile": NotRequired[str],
     "classes": NotRequired[List[Literal["selected_text", "structured_state", "review_package", "screen"]]],
@@ -917,8 +926,10 @@ AssistantConsentResult = TypedDict("AssistantConsentResult", {
 })
 
 AssistantGenerateParams = TypedDict("AssistantGenerateParams", {
-    "operation": Literal["suggest_task_details", "review_summary", "pane_title", "briefing", "handoff", "effort_estimate"],
+    "operation": Literal["suggest_task_details", "review_summary", "pane_title", "briefing", "handoff", "effort_estimate", "navigate", "decision_card", "stall_notice", "background_summary", "task_title"],
     "profile": NotRequired[str],
+    "priority": NotRequired[Literal["interactive", "background"]],
+    "stream": NotRequired[bool],
     "idempotency_key": NotRequired[str],
     "retry_of": NotRequired[str],
     "inputs": NotRequired[Dict[str, Any]],
@@ -927,6 +938,9 @@ AssistantGenerateParams = TypedDict("AssistantGenerateParams", {
     "pane": NotRequired["Target"],
     "task": NotRequired["Target"],
     "workspace": NotRequired["Target"],
+    "interaction": NotRequired["Target"],
+    "query": NotRequired[str],
+    "remote_sources": NotRequired[List[Dict[str, Any]]],
     "include_screen": NotRequired[bool],
 })
 
@@ -946,13 +960,19 @@ AssistantGenerateResultPreview = TypedDict("AssistantGenerateResultPreview", {
     "omitted": NotRequired[Any],
     "redactions": NotRequired[Any],
     "notice": NotRequired[str],
+    "priority": NotRequired[str],
+    "coverage_notes": NotRequired[List[str]],
 })
 
 AssistantGenerateResult = TypedDict("AssistantGenerateResult", {
     "request": Dict[str, Any],
-    "preview": "AssistantGenerateResultPreview",
-    "requires_confirmation": bool,
-    "confirm_with": NotRequired[Dict[str, Any]],
+    "preview": NotRequired["AssistantGenerateResultPreview"],
+    "requires_confirmation": NotRequired[bool],
+    "confirm_with": NotRequired[Optional[Dict[str, Any]]],
+    "deduplicated": NotRequired[bool],
+    "coalesced": NotRequired[bool],
+    "cached": NotRequired[bool],
+    "note": NotRequired[str],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -974,6 +994,33 @@ AssistantListResult = TypedDict("AssistantListResult", {
     "requests": List[Dict[str, Any]],
 })
 
+AssistantModelsParams = TypedDict("AssistantModelsParams", {
+    "connection": NotRequired[str],
+    "profile": NotRequired[str],
+    "refresh": NotRequired[bool],
+})
+
+AssistantModelsResultModelsItem = TypedDict("AssistantModelsResultModelsItem", {
+    "id": str,
+    "display_name": NotRequired[Optional[str]],
+    "created": NotRequired[Optional[str]],
+    "capabilities": Dict[str, Any],
+})
+
+AssistantModelsResult = TypedDict("AssistantModelsResult", {
+    "connection": str,
+    "adapter": str,
+    "provenance": Literal["live", "cached", "bundled"],
+    "refreshed_at_ms": Optional[int],
+    "models": List["AssistantModelsResultModelsItem"],
+    "note": str,
+    "endpoint_host": NotRequired[str],
+    "execution_machine": NotRequired[str],
+    "current_model": NotRequired[Optional[str]],
+    "current_capabilities": NotRequired[Optional[Dict[str, Any]]],
+    "explicit_model": NotRequired[str],
+})
+
 AssistantProvidersParams: TypeAlias = Dict[str, Any]
 
 AssistantProvidersResultConnectionsItem = TypedDict("AssistantProvidersResultConnectionsItem", {
@@ -985,10 +1032,18 @@ AssistantProvidersResultConnectionsItem = TypedDict("AssistantProvidersResultCon
     "verified": bool,
 })
 
+AssistantProvidersResultTargetsItem = TypedDict("AssistantProvidersResultTargetsItem", {
+    "name": str,
+    "adapter": str,
+    "endpoint": str,
+})
+
 AssistantProvidersResult = TypedDict("AssistantProvidersResult", {
     "connections": List["AssistantProvidersResultConnectionsItem"],
     "profiles": List[Dict[str, Any]],
     "default_profile": NotRequired[Optional[str]],
+    "coordinator_note": NotRequired[str],
+    "targets": NotRequired[List["AssistantProvidersResultTargetsItem"]],
 })
 
 AssistantPurgeParams = TypedDict("AssistantPurgeParams", {
@@ -1004,6 +1059,7 @@ AssistantPurgeResult = TypedDict("AssistantPurgeResult", {
 
 AssistantRevokeParams = TypedDict("AssistantRevokeParams", {
     "workspace": NotRequired["Target"],
+    "remote_workspace": NotRequired[str],
     "connection": NotRequired[str],
 })
 
@@ -1027,6 +1083,17 @@ AssistantStatusResultToday = TypedDict("AssistantStatusResultToday", {
     "remaining": Any,
 })
 
+AssistantStatusResultScheduler = TypedDict("AssistantStatusResultScheduler", {
+    "capacity": int,
+    "running": int,
+    "waiting": int,
+})
+
+AssistantStatusResultCache = TypedDict("AssistantStatusResultCache", {
+    "enabled": bool,
+    "entries": int,
+})
+
 AssistantStatusResult = TypedDict("AssistantStatusResult", {
     "enabled": bool,
     "configured": bool,
@@ -1035,6 +1102,37 @@ AssistantStatusResult = TypedDict("AssistantStatusResult", {
     "profile": NotRequired[Optional[Dict[str, Any]]],
     "limits": NotRequired[Dict[str, Any]],
     "today": NotRequired["AssistantStatusResultToday"],
+    "background": NotRequired[bool],
+    "background_detail": NotRequired[Dict[str, Any]],
+    "scheduler": NotRequired["AssistantStatusResultScheduler"],
+    "capabilities": NotRequired[Optional[Dict[str, Any]]],
+    "cache": NotRequired["AssistantStatusResultCache"],
+    "remote_sources": NotRequired[bool],
+    "keychain_backend": NotRequired[str],
+})
+
+AssistantTestParams = TypedDict("AssistantTestParams", {
+    "profile": NotRequired[str],
+    "probe": NotRequired[Union[List[Literal["streaming", "json_schema"]], str]],
+})
+
+AssistantTestResult = TypedDict("AssistantTestResult", {
+    "ok": bool,
+    "id": str,
+    "profile": str,
+    "connection": str,
+    "adapter": str,
+    "model": str,
+    "endpoint_host": str,
+    "execution_machine": str,
+    "latency_ms": int,
+    "attempts": int,
+    "usage": Dict[str, Any],
+    "estimated_cost_usd": NotRequired[Optional[float]],
+    "counted": bool,
+    "error": NotRequired[Optional[Dict[str, Any]]],
+    "probes": List[Dict[str, Any]],
+    "cursor": NotRequired["Cursor"],
 })
 
 AttentionListParams = TypedDict("AttentionListParams", {
@@ -5554,16 +5652,19 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "assistant.background": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.confirm": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.consent": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.generate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "assistant.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "assistant.models": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "assistant.providers": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "assistant.purge": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.revoke": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "assistant.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "assistant.test": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "attention.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "attention.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "audit.search": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
@@ -5993,12 +6094,33 @@ AssistantConsentGrantedSubject = TypedDict("AssistantConsentGrantedSubject", {
 AssistantConsentGrantedData: TypeAlias = Any
 
 AssistantConsentRevokedSubject = TypedDict("AssistantConsentRevokedSubject", {
-    "workspace": str,
+    "workspace": NotRequired[str],
+    "remote_workspace": NotRequired[str],
 })
 
 AssistantConsentRevokedData = TypedDict("AssistantConsentRevokedData", {
     "grants": int,
     "cancelled": int,
+})
+
+AssistantDeltaSubject = TypedDict("AssistantDeltaSubject", {
+    "assistant_request": str,
+})
+
+AssistantDeltaData = TypedDict("AssistantDeltaData", {
+    "request": str,
+    "seq": int,
+    "text": str,
+})
+
+AssistantModelsRefreshedSubject = TypedDict("AssistantModelsRefreshedSubject", {
+    "assistant_connection": str,
+})
+
+AssistantModelsRefreshedData = TypedDict("AssistantModelsRefreshedData", {
+    "adapter": str,
+    "endpoint_host": str,
+    "models": int,
 })
 
 AssistantPurgedSubject: TypeAlias = Dict[str, Any]
@@ -6008,11 +6130,38 @@ AssistantPurgedData = TypedDict("AssistantPurgedData", {
     "reason": str,
 })
 
+AssistantRequestCreatedSubject = TypedDict("AssistantRequestCreatedSubject", {
+    "assistant_request": str,
+})
+
+AssistantRequestCreatedData: TypeAlias = Any
+
 AssistantRequestFinishedSubject = TypedDict("AssistantRequestFinishedSubject", {
     "assistant_request": str,
 })
 
 AssistantRequestFinishedData: TypeAlias = Any
+
+AssistantRequestStartedSubject = TypedDict("AssistantRequestStartedSubject", {
+    "assistant_request": str,
+})
+
+AssistantRequestStartedData: TypeAlias = Any
+
+AssistantStallNoticeSubject = TypedDict("AssistantStallNoticeSubject", {
+    "assistant_request": str,
+    "run": NotRequired[Any],
+})
+
+AssistantStallNoticeData = TypedDict("AssistantStallNoticeData", {
+    "request": str,
+})
+
+AssistantTestFinishedSubject = TypedDict("AssistantTestFinishedSubject", {
+    "assistant_connection": str,
+})
+
+AssistantTestFinishedData: TypeAlias = Any
 
 AttentionPreferenceChangedSubjectKey = TypedDict("AttentionPreferenceChangedSubjectKey", {
     "kind": str,
@@ -7511,8 +7660,14 @@ EVENT_TYPES = (
     "agent.usage",
     "assistant.consent_granted",
     "assistant.consent_revoked",
+    "assistant.delta",
+    "assistant.models_refreshed",
     "assistant.purged",
+    "assistant.request_created",
     "assistant.request_finished",
+    "assistant.request_started",
+    "assistant.stall_notice",
+    "assistant.test_finished",
     "attention.preference_changed",
     "audit.recorded",
     "auth.elevate_denied",

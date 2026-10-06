@@ -334,5 +334,48 @@ manifest_check = true
 # title = "edit"
 # pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
 
+# AI assistance (spec 14). Off by default: nothing is sent anywhere until you enable it, choose a
+# connection and a profile, and grant consent per workspace (`vibeke assist consent`). User config
+# only: a repository's own config cannot redirect assistant traffic. Requests run on the machine
+# where the server runs, which also owns the credentials; `localhost` endpoints mean that machine.
+# [assistant]
+# enabled                     = false
+# default_profile             = "interactive"
+# max_concurrent_requests     = 2           # a change applies immediately
+# max_queued_requests         = 16
+# daily_request_limit         = 100         # provider attempts per UTC day on this machine
+# daily_token_limit           = 200000
+# daily_cost_limit_usd        = 1.0         # optional; needs known pricing for the model
+# requests_per_minute         = 6
+# request_timeout_seconds     = 60
+# result_retention_hours      = 24
+# preview_ttl_seconds         = 600
+# auto_send                   = []          # operations that skip the preview; the workspace consent must list them too
+# result_cache                = false       # reuse a stored result for identical context under the same grants
+# keychain_backend            = "off"       # off | os (the system credential store through its own CLI) | fake (tests)
+# remote_sources              = false       # accept source data a client collected from other machines
+# remote_stale_seconds        = 300
+# background_enabled          = false       # opt-in: background features (each also needs its own switch below)
+# background_summaries        = false
+# stall_notices               = false
+# background_interval_seconds = 300
+# stall_repeat_threshold      = 3
+#
+# [assistant.connections.primary]
+# adapter    = "anthropic"                  # anthropic | openai_compatible | ollama | gemini
+# # endpoint defaults to the adapter's standard endpoint. OpenRouter: adapter = "openai_compatible",
+# # endpoint = "https://openrouter.ai/api". Plain http:// is allowed for loopback endpoints only.
+# credential = { env = "VIBEKE_ASSISTANT_API_KEY" }   # or { file = "~/.config/vibeke/assistant.key" } (mode 0600) or { keychain = "vibeke/assistant/primary" }
+#
+# [assistant.profiles.interactive]
+# connection        = "primary"
+# model             = "<selected-model-id>"  # a placeholder, not a recommendation: `vibeke assist models --connection primary`
+# max_input_tokens  = 12000
+# max_input_bytes   = 65536
+# max_output_tokens = 1024
+# # capabilities = { streaming = "supported", json_schema = "supported" }   # declare what the model supports; unknown otherwise
+# # Optional `background` and `review` profiles serve those features. Without one the default profile
+# # is used only if it meets the feature's requirements.
+
 # Sections owned by other components and documented with them:
 # [collision], [isolation], [preview], [security], [plugins]

@@ -1446,6 +1446,8 @@ async fn rebuild_index(g: &Global) -> i32 {
     EXIT_OK
 }
 
+mod assist_checks;
+
 const AUDIT: &str = "audit";
 
 /// The session's audit log hash chain (09 §11): intact, cut or edited. `all` lists every
@@ -1556,6 +1558,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     check_topology(&mut r);
     check_isolation(&mut r);
     check_tasks(&mut r);
+    assist_checks::check(&mut r);
     if g.json == Some(true) {
         println!(
             "{}",

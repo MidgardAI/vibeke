@@ -3673,6 +3673,24 @@
         ]
       }
     },
+    "assistant.background": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "tick"
+            ]
+          }
+        }
+      },
+      "result": {}
+    },
     "assistant.cancel": {
       "mutating": true,
       "scope": "full",
@@ -3693,6 +3711,12 @@
         "properties": {
           "request": {
             "type": "object"
+          },
+          "detached": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -3746,6 +3770,9 @@
         "properties": {
           "workspace": {
             "$ref": "#/$defs/Target"
+          },
+          "remote_workspace": {
+            "type": "string"
           },
           "connection": {
             "type": "string"
@@ -3813,11 +3840,26 @@
               "pane_title",
               "briefing",
               "handoff",
-              "effort_estimate"
+              "effort_estimate",
+              "navigate",
+              "decision_card",
+              "stall_notice",
+              "background_summary",
+              "task_title"
             ]
           },
           "profile": {
             "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "interactive",
+              "background"
+            ]
+          },
+          "stream": {
+            "type": "boolean"
           },
           "idempotency_key": {
             "type": "string"
@@ -3845,6 +3887,18 @@
           },
           "workspace": {
             "$ref": "#/$defs/Target"
+          },
+          "interaction": {
+            "$ref": "#/$defs/Target"
+          },
+          "query": {
+            "type": "string"
+          },
+          "remote_sources": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
           },
           "include_screen": {
             "type": "boolean"
@@ -3913,6 +3967,15 @@
               "redactions": {},
               "notice": {
                 "type": "string"
+              },
+              "priority": {
+                "type": "string"
+              },
+              "coverage_notes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
@@ -3923,16 +3986,33 @@
             "type": "boolean"
           },
           "confirm_with": {
-            "type": "object"
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deduplicated": {
+            "type": "boolean"
+          },
+          "coalesced": {
+            "type": "boolean"
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
-          "request",
-          "preview",
-          "requires_confirmation"
+          "request"
         ]
       }
     },
@@ -3993,6 +4073,132 @@
         },
         "required": [
           "requests"
+        ]
+      }
+    },
+    "assistant.models": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "refresh": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string"
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "live",
+              "cached",
+              "bundled"
+            ]
+          },
+          "refreshed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "display_name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "created": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "capabilities": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "id",
+                "capabilities"
+              ]
+            }
+          },
+          "note": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "execution_machine": {
+            "type": "string"
+          },
+          "current_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current_capabilities": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "explicit_model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection",
+          "adapter",
+          "provenance",
+          "refreshed_at_ms",
+          "models",
+          "note"
         ]
       }
     },
@@ -4061,6 +4267,31 @@
                 "type": "null"
               }
             ]
+          },
+          "coordinator_note": {
+            "type": "string"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "adapter": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "adapter",
+                "endpoint"
+              ]
+            }
           }
         },
         "required": [
@@ -4111,6 +4342,9 @@
         "properties": {
           "workspace": {
             "$ref": "#/$defs/Target"
+          },
+          "remote_workspace": {
+            "type": "string"
           },
           "connection": {
             "type": "string"
@@ -4206,11 +4440,182 @@
               "reserved",
               "remaining"
             ]
+          },
+          "background": {
+            "type": "boolean"
+          },
+          "background_detail": {
+            "type": "object"
+          },
+          "scheduler": {
+            "type": "object",
+            "properties": {
+              "capacity": {
+                "type": "integer"
+              },
+              "running": {
+                "type": "integer"
+              },
+              "waiting": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "capacity",
+              "running",
+              "waiting"
+            ]
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cache": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "entries": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "enabled",
+              "entries"
+            ]
+          },
+          "remote_sources": {
+            "type": "boolean"
+          },
+          "keychain_backend": {
+            "type": "string"
           }
         },
         "required": [
           "enabled",
           "configured"
+        ]
+      }
+    },
+    "assistant.test": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "probe": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "streaming",
+                    "json_schema"
+                  ]
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "execution_machine": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "usage": {
+            "type": "object"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counted": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "probes": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "ok",
+          "id",
+          "profile",
+          "connection",
+          "adapter",
+          "model",
+          "endpoint_host",
+          "execution_machine",
+          "latency_ms",
+          "attempts",
+          "usage",
+          "counted",
+          "probes"
         ]
       }
     },
@@ -21005,11 +21410,11 @@
         "properties": {
           "workspace": {
             "type": "string"
+          },
+          "remote_workspace": {
+            "type": "string"
           }
-        },
-        "required": [
-          "workspace"
-        ]
+        }
       },
       "data": {
         "type": "object",
@@ -21024,6 +21429,70 @@
         "required": [
           "grants",
           "cancelled"
+        ]
+      }
+    },
+    "assistant.delta": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request",
+          "seq",
+          "text"
+        ]
+      }
+    },
+    "assistant.models_refreshed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_connection": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_connection"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "models": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "adapter",
+          "endpoint_host",
+          "models"
         ]
       }
     },
@@ -21047,6 +21516,20 @@
         ]
       }
     },
+    "assistant.request_created": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {}
+    },
     "assistant.request_finished": {
       "subject": {
         "type": "object",
@@ -21057,6 +21540,59 @@
         },
         "required": [
           "assistant_request"
+        ]
+      },
+      "data": {}
+    },
+    "assistant.request_started": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {}
+    },
+    "assistant.stall_notice": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_request": {
+            "type": "string"
+          },
+          "run": {}
+        },
+        "required": [
+          "assistant_request"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ]
+      }
+    },
+    "assistant.test_finished": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "assistant_connection": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assistant_connection"
         ]
       },
       "data": {}
