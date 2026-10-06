@@ -12,6 +12,16 @@ pub struct Paths {
     pub state: PathBuf,
 }
 
+/// The exclusive-writer lock of a session's state dir: `flock(LOCK_EX)` on
+/// `<state>/state.lock`, held by a running server for its whole life and by
+/// `vibeke doctor --rebuild-index` while it rebuilds, so the two never write the archive and its
+/// index at the same time (02). Released when dropped or when the process exits (the
+/// descriptor is close-on-exec, so holders and plugins never inherit it).
+#[derive(Debug)]
+pub struct StateLock {
+    _file: std::fs::File,
+}
+
 pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -82,6 +92,44 @@ impl Paths {
     pub fn pidfile(&self) -> PathBuf {
         self.runtime.join("server.pid")
     }
+    /// Exclusive-writer lock of the session's state dir (see [`StateLock`]).
+    pub fn state_lock(&self) -> PathBuf {
+        self.state.join("state.lock")
+    }
+    /// Take the state dir's exclusive-writer lock without waiting; `Ok(None)` when another
+    /// process holds it.
+    pub fn try_lock_state(&self) -> std::io::Result<Option<StateLock>> {
+        use std::os::fd::AsRawFd;
+        std::fs::create_dir_all(&self.state)?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.state_lock())?;
+        // SAFETY: flock on a descriptor we own; the lock lives as long as the file is open.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(Some(StateLock { _file: f }));
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            Ok(None)
+        } else {
+            Err(e)
+        }
+    }
+    /// [`Paths::try_lock_state`], retrying for up to `wait`.
+    pub fn lock_state(&self, wait: std::time::Duration) -> std::io::Result<Option<StateLock>> {
+        let t0 = std::time::Instant::now();
+        loop {
+            if let Some(l) = self.try_lock_state()? {
+                return Ok(Some(l));
+            }
+            if t0.elapsed() >= wait {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
     /// Pane inbox for translated drops/pastes (06 A11.4): `$XDG_STATE_HOME/vibeke/inbox`.
     pub fn inbox() -> PathBuf {
         state_root().join("inbox")
@@ -106,5 +154,32 @@ impl Paths {
             std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One holder at a time; released on drop.
+    #[test]
+    fn state_lock_is_exclusive() {
+        let d = tempfile::tempdir().unwrap();
+        let p = Paths {
+            session: "t".into(),
+            runtime: d.path().join("run"),
+            state: d.path().join("state"),
+        };
+        let held = p.try_lock_state().unwrap().expect("free");
+        assert!(p.try_lock_state().unwrap().is_none());
+        let t0 = std::time::Instant::now();
+        assert!(
+            p.lock_state(std::time::Duration::from_millis(200))
+                .unwrap()
+                .is_none()
+        );
+        assert!(t0.elapsed() >= std::time::Duration::from_millis(200));
+        drop(held);
+        assert!(p.try_lock_state().unwrap().is_some());
     }
 }

@@ -248,3 +248,93 @@ fn doctor_rebuild_index_refuses_while_running_then_rebuilds_offline() {
     // The server comes back up on the rebuilt index and search works.
     s.wait_hits("needleone");
 }
+
+/// Review finding 12: the socket/pid probe is only a snapshot, so doctor and server startup
+/// also share the state dir's writer lock. A server the probe misses still makes doctor refuse;
+/// a server started while a rebuild runs waits for it instead of writing alongside it.
+#[test]
+fn doctor_rebuild_index_and_server_startup_exclude_each_other() {
+    let s = Session::new();
+    s.workspace_with("needlelock");
+    s.wait_hits("needlelock");
+    let run = s.path().join("run/default");
+    let wait_pid_gone = |pid: i32| {
+        let t0 = Instant::now();
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(15),
+                "server did not stop"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+
+    // A running server the probe can't see (no socket, no pidfile at their usual paths):
+    // doctor still refuses, on the lock.
+    std::fs::rename(run.join("vibeke.sock"), run.join("hidden.sock")).unwrap();
+    std::fs::rename(run.join("server.pid"), run.join("hidden.pid")).unwrap();
+    let o = s.run(&["doctor", "--rebuild-index"]);
+    std::fs::rename(run.join("hidden.sock"), run.join("vibeke.sock")).unwrap();
+    std::fs::rename(run.join("hidden.pid"), run.join("server.pid")).unwrap();
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert!(stderr(&o).contains("locked"), "{}", stderr(&o));
+
+    let pid: i32 = std::fs::read_to_string(run.join("server.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    s.json(&["server", "stop", "--kill-panes"]);
+    wait_pid_gone(pid);
+
+    // Doctor passes its probe and takes the lock, then pauses (test hook).
+    let gate = s.path().join("rebuild-gate");
+    let doctor = s
+        .cmd(&["doctor", "--rebuild-index"])
+        .env("VIBEKE_TEST_REBUILD_PAUSE", &gate)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let paused = s.path().join("rebuild-gate.paused");
+    let t0 = Instant::now();
+    while !paused.exists() {
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "doctor did not pause"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // A server starting now must not run alongside the rebuild: it waits for the lock.
+    let mut server = s
+        .cmd(&["server", "run"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        server.try_wait().unwrap().is_none(),
+        "the server waits, it doesn't fail at once"
+    );
+    assert!(
+        std::os::unix::net::UnixStream::connect(run.join("vibeke.sock")).is_err(),
+        "the server must not serve while the rebuild holds the lock"
+    );
+    // The rebuild finishes; then the server comes up on the rebuilt index.
+    std::fs::write(&gate, b"").unwrap();
+    let out = doctor.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["rebuilt"]["rows_indexed"].as_u64().unwrap() > 0, "{v}");
+    s.wait_hits("needlelock");
+    let _ = s.cmd(&["server", "stop", "--kill-panes"]).output();
+    let t0 = Instant::now();
+    while server.try_wait().unwrap().is_none() {
+        if t0.elapsed() > Duration::from_secs(15) {
+            let _ = server.kill();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}

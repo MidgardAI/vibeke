@@ -984,6 +984,24 @@ fn check_topology(r: &mut Report) {
     }
 }
 
+/// `VIBEKE_TEST_HOOKS=1` + `VIBEKE_TEST_REBUILD_PAUSE=<file>`: with the state lock held, create
+/// `<file>.paused` and wait (up to 60 s) until `<file>` exists (tests start a server meanwhile).
+fn test_pause_rebuild() {
+    if std::env::var("VIBEKE_TEST_HOOKS").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(gate) = std::env::var_os("VIBEKE_TEST_REBUILD_PAUSE").map(PathBuf::from) else {
+        return;
+    };
+    let mut paused = gate.clone().into_os_string();
+    paused.push(".paused");
+    let _ = std::fs::write(&paused, b"");
+    let t0 = std::time::Instant::now();
+    while !gate.exists() && t0.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// `vibeke doctor --rebuild-index` (02 "Archive search as implemented", 07 §7): rebuild
 /// `scrollback_fts` and `archive_panes` from the zstd segments on disk. Works offline on the
 /// session's state dir and refuses while the session's server is running (it would be writing
@@ -1014,9 +1032,32 @@ async fn rebuild_index(g: &Global) -> i32 {
         );
         return 1;
     }
-    let report = match vk_store::Store::open(&p.db())
-        .and_then(|s| s.rebuild_archive_index(&p.scrollback()))
-    {
+    // The probe above is a snapshot: a server could start right after it. The state dir's
+    // writer lock, which a server holds for its whole life, closes that window — taken here
+    // and held until the rebuild is done, a server that starts meanwhile waits and then
+    // refuses (leftovers review finding 12).
+    let _lock = match p.try_lock_state() {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            eprintln!(
+                "refusing to rebuild the index of session `{}`: its state is locked ({}), so its server is running (or starting) or another rebuild is in progress; run `vibeke server stop` first (panes survive), then retry",
+                g.session,
+                p.state_lock().display()
+            );
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("cannot lock {}: {e}", p.state_lock().display());
+            return 1;
+        }
+    };
+    test_pause_rebuild();
+    let report = match vk_store::Store::open(&p.db()).and_then(|s| {
+        // Settle purges a crash interrupted first: their staged segments belong back in (or
+        // out of) the archive before it is re-indexed.
+        s.recover_archive_purges(&p.scrollback())?;
+        s.rebuild_archive_index(&p.scrollback())
+    }) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("rebuild failed (the old index is unchanged): {e:#}");
