@@ -71,11 +71,23 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .into_iter()
                 .take(64)
                 .collect();
-            state(server)
+            let n = list.len();
+            let prev = state(server)
                 .devices
                 .lock()
                 .unwrap()
-                .insert(ctx.client_id.clone(), list);
+                .insert(ctx.client_id.clone(), list.clone());
+            if prev.as_ref() != Some(&list) {
+                // Event push: TUIs refresh their devices indicator without polling.
+                let mut c = server.core.lock().unwrap();
+                let mut tx = Tx::new();
+                tx.event(
+                    "client.devices_changed",
+                    json!({"client": ctx.client_id}),
+                    json!({"devices": n}),
+                );
+                let _ = server.commit(&mut c, tx);
+            }
             Ok(json!({}))
         }
         "client.confirm" => confirm(server, ctx, p).await,

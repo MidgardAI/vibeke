@@ -132,6 +132,11 @@ pub struct BrowserPane {
     pub history: Vec<String>,
     pub history_index: u32,
     pub title: String,
+    /// Watch mode (06 B7): the pane shows this agent browser session (handle such as `b3`,
+    /// on this pane's machine) instead of a page of its own. Read-only until taken over.
+    /// Last field (postcard is positional).
+    #[serde(default)]
+    pub watch: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -633,6 +638,7 @@ mod tests {
             history: vec!["http://localhost:5173/".into()],
             history_index: 0,
             title: "app".into(),
+            watch: None,
         });
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["browser"]["url"], "http://localhost:5173/");

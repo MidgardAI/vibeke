@@ -2251,6 +2251,81 @@ async fn install(p: &Value) -> R {
     Ok(json!({"installed": true, "binary": bin, "plan": plan.to_json()}))
 }
 
+// ---- watch / take-over hooks for the browser pane's watch view (06 B7) ----------------------
+
+/// What the watch view (`browser_pane::watch`) needs to know about a session.
+#[derive(Debug, Clone)]
+pub struct WatchInfo {
+    pub handle: String,
+    pub id: String,
+    pub owner_pane: Option<String>,
+    pub url: String,
+    pub viewport: (u32, u32),
+    /// Who holds human control (`None` = the agent drives).
+    pub human: Option<String>,
+}
+
+impl AgentBrowsers {
+    /// The session by handle or id, for the watch view.
+    pub fn watch_info(&self, target: &str) -> Option<WatchInfo> {
+        let sess = self.session(target)?;
+        if sess.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(WatchInfo {
+            handle: sess.handle.clone(),
+            id: sess.id.clone(),
+            owner_pane: sess.owner_pane.clone(),
+            url: sess.url.lock().unwrap().clone(),
+            viewport: sess.viewport,
+            human: sess.human_control(),
+        })
+    }
+
+    /// The newest open session owned by `pane` (the agent's peek "watch" action).
+    pub fn session_of_pane(&self, pane: &str) -> Option<String> {
+        self.sessions()
+            .into_iter()
+            .rev()
+            .find(|x| x.owner_pane.as_deref() == Some(pane) && !x.closed.load(Ordering::SeqCst))
+            .map(|x| x.handle.clone())
+    }
+}
+
+/// Set (`by = Some(holder)`) or clear human control on a session, with the same events as
+/// `browser.take_over` / `browser.release`. Returns whether anything changed.
+pub fn set_human_control(
+    server: &Arc<Server>,
+    target: &str,
+    by: Option<String>,
+) -> Result<bool, RpcError> {
+    let sess = server
+        .agent_browser
+        .session(target)
+        .ok_or_else(|| not_found("browser_session", target))?;
+    let on = by.is_some();
+    let changed = {
+        let mut h = sess.human.lock().unwrap();
+        let changed = h.is_some() != on;
+        *h = by.clone();
+        changed
+    };
+    sess.touch();
+    if changed {
+        emit(
+            server,
+            if on {
+                "browser.taken_over"
+            } else {
+                "browser.released"
+            },
+            &sess,
+            json!({"by": by, "via": "watch_pane"}),
+        );
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 #[path = "agent_browser_tests.rs"]
 mod api_tests;

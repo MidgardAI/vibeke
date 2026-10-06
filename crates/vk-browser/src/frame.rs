@@ -111,6 +111,30 @@ pub fn decode(bytes: &[u8]) -> Result<Rgba> {
     })
 }
 
+/// Scale `img` to fit inside `max_w × max_h` keeping its aspect ratio (up or down; the watch
+/// view fits an agent's viewport into the pane). Returns the image unchanged when it already
+/// has that size or a bound is zero.
+pub fn scale_to_fit(img: &Rgba, max_w: u32, max_h: u32) -> Rgba {
+    if max_w == 0 || max_h == 0 || img.width == 0 || img.height == 0 {
+        return img.clone();
+    }
+    let k = (max_w as f64 / img.width as f64).min(max_h as f64 / img.height as f64);
+    let w = ((img.width as f64 * k).round() as u32).clamp(1, max_w);
+    let h = ((img.height as f64 * k).round() as u32).clamp(1, max_h);
+    if w == img.width && h == img.height {
+        return img.clone();
+    }
+    let Some(src) = image::RgbaImage::from_raw(img.width, img.height, img.data.clone()) else {
+        return img.clone();
+    };
+    let out = image::imageops::resize(&src, w, h, image::imageops::FilterType::Triangle);
+    Rgba {
+        width: w,
+        height: h,
+        data: out.into_raw(),
+    }
+}
+
 /// Encode RGBA as PNG (for kitty `f=100`).
 pub fn encode_png(width: u32, height: u32, rgba: &[u8], fast: bool) -> Result<Vec<u8>> {
     use image::ImageEncoder;
@@ -261,6 +285,22 @@ mod tests {
         let mut i = Rgba::new(w, h);
         i.fill_rect(0, 0, w, h, [255, 255, 255, 255]);
         i
+    }
+
+    #[test]
+    fn scale_to_fit_keeps_aspect() {
+        let mut a = img(1280, 720);
+        a.fill_rect(0, 0, 640, 720, [255, 0, 0, 255]);
+        let s = scale_to_fit(&a, 800, 800);
+        assert_eq!((s.width, s.height), (800, 450));
+        assert_eq!(s.pixel(10, 10)[0], 255);
+        assert!(s.pixel(10, 10)[1] < 10, "left half stays red");
+        assert_eq!(s.pixel(790, 10), [255, 255, 255, 255]);
+        let up = scale_to_fit(&img(100, 50), 400, 400);
+        assert_eq!((up.width, up.height), (400, 200));
+        let same = scale_to_fit(&img(100, 50), 100, 50);
+        assert_eq!((same.width, same.height), (100, 50));
+        assert_eq!(scale_to_fit(&img(10, 10), 0, 5).width, 10);
     }
 
     #[test]

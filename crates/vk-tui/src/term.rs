@@ -125,11 +125,22 @@ pub fn enter(kitty: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The host's window title was pushed (`CSI 22;2t`) before title sync wrote OSC 2; popped on
+/// leave.
+static TITLE_PUSHED: AtomicBool = AtomicBool::new(false);
+
+pub fn title_pushed() {
+    TITLE_PUSHED.store(true, Ordering::SeqCst);
+}
+
 pub fn leave() {
     if !ACTIVE.swap(false, Ordering::SeqCst) {
         return;
     }
     let mut out = std::io::stdout();
+    if TITLE_PUSHED.swap(false, Ordering::SeqCst) {
+        let _ = out.write_all(b"\x1b[23;2t");
+    }
     if KITTY_PUSHED.swap(false, Ordering::SeqCst) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }

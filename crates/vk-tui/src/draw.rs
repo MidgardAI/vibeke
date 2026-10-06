@@ -113,7 +113,7 @@ fn vk_now() -> i64 {
         .unwrap_or(0)
 }
 
-fn urgency(app: &App, m: &crate::app::Machine, r: &AgentRun) -> u8 {
+pub(crate) fn urgency(app: &App, m: &crate::app::Machine, r: &AgentRun) -> u8 {
     let (g, _, _, _) = run_state(app, m, r);
     match g.as_str() {
         "⚠" => 8,

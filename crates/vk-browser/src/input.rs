@@ -44,6 +44,9 @@ pub struct KeyParams {
 pub enum CdpInput {
     Key(KeyParams),
     InsertText(String),
+    /// `Input.dispatchMouseEvent` params as given (mouse and wheel; the watch view forwards a
+    /// taken-over pane's mouse this way).
+    Mouse(Value),
 }
 
 impl CdpInput {
@@ -51,6 +54,7 @@ impl CdpInput {
     pub fn to_command(&self) -> (&'static str, Value) {
         match self {
             CdpInput::InsertText(t) => ("Input.insertText", json!({ "text": t })),
+            CdpInput::Mouse(p) => ("Input.dispatchMouseEvent", p.clone()),
             CdpInput::Key(k) => {
                 let mut p = json!({
                     "type": k.kind,

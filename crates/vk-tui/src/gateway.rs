@@ -14,6 +14,8 @@ use vk_proto::model::{Interaction, InteractionStatus};
 pub const ACTIVITY_EVERY: Duration = Duration::from_secs(10);
 const EVENTS_EVERY: Duration = Duration::from_secs(1);
 const LIST_EVERY: Duration = Duration::from_secs(15);
+/// With event push the list is refreshed on `client.*` events; this is only a safety net.
+const LIST_EVERY_PUSH: Duration = Duration::from_secs(120);
 /// A request with no answer for this long is considered lost (disconnect) and re-sent.
 const INFLIGHT_MAX: Duration = Duration::from_secs(10);
 /// Keys right after an overlay appears are swallowed: they were typed for the pane.
@@ -86,6 +88,10 @@ struct Per {
     list_sent: Option<Instant>,
     next_list: Option<Instant>,
     devices: u32,
+    /// The server pushes our events (`crate::push`): no `events.read` polling once caught up.
+    push: bool,
+    /// The one catch-up `events.read` after (re)connecting or a lag has completed.
+    caught_up: bool,
 }
 
 fn ready(sent: Option<Instant>, next: Option<Instant>, now: Instant) -> bool {
@@ -284,6 +290,45 @@ pub fn on_connected(app: &mut App, i: usize) {
     *app.gateway.per(i) = Per::default();
 }
 
+/// Event push on/off for machine `i` (set after connecting, see `crate::push`).
+pub fn set_push(app: &mut App, i: usize, on: bool) {
+    let p = app.gateway.per(i);
+    p.push = on;
+    p.caught_up = false;
+}
+
+/// Whether machine `i` is still polled for confirm events.
+pub fn polling(app: &mut App, i: usize) -> bool {
+    let p = app.gateway.per(i);
+    !(p.push && p.caught_up)
+}
+
+/// A pushed `client.*` event: refresh the client/device list now.
+pub fn refresh_list(app: &mut App, i: usize) {
+    if !app.machines[i].connected() {
+        return;
+    }
+    let now = Instant::now();
+    let p = app.gateway.per(i);
+    if p.list_sent
+        .is_some_and(|s| now.saturating_duration_since(s) <= INFLIGHT_MAX)
+    {
+        // One in flight; ask again right after it answers.
+        p.next_list = Some(now);
+        return;
+    }
+    p.list_sent = Some(now);
+    p.next_list = Some(now + LIST_EVERY_PUSH);
+    app.command_on(i, "client.list", json!({}), Pending::Gateway(Reply::List));
+}
+
+/// The server dropped pushed events for us: one more `events.read` from the cursor.
+pub fn catch_up(app: &mut App, i: usize) {
+    let p = app.gateway.per(i);
+    p.caught_up = false;
+    p.next_events = None;
+}
+
 pub fn tick(app: &mut App) {
     let now = Instant::now();
     if app.gateway.expire(now) || app.gateway.modal() {
@@ -293,12 +338,13 @@ pub fn tick(app: &mut App) {
         if !app.machines[i].connected() {
             continue;
         }
-        let (do_events, do_list, cursor) = {
+        let (do_events, do_list, cursor, push) = {
             let p = app.gateway.per(i);
             (
-                ready(p.events_sent, p.next_events, now),
+                ready(p.events_sent, p.next_events, now) && !(p.push && p.caught_up),
                 ready(p.list_sent, p.next_list, now),
                 p.cursor,
+                p.push,
             )
         };
         if do_events {
@@ -315,7 +361,7 @@ pub fn tick(app: &mut App) {
         if do_list {
             let p = app.gateway.per(i);
             p.list_sent = Some(now);
-            p.next_list = Some(now + LIST_EVERY);
+            p.next_list = Some(now + if push { LIST_EVERY_PUSH } else { LIST_EVERY });
             app.command_on(i, "client.list", json!({}), Pending::Gateway(Reply::List));
         }
     }
@@ -349,7 +395,10 @@ pub fn on_reply(app: &mut App, i: usize, reply: Reply, res: Result<Value, RpcErr
         Reply::Events => {
             app.gateway.per(i).events_sent = None;
             match res {
-                Ok(v) => on_events(app, i, &v, now_ms(), now),
+                Ok(v) => {
+                    app.gateway.per(i).caught_up = true;
+                    on_events(app, i, &v, now_ms(), now)
+                }
                 Err(_) => app.gateway.per(i).next_events = Some(now + Duration::from_secs(30)),
             }
         }

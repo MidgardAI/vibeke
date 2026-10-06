@@ -655,3 +655,158 @@ fn browser_pane_real_chromium() {
         "Vibeke profile under the test state dir"
     );
 }
+
+/// Playwright's headless shell on disk (never downloaded here).
+fn playwright_shell() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let mut best: Option<(u32, String)> = None;
+    for root in [
+        format!("{home}/Library/Caches/ms-playwright"),
+        format!("{home}/.cache/ms-playwright"),
+    ] {
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(rev) = name
+                .strip_prefix("chromium_headless_shell-")
+                .and_then(|r| r.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            for sub in [
+                "chrome-headless-shell-mac-arm64/chrome-headless-shell",
+                "chrome-headless-shell-mac-x64/chrome-headless-shell",
+                "chrome-headless-shell-linux64/chrome-headless-shell",
+            ] {
+                let p = e.path().join(sub);
+                if p.is_file() && best.as_ref().is_none_or(|b| b.0 < rev) {
+                    best = Some((rev, p.display().to_string()));
+                }
+            }
+        }
+    }
+    best.map(|b| b.1)
+}
+
+fn release_tile(t: &vk_proto::render::MediaTile) {
+    if let TileData::Shm { name, .. } = &t.data {
+        vk_browser::kitty::shm::unlink(name);
+    }
+}
+
+/// Watch / take over an agent's browser session (06 B7) with Playwright's headless shell:
+/// `vibeke browser watch b1` opens a watch pane next to a pane; the agent session's
+/// screencast arrives as tiles on the media channel; keys are ignored until the pane takes
+/// the session over; then they reach the page; closing the pane releases it.
+#[test]
+fn watch_agent_session_real_chromium() {
+    if std::env::var("VIBEKE_BROWSER_TESTS").as_deref() != Ok("1") {
+        eprintln!("VIBEKE_BROWSER_TESTS != 1; skipping");
+        return;
+    }
+    let Some(shell) = playwright_shell() else {
+        eprintln!("no Playwright chrome-headless-shell on disk; skipping");
+        return;
+    };
+    let s = Session::new(false);
+    std::fs::write(
+        s.path().join("config.toml"),
+        format!("[preview]\nbrowser_path = \"{shell}\"\nbrowser_idle = \"60s\"\n"),
+    )
+    .unwrap();
+    let page = r#"<html><head><title>keys 0</title><style>
+        html,body{margin:0;height:100%;background:rgb(0,160,0)}</style></head><body>
+      <script>
+        let n = 0;
+        document.addEventListener('keydown', e => {
+          n++; document.title = 'keys ' + n + ' ' + e.key;
+          document.body.style.background = n % 2 ? 'rgb(200,0,0)' : 'rgb(0,0,200)';
+        });
+      </script></body></html>"#;
+    let port = http(vec![("/", page.to_string())]);
+    let src = root_pane(&s);
+    s.json(&["preview", "declare", &port.to_string(), "--label", "app"]);
+    let open = s.json(&["browser", "open", "v1"]);
+    assert_eq!(open["session"], "b1", "{open}");
+    let title = |s: &Session| -> String {
+        s.json(&["browser", "eval", "b1", "document.title"])["value"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    assert_eq!(title(&s), "keys 0");
+    let w = s.json(&["browser", "watch", "b1", "--pane", &src]);
+    assert_eq!(w["opened_in"], "watch", "{w}");
+    let wp = w["pane"].as_str().unwrap().to_string();
+    let spec = s.browser_spec(&wp);
+    assert_eq!(spec.watch.as_deref(), Some("b1"));
+    let mut r = Render::attach(&s.socket(), "watcher");
+    r.view(vec![media_pane(&wp, spec, 60, 30)]);
+    // The agent's page (green) arrives scaled into 60×30 cells of 16×32 px.
+    let (m, states) = r.media(|m| m.reset && !m.tiles.is_empty(), Duration::from_secs(30));
+    assert!(
+        m.width <= 960 && m.height <= 960,
+        "{}x{}",
+        m.width,
+        m.height
+    );
+    let px = tile_px(&m.tiles[0]);
+    assert!(px[1] > 120 && px[0] < 60, "green page: {:?}", &px[..4]);
+    for t in &m.tiles[1..] {
+        release_tile(t);
+    }
+    if let Some(st) = states.last() {
+        assert_eq!(st.watch.as_deref(), Some("b1"));
+        assert!(!st.human_control);
+    }
+    // Read-only: a key does nothing to the page.
+    r.cmd(&wp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('x')));
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(title(&s), "keys 0");
+    // Take over: keys reach the page through the agent session.
+    r.cmd(&wp, BrowserCmd::TakeOver(true));
+    let st = r.state(|st| st.controlled_here, Duration::from_secs(10));
+    assert!(st.human_control);
+    r.cmd(&wp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('k')));
+    let t0 = Instant::now();
+    while title(&s) != "keys 1 k" {
+        assert!(t0.elapsed() < Duration::from_secs(10), "key not delivered");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The page turned red: a changed frame arrives.
+    let (m, _) = r.media(
+        |m| {
+            m.tiles.first().is_some_and(|t| {
+                let px = tile_px(t);
+                px[0] > 150 && px[1] < 80
+            })
+        },
+        Duration::from_secs(10),
+    );
+    for t in &m.tiles[1..] {
+        release_tile(t);
+    }
+    let list = s.json(&["browser", "list"]);
+    assert_eq!(list["sessions"][0]["human_control"], true, "{list}");
+    // Release.
+    r.cmd(&wp, BrowserCmd::TakeOver(false));
+    r.state(|st| !st.human_control, Duration::from_secs(10));
+    // Take over again and close the pane: control goes back to the agent.
+    r.cmd(&wp, BrowserCmd::TakeOver(true));
+    r.state(|st| st.controlled_here, Duration::from_secs(10));
+    s.json(&["pane", "close", &wp]);
+    let t0 = Instant::now();
+    loop {
+        let list = s.json(&["browser", "list"]);
+        if list["sessions"][0]["human_control"] == false {
+            break;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "not released: {list}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
