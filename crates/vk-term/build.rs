@@ -79,26 +79,34 @@ fn main() {
     let prefix = out.join("ghostty-out");
     let optimize = env::var("LIBGHOSTTY_VT_OPTIMIZE").unwrap_or_else(|_| "ReleaseFast".into());
     let zig = env::var("ZIG").unwrap_or_else(|_| "zig".into());
-    let status = Command::new(&zig)
-        .current_dir(&build_root)
-        .arg("build")
-        .arg("--prefix")
-        .arg(&prefix)
-        .arg("--cache-dir")
-        .arg(out.join("zig-cache"))
-        .arg("-Demit-lib-vt")
-        .arg("-Demit-xcframework=false")
-        .arg(format!("-Doptimize={optimize}"))
-        .arg(format!("-Dtarget={}", zig_target(&target)))
-        // Explicit versions keep Ghostty's build from running `git describe` in our repo.
-        .arg(format!("-Dversion-string={version}+{}", &commit[..7]))
-        .status()
-        .unwrap_or_else(|e| {
-            panic!(
-                "vk-term: cannot run `{zig}` ({e}). libghostty-vt needs Zig 0.16.0: run \
+    let run_zig = || {
+        Command::new(&zig)
+            .current_dir(&build_root)
+            .arg("build")
+            .arg("--prefix")
+            .arg(&prefix)
+            .arg("--cache-dir")
+            .arg(out.join("zig-cache"))
+            .arg("-Demit-lib-vt")
+            .arg("-Demit-xcframework=false")
+            .arg(format!("-Doptimize={optimize}"))
+            .arg(format!("-Dtarget={}", zig_target(&target)))
+            // Explicit versions keep Ghostty's build from running `git describe` in our repo.
+            .arg(format!("-Dversion-string={version}+{}", &commit[..7]))
+            .status()
+    };
+    // On a cold cache Zig fetches Ghostty's dependencies over the network; retry once so a
+    // transient connection error (seen on CI runners) doesn't fail the build.
+    let status = match run_zig() {
+        Ok(s) if !s.success() => run_zig(),
+        other => other,
+    }
+    .unwrap_or_else(|e| {
+        panic!(
+            "vk-term: cannot run `{zig}` ({e}). libghostty-vt needs Zig 0.16.0: run \
                  `mise install` (pinned in mise.toml) or set ZIG"
-            )
-        });
+        )
+    });
     assert!(
         status.success(),
         "vk-term: `zig build -Demit-lib-vt` failed ({status}); check `zig version` is 0.16.0"
