@@ -77,12 +77,51 @@ pub const USER_VAR_NAME_MAX: usize = 64;
 pub const USER_VAR_VALUE_MAX: usize = 4096;
 /// Longest OSC 8 URI kept on a row; longer links render as plain text.
 pub const LINK_URI_MAX: usize = 2048;
-/// Largest decoded image a pane may store (03 §9 `graphics.max_image_bytes`): bigger kitty
-/// transmissions and PNGs are refused by the engine.
+/// Default largest decoded image a pane may store (03 §9 `graphics.max_image_bytes`): bigger
+/// kitty transmissions and PNGs are refused by the engine.
 pub const MAX_IMAGE_BYTES: usize = 32 << 20;
-/// Kitty image storage per pane screen (03 §9 `graphics.max_total_per_pane`); the engine
-/// evicts the oldest images beyond it.
+/// Default kitty image storage per pane screen (03 §9 `graphics.max_total_per_pane`); the
+/// engine evicts the oldest images beyond it.
 pub const MAX_IMAGES_PER_PANE: u64 = 256 << 20;
+/// Upper bound for `graphics.max_image_bytes`: an image's base64 APC must fit the snapshot
+/// continuation limit.
+pub const MAX_IMAGE_BYTES_CAP: usize = 48 << 20;
+
+static GRAPHICS_MAX_IMAGE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(MAX_IMAGE_BYTES);
+static GRAPHICS_MAX_TOTAL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(MAX_IMAGES_PER_PANE);
+
+/// The `[graphics]` limits (03 §9) for engines created or restored from now on. The image
+/// size is clamped to 64 KiB ..= [`MAX_IMAGE_BYTES_CAP`]; the per-pane total to at least one
+/// image.
+pub fn set_graphics_limits(max_image_bytes: u64, max_total_per_pane: u64) {
+    use std::sync::atomic::Ordering;
+    let (img, total) = clamp_graphics_limits(max_image_bytes, max_total_per_pane);
+    GRAPHICS_MAX_IMAGE.store(img, Ordering::Relaxed);
+    GRAPHICS_MAX_TOTAL.store(total, Ordering::Relaxed);
+}
+
+fn clamp_graphics_limits(max_image_bytes: u64, max_total_per_pane: u64) -> (usize, u64) {
+    let img =
+        (max_image_bytes.min(usize::MAX as u64) as usize).clamp(64 << 10, MAX_IMAGE_BYTES_CAP);
+    (img, max_total_per_pane.max(img as u64))
+}
+
+/// The configured largest image (see [`set_graphics_limits`]).
+pub fn max_image_bytes() -> usize {
+    GRAPHICS_MAX_IMAGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The configured per-pane image storage.
+pub fn max_images_per_pane() -> u64 {
+    GRAPHICS_MAX_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Images saved with a snapshot are capped at this many bytes in total.
+const SNAPSHOT_IMAGES_MAX: usize = 64 << 20;
+/// Marks the optional images section after the snapshot header.
+const IMAGES_MAGIC: &[u8; 4] = b"VKIM";
 /// Largest PNG side accepted by the decoder.
 const PNG_MAX_SIDE: u32 = 10_000;
 
@@ -108,9 +147,41 @@ pub struct ImagePlacement {
     pub rows: u32,
     /// Kitty z-index (negative = below text).
     pub z: i32,
+    /// A virtual placement (`U=1`): the program draws unicode placeholder cells for it, so
+    /// `col`/`row` are 0 and `cols`/`rows` are the placement's grid size.
+    pub virt: bool,
     /// Source rectangle in the stored image and its generation (to fetch the pixels).
     src: (u32, u32, u32, u32),
     generation: u64,
+}
+
+/// A kitty image and its placements, kept with a snapshot (03 §2.4: the engine's own
+/// snapshot carries placeholder cells but no image state).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SavedImage {
+    id: u32,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SavedPlace {
+    image_id: u32,
+    placement_id: u32,
+    virt: bool,
+    col: i32,
+    row: i32,
+    cols: u32,
+    rows: u32,
+    z: i32,
+    src: (u32, u32, u32, u32),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct SavedGraphics {
+    images: Vec<SavedImage>,
+    places: Vec<SavedPlace>,
 }
 
 /// The output of the last command, from OSC 133 marks (`pane.read --source last-command`).
@@ -220,6 +291,8 @@ pub struct Engine {
     last_exit: Option<i32>,
     /// Content hashes of cropped images by (image id, generation, source rect).
     image_hashes: RefCell<ImageHashes>,
+    /// DCS tmux passthrough unwrap (`terminal.allow_passthrough`, 03 §8); `None` = off.
+    passthrough: Option<crate::passthrough::Unwrap>,
 }
 
 // SAFETY: the libghostty-vt handles are plain heap objects without thread affinity; `Engine`
@@ -619,6 +692,7 @@ impl Engine {
             write_chunk: usize::MAX,
             last_exit: None,
             image_hashes: RefCell::new(std::collections::HashMap::new()),
+            passthrough: None,
         };
         e.configure_graphics();
         e.set_line_limit();
@@ -655,8 +729,8 @@ impl Engine {
     /// [`decode_png`].
     fn configure_graphics(&mut self) {
         install_png_decoder();
-        let limit: u64 = MAX_IMAGES_PER_PANE;
-        let apc: usize = MAX_IMAGE_BYTES / 3 * 4 + (1 << 16);
+        let limit: u64 = max_images_per_pane();
+        let apc: usize = max_image_bytes() / 3 * 4 + (1 << 16);
         let yes = true;
         let no = false;
         let tmp = std::env::temp_dir().to_string_lossy().into_owned();
@@ -798,26 +872,7 @@ impl Engine {
             info.source_width,
             info.source_height,
         );
-        let key = (id, generation, [src.0, src.1, src.2, src.3]);
-        let cached = self.image_hashes.borrow().get(&key).copied();
-        let hash = match cached {
-            Some(h) => h,
-            None => {
-                let px = crop_rgba(img, src)?;
-                let mut hs = blake3::Hasher::new();
-                hs.update(&src.2.to_le_bytes());
-                hs.update(&src.3.to_le_bytes());
-                hs.update(&px);
-                let mut h = [0u8; 16];
-                h.copy_from_slice(&hs.finalize().as_bytes()[..16]);
-                let mut c = self.image_hashes.borrow_mut();
-                if c.len() > 256 {
-                    c.clear();
-                }
-                c.insert(key, h);
-                h
-            }
-        };
+        let hash = self.hash_of(img, id, generation, src)?;
         Some(ImagePlacement {
             image_id: id,
             placement_id: pid,
@@ -829,9 +884,273 @@ impl Engine {
             cols: info.grid_cols,
             rows: info.grid_rows,
             z,
+            virt: false,
             src,
             generation,
         })
+    }
+
+    /// Virtual kitty placements (`U=1`) of the active screen: images the program shows through
+    /// its own unicode placeholder cells (03 §9). The pixels are the whole image (or the
+    /// placement's source rectangle); `cols`/`rows` are the placement's grid size.
+    pub fn virtual_placements(&self) -> Vec<ImagePlacement> {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        let mut out = Vec::new();
+        if g.is_null() {
+            return out;
+        }
+        unsafe {
+            let mut it: sys::GhosttyKittyGraphicsPlacementIterator = ptr::null_mut();
+            if sys::ghostty_kitty_graphics_placement_iterator_new(ptr::null(), &mut it)
+                != sys::GHOSTTY_SUCCESS
+            {
+                return out;
+            }
+            if sys::ghostty_kitty_graphics_get(
+                g,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+                (&raw mut it).cast(),
+            ) == sys::GHOSTTY_SUCCESS
+            {
+                while sys::ghostty_kitty_graphics_placement_next(it) {
+                    if let Some(p) = self.virtual_placement(g, it) {
+                        out.push(p);
+                    }
+                }
+            }
+            sys::ghostty_kitty_graphics_placement_iterator_free(it);
+        }
+        out.sort_by_key(|p| (p.image_id, p.placement_id));
+        out
+    }
+
+    unsafe fn virtual_placement(
+        &self,
+        g: sys::GhosttyKittyGraphics,
+        it: sys::GhosttyKittyGraphicsPlacementIterator,
+    ) -> Option<ImagePlacement> {
+        let u32_of = |key: c_int| {
+            let mut v = 0u32;
+            unsafe { sys::ghostty_kitty_graphics_placement_get(it, key, (&raw mut v).cast()) };
+            v
+        };
+        let mut virt = false;
+        unsafe {
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+                (&raw mut virt).cast(),
+            );
+        }
+        if !virt {
+            return None;
+        }
+        let id = u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID);
+        let pid = u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID);
+        let cols = u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS);
+        let rows = u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS);
+        let img = unsafe { sys::ghostty_kitty_graphics_image(g, id) };
+        if img.is_null() {
+            return None;
+        }
+        let (w, h) = (
+            image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH),
+            image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT),
+        );
+        let (sx, sy) = (
+            u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_SOURCE_X),
+            u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_SOURCE_Y),
+        );
+        let sw = match u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_SOURCE_WIDTH) {
+            0 => w.saturating_sub(sx),
+            v => v,
+        };
+        let sh = match u32_of(sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_SOURCE_HEIGHT) {
+            0 => h.saturating_sub(sy),
+            v => v,
+        };
+        if sw == 0 || sh == 0 {
+            return None;
+        }
+        let src = (sx, sy, sw, sh);
+        let generation = image_u64(img, sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION);
+        let hash = self.hash_of(img, id, generation, src)?;
+        Some(ImagePlacement {
+            image_id: id,
+            placement_id: pid,
+            hash,
+            width: sw,
+            height: sh,
+            col: 0,
+            row: 0,
+            cols: cols.max(1),
+            rows: rows.max(1),
+            z: 0,
+            virt: true,
+            src,
+            generation,
+        })
+    }
+
+    /// Content hash of an image cropped to `src` (cached by image, generation and rect).
+    fn hash_of(
+        &self,
+        img: sys::GhosttyKittyGraphicsImage,
+        id: u32,
+        generation: u64,
+        src: (u32, u32, u32, u32),
+    ) -> Option<[u8; 16]> {
+        let key = (id, generation, [src.0, src.1, src.2, src.3]);
+        if let Some(h) = self.image_hashes.borrow().get(&key) {
+            return Some(*h);
+        }
+        let px = crop_rgba(img, src)?;
+        let mut hs = blake3::Hasher::new();
+        hs.update(&src.2.to_le_bytes());
+        hs.update(&src.3.to_le_bytes());
+        hs.update(&px);
+        let mut h = [0u8; 16];
+        h.copy_from_slice(&hs.finalize().as_bytes()[..16]);
+        let mut c = self.image_hashes.borrow_mut();
+        if c.len() > 256 {
+            c.clear();
+        }
+        c.insert(key, h);
+        Some(h)
+    }
+
+    /// The images and placements of the active screen, for a snapshot (03 §2.4).
+    fn saved_graphics(&self) -> SavedGraphics {
+        let mut places = self.image_placements();
+        places.extend(self.virtual_placements());
+        let mut out = SavedGraphics::default();
+        if places.is_empty() {
+            return out;
+        }
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        if g.is_null() {
+            return out;
+        }
+        let mut total = 0usize;
+        for p in &places {
+            if !out.images.iter().any(|i| i.id == p.image_id) {
+                let img = unsafe { sys::ghostty_kitty_graphics_image(g, p.image_id) };
+                if img.is_null() {
+                    continue;
+                }
+                let (w, h) = (
+                    image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH),
+                    image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT),
+                );
+                let Some(rgba) = crop_rgba(img, (0, 0, w, h)) else {
+                    continue;
+                };
+                if total + rgba.len() > SNAPSHOT_IMAGES_MAX {
+                    continue;
+                }
+                total += rgba.len();
+                out.images.push(SavedImage {
+                    id: p.image_id,
+                    width: w,
+                    height: h,
+                    rgba,
+                });
+            }
+            if out.images.iter().any(|i| i.id == p.image_id) {
+                out.places.push(SavedPlace {
+                    image_id: p.image_id,
+                    placement_id: p.placement_id,
+                    virt: p.virt,
+                    col: p.col,
+                    row: p.row,
+                    cols: p.cols,
+                    rows: p.rows,
+                    z: p.z,
+                    src: p.src,
+                });
+            }
+        }
+        out
+    }
+
+    /// Transmit saved images and placements into a restored engine: images directly (RGBA),
+    /// virtual placements as such, visible placements at their screen cell (without moving
+    /// the cursor, which is put back afterwards).
+    fn restore_graphics(&mut self, g: &SavedGraphics) {
+        use base64::Engine as _;
+        if g.images.is_empty() {
+            return;
+        }
+        let mut b: Vec<u8> = Vec::new();
+        for img in &g.images {
+            if img.rgba.len() != img.width as usize * img.height as usize * 4 {
+                continue;
+            }
+            let data = base64::engine::general_purpose::STANDARD.encode(&img.rgba);
+            let chunks: Vec<&[u8]> = data.as_bytes().chunks(4096).collect();
+            for (i, c) in chunks.iter().enumerate() {
+                let more = u8::from(i + 1 < chunks.len());
+                if i == 0 {
+                    b.extend_from_slice(
+                        format!(
+                            "\x1b_Ga=t,f=32,s={},v={},i={},q=2,m={more};",
+                            img.width, img.height, img.id
+                        )
+                        .as_bytes(),
+                    );
+                } else {
+                    b.extend_from_slice(format!("\x1b_Gm={more};").as_bytes());
+                }
+                b.extend_from_slice(c);
+                b.extend_from_slice(b"\x1b\\");
+            }
+        }
+        let cur = self.cursor();
+        let pid = |p: &SavedPlace| {
+            if p.placement_id == 0 {
+                String::new()
+            } else {
+                format!(",p={}", p.placement_id)
+            }
+        };
+        for p in &g.places {
+            if p.virt {
+                b.extend_from_slice(
+                    format!(
+                        "\x1b_Ga=p,U=1,i={}{},c={},r={},q=2\x1b\\",
+                        p.image_id,
+                        pid(p),
+                        p.cols,
+                        p.rows
+                    )
+                    .as_bytes(),
+                );
+            } else if p.row >= 0 && p.col >= 0 {
+                b.extend_from_slice(
+                    format!(
+                        "\x1b[{};{}H\x1b_Ga=p,i={}{},c={},r={},x={},y={},w={},h={},z={},C=1,q=2\x1b\\",
+                        p.row + 1,
+                        p.col + 1,
+                        p.image_id,
+                        pid(p),
+                        p.cols,
+                        p.rows,
+                        p.src.0,
+                        p.src.1,
+                        p.src.2,
+                        p.src.3,
+                        p.z
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
+        b.extend_from_slice(format!("\x1b[{};{}H", cur.row + 1, cur.col + 1).as_bytes());
+        let mut sink = Vec::new();
+        let was = self.replaying;
+        self.replaying = true;
+        self.feed(&b, &mut sink);
+        self.replaying = was;
     }
 
     /// The RGBA pixels of a placement (its image cropped to the source rectangle), if the
@@ -941,7 +1260,29 @@ impl Engine {
         self.cb_ref().cwd.as_deref()
     }
 
+    /// `terminal.allow_passthrough` (03 §8): unwrap DCS tmux passthrough so the payload is
+    /// processed as if the program wrote it directly.
+    pub fn set_allow_passthrough(&mut self, on: bool) {
+        match (on, self.passthrough.is_some()) {
+            (true, false) => self.passthrough = Some(Default::default()),
+            (false, true) => self.passthrough = None,
+            _ => {}
+        }
+    }
+
+    pub fn allow_passthrough(&self) -> bool {
+        self.passthrough.is_some()
+    }
+
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<Effect>) {
+        let unwrapped;
+        let bytes = match self.passthrough.as_mut() {
+            Some(u) => {
+                unwrapped = u.feed(bytes);
+                unwrapped.as_slice()
+            }
+            None => bytes,
+        };
         self.tracked.clear();
         self.tracker.feed(bytes, &mut self.tracked);
         for t in std::mem::take(&mut self.tracked) {
@@ -1515,6 +1856,16 @@ impl Engine {
         out.extend_from_slice(SNAPSHOT_MAGIC);
         out.extend_from_slice(&(h.len() as u32).to_le_bytes());
         out.extend_from_slice(&h);
+        // Optional images section (absent when there are none, so older snapshots and
+        // image-free ones read the same).
+        let g = self.saved_graphics();
+        if !g.images.is_empty()
+            && let Ok(gb) = postcard::to_stdvec(&g)
+        {
+            out.extend_from_slice(IMAGES_MAGIC);
+            out.extend_from_slice(&(gb.len() as u32).to_le_bytes());
+            out.extend_from_slice(&gb);
+        }
         unsafe extern "C" fn write(ud: *mut c_void, data: *const u8, len: usize) -> bool {
             let v = unsafe { &mut *(ud as *mut Vec<u8>) };
             v.extend_from_slice(unsafe { bytes(sys::GhosttyString { ptr: data, len }) });
@@ -1543,7 +1894,14 @@ impl Engine {
             "snapshot from engine {}",
             header.engine_version
         );
-        let body = &bytes[8 + hlen..];
+        let mut body = &bytes[8 + hlen..];
+        let mut graphics = SavedGraphics::default();
+        if body.len() >= 8 && &body[..4] == IMAGES_MAGIC {
+            let glen = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+            anyhow::ensure!(body.len() >= 8 + glen, "truncated snapshot images");
+            graphics = postcard::from_bytes(&body[8..8 + glen]).unwrap_or_default();
+            body = &body[8 + glen..];
+        }
         let mut term: sys::GhosttyTerminal = ptr::null_mut();
         let res = unsafe {
             let mut dec: sys::GhosttySnapshotDecoder = ptr::null_mut();
@@ -1584,6 +1942,11 @@ impl Engine {
         let mut sink = Vec::new();
         e.tracker.feed(&cont, &mut sink);
         e.update_scrolled();
+        // Images (03 §2.4): back into the engine before the journal replay continues. Only at
+        // ground: mid-sequence, the transmissions would land inside the unfinished one.
+        if cont.is_empty() {
+            e.restore_graphics(&graphics);
+        }
         Ok(e)
     }
 
@@ -1814,7 +2177,7 @@ fn crop_rgba(img: sys::GhosttyKittyGraphicsImage, src: (u32, u32, u32, u32)) -> 
     if sx.checked_add(sw)? > w || sy.checked_add(sh)? > h {
         return None;
     }
-    if sw as usize * sh as usize * 4 > MAX_IMAGE_BYTES {
+    if sw as usize * sh as usize * 4 > max_image_bytes() {
         return None;
     }
     let mut out = Vec::with_capacity(sw as usize * sh as usize * 4);
@@ -1882,12 +2245,12 @@ pub fn decode_png_rgba(input: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let mut lim = image::Limits::default();
     lim.max_image_width = Some(PNG_MAX_SIDE);
     lim.max_image_height = Some(PNG_MAX_SIDE);
-    lim.max_alloc = Some(2 * MAX_IMAGE_BYTES as u64);
+    lim.max_alloc = Some(2 * max_image_bytes() as u64);
     r.limits(lim);
     let img = r.decode().ok()?.into_rgba8();
     let (w, h) = img.dimensions();
     let px = img.into_raw();
-    (px.len() <= MAX_IMAGE_BYTES).then_some((w, h, px))
+    (px.len() <= max_image_bytes()).then_some((w, h, px))
 }
 
 fn mark_of(sem: i32) -> u8 {
@@ -2303,6 +2666,132 @@ mod tests {
             ),
             "{out:?}"
         );
+    }
+
+    /// Virtual placements (`U=1`) are listed separately with their grid size and the whole
+    /// image (03 §9).
+    #[test]
+    fn kitty_virtual_placements() {
+        let px = vec![7u8; 4 * 2 * 4];
+        let mut e = Engine::new(20, 6, 10);
+        fx(&mut e, &kitty_rgba(11, 4, 2, &px, ",U=1,c=3,r=2"));
+        assert!(e.image_placements().is_empty(), "not a visible placement");
+        let vs = e.virtual_placements();
+        assert_eq!(vs.len(), 1, "{vs:?}");
+        let v = &vs[0];
+        assert!(v.virt);
+        assert_eq!((v.image_id, v.cols, v.rows), (11, 3, 2));
+        assert_eq!((v.width, v.height), (4, 2));
+        assert_eq!(e.image_rgba(v).unwrap(), px);
+    }
+
+    /// Images and placements survive a snapshot: the restored engine has them again before the
+    /// journal replay continues (03 §2.4).
+    #[test]
+    fn snapshot_keeps_kitty_images_and_placements() {
+        let mut px = vec![0u8; 4 * 2 * 4];
+        for (i, b) in px.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let mut e = Engine::new(20, 6, 10);
+        assert!(
+            !e.snapshot().windows(4).any(|w| w == IMAGES_MAGIC),
+            "no images section without images"
+        );
+        let mut b = b"\x1b[3;4H".to_vec();
+        b.extend(kitty_rgba(7, 4, 2, &px, ",p=5,c=3,r=2"));
+        b.extend(kitty_rgba(8, 4, 2, &px, ",U=1,c=2,r=1"));
+        b.extend_from_slice(b"\x1b[6;10Hcursor");
+        fx(&mut e, &b);
+        let before = e.image_placements();
+        assert_eq!(before.len(), 1);
+        let snap = e.snapshot();
+        assert!(snap.windows(4).any(|w| w == IMAGES_MAGIC));
+        let r = Engine::restore(&snap, 10).unwrap();
+        let after = r.image_placements();
+        assert_eq!(after.len(), 1, "{after:?}");
+        let (a, p) = (&after[0], &before[0]);
+        assert_eq!(
+            (
+                a.image_id,
+                a.placement_id,
+                a.col,
+                a.row,
+                a.cols,
+                a.rows,
+                a.hash
+            ),
+            (
+                p.image_id,
+                p.placement_id,
+                p.col,
+                p.row,
+                p.cols,
+                p.rows,
+                p.hash
+            )
+        );
+        assert_eq!(r.image_rgba(a).unwrap(), px);
+        let v = r.virtual_placements();
+        assert_eq!((v.len(), v[0].image_id, v[0].cols), (1, 8, 2));
+        assert_eq!(r.cursor().row, e.cursor().row, "cursor put back");
+        assert_eq!(r.cursor().col, e.cursor().col);
+        assert_eq!(r.screen_text(), e.screen_text());
+        // A snapshot without the section (older format) still restores.
+        let plain = {
+            let mut e2 = Engine::new(20, 6, 10);
+            fx(&mut e2, b"hello");
+            e2.snapshot()
+        };
+        assert!(
+            Engine::restore(&plain, 10)
+                .unwrap()
+                .screen_text()
+                .contains("hello")
+        );
+    }
+
+    /// DCS tmux passthrough (03 §8): unwrapped only when allowed.
+    #[test]
+    fn tmux_passthrough_unwrap() {
+        let wrapped = b"\x1bPtmux;\x1b\x1b]2;from tmux\x07\x1b\\";
+        let mut e = Engine::new(20, 3, 10);
+        assert!(!e.allow_passthrough());
+        fx(&mut e, wrapped);
+        assert_ne!(e.title(), "from tmux", "ignored by default");
+        e.set_allow_passthrough(true);
+        fx(&mut e, wrapped);
+        assert_eq!(e.title(), "from tmux");
+        // A kitty image sent through tmux passthrough is stored and placed.
+        let px = vec![1u8; 8];
+        let inner = kitty_rgba(3, 2, 1, &px, ",c=1,r=1");
+        let mut w = b"\x1bPtmux;".to_vec();
+        for &c in &inner {
+            if c == 0x1b {
+                w.push(0x1b);
+            }
+            w.push(c);
+        }
+        w.extend_from_slice(b"\x1b\\");
+        // Split across writes.
+        let (a, b) = w.split_at(9);
+        fx(&mut e, a);
+        fx(&mut e, b);
+        assert_eq!(e.image_placements().len(), 1);
+    }
+
+    #[test]
+    fn graphics_limits_are_clamped() {
+        assert_eq!(
+            clamp_graphics_limits(32 << 20, 256 << 20),
+            (32 << 20, 256 << 20)
+        );
+        assert_eq!(clamp_graphics_limits(1, 1), (64 << 10, 64 << 10));
+        assert_eq!(
+            clamp_graphics_limits(1 << 40, 1 << 20),
+            (MAX_IMAGE_BYTES_CAP, MAX_IMAGE_BYTES_CAP as u64)
+        );
+        const { assert!(MAX_IMAGE_BYTES_CAP / 3 * 4 + (1 << 16) < CONTINUATION_MAX) };
     }
 
     #[test]

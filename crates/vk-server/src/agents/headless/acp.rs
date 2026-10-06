@@ -3,7 +3,10 @@
 //! mapping is the host's (`agents/acp.rs`): `session/new|load` → `SessionStart`,
 //! `session/prompt` → turn, `session/update` → items, `session/request_permission` → approval
 //! answered with `{outcome: {outcome: "selected", optionId}}`, `fs/read_text_file` /
-//! `fs/write_text_file` served inside the session cwd, `session/cancel` → interrupt.
+//! `fs/write_text_file` served inside the session cwd, `terminal/*` as real panes
+//! ([`super::acp_term`]), `session/cancel` → interrupt. A run Vibeke isolates gets neither fs
+//! nor terminals (both would be carried out on the host): the capabilities say so and the
+//! requests are refused.
 //!
 //! **fs requests.** The path is resolved completely, final component included: anything that
 //! resolves outside the session cwd (through `..`, a symlinked directory or a symlinked file)
@@ -50,6 +53,8 @@ pub struct Acp {
     turn_text: String,
     /// Native refs of `fs/write_text_file` requests already carried out.
     done: HashSet<String>,
+    /// The run is isolated: no host-side fs or terminals.
+    isolated: bool,
 }
 
 fn id_str(id: &Value) -> String {
@@ -79,6 +84,24 @@ impl Acp {
             tools: HashMap::new(),
             turn_text: String::new(),
             done: HashSet::new(),
+            isolated: rec.isolated,
+        }
+    }
+
+    /// An automatic request: `terminal/*` goes to the session, the rest is answered here.
+    fn auto(&self, cx: &mut Cx, id: &Value, method: &str, p: &Value) {
+        if method.starts_with("terminal/") && !self.isolated {
+            cx.terminal(
+                format!("rpc:{}", id_str(id)),
+                super::acp_term::Req {
+                    id: id.clone(),
+                    method: method.to_string(),
+                    params: p.clone(),
+                },
+            );
+        } else {
+            let r = self.auto_response(cx, id, method, p);
+            cx.write(r);
         }
     }
 
@@ -112,6 +135,12 @@ impl Acp {
     fn auto_response(&self, cx: &mut Cx, id: &Value, method: &str, p: &Value) -> Value {
         let err = |code: i64, msg: &str| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": msg}});
         let native_ref = format!("rpc:{}", id_str(id));
+        if self.isolated && (method.starts_with("fs/") || method.starts_with("terminal/")) {
+            return err(
+                -32002,
+                "refused: the run is isolated and the request would be carried out on the host",
+            );
+        }
         match method {
             "fs/read_text_file" => {
                 let path = p.get("path").and_then(Value::as_str).unwrap_or("");
@@ -226,7 +255,7 @@ impl Acp {
                 ) {
                     o.entry("file_path").or_insert(json!(path));
                 }
-                cx.render(format!("\n⏺ {title}\n"));
+                cx.tool_start(&id, title.clone());
                 sig(
                     cx,
                     "PreToolUse",
@@ -295,7 +324,31 @@ impl Acp {
         ) {
             o.entry("file_path").or_insert(json!(path));
         }
-        cx.render(format!("  {} {title}\n", if failed { "✗" } else { "✓" }));
+        let content = u.get("content").cloned().unwrap_or(Value::Null);
+        let diff: String = content
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|c| c.get("type").and_then(Value::as_str) == Some("diff"))
+                    .filter_map(transcript::input_diff)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let output = transcript::result_text(&content).or_else(|| {
+            u.get("rawOutput")
+                .and_then(|o| transcript::result_text(o).or_else(|| o.as_str().map(str::to_string)))
+        });
+        cx.tool_end(
+            &id,
+            if failed {
+                ToolStatus::Failed
+            } else {
+                ToolStatus::Done
+            },
+            output,
+            (!diff.is_empty()).then_some(diff),
+            None,
+        );
         if !quiet {
             cx.signal(
                 if failed { "PostToolUseFailure" } else { "PostToolUse" },
@@ -328,7 +381,7 @@ impl Adapter for Acp {
         self.request(
             cx,
             "initialize",
-            json!({"protocolVersion": super::super::acp::PROTOCOL_VERSION, "clientCapabilities": {"fs": {"readTextFile": true, "writeTextFile": true}, "terminal": false}}),
+            json!({"protocolVersion": super::super::acp::PROTOCOL_VERSION, "clientCapabilities": {"fs": {"readTextFile": !self.isolated, "writeTextFile": !self.isolated}, "terminal": !self.isolated}}),
         );
     }
 
@@ -457,8 +510,7 @@ impl Adapter for Acp {
                 // A replayed request only rebuilds state: its response may follow in the
                 // journal, and `reconcile` answers the ones that stay unanswered.
                 if cx.live {
-                    let r = self.auto_response(cx, id, m, &p);
-                    cx.write(r);
+                    self.auto(cx, id, m, &p);
                 }
             }
             _ => {}
@@ -586,8 +638,7 @@ impl Adapter for Acp {
             );
         }
         for (id, m, p) in self.auto.clone() {
-            let r = self.auto_response(cx, &id, &m, &p);
-            cx.write(r);
+            self.auto(cx, &id, &m, &p);
         }
     }
 

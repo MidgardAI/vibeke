@@ -444,7 +444,7 @@ inbox_retention  = "14d"
 prefix             = "ctrl+b"
 prefix_timeout_ms  = 1500
 prefix_passthrough = true
-altgr_mode         = "auto"           # auto | text | chord
+altgr_mode         = "auto"           # auto | text | chord (auto = text: AltGr keys type their character, 03 §7.1)
 shift_enter_legacy = "cr"             # cr | lf
 # … action = "binding" entries as in §10.2
 [keys.copy_mode]
@@ -541,6 +541,7 @@ integration = "extension"             # extension | rpc | screen
 [agents.harness.codex]
 shim = true                           # adds --disable daemon_auto_start; user args untouched
 headless_shared = false               # one app-server per Vibeke session multiplexing threads (04 §6.2)
+isolated_args = ["-c", 'sandbox_mode="danger-full-access"']  # after `codex` when Vibeke isolates a headless run (04 §6.2)
 
 [policy]                              # rules: 02 §4
 [[policy.rule]]
@@ -621,6 +622,10 @@ size_policy = "latest"                # latest | smallest | pinned — which cli
 
 [render]
 max_unacked = 2                       # in-flight diffs per pane before the server falls back to a full frame (07 §3)
+
+[graphics]                            # images programs place in panes (03 §9); new panes
+max_image_bytes    = "32MiB"          # bigger images are refused (clamped to 64KiB..48MiB)
+max_total_per_pane = "256MiB"         # per pane screen; the oldest images are evicted
 
 [security]                            # see 09
 encrypt_state = false                 # encrypt blobs + scrollback segments at rest with a key in the OS keychain (protects backups, not same-UID processes)

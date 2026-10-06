@@ -24,6 +24,7 @@ pub mod gallery;
 pub mod gateway;
 pub mod groups;
 pub mod inbox;
+pub mod input;
 pub mod keymap;
 pub mod layouts;
 pub mod mouse_focus;

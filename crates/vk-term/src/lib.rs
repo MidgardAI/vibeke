@@ -5,6 +5,7 @@ pub mod encode;
 pub mod engine;
 mod ghostty_sys;
 pub mod keygrammar;
+pub mod passthrough;
 pub mod tracker;
 pub mod vt;
 

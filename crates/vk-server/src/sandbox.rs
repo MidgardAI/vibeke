@@ -745,16 +745,21 @@ pub async fn prepare_headless(
     cwd: &str,
     harness: &str,
     opts: &LaunchOpts,
-) -> Result<(), vk_proto::rpc::RpcError> {
-    let contained = box_for_spawn(server, ws_task, cwd).is_some_and(|b| b.task.is_some())
-        || failed_for_spawn(server, ws_task, cwd).is_some();
+) -> Result<Option<IsolationLevel>, vk_proto::rpc::RpcError> {
+    let task_box = box_for_spawn(server, ws_task, cwd).filter(|b| b.task.is_some());
+    let contained = task_box.is_some() || failed_for_spawn(server, ws_task, cwd).is_some();
     if contained {
         if opts.isolate == Some(IsolationLevel::Host) {
             return Err(invalid(
                 "this workspace is sandboxed; an agent in it cannot run on the host",
             ));
         }
-        return Ok(());
+        // A failed task box refuses the spawn itself; the run is never on the host.
+        return Ok(Some(
+            task_box
+                .map(|b| b.isolation.level)
+                .unwrap_or(IsolationLevel::Sandbox),
+        ));
     }
     if opts.yolo {
         return Err(err(
@@ -769,7 +774,7 @@ pub async fn prepare_headless(
                 "a network profile needs an isolation level (isolate); refusing to run on the host unrestricted",
             ));
         }
-        return Ok(());
+        return Ok(None);
     }
     let cfg = load_cfg();
     let checkout = vk_tasks::repo_root(Path::new(cwd))
@@ -786,7 +791,7 @@ pub async fn prepare_headless(
         ..Default::default()
     };
     prepare_box(server, &format!("pane:{pane_id}"), None, &checkout, req).await?;
-    Ok(())
+    Ok(Some(level))
 }
 
 /// Wrap the pipe-mode spawn of a pane that has a run-scoped box ([`prepare_headless`]);
