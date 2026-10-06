@@ -188,13 +188,33 @@ async fn diff_revs_at(root: &Path, p: &Value) -> R {
         )
         .await?;
         let all = crate::git_api::parse_numstat(&out);
+        // Change kind per path (A/M/D/R/C/T) and rename sources, from --name-status.
+        let names = git(
+            root,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--name-status",
+                "-z",
+                "-M",
+                "--end-of-options",
+                &rev,
+                "--",
+            ],
+        )
+        .await
+        .map(|o| parse_name_status(&o))
+        .unwrap_or_default();
         let truncated = all.len() > MAX_ENTRIES;
         let files: Vec<Value> = all
             .into_iter()
             .take(MAX_ENTRIES)
             .map(|(path, c)| {
+                let ns = names.iter().find(|n| n.path == path);
                 json!({"path": path, "adds": c.map(|c| c.0), "dels": c.map(|c| c.1),
-                       "binary": c.is_none(), "secret": is_secret_path(&path)})
+                       "binary": c.is_none(), "secret": is_secret_path(&path),
+                       "status": ns.map(|n| n.status.to_string()), "orig_path": ns.and_then(|n| n.orig.clone())})
             })
             .collect();
         return Ok(json!({"rev": rev, "files": files, "truncated": truncated}));
@@ -761,5 +781,78 @@ mod tests {
             let e = read(root.clone(), json!({"path": p})).await.unwrap_err();
             assert_eq!(kind(&e), k, "{p}");
         }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct NameStatus {
+    status: char,
+    path: String,
+    orig: Option<String>,
+}
+
+/// Parse `git diff --name-status -z`: `X\0path\0`, or `R100\0old\0new\0` for renames/copies.
+fn parse_name_status(out: &[u8]) -> Vec<NameStatus> {
+    let mut res = Vec::new();
+    let mut it = out
+        .split(|&b| b == 0)
+        .map(|e| String::from_utf8_lossy(e).to_string());
+    while let Some(code) = it.next() {
+        let Some(status) = code.chars().next() else {
+            continue;
+        };
+        if matches!(status, 'R' | 'C') {
+            let (Some(old), Some(new)) = (it.next(), it.next()) else {
+                break;
+            };
+            res.push(NameStatus {
+                status,
+                path: new,
+                orig: Some(old),
+            });
+        } else {
+            let Some(path) = it.next() else { break };
+            res.push(NameStatus {
+                status,
+                path,
+                orig: None,
+            });
+        }
+    }
+    res
+}
+
+#[cfg(test)]
+mod name_status_tests {
+    use super::*;
+
+    #[test]
+    fn parses_name_status() {
+        let v = parse_name_status(b"M\0src/a.rs\0A\0new.rs\0R087\0old.rs\0moved.rs\0D\0gone.rs\0");
+        assert_eq!(
+            v[0],
+            NameStatus {
+                status: 'M',
+                path: "src/a.rs".into(),
+                orig: None
+            }
+        );
+        assert_eq!(v[1].status, 'A');
+        assert_eq!(
+            v[2],
+            NameStatus {
+                status: 'R',
+                path: "moved.rs".into(),
+                orig: Some("old.rs".into())
+            }
+        );
+        assert_eq!(
+            v[3],
+            NameStatus {
+                status: 'D',
+                path: "gone.rs".into(),
+                orig: None
+            }
+        );
     }
 }

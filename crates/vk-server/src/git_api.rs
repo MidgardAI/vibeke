@@ -23,6 +23,9 @@ const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_DIFF: usize = 512 * 1024;
 const MAX_UNTRACKED: u64 = 1024 * 1024;
 const MAX_FILES: usize = 2000;
+/// Untracked files whose lines are counted for `git.status` (and the total bytes read for it).
+const MAX_UNTRACKED_COUNTED: usize = 200;
+const UNTRACKED_COUNT_BUDGET: u64 = 8 * 1024 * 1024;
 
 const SAFE_CONFIG: &[&str] = &[
     "-c",
@@ -392,12 +395,47 @@ async fn status(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     .map(|o| parse_numstat(&o))
     .unwrap_or_default();
     let truncated = st.files.len() > MAX_FILES;
+    // Untracked text files have no numstat: count their lines (no-follow reads, bounded).
+    let untracked: Vec<String> = st
+        .files
+        .iter()
+        .take(MAX_FILES)
+        .filter(|f| f.kind == "untracked" && !is_secret_path(&f.path) && safe_relative(&f.path))
+        .take(MAX_UNTRACKED_COUNTED)
+        .map(|f| f.path.clone())
+        .collect();
+    let root2 = root.clone();
+    let counted: Vec<(String, Option<(u64, u64)>)> = tokio::task::spawn_blocking(move || {
+        let mut budget = UNTRACKED_COUNT_BUDGET;
+        untracked
+            .into_iter()
+            .filter_map(|path| {
+                let bytes = read_untracked(&root2, &path).ok().flatten()?;
+                if budget < bytes.len() as u64 {
+                    return None;
+                }
+                budget -= bytes.len() as u64;
+                if bytes.contains(&0) {
+                    return Some((path, None)); // binary
+                }
+                let lines = bytes.iter().filter(|&&b| b == b'\n').count() as u64
+                    + u64::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+                Some((path, Some((lines, 0))))
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
     let files: Vec<Value> = st
         .files
         .iter()
         .take(MAX_FILES)
         .map(|f| {
-            let counts = numstat.iter().find(|(p, _)| *p == f.path).map(|(_, c)| *c);
+            let counts = numstat
+                .iter()
+                .chain(counted.iter())
+                .find(|(p, _)| *p == f.path)
+                .map(|(_, c)| *c);
             let binary = matches!(counts, Some(None));
             let (adds, dels) = counts.flatten().map_or((None, None), |(a, d)| (Some(a), Some(d)));
             json!({"path": f.path, "orig_path": f.orig, "x": f.x.to_string(), "y": f.y.to_string(), "kind": f.kind,
