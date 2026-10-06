@@ -100,6 +100,28 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// Every kind, in code order of the spec table (07 §1.4); the schema bundle lists them.
+    pub const ALL: [ErrorKind; 18] = [
+        ErrorKind::ParseError,
+        ErrorKind::InvalidRequest,
+        ErrorKind::MethodNotFound,
+        ErrorKind::InvalidParams,
+        ErrorKind::NotFound,
+        ErrorKind::AmbiguousTarget,
+        ErrorKind::PermissionDenied,
+        ErrorKind::Conflict,
+        ErrorKind::Timeout,
+        ErrorKind::Stalled,
+        ErrorKind::Unsupported,
+        ErrorKind::RemoteUnavailable,
+        ErrorKind::RateLimited,
+        ErrorKind::Truncated,
+        ErrorKind::InvalidKey,
+        ErrorKind::Untrusted,
+        ErrorKind::StorageUnavailable,
+        ErrorKind::Internal,
+    ];
+
     pub fn code(self) -> i64 {
         use ErrorKind::*;
         match self {
@@ -148,6 +170,13 @@ impl ErrorKind {
     }
 }
 
+impl ErrorKind {
+    /// Whether errors of this kind are marked `retryable` by [`RpcError::new`].
+    pub fn retryable(self) -> bool {
+        matches!(self, ErrorKind::RemoteUnavailable | ErrorKind::RateLimited)
+    }
+}
+
 impl RpcError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         RpcError {
@@ -156,7 +185,7 @@ impl RpcError {
             data: ErrorData {
                 kind: kind.as_str().into(),
                 details: Value::Null,
-                retryable: matches!(kind, ErrorKind::RemoteUnavailable | ErrorKind::RateLimited),
+                retryable: kind.retryable(),
             },
         }
     }
@@ -176,3 +205,39 @@ impl std::fmt::Display for RpcError {
 }
 
 impl std::error::Error for RpcError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_lists_every_kind_once() {
+        let mut codes: Vec<i64> = ErrorKind::ALL.iter().map(|k| k.code()).collect();
+        codes.sort();
+        codes.dedup();
+        assert_eq!(codes.len(), ErrorKind::ALL.len());
+        // An exhaustive match keeps ALL in step with the enum.
+        for k in ErrorKind::ALL {
+            match k {
+                ErrorKind::ParseError
+                | ErrorKind::InvalidRequest
+                | ErrorKind::MethodNotFound
+                | ErrorKind::InvalidParams
+                | ErrorKind::NotFound
+                | ErrorKind::AmbiguousTarget
+                | ErrorKind::PermissionDenied
+                | ErrorKind::Conflict
+                | ErrorKind::Timeout
+                | ErrorKind::Stalled
+                | ErrorKind::Unsupported
+                | ErrorKind::RemoteUnavailable
+                | ErrorKind::RateLimited
+                | ErrorKind::Truncated
+                | ErrorKind::InvalidKey
+                | ErrorKind::Untrusted
+                | ErrorKind::StorageUnavailable
+                | ErrorKind::Internal => {}
+            }
+        }
+    }
+}

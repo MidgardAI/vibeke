@@ -174,6 +174,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("client.hello", false),
     ("client.list", false),
     ("api.methods", false),
+    ("api.schema", false),
     ("server.status", false),
     ("server.stop", true),
     ("server.reload_config", true),
@@ -598,6 +599,17 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
+        }
+        "api.schema" => {
+            let method = s(p, "method");
+            match crate::api_schema::api_schema(method) {
+                Some(schema) => Ok(json!({"schema": schema})),
+                None => Err(err(
+                    ErrorKind::NotFound,
+                    format!("no schema for method {}", method.unwrap_or_default()),
+                )
+                .details(json!({"object": "method"}))),
+            }
         }
         "server.status" => {
             let (panes, seq) =

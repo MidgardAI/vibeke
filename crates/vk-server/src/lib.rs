@@ -6,6 +6,7 @@
 pub mod agent_browser;
 pub mod agents;
 pub mod api;
+pub mod api_schema;
 pub mod assist;
 pub mod browser_pane;
 pub mod compat;
@@ -29,6 +30,7 @@ pub mod run;
 pub mod sandbox;
 pub mod screenshots;
 pub mod search;
+pub mod shape;
 pub mod theme;
 pub mod timers;
 pub mod tracking;

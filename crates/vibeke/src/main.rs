@@ -121,6 +121,11 @@ fn main() {
         std::process::exit(debug::ptyshot(&args[2..]));
     }
     if args.first().map(String::as_str) == Some("debug")
+        && args.get(1).map(String::as_str) == Some("api-schema")
+    {
+        std::process::exit(debug::api_schema(&args[2..]));
+    }
+    if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("idle")
     {
         std::process::exit(idle::idle(&args[2..]));

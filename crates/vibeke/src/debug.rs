@@ -10,6 +10,52 @@
 use std::time::{Duration, Instant};
 use vk_term::Engine;
 
+/// `vibeke debug api-schema [--out FILE] [--method NAME]`: the JSON Schema 2020-12 bundle of this
+/// binary's control API (methods, events, error kinds), generated offline from the schema
+/// registry (07 §1.5). Prints to stdout unless `--out` is given. `--method` narrows it to one
+/// method's entry (what `api.schema {method}` returns).
+pub fn api_schema(args: &[String]) -> i32 {
+    let get = |k: &str| {
+        args.iter()
+            .position(|a| a == k)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    if let Some(bad) = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| {
+            a.starts_with('-')
+                && !matches!(a.as_str(), "--out" | "--method")
+                && !(*i > 0 && matches!(args[i - 1].as_str(), "--out" | "--method"))
+        })
+        .map(|(_, a)| a)
+    {
+        eprintln!("unknown flag {bad}\nvibeke debug api-schema [--out FILE] [--method NAME]");
+        return 2;
+    }
+    let method = get("--method");
+    let Some(schema) = vk_server::api_schema::api_schema(method.as_deref()) else {
+        eprintln!("no schema for method {}", method.unwrap_or_default());
+        return 1;
+    };
+    let mut text = serde_json::to_string_pretty(&schema).unwrap();
+    text.push('\n');
+    match get("--out") {
+        Some(path) => match std::fs::write(&path, text) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("write {path}: {e}");
+                1
+            }
+        },
+        None => {
+            print!("{text}");
+            0
+        }
+    }
+}
+
 pub fn ptyshot(args: &[String]) -> i32 {
     let get = |k: &str| {
         args.iter()

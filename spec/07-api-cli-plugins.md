@@ -64,8 +64,10 @@ JSON-RPC `error: {code, message, data: {kind, details?, retryable: bool}}`. `dat
 ### 1.5 Versioning
 
 - API string `vibeke/1`. Within a major: new methods, new optional params, new result fields, new event types only. Clients must ignore unknown fields and unknown event types.
-- `api.schema` returns the full JSON Schema (generated from `vk-proto` via `schemars`); CI diffs it against the previous release and fails on breaking changes.
+- `api.schema` returns the full JSON Schema (2020-12); CI diffs it against the previous release and fails on breaking changes.
 - Generated clients: `@vibeke/client` (TypeScript, published to npm), `vibeke-client` (Python), and the Rust `vk-proto` crate.
+- **As built (M6 groundwork, 2026-10-06).** The schema is not derived with `schemars`: most handlers parse `Value` ad hoc, so the shapes are written once in a registry, `crates/vk-server/src/api_schema.rs`, in a small notation (`crates/vk-server/src/shape.rs`: `{field, field?: type = default}`, `[T]`, `A|B`, `{*: T}`, CamelCase shared types mirroring the `vk-proto` model structs). The registry has an entry for every method in every `METHODS` table (params and result), every event type the server emits (subject and data), the notifications (`events.event`, `events.overflow`) and the error kinds (`vk_proto::rpc::ErrorKind::ALL`, code, retryable, `details` shape). Objects are open (unknown fields allowed, 07 §1.5) and every mutating result gains an optional `cursor` (§1.3). Everything else is derived from it: `docs/api/methods.json` (each method's `params`/`result` in the notation), `docs/api/vibeke-1.schema.json`, `vibeke debug api-schema [--out FILE] [--method NAME]` (offline, prints the bundle of the running binary), the `api.schema {method?}` method (`{schema}`: the bundle, or one method's `x-method` entry with the `$defs`) and the generated clients. Bundle layout: shared types under `$defs`, `x-methods {name: {mutating, scope, pane_scope, params, result}}`, `x-events {type: {subject, data}}`, `x-notifications`, `x-errors [{kind, code, retryable, details}]`, `x-transport`. Tests keep the registry honest: every method has a shape and no shape is orphaned, every event type emitted through `.event(…)` is listed, and a live server's results (about 70 methods) and event payloads validate against their shapes (`crates/vibeke/tests/api_schema_live.rs`).
+- **Clients as built.** `clients/typescript` (`@vibeke/client`: Node `net`, `VibekeClient.connect/call/events`, `types.gen.ts` with `Methods`, `EventMap`, `ErrorKind`, `isEvent`; events are an async iterator, errors are `VibekeError`, overflow ends the stream with `EventOverflow`; no dependencies, runs on Node >= 22.18 or Bun) and `clients/python` (`vibeke-client`: stdlib asyncio, Python 3.11+, TypedDicts for every shape, `Client` with one typed coroutine per method, `EventStream` async iterator). The generated files (`types.gen.ts`, `types_gen.py`, `api_gen.py`) are checked in; `cargo test -p vibeke --test api_clients` fails when they drift from the registry (`VIBEKE_UPDATE_CLIENTS=1` regenerates) and also runs both clients' unit tests against an in-process mock and both example scripts against a real isolated server (`server.status`, `workspace.list`, an event subscription that receives the `workspace.created` of a workspace the script creates); it skips when `node`/`bun`/`python3` are missing. Not yet: publishing to npm/PyPI (the TypeScript package is `private` and ships `.ts` sources), a Windows named-pipe transport (M6 Windows), socket-ownership checks like the CLI's (`check_socket_trust`), and a release-over-release schema diff in CI (the freeze test covers method flags only).
 
 ### 1.6 Remote routing
 
@@ -89,7 +91,7 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `status.segments` | `{pane?, client?}` → `{segments: {machine, session, workspace, task, branch, ports, attention, agents_summary, cpu, clock, sync_input}, focus, appearance, client_side: [mode, prefix_indicator]}` — data for the built-in status-bar segments (08 §4) from that client's focus [M4] |
 
 `render.attach` and `client.hello` accept an optional `host: {bundle_id?, term_program?}` (the host terminal's `__CFBundleIdentifier` / `TERM_PROGRAM`), used to raise the window on click-to-focus and to enable native notifications (08 §7.1). *(M4: implemented; the TUI sends it to the server on its own machine only.)*
-| `api.schema` | `{method?}` → `{schema}` |
+| `api.schema` | `{method?}` → `{schema}` — the JSON Schema bundle (§1.5), or with `method` that method's `x-method` entry plus `$defs`; `not_found` for an unknown method |
 | `api.methods` | `{}` → `{methods: [{name, milestone, capability, mutating}]}` |
 | `server.status` | `{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}` |
 | `server.reload_config` | `{}` → `{changed: [keys], errors: []}` |
@@ -782,7 +784,7 @@ vibeke api       schema|methods|call <method> [json]      # raw access
 vibeke doctor    [--fix] [--rebuild-index]   # --rebuild-index: rebuild FTS + derived caches (state tables are the source of truth, 02)
                                 # as built: --rebuild-index rebuilds scrollback_fts/archive_panes from the segments, offline, server stopped (02); --fix is not built
 vibeke forget    --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   # scrollback archive only (02, 09 §9.3); method scrollback.forget
-vibeke debug     bundle [--out file] | holders | replay <pane>
+vibeke debug     bundle [--out file] | holders | replay <pane> | api-schema [--out file] [--method name]
 vibeke update    [--check] [--channel stable|preview] [--rollback]
 vibeke channel   get|set <stable|preview>
 vibeke completion <zsh|bash|fish|nu|powershell>

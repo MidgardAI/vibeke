@@ -1,12 +1,14 @@
 {
   "api": "vibeke/1",
-  "generated_from": "vk-server METHODS tables; signatures from spec/07 §2",
+  "generated_from": "vk-server METHODS tables; signatures from spec/07 §2; params/result shapes from the schema registry (crates/vk-server/src/api_schema.rs)",
+  "schema": "vibeke-1.schema.json",
+  "shape_language": "{field, field?: type = default, ...}; [T]; A|B (bare lowercase words are string literals); {*: T} maps; CamelCase names are shared definitions in the schema's $defs",
   "render_protocol": 3,
   "holder_protocol": {
     "proto": 1,
     "min": 1
   },
-  "method_count": 237,
+  "method_count": 238,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -18,7 +20,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{interaction: Target, idempotency_key: string, applied?: bool}",
+      "result": "{}"
     },
     {
       "name": "adapter.gate",
@@ -30,7 +34,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{harness: string, event: string, payload?: any, pid?: int}",
+      "result": "{decision: object | null, interaction?: Target, idempotency_key?: string, mode?: observe, resumed?: bool}"
     },
     {
       "name": "adapter.report_self",
@@ -42,7 +48,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane?: Target, pane_id?: Target, source?: string = vibeke, seq?: int, agent?: string, harness?: string, state: idle|working|blocked|done|string, message?: string, resume_argv?: [string]}",
+      "result": "{type: 'ok', dropped?: 'stale_seq', applied?: bool}"
     },
     {
       "name": "adapter.signal",
@@ -54,7 +62,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{harness: string, event: string, payload?: any, pid?: int}",
+      "result": "{}"
     },
     {
       "name": "agent.get",
@@ -66,7 +76,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target}` → `{run, pane, open_interactions[], last_turn?}`"
+      "spec": "`{target}` → `{run, pane, open_interactions[], last_turn?}`",
+      "params": "{target: Target}",
+      "result": "{run: AgentRun, pane: Pane, open_interactions: [Interaction], last_turn?: any}"
     },
     {
       "name": "agent.harnesses",
@@ -78,7 +90,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{harnesses: [{id, display, version_detected?, integration_installed, capabilities: {native_approval, native_question, steer, transcript, resume, headless}}]}`"
+      "spec": "`{}` → `{harnesses: [{id, display, version_detected?, integration_installed, capabilities: {native_approval, native_question, steer, transcript, resume, headless}}]}`",
+      "params": "{}",
+      "result": "{harnesses: [{id: string, display?: string, version_detected?: string|null, integration_installed?: bool, capabilities?: [string]}]}"
     },
     {
       "name": "agent.interrupt",
@@ -90,7 +104,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target}` → `{run}` — native abort where available (`abort` RPC, Esc for TUIs)"
+      "spec": "`{target}` → `{run}` — native abort where available (`abort` RPC, Esc for TUIs)",
+      "params": "{target: Target}",
+      "result": "{run: AgentRun}"
     },
     {
       "name": "agent.list",
@@ -102,7 +118,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{workspace?, state?: [AgentState], harness?}` → `{runs: [AgentRun + {pane, open_interactions: n}]}`"
+      "spec": "`{workspace?, state?: [AgentState], harness?}` → `{runs: [AgentRun + {pane, open_interactions: n}]}`",
+      "params": "{workspace?: Target, state?: [AgentState], harness?: string}",
+      "result": "{runs: [AgentRun]}"
     },
     {
       "name": "agent.manifests",
@@ -114,7 +132,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}], warnings: [string]}"
     },
     {
       "name": "agent.manifests_reload",
@@ -126,7 +146,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{warnings: [string], manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}]}"
     },
     {
       "name": "agent.prompt",
@@ -138,7 +160,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target, text, images?: [blob|path], mode?: send|steer|follow_up = send, wait?: bool, until?: [AgentState], timeout_ms?}` → `{run, turn?}` — submits text + Enter atomically via the best channel (RPC `prompt`/`steer` for headless and extension-capable harnesses, bracketed paste + Enter otherwise). If the run is not working and no lifecycle change occurs within 5 s → `stalled`"
+      "spec": "`{target, text, images?: [blob|path], mode?: send|steer|follow_up = send, wait?: bool, until?: [AgentState], timeout_ms?}` → `{run, turn?}` — submits text + Enter atomically via the best channel (RPC `prompt`/`steer` for headless and extension-capable harnesses, bracketed paste + Enter otherwise). If the run is not working and no lifecycle change occurs within 5 s → `stalled`",
+      "params": "{target: Target, text: string, images?: [string], mode?: send|steer|follow_up = send, wait?: bool, until?: [string], timeout_ms?: int}",
+      "result": "{run: AgentRun, turn?: any}"
     },
     {
       "name": "agent.read",
@@ -150,7 +174,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target, source?: visible|recent|transcript, lines?, format?}` → as `pane.read`, plus `transcript` returns the last N turns from the structured log"
+      "spec": "`{target, source?: visible|recent|transcript, lines?, format?}` → as `pane.read`, plus `transcript` returns the last N turns from the structured log",
+      "params": "{target: Target, source?: visible|recent|transcript = visible, lines?: int, format?: text|ansi|cells}",
+      "result": "{text?: string, turns?: [any], rows?: int, revision?: int, truncated?: bool}"
     },
     {
       "name": "agent.release",
@@ -162,7 +188,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target}` → `{}` — stop tracking (the process keeps running as an untracked pane occupant)"
+      "spec": "`{target}` → `{}` — stop tracking (the process keeps running as an untracked pane occupant)",
+      "params": "{target: Target}",
+      "result": "{}"
     },
     {
       "name": "agent.rename",
@@ -174,7 +202,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target, name: string|null}` → `{run}`"
+      "spec": "`{target, name: string|null}` → `{run}`",
+      "params": "{target: Target, name: string|null}",
+      "result": "{run: AgentRun}"
     },
     {
       "name": "agent.report",
@@ -186,7 +216,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane?: Target, state: string, harness?: string = claude, message?: string}",
+      "result": "{}"
     },
     {
       "name": "agent.resumable",
@@ -198,7 +230,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{runs: [AgentRun]}"
     },
     {
       "name": "agent.resume",
@@ -210,7 +244,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{pane?, run: ended_run_id, mode?}` → `{run}` — re-launches via the harness resume argv in the same or a new pane"
+      "spec": "`{pane?, run: ended_run_id, mode?}` → `{run}` — re-launches via the harness resume argv in the same or a new pane",
+      "params": "{pane?: Target, run: Target, mode?: string}",
+      "result": "{run: AgentRun}"
     },
     {
       "name": "agent.send_keys",
@@ -222,7 +258,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target, keys}` → `{}`"
+      "spec": "`{target, keys}` → `{}`",
+      "params": "{target: Target, keys: [string]}",
+      "result": "{}"
     },
     {
       "name": "agent.spawn",
@@ -234,7 +272,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — convenience: split/tab + start + optional first prompt"
+      "spec": "`{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — convenience: split/tab + start + optional first prompt",
+      "params": "{harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false}",
+      "result": "{pane: Pane, run: AgentRun}"
     },
     {
       "name": "agent.start",
@@ -246,7 +286,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise); returns once the adapter (or detector) reports `idle`"
+      "spec": "`{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise); returns once the adapter (or detector) reports `idle`",
+      "params": "{pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000}",
+      "result": "{run: AgentRun}"
     },
     {
       "name": "agent.wait",
@@ -258,7 +300,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target, until?: [WaitCondition] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` — `WaitCondition` = an execution state (04 §2.4) or a derived condition: `needs_approval`/`needs_answer` = an open interaction of that kind, `done` = idle with a turn completed after the wait started (never read state)"
+      "spec": "`{target, until?: [WaitCondition] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` — `WaitCondition` = an execution state (04 §2.4) or a derived condition: `needs_approval`/`needs_answer` = an open interaction of that kind, `done` = idle with a turn completed after the wait started (never read state)",
+      "params": "{target: Target, until?: [string], timeout_ms?: int}",
+      "result": "{run: AgentRun, state: string, interaction?: Interaction}"
     },
     {
       "name": "api.methods",
@@ -270,7 +314,23 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{methods: [{name, milestone, capability, mutating}]}`"
+      "spec": "`{}` → `{methods: [{name, milestone, capability, mutating}]}`",
+      "params": "{}",
+      "result": "{methods: [{name: string, mutating: bool, milestone?: string, capability?: string}]}"
+    },
+    {
+      "name": "api.schema",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{method?}` → `{schema}` — the JSON Schema bundle (§1.5), or with `method` that method's `x-method` entry plus `$defs`; `not_found` for an unknown method",
+      "params": "{method?: string}",
+      "result": "{schema: object}"
     },
     {
       "name": "assistant.cancel",
@@ -282,7 +342,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}` → `{request}`; aborts the provider call; a cancelled running request still counts its reservation against the day's budget"
+      "spec": "`{request}` → `{request}`; aborts the provider call; a cancelled running request still counts its reservation against the day's budget",
+      "params": "{request: string}",
+      "result": "{request: object}"
     },
     {
       "name": "assistant.confirm",
@@ -294,7 +356,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request, preview_digest}` → `{request}` (state `queued`); rechecks consent, endpoint, queue, rate and daily budget; sends exactly the previewed payload"
+      "spec": "`{request, preview_digest}` → `{request}` (state `queued`); rechecks consent, endpoint, queue, rate and daily budget; sends exactly the previewed payload",
+      "params": "{request: string, preview_digest: string}",
+      "result": "{request: object}"
     },
     {
       "name": "assistant.consent",
@@ -306,7 +370,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`; default classes exclude `screen`; the grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint"
+      "spec": "`{workspace?, connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`; default classes exclude `screen`; the grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint",
+      "params": "{workspace?: Target, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]}",
+      "result": "{consent: object, notice: string}"
     },
     {
       "name": "assistant.generate",
@@ -318,7 +384,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate, profile?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved; nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`"
+      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate, profile?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved; nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`",
+      "params": "{operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate, profile?: string, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, include_screen?: bool}",
+      "result": "{request: object, preview: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string}, requires_confirmation: bool, confirm_with?: object}"
     },
     {
       "name": "assistant.get",
@@ -330,7 +398,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}` → `{request: {id, operation, state: awaiting_confirmation\\|queued\\|running\\|done\\|failed\\|cancelled\\|interrupted, workspace, inputs (IDs only), profile, connection, adapter, model, endpoint_host, machine, prompt_version, sources (metadata + digests), omitted, redactions, context_digest, preview_digest, payload_bytes, estimated_input_tokens, max_output_tokens, usage: {input_tokens?, output_tokens?}, attempts, estimated_cost_usd?, finish_reason?, error?: {category, message}, output?: {generated: true, label, ...operation fields}, timestamps}}`"
+      "spec": "`{request}` → `{request: {id, operation, state: awaiting_confirmation\\|queued\\|running\\|done\\|failed\\|cancelled\\|interrupted, workspace, inputs (IDs only), profile, connection, adapter, model, endpoint_host, machine, prompt_version, sources (metadata + digests), omitted, redactions, context_digest, preview_digest, payload_bytes, estimated_input_tokens, max_output_tokens, usage: {input_tokens?, output_tokens?}, attempts, estimated_cost_usd?, finish_reason?, error?: {category, message}, output?: {generated: true, label, ...operation fields}, timestamps}}`",
+      "params": "{request: string}",
+      "result": "{request: object}"
     },
     {
       "name": "assistant.list",
@@ -342,7 +412,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, state?, limit?}` → `{requests}` (without outputs)"
+      "spec": "`{workspace?, state?, limit?}` → `{requests}` (without outputs)",
+      "params": "{workspace?: Target, state?: string, limit?: int}",
+      "result": "{requests: [object]}"
     },
     {
       "name": "assistant.providers",
@@ -354,7 +426,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{}` → `{connections: [{id, adapter, endpoint, endpoint_error?, credential, verified}], profiles, default_profile}`"
+      "spec": "`{}` → `{connections: [{id, adapter, endpoint, endpoint_error?, credential, verified}], profiles, default_profile}`",
+      "params": "{}",
+      "result": "{connections: [{id: string, adapter: string, endpoint: string, endpoint_error?: string|null, credential: string, verified: bool}], profiles: [object], default_profile?: string|null}"
     },
     {
       "name": "assistant.purge",
@@ -366,7 +440,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}\\|{workspace}\\|{all: true}` → `{purged}`; deletes records and generated outputs (cancels unfinished ones first)"
+      "spec": "`{request}\\|{workspace}\\|{all: true}` → `{purged}`; deletes records and generated outputs (cancels unfinished ones first)",
+      "params": "{request?: string, workspace?: Target, all?: bool}",
+      "result": "{purged: int}"
     },
     {
       "name": "assistant.revoke",
@@ -378,7 +454,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, connection?}` → `{revoked, cancelled_requests}`; cancels that workspace's unfinished requests"
+      "spec": "`{workspace?, connection?}` → `{revoked, cancelled_requests}`; cancels that workspace's unfinished requests",
+      "params": "{workspace?: Target, connection?: string}",
+      "result": "{revoked: int, cancelled_requests: int}"
     },
     {
       "name": "assistant.status",
@@ -390,7 +468,9 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{}` → `{enabled, configured, config_problem?, coordinator: {machine, session}, profile?: {id, connection, adapter, model, endpoint_host, credential: \"env:NAME\"\\|\"file:PATH\"\\|..., limits, pricing_usd_per_mtok?}, limits, today: {utc_day, used, reserved, remaining}, auto_send, consents, requests: {awaiting_confirmation, queued, running, stored}, operations, background: false}` — no secrets, no provider contact"
+      "spec": "`{}` → `{enabled, configured, config_problem?, coordinator: {machine, session}, profile?: {id, connection, adapter, model, endpoint_host, credential: \"env:NAME\"\\|\"file:PATH\"\\|..., limits, pricing_usd_per_mtok?}, limits, today: {utc_day, used, reserved, remaining}, auto_send, consents, requests: {awaiting_confirmation, queued, running, stored}, operations, background: false}` — no secrets, no provider contact",
+      "params": "{}",
+      "result": "{enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}}"
     },
     {
       "name": "attention.list",
@@ -402,7 +482,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{budget_ms?: int, effort?: quick|minutes|deep}",
+      "result": "{items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool}], coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int}, five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null}"
     },
     {
       "name": "attention.update",
@@ -414,7 +496,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool}",
+      "result": "{key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, warning: string | null}"
     },
     {
       "name": "blob.abort",
@@ -426,7 +510,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{upload_id: string}",
+      "result": "{aborted: bool}"
     },
     {
       "name": "blob.append",
@@ -438,7 +524,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{upload_id: string, offset: int, data_b64: string}",
+      "result": "{offset: int}"
     },
     {
       "name": "blob.begin",
@@ -450,7 +538,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{name: string, size: int, sha256?: string}",
+      "result": "{upload_id: string, max_chunk: int}"
     },
     {
       "name": "blob.commit",
@@ -462,7 +552,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{upload_id: string, stage?: browser}",
+      "result": "{hash: string, sha256: string, size: int, path_on_machine: string, path: string}"
     },
     {
       "name": "blob.put",
@@ -474,7 +566,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{mime, data_b64}` (≤ 16 MiB) or `{mime, path}` (server reads local file) → `{hash, size}`"
+      "spec": "`{mime, data_b64}` (≤ 16 MiB) or `{mime, path}` (server reads local file) → `{hash, size}`",
+      "params": "{mime: string, data_b64?: string, path?: string}",
+      "result": "{hash: string, size: int}"
     },
     {
       "name": "browser.attach_screencast",
@@ -486,7 +580,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`."
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
+      "params": "{session: string, after_seq?: int}",
+      "result": "object"
     },
     {
       "name": "browser.click",
@@ -498,7 +594,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`"
+      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`",
+      "params": "{browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool}",
+      "result": "{}"
     },
     {
       "name": "browser.close",
@@ -510,7 +608,9 @@
         "agent_browser"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{session?: string, browser_session?: string, target?: string}",
+      "result": "{session: string, closed: bool}"
     },
     {
       "name": "browser.command",
@@ -522,7 +622,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?, hard?, text?}` → `{pane}` (`window` → the `preview.open` window result; `pane` → `{pane, profile}`) — for panes rendered by this server. Not from a pane."
+      "spec": "`{pane, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?, hard?, text?}` → `{pane}` (`window` → the `preview.open` window result; `pane` → `{pane, profile}`) — for panes rendered by this server. Not from a pane.",
+      "params": "{pane: Target, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?: string, hard?: bool, text?: string}",
+      "result": "object"
     },
     {
       "name": "browser.console",
@@ -534,7 +636,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session|preview, since_ms?, level?: error|warn|all}` → `{entries: [{ts, level, text, source}]}`"
+      "spec": "`{browser_session|preview, since_ms?, level?: error|warn|all}` → `{entries: [{ts, level, text, source}]}`",
+      "params": "{browser_session?: string, preview?: Target, since_ms?: int, level?: error|warn|all}",
+      "result": "{entries: [{ts: int, level: string, text: string, source?: string}]}"
     },
     {
       "name": "browser.detach_screencast",
@@ -546,7 +650,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`."
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
+      "params": "{session: string}",
+      "result": "object"
     },
     {
       "name": "browser.diff",
@@ -558,7 +664,9 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{a: blob, b: blob, threshold?}` → `{blob, changed_ratio, regions}` — refuses different `environment.kind` unless `force`"
+      "spec": "`{a: blob, b: blob, threshold?}` → `{blob, changed_ratio, regions}` — refuses different `environment.kind` unless `force`",
+      "params": "{a: string, b: string, threshold?: number, force?: bool}",
+      "result": "{blob: string, changed_ratio: number, regions: any}"
     },
     {
       "name": "browser.dom",
@@ -570,7 +678,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session|preview, selector?, format?: text|html|a11y}` → `{content}`"
+      "spec": "`{browser_session|preview, selector?, format?: text|html|a11y}` → `{content}`",
+      "params": "{browser_session?: string, preview?: Target, selector?: string, format?: text|html|a11y}",
+      "result": "{content: string}"
     },
     {
       "name": "browser.eval",
@@ -582,7 +692,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session, expression}` → `{value}` — gated by capability `browser.script`"
+      "spec": "`{browser_session, expression}` → `{value}` — gated by capability `browser.script`",
+      "params": "{browser_session: string, expression: string}",
+      "result": "{value: any}"
     },
     {
       "name": "browser.install",
@@ -594,7 +706,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`; with `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only."
+      "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`; with `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only.",
+      "params": "{confirm?: bool, version?: string, url?: string, sha256?: string}",
+      "result": "object"
     },
     {
       "name": "browser.list",
@@ -606,7 +720,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{}` → `{sessions: [...], browser: <status>, machine}` — only sessions the caller may see."
+      "spec": "`{}` → `{sessions: [...], browser: <status>, machine}` — only sessions the caller may see.",
+      "params": "{}",
+      "result": "{sessions: [object], browser: any, machine: string}"
     },
     {
       "name": "browser.navigate",
@@ -618,7 +734,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5)"
+      "spec": "`{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5)",
+      "params": "{browser_session: string, url?: string, path?: string, wait?: bool}",
+      "result": "{status: int, final_url: string}"
     },
     {
       "name": "browser.network",
@@ -630,7 +748,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session|preview, failed_only?, since_ms?}` → `{entries: [{ts, method, url, status?, error?, blocked_by_policy?}]}`"
+      "spec": "`{browser_session|preview, failed_only?, since_ms?}` → `{entries: [{ts, method, url, status?, error?, blocked_by_policy?}]}`",
+      "params": "{browser_session?: string, preview?: Target, failed_only?: bool, since_ms?: int}",
+      "result": "{entries: [{ts: int, method: string, url: string, status?: int, error?: string, blocked_by_policy?: bool}]}"
     },
     {
       "name": "browser.open",
@@ -642,7 +762,9 @@
         "agent_browser"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool}",
+      "result": "{session: string, session_id: string, owner: {pane: string, pane_handle?: string, run?: string} | {user: string}, preview?: string, url: string, created_ms: int, viewport: {width: int, height: int}, device?: string, previews: own|machine, human_control: bool, screencast: bool, proxy_port?: int, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device?: string, viewport: {width: int, height: int}, dpr: number}, status?: int, final_url?: string, title?: string}"
     },
     {
       "name": "browser.pane.console",
@@ -654,7 +776,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, toggle?: true, focus?: false}` → `{pane, pane_handle, browser_pane}` (opened) \\| `{closed, pane_handle, browser_pane}` (toggled off) \\| `{…, existing: true}` (`toggle: false`) — the console/network split: a pane under the browser pane (30 %) running `vibeke browser console --pane <id> --follow`, marked `created_by = \"browser-console:<browser pane id>\"`; closed by the server when its browser pane goes. Not from a pane."
+      "spec": "`{pane, toggle?: true, focus?: false}` → `{pane, pane_handle, browser_pane}` (opened) \\| `{closed, pane_handle, browser_pane}` (toggled off) \\| `{…, existing: true}` (`toggle: false`) — the console/network split: a pane under the browser pane (30 %) running `vibeke browser console --pane <id> --follow`, marked `created_by = \"browser-console:<browser pane id>\"`; closed by the server when its browser pane goes. Not from a pane.",
+      "params": "{pane: Target, toggle?: bool = true, focus?: bool = false}",
+      "result": "object"
     },
     {
       "name": "browser.pane.console_push",
@@ -666,7 +790,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, entries: [console/network entry]}` → `{pane, stored}` — the media host relaying a page's capture to the owner of a browser pane it renders (≤ 1 batch/s, ≤ 200 entries, only while the page is on a loopback URL); the owner keeps known fields only, re-redacted (8 KiB text cap), in its own ring. Not from a pane."
+      "spec": "`{pane, entries: [console/network entry]}` → `{pane, stored}` — the media host relaying a page's capture to the owner of a browser pane it renders (≤ 1 batch/s, ≤ 200 entries, only while the page is on a loopback URL); the owner keeps known fields only, re-redacted (8 KiB text cap), in its own ring. Not from a pane.",
+      "params": "{pane: Target, entries: [object]}",
+      "result": "{pane: string, stored: int}"
     },
     {
       "name": "browser.pane.create",
@@ -678,7 +804,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane?, preview? | url?, split?, machine?, focus?: true, focus_client?}` → `{opened_in: \"pane\", pane, pane_handle, tab, url, machine, source_pane}` — on the owning server; `pane` defaults to the preview's pane, then the caller's pane / focused pane. URLs: `http(s)` (`localhost:5173/x` gets `http://`); from a pane only loopback, only next to the caller's own panes, never moving focus. Events `pane.created {kind: \"browser\"}`, `tab.layout_changed`."
+      "spec": "`{pane?, preview? | url?, split?, machine?, focus?: true, focus_client?}` → `{opened_in: \"pane\", pane, pane_handle, tab, url, machine, source_pane}` — on the owning server; `pane` defaults to the preview's pane, then the caller's pane / focused pane. URLs: `http(s)` (`localhost:5173/x` gets `http://`); from a pane only loopback, only next to the caller's own panes, never moving focus. Events `pane.created {kind: \"browser\"}`, `tab.layout_changed`.",
+      "params": "{pane?: Target, preview?: Target, url?: string, split?: right|down|left|up|tab, machine?: string, focus?: bool = true, focus_client?: string}",
+      "result": "{opened_in: string, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
     },
     {
       "name": "browser.pane.list",
@@ -690,7 +818,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{}` → `{panes: [{pane, handle, tab, browser}]}`"
+      "spec": "`{}` → `{panes: [{pane, handle, tab, browser}]}`",
+      "params": "{}",
+      "result": "{panes: [{pane: string, handle: string, tab: string, browser: BrowserPane}]}"
     },
     {
       "name": "browser.pane.status",
@@ -702,7 +832,9 @@
         "browser_pane"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{browsers: [{profile: string, dpr: number, pid?: int, targets: int, up_ms: int}], targets: [{pane: string, owner: string, url?: string, title?: string, profile: string, machine: string, route: string, running: bool, screencast: bool, viewers: int, frames: int, fps: number, decode_ms: number, css: [number], frame?: [int], history: any, error?: string, pin?: {device?: string, width: int, height: int}, letterbox?: {rect: [number], scale: number}, console: int, network: int, clipboard: {forwarded: int, blocked: int}}], windowed: [string], tiles_sent: int, media_bytes: int}"
     },
     {
       "name": "browser.pane.update",
@@ -714,7 +846,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, url?, title?, history?, history_index?, device?, viewport?: \"WxH\" \\| \"fit\", fit?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. `device` (a `vk_browser::devices` preset: `iphone-15`, `pixel-8`, `ipad`, `desktop-1280/1440/1920`) or `viewport` (64..=8192 CSS px per edge) pins the page size (06 B3.2, letterboxed); `viewport: \"fit\"` / `fit: true` unpins; both at once or an unknown name → `invalid_params`; event `browser.viewport_changed {device, viewport}`. Not from a pane."
+      "spec": "`{pane, url?, title?, history?, history_index?, device?, viewport?: \"WxH\" \\| \"fit\", fit?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. `device` (a `vk_browser::devices` preset: `iphone-15`, `pixel-8`, `ipad`, `desktop-1280/1440/1920`) or `viewport` (64..=8192 CSS px per edge) pins the page size (06 B3.2, letterboxed); `viewport: \"fit\"` / `fit: true` unpins; both at once or an unknown name → `invalid_params`; event `browser.viewport_changed {device, viewport}`. Not from a pane.",
+      "params": "{pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string, fit?: bool}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "browser.press",
@@ -726,7 +860,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`"
+      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`",
+      "params": "{browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool}",
+      "result": "{}"
     },
     {
       "name": "browser.release",
@@ -738,7 +874,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`."
+      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`.",
+      "params": "{session: string}",
+      "result": "{session: string, human_control: bool}"
     },
     {
       "name": "browser.screencast_frame",
@@ -750,7 +888,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`."
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
+      "params": "{session: string, after_seq?: int}",
+      "result": "object"
     },
     {
       "name": "browser.screenshot",
@@ -762,7 +902,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6; file also written to `$TMPDIR/vibeke-shots/<hash>.png`"
+      "spec": "`{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6; file also written to `$TMPDIR/vibeke-shots/<hash>.png`",
+      "params": "{browser_session?: string, preview?: Target, url?: string, full_page?: bool, selector?: string, viewport?: any, device?: string}",
+      "result": "{blob: string, path_on_machine: string, width: int, height: int, meta: ScreenshotMeta}"
     },
     {
       "name": "browser.session_close",
@@ -774,7 +916,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session}` → `{}`"
+      "spec": "`{browser_session}` → `{}`",
+      "params": "{browser_session: string}",
+      "result": "{}"
     },
     {
       "name": "browser.session_open",
@@ -786,7 +930,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run"
+      "spec": "`{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run",
+      "params": "{preview?: Target, url?: string, viewport?: {w?: int, h?: int, dpr?: number}, device?: string, color_scheme?: light|dark}",
+      "result": "{browser_session: string}"
     },
     {
       "name": "browser.snapshot",
@@ -798,7 +944,9 @@
         "agent_browser"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{session?: string, browser_session?: string, target?: string, format?: a11y|accessibility|text|html = a11y, max_bytes?: int, selector?: string}",
+      "result": "{session: string, url: string, format: string, content: string, truncated: bool}"
     },
     {
       "name": "browser.status",
@@ -810,7 +958,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{}` → `{browsers: [{profile, dpr, pid, targets, up_ms}], targets: [{pane, owner, url, title, profile, machine, route, running, screencast, viewers, frames, fps, decode_ms, css, frame, history, error}], windowed, tiles_sent, media_bytes}` — the media host's view."
+      "spec": "`{}` → `{browsers: [{profile, dpr, pid, targets, up_ms}], targets: [{pane, owner, url, title, profile, machine, route, running, screencast, viewers, frames, fps, decode_ms, css, frame, history, error}], windowed, tiles_sent, media_bytes}` — the media host's view.",
+      "params": "{}",
+      "result": "object"
     },
     {
       "name": "browser.take_over",
@@ -822,7 +972,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`."
+      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`.",
+      "params": "{session: string}",
+      "result": "{session: string, human_control: bool}"
     },
     {
       "name": "browser.type",
@@ -834,7 +986,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`"
+      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`",
+      "params": "{browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool}",
+      "result": "{}"
     },
     {
       "name": "browser.wait",
@@ -846,7 +1000,9 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session, for: load|networkidle|{selector}|{ms}}` → `{}`"
+      "spec": "`{browser_session, for: load|networkidle|{selector}|{ms}}` → `{}`",
+      "params": "{browser_session: string, for: string | {selector: string} | {ms: int}}",
+      "result": "{}"
     },
     {
       "name": "browser.watch",
@@ -858,7 +1014,9 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{session \\| agent_pane, pane?, split?: right\\|down\\|left\\|up\\|tab, focus?: true, focus_client?}` → `{opened_in: \"watch\", session, read_only: true, pane, pane_handle, tab, url, machine, source_pane}` — full scope only (`permission_denied` from a pane). `agent_pane` picks that pane's newest open session (`not_found` \"… has no open browser session\"). Creates a browser pane with `watch = <session>` in this server's layout next to `pane` (default: the session's owner pane). The pane is read-only until `BrowserCmd::TakeOver(true)` (render stream), which sets human control held by `pane:<id>` (events `browser.taken_over {by, via: \"watch_pane\"}`); `TakeOver(false)` or closing the pane releases it (`browser.released`). CLI: `vibeke browser watch <session> [--pane p] [--split …] [--machine m]`."
+      "spec": "`{session \\| agent_pane, pane?, split?: right\\|down\\|left\\|up\\|tab, focus?: true, focus_client?}` → `{opened_in: \"watch\", session, read_only: true, pane, pane_handle, tab, url, machine, source_pane}` — full scope only (`permission_denied` from a pane). `agent_pane` picks that pane's newest open session (`not_found` \"… has no open browser session\"). Creates a browser pane with `watch = <session>` in this server's layout next to `pane` (default: the session's owner pane). The pane is read-only until `BrowserCmd::TakeOver(true)` (render stream), which sets human control held by `pane:<id>` (events `browser.taken_over {by, via: \"watch_pane\"}`); `TakeOver(false)` or closing the pane releases it (`browser.released`). CLI: `vibeke browser watch <session> [--pane p] [--split …] [--machine m]`.",
+      "params": "{session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab, focus?: bool = true, focus_client?: string}",
+      "result": "{opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string}"
     },
     {
       "name": "client.appearance",
@@ -871,7 +1029,9 @@
         "theme"
       ],
       "milestone": "M1",
-      "spec": "`{dark: bool, source?: osc11\\|csi996}` → `{appearance, colorfgbg}` — host terminal light/dark report (theme propagation, 08 §11) [M4]"
+      "spec": "`{dark: bool, source?: osc11\\|csi996}` → `{appearance, colorfgbg}` — host terminal light/dark report (theme propagation, 08 §11) [M4]",
+      "params": "{dark: bool, source?: osc11|csi996|string}",
+      "result": "{appearance: Appearance, colorfgbg: string}"
     },
     {
       "name": "client.focus",
@@ -884,7 +1044,9 @@
         "notify"
       ],
       "milestone": "M1",
-      "spec": "`{pane \\| url: \"vibeke://focus?session=…&pane=…\", raise?: true}` → `{pane, client, focused, raised, host}` — focus in the most recently active attached client and raise its host terminal (08 §7.1 click-to-focus); full scope only [M4]"
+      "spec": "`{pane \\| url: \"vibeke://focus?session=…&pane=…\", raise?: true}` → `{pane, client, focused, raised, host}` — focus in the most recently active attached client and raise its host terminal (08 §7.1 click-to-focus); full scope only [M4]",
+      "params": "{pane?: Target, url?: string, raise?: bool = true}",
+      "result": "{pane: string, client: string, focused: bool, raised: bool, host: any}"
     },
     {
       "name": "client.hello",
@@ -896,7 +1058,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{client, version, api, kind: tui|cli|plugin|gateway|agent, token?}` → `{server_version, api, session, machine, capabilities[], features[]}`"
+      "spec": "`{client, version, api, kind: tui|cli|plugin|gateway|agent, token?}` → `{server_version, api, session, machine, capabilities[], features[]}`",
+      "params": "{client: string, version: string, api: string, kind: tui|cli|plugin|gateway|agent|string, token?: string, host?: {bundle_id?: string, term_program?: string}}",
+      "result": "{server_version: string, api: string, session: string, machine: string, capabilities: [string], features: [string], client_id?: string}"
     },
     {
       "name": "client.list",
@@ -908,7 +1072,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{clients: [{id, kind, client, version, attached_at, peer: {uid, pid?, machine?}, focused_pane?}]}`"
+      "spec": "`{}` → `{clients: [{id, kind, client, version, attached_at, peer: {uid, pid?, machine?}, focused_pane?}]}`",
+      "params": "{}",
+      "result": "{clients: [{id: string, kind: string, client?: string, version?: string, attached_at: int, peer?: {uid: int, pid?: int, machine?: string}, focused_pane: string|null}]}"
     },
     {
       "name": "compat.herdr.call",
@@ -920,7 +1086,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{method: string, params?: object, as_plugin?: {session: string, ticket: string}}",
+      "result": "{result: any} | {error: {code: string, message: string}}"
     },
     {
       "name": "compat.invocation.verify",
@@ -932,7 +1100,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{ticket: string}",
+      "result": "{plugin_id: string, digest: string, grant_id: string, log_id: string, session: string, sandboxed: bool}"
     },
     {
       "name": "compat.status",
@@ -944,7 +1114,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{baseline: {herdr: string, commit: string}, support: string, listener: {enabled: bool, path: string, live: bool}, inventory: {implemented: int, partial: int, missing: int}, brokers: int, herdr_root: string, registry: string}"
     },
     {
       "name": "compat.ui.state",
@@ -956,7 +1128,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}"
     },
     {
       "name": "desk.context",
@@ -968,7 +1142,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session, turns?: [n]\\|\"3-5,7\", path?, objective?}` → `{package: {objective, decisions, remaining_work, selected_turns: [{turn, user, assistant, tool_calls}], repository: {repo, cwd, revision: {revision, branch, uncommitted_files}}}, text}` — deterministic (no model call): the objective defaults to the first prompt, decisions/remaining work are labelled line extracts for the user to edit, default turns are the last three"
+      "spec": "`{session, turns?: [n]\\|\"3-5,7\", path?, objective?}` → `{package: {objective, decisions, remaining_work, selected_turns: [{turn, user, assistant, tool_calls}], repository: {repo, cwd, revision: {revision, branch, uncommitted_files}}}, text}` — deterministic (no model call): the objective defaults to the first prompt, decisions/remaining work are labelled line extracts for the user to edit, default turns are the last three",
+      "params": "{session: string, turns?: [int] | string, path?: string, objective?: string}",
+      "result": "{package: object, text: string}"
     },
     {
       "name": "desk.forget",
@@ -980,7 +1156,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session}\\|{repo}\\|{workspace}\\|{before}` → `{rows_deleted, sessions_forgotten}` — deletes index rows; sessions are tombstoned so the indexer never re-adds them; `before` deletes older rows. Event `desk.forgotten {scope} {rows, sessions}` (no text)"
+      "spec": "`{session}\\|{repo}\\|{workspace}\\|{before}` → `{rows_deleted, sessions_forgotten}` — deletes index rows; sessions are tombstoned so the indexer never re-adds them; `before` deletes older rows. Event `desk.forgotten {scope} {rows, sessions}` (no text)",
+      "params": "{session?: string, repo?: string, workspace?: Target, before?: string|int}",
+      "result": "{rows_deleted: int, sessions_forgotten: int}"
     },
     {
       "name": "desk.index",
@@ -992,7 +1170,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{budget?}` → `{pass: {registered, bytes, rows, purged, reset, pending, errors}}`"
+      "spec": "`{budget?}` → `{pass: {registered, bytes, rows, purged, reset, pending, errors}}`",
+      "params": "{budget?: int}",
+      "result": "{pass: {registered: int, bytes: int, rows: int, purged: int, reset: int, pending: int, errors: any}}"
     },
     {
       "name": "desk.open",
@@ -1004,7 +1184,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session, turn?, path?, focus?: false}` → `{status, action: focus_live_pane\\|resume_native_session\\|start_new_agent_with_context, turn_items, focused, actions: [{id: focus, label: \"Focus live pane\"}, {id: resume_native, label: \"Resume native session\", command}, {id: new_agent, label: \"Start new agent with context\"}]}`. Focuses the live run's pane **only** with `focus: true` (an explicit user action); never resumes"
+      "spec": "`{session, turn?, path?, focus?: false}` → `{status, action: focus_live_pane\\|resume_native_session\\|start_new_agent_with_context, turn_items, focused, actions: [{id: focus, label: \"Focus live pane\"}, {id: resume_native, label: \"Resume native session\", command}, {id: new_agent, label: \"Start new agent with context\"}]}`. Focuses the live run's pane **only** with `focus: true` (an explicit user action); never resumes",
+      "params": "{session: string, turn?: int, path?: string, focus?: bool = false}",
+      "result": "{status: string, action: string, turn_items?: any, focused?: bool, actions?: [object]}"
     },
     {
       "name": "desk.resume",
@@ -1016,7 +1198,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session, mode?: native, pane?, workspace?}` → **Resume native session**: `conflict:session_live` while it runs (focus it instead); `unsupported` without a resume handle; else types the resume argv into the given free pane (`conflict:pane_busy` if it has an agent) or a new tab in the session's workspace at its cwd (a stored run without `pane` keeps `agent.resume`'s behaviour) → `{mode, label, command, run}`. `{session, mode: new_agent, workspace?, start?: false, harness?, pane?, turns?, objective?}` → **Start new agent with context**: builds the `desk.context` package and saves it as a workspace draft; with `start` also starts the harness (no prompt) in a free pane → `{draft, package, sent: false, run?, pane?}`. Nothing is ever sent: the user edits and sends the draft (`draft.send`)"
+      "spec": "`{session, mode?: native, pane?, workspace?}` → **Resume native session**: `conflict:session_live` while it runs (focus it instead); `unsupported` without a resume handle; else types the resume argv into the given free pane (`conflict:pane_busy` if it has an agent) or a new tab in the session's workspace at its cwd (a stored run without `pane` keeps `agent.resume`'s behaviour) → `{mode, label, command, run}`. `{session, mode: new_agent, workspace?, start?: false, harness?, pane?, turns?, objective?}` → **Start new agent with context**: builds the `desk.context` package and saves it as a workspace draft; with `start` also starts the harness (no prompt) in a free pane → `{draft, package, sent: false, run?, pane?}`. Nothing is ever sent: the user edits and sends the draft (`draft.send`)",
+      "params": "{session: string, mode?: native, pane?: Target, workspace?: Target}",
+      "result": "object"
     },
     {
       "name": "desk.search",
@@ -1028,7 +1212,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{text, repo?, harness?, since?, until?, session?, limit?: 20, sort?: relevance\\|recent, fresh?: true}` → `{hits: [{session, path, harness, machine, repo, cwd, turn, role, kind, ts, offset, snippet, status: live\\|resumable\\|none, live: {run, pane}, resume: {argv, command, run}}], index: {sources, rows, forgotten_sessions}}`. `repo` is a directory (matched as main repository root or cwd prefix); `since`/`until` take epoch ms, `7d`/`12h`/`30m` or `YYYY-MM-DD`. **live** = a current run is in that native session; **resumable** = a resume argv is known (a stored run's, else the harness's own)"
+      "spec": "`{text, repo?, harness?, since?, until?, session?, limit?: 20, sort?: relevance\\|recent, fresh?: true}` → `{hits: [{session, path, harness, machine, repo, cwd, turn, role, kind, ts, offset, snippet, status: live\\|resumable\\|none, live: {run, pane}, resume: {argv, command, run}}], index: {sources, rows, forgotten_sessions}}`. `repo` is a directory (matched as main repository root or cwd prefix); `since`/`until` take epoch ms, `7d`/`12h`/`30m` or `YYYY-MM-DD`. **live** = a current run is in that native session; **resumable** = a resume argv is known (a stored run's, else the harness's own)",
+      "params": "{text: string, repo?: string, harness?: string, since?: string|int, until?: string|int, session?: string, limit?: int = 20, sort?: relevance|recent, fresh?: bool = true}",
+      "result": "{hits: [object], index: object}"
     },
     {
       "name": "desk.sessions",
@@ -1040,7 +1226,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{repo?, harness?, limit?: 50}` → `{sessions: [{session, harness, machine, repo, cwd, workspace, run, first_ts, last_ts, turns, rows, paths, status, live, resume}]}`, most recent first"
+      "spec": "`{repo?, harness?, limit?: 50}` → `{sessions: [{session, harness, machine, repo, cwd, workspace, run, first_ts, last_ts, turns, rows, paths, status, live, resume}]}`, most recent first",
+      "params": "{repo?: string, harness?: string, limit?: int = 50}",
+      "result": "{sessions: [{session: string, harness: string, machine?: string, repo?: string|null, cwd?: string|null, workspace?: string|null, run?: string|null, first_ts?: int, last_ts?: int, turns?: int, rows?: int, paths?: any, status?: string, live?: any, resume?: any}]}"
     },
     {
       "name": "desk.status",
@@ -1052,7 +1240,9 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{}` → `{db, selection: {runs, roots}, exclude, retention_days, counts, sources: [{path, harness, session, origin: run\\|root, repo, rows, offset, size, pending_bytes, excluded}], last_pass}` — makes source selection, exclusions and retention visible"
+      "spec": "`{}` → `{db, selection: {runs, roots}, exclude, retention_days, counts, sources: [{path, harness, session, origin: run\\|root, repo, rows, offset, size, pending_bytes, excluded}], last_pass}` — makes source selection, exclusions and retention visible",
+      "params": "{}",
+      "result": "{db: string, selection: object, exclude: any, retention_days: int, counts: object, sources: [object], last_pass: any}"
     },
     {
       "name": "draft.check",
@@ -1064,7 +1254,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{target_run, draft?}` → `{run, pane, harness, native_conversation_id, send_path: prompt_input\\|open_pane_only, unsafe?, follow_up: prompt_input, steer: false, hidden_attachments}`"
+      "spec": "`{target_run, draft?}` → `{run, pane, harness, native_conversation_id, send_path: prompt_input\\|open_pane_only, unsafe?, follow_up: prompt_input, steer: false, hidden_attachments}`",
+      "params": "{target_run: Target, draft?: Target}",
+      "result": "{run: string, pane: string, harness: string, native_conversation_id: string|null, send_path: prompt_input|open_pane_only, unsafe?: any, follow_up?: string, steer?: bool, hidden_attachments?: any}"
     },
     {
       "name": "draft.combine",
@@ -1076,7 +1268,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{ids: [two or more of one scope], title?, separator?: \"\\n\\n\", delete_sources?: false}` → new `{draft}` with joined text, de-duplicated attachments and `combined_from`"
+      "spec": "`{ids: [two or more of one scope], title?, separator?: \"\\n\\n\", delete_sources?: false}` → new `{draft}` with joined text, de-duplicated attachments and `combined_from`",
+      "params": "{ids: [string], title?: string, separator?: string, delete_sources?: bool = false}",
+      "result": "{draft: object}"
     },
     {
       "name": "draft.create",
@@ -1088,7 +1282,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{scope?: workspace\\|task, id?, text, title?, attachments?: [{kind: file\\|screenshot, path\\|blob\\|data_b64, name?, label?}], idempotency_key?}` → `{draft}`. `id` defaults to the caller's workspace. `path` must be an existing absolute path on this server's machine; `blob` is a `blob.put` hash; `data_b64` is stored now in the pane inbox (06 A11.4) — remote clients use `blob`/`data_b64`"
+      "spec": "`{scope?: workspace\\|task, id?, text, title?, attachments?: [{kind: file\\|screenshot, path\\|blob\\|data_b64, name?, label?}], idempotency_key?}` → `{draft}`. `id` defaults to the caller's workspace. `path` must be an existing absolute path on this server's machine; `blob` is a `blob.put` hash; `data_b64` is stored now in the pane inbox (06 A11.4) — remote clients use `blob`/`data_b64`",
+      "params": "{scope?: workspace|task, id?: string, text: string, title?: string, attachments?: [{kind: file|screenshot, path?: string, blob?: string, data_b64?: string, name?: string, label?: string}], idempotency_key?: string}",
+      "result": "{draft: object}"
     },
     {
       "name": "draft.delete",
@@ -1100,7 +1296,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{deleted}`"
+      "spec": "`{draft}` → `{deleted}`",
+      "params": "{draft: Target}",
+      "result": "{deleted: any}"
     },
     {
       "name": "draft.get",
@@ -1112,7 +1310,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`"
+      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`",
+      "params": "{draft: Target}",
+      "result": "{draft: object}"
     },
     {
       "name": "draft.list",
@@ -1124,7 +1324,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`"
+      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`",
+      "params": "{scope?: workspace|task, id?: string, all?: bool}",
+      "result": "{drafts: [object]}"
     },
     {
       "name": "draft.reconcile",
@@ -1136,7 +1338,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{send, receipt: {known, …}, may_retry, note}` — a late matching turn upgrades the attempt to `delivered`; a still-uncertain attempt is marked reconciled, which is what allows a warned retry"
+      "spec": "`{draft}` → `{send, receipt: {known, …}, may_retry, note}` — a late matching turn upgrades the attempt to `delivered`; a still-uncertain attempt is marked reconciled, which is what allows a warned retry",
+      "params": "{draft: Target}",
+      "result": "{send: object, receipt: object, may_retry: bool, note: string}"
     },
     {
       "name": "draft.reorder",
@@ -1148,7 +1352,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{order: [draft ids]}` → listed drafts first in that order, the rest after"
+      "spec": "`{order: [draft ids]}` → listed drafts first in that order, the rest after",
+      "params": "{order: [string]}",
+      "result": "{drafts?: [object]}"
     },
     {
       "name": "draft.send",
@@ -1160,7 +1366,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft, target_run, idempotency_key, include_notes?: false, keep?: false, retry_despite_unknown?}` → `{draft, send, send_path}`. Uses task messages' guarded prompt-input path (15 §9) without a tracked task: the run and its native conversation are fixed when the send starts; it requires a known native conversation, an idle run, no open interaction, no attached TUI focused on the pane, a provably empty input box and every attachment visible to the pane (`sandbox::can_see`); otherwise `conflict:send_unsafe {fallback: open_pane_to_send, draft_kept: true}` with **zero bytes written** and no attempt recorded. Delivery holds the pane input lock, rechecks, submits and is `delivered` only when a turn at or after the baseline starts in that conversation with the text; otherwise `delivery_unknown` (or `failed`). The sent text is the draft, then `Attached files:` with one path per attachment, then `Notes:` only with `include_notes`. A delivered draft is archived unless `keep`. Receipts are owner-aware (`review::receipts`); the same key replays the current outcome. After `delivery_unknown`: `conflict:reconcile_first` until `draft.reconcile`, then `retry_despite_unknown`"
+      "spec": "`{draft, target_run, idempotency_key, include_notes?: false, keep?: false, retry_despite_unknown?}` → `{draft, send, send_path}`. Uses task messages' guarded prompt-input path (15 §9) without a tracked task: the run and its native conversation are fixed when the send starts; it requires a known native conversation, an idle run, no open interaction, no attached TUI focused on the pane, a provably empty input box and every attachment visible to the pane (`sandbox::can_see`); otherwise `conflict:send_unsafe {fallback: open_pane_to_send, draft_kept: true}` with **zero bytes written** and no attempt recorded. Delivery holds the pane input lock, rechecks, submits and is `delivered` only when a turn at or after the baseline starts in that conversation with the text; otherwise `delivery_unknown` (or `failed`). The sent text is the draft, then `Attached files:` with one path per attachment, then `Notes:` only with `include_notes`. A delivered draft is archived unless `keep`. Receipts are owner-aware (`review::receipts`); the same key replays the current outcome. After `delivery_unknown`: `conflict:reconcile_first` until `draft.reconcile`, then `retry_despite_unknown`",
+      "params": "{draft: Target, target_run: Target, idempotency_key: string, include_notes?: bool = false, keep?: bool = false, retry_despite_unknown?: bool}",
+      "result": "{draft: object, send: object, send_path: string}"
     },
     {
       "name": "draft.update",
@@ -1172,7 +1380,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft, text?, title?, attachments?, add_attachment?, remove_attachment?: index, expected_rev?}` → `{draft}` (`conflict:draft_changed`, `conflict:send_in_progress`)"
+      "spec": "`{draft, text?, title?, attachments?, add_attachment?, remove_attachment?: index, expected_rev?}` → `{draft}` (`conflict:draft_changed`, `conflict:send_in_progress`)",
+      "params": "{draft: Target, text?: string, title?: string, attachments?: [any], add_attachment?: object, remove_attachment?: int, expected_rev?: int}",
+      "result": "{draft: object}"
     },
     {
       "name": "events.read",
@@ -1184,7 +1394,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{after?: Cursor, before?: Cursor, types?, subjects?, limit?: 500}` → `{events, next: Cursor}` — paginated history (within retention)"
+      "spec": "`{after?: Cursor, before?: Cursor, types?, subjects?, limit?: 500}` → `{events, next: Cursor}` — paginated history (within retention)",
+      "params": "{after?: Cursor|int, before?: Cursor|int, types?: [string] | string, subjects?: object, limit?: int = 500}",
+      "result": "{events: [Event], next: Cursor}"
     },
     {
       "name": "events.subscribe",
@@ -1196,7 +1408,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{after?: Cursor, types?: [glob], subjects?: {workspace?, tab?, pane?, run?, task?}, include_snapshot?: false, machine?: label|\"*\"}` → `{subscription_id, at: Cursor}` then notifications"
+      "spec": "`{after?: Cursor, types?: [glob], subjects?: {workspace?, tab?, pane?, run?, task?}, include_snapshot?: false, machine?: label|\"*\"}` → `{subscription_id, at: Cursor}` then notifications",
+      "params": "{after?: Cursor|int, types?: [string] | string, subjects?: {workspace?: Target, tab?: Target, pane?: Target, run?: Target, task?: Target}, include_snapshot?: bool = false, machine?: string}",
+      "result": "{subscription_id: string, at: Cursor}"
     },
     {
       "name": "events.wait",
@@ -1208,7 +1422,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{types, subjects?, after?: Cursor, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly)"
+      "spec": "`{types, subjects?, after?: Cursor, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly)",
+      "params": "{types?: [string] | string, subjects?: object, after?: Cursor|int, timeout_ms?: int = 60000}",
+      "result": "{event: Event}"
     },
     {
       "name": "fs.list",
@@ -1220,7 +1436,9 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane, path?: \"\"}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd; directories first, then by name; ≤ 2000 entries. Symlinks are listed, never followed; `.git` is not listed; secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}`"
+      "spec": "`{pane, path?: \"\"}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd; directories first, then by name; ≤ 2000 entries. Symlinks are listed, never followed; `.git` is not listed; secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}`",
+      "params": "{pane?: Target, path?: string = ''}",
+      "result": "{path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}"
     },
     {
       "name": "fs.read",
@@ -1232,7 +1450,9 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary); `binary` (NUL in the first 8 KiB) returns no text; secret-looking files return `{secret: true}` without content"
+      "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary); `binary` (NUL in the first 8 KiB) returns no text; secret-looking files return `{secret: true}` without content",
+      "params": "{pane?: Target, path: string}",
+      "result": "{path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool}"
     },
     {
       "name": "git.diff",
@@ -1244,7 +1464,9 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB"
+      "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB",
+      "params": "{pane?: Target, path?: string, file: string, staged?: bool}",
+      "result": "{file: string, diff: string, truncated: bool, binary: bool, untracked: bool, secret?: bool}"
     },
     {
       "name": "git.log",
@@ -1256,7 +1478,9 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first; with `base`, only commits in `base..HEAD`"
+      "spec": "`{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first; with `base`, only commits in `base..HEAD`",
+      "params": "{pane?: Target, path?: string, base?: string, limit?: int = 50}",
+      "result": "{commits: [{sha: string, short: string, author: string, ts: int, subject: string}], truncated: bool}"
     },
     {
       "name": "git.status",
@@ -1268,7 +1492,9 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository"
+      "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository",
+      "params": "{pane?: Target, path?: string}",
+      "result": "{repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}"
     },
     {
       "name": "group.add",
@@ -1280,7 +1506,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`"
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
+      "params": "{group: Target, workspace?: Target, index?: int}",
+      "result": "{workspace: Workspace, group: string|null}"
     },
     {
       "name": "group.collapse",
@@ -1292,7 +1520,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{group, …}` → `{group}`"
+      "spec": "`{group, …}` → `{group}`",
+      "params": "{group: Target, collapsed?: bool}",
+      "result": "{group: Group}"
     },
     {
       "name": "group.create",
@@ -1304,7 +1534,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{name, parent?}` → `{group}`"
+      "spec": "`{name, parent?}` → `{group}`",
+      "params": "{name: string, parent?: Target}",
+      "result": "{group: Group}"
     },
     {
       "name": "group.delete",
@@ -1316,7 +1548,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{group, …}` → `{group}`"
+      "spec": "`{group, …}` → `{group}`",
+      "params": "{group: Target}",
+      "result": "{}"
     },
     {
       "name": "group.list",
@@ -1328,7 +1562,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`"
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
+      "params": "{}",
+      "result": "{groups: [Group], ungrouped: [string]}"
     },
     {
       "name": "group.move",
@@ -1340,7 +1576,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{group, …}` → `{group}`"
+      "spec": "`{group, …}` → `{group}`",
+      "params": "{group: Target, parent?: Target|null, index?: int, delta?: int}",
+      "result": "{group: Group}"
     },
     {
       "name": "group.remove",
@@ -1352,7 +1590,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`"
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
+      "params": "{workspace?: Target, index?: int}",
+      "result": "{workspace: Workspace, group: string|null}"
     },
     {
       "name": "group.rename",
@@ -1364,7 +1604,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{group, …}` → `{group}`"
+      "spec": "`{group, …}` → `{group}`",
+      "params": "{group: Target, name: string}",
+      "result": "{group: Group}"
     },
     {
       "name": "image.upload",
@@ -1376,7 +1618,9 @@
         "api"
       ],
       "milestone": "M3",
-      "spec": "`{pane, mime, data_b64 | path_on_client}` → `{path_on_machine, blob}` — client→remote image transfer (paste/drag)"
+      "spec": "`{pane, mime, data_b64 | path_on_client}` → `{path_on_machine, blob}` — client→remote image transfer (paste/drag)",
+      "params": "{pane: Target, mime: string, data_b64?: string, path_on_client?: string}",
+      "result": "{path_on_machine: string, blob?: string}"
     },
     {
       "name": "interaction.answer",
@@ -1388,7 +1632,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again; a different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7); the key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1)"
+      "spec": "`{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again; a different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7); the key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1)",
+      "params": "{interaction: Target, decision?: allow|allow_always|deny, choices?: {*: [string]}, text?: string, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?: string, actor?: string, expected_decision_rev?: int}",
+      "result": "{interaction: Interaction, delivery: {state: string, channel?: native|keystrokes|none|string}, duplicate?: bool}"
     },
     {
       "name": "interaction.cancel",
@@ -1400,7 +1646,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{interaction}` → `{interaction}` (user dismisses; adapter delivers deny/escape)"
+      "spec": "`{interaction}` → `{interaction}` (user dismisses; adapter delivers deny/escape)",
+      "params": "{interaction: Target}",
+      "result": "{interaction: Interaction}"
     },
     {
       "name": "interaction.get",
@@ -1412,7 +1660,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{interaction}` → `{interaction}`"
+      "spec": "`{interaction}` → `{interaction}`",
+      "params": "{interaction: Target}",
+      "result": "{interaction: Interaction}"
     },
     {
       "name": "interaction.list",
@@ -1424,7 +1674,9 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1; Phase 2 adds ranking"
+      "spec": "`{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1; Phase 2 adds ranking",
+      "params": "{status?: open|string, run?: Target, workspace?: Target, kind?: string}",
+      "result": "{interactions: [Interaction]}"
     },
     {
       "name": "layout.apply",
@@ -1437,7 +1689,9 @@
         "layouts"
       ],
       "milestone": "M1",
-      "spec": "`{layout, workspace?, new_workspace?: {cwd, name}}` → `{workspace, tabs, panes}`"
+      "spec": "`{layout, workspace?, new_workspace?: {cwd, name}}` → `{workspace, tabs, panes}`",
+      "params": "{layout: LayoutSpec | string, workspace?: Target, new_workspace?: {cwd: string, name?: string}}",
+      "result": "{workspace: Workspace, tabs: [Tab], panes: [Pane]}"
     },
     {
       "name": "layout.export",
@@ -1450,7 +1704,9 @@
         "layouts"
       ],
       "milestone": "M1",
-      "spec": "`{tab|workspace}` → `{layout: LayoutSpec}` (TOML/JSON-serializable, includes commands and cwds)"
+      "spec": "`{tab|workspace}` → `{layout: LayoutSpec}` (TOML/JSON-serializable, includes commands and cwds)",
+      "params": "{tab?: Target, workspace?: Target}",
+      "result": "{layout: LayoutSpec}"
     },
     {
       "name": "layout.get",
@@ -1463,7 +1719,9 @@
         "layouts"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]"
+      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
+      "params": "{name?: string}",
+      "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
     },
     {
       "name": "layout.list",
@@ -1476,7 +1734,9 @@
         "layouts"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]"
+      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
+      "params": "{name?: string}",
+      "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
     },
     {
       "name": "notes.get",
@@ -1488,7 +1748,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`"
+      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`",
+      "params": "{workspace?: Target}",
+      "result": "{notes: {workspace: string, text: string, rev: int}}"
     },
     {
       "name": "notes.set",
@@ -1500,7 +1762,9 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`"
+      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`",
+      "params": "{workspace?: Target, text: string, expected_rev?: int}",
+      "result": "{notes: {workspace: string, text: string, rev: int}}"
     },
     {
       "name": "notification.config",
@@ -1513,7 +1777,9 @@
         "notify"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{channels: [os, terminal_bell, osc9, sound, plugin:<id>], rules}` — *M4:* `{channels: [toast, native, osc, …], native: {backend, unavailable_reason}, rules: {on, suppress_when_focused, coalesce_ms, quiet_hours}, hosts}`"
+      "spec": "`{}` → `{channels: [os, terminal_bell, osc9, sound, plugin:<id>], rules}` — *M4:* `{channels: [toast, native, osc, …], native: {backend, unavailable_reason}, rules: {on, suppress_when_focused, coalesce_ms, quiet_hours}, hosts}`",
+      "params": "{}",
+      "result": "{channels: [string], rules: any, native?: object, hosts?: any}"
     },
     {
       "name": "notification.list",
@@ -1525,7 +1791,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{unread_only?: true, limit?}` → `{notifications}`"
+      "spec": "`{unread_only?: true, limit?}` → `{notifications}`",
+      "params": "{unread_only?: bool = true, limit?: int}",
+      "result": "{notifications: [Notification]}"
     },
     {
       "name": "notification.read",
@@ -1537,7 +1805,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{notification|all: true}` → `{}`"
+      "spec": "`{notification|all: true}` → `{}`",
+      "params": "{notification?: Target, all?: bool}",
+      "result": "{}"
     },
     {
       "name": "notification.send",
@@ -1549,7 +1819,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{title, body?, urgency?: normal, subject?: pane|run|task, sound?: bool}` → `{notification}` — for scripts/plugins"
+      "spec": "`{title, body?, urgency?: normal, subject?: pane|run|task, sound?: bool}` → `{notification}` — for scripts/plugins",
+      "params": "{title: string, body?: string, urgency?: string = normal, subject?: string, sound?: bool}",
+      "result": "{notification: Notification}"
     },
     {
       "name": "pane.can_see_paths",
@@ -1561,7 +1833,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane?: Target, paths?: [string]}",
+      "result": "{visible: [bool]}"
     },
     {
       "name": "pane.close",
@@ -1573,7 +1847,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, force?}` → `{}`"
+      "spec": "`{pane, force?}` → `{}`",
+      "params": "{pane?: Target, force?: bool}",
+      "result": "{}"
     },
     {
       "name": "pane.current",
@@ -1585,7 +1861,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{pane}` (requires pane token / `@current`)"
+      "spec": "`{}` → `{pane}` (requires pane token / `@current`)",
+      "params": "{}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.embed",
@@ -1597,7 +1875,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{pane, target?, direction?: right, ratio?}` → `{pane, tab}` — a floating pane back into the tiling, split next to `target` (default the focused tiled pane) [M4]"
+      "spec": "`{pane, target?, direction?: right, ratio?}` → `{pane, tab}` — a floating pane back into the tiling, split next to `target` (default the focused tiled pane) [M4]",
+      "params": "{pane: Target, target?: Target, direction?: right|down|left|up = right, ratio?: number}",
+      "result": "{pane: Pane, tab: Tab}"
     },
     {
       "name": "pane.equalize",
@@ -1609,7 +1889,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{tab?: Target}",
+      "result": "{layout: LayoutSpec}"
     },
     {
       "name": "pane.float",
@@ -1621,7 +1903,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centred); with `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout`"
+      "spec": "`{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centred); with `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout`",
+      "params": "{pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string], focus?: bool}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.focus",
@@ -1633,7 +1917,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, client?}` → `{pane}`"
+      "spec": "`{pane, client?}` → `{pane}`",
+      "params": "{pane: Target, client?: string}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.get",
@@ -1645,7 +1931,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane}` → `{pane, run?, open_interactions[]}`"
+      "spec": "`{pane}` → `{pane, run?, open_interactions[]}`",
+      "params": "{pane?: Target}",
+      "result": "{pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction]}"
     },
     {
       "name": "pane.list",
@@ -1657,7 +1945,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace?, tab?, has_agent?}` → `{panes}`"
+      "spec": "`{workspace?, tab?, has_agent?}` → `{panes}`",
+      "params": "{workspace?: Target, tab?: Target, has_agent?: bool}",
+      "result": "{panes: [Pane]}"
     },
     {
       "name": "pane.mark_seen",
@@ -1669,7 +1959,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane}` → `{pane}`"
+      "spec": "`{pane}` → `{pane}`",
+      "params": "{pane?: Target}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.mark_unread",
@@ -1681,7 +1973,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane}` → `{pane}`"
+      "spec": "`{pane}` → `{pane}`",
+      "params": "{pane?: Target}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.pin",
@@ -1693,7 +1987,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, pinned: bool}` → `{pane}`"
+      "spec": "`{pane, pinned: bool}` → `{pane}`",
+      "params": "{pane?: Target, pinned: bool}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.read",
@@ -1705,7 +2001,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, source: visible|recent|recent_unwrapped|scrollback|detection, lines?: 200, from_line?, format?: text|ansi|cells, include_cursor?}` → `{text|cells, rows, revision, truncated, scroll}`"
+      "spec": "`{pane, source: visible|recent|recent_unwrapped|scrollback|detection, lines?: 200, from_line?, format?: text|ansi|cells, include_cursor?}` → `{text|cells, rows, revision, truncated, scroll}`",
+      "params": "{pane?: Target, source?: visible|recent|recent_unwrapped|scrollback|detection = visible, lines?: int = 200, from_line?: int, format?: text|ansi|cells = text, include_cursor?: bool}",
+      "result": "{text?: string, cells?: any, rows?: int, revision?: int, truncated?: bool, scroll?: any, cursor?: any}"
     },
     {
       "name": "pane.rename",
@@ -1717,7 +2015,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, title: string|null}` → `{pane}` (emits `pane.title_changed`)"
+      "spec": "`{pane, title: string|null}` → `{pane}` (emits `pane.title_changed`)",
+      "params": "{pane?: Target, title: string|null}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.report_agent",
@@ -1729,7 +2029,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane?: Target, pane_id?: Target, source?: string = herdr, seq?: int, agent?: string, harness?: string, state: idle|working|blocked|done|string, message?: string, resume_argv?: [string]}",
+      "result": "{type: 'ok', dropped?: 'stale_seq', applied?: bool}"
     },
     {
       "name": "pane.report_agent_session",
@@ -1741,7 +2043,9 @@
         "agents"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane?: Target, pane_id?: Target, source?: string = herdr, seq?: int, agent?: string, harness?: string, agent_session_id?: string, agent_session_path?: string, session_start_source?: string}",
+      "result": "{type: 'ok', dropped?: 'stale_seq'}"
     },
     {
       "name": "pane.resize",
@@ -1753,7 +2057,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, direction, cells?|percent?}` → `{layout}`"
+      "spec": "`{pane, direction, cells?|percent?}` → `{layout}`",
+      "params": "{pane?: Target, direction: right|down|left|up, cells?: int, percent?: number}",
+      "result": "{layout: any}"
     },
     {
       "name": "pane.run",
@@ -1765,7 +2071,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, command: string, wait?: bool, timeout_ms?}` → `{}` or (with wait) `{exit_code?, output_tail}` — sends text + Enter; with `wait`, uses OSC 133 prompt marks when the shell integration is active, else falls back to \"foreground process returns to shell\""
+      "spec": "`{pane, command: string, wait?: bool, timeout_ms?}` → `{}` or (with wait) `{exit_code?, output_tail}` — sends text + Enter; with `wait`, uses OSC 133 prompt marks when the shell integration is active, else falls back to \"foreground process returns to shell\"",
+      "params": "{pane?: Target, command: string, wait?: bool, timeout_ms?: int}",
+      "result": "{exit_code?: int|null, output_tail?: string}"
     },
     {
       "name": "pane.send_bytes",
@@ -1777,7 +2085,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane?: Target, data_b64: string}",
+      "result": "{}"
     },
     {
       "name": "pane.send_keys",
@@ -1789,7 +2099,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, keys: [string]}` → `{}` — key grammar §2.6.1; all keys validated before any byte is written"
+      "spec": "`{pane, keys: [string]}` → `{}` — key grammar §2.6.1; all keys validated before any byte is written",
+      "params": "{pane?: Target, keys: [string]}",
+      "result": "{}"
     },
     {
       "name": "pane.send_text",
@@ -1801,7 +2113,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, text, paste?: auto|bracketed|raw = auto}` → `{bytes}` — `auto` honors the pane's live bracketed-paste mode *(notify ok)*"
+      "spec": "`{pane, text, paste?: auto|bracketed|raw = auto}` → `{bytes}` — `auto` honors the pane's live bracketed-paste mode *(notify ok)*",
+      "params": "{pane?: Target, text: string, paste?: auto|bracketed|raw = auto}",
+      "result": "{bytes: int}"
     },
     {
       "name": "pane.split",
@@ -1813,7 +2127,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}`"
+      "spec": "`{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}`",
+      "params": "{pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string], env?: {*: string}, focus?: bool = false, title?: string}",
+      "result": "{pane: Pane}"
     },
     {
       "name": "pane.wait_idle",
@@ -1825,7 +2141,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, quiet_ms: 2000, timeout_ms?}` → `{revision}`"
+      "spec": "`{pane, quiet_ms: 2000, timeout_ms?}` → `{revision}`",
+      "params": "{pane?: Target, quiet_ms?: int = 2000, timeout_ms?: int}",
+      "result": "{revision: int}"
     },
     {
       "name": "pane.wait_output",
@@ -1837,7 +2155,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, match?: string, regex?: string, source?, timeout_ms?, since_revision?}` → `{matched: string, line, revision}`"
+      "spec": "`{pane, match?: string, regex?: string, source?, timeout_ms?, since_revision?}` → `{matched: string, line, revision}`",
+      "params": "{pane?: Target, match?: string, regex?: string, source?: string, timeout_ms?: int, since_revision?: int}",
+      "result": "{matched: string, line: any, revision: int}"
     },
     {
       "name": "pane.zoom",
@@ -1849,7 +2169,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, zoomed?: toggle}` → `{tab}`"
+      "spec": "`{pane, zoomed?: toggle}` → `{tab}`",
+      "params": "{pane?: Target, zoomed?: bool}",
+      "result": "{tab: Tab}"
     },
     {
       "name": "plugin.action.list",
@@ -1861,7 +2183,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{plugin?: string}",
+      "result": "{actions: [{plugin_id: string, action_id: string, qualified_id: string, title: string, description?: string, contexts: any, available: bool, status: string}], keybindings: [{plugin_id: string, key: string, action: string, description?: string, installed: bool, reason?: string, conflicts_with?: any}]}"
     },
     {
       "name": "plugin.action.run",
@@ -1873,7 +2197,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{plugin: string, action: string, source?: palette|keybinding, context?: {pane_id?: Target, pane?: Target, tab_id?: Target, tab?: Target, workspace_id?: Target, workspace?: Target}, pane_id?: Target, tab_id?: Target, workspace_id?: Target} | {action: string, source?: palette|keybinding, context?: object}",
+      "result": "{log: {log_id: string, plugin_id: string, action_id?: string, event?: string, entrypoint_id?: string, source: string, command: any, long_lived: bool, isolation: sandbox|host, status: string, started_unix_ms: int, finished_unix_ms?: int, started_at: int, finished_at?: int, exit_code?: int, stdout: string, stderr: string, context: object}}"
     },
     {
       "name": "plugin.link.open",
@@ -1885,7 +2211,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{plugin: string, handler: string, url: string, context?: {pane_id?: Target, tab_id?: Target, workspace_id?: Target}, pane_id?: Target, tab_id?: Target, workspace_id?: Target}",
+      "result": "{log: object}"
     },
     {
       "name": "plugin.link_handler.list",
@@ -1897,7 +2225,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{handlers: [{plugin_id: string, handler_id: string, title?: string, pattern: string, action_id?: string, available: bool, status: string}]}"
     },
     {
       "name": "plugin.list",
@@ -1909,7 +2239,9 @@
         "compat"
       ],
       "milestone": "M5",
-      "spec": "`{}` → `{plugins: [{id, version, enabled, kind: actions|process, capabilities, status}]}`"
+      "spec": "`{}` → `{plugins: [{id, version, enabled, kind: actions|process, capabilities, status}]}`",
+      "params": "{}",
+      "result": "{plugins: [{id: string, version?: string, enabled: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}"
     },
     {
       "name": "plugin.log.list",
@@ -1921,7 +2253,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{plugin?: string, limit?: int}",
+      "result": "{logs: [object]}"
     },
     {
       "name": "plugin.registry.notify",
@@ -1933,7 +2267,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{ok: bool}"
     },
     {
       "name": "plugin.surface.close",
@@ -1945,7 +2281,9 @@
         "compat"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{pane: Target}",
+      "result": "{closed: Target | null}"
     },
     {
       "name": "preview.declare",
@@ -1957,7 +2295,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{port, host?: 127.0.0.1, scheme?: http, path?, label?, pane?, task?}` → `{preview}`"
+      "spec": "`{port, host?: 127.0.0.1, scheme?: http, path?, label?, pane?, task?}` → `{preview}`",
+      "params": "{port: int, host?: string = '127.0.0.1', scheme?: string = http, path?: string, label?: string, pane?: Target, task?: Target}",
+      "result": "{preview: Preview}"
     },
     {
       "name": "preview.dismiss",
@@ -1969,7 +2309,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion"
+      "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion",
+      "params": "{preview: Target}",
+      "result": "{preview: Preview}"
     },
     {
       "name": "preview.forget",
@@ -1981,7 +2323,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{}`"
+      "spec": "`{preview}` → `{}`",
+      "params": "{preview: Target}",
+      "result": "{}"
     },
     {
       "name": "preview.get",
@@ -1993,7 +2337,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{preview}`"
+      "spec": "`{preview}` → `{preview}`",
+      "params": "{preview: Target}",
+      "result": "{preview: Preview}"
     },
     {
       "name": "preview.list",
@@ -2005,7 +2351,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{machine?, task?, pane?, status?: suggested|up|down|all}` → `{previews}` — suggestions only with `status: suggested|all`"
+      "spec": "`{machine?, task?, pane?, status?: suggested|up|down|all}` → `{previews}` — suggestions only with `status: suggested|all`",
+      "params": "{machine?: string, task?: Target, pane?: Target, status?: suggested|up|down|all}",
+      "result": "{previews: [Preview]}"
     },
     {
       "name": "preview.mirror",
@@ -2017,7 +2365,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only"
+      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only",
+      "params": "{preview: Target}",
+      "result": "{local_port: int}"
     },
     {
       "name": "preview.open",
@@ -2029,7 +2379,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`; proxy mode returns a tokenized `*.vibeke.localhost` URL"
+      "spec": "`{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`; proxy mode returns a tokenized `*.vibeke.localhost` URL",
+      "params": "{preview: Target, mode?: profile|proxy, client?: string}",
+      "result": "{opened_in: string, url: string}"
     },
     {
       "name": "preview.profile",
@@ -2041,7 +2393,9 @@
         "preview"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{action?: list|reset = list, profile?: string, machine?: string}",
+      "result": "{profiles: [{name: string, path: string, running: bool, pid?: int, machine?: string, route?: string, bytes: int}], root: string} | {profile: string, removed: bool}"
     },
     {
       "name": "preview.profile.list",
@@ -2053,7 +2407,9 @@
         "preview"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{profiles: [{name: string, path: string, running: bool, pid?: int, machine?: string, route?: string, bytes: int}], root: string}"
     },
     {
       "name": "preview.profile.reset",
@@ -2065,7 +2421,9 @@
         "preview"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{profile: string, machine?: string}",
+      "result": "{profile: string, removed: bool}"
     },
     {
       "name": "preview.promote",
@@ -2077,7 +2435,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion"
+      "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion",
+      "params": "{preview: Target}",
+      "result": "{preview: Preview}"
     },
     {
       "name": "preview.status",
@@ -2089,7 +2449,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`."
+      "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`.",
+      "params": "{}",
+      "result": "{socks_port?: int|null, browsers: [object], links: [object], accepted?: int, rejected?: int}"
     },
     {
       "name": "preview.unmirror",
@@ -2101,7 +2463,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only"
+      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only",
+      "params": "{preview: Target}",
+      "result": "{local_port: int}"
     },
     {
       "name": "preview.url",
@@ -2113,7 +2477,9 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human)"
+      "spec": "`{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human)",
+      "params": "{preview: Target, mode?: profile|proxy}",
+      "result": "{remote_url: string, profile_url: string, proxy_url?: string}"
     },
     {
       "name": "sandbox.allow",
@@ -2125,7 +2491,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, host: string}",
+      "result": "{task: string, allowed: string}"
     },
     {
       "name": "sandbox.list",
@@ -2137,7 +2505,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{sandboxes: [{sandbox: string, task?: string, checkout?: string, level: string, provider?: string, network: any, yolo: bool, proxy_port?: int, task_allow?: any, credentials: any, container?: {container: string, state: string, image: any, code: any, workdir: any, clone?: {branch: string, base: string}, devcontainer: any, warnings: any, in_box_vibeke: any}}]}"
     },
     {
       "name": "sandbox.remove",
@@ -2149,7 +2519,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, force?: bool = false}",
+      "result": "{container: string, action: string, sync: any, leftovers: any, error?: string, unsynced_kept: bool}"
     },
     {
       "name": "sandbox.start",
@@ -2161,7 +2533,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{state: string, created: bool}"
     },
     {
       "name": "sandbox.status",
@@ -2173,7 +2547,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{}",
+      "result": "{levels: [{level: string, available: bool, detail?: any, hint?: string}], config: object, container: {runtime?: string, docker_sandboxes?: {plugin: any, note: string}, vibeke_linux: any, vibeke_linux_hint: string}}"
     },
     {
       "name": "sandbox.stop",
@@ -2185,7 +2561,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{state: string}"
     },
     {
       "name": "screenshot.delete",
@@ -2197,7 +2575,9 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes); a screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`."
+      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes); a screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`.",
+      "params": "{id: string, force?: bool}",
+      "result": "{id: string, handle: string, deleted: bool, blob_removed: bool}"
     },
     {
       "name": "screenshot.get",
@@ -2209,7 +2589,9 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{id}` (id or `sN`) → `ScreenshotMeta + {path_on_machine, exists, data_b64? (inline)}` — other workspaces' screenshots are `not_found` for panes."
+      "spec": "`{id}` (id or `sN`) → `ScreenshotMeta + {path_on_machine, exists, data_b64? (inline)}` — other workspaces' screenshots are `not_found` for panes.",
+      "params": "{id: string}",
+      "result": "ScreenshotMeta"
     },
     {
       "name": "screenshot.list",
@@ -2221,7 +2603,9 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{task?, preview?, run?, since?: ms \\| \"1h\", since_ms?, limit?: 50}` → `{screenshots: [ScreenshotMeta + {path_on_machine, exists}], count, total}` — newest first. Pane scope: only screenshots whose `workspace` is the pane's workspace."
+      "spec": "`{task?, preview?, run?, since?: ms \\| \"1h\", since_ms?, limit?: 50}` → `{screenshots: [ScreenshotMeta + {path_on_machine, exists}], count, total}` — newest first. Pane scope: only screenshots whose `workspace` is the pane's workspace.",
+      "params": "{task?: Target, preview?: Target, run?: Target, since?: string|int, since_ms?: int, limit?: int = 50}",
+      "result": "{screenshots: [ScreenshotMeta], count: int, total: int}"
     },
     {
       "name": "screenshot.open",
@@ -2233,7 +2617,9 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`; `VIBEKE_NO_OPEN=1` only reports the path)."
+      "spec": "`{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`; `VIBEKE_NO_OPEN=1` only reports the path).",
+      "params": "{id: string}",
+      "result": "ScreenshotMeta"
     },
     {
       "name": "scrollback.forget",
@@ -2245,7 +2631,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both; a call with `plan` is refused with `conflict` unless the scope still resolves to exactly that plan (the CLI confirms by sending the dry run's `scope` + `plan`, so a focus change or a relative cutoff can't redirect the deletion). Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`."
+      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both; a call with `plan` is refused with `conflict` unless the scope still resolves to exactly that plan (the CLI confirms by sending the dry run's `scope` + `plan`, so a focus change or a relative cutoff can't redirect the deletion). Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`.",
+      "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}",
+      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int}"
     },
     {
       "name": "search.query",
@@ -2257,7 +2645,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts"
+      "spec": "`{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts",
+      "params": "{q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false}",
+      "result": "{hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}"
     },
     {
       "name": "server.reload_config",
@@ -2269,7 +2659,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{changed: [keys], errors: []}`"
+      "spec": "`{}` → `{changed: [keys], errors: []}`",
+      "params": "{}",
+      "result": "{changed: [string], errors: [any]}"
     },
     {
       "name": "server.status",
@@ -2281,7 +2673,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}`"
+      "spec": "`{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}`",
+      "params": "{}",
+      "result": "{pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, preview?: object, timers?: object, db_size?: int, rss?: int}"
     },
     {
       "name": "server.stop",
@@ -2293,7 +2687,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{kill_panes: bool = false}` → `{}` — with `kill_panes:false`, holders keep running and the next server reattaches"
+      "spec": "`{kill_panes: bool = false}` → `{}` — with `kill_panes:false`, holders keep running and the next server reattaches",
+      "params": "{kill_panes?: bool = false}",
+      "result": "{}"
     },
     {
       "name": "session.snapshot",
@@ -2305,7 +2701,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{include?: [workspaces, tabs, panes, runs, interactions, tasks, previews, layouts, machines]}` → `{at_seq, workspaces[], groups[], tabs[], panes[], runs[], interactions[], tasks[], previews[], layouts[], focused: {client_id → {workspace, tab, pane}}}`"
+      "spec": "`{include?: [workspaces, tabs, panes, runs, interactions, tasks, previews, layouts, machines]}` → `{at_seq, workspaces[], groups[], tabs[], panes[], runs[], interactions[], tasks[], previews[], layouts[], focused: {client_id → {workspace, tab, pane}}}`",
+      "params": "{include?: [workspaces|tabs|panes|runs|interactions|tasks|previews|layouts|machines|groups|string]}",
+      "result": "{at_seq: int, workspaces?: [Workspace], groups?: [Group], tabs?: [Tab], panes?: [Pane], runs?: [AgentRun], interactions?: [Interaction], tasks?: [Task], previews?: [Preview], layouts?: [any], focused?: {*: {workspace: string|null, tab: string|null, pane: string|null}}}"
     },
     {
       "name": "status.segments",
@@ -2317,7 +2715,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{pane?, client?}` → `{segments: {machine, session, workspace, task, branch, ports, attention, agents_summary, cpu, clock, sync_input}, focus, appearance, client_side: [mode, prefix_indicator]}` — data for the built-in status-bar segments (08 §4) from that client's focus [M4]"
+      "spec": "`{pane?, client?}` → `{segments: {machine, session, workspace, task, branch, ports, attention, agents_summary, cpu, clock, sync_input}, focus, appearance, client_side: [mode, prefix_indicator]}` — data for the built-in status-bar segments (08 §4) from that client's focus [M4]",
+      "params": "{pane?: Target, client?: string}",
+      "result": "{segments: object, focus: any, appearance: Appearance, client_side: [string]}"
     },
     {
       "name": "tab.close",
@@ -2329,7 +2729,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{tab, force?}` → `{}`"
+      "spec": "`{tab, force?}` → `{}`",
+      "params": "{tab: Target, force?: bool}",
+      "result": "{}"
     },
     {
       "name": "tab.create",
@@ -2341,7 +2743,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace, cwd?, title?, focus?: false, command?: argv, layout?: LayoutSpec}` → `{tab, root_pane}`"
+      "spec": "`{workspace, cwd?, title?, focus?: false, command?: argv, layout?: LayoutSpec}` → `{tab, root_pane}`",
+      "params": "{workspace?: Target, cwd?: string, title?: string, focus?: bool = false, command?: [string], layout?: LayoutSpec}",
+      "result": "{tab: Tab, root_pane: Pane}"
     },
     {
       "name": "tab.floats",
@@ -2353,7 +2757,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{tab?, visible?}` → `{tab}` — show/hide all floats (`Tab.floats_hidden`; toggles without `visible`) [M4]"
+      "spec": "`{tab?, visible?}` → `{tab}` — show/hide all floats (`Tab.floats_hidden`; toggles without `visible`) [M4]",
+      "params": "{tab?: Target, visible?: bool}",
+      "result": "{tab: Tab}"
     },
     {
       "name": "tab.focus",
@@ -2365,7 +2771,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{tab, client?}` → `{tab}`"
+      "spec": "`{tab, client?}` → `{tab}`",
+      "params": "{tab: Target, client?: string}",
+      "result": "{tab: Tab}"
     },
     {
       "name": "tab.list",
@@ -2377,7 +2785,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace?}` → `{tabs}`"
+      "spec": "`{workspace?}` → `{tabs}`",
+      "params": "{workspace?: Target}",
+      "result": "{tabs: [Tab]}"
     },
     {
       "name": "tab.move",
@@ -2389,7 +2799,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{tab, index, workspace?}` → `{tabs}` (numbers are stable; order changes)"
+      "spec": "`{tab, index, workspace?}` → `{tabs}` (numbers are stable; order changes)",
+      "params": "{tab: Target, index: int, workspace?: Target}",
+      "result": "{tabs: [Tab]}"
     },
     {
       "name": "tab.rename",
@@ -2401,7 +2813,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{tab, title: string|null}` → `{tab}`"
+      "spec": "`{tab, title: string|null}` → `{tab}`",
+      "params": "{tab: Target, title: string|null}",
+      "result": "{tab: Tab}"
     },
     {
       "name": "task.check.authorize",
@@ -2413,7 +2827,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, check: string, subject: string, subject_id?: string, definition_digest?: string, idempotency_key?: string}",
+      "result": "{grant: object, definition: object, provenance: any, subject: string, head_sha: string, confirmation_label: string, execution: {machine: any, runner: 'host', checkout: string}}"
     },
     {
       "name": "task.check.cancel",
@@ -2425,7 +2841,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{check_run: string}",
+      "result": "{check_run: object, cancelling: bool}"
     },
     {
       "name": "task.check.get",
@@ -2437,7 +2855,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{check_run: string}",
+      "result": "{check_run: object, definition: object, task: Target, log_tail: string | null}"
     },
     {
       "name": "task.check.list",
@@ -2449,7 +2869,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, subject?: string, subject_id?: string}",
+      "result": "{task: Target, subject: object | null, checks: [object], confirmation_label: string}"
     },
     {
       "name": "task.check.run",
@@ -2461,7 +2883,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, check: string, subject: string, subject_id?: string, definition_digest?: string, idempotency_key?: string, authorize?: bool}",
+      "result": "{check_run: object, definition: object, provenance: any}"
     },
     {
       "name": "task.create",
@@ -2473,7 +2897,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`)"
+      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`)",
+      "params": "{title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target}",
+      "result": "{task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun]}"
     },
     {
       "name": "task.dependency.add",
@@ -2486,7 +2912,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, depends_on: Target, kind?: blocks|related = blocks, idempotency_key?: string}",
+      "result": "{edge: object, note: string}"
     },
     {
       "name": "task.dependency.list",
@@ -2499,7 +2927,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task?: Target}",
+      "result": "{task: Target, dependencies: {depends_on: [{edge: object, title: string | null} | {hidden: true, title: string, edge: {kind: string}}], dependents: [{edge: object, title: string | null} | {hidden: true, title: string, edge: {kind: string}}], blocks_open_tasks: int, note: string}} | {edges: [object]}"
     },
     {
       "name": "task.dependency.remove",
@@ -2512,7 +2942,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{edge: string} | {task: Target, depends_on: Target, kind?: blocks|related, idempotency_key?: string}",
+      "result": "{removed: [object], removed_by: object}"
     },
     {
       "name": "task.effort.estimate",
@@ -2525,7 +2957,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{task: Target, effort: {set: string | null, heuristic: any, note: string}, model_estimate: {method: string, params: object, note: string}}"
     },
     {
       "name": "task.finish",
@@ -2537,7 +2971,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{task, remove_worktree?: ask|true|false, delete_branch?: false}` → `{task}`"
+      "spec": "`{task, remove_worktree?: ask|true|false, delete_branch?: false}` → `{task}`",
+      "params": "{task: Target, remove_worktree?: ask|true|false, delete_branch?: bool = false}",
+      "result": "{task: Task}"
     },
     {
       "name": "task.get",
@@ -2549,7 +2985,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{task}` → `{task, workspace, runs, previews, collisions[]}`"
+      "spec": "`{task}` → `{task, workspace, runs, previews, collisions[]}`",
+      "params": "{task: Target}",
+      "result": "{task: Task, workspace: Workspace|null, runs: [AgentRun], previews: [Preview], collisions: [any]}"
     },
     {
       "name": "task.list",
@@ -2561,7 +2999,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{status?, repo?}` → `{tasks}`"
+      "spec": "`{status?, repo?}` → `{tasks}`",
+      "params": "{status?: string, repo?: string}",
+      "result": "{tasks: [Task]}"
     },
     {
       "name": "task.review.accept",
@@ -2573,7 +3013,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, subject_id: string, intent_revision: int, expected_intent_revision?: int, package_revision?: int, expected_package_revision?: int, exceptions?: [{criterion: string, criterion_id?: string, reason?: string}], idempotency_key?: string}",
+      "result": "{acceptance: object, label: string, label_text: string, task: Task, note: string}"
     },
     {
       "name": "task.review.candidates",
@@ -2585,7 +3027,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{task: Target, current: string | null, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, warnings: [string]}"
     },
     {
       "name": "task.review.diff",
@@ -2597,7 +3041,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, subject?: string, path?: string, max_bytes?: int}",
+      "result": "{task: Target, subject: string, base_sha: string, head_sha: string, content_sha: string, path: string | null, diff: string, truncated: bool, total_bytes: int, max_bytes: int}"
     },
     {
       "name": "task.review.get",
@@ -2609,7 +3055,9 @@
         "api"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, subject?: string}",
+      "result": "{task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}}"
     },
     {
       "name": "task.review.note.classify",
@@ -2622,7 +3070,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{note: string, classification: blocking|not_blocking|dismissed, reason?: string, idempotency_key?: string}",
+      "result": "{note: object}"
     },
     {
       "name": "task.review.notes",
@@ -2635,7 +3085,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{task: Target, notes: [object], reviewer_runs: [object]}"
     },
     {
       "name": "task.review.request_reviewer",
@@ -2648,7 +3100,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, harness?: string = claude, subject?: string, expected_subject?: string, prompt?: string, idempotency_key?: string}",
+      "result": "{request: object, prompt: string, prompt_digest: string, harness: string, subject: string, requires_confirmation: true, label: string, uses_provider: string, confirm_with: {method: string, params: {request: string, prompt_digest: string}}}"
     },
     {
       "name": "task.review.snapshot",
@@ -2661,7 +3115,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, idempotency_key?: string}",
+      "result": "{subject: object, snapshot: object, label: string, note: string}"
     },
     {
       "name": "task.review.snapshot.gc",
@@ -2674,7 +3130,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, include_unrecorded?: bool = false, dry_run?: bool = false} | {repo: string, include_unrecorded?: bool = false, dry_run?: bool = false}",
+      "result": "{repo: string, task: Target | null, dry_run: bool, removed: [object], kept: [object], unrecorded: [object], note: string}"
     },
     {
       "name": "task.review.start_reviewer",
@@ -2687,7 +3145,9 @@
         "review::t4"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, idempotency_key?: string}",
+      "result": "{request: object, run: Target, binding: object, note?: string, replayed?: bool}"
     },
     {
       "name": "task.sync",
@@ -2699,7 +3159,9 @@
         "sandbox"
       ],
       "milestone": null,
-      "spec": null
+      "spec": null,
+      "params": "{task: Target, direction?: pull|push|both = pull, force?: bool = false}",
+      "result": "{task: Target | null, synced: [{direction: string, status: string, commits: any, from: any, to: any, ref: any}]}"
     },
     {
       "name": "theme.get",
@@ -2712,7 +3174,9 @@
         "theme"
       ],
       "milestone": "M1",
-      "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]"
+      "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]",
+      "params": "{}",
+      "result": "{appearance: Appearance, colorfgbg: string, reports?: any}"
     },
     {
       "name": "theme.set_mode",
@@ -2725,7 +3189,9 @@
         "theme"
       ],
       "milestone": "M1",
-      "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]"
+      "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]",
+      "params": "{mode: auto|light|dark|null}",
+      "result": "{appearance: Appearance, colorfgbg: string, reports?: any}"
     },
     {
       "name": "workspace.close",
@@ -2737,7 +3203,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace, force?: false}` → `{}` — refuses with `conflict:pane_busy` if a non-shell foreground process runs, unless `force`"
+      "spec": "`{workspace, force?: false}` → `{}` — refuses with `conflict:pane_busy` if a non-shell foreground process runs, unless `force`",
+      "params": "{workspace?: Target, force?: bool = false}",
+      "result": "{}"
     },
     {
       "name": "workspace.create",
@@ -2749,7 +3217,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{cwd, name?, group?, focus?: false, layout?: LayoutSpec, command?: argv}` → `{workspace, tab, root_pane}`"
+      "spec": "`{cwd, name?, group?, focus?: false, layout?: LayoutSpec, command?: argv}` → `{workspace, tab, root_pane}`",
+      "params": "{cwd?: string, name?: string, group?: Target, focus?: bool = false, layout?: LayoutSpec, command?: [string]}",
+      "result": "{workspace: Workspace, tab: Tab, root_pane: Pane}"
     },
     {
       "name": "workspace.focus",
@@ -2761,7 +3231,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace, client?}` → `{workspace}`"
+      "spec": "`{workspace, client?}` → `{workspace}`",
+      "params": "{workspace: Target, client?: string}",
+      "result": "{workspace: Workspace}"
     },
     {
       "name": "workspace.get",
@@ -2773,7 +3245,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace}` → `{workspace}`"
+      "spec": "`{workspace}` → `{workspace}`",
+      "params": "{workspace?: Target}",
+      "result": "{workspace: Workspace}"
     },
     {
       "name": "workspace.list",
@@ -2785,7 +3259,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{group?}` → `{workspaces: [Workspace + {agent_summary: {working, needs_input, done, idle}, tab_count, pane_count}]}`"
+      "spec": "`{group?}` → `{workspaces: [Workspace + {agent_summary: {working, needs_input, done, idle}, tab_count, pane_count}]}`",
+      "params": "{group?: Target}",
+      "result": "{workspaces: [Workspace]}"
     },
     {
       "name": "workspace.move",
@@ -2797,7 +3273,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace, group?, index}` → `{workspaces}`"
+      "spec": "`{workspace, group?, index}` → `{workspaces}`",
+      "params": "{workspace: Target, group?: Target|null, index?: int, delta?: int}",
+      "result": "{workspaces: [Workspace]}"
     },
     {
       "name": "workspace.rename",
@@ -2809,7 +3287,9 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{workspace, name: string|null}` → `{workspace}` (null clears to auto-name)"
+      "spec": "`{workspace, name: string|null}` → `{workspace}` (null clears to auto-name)",
+      "params": "{workspace?: Target, name: string|null}",
+      "result": "{workspace: Workspace}"
     },
     {
       "name": "worktree.create",
@@ -2821,7 +3301,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{repo|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}`"
+      "spec": "`{repo|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}`",
+      "params": "{repo?: string, cwd?: string, branch: string, path?: string, base?: string, open?: bool, focus?: bool = false}",
+      "result": "{worktree: any, workspace?: Workspace}"
     },
     {
       "name": "worktree.list",
@@ -2833,7 +3315,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}`"
+      "spec": "`{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}`",
+      "params": "{repo?: string, cwd?: string}",
+      "result": "{worktrees: [{path: string, branch: string|null, head: string, task?: string|null, workspace?: string|null, locked: bool, prunable: bool}]}"
     },
     {
       "name": "worktree.open",
@@ -2845,7 +3329,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{path, focus?: false}` → `{workspace}`"
+      "spec": "`{path, focus?: false}` → `{workspace}`",
+      "params": "{path: string, focus?: bool = false}",
+      "result": "{workspace: Workspace}"
     },
     {
       "name": "worktree.remove",
@@ -2857,7 +3343,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event"
+      "spec": "`{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event",
+      "params": "{path: string, force?: bool = false}",
+      "result": "{job: any}"
     },
     {
       "name": "worktree.repo_root",
@@ -2869,7 +3357,9 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{cwd}` → `{repo_root, vcs}`"
+      "spec": "`{cwd}` → `{repo_root, vcs}`",
+      "params": "{cwd: string}",
+      "result": "{repo_root: string, vcs: string}"
     }
   ]
 }

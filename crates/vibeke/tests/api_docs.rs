@@ -21,25 +21,7 @@ fn read(rel: &str) -> String {
 
 /// Every method table in the server: (table, name, mutating).
 fn tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
-    use vk_server::*;
-    vec![
-        ("api", api::METHODS),
-        ("agents", agents::METHODS),
-        ("review::t4", review::t4::METHODS),
-        ("preview", preview::METHODS),
-        ("sandbox", sandbox::METHODS),
-        ("agent_browser", agent_browser::METHODS),
-        ("browser_pane", browser_pane::METHODS),
-        ("parity", parity::METHODS),
-        ("screenshots", screenshots::METHODS),
-        ("desk", desk::METHODS),
-        ("drafts", drafts::METHODS),
-        ("assist", assist::METHODS),
-        ("compat", compat::METHODS),
-        ("notify", notify::METHODS),
-        ("theme", theme::METHODS),
-        ("layouts", layouts::METHODS),
-    ]
+    vk_server::api_schema::method_tables()
 }
 
 /// One row of spec 07 §2: method -> (milestone, "params → result" text).
@@ -117,6 +99,9 @@ pub fn catalog() -> Value {
                 .get(*name)
                 .map(|(m, s)| (json!(m), json!(s)))
                 .unwrap_or((Value::Null, Value::Null));
+            let (params, result) = vk_server::api_schema::method_sources(name)
+                .map(|(p, r)| (json!(p), json!(r)))
+                .unwrap_or((Value::Null, Value::Null));
             json!({
                 "name": name,
                 "mutating": mutating,
@@ -126,12 +111,16 @@ pub fn catalog() -> Value {
                 "tables": tabs,
                 "milestone": milestone,
                 "spec": signature,
+                "params": params,
+                "result": result,
             })
         })
         .collect();
     json!({
         "api": vk_proto::API_VERSION,
-        "generated_from": "vk-server METHODS tables; signatures from spec/07 §2",
+        "generated_from": "vk-server METHODS tables; signatures from spec/07 §2; params/result shapes from the schema registry (crates/vk-server/src/api_schema.rs)",
+        "schema": "vibeke-1.schema.json",
+        "shape_language": "{field, field?: type = default, ...}; [T]; A|B (bare lowercase words are string literals); {*: T} maps; CamelCase names are shared definitions in the schema's $defs",
         "render_protocol": vk_proto::render::PROTOCOL,
         "holder_protocol": {"proto": vk_proto::holder::PROTO, "min": vk_proto::holder::PROTO_MIN},
         "method_count": list.len(),
@@ -162,6 +151,9 @@ pub fn api_markdown(cat: &Value) -> String {
          - **Scope**: `full` means only full-scope clients (the TUI, the CLI, granted plugins) may call it; a pane token is refused. `pane` means a pane token may call it too. `own` marks pane-scope calls that must target the caller's own panes or runs (09 §5.2).\n\
          - **Signature**: `params → result` as written in spec 07 §2. A dash means the spec does not tabulate the method yet (the code is authoritative; `api.schema` returns the live shapes).\n\n",
     );
+    s.push_str("## Schema and clients\n\n");
+    s.push_str(
+        "Every method has a params and a result shape, every event type a subject and data shape, and every error kind a code, all written once in the schema registry (`crates/vk-server/src/api_schema.rs`). [`methods.json`](methods.json) carries each method's shapes in the registry's compact notation (`params`, `result`: `{field, field?: type = default}`, `[T]`, `A|B`, `{*: T}` maps, CamelCase shared types). [`vibeke-1.schema.json`](vibeke-1.schema.json) is the same information as JSON Schema 2020-12 (shared types under `$defs`; `x-methods`, `x-events`, `x-notifications`, `x-errors`); `vibeke debug api-schema [--out FILE]` prints it for the running binary and the `api.schema {method?}` method serves it. The typed clients in [`clients/typescript`](../../clients/typescript) (`@vibeke/client`, Node `net`, events as an async iterator) and [`clients/python`](../../clients/python) (`vibeke-client`, stdlib `asyncio`, TypedDicts) are generated from that schema; `cargo test -p vibeke --test api_clients` fails when a checked-in client file is stale (`VIBEKE_UPDATE_CLIENTS=1` regenerates). Results of a real server and the payloads of its events are validated against the shapes in tests.\n\n");
     s.push_str("## Versioning and the freeze\n\n");
     s.push_str(
         "Within `vibeke/1` only additions are allowed: new methods, new optional params, new result fields and new event types. Clients must ignore unknown fields and event types (spec 07 §1.5). The snapshot [`vibeke-1.frozen.json`](vibeke-1.frozen.json) lists the methods that may not be removed or have their mutating flag, scope or pane scope (`own_target`, `open`, `forbidden`) changed; a test fails when they do. **The freeze is a draft until 1.0**: the snapshot is regenerated deliberately (`VIBEKE_UPDATE_API_FREEZE=1`) and the flags may still move before the release.\n\n",
@@ -280,6 +272,11 @@ fn generated_docs_are_up_to_date() {
     let cat = catalog();
     let mut stale = vec![];
     check_generated("docs/api/methods.json", &pretty(&cat), &mut stale);
+    check_generated(
+        "docs/api/vibeke-1.schema.json",
+        &pretty(&vk_server::api_schema::bundle()),
+        &mut stale,
+    );
     let md = api_markdown(&cat);
     check_generated("docs/api/README.md", &md, &mut stale);
     check_generated(
@@ -288,7 +285,12 @@ fn generated_docs_are_up_to_date() {
             .replace(
                 "(vibeke-1.frozen.json)",
                 "(../../../api/vibeke-1.frozen.json)",
-            ),
+            )
+            .replace(
+                "(vibeke-1.schema.json)",
+                "(../../../api/vibeke-1.schema.json)",
+            )
+            .replace("(../../clients/", "(../../../../clients/"),
         &mut stale,
     );
     check_generated(
