@@ -276,6 +276,79 @@ export interface GitDiff {
   secret?: boolean;
 }
 
+/** One file of a `git.diff {base|range}` listing (no `file`). */
+export interface GitRevFile {
+  path: string;
+  adds?: number | null;
+  dels?: number | null;
+  binary: boolean;
+  secret?: boolean;
+}
+
+/** `git.diff {pane, base | range}` without `file`: the files that differ. */
+export interface GitRevFiles {
+  rev: string;
+  files: GitRevFile[];
+  truncated: boolean;
+}
+
+/** `git.diff` params: the working tree (`file`, `staged`), or against `base` / over `range`. */
+export type GitDiffParams =
+  | { pane: string; file: string; staged?: boolean }
+  | { pane: string; base: string; file?: string }
+  | { pane: string; range: string; file?: string };
+
+/** `git.log` entry; `ts` is unix ms. */
+export interface Commit {
+  sha: string;
+  short: string;
+  author: string;
+  ts: number;
+  subject: string;
+}
+
+export interface GitLog {
+  commits: Commit[];
+  truncated: boolean;
+}
+
+export type FsEntryKind = 'file' | 'dir' | 'symlink' | 'other';
+
+/** One `fs.list` entry (one directory level; secrets are listed but never readable). */
+export interface FsEntry {
+  name: string;
+  kind: FsEntryKind;
+  size?: number | null;
+  ignored: boolean;
+  secret: boolean;
+}
+
+export interface FsList {
+  path: string;
+  entries: FsEntry[];
+  truncated: boolean;
+  /** The directory itself looks like a secret: no entries. */
+  secret?: boolean;
+}
+
+export interface FsRead {
+  path: string;
+  text?: string | null;
+  binary: boolean;
+  truncated: boolean;
+  size: number | null;
+  secret: boolean;
+}
+
+export interface Worktree {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  locked: boolean;
+  prunable: boolean;
+  main: boolean;
+}
+
 export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
 /** One item of a transcript turn (server gateway_api.rs `line_items`). */
@@ -494,7 +567,12 @@ export interface AppApi {
     result: { results: BatchResult[] };
   };
   'git.status': { params: { pane: string }; result: GitStatus };
-  'git.diff': { params: { pane: string; file: string; staged?: boolean }; result: GitDiff };
+  /** With `file`: one file's diff (`rev` set for base/range); without (base/range): `GitRevFiles`. */
+  'git.diff': { params: GitDiffParams; result: GitDiff & Partial<GitRevFiles> };
+  'git.log': { params: { pane: string; base?: string; limit?: number }; result: GitLog };
+  'fs.list': { params: { pane: string; path?: string }; result: FsList };
+  'fs.read': { params: { pane: string; path: string }; result: FsRead };
+  'worktree.list': { params: { pane: string } | { workspace: string }; result: { worktrees: Worktree[] } };
   /** `data_b64` is standard (padded) base64, as the server's image.upload expects. */
   'attachment.put': {
     params: { name: string; mime: string; data_b64: string };

@@ -34,7 +34,7 @@ const treeOf = (d = fixture(), seen: Record<string, number> = {}, pins: string[]
 describe('workspace routes', () => {
   test('parse with tab, panel, file and commit', () => {
     expect(parseRoute('#/w/h1/w1')).toEqual(workspaceRoute('h1', 'w1'));
-    expect(parseRoute('#/w/h1/w1/t/p%2F2?panel=changes&file=src%2Fa.ts&commit=abc')).toEqual({
+    expect(parseRoute('#/w/h1/w1/t/p%2F2?panel=changes&file=src%2Fa.ts&commit=abc')).toMatchObject({
       name: 'workspace',
       host: 'h1',
       workspace: 'w1',

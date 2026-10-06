@@ -1,5 +1,5 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
-// `?panel=changes|files|off&file=…&commit=…`, push deep links from the gateway
+// `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|preview:<id>`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`) and the pairing link `#/pair?d=…`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
 // parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
@@ -20,6 +20,12 @@ export interface WorkspaceRoute {
   panel: PanelKind | 'off' | null;
   file: string | null;
   commit: string | null;
+  /** Changes compared against this ref (`?base=`) instead of the uncommitted work. */
+  base?: string | null;
+  /** `diff`: the centre shows `file`'s diff (from `commit` / `base` when set) as a transient view. */
+  view?: 'diff' | null;
+  /** The tab's centre: null = default (conversation for agents), `term`, or `preview:<id>`. */
+  show?: string | null;
 }
 
 export type Route =
@@ -83,6 +89,9 @@ export function parseRoute(hash: string): Route {
           panel: p === 'changes' || p === 'files' || p === 'off' ? p : null,
           file: opt('file'),
           commit: opt('commit'),
+          base: opt('base'),
+          view: query.get('view') === 'diff' ? 'diff' : null,
+          show: opt('show'),
         };
       }
       break;
@@ -109,7 +118,7 @@ const enc = encodeURIComponent;
 
 /** A workspace route with defaults for the optional parts. */
 export function workspaceRoute(host: string, workspace: string, o: Partial<Omit<WorkspaceRoute, 'name' | 'host' | 'workspace'>> = {}): WorkspaceRoute {
-  return { name: 'workspace', host, workspace, pane: o.pane ?? null, panel: o.panel ?? null, file: o.file ?? null, commit: o.commit ?? null };
+  return { name: 'workspace', host, workspace, pane: o.pane ?? null, panel: o.panel ?? null, file: o.file ?? null, commit: o.commit ?? null, base: o.base ?? null, view: o.view ?? null, show: o.show ?? null };
 }
 
 export function formatRoute(r: Route): string {
@@ -131,6 +140,9 @@ export function formatRoute(r: Route): string {
       if (r.panel) q.set('panel', r.panel);
       if (r.file) q.set('file', r.file);
       if (r.commit) q.set('commit', r.commit);
+      if (r.base) q.set('base', r.base);
+      if (r.view) q.set('view', r.view);
+      if (r.show) q.set('show', r.show);
       const qs = q.toString();
       return `#/w/${enc(r.host)}/${enc(r.workspace)}${r.pane ? `/t/${enc(r.pane)}` : ''}${qs ? `?${qs}` : ''}`;
     }
