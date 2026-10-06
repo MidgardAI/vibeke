@@ -1,0 +1,19 @@
+[package]
+name = "vk-assist"
+description = "Vibeke assistance (spec 14): provider adapters, configuration, consent, context packages, budgets and output validation for user-invoked LLM drafts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vk-redact.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+blake3.workspace = true
+libc.workspace = true
+# Reuses the workspace's existing HTTP client (vk-gateway); no new crates in Cargo.lock.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tempfile.workspace = true

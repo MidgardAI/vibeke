@@ -2846,6 +2846,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vk-agents",
+ "vk-assist",
  "vk-browser",
  "vk-cli",
  "vk-compat",
@@ -2873,6 +2874,20 @@ dependencies = [
  "tempfile",
  "toml",
  "toml_edit",
+]
+
+[[package]]
+name = "vk-assist"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "vk-redact",
 ]
 
 [[package]]
@@ -3125,6 +3140,7 @@ dependencies = [
  "tracing",
  "ulid",
  "vk-agents",
+ "vk-assist",
  "vk-browser",
  "vk-config",
  "vk-hold",

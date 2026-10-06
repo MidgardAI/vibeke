@@ -6,6 +6,7 @@
 pub mod agent_browser;
 pub mod agents;
 pub mod api;
+pub mod assist;
 pub mod browser_pane;
 pub mod core;
 pub mod gateway_api;
@@ -109,6 +110,8 @@ pub struct Server {
     pub notifier: notify::State,
     /// Host appearance reports and the effective theme (08 §11 `[theme]`).
     pub theme: theme::State,
+    /// User-invoked LLM drafts (14).
+    pub assist: assist::State,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -184,6 +187,7 @@ impl Server {
             browser: browser_pane::Host::default(),
             notifier: notify::State::default(),
             theme: theme::State::default(),
+            assist: assist::State::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),

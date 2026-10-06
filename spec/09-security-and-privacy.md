@@ -236,8 +236,21 @@ A shared `vk-redact` module scrubs strings before they enter logs, events, debug
 | Screenshots/blobs | 7 days unless referenced by a live object | `retention.blobs` |
 | Audit log | 90 days | `retention.audit` |
 | Logs | 7 days, 100 MiB | `logging.*` |
+| Assistant requests and generated drafts (14) | 24 h after finishing, then deleted (lazy, on the next `assistant.*` call); payloads are never stored — an unconfirmed preview lives only in server memory for `preview_ttl_seconds` (600 s) | `[assistant] result_retention_hours`, `vibeke assist purge` |
 
 `vibeke forget --pane p | --workspace w | --before date` purges archives, events and blobs for scope (events replaced by tombstones to keep `seq` gapless).
+
+### 9.3a Assistance egress, consent and retention (14) — as built 2026-10-06
+
+Optional LLM assistance is the one intentional path by which operational content can leave the machine. Rules as implemented (`crates/vk-assist`, `crates/vk-server/src/assist.rs`):
+
+- **Off by default.** `[assistant] enabled = false`; while false, `assistant.generate/confirm` fail with `disabled` and turning it off cancels queued/running requests. Settings are read only from the user's config (repository files cannot configure or redirect assistant traffic).
+- **Per-workspace consent.** `vibeke assist consent [workspace]` records a grant in `<state root>/assistant-consent.json` (0600, user-level, shared by the user's sessions): canonical workspace path, connection ID, adapter+endpoint fingerprint, allowed context classes (`selected_text`, `structured_state`, `review_package`; `screen` only when named), optional operation list and optional per-operation `auto_send`. A changed adapter/endpoint invalidates the grant; `vibeke assist revoke` removes it and cancels that workspace's unfinished requests. Consent is checked on IDs before any content is read. Revocation cannot retract content already sent.
+- **Selected inputs only, previewed.** Each operation sends only the inputs the user selected (e.g. the chosen turns' prompts for Suggest task details), redacted with `vk-redact` (built-in patterns plus `[security.redact] patterns`) and bounded by the profile's byte/token limits. `assistant.generate` returns the exact system and user text that would be sent, with a digest; only `assistant.confirm {request, preview_digest}` sends it (or `auto_send`, which must be enabled both in config and in that workspace's consent for that operation). Pattern redaction cannot guarantee removal of every secret; the preview says so.
+- **Credentials.** Only an explicitly named environment variable or a user-created key file (regular file, owned by the user, mode 0600, ≤ 4 KiB). Harness and cloud CLI credential stores (`~/.claude*`, `~/.codex`, `~/.config/{claude,anthropic,openai,gcloud}`, `~/.aws`, `~/.ssh`, …) are refused; there is no fallback to ambient keys such as `ANTHROPIC_API_KEY` unless the user names that variable. Keys are read on the coordinator per request, never stored, logged, returned by the API or put in agent environments. Keychain references are accepted in config but report `unsupported_capability` until implemented.
+- **Transport.** HTTPS required except for loopback endpoints; endpoints with userinfo are refused; redirects are never followed; certificate validation is never disabled; provider response bodies never appear in errors.
+- **Authority.** Pane-scoped callers have no `assistant.*` access. An operation can call only `task.review.get`, `task.intent.get` and `pane.read` while gathering context (`assistant_read_only` otherwise). Generated output is validated against a fixed schema (unknown fields such as a model-proposed `method`/`params` are dropped; invented source/target IDs reject the output) and stored as a draft labelled generated; nothing interprets it as an action. No request is started by turn ends, agent launches or timers.
+- **Audit.** `assistant.*` events carry metadata only — operation, state, adapter, connection, model, endpoint host, counts of sources/redactions, payload bytes, token counts, attempts, estimated cost, error category — never prompts, source text or generated text.
 
 ### 9.4 Telemetry
 

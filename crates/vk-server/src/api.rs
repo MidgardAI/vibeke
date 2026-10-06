@@ -381,6 +381,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
     if let Some(r) = crate::gateway_api::api(server, ctx, method, p).await {
         return r;
     }
+    if let Some(r) = crate::assist::api(server, ctx, method, p).await {
+        return r;
+    }
     if let Some(r) = crate::agents::api(server, ctx, method, p).await {
         return r;
     }
@@ -434,6 +437,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                     .chain(crate::browser_pane::METHODS)
                     .chain(crate::parity::METHODS)
                     .chain(crate::screenshots::METHODS)
+                    .chain(crate::assist::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
