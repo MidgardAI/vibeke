@@ -82,18 +82,9 @@ fn spec_rows() -> BTreeMap<String, (String, String)> {
     out
 }
 
+/// `forbidden` | `own_target` | `open`, from the registry `api::authorize` itself consults.
 fn pane_scope(method: &str) -> &'static str {
-    use vk_server::api;
-    if api::PANE_FORBIDDEN.contains(&method) {
-        "forbidden"
-    } else if api::is_pane_targeted(method)
-        || api::is_run_targeted(method)
-        || matches!(method, "agent.start" | "agent.resume")
-    {
-        "own_target"
-    } else {
-        "open"
-    }
+    vk_server::api::pane_scope_of(method).as_str()
 }
 
 /// `full`: only full-scope clients (TUI, CLI, plugins with a grant); `pane`: also callable with a
@@ -173,7 +164,7 @@ pub fn api_markdown(cat: &Value) -> String {
     );
     s.push_str("## Versioning and the freeze\n\n");
     s.push_str(
-        "Within `vibeke/1` only additions are allowed: new methods, new optional params, new result fields and new event types. Clients must ignore unknown fields and event types (spec 07 §1.5). The snapshot [`vibeke-1.frozen.json`](vibeke-1.frozen.json) lists the methods that may not be removed or have their mutating or scope flag changed; a test fails when they do. **The freeze is a draft until 1.0**: the snapshot is regenerated deliberately (`VIBEKE_UPDATE_API_FREEZE=1`) and the flags may still move before the release.\n\n",
+        "Within `vibeke/1` only additions are allowed: new methods, new optional params, new result fields and new event types. Clients must ignore unknown fields and event types (spec 07 §1.5). The snapshot [`vibeke-1.frozen.json`](vibeke-1.frozen.json) lists the methods that may not be removed or have their mutating flag, scope or pane scope (`own_target`, `open`, `forbidden`) changed; a test fails when they do. **The freeze is a draft until 1.0**: the snapshot is regenerated deliberately (`VIBEKE_UPDATE_API_FREEZE=1`) and the flags may still move before the release.\n\n",
     );
     s.push_str("## Methods\n\n| Method | Mutating | Scope | Milestone | Signature |\n|---|---|---|---|---|\n");
     for m in cat["methods"].as_array().unwrap() {
@@ -254,13 +245,13 @@ fn freeze_doc(cat: &Value) -> Value {
     for m in cat["methods"].as_array().unwrap() {
         methods.insert(
             m["name"].as_str().unwrap().to_string(),
-            json!({"mutating": m["mutating"], "scope": m["scope"]}),
+            json!({"mutating": m["mutating"], "scope": m["scope"], "pane_scope": m["pane_scope"]}),
         );
     }
     json!({
         "api": cat["api"],
         "status": "draft until 1.0",
-        "rule": "frozen methods may not be removed and their mutating/scope flags may not change; additions are allowed",
+        "rule": "frozen methods may not be removed and their mutating/scope/pane_scope flags may not change; additions are allowed",
         "render_protocol": cat["render_protocol"],
         "holder_protocol": cat["holder_protocol"],
         "methods": methods,
@@ -357,6 +348,18 @@ fn catalog_covers_every_table_and_is_consistent() {
     assert_eq!(by("server.stop")["scope"], "full");
     assert_eq!(by("pane.read")["pane_scope"], "open");
     assert_eq!(by("pane.send_text")["pane_scope"], "own_target");
+    for m in [
+        "preview.mirror",
+        "preview.unmirror",
+        "preview.profile.reset",
+    ] {
+        assert_eq!(
+            by(m)["scope"],
+            "full",
+            "{m}: its handler refuses pane scope"
+        );
+        assert_eq!(by(m)["pane_scope"], "forbidden", "{m}");
+    }
     assert_eq!(by("pane.send_text")["gateway"], "actor_required");
     assert_eq!(by("pane.list")["mutating"], false);
     // Spec-derived signatures are attached where spec 07 §2 tabulates a method.
@@ -404,6 +407,15 @@ fn diff_against_freeze(frozen: &Value, cat: &Value) -> Vec<String> {
                     problems.push(format!(
                         "{name}: scope changed {} -> {}",
                         f["scope"], m["scope"]
+                    ));
+                }
+                // own_target / open / forbidden: every frozen entry records it.
+                if f.get("pane_scope").is_none() {
+                    problems.push(format!("{name}: frozen entry lacks pane_scope"));
+                } else if m["pane_scope"] != f["pane_scope"] {
+                    problems.push(format!(
+                        "{name}: pane_scope changed {} -> {}",
+                        f["pane_scope"], m["pane_scope"]
                     ));
                 }
             }
@@ -476,7 +488,8 @@ fn freeze_check_detects_breaks_and_allows_additions() {
 
     // Removal: a frozen method that no longer exists fails.
     let mut more = frozen.clone();
-    more["methods"]["no.such_method"] = json!({"mutating": false, "scope": "pane"});
+    more["methods"]["no.such_method"] =
+        json!({"mutating": false, "scope": "pane", "pane_scope": "open"});
     assert_eq!(
         diff_against_freeze(&more, &cat),
         vec!["no.such_method: removed"]
@@ -488,6 +501,37 @@ fn freeze_check_detects_breaks_and_allows_additions() {
     flipped["methods"]["server.stop"]["scope"] = json!("pane");
     let p = diff_against_freeze(&flipped, &cat);
     assert_eq!(p.len(), 2, "{p:?}");
+
+    // own_target <-> open regressions keep `scope` at "pane" but still fail.
+    let mut widened = frozen.clone();
+    assert_eq!(
+        widened["methods"]["pane.send_text"]["pane_scope"],
+        "own_target"
+    );
+    widened["methods"]["pane.send_text"]["pane_scope"] = json!("open");
+    widened["methods"]["pane.read"]["pane_scope"] = json!("own_target");
+    assert_eq!(
+        diff_against_freeze(&widened, &cat),
+        vec![
+            "pane.read: pane_scope changed \"own_target\" -> \"open\"",
+            "pane.send_text: pane_scope changed \"open\" -> \"own_target\"",
+        ]
+    );
+    // A frozen entry without pane_scope is rejected (every entry must record it).
+    let mut bare = frozen.clone();
+    bare["methods"]["pane.read"]
+        .as_object_mut()
+        .unwrap()
+        .remove("pane_scope");
+    assert_eq!(
+        diff_against_freeze(&bare, &cat),
+        vec!["pane.read: frozen entry lacks pane_scope"]
+    );
+    // forbidden -> open shows up in both columns.
+    let mut opened = frozen.clone();
+    opened["methods"]["preview.mirror"]["scope"] = json!("pane");
+    opened["methods"]["preview.mirror"]["pane_scope"] = json!("open");
+    assert_eq!(diff_against_freeze(&opened, &cat).len(), 2);
 
     // Protocol and api string.
     let mut proto = frozen.clone();

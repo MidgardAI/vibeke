@@ -141,6 +141,7 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `unbind` | `<task>` | `task.unbind` | [--binding b] |
 | `set` | `<task>` | `task.set` | [--priority N] [--effort quick\|minutes\|deep\|unknown] [--effort-source heuristic\|assistant:<request>] |
 | `snapshot` | `<task>` | `task.review.snapshot` | <task> — capture uncommitted work as an immutable, accept-capable subject (files, index and branches stay as they are) |
+| `snapshot-gc` | `<task>` | `task.review.snapshot.gc` | [task] \| --repo path [--dry-run] [--include-unrecorded] — delete snapshot refs no candidate, acceptance, reviewer or running check references; prints what was removed |
 | `effort` | `<task>` | `task.effort.estimate` | <task> — your effort, the deterministic heuristic (model estimate: assist generate effort_estimate --task) |
 | `reviewer` | `<task>` | `task.review.request_reviewer` | <task> [--harness claude] [--subject s] [--prompt text] — show the reviewer prompt; nothing is launched |
 | `reviewer-start` | `<request>` `<prompt_digest>` | `task.review.start_reviewer` | <request> <prompt-digest> [--pane p \| --split-of p] — start the confirmed reviewer run (role review) |
