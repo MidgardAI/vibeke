@@ -101,6 +101,32 @@ pub fn find_pane_browser(configured: Option<&str>) -> Option<PathBuf> {
         .or_else(|| vk_preview::browser::find_browser(None).map(|b| b.path))
 }
 
+/// Chromium flags for a pane browser.
+fn pane_launch_options(bin: &std::path::Path, req: &LaunchReq) -> vk_browser::cdp::LaunchOptions {
+    let mut o = vk_browser::cdp::LaunchOptions::new(bin, &req.profile_dir);
+    let name = bin
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    o.headless_new = !name.contains("headless");
+    o.device_scale_factor = Some(req.dpr);
+    o.stderr_log = req.log.clone();
+    // Wheel deltas from the host are already pixel-smooth (Stage 0: cut the scroll p95).
+    o.extra_args.push("--disable-smooth-scrolling".into());
+    if let Some(p) = req.socks_port {
+        o.extra_args
+            .push(format!("--proxy-server=socks5://127.0.0.1:{p}"));
+        o.extra_args.push("--proxy-bypass-list=<-loopback>".into());
+        // WebRTC UDP would otherwise leave this machine directly, around the route.
+        o.extra_args.extend(
+            vk_browser::headless::WEBRTC_UDP_POLICY
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    }
+    o
+}
+
 impl Launcher for ChromiumLauncher {
     fn launch(&self, req: &LaunchReq) -> Result<Launched> {
         let bin = self
@@ -109,21 +135,7 @@ impl Launcher for ChromiumLauncher {
             .or_else(|| find_pane_browser(None))
             .ok_or_else(|| anyhow!("no Chromium found for the browser pane (install Playwright's chromium-headless-shell or set VIBEKE_CHROMIUM)"))?;
         tracing::info!(bin = %bin.display(), profile = %req.profile, "browser pane: launching");
-        let mut o = vk_browser::cdp::LaunchOptions::new(&bin, &req.profile_dir);
-        let name = bin
-            .file_name()
-            .map(|n| n.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        o.headless_new = !name.contains("headless");
-        o.device_scale_factor = Some(req.dpr);
-        o.stderr_log = req.log.clone();
-        // Wheel deltas from the host are already pixel-smooth (Stage 0: cut the scroll p95).
-        o.extra_args.push("--disable-smooth-scrolling".into());
-        if let Some(p) = req.socks_port {
-            o.extra_args
-                .push(format!("--proxy-server=socks5://127.0.0.1:{p}"));
-            o.extra_args.push("--proxy-bypass-list=<-loopback>".into());
-        }
+        let o = pane_launch_options(&bin, req);
         let mut b = vk_browser::cdp::Browser::launch(&o)?;
         let events = b.take_events();
         Ok(Launched {
@@ -517,19 +529,25 @@ pub fn normalize_url(raw: &str) -> Option<String> {
         }
         format!("http://{t}")
     };
-    preview::url_host(&u).map(|_| u)
+    // The canonical (WHATWG) form is what gets checked, stored and sent to Chromium.
+    preview::canonical_open_url(&u).map(|(c, _)| c)
 }
 
 /// Initial URL check: http(s) or about:blank; for panes owned by another machine, only that
 /// machine's loopback (a remote server can't point the laptop browser at the internet).
-fn initial_url_ok(url: &str, remote_owner: bool) -> bool {
+/// Returns the canonical URL to load.
+fn initial_url(url: &str, remote_owner: bool) -> Option<String> {
     if url == "about:blank" {
-        return true;
+        return Some(url.to_string());
     }
-    match preview::url_host(url) {
-        Some(h) => !remote_owner || vk_remote::is_loopback_host(&h) || h == "0.0.0.0",
-        None => false,
-    }
+    let (c, loopback) = preview::canonical_open_url(url)?;
+    let unspecified = preview::url_host(&c).as_deref() == Some("0.0.0.0");
+    (!remote_owner || loopback || unspecified).then_some(c)
+}
+
+#[cfg(test)]
+fn initial_url_ok(url: &str, remote_owner: bool) -> bool {
+    initial_url(url, remote_owner).is_some()
 }
 
 // ---- views (subscriptions) ----------------------------------------------------------------------
@@ -581,16 +599,17 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                 let remote_owner = !mp.owner.is_empty();
                 // A remote owner's record may only start the page on that machine's loopback
                 // (fall back to the latest loopback URL in its history).
-                let (url, error) = if initial_url_ok(&mp.spec.url, remote_owner) {
-                    (mp.spec.url.clone(), None)
+                let (url, error) = if let Some(u) = initial_url(&mp.spec.url, remote_owner) {
+                    (u, None)
                 } else if let Some(u) = mp
                     .spec
                     .history
                     .iter()
                     .rev()
-                    .find(|u| *u != "about:blank" && initial_url_ok(u, remote_owner))
+                    .filter(|u| *u != "about:blank")
+                    .find_map(|u| initial_url(u, remote_owner))
                 {
-                    (u.clone(), None)
+                    (u, None)
                 } else {
                     (
                         "about:blank".to_string(),
@@ -1792,7 +1811,7 @@ fn encode_frame(pane: &str, tf: &TakenFrame, shm: bool) -> (MediaFrame, Vec<Stri
     for r in &tf.tiles {
         let px = tf.frame.extract(r);
         let data = if shm {
-            let name = vk_browser::kitty::shm::new_name();
+            let name = vk_browser::kitty::shm::new_name_for(pane);
             match vk_browser::kitty::shm::write(&name, &px) {
                 Ok(()) => {
                     names.push(name.clone());
@@ -1881,8 +1900,8 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
     };
     if let Some(scope) = &ctx.pane_scope {
-        let host = preview::url_host(&url).unwrap_or_default();
-        if !vk_remote::is_loopback_host(&host) {
+        // `url` is canonical here (normalize_url / open_url_of), the same string Chromium gets.
+        if !preview::canonical_open_url(&url).is_some_and(|(_, lb)| lb) {
             return Err(err(
                 ErrorKind::PermissionDenied,
                 "from a pane, only loopback URLs can be opened",
@@ -2124,17 +2143,20 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Some(x) => x,
                 None => return Some(Err(invalid("missing param `pane`"))),
             };
-            let url = s(p, "url").unwrap_or("");
-            if !url.is_empty() && normalize_url(url).is_none() {
-                return Some(Err(invalid("only http(s) URLs")));
-            }
+            let url = match s(p, "url").filter(|u| !u.is_empty()) {
+                Some(u) => match normalize_url(u) {
+                    Some(c) => c,
+                    None => return Some(Err(invalid("only http(s) URLs"))),
+                },
+                None => String::new(),
+            };
+            let url = url.as_str();
             let history: Option<Vec<String>> = p.get("history").and_then(|h| {
                 h.as_array().map(|a| {
                     a.iter()
                         .filter_map(|x| x.as_str())
-                        .filter(|x| normalize_url(x).is_some())
+                        .filter_map(normalize_url)
                         .take(MAX_HISTORY)
-                        .map(str::to_owned)
                         .collect()
                 })
             });
@@ -2602,3 +2624,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "browser_pane_followup_tests.rs"]
+mod followup_tests;

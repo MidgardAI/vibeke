@@ -406,22 +406,63 @@ pub struct Target {
     pub port: u16,
 }
 
-/// Parse `scheme://[user@]host[:port]/…` for http/https/ws/wss. Other schemes → `None`.
+/// Parse an http/https/ws/wss URL the way the browser does (WHATWG URL Standard, the `url`
+/// crate): `http://192.168.1.10\@localhost/` is host `192.168.1.10`, `http://0x7f.1/` and
+/// `http://2130706433/` are `127.0.0.1`. Other schemes → `None`.
 pub fn parse_target(url: &str) -> Option<Target> {
     if url.chars().any(|c| c.is_control() || c == ' ') {
         return None;
     }
-    let (scheme, rest) = url.split_once("://")?;
-    let scheme = scheme.to_ascii_lowercase();
-    let default_port = match scheme.as_str() {
-        "http" | "ws" => 80,
-        "https" | "wss" => 443,
-        _ => return None,
-    };
-    let auth = rest.split(['/', '?', '#']).next()?;
-    let auth = auth.rsplit('@').next()?;
-    let (host, port) = split_host_port(auth, default_port)?;
+    let u = url::Url::parse(url).ok()?;
+    let scheme = u.scheme().to_string();
+    if !matches!(scheme.as_str(), "http" | "https" | "ws" | "wss") {
+        return None;
+    }
+    let host = host_of(&u)?;
+    let port = u.port_or_known_default().filter(|p| *p != 0)?;
     Some(Target { scheme, host, port })
+}
+
+/// The URL's host as the browser will connect to it: lower-case domain, dotted IPv4, or IPv6
+/// without brackets.
+pub fn host_of(u: &url::Url) -> Option<String> {
+    Some(match u.host()? {
+        url::Host::Domain(d) if !d.is_empty() => d.to_ascii_lowercase(),
+        url::Host::Domain(_) => return None,
+        url::Host::Ipv4(a) => a.to_string(),
+        url::Host::Ipv6(a) => a.to_string(),
+    })
+}
+
+/// A URL a user or agent asked to open in a browser (pane, window, agent browser): parsed as
+/// the browser parses it, `http`/`https` only, no credentials (`user:pass@`), no whitespace or
+/// control characters. Callers pass `Url::as_str()` — the canonical form that was checked — to
+/// Chromium, never the raw input.
+pub fn parse_open_url(raw: &str) -> Option<url::Url> {
+    if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let u = url::Url::parse(raw).ok()?;
+    if !matches!(u.scheme(), "http" | "https") || !u.username().is_empty() || u.password().is_some()
+    {
+        return None;
+    }
+    host_of(&u)?;
+    Some(u)
+}
+
+/// Whether a parsed URL's host is this machine's loopback: `localhost`/`*.localhost`,
+/// `127.0.0.0/8`, `::1`, or an IPv4-mapped/compatible IPv6 form of those.
+pub fn is_loopback_url(u: &url::Url) -> bool {
+    match u.host() {
+        Some(url::Host::Domain(d)) => is_localhost_name(d),
+        Some(url::Host::Ipv4(a)) => a.is_loopback(),
+        Some(url::Host::Ipv6(a)) => match canonical(IpAddr::V6(a)) {
+            IpAddr::V4(v4) => v4.is_loopback(),
+            IpAddr::V6(v6) => v6.is_loopback(),
+        },
+        None => false,
+    }
 }
 
 /// `host[:port]` / `[v6][:port]` → (host without brackets, lower-cased; port).
@@ -676,6 +717,32 @@ mod tests {
         assert_eq!(parse_target("http://h:0/"), None);
         assert_eq!(parse_target("http://h:99999/"), None);
         assert_eq!(parse_target("http://a b/"), None);
+        // WHATWG parsing (what Chromium navigates to), not a hand-written split.
+        assert_eq!(
+            parse_target("http://192.168.1.10\\@localhost:5173/")
+                .unwrap()
+                .host,
+            "192.168.1.10"
+        );
+        assert_eq!(parse_target("http://0x7f.1/").unwrap().host, "127.0.0.1");
+        assert_eq!(
+            parse_target("http://2130706433/").unwrap().host,
+            "127.0.0.1"
+        );
+        assert_eq!(
+            parse_target("http://0177.0.0.1/").unwrap().host,
+            "127.0.0.1"
+        );
+        assert_eq!(
+            parse_target("http://[::ffff:127.0.0.1]/").unwrap().host,
+            "::ffff:127.0.0.1"
+        );
+        assert_eq!(
+            parse_target("http://localhost:5173@192.168.1.10/")
+                .unwrap()
+                .host,
+            "192.168.1.10"
+        );
         assert!(is_local_scheme("data:text/html,hi"));
         assert!(is_local_scheme("about:blank"));
         assert!(!is_local_scheme("about:config"));
@@ -683,5 +750,77 @@ mod tests {
         assert!(is_localhost_name("LOCALHOST."));
         assert!(is_localhost_name("app.localhost"));
         assert!(!is_localhost_name("localhost.evil.com"));
+    }
+
+    #[test]
+    fn open_urls_are_parsed_like_the_browser() {
+        let lb = |s: &str| parse_open_url(s).map(|u| (is_loopback_url(&u), u.as_str().to_string()));
+        // The Codex counterexample: the backslash is a path separator, the host is the LAN IP.
+        assert_eq!(
+            lb("http://192.168.1.10\\@localhost:5173/"),
+            Some((false, "http://192.168.1.10/@localhost:5173/".into()))
+        );
+        // Credentials are refused outright (both directions of the confusion).
+        assert_eq!(lb("http://localhost@192.168.1.10/"), None);
+        assert_eq!(lb("http://u:p@127.0.0.1/"), None);
+        assert_eq!(lb("http://192.168.1.10@localhost/"), None);
+        // Alternative IPv4 spellings canonicalise to what Chromium connects to.
+        assert_eq!(
+            lb("http://2130706433:3000/"),
+            Some((true, "http://127.0.0.1:3000/".into()))
+        );
+        assert_eq!(
+            lb("http://0x7f000001/"),
+            Some((true, "http://127.0.0.1/".into()))
+        );
+        assert_eq!(
+            lb("http://0177.0.0.1/"),
+            Some((true, "http://127.0.0.1/".into()))
+        );
+        assert_eq!(
+            lb("http://127.1/"),
+            Some((true, "http://127.0.0.1/".into()))
+        );
+        assert_eq!(
+            lb("http://3232235786/"),
+            Some((false, "http://192.168.1.10/".into()))
+        );
+        assert_eq!(
+            lb("http://0xc0.0xa8.1.10/"),
+            Some((false, "http://192.168.1.10/".into()))
+        );
+        // IPv6 and IPv4-mapped IPv6.
+        assert_eq!(
+            lb("http://[::1]:8443/"),
+            Some((true, "http://[::1]:8443/".into()))
+        );
+        assert_eq!(lb("http://[::ffff:127.0.0.1]/").map(|x| x.0), Some(true));
+        assert_eq!(
+            lb("http://[::ffff:192.168.1.10]/").map(|x| x.0),
+            Some(false)
+        );
+        assert_eq!(lb("http://[::ffff:c0a8:10a]/").map(|x| x.0), Some(false));
+        // Names.
+        assert_eq!(
+            lb("http://LOCALHOST:5173/x"),
+            Some((true, "http://localhost:5173/x".into()))
+        );
+        assert_eq!(lb("http://app.localhost/").map(|x| x.0), Some(true));
+        assert_eq!(lb("http://localhost./").map(|x| x.0), Some(true));
+        assert_eq!(lb("http://localhost.evil.com/").map(|x| x.0), Some(false));
+        assert_eq!(lb("http://evil.com#@localhost/").map(|x| x.0), Some(false));
+        assert_eq!(lb("http://evil.com?@localhost/").map(|x| x.0), Some(false));
+        // Not http(s), or not a URL at all.
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "http://",
+            "http://a b/",
+            "http://local\thost/",
+            "ws://localhost/",
+        ] {
+            assert_eq!(parse_open_url(bad), None, "{bad}");
+        }
     }
 }

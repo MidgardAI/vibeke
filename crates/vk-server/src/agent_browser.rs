@@ -1384,8 +1384,7 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                         .into_iter()
                         .map(|i| i.pid)
                         .collect();
-                    vk_preview::sockets::owner_of_connection(&pids, peer.port(), local.port())
-                        .is_some()
+                    vk_preview::sockets::owner_of_connection(&pids, peer, local).is_some()
                 })
                 .await
                 .unwrap_or(false)

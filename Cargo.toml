@@ -61,6 +61,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = { version = "1", features = ["serde"] }
 unicode-segmentation = "1"
 unicode-width = "0.2"
+url = "2"
 zstd = "0.13"
 
 [profile.release]

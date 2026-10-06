@@ -845,9 +845,19 @@ fn dest_is_local(dest: &Dest) -> bool {
     dest.is_loopback()
         || match &dest.addr {
             Addr::V4(a) => a.is_unspecified(),
-            Addr::V6(a) => a.is_unspecified(),
+            Addr::V6(a) => IpAddr::V6(*a).to_canonical().is_unspecified(),
             Addr::Domain(_) => false,
         }
+}
+
+/// A DNS answer that means "the profile's machine" (loopback or unspecified), canonical:
+/// `::ffff:127.0.0.1` is 127.0.0.1, not a v6 address to connect to directly from here (which
+/// would reach **this** machine's loopback instead of the remote's).
+fn machine_local_answer(addrs: &[SocketAddr]) -> Option<IpAddr> {
+    addrs
+        .iter()
+        .map(|a| a.ip().to_canonical())
+        .find(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
 async fn to_machine(
@@ -891,7 +901,7 @@ impl socks::Router for Router {
                         .into_iter()
                         .map(|i| i.pid)
                         .collect();
-                    if sockets::owner_of_connection(&pids, peer.port(), local.port()).is_some() {
+                    if sockets::owner_of_connection(&pids, peer, local).is_some() {
                         return Some(Grant {
                             profile: b.profile,
                             machine: b.machine,
@@ -938,12 +948,9 @@ impl socks::Router for Router {
                 .await
                 .map_err(|_| reply::HOST_UNREACHABLE)?
                 .collect();
-            if let Some(a) = addrs
-                .iter()
-                .find(|a| a.ip().is_loopback() || a.ip().is_unspecified())
-            {
+            if let Some(ip) = machine_local_answer(&addrs) {
                 let d = Dest {
-                    addr: match a.ip() {
+                    addr: match ip {
                         IpAddr::V4(v) => Addr::V4(v),
                         IpAddr::V6(v) => Addr::V6(v),
                     },
@@ -1124,31 +1131,60 @@ pub(crate) async fn remote_call(server: &Server, machine: &str, method: &str, pa
         .map_err(|_| unavailable(format!("machine {machine} did not answer")))?
 }
 
-/// `http(s)://host[:port]/…` → host (brackets stripped), or None if not http(s).
+/// `http(s)://host[:port]/…` → host as the browser parses it (WHATWG; brackets stripped), or
+/// None if not an openable http(s) URL (09 §7: no other schemes, no credentials).
 pub(crate) fn url_host(url: &str) -> Option<String> {
-    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return None;
-    }
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))?;
-    let auth = rest.split(['/', '?', '#']).next()?;
-    let auth = auth.rsplit('@').next()?;
-    let host = if let Some(r) = auth.strip_prefix('[') {
-        r.split(']').next()?.to_string()
-    } else {
-        auth.split(':').next()?.to_string()
-    };
-    (!host.is_empty()).then_some(host)
+    vk_browser::policy::parse_open_url(url).and_then(|u| vk_browser::policy::host_of(&u))
+}
+
+/// An openable URL in the canonical form Chromium will load, and whether its host is this
+/// machine's loopback. Every open/navigate passes this canonical string on, never the raw input.
+pub(crate) fn canonical_open_url(raw: &str) -> Option<(String, bool)> {
+    let u = vk_browser::policy::parse_open_url(raw)?;
+    let lb = vk_browser::policy::is_loopback_url(&u);
+    Some((u.as_str().to_string(), lb))
 }
 
 pub(crate) fn open_url_of(p: &Preview) -> String {
     let u = p.url.replace("://0.0.0.0", "://localhost");
-    if url_host(&u).is_some() {
-        u
-    } else {
-        format!("http://localhost:{}{}", p.port, p.path)
+    match canonical_open_url(&u) {
+        Some((c, _)) => c,
+        None => format!("http://localhost:{}{}", p.port, p.path),
     }
+}
+
+/// Pane scope (09 §5.2): agents open, create and manage previews and browser panes on their own
+/// machine only. Called from the shared authorization point (`api::authorize`) for every
+/// method that can pick a machine, so no dispatch path (`browser.pane.create` is dispatched
+/// before `preview.*`) can skip it.
+pub(crate) fn authorize_pane_machine(
+    server: &Server,
+    ctx: &Ctx,
+    method: &str,
+    p: &Value,
+) -> Result<(), RpcError> {
+    if ctx.pane_scope.is_none()
+        || !matches!(
+            method,
+            "preview.open"
+                | "preview.forget"
+                | "preview.dismiss"
+                | "preview.promote"
+                | "browser.pane.create"
+        )
+    {
+        return Ok(());
+    }
+    let remote = s(p, "machine").is_some_and(|m| !m.is_empty() && !is_local_machine(server, m))
+        || s(p, "preview").is_some_and(|t| !t.contains("://") && t.contains('/'));
+    if remote {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            format!("{method} on another machine is not allowed from a pane"),
+        )
+        .details(json!({"scope": "pane"})));
+    }
+    Ok(())
 }
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
@@ -1159,23 +1195,6 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     }
     if !method.starts_with("preview.") {
         return None;
-    }
-    // Pane scope (09 §5.2): agents act on their own machine's previews only.
-    if ctx.pane_scope.is_some()
-        && matches!(
-            method,
-            "preview.open" | "preview.forget" | "preview.dismiss" | "preview.promote"
-        )
-    {
-        let remote = s(p, "machine").is_some_and(|m| !is_local_machine(server, m))
-            || s(p, "preview").is_some_and(|t| !t.contains("://") && t.contains('/'));
-        if remote {
-            return Some(Err(err(
-                ErrorKind::PermissionDenied,
-                format!("{method} on another machine is not allowed from a pane"),
-            )
-            .details(json!({"scope": "pane"}))));
-        }
     }
     Some(match method {
         "preview.declare" => declare(server, ctx, p),
@@ -1484,9 +1503,11 @@ pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         return crate::browser_pane::open_pane(server, ctx, p, &machine, preview.as_ref(), &url)
             .await;
     }
-    // Open-URL rules (09 §7): http(s) only; from a pane, only loopback.
-    let host = url_host(&url).ok_or_else(|| invalid("only http(s) URLs can be opened"))?;
-    if ctx.pane_scope.is_some() && !vk_remote::is_loopback_host(&host) {
+    // Open-URL rules (09 §7): http(s) only; from a pane, only loopback. The check and the
+    // browser both use the canonical (WHATWG) form.
+    let (url, loopback) =
+        canonical_open_url(&url).ok_or_else(|| invalid("only http(s) URLs can be opened"))?;
+    if ctx.pane_scope.is_some() && !loopback {
         return Err(err(
             ErrorKind::PermissionDenied,
             "from a pane, preview.open only opens loopback URLs",
@@ -1766,15 +1787,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mapped_dns_answers_route_to_the_profiles_machine() {
+        let sa = |s: &str| -> SocketAddr { s.parse().unwrap() };
+        assert_eq!(
+            machine_local_answer(&[sa("[::ffff:127.0.0.1]:80")]),
+            Some("127.0.0.1".parse().unwrap())
+        );
+        assert_eq!(
+            machine_local_answer(&[sa("93.184.216.34:80"), sa("[::ffff:127.0.0.2]:80")]),
+            Some("127.0.0.2".parse().unwrap())
+        );
+        assert_eq!(
+            machine_local_answer(&[sa("[::ffff:0.0.0.0]:80")]),
+            Some("0.0.0.0".parse().unwrap())
+        );
+        assert_eq!(
+            machine_local_answer(&[sa("[::1]:80")]),
+            Some("::1".parse().unwrap())
+        );
+        assert_eq!(
+            machine_local_answer(&[sa("[::ffff:93.184.216.34]:80")]),
+            None
+        );
+        assert_eq!(machine_local_answer(&[sa("10.0.0.1:80")]), None);
+        // Literal destinations: a mapped unspecified/loopback address is local too.
+        let d = |addr: Addr| Dest { addr, port: 80 };
+        assert!(dest_is_local(&d(Addr::V6(
+            "::ffff:0.0.0.0".parse().unwrap()
+        ))));
+        assert!(dest_is_local(&d(Addr::V6(
+            "::ffff:127.0.0.1".parse().unwrap()
+        ))));
+        assert!(!dest_is_local(&d(Addr::V6(
+            "::ffff:10.0.0.1".parse().unwrap()
+        ))));
+    }
+
+    #[test]
     fn url_hosts() {
         assert_eq!(
             url_host("http://localhost:5173/x").as_deref(),
             Some("localhost")
         );
         assert_eq!(url_host("https://[::1]:8443/").as_deref(), Some("::1"));
+        // Credentials are not opened (09 §7); the Codex counterexample is the LAN host.
+        assert_eq!(url_host("http://u:p@127.0.0.1/"), None);
         assert_eq!(
-            url_host("http://u:p@127.0.0.1/").as_deref(),
-            Some("127.0.0.1")
+            url_host("http://192.168.1.10\\@localhost:5173/").as_deref(),
+            Some("192.168.1.10")
+        );
+        assert_eq!(
+            canonical_open_url("http://192.168.1.10\\@localhost:5173/"),
+            Some(("http://192.168.1.10/@localhost:5173/".into(), false))
+        );
+        assert_eq!(
+            canonical_open_url("http://2130706433:5173/"),
+            Some(("http://127.0.0.1:5173/".into(), true))
         );
         assert_eq!(
             url_host("http://example.com").as_deref(),
