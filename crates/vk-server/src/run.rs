@@ -79,9 +79,10 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         if !peer_uid_ok(&stream) {
             continue;
         }
+        let peer_pid = stream.peer_cred().ok().and_then(|c| c.pid());
         let srv = server.clone();
         tokio::spawn(async move {
-            if let Err(e) = connection(srv, stream).await {
+            if let Err(e) = connection(srv, stream, peer_pid).await {
                 tracing::debug!(error = %e, "connection ended");
             }
         });
@@ -90,16 +91,48 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
 
 /// One control connection: newline-delimited JSON-RPC, pipelined, with optional switch to the
 /// binary render stream (`render.attach`) or event subscriptions.
-pub async fn connection<S>(server: Arc<Server>, stream: S) -> Result<()>
+/// The pane whose process tree contains `pid`, if any (09 §3.2): a process running inside a
+/// pane gets pane scope whether or not it presents its token.
+pub fn ancestry_pane(server: &Server, pid: Option<i32>) -> Option<String> {
+    let mut pid = pid? as u32;
+    let roots: Vec<(u32, String)> = server.with_core(|c| {
+        c.model
+            .panes
+            .iter()
+            .filter_map(|p| p.child_pid.map(|cp| (cp, p.id.clone())))
+            .collect()
+    });
+    if roots.is_empty() {
+        return None;
+    }
+    for _ in 0..64 {
+        if let Some((_, pane)) = roots.iter().find(|(cp, _)| *cp == pid) {
+            return Some(pane.clone());
+        }
+        let info = vk_hold::procinfo::info(pid)?;
+        if info.ppid <= 1 || info.ppid == pid {
+            return None;
+        }
+        pid = info.ppid;
+    }
+    None
+}
+
+pub async fn connection<S>(server: Arc<Server>, stream: S, peer_pid: Option<i32>) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
+    let ancestry = ancestry_pane(&server, peer_pid);
     let mut ctx = Ctx {
         client_id: format!("c-{}", &ulid()[20..]),
-        kind: "anonymous".into(),
-        pane_scope: None,
+        kind: if ancestry.is_some() {
+            "agent".into()
+        } else {
+            "anonymous".into()
+        },
+        pane_scope: ancestry.clone(),
         remote: false,
     };
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
@@ -120,8 +153,9 @@ where
                     "client.hello" => {
                         if let Some(tok) = req.params.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
                             match server.pane_for_token(tok) {
-                                Some(p) => ctx.pane_scope = Some(p),
-                                None => {
+                                // A token can't widen or switch scope away from the caller's own pane.
+                                Some(p) if ancestry.as_ref().is_none_or(|a| *a == p) => ctx.pane_scope = Some(p),
+                                _ => {
                                     let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, "unknown pane token"));
                                     let _ = out_tx.send(serde_json::to_string(&r)?);
                                     continue;

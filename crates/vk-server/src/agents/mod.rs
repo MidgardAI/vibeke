@@ -276,8 +276,11 @@ impl Agents {
                     json!({"harness": h.id(), "via": "process", "argv0": argv.first()}),
                 );
                 tx.counters = true;
+                let run_id = run.id.clone();
                 tx.run(run);
                 let _ = server.commit(&mut c, tx);
+                drop(c);
+                check_version(server, &run_id, h);
             }
             (Some((h, argv)), Some(r)) if r.harness != h.id() => {
                 self.end_run(server, &r.id, "replaced");
@@ -624,15 +627,30 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
 /// Bind the signal to a run in the caller's pane (deterministic binding via pane token, §2.6).
 /// Detect the harness version once (off the state path) and gate capabilities (04 §12.3).
 fn check_version(server: &Arc<Server>, run_id: &str, h: Harness) {
-    let cached = server.agents.inner.lock().unwrap().versions.get(h.id()).cloned();
+    let cached = server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .versions
+        .get(h.id())
+        .cloned();
     let srv = server.clone();
     let run_id = run_id.to_string();
     tokio::spawn(async move {
         let v = match cached {
             Some(v) => v,
             None => {
-                let v = tokio::task::spawn_blocking(move || harness::version(h)).await.ok().flatten();
-                srv.agents.inner.lock().unwrap().versions.insert(h.id().to_string(), v.clone());
+                let v = tokio::task::spawn_blocking(move || harness::version(h))
+                    .await
+                    .ok()
+                    .flatten();
+                srv.agents
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .versions
+                    .insert(h.id().to_string(), v.clone());
                 v
             }
         };
@@ -647,7 +665,11 @@ fn check_version(server: &Arc<Server>, run_id: &str, h: Harness) {
                 r.health = AdapterHealth::UnvalidatedVersion;
                 r.execution.confidence = r.execution.confidence.min(0.8);
                 r.capabilities = vec!["observe".into(), "answer_keystroke".into()];
-                tx.event("agent.harness_version_unvalidated", json!({"run": r.id, "pane": r.pane}), json!({"harness": h.id(), "version": v}));
+                tx.event(
+                    "agent.harness_version_unvalidated",
+                    json!({"run": r.id, "pane": r.pane}),
+                    json!({"harness": h.id(), "version": v}),
+                );
             }
         });
     });
@@ -687,6 +709,8 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
     );
     tx.run(run.clone());
     let _ = server.commit(&mut c, tx);
+    drop(c);
+    check_version(server, &run.id, h);
     run
 }
 
@@ -701,31 +725,79 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
     let call = p.get("call_id").cloned().unwrap_or(Value::Null);
     match event {
         "SessionStart" => on_signal(server, pane, h, "SessionStart", p),
-        "TurnStarted" => on_signal(server, pane, h, "UserPromptSubmit", &json!({"prompt": p.get("prompt_preview")})),
+        "TurnStarted" => on_signal(
+            server,
+            pane,
+            h,
+            "UserPromptSubmit",
+            &json!({"prompt": p.get("prompt_preview")}),
+        ),
         "Working" | "Settling" => {
             let run = bound_run(server, pane, h);
-            set_execution(server, &run.id, Execution::Working, StateSource::Structured, 1.0, (event == "Settling").then(|| "settling".to_string()));
+            set_execution(
+                server,
+                &run.id,
+                Execution::Working,
+                StateSource::Structured,
+                1.0,
+                (event == "Settling").then(|| "settling".to_string()),
+            );
         }
-        "TurnEnded" => on_signal(server, pane, h, "Stop", &json!({"last_assistant_message": p.get("last_message")})),
+        "TurnEnded" => on_signal(
+            server,
+            pane,
+            h,
+            "Stop",
+            &json!({"last_assistant_message": p.get("last_message")}),
+        ),
         "ToolStarted" => {
             let t = tool_name(p.get("tool").and_then(Value::as_str).unwrap_or(""));
-            on_signal(server, pane, h, "PreToolUse", &json!({"tool_name": t, "tool_input": p.get("input"), "tool_use_id": call}));
+            on_signal(
+                server,
+                pane,
+                h,
+                "PreToolUse",
+                &json!({"tool_name": t, "tool_input": p.get("input"), "tool_use_id": call}),
+            );
         }
         "ToolEnded" => {
             let t = tool_name(p.get("tool").and_then(Value::as_str).unwrap_or(""));
-            let ev = if p.get("ok").and_then(Value::as_bool).unwrap_or(true) { "PostToolUse" } else { "PostToolUseFailure" };
-            on_signal(server, pane, h, ev, &json!({"tool_name": t, "tool_use_id": call, "tool_input": {"file_path": p.get("file_path")}}));
+            let ev = if p.get("ok").and_then(Value::as_bool).unwrap_or(true) {
+                "PostToolUse"
+            } else {
+                "PostToolUseFailure"
+            };
+            on_signal(
+                server,
+                pane,
+                h,
+                ev,
+                &json!({"tool_name": t, "tool_use_id": call, "tool_input": {"file_path": p.get("file_path")}}),
+            );
         }
         "Error" => {
             let msg = p.get("message").and_then(Value::as_str).unwrap_or("error");
-            if p.get("rate_limited").and_then(Value::as_bool).unwrap_or(false) {
-                on_signal(server, pane, h, "StopFailure", &json!({"error_type": "rate_limit"}));
+            if p.get("rate_limited")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                on_signal(
+                    server,
+                    pane,
+                    h,
+                    "StopFailure",
+                    &json!({"error_type": "rate_limit"}),
+                );
             } else if !p.get("retrying").and_then(Value::as_bool).unwrap_or(false) {
                 on_signal(server, pane, h, "StopFailure", &json!({"error_type": msg}));
             }
         }
         "Compacting" => {
-            let ev = if p.get("phase").and_then(Value::as_str) == Some("end") { "PostCompact" } else { "PreCompact" };
+            let ev = if p.get("phase").and_then(Value::as_str) == Some("end") {
+                "PostCompact"
+            } else {
+                "PreCompact"
+            };
             on_signal(server, pane, h, ev, p);
         }
         "SessionEnded" => on_signal(server, pane, h, "SessionEnd", p),
@@ -735,14 +807,27 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
             // the dialog bridge when omp routes it through uiContext).
             let run = bound_run(server, pane, h);
             let native = call.as_str().map(str::to_string);
-            if server.with_core(|c| c.model.interactions.iter().any(|i| i.run == run.id && i.native_ref == native && i.status == InteractionStatus::Open)) {
+            if server.with_core(|c| {
+                c.model.interactions.iter().any(|i| {
+                    i.run == run.id && i.native_ref == native && i.status == InteractionStatus::Open
+                })
+            }) {
                 return;
             }
-            let tool = p.get("tool").and_then(Value::as_str).unwrap_or("tool").to_string();
+            let tool = p
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
             let reason = p.get("reason").and_then(Value::as_str).map(str::to_string);
             let mut c = server.core.lock().unwrap();
             let handle = c.next_interaction_handle();
-            let mut it = harness::interaction_from_hook(Harness::Claude, "PermissionRequest", &json!({"tool_name": tool, "tool_input": {"command": reason}})).expect("approval");
+            let mut it = harness::interaction_from_hook(
+                Harness::Claude,
+                "PermissionRequest",
+                &json!({"tool_name": tool, "tool_input": {"command": reason}}),
+            )
+            .expect("approval");
             it.handle = handle;
             it.run = run.id.clone();
             it.pane = pane.to_string();
@@ -759,28 +844,95 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
         }
         "ApprovalResolved" | "DialogResolved" => {
             let run = bound_run(server, pane, h);
-            let key = p.get("call_id").or_else(|| p.get("dialog_id")).and_then(Value::as_str).map(str::to_string);
-            let id = server.with_core(|c| c.model.interactions.iter().find(|i| i.run == run.id && i.native_ref == key).map(|i| i.id.clone()));
+            let key = p
+                .get("call_id")
+                .or_else(|| p.get("dialog_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let id = server.with_core(|c| {
+                c.model
+                    .interactions
+                    .iter()
+                    .find(|i| i.run == run.id && i.native_ref == key)
+                    .map(|i| i.id.clone())
+            });
             if let Some(id) = id {
-                resolve(server, &id, InteractionStatus::ResolvedElsewhere, "answered in pane");
+                resolve(
+                    server,
+                    &id,
+                    InteractionStatus::ResolvedElsewhere,
+                    "answered in pane",
+                );
             }
         }
         "Snapshot" => {
             // Reconnect repair (DESIGN §2): replace our view of the run.
             if let Some(sid) = p.get("session_id").and_then(Value::as_str) {
-                on_signal(server, pane, h, "SessionStart", &json!({"session_id": sid, "transcript_path": p.get("session_file"), "model": p.get("model")}));
+                on_signal(
+                    server,
+                    pane,
+                    h,
+                    "SessionStart",
+                    &json!({"session_id": sid, "transcript_path": p.get("session_file"), "model": p.get("model")}),
+                );
             }
             let run = bound_run(server, pane, h);
-            let streaming = p.get("is_streaming").and_then(Value::as_bool).unwrap_or(false);
-            set_execution(server, &run.id, if streaming { Execution::Working } else { Execution::Idle }, StateSource::Structured, 1.0, None);
-            let open: Vec<String> = p.get("open_approvals").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.get("call_id").and_then(Value::as_str).map(str::to_string)).collect()).unwrap_or_default();
+            let streaming = p
+                .get("is_streaming")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            set_execution(
+                server,
+                &run.id,
+                if streaming {
+                    Execution::Working
+                } else {
+                    Execution::Idle
+                },
+                StateSource::Structured,
+                1.0,
+                None,
+            );
+            let open: Vec<String> = p
+                .get("open_approvals")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| {
+                            x.get("call_id").and_then(Value::as_str).map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let stale: Vec<String> = server.with_core(|c| {
-                c.model.interactions.iter().filter(|i| i.run == run.id && i.status == InteractionStatus::Open && i.native_ref.as_ref().is_some_and(|r| !open.contains(r) && !r.starts_with("dlg")) && i.answer_channel == AnswerChannel::None).map(|i| i.id.clone()).collect()
+                c.model
+                    .interactions
+                    .iter()
+                    .filter(|i| {
+                        i.run == run.id
+                            && i.status == InteractionStatus::Open
+                            && i.native_ref
+                                .as_ref()
+                                .is_some_and(|r| !open.contains(r) && !r.starts_with("dlg"))
+                            && i.answer_channel == AnswerChannel::None
+                    })
+                    .map(|i| i.id.clone())
+                    .collect()
             });
             for id in stale {
-                resolve(server, &id, InteractionStatus::ResolvedElsewhere, "not pending after reconnect");
+                resolve(
+                    server,
+                    &id,
+                    InteractionStatus::ResolvedElsewhere,
+                    "not pending after reconnect",
+                );
             }
-            for a in p.get("open_approvals").and_then(Value::as_array).cloned().unwrap_or_default() {
+            for a in p
+                .get("open_approvals")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
                 on_extension_signal(server, pane, h, "ApprovalRequested", &a);
             }
         }
@@ -1079,12 +1231,24 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     {
         let mut c = server.core.lock().unwrap();
         it.handle = c.next_interaction_handle();
-        // Re-attach by native ref (a hook retried after a dropped connection).
-        if let Some(existing) =
-            c.model.interactions.iter().find(|x| {
-                x.native_ref.is_some() && x.native_ref == it.native_ref && x.run == run.id
-            })
+        // Re-attach by native ref (a hook retried after a dropped connection, 04 §7.3 rule 4):
+        // an already-decided interaction returns its recorded decision; never reopen it.
+        if let Some(existing) = c
+            .model
+            .interactions
+            .iter()
+            .find(|x| x.native_ref.is_some() && x.native_ref == it.native_ref && x.run == run.id)
+            .cloned()
         {
+            if existing.status == InteractionStatus::Answered
+                && let Some(ans) = existing.answer.clone()
+            {
+                let json = harness::decision_json(h, &existing, &ans);
+                let key = format!("{}:{}", existing.id, existing.decision_rev);
+                return Ok(
+                    json!({"decision": json, "interaction": existing.id, "idempotency_key": key, "resumed": true}),
+                );
+            }
             it.id = existing.id.clone();
             it.handle = existing.handle.clone();
         }
@@ -1340,6 +1504,49 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 }
 
 /// Verified keystroke delivery (04 §8): best effort; `delivered` only when the dialog closes.
+fn norm_ws(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Does the on-screen dialog describe this interaction?
+fn dialog_matches(d: &screen::Dialog, it: &Interaction) -> bool {
+    if let Some(fp) = it
+        .native_ref
+        .as_deref()
+        .and_then(|r| r.strip_prefix("screen:"))
+    {
+        return fp == d.fingerprint;
+    }
+    if d.kind != it.kind
+        && !(it.kind == InteractionKind::PlanReview && d.kind == InteractionKind::Approval)
+    {
+        return false;
+    }
+    match (
+        it.action.as_ref().and_then(|a| a.command.as_deref()),
+        d.command.as_deref(),
+    ) {
+        (Some(want), Some(got)) => {
+            let (w, g) = (norm_ws(want.lines().next().unwrap_or(want)), norm_ws(got));
+            !w.is_empty() && (g.contains(&w) || w.contains(&g)) && g.len() >= 3
+        }
+        (Some(_), None) => false,
+        (None, _) => {
+            // Questions: the prompt text must be on screen.
+            let prompt = it
+                .questions
+                .first()
+                .map(|q| norm_ws(&q.prompt))
+                .unwrap_or_else(|| norm_ws(&it.title));
+            let shown = norm_ws(&d.title);
+            !prompt.is_empty() && (shown.contains(&prompt) || prompt.contains(&shown))
+        }
+    }
+}
+
 async fn deliver_keystrokes(
     server: &Arc<Server>,
     id: &str,
@@ -1372,6 +1579,14 @@ async fn deliver_keystrokes(
     let Some(dialog) = screen::evaluate(h, &before).dialog else {
         return (DeliveryState::Failed, Some("dialog_changed".into()));
     };
+    // The visible dialog must be the one this interaction describes (04 §8 step 2); a stale
+    // answer must never select an option in a replacement dialog.
+    if !dialog_matches(&dialog, &it) {
+        return (
+            DeliveryState::Failed,
+            Some("dialog_changed: the visible dialog is not this interaction".into()),
+        );
+    }
     let Some(keys) = screen::keys_for(h, &dialog, &it, answer) else {
         return (DeliveryState::Failed, Some("selection_mismatch".into()));
     };
@@ -1399,11 +1614,15 @@ async fn deliver_keystrokes(
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let now = screen_text();
-        if screen::evaluate(h, &now)
-            .dialog
-            .is_none_or(|d| d.fingerprint != dialog.fingerprint)
-        {
-            return (DeliveryState::Delivered, None);
+        match screen::evaluate(h, &now).dialog {
+            None => return (DeliveryState::Delivered, None),
+            Some(d) if d.fingerprint != dialog.fingerprint => {
+                return (
+                    DeliveryState::DeliveryUnknown,
+                    Some("a different dialog appeared; check the pane".into()),
+                );
+            }
+            Some(_) => {}
         }
     }
     (
@@ -1796,10 +2015,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 None,
                 None,
                 focus,
-                if ctx.pane_scope.is_some() {
-                    "agent"
-                } else {
-                    "user"
+                &match &ctx.pane_scope {
+                    Some(p) => format!("agent:{p}"),
+                    None => "user".to_string(),
                 },
             ) {
                 Ok(p) => p,
@@ -2111,6 +2329,24 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             }
         }
         "adapter.delivery_ack" => {
+            // Only the hook shim of the interaction's own pane, with the issued key, may ack.
+            let Some(pane) = ctx.pane_scope.clone() else {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "adapter methods need a pane token",
+                )));
+            };
+            let it =
+                s(p, "interaction").and_then(|id| server.with_core(|c| c.interaction(id).cloned()));
+            let key_ok = it.as_ref().is_some_and(|i| {
+                s(p, "idempotency_key") == Some(&format!("{}:{}", i.id, i.decision_rev))
+            });
+            if it.as_ref().is_none_or(|i| i.pane != pane) || !key_ok {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "delivery ack does not match an interaction of this pane",
+                )));
+            }
             if let Some(id) = s(p, "interaction") {
                 // Claude/Codex: the shim printed the decision; Post*/resolution events confirm.
                 set_delivery(server, id, DeliveryState::Delivered, None);
@@ -2134,4 +2370,38 @@ pub(crate) fn harness_tests_blank() -> Interaction {
         &json!({"tool_name": "Bash", "tool_input": {"command": "x"}}),
     )
     .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIALOG: &str = "│ Bash command\n│   rm -rf build\n│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. Yes, and don't ask again\n│   3. No, and tell Claude what to do differently (esc)";
+
+    #[test]
+    fn stale_answer_never_matches_a_replacement_dialog() {
+        let d = screen::evaluate(Harness::Claude, DIALOG).dialog.unwrap();
+        let mine = harness::interaction_from_hook(
+            Harness::Claude,
+            "PermissionRequest",
+            &json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}}),
+        )
+        .unwrap();
+        assert!(dialog_matches(&d, &mine));
+        let other = harness::interaction_from_hook(
+            Harness::Claude,
+            "PermissionRequest",
+            &json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+        )
+        .unwrap();
+        assert!(
+            !dialog_matches(&d, &other),
+            "a harmless approval must not select options of a dangerous dialog"
+        );
+        let mut screen_it = mine.clone();
+        screen_it.native_ref = Some(format!("screen:{}", d.fingerprint));
+        assert!(dialog_matches(&d, &screen_it));
+        screen_it.native_ref = Some("screen:deadbeef".into());
+        assert!(!dialog_matches(&d, &screen_it));
+    }
 }

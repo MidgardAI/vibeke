@@ -68,7 +68,9 @@ pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
     let text = tail.join("\n");
     let working = match h {
         Harness::Claude | Harness::Pi | Harness::Omp => {
-            text.contains("esc to interrupt") || text.contains("Esc to interrupt") || text.contains("Working...")
+            text.contains("esc to interrupt")
+                || text.contains("Esc to interrupt")
+                || text.contains("Working...")
         }
         Harness::Codex => {
             text.contains("esc to interrupt")

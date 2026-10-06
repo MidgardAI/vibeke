@@ -98,8 +98,18 @@ pub fn main(args: &[String]) -> i32 {
         return 0;
     };
     if let Some(decision) = result.get("decision").filter(|d| d.is_object()) {
-        // Ack first: the server marks delivery once the harness has the decision on stdout.
-        if let (Some(i), Some(k)) = (result.get("interaction"), result.get("idempotency_key")) {
+        // Hand the decision to the harness first; ack only once stdout took it. A failed write
+        // is not acked, so the server reconciles instead of recording a false delivery.
+        let out = serde_json::to_string(decision).unwrap_or_default();
+        let mut stdout = std::io::stdout();
+        let written = stdout
+            .write_all(out.as_bytes())
+            .and_then(|_| stdout.write_all(b"\n"))
+            .and_then(|_| stdout.flush())
+            .is_ok();
+        if written
+            && let (Some(i), Some(k)) = (result.get("interaction"), result.get("idempotency_key"))
+        {
             let _ = call(
                 &mut stream,
                 &mut rd,
@@ -108,11 +118,6 @@ pub fn main(args: &[String]) -> i32 {
                 json!({"interaction": i, "idempotency_key": k, "applied": true}),
             );
         }
-        let out = serde_json::to_string(decision).unwrap_or_default();
-        let mut stdout = std::io::stdout();
-        let _ = stdout.write_all(out.as_bytes());
-        let _ = stdout.write_all(b"\n");
-        let _ = stdout.flush();
     }
     0
 }

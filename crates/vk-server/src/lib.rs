@@ -257,16 +257,27 @@ impl Server {
     /// A holder vanished while this server was attached to it.
     pub fn holder_lost(self: &Arc<Self>, pane_id: &str) {
         self.panes.lock().unwrap().remove(pane_id);
-        let Some(p) = self.with_core(|c| c.pane(pane_id).cloned()) else { return };
+        let Some(p) = self.with_core(|c| c.pane(pane_id).cloned()) else {
+            return;
+        };
         if let Some(r) = self.with_core(|c| c.run_for_pane(pane_id).cloned()) {
             self.agents.end_run(self, &r.id, "holder_lost");
         }
-        let cwd = p.cwd.clone().unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
+        let cwd = p
+            .cwd
+            .clone()
+            .unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
         if let Err(e) = self.respawn_pane(&p, &cwd) {
             tracing::warn!(pane = %pane_id, error = %e, "respawn after holder loss failed");
             self.pane_ended(pane_id, "holder_lost");
         } else {
-            self.notify("system", Some(pane_id), "pane restarted", "its process was lost; agents can be resumed (vibeke agent resumable)", "normal");
+            self.notify(
+                "system",
+                Some(pane_id),
+                "pane restarted",
+                "its process was lost; agents can be resumed (vibeke agent resumable)",
+                "normal",
+            );
         }
     }
 
@@ -642,14 +653,19 @@ impl Server {
         focus_client: Option<&str>,
         created_by: &str,
     ) -> Result<Pane> {
+        // Resolve the cwd before taking `core` (pane_cwd may lock it; lock order: core → clients,
+        // never re-entrant).
+        let target_id = self
+            .with_core(|c| c.pane(target).map(|p| p.id.clone()))
+            .context("pane not found")?;
+        let cwd_resolved = cwd
+            .map(str::to_string)
+            .or_else(|| self.pane_cwd(&target_id));
         let mut c = self.core.lock().unwrap();
-        let tp = c.pane(target).cloned().context("pane not found")?;
+        let tp = c.pane(&target_id).cloned().context("pane not found")?;
         let ws = c.ws(&tp.workspace).cloned().context("workspace")?;
         let mut tab = c.tab(&tp.tab).cloned().context("tab")?;
-        let cwd = cwd
-            .map(str::to_string)
-            .or_else(|| self.pane_cwd(&tp.id))
-            .unwrap_or_else(|| ws.root_path.clone());
+        let cwd = cwd_resolved.unwrap_or_else(|| ws.root_path.clone());
         let mut tx = Tx::new();
         let tab_handle = tab.handle.clone();
         let pane = self.new_pane(

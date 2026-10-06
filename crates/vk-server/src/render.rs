@@ -76,6 +76,14 @@ where
             }
         }
     });
+    // Read from `core` before locking `clients` (lock order: core → clients).
+    let last_focus: Option<vk_proto::model::ClientFocus> = server.with_core(|c| {
+        c.store
+            .kv_get("server", "last_focus")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    });
     {
         let mut clients = server.clients.lock().unwrap();
         let st = clients.entry(client_id.clone()).or_default();
@@ -84,14 +92,7 @@ where
         st.last_active = Some(Instant::now());
         if st.focus.pane.is_none() {
             // Restore the last focus of any client, else the first pane.
-            let last: Option<vk_proto::model::ClientFocus> = server.with_core(|c| {
-                c.store
-                    .kv_get("server", "last_focus")
-                    .ok()
-                    .flatten()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-            });
-            st.focus = last.unwrap_or_default();
+            st.focus = last_focus.unwrap_or_default();
         }
     }
     server.fix_client_focus();

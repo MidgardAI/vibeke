@@ -82,7 +82,7 @@ impl Harness {
             (Harness::Claude, InteractionKind::PlanReview) => true,
             (Harness::Claude, InteractionKind::Question) => caps::CLAUDE_QUESTION_NATIVE,
             // pi/omp: dialogs raised through the extension bridge are answered natively.
-            (Harness::Pi | Harness::Omp, InteractionKind::Question | InteractionKind::Approval) => true,
+            (Harness::Pi | Harness::Omp, InteractionKind::Question) => true,
             _ => false,
         }
     }
@@ -463,18 +463,42 @@ pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Inter
 /// An extension dialog (pi/omp uiContext `confirm`/`select`/`input`, DESIGN §4.1).
 fn dialog_interaction(p: &Value) -> Interaction {
     let method = p.get("method").and_then(Value::as_str).unwrap_or("confirm");
-    let title = p.get("title").and_then(Value::as_str).unwrap_or("extension dialog").to_string();
+    let title = p
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("extension dialog")
+        .to_string();
     let message = p.get("message").and_then(Value::as_str).map(str::to_string);
-    let native_ref = p.get("dialog_id").and_then(Value::as_str).map(str::to_string);
+    let native_ref = p
+        .get("dialog_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let looks_permission = {
         let t = format!("{title} {}", message.clone().unwrap_or_default()).to_lowercase();
-        ["allow", "approve", "permission", "run ", "execute", "proceed"].iter().any(|k| t.contains(k))
+        [
+            "allow",
+            "approve",
+            "permission",
+            "run ",
+            "execute",
+            "proceed",
+        ]
+        .iter()
+        .any(|k| t.contains(k))
     };
     match method {
         "confirm" if looks_permission => {
             let mut it = blank_interaction(InteractionKind::Approval, title.clone(), native_ref);
             let (risk, reasons) = risk("extension", message.as_deref(), &[]);
-            it.action = Some(ActionInfo { tool: "extension dialog".into(), summary: title, command: message.clone(), paths: vec![], diff: None, risk, risk_reasons: reasons });
+            it.action = Some(ActionInfo {
+                tool: "extension dialog".into(),
+                summary: title,
+                command: message.clone(),
+                paths: vec![],
+                diff: None,
+                risk,
+                risk_reasons: reasons,
+            });
             it.body_md = message;
             it
         }
@@ -487,8 +511,16 @@ fn dialog_interaction(p: &Value) -> Interaction {
                 header: None,
                 multi: false,
                 options: vec![
-                    QuestionOption { id: "yes".into(), label: "Yes".into(), description: None },
-                    QuestionOption { id: "no".into(), label: "No".into(), description: None },
+                    QuestionOption {
+                        id: "yes".into(),
+                        label: "Yes".into(),
+                        description: None,
+                    },
+                    QuestionOption {
+                        id: "no".into(),
+                        label: "No".into(),
+                        description: None,
+                    },
                 ],
                 allow_free_text: false,
             }];
@@ -500,9 +532,25 @@ fn dialog_interaction(p: &Value) -> Interaction {
             let options: Vec<QuestionOption> = p
                 .get("options")
                 .and_then(Value::as_array)
-                .map(|o| o.iter().filter_map(Value::as_str).map(|l| QuestionOption { id: l.into(), label: l.into(), description: None }).collect())
+                .map(|o| {
+                    o.iter()
+                        .filter_map(Value::as_str)
+                        .map(|l| QuestionOption {
+                            id: l.into(),
+                            label: l.into(),
+                            description: None,
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
-            it.questions = vec![Question { id: "answer".into(), prompt: title, header: None, multi: false, allow_free_text: options.is_empty(), options }];
+            it.questions = vec![Question {
+                id: "answer".into(),
+                prompt: title,
+                header: None,
+                multi: false,
+                allow_free_text: options.is_empty(),
+                options,
+            }];
             it
         }
     }
@@ -512,7 +560,10 @@ pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
     if matches!(h, Harness::Pi | Harness::Omp) {
         // Returned to the calling extension through the uiContext wrapper.
         let value = match it.kind {
-            InteractionKind::Approval => json!(matches!(a.decision, Some(Decision::Allow | Decision::AllowAlways))),
+            InteractionKind::Approval => json!(matches!(
+                a.decision,
+                Some(Decision::Allow | Decision::AllowAlways)
+            )),
             _ => {
                 let choice = a.choices.first().and_then(|(_, o)| o.first()).cloned();
                 match (it.questions.first().map(|q| q.id.as_str()), choice) {
@@ -645,8 +696,15 @@ pub fn transcript_tail(path: &Path, limit: usize) -> String {
 /// The ranges are the versions the adapter was written and tested against in Goal 01 (see
 /// spec/04-harness-adapters.md: live golden fixtures still pending).
 pub fn validated(h: Harness, version: &str) -> bool {
-    let v: Vec<u64> = version.split(['.', '-', '+']).take(3).map(|x| x.parse().unwrap_or(0)).collect();
-    let (major, minor) = (v.first().copied().unwrap_or(0), v.get(1).copied().unwrap_or(0));
+    let v: Vec<u64> = version
+        .split(['.', '-', '+'])
+        .take(3)
+        .map(|x| x.parse().unwrap_or(0))
+        .collect();
+    let (major, minor) = (
+        v.first().copied().unwrap_or(0),
+        v.get(1).copied().unwrap_or(0),
+    );
     match h {
         Harness::Claude => major == 2 && minor == 1,
         Harness::Codex => major == 0 && (157..=160).contains(&minor),
@@ -778,17 +836,68 @@ mod tests {
     #[test]
     fn pi_dialogs_and_detection() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(detect_harness(&a(&["node", "/opt/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"]), None), Some(Harness::Pi));
-        assert_eq!(detect_harness(&a(&["omp"]), Some("/Users/x/.bun/bin/omp")), Some(Harness::Omp));
+        assert_eq!(
+            detect_harness(
+                &a(&[
+                    "node",
+                    "/opt/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+                ]),
+                None
+            ),
+            Some(Harness::Pi)
+        );
+        assert_eq!(
+            detect_harness(&a(&["omp"]), Some("/Users/x/.bun/bin/omp")),
+            Some(Harness::Omp)
+        );
         let perm = interaction_from_hook(Harness::Pi, "Dialog", &json!({"method": "confirm", "title": "Allow bash?", "message": "rm -rf dist", "dialog_id": "dlg1"})).unwrap();
         assert_eq!(perm.kind, InteractionKind::Approval);
-        assert_eq!(decision_json(Harness::Pi, &perm, &Answer { decision: Some(Decision::Allow), ..Default::default() }), json!({"value": true}));
-        assert_eq!(decision_json(Harness::Pi, &perm, &Answer { decision: Some(Decision::Deny), ..Default::default() }), json!({"value": false}));
+        assert_eq!(
+            decision_json(
+                Harness::Pi,
+                &perm,
+                &Answer {
+                    decision: Some(Decision::Allow),
+                    ..Default::default()
+                }
+            ),
+            json!({"value": true})
+        );
+        assert_eq!(
+            decision_json(
+                Harness::Pi,
+                &perm,
+                &Answer {
+                    decision: Some(Decision::Deny),
+                    ..Default::default()
+                }
+            ),
+            json!({"value": false})
+        );
         let sel = interaction_from_hook(Harness::Omp, "Dialog", &json!({"method": "select", "title": "Pick", "options": ["A", "B"], "dialog_id": "dlg2"})).unwrap();
         assert_eq!(sel.questions[0].options.len(), 2);
-        let ans = Answer { choices: vec![("answer".into(), vec!["B".into()])], ..Default::default() };
-        assert_eq!(decision_json(Harness::Omp, &sel, &ans), json!({"value": "B"}));
+        let ans = Answer {
+            choices: vec![("answer".into(), vec!["B".into()])],
+            ..Default::default()
+        };
+        assert_eq!(
+            decision_json(Harness::Omp, &sel, &ans),
+            json!({"value": "B"})
+        );
         assert_eq!(Harness::Pi.resume_argv("s1"), vec!["pi", "--session", "s1"]);
         assert!(yolo(Harness::Pi, &a(&["pi"])));
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn validated_ranges() {
+        assert!(validated(Harness::Claude, "2.1.290"));
+        assert!(!validated(Harness::Claude, "3.0.0"));
+        assert!(validated(Harness::Codex, "0.160.1"));
+        assert!(!validated(Harness::Codex, "0.170.0"));
     }
 }

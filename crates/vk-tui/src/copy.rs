@@ -449,10 +449,16 @@ mod tests {
         cm.pending_req = Some(1);
         assert_eq!(cm.on_history(1, 0, 30_000, vec![]), Some((10_000, 20_000)));
         cm.pending_req = Some(2);
-        let page = |a: usize, b: usize| (a..b).map(|i| row(&format!("l{i}"), false)).collect::<Vec<_>>();
+        let page = |a: usize, b: usize| {
+            (a..b)
+                .map(|i| row(&format!("l{i}"), false))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(cm.on_history(2, 10_000, 30_000, page(10_000, 30_000)), None);
         assert_eq!(cm.lines.len(), 20_001);
-        let Outcome::Fetch { start, count } = cm.key(&KeyEvent::ch('g')) else { panic!("expected a fetch for older rows") };
+        let Outcome::Fetch { start, count } = cm.key(&KeyEvent::ch('g')) else {
+            panic!("expected a fetch for older rows")
+        };
         assert_eq!((start, count), (0, 10_000));
         cm.pending_req = Some(3);
         cm.on_history(3, 0, 30_000, page(0, 10_000));

@@ -231,7 +231,95 @@ pub const METHODS: &[(&str, bool)] = &[
     ("worktree.repo_root", false),
 ];
 
+/// Capability check for pane-scoped callers (09 §5.2): reads are open; writes are limited to
+/// the caller's own pane and panes it created; authorizing actions (answering interactions),
+/// server control and other workspaces' layout are forbidden.
+pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
+    let Some(scope) = &ctx.pane_scope else {
+        return Ok(());
+    };
+    let deny = |why: &str| {
+        Err(err(
+            ErrorKind::PermissionDenied,
+            format!("{method} is not allowed from a pane ({why})"),
+        )
+        .details(json!({"scope": "pane"})))
+    };
+    const FORBIDDEN: &[&str] = &[
+        "interaction.answer",
+        "interaction.cancel",
+        "server.stop",
+        "server.reload_config",
+        "workspace.close",
+        "workspace.rename",
+        "workspace.move",
+        "workspace.focus",
+        "tab.close",
+        "tab.rename",
+        "tab.move",
+        "tab.focus",
+        "pane.focus",
+        "task.finish",
+        "worktree.remove",
+        "render.attach",
+    ];
+    if FORBIDDEN.contains(&method) {
+        if method == "interaction.answer" {
+            return Err(err(
+                ErrorKind::PermissionDenied,
+                "self_answer_forbidden: agents may see but not answer interactions",
+            )
+            .details(json!({"scope": "pane"})));
+        }
+        return deny("forbidden for pane scope");
+    }
+    let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
+    let pane_targeted = method.starts_with("pane.")
+        && !matches!(
+            method,
+            "pane.list"
+                | "pane.get"
+                | "pane.current"
+                | "pane.read"
+                | "pane.wait_output"
+                | "pane.wait_idle"
+                | "pane.can_see_paths"
+        );
+    if pane_targeted {
+        let target = s(p, "pane").unwrap_or("@current");
+        let pane = resolve_pane(server, ctx, Some(target))?;
+        if !owns(&pane) {
+            return deny("target pane is not yours");
+        }
+        if p.get("focus").and_then(Value::as_bool) == Some(true) {
+            return deny("agents can't move the user's focus");
+        }
+    }
+    let run_targeted = matches!(
+        method,
+        "agent.prompt" | "agent.interrupt" | "agent.send_keys" | "agent.rename" | "agent.release"
+    );
+    if run_targeted {
+        let t = s(p, "target").unwrap_or("@current");
+        let pane = server
+            .with_core(|c| c.run(t).and_then(|r| c.pane(&r.pane).cloned()))
+            .map(Ok)
+            .unwrap_or_else(|| resolve_pane(server, ctx, Some(t)))?;
+        if !owns(&pane) {
+            return deny("target agent is not in your pane or a pane you created");
+        }
+    }
+    if matches!(method, "agent.start" | "agent.resume") {
+        let pane = resolve_pane(server, ctx, s(p, "pane").or(Some("@current")))?;
+        if !owns(&pane) {
+            return deny("target pane is not yours");
+        }
+    }
+    Ok(())
+}
+
 async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
+    authorize(server, ctx, method, p)?;
     if let Some(r) = crate::agents::api(server, ctx, method, p).await {
         return r;
     }
@@ -399,9 +487,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         }
         "workspace.focus" => {
             let ws = resolve_ws(server, ctx, s(p, "workspace"))?;
+            let cur = server.client_focus(&ctx.client_id);
             let pane = server.with_core(|c| {
                 let tabs = c.tabs_of(&ws.id);
-                let cur = server.client_focus(&ctx.client_id);
                 let tab = tabs
                     .iter()
                     .find(|t| Some(&t.id) == cur.tab.as_ref())
@@ -578,11 +666,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             let focus = b(p, "focus")
                 .unwrap_or(false)
                 .then_some(ctx.client_id.as_str());
-            let by = if ctx.pane_scope.is_some() {
-                "agent"
-            } else {
-                "user"
+            let by_owned = match &ctx.pane_scope {
+                Some(p) => format!("agent:{p}"),
+                None => "user".to_string(),
             };
+            let by = by_owned.as_str();
             let pane = server
                 .split_pane(
                     &target.id,

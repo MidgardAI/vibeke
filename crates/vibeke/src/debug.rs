@@ -53,7 +53,10 @@ pub fn ptyshot(args: &[String]) -> i32 {
                                 let _ = rustix::io::write(&pty.master, &b);
                             }
                             vk_term::Effect::Clipboard { data, .. } => {
-                                eprintln!("[host clipboard set: {:?}]", String::from_utf8_lossy(&data));
+                                eprintln!(
+                                    "[host clipboard set: {:?}]",
+                                    String::from_utf8_lossy(&data)
+                                );
                             }
                             _ => {}
                         }
