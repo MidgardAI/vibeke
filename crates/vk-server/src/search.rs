@@ -484,6 +484,9 @@ pub fn read_archive(server: &Server, ctx: &Ctx, p: &Value) -> R {
 /// go. Idempotent. It does not touch the live screen, in-memory scrollback, VT snapshots, the
 /// event log, blobs, the desk index, drafts or notes. `before` is segment-granular: a segment
 /// whose last write is older than the time goes; one that straddles it stays whole.
+/// The result carries the canonical `scope` (pane/workspace id, absolute `before` ms),
+/// `pane_ids` and a `plan` digest of both; with `plan` given the call is refused (`conflict`)
+/// unless the scope still resolves to exactly that plan (how the CLI confirms a dry run).
 pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
     use vk_store::archive::Select;
     let all = b(p, "all").unwrap_or(false);
@@ -550,6 +553,29 @@ pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
     {
         return Err(invalid(format!("unsafe pane id `{bad}`")));
     }
+    // The canonical plan: resolved pane ids and an absolute cutoff. A confirmed call sends the
+    // dry run's `scope` and `plan` back; if the scope no longer resolves to the same panes the
+    // call is refused rather than deleting something the user never saw.
+    let pane_ids: Option<Vec<String>> = panes.as_ref().map(|v| {
+        let mut v = v.clone();
+        v.sort();
+        v.dedup();
+        v
+    });
+    let plan = {
+        let canon = json!({"scope": scope, "panes": pane_ids});
+        let h = blake3::hash(canon.to_string().as_bytes()).to_hex();
+        format!("fp1-{}", &h[..32])
+    };
+    if let Some(want) = s(p, "plan")
+        && want != plan
+    {
+        return Err(err(
+            ErrorKind::Conflict,
+            "scrollback.forget: the scope no longer resolves to the confirmed plan; run the dry run again",
+        )
+        .details(json!({"scope": scope, "pane_ids": pane_ids, "plan": plan, "expected": want})));
+    }
     let report = {
         let mut a = server.archive.lock().unwrap();
         let _ = a.flush();
@@ -579,6 +605,8 @@ pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
     };
     Ok(json!({
         "scope": scope,
+        "pane_ids": pane_ids,
+        "plan": plan,
         "dry_run": dry_run,
         "panes": report.panes,
         "segments_deleted": report.segments,

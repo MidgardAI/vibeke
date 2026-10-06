@@ -2245,7 +2245,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false` → `{scope, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata, in one transaction. Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`."
+      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both; a call with `plan` is refused with `conflict` unless the scope still resolves to exactly that plan (the CLI confirms by sending the dry run's `scope` + `plan`, so a focus change or a relative cutoff can't redirect the deletion). Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`."
     },
     {
       "name": "search.query",
