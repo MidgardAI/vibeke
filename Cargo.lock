@@ -1379,6 +1379,7 @@ name = "vibeke"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "libc",
  "rustix",
  "serde_json",
