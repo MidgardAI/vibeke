@@ -142,6 +142,9 @@ pub fn tools() -> Vec<Value> {
                "description": "Requests made by the session, with status, errors and requests blocked by Vibeke's destination policy (with the reason).",
                "inputSchema": obj(json!({"session": s(), "failed_only": {"type": "boolean"}, "since_ms": {"type": "integer"}}), &["session"]),
                "annotations": {"readOnlyHint": true}}),
+        json!({"name": "browser_diff", "title": "Compare two screenshots",
+               "description": "Visual diff of two screenshots (ids or handles like \"s3\" from browser_screenshot): changed pixel ratio, changed regions and a diff image (changes in red). Screenshots from different environments (headless vs a browser pane) are refused unless force is set.",
+               "inputSchema": obj(json!({"a": {"type": "string"}, "b": {"type": "string"}, "threshold": {"type": "number", "minimum": 0, "maximum": 1, "description": "Per-channel tolerance (fraction), default 0.1."}, "force": {"type": "boolean"}}), &["a", "b"])}),
         json!({"name": "browser_close", "title": "Close the session",
                "description": "Close a browser session (its cookies and storage are discarded).",
                "inputSchema": obj(json!({"session": s()}), &["session"])}),
@@ -172,6 +175,10 @@ pub fn map_tool(name: &str, args: &Value) -> Option<(&'static str, Value)> {
         "browser_console" => "browser.console",
         "browser_network" => "browser.network",
         "browser_close" => "browser.close",
+        "browser_diff" => {
+            a["inline"] = json!(true);
+            "browser.diff"
+        }
         _ => return None,
     };
     Some((method, a))
@@ -186,7 +193,7 @@ pub fn tool_result(name: &str, r: Result<Value, CallError>) -> Value {
     match r {
         Ok(mut v) => {
             let mut content = Vec::new();
-            if name == "browser_screenshot"
+            if (name == "browser_screenshot" || name == "browser_diff")
                 && let Some(data) = v.as_object_mut().and_then(|o| o.remove("data_b64"))
             {
                 content.push(json!({"type": "image", "data": data, "mimeType": v["mime"].as_str().unwrap_or("image/png")}));
@@ -423,6 +430,7 @@ mod tests {
             "browser_console",
             "browser_network",
             "browser_close",
+            "browser_diff",
         ] {
             assert!(names.contains(&want), "{want}");
         }

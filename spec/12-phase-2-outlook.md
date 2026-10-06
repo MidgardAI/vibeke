@@ -36,6 +36,8 @@ EvidenceRecord {
 }
 ```
 
+**Groundwork as built (Goal 03 Stage 4):** screenshot artifacts exist as `screenshot` records (06 B6, 07 §2.11) that already carry what an `artifacts[]` entry and its record need: `blob`, `environment` + `label` (→ `environment_label`), `code {repo, head_sha, dirty_digest, dirty_state, captured_at_ms}` (→ `head_sha`/`dirty_digest`; computed like the review observation baseline, so it compares with `ChangeSubject`s), `taken_by {kind, pane, run}` (→ `provenance`), `task`, `run`, and — new relative to this sketch — a separate **running-build identity** `runtime {status, source, build_id, head_sha, dirty_digest, started_at_ms, fixture}` with `binding: bound|illustrative` (15 §6.4): a screenshot is evidence *about a revision* only when the serving build reports that revision; otherwise it is illustrative and can't satisfy a check. `EvidenceRecord` itself (grouping checks + artifacts per revision, `base_sha`, `supersedes`, signing) is not built; review packages list screenshots as `browser` evidence directly.
+
 Rules: evidence whose `head_sha`/`dirty_digest` doesn't match the task's current state is shown as **stale**; checks are only "run" if Vibeke observed the process (pane/runner) or the adapter reported the exact tool call — an agent claiming "tests pass" in prose is not evidence. Screenshots always carry `environment_label` so a remote headless browser is never mistaken for the human's own view.
 
 **Strategic notes from the research (Oct 2026):**

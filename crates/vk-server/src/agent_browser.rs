@@ -233,6 +233,9 @@ pub struct Session {
     pub cdp_session: String,
     pub created_ms: i64,
     pub viewport: (u32, u32),
+    /// Device scale factor and emulated `prefers-color-scheme` (screenshot environment, B6).
+    pub dpr: f64,
+    pub color_scheme: Option<String>,
     proxy: Mutex<Option<ProxyHandle>>,
     console: Mutex<VecDeque<Value>>,
     network: Mutex<VecDeque<Value>>,
@@ -1473,6 +1476,10 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         cdp_session: cdp_session.clone(),
         created_ms: vk_store::now_ms(),
         viewport,
+        dpr: p.get("dpr").and_then(Value::as_f64).unwrap_or(1.0),
+        color_scheme: s(p, "color_scheme")
+            .or(b(p, "dark").and_then(|d| d.then_some("dark")))
+            .map(str::to_string),
         proxy: Mutex::new(Some(proxy)),
         console: Mutex::default(),
         network: Mutex::default(),
@@ -1525,7 +1532,7 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             &cdp,
             cs,
             "Emulation.setDeviceMetricsOverride",
-            json!({"width": viewport.0, "height": viewport.1, "deviceScaleFactor": p.get("dpr").and_then(Value::as_f64).unwrap_or(1.0), "mobile": false}),
+            json!({"width": viewport.0, "height": viewport.1, "deviceScaleFactor": sess.dpr, "mobile": false}),
         )
         .await?;
         if let Some(scheme) =
@@ -1958,7 +1965,7 @@ async fn eval(cdp: Arc<Cdp>, sess: Arc<Session>, p: Value) -> R {
     Ok(json!({"session": sess.handle, "value": v}))
 }
 
-fn png_size(png: &[u8]) -> (u32, u32) {
+pub(crate) fn png_size(png: &[u8]) -> (u32, u32) {
     if png.len() >= 24 && &png[12..16] == b"IHDR" {
         let w = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
         let h = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
@@ -2037,44 +2044,93 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
     let png = base64::engine::general_purpose::STANDARD
         .decode(r["data"].as_str().unwrap_or(""))
         .map_err(|e| err(ErrorKind::Internal, format!("screenshot data: {e}")))?;
-    let (width, height) = png_size(&png);
     let proc_ = server.agent_browser.proc_.lock().await.clone();
     let url = sess.url.lock().unwrap().clone();
+    // Where the page actually is (after redirects) and its title; best effort.
+    let (final_url, title) =
+        match evaluate(&cdp, sess, "({href: location.href, title: document.title})").await {
+            Ok(v) => (
+                v["href"].as_str().map(str::to_string),
+                v["title"].as_str().map(str::to_string),
+            ),
+            Err(_) => (None, None),
+        };
     let taken_by = match &ctx.pane_scope {
-        Some(pane) => json!({"kind": "agent", "pane": pane, "run": sess.owner_run}),
-        None => json!({"kind": "user", "client": ctx.client_id}),
+        Some(pane) => crate::screenshots::Requester {
+            kind: "agent".into(),
+            pane: Some(pane.clone()),
+            run: sess.owner_run.clone(),
+            client: None,
+        },
+        None => crate::screenshots::Requester {
+            kind: "user".into(),
+            pane: sess.owner_pane.clone(),
+            run: sess.owner_run.clone(),
+            client: Some(ctx.client_id.clone()),
+        },
     };
-    let meta = json!({
-        "kind": "screenshot",
-        "session": sess.handle,
-        "preview": sess.preview,
-        "url": url,
-        "taken_at": vk_store::now_ms(),
-        "taken_by": taken_by,
-        "environment": proc_.as_ref().map(|p| environment(server, p)).unwrap_or(Value::Null),
-        // Stage 4 adds `code` (task, head_sha, dirty_digest).
-        "code": null,
-        "viewport": {"width": sess.viewport.0, "height": sess.viewport.1, "dpr": 1},
-        "full_page": full_page,
-        "selector": s(p, "selector"),
-        "width": width,
-        "height": height,
-        "mime": "image/png",
-    });
-    let (hash, path) = store_blob(server, &png, "png", &meta).map_err(crate::api::internal)?;
+    let product = proc_
+        .as_ref()
+        .map(|p| p.product.clone())
+        .unwrap_or_default();
+    let environment = crate::screenshots::Environment {
+        kind: crate::screenshots::EnvKind::RemoteHeadless,
+        machine: server.opts.machine.clone(),
+        runner: "host".into(),
+        browser_version: product.split_once('/').map(|(_, v)| v.to_string()),
+        browser: product,
+        viewport: crate::screenshots::Viewport {
+            width: sess.viewport.0,
+            height: sess.viewport.1,
+        },
+        dpr: sess.dpr,
+        color_scheme: sess.color_scheme.clone(),
+        device: None,
+        fresh_context: true,
+        profile: None,
+    };
+    let meta = crate::screenshots::record_screenshot(
+        server,
+        &png,
+        crate::screenshots::ShotInputs {
+            environment,
+            url: url.clone(),
+            final_url,
+            title,
+            preview: sess.preview.clone(),
+            session: Some(sess.handle.clone()),
+            taken_by,
+            full_page,
+            selector: s(p, "selector").map(str::to_string),
+            checkout: None,
+            runtime: None,
+            probe_runtime: true,
+        },
+    )
+    .await?;
+    let (hash, path, width, height) = (
+        meta.blob.clone(),
+        meta.path(server),
+        meta.width,
+        meta.height,
+    );
     emit(
         server,
         "browser.screenshot",
         sess,
-        json!({"blob": hash, "url": url, "width": width, "height": height}),
+        json!({"blob": hash, "url": url, "width": width, "height": height, "screenshot": meta.id}),
     );
     let mut out = json!({
         "session": sess.handle,
+        "id": meta.id,
+        "handle": meta.handle,
         "blob": hash,
         "path_on_machine": path,
         "width": width,
         "height": height,
         "bytes": png.len(),
+        "binding": meta.binding,
+        "label": meta.label,
         "meta": meta,
     });
     if b(p, "inline").unwrap_or(false) {

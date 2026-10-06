@@ -668,6 +668,19 @@ async fn screenshot_is_a_blob_with_metadata() {
     assert_eq!(meta["preview"], "v1");
     assert!(meta["taken_at"].as_i64().unwrap() > 0);
     assert!(r["data_b64"].as_str().is_some());
+    // Stage 4: a `screenshot` record with code state (none here: the pane has no checkout),
+    // running-build identity (unknown) and binding.
+    assert_eq!(r["handle"], "s1");
+    assert_eq!(meta["binding"], "illustrative");
+    assert_eq!(meta["code"], Value::Null);
+    assert!(meta["code_note"].is_string());
+    assert_eq!(meta["runtime"]["status"], "unknown");
+    assert_eq!(meta["session"], "b1");
+    assert_eq!(meta["label"], "testbox · headless · fresh context");
+    assert_eq!(meta["environment"]["browser_version"], "0.0-fake", "{meta}");
+    let rec = crate::screenshots::find(&e.server, r["id"].as_str().unwrap()).unwrap();
+    assert_eq!(rec.blob, r["blob"]);
+    assert_eq!(e.events("screenshot.captured").len(), 1);
     let sidecar = path.with_extension("json");
     let saved: Value = serde_json::from_slice(&std::fs::read(sidecar).unwrap()).unwrap();
     assert_eq!(saved["environment"]["kind"], "remote_headless");

@@ -2907,6 +2907,7 @@ dependencies = [
  "vk-compat",
  "vk-config",
  "vk-proto",
+ "vk-review",
  "vk-server",
 ]
 
@@ -3110,6 +3111,7 @@ dependencies = [
  "blake3",
  "futures",
  "hmac",
+ "image",
  "libc",
  "rand 0.9.5",
  "regex",

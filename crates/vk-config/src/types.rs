@@ -119,7 +119,7 @@ pub struct Config {
     /// `[layouts.<name>]`: named declarative layouts (07 §2.14 `LayoutSpec`, parsed by the
     /// server) for `vibeke layout apply <name>` and `workspace create --layout <name>`.
     pub layouts: BTreeMap<String, toml::Value>,
-    /// Sections owned by other crates (`collision`, `isolation`, `preview`, `security`,
+    /// Sections owned by other crates (`collision`, `isolation`, `preview`, `screenshots`, `security`,
     /// `plugins`), preserved verbatim so they are not reported as unknown.
     #[serde(skip_deserializing)]
     pub extra: BTreeMap<String, toml::Value>,

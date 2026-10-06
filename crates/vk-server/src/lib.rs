@@ -22,6 +22,7 @@ pub mod run;
 pub mod sandbox;
 pub mod search;
 pub mod theme;
+pub mod screenshots;
 pub mod tracking;
 
 use crate::core::{Core, Tx, subject_pane, ulid};

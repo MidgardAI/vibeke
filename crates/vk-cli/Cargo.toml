@@ -10,6 +10,7 @@ vk-proto = { workspace = true }
 vk-server = { workspace = true }
 vk-config = { path = "../vk-config" }
 vk-compat = { workspace = true }
+vk-review = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

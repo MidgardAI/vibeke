@@ -14,6 +14,8 @@
 //! - [`checks`]: check definitions with resolved-script digests, per-candidate authorization,
 //!   disposable-checkout execution and observed agent commands (§6.2, §6.3).
 //! - [`readiness`]: criterion assessment, readiness labels, acceptance and freshness (§6.1, §7).
+//! - [`screenshot`]: screenshot code state, running-build identity and their binding (06 B6,
+//!   §6.4).
 //! - [`attention`]: inbox ranking, five-minute view, snooze wake-ups, stable selection and
 //!   batching (§8).
 //!
@@ -26,6 +28,7 @@ pub mod binding;
 pub mod checks;
 pub mod intent;
 pub mod readiness;
+pub mod screenshot;
 pub mod subject;
 
 mod gitcmd;

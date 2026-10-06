@@ -35,6 +35,10 @@ pub enum EvidenceCategory {
     ExternalObservation,
     /// Pre-spec-15 evidence lacking binding fields: **Legacy evidence — binding incomplete**.
     Legacy,
+    /// A browser screenshot (06 B6, 15 §6.4). Never satisfies a check criterion; even a
+    /// `bound` screenshot (running build = checkout state) only *supports* a human criterion,
+    /// which passes through an explicit human review, never automatically.
+    Browser,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -117,6 +121,31 @@ impl Evidence {
             actor: Some(Actor::agent(cmd.run_id.clone())),
             observed_at_ms: cmd.ended_at_ms.or(cmd.started_at_ms).unwrap_or(0),
             summary: Some(cmd.command.clone()),
+        }
+    }
+
+    /// Evidence from a screenshot. `subject` is the reviewed subject's id when the screenshot
+    /// is `bound` and its code state matches that subject; otherwise `None` (unbound,
+    /// illustrative). `human_criteria` links it to the human criteria it can support.
+    pub fn from_screenshot(
+        id: &str,
+        subject: Option<&str>,
+        human_criteria: Vec<String>,
+        taken_at_ms: i64,
+        summary: String,
+    ) -> Evidence {
+        Evidence {
+            id: id.to_string(),
+            category: EvidenceCategory::Browser,
+            outcome: EvidenceOutcome::Unknown,
+            check_definition_id: None,
+            definition_digest: None,
+            environment_digest: None,
+            subject_id: subject.map(str::to_string),
+            criterion_ids: human_criteria,
+            actor: None,
+            observed_at_ms: taken_at_ms,
+            summary: Some(summary),
         }
     }
 
@@ -554,6 +583,17 @@ fn assess_criterion(
             }
             EvidenceCategory::Legacy => {
                 reasons.push("Legacy evidence — binding incomplete".into());
+                refs.push(e.id.clone());
+            }
+            // Screenshots never decide a status (15 §6.4): a bound one on this subject is
+            // listed for the human's review; anything else is illustrative.
+            EvidenceCategory::Browser => {
+                let bound = e.subject_id.as_deref() == Some(subject.id.as_str());
+                reasons.push(if bound {
+                    "Screenshot of this revision available for your review (not a pass)".into()
+                } else {
+                    "Screenshot is illustrative (build not verified); not evidence".into()
+                });
                 refs.push(e.id.clone());
             }
             _ => {}
@@ -1421,6 +1461,72 @@ mod tests {
             CriterionStatus::NeedsJudgment
         );
         assert!(a.explanation[0].starts_with("Ready for your review"));
+    }
+
+    #[test]
+    fn screenshots_never_satisfy_checks_or_pass_human_criteria() {
+        // 15 §6.4 / §12 "Browser still serves an old build": screenshots illustrate.
+        let s = subject("abc");
+        let mut ev = vec![verify("e1", REDIRECT, &s, EvidenceOutcome::Passed)];
+        // Even a "passed" browser item pointed at a check definition and the subject.
+        let mut forged = Evidence::from_screenshot(
+            "shot-illustrative",
+            None,
+            vec!["sso".into()],
+            2,
+            "illustrative".into(),
+        );
+        forged.check_definition_id = Some(SSO.into());
+        forged.definition_digest = Some(DIG.into());
+        forged.environment_digest = Some(ENV.into());
+        forged.outcome = EvidenceOutcome::Passed;
+        ev.push(forged.clone());
+        let mut bound_forged = forged.clone();
+        bound_forged.id = "shot-bound-check".into();
+        bound_forged.subject_id = Some(s.id.clone());
+        ev.push(bound_forged);
+        // A bound screenshot linked to the human criterion.
+        ev.push(Evidence::from_screenshot(
+            "shot-bound",
+            Some(&s.id),
+            vec!["judge".into()],
+            3,
+            "bound".into(),
+        ));
+        let a = assess(Some(&intent()), Some(&s), &ev, &live(), true);
+        let sso = a.criterion("sso").unwrap();
+        assert_eq!(sso.status, CriterionStatus::Missing, "{sso:#?}");
+        assert!(sso.supporting_checks.is_empty());
+        assert!(sso.reasons.iter().any(|r| r.contains("illustrative")));
+        let judge = a.criterion("judge").unwrap();
+        assert_eq!(judge.status, CriterionStatus::NeedsJudgment);
+        assert!(judge.evidence_refs.contains(&"shot-bound".to_string()));
+        assert!(
+            judge
+                .reasons
+                .iter()
+                .any(|r| r.contains("available for your review"))
+        );
+        assert_ne!(a.label, ReadinessLabel::ReadyForReview);
+        // An explicit human review still decides the human criterion.
+        ev.push(Evidence {
+            id: "hr".into(),
+            category: EvidenceCategory::HumanReview,
+            outcome: EvidenceOutcome::Passed,
+            check_definition_id: None,
+            definition_digest: None,
+            environment_digest: None,
+            subject_id: Some(s.id.clone()),
+            criterion_ids: vec!["judge".into()],
+            actor: Some(Actor::user("demo")),
+            observed_at_ms: 4,
+            summary: None,
+        });
+        let a = assess(Some(&intent()), Some(&s), &ev, &live(), true);
+        assert_eq!(
+            a.criterion("judge").unwrap().status,
+            CriterionStatus::Supported
+        );
     }
 
     #[test]

@@ -94,8 +94,14 @@ impl Warning {
 }
 
 /// Top-level sections owned by other crates; preserved in `Config::extra`.
-pub const EXTERNAL_SECTIONS: &[&str] =
-    &["collision", "isolation", "preview", "security", "plugins"];
+pub const EXTERNAL_SECTIONS: &[&str] = &[
+    "collision",
+    "isolation",
+    "preview",
+    "screenshots",
+    "security",
+    "plugins",
+];
 
 const BUILTIN_SEGMENTS: &[&str] = &[
     "machine",

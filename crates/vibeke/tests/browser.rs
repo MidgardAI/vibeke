@@ -535,3 +535,255 @@ fn headless_browser_filters_destinations_with_real_chromium() {
     assert!(!app.seen.lock().unwrap().is_empty());
     assert!(secret.seen.lock().unwrap().is_empty());
 }
+
+// ---- Goal 03 Stage 4: screenshots as evidence ----------------------------------------------
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn temp_repo(s: &Session) -> std::path::PathBuf {
+    let repo = s.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("index.html"), "<h1>blue</h1>\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    repo
+}
+
+#[test]
+fn screenshot_cli_code_state_and_api_without_a_browser() {
+    let s = Session::new("");
+    let repo = temp_repo(&s);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    // `vibeke screenshot code-state` runs locally (no server needed).
+    let out = s
+        .cmd(&["screenshot", "code-state", repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let c: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(c["head_sha"], head);
+    assert_eq!(c["dirty_state"], "clean");
+    assert_eq!(c["dirty_digest"], Value::Null);
+    std::fs::write(repo.join("index.html"), "<h1>red</h1>\n").unwrap();
+    let out = s
+        .cmd(&["screenshot", "code-state", repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let c: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(c["dirty_state"], "dirty");
+    assert!(c["dirty_digest"].as_str().unwrap().len() == 64);
+    let out = s
+        .cmd(&[
+            "screenshot",
+            "code-state",
+            s.path().join("nope").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    // API against a real server.
+    let l = s.json(&["screenshot", "list"]);
+    assert_eq!(l["count"], 0);
+    let e = s.try_json(&["screenshot", "get", "s9"]).unwrap_err();
+    assert_eq!(e["error"]["kind"], "not_found");
+    let e = s.try_json(&["browser", "diff", "s1", "s2"]).unwrap_err();
+    assert_eq!(e["error"]["kind"], "not_found");
+    let methods = s.json(&["api", "methods"]);
+    for m in [
+        "screenshot.list",
+        "screenshot.get",
+        "screenshot.delete",
+        "browser.diff",
+    ] {
+        assert!(
+            methods["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["name"] == m),
+            "{m}"
+        );
+    }
+}
+
+#[test]
+fn screenshots_carry_environment_code_state_and_binding_with_real_chromium() {
+    if !browser_tests() {
+        eprintln!("skipped: set VIBEKE_BROWSER_TESTS=1");
+        return;
+    }
+    let Some(shell) = playwright_shell() else {
+        eprintln!("skipped: no Playwright chrome-headless-shell on disk");
+        return;
+    };
+    let s = Session::new(&format!(
+        "[preview]\nbrowser_path = \"{shell}\"\nbrowser_idle = \"30s\"\nbrowser_external = \"deny\"\n"
+    ));
+    let repo = temp_repo(&s);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    // The app was "built" from this checkout: its dev script serves the code state.
+    let out = s
+        .cmd(&["screenshot", "code-state", repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let build = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    let app = http_server(
+        vec![
+            (
+                "/",
+                "<html><head><title>Blue</title></head><body style='background:#00f'><h1>Blue</h1></body></html>".into(),
+            ),
+            (
+                "/red",
+                "<html><head><title>Red</title></head><body style='background:#f00'><h1>Red</h1></body></html>".into(),
+            ),
+            ("/__vibeke_build", build),
+        ],
+        None,
+    );
+    let pane = s.json(&["workspace", "create", "--cwd", repo.to_str().unwrap()])["root_pane"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.json(&[
+        "preview",
+        "declare",
+        &app.port.to_string(),
+        "--pane",
+        &pane,
+        "--label",
+        "app",
+    ]);
+    let open = s.json(&["browser", "open", "v1", "--viewport", "640x400"]);
+    let sid = open["session"].as_str().unwrap().to_string();
+    assert_eq!(open["status"], 200, "{open}");
+
+    let shot = s.json(&["browser", "screenshot", &sid]);
+    let m = &shot["meta"];
+    assert_eq!(shot["handle"], "s1");
+    assert_eq!(m["environment"]["kind"], "remote_headless");
+    assert_eq!(m["environment"]["fresh_context"], true);
+    assert_eq!(m["environment"]["viewport"]["width"], 640);
+    assert!(
+        m["environment"]["browser"]
+            .as_str()
+            .unwrap()
+            .contains("HeadlessChrome")
+    );
+    assert!(m["environment"]["browser_version"].is_string());
+    assert!(
+        m["label"]
+            .as_str()
+            .unwrap()
+            .contains("headless · fresh context")
+    );
+    assert_eq!(m["preview"], "v1");
+    assert_eq!(m["title"], "Blue");
+    assert!(
+        m["final_url"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("http://localhost:{}/", app.port))
+    );
+    assert_eq!(m["code"]["head_sha"], head, "{m:#}");
+    assert_eq!(m["code"]["dirty_state"], "clean");
+    assert_eq!(m["runtime"]["status"], "known", "{m:#}");
+    assert_eq!(m["runtime"]["source"], "probe");
+    assert_eq!(m["binding"], "bound", "{m:#}");
+    assert!(
+        app.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("GET /__vibeke_build"))
+    );
+
+    // The checkout moves on while the server still serves the old build → illustrative.
+    std::fs::write(repo.join("index.html"), "<h1>red</h1>\n").unwrap();
+    git(&repo, &["commit", "-qam", "red"]);
+    s.json(&["browser", "navigate", &sid, "/red"]);
+    let shot2 = s.json(&["browser", "screenshot", &sid]);
+    assert_eq!(shot2["meta"]["binding"], "illustrative");
+    assert!(
+        shot2["meta"]["binding_reason"]
+            .as_str()
+            .unwrap()
+            .contains("Running build is"),
+        "{:#}",
+        shot2["meta"]
+    );
+    let ev = s.events("screenshot.captured");
+    assert_eq!(ev.len(), 2, "{ev:#?}");
+    assert_eq!(ev[0]["data"]["binding"], "bound");
+
+    // List/get/open.
+    let l = s.json(&["screenshot", "list", "--preview", "v1"]);
+    assert_eq!(l["count"], 2);
+    assert_eq!(l["screenshots"][0]["handle"], "s2");
+    let g = s.json(&["screenshot", "get", "s1"]);
+    assert_eq!(g["binding"], "bound");
+    assert!(Path::new(g["path_on_machine"].as_str().unwrap()).is_file());
+    let out = s
+        .cmd(&["--json", "screenshot", "open", "s1"])
+        .env("VIBEKE_NO_OPEN", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let o: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(o["opened"], false);
+    assert_eq!(
+        &std::fs::read(o["out"].as_str().unwrap()).unwrap()[..8],
+        b"\x89PNG\r\n\x1a\n"
+    );
+
+    // Visual diff blue → red: everything changed except maybe nothing; diff image written.
+    let diff_out = s.path().join("diff.png");
+    let d = s.json(&[
+        "browser",
+        "diff",
+        "s1",
+        "s2",
+        "--out",
+        diff_out.to_str().unwrap(),
+    ]);
+    assert!(d["changed_ratio"].as_f64().unwrap() > 0.5, "{d:#}");
+    assert_eq!(d["width"], 640);
+    assert!(!d["regions"].as_array().unwrap().is_empty());
+    assert_eq!(
+        &std::fs::read(&diff_out).unwrap()[..8],
+        b"\x89PNG\r\n\x1a\n"
+    );
+    // MCP browser_diff returns the diff image.
+    let mut mcp = Mcp::start(&s);
+    mcp.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+    let r = mcp.tool("browser_diff", json!({"a": "s1", "b": "s1"}));
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(r["content"][0]["type"], "image", "{r}");
+    assert!(
+        r["content"][1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"changed_pixels\": 0")
+    );
+    s.json(&["browser", "close", &sid]);
+}
