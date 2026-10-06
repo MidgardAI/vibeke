@@ -10,6 +10,7 @@ import type { AgentRun } from '@vibeke/core';
 import { useApp, usePrefs } from '../../app/hooks';
 import { Button, HarnessIcon, IconButton, Notice, Sheet, cx } from '../../components/ui';
 import { MenuButton } from '../workspace/menu';
+import { useMediaQuery } from '../../app/shell';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { base64Std } from '../../lib/format';
@@ -53,6 +54,7 @@ export function Composer({
   onSent?: () => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
+  const roomy = useMediaQuery('(min-width: 640px)');
   const app = useApp();
   const prefs = usePrefs();
   const [cleared, setCleared] = useState<string | null>(null);
@@ -254,7 +256,7 @@ export function Composer({
                 void send();
               }
             }}
-            placeholder={isAgent ? t.composer2.placeholder : t.composer2.placeholderShell}
+            placeholder={isAgent ? (roomy ? t.composer2.placeholder : t.composer2.placeholderShort) : t.composer2.placeholderShell}
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}

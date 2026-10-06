@@ -45,7 +45,18 @@ const LONG_USER = 600;
 
 /** What changes on the run when a turn starts / ends or its state moves (drives a refetch). */
 export const runRevision = (run: AgentRun): string =>
-  [run.id, run.execution.value, run.execution.since_ms, run.turns_completed, run.done_rev, run.last_tool ?? '', run.last_message ?? ''].join('|');
+  [
+    run.id,
+    run.execution.value,
+    run.execution.since_ms,
+    run.turns_completed,
+    run.done_rev,
+    run.last_tool ?? '',
+    run.last_message ?? '',
+    // The transcript file becomes known (SessionStart) after the run first shows up.
+    run.transcript_path ?? '',
+    run.harness_session_id ?? '',
+  ].join('|');
 
 const isUnsupported = (e: unknown): boolean =>
   e instanceof RpcError && (e.kind === 'unsupported' || e.kind === 'not_found' || /no transcript/i.test(e.message));
@@ -177,10 +188,27 @@ export function Conversation({
     if (atBottom && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [tail]);
 
+  // Following the stream: stay at the bottom when the content or the window changes size.
+  const atBottomRef = useRef(true);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = listRef.current;
+    const inner = contentRef.current;
+    if (!el || !inner || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (atBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [phase]);
+
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
-    setAtBottom(nearBottom());
+    const bottom = nearBottom();
+    atBottomRef.current = bottom;
+    setAtBottom(bottom);
     if (el.scrollTop < 160 && trRef.current.nextBefore !== null && !olderBusy && phase === 'ready') void loadOlder();
   };
 
@@ -219,7 +247,7 @@ export function Conversation({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={listRef} onScroll={onScroll} className="vk-scroll min-h-0 flex-1 overflow-y-auto" role="log" aria-label={t.conv.label} aria-busy={phase === 'loading'}>
-        <div className="mx-auto w-full max-w-[780px] px-4 pb-6 pt-3 sm:px-6">
+        <div ref={contentRef} className="mx-auto w-full max-w-[780px] px-4 pb-6 pt-3 sm:px-6">
           <div className="flex h-8 items-center justify-center text-xs text-faint">
             {olderBusy ? (
               <span className="inline-flex items-center gap-1.5">
@@ -289,11 +317,11 @@ const TurnView = memo(
       <section
         id={`turn-${turn.n}`}
         data-turn={turn.n}
-        className={cx('space-y-3 py-2', !latest && '[contain-intrinsic-size:auto_320px] [content-visibility:auto]')}
+        className={cx('flex flex-col gap-3 py-2', !latest && '[contain-intrinsic-size:auto_320px] [content-visibility:auto]')}
       >
         {groups.map((g) =>
           Array.isArray(g) ? (
-            <div key={g[0]!.key} className="-my-0.5">
+            <div key={g[0]!.key}>
               {g.map((b) => (
                 <StepView key={b.key} block={b} cwd={cwd} pending={working && b.key === lastStepKey} />
               ))}

@@ -131,8 +131,13 @@ test('connect to this Mac, keyboard approvals, palette, popover, pane window', a
   // Pop the pane out: bound to its pane (no previous/next), no Lock without a resume path.
   await workspaces.first().click();
   await expect(page).toHaveURL(/#\/w\/[^/]+\/[^/?]+/);
-  await page.getByRole('button', { name: 'Open this pane in a new window' }).click();
+  await page.getByRole('button', { name: 'Workspace options' }).click();
+  await page.getByRole('menuitem', { name: 'Open this pane in a new window' }).click();
   const paneWin = await app.waitForEvent('window', { predicate: (p) => p.url().includes('surface=pane'), timeout: 15_000 });
+  // Locked to the pane: its agent and terminal tabs only, no + menu; the terminal shows the hook.
+  await expect(paneWin.getByRole('button', { name: 'New tab' })).toHaveCount(0);
+  const termTab = paneWin.getByRole('tab', { name: 'Terminal' });
+  if (await termTab.count()) await termTab.click();
   await expect(paneWin.getByText('HOOK-DONE').first()).toBeVisible({ timeout: 20_000 });
   await expect(paneWin.getByRole('button', { name: /^(Previous|Next) pane$/ })).toHaveCount(0);
   await shoot(app, paneWin, 'pane-window');

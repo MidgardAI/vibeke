@@ -653,6 +653,7 @@ export const en = {
 
   composer2: {
     placeholder: 'Message the agent, tag @files, or use /commands',
+    placeholderShort: 'Message, @files, /commands',
     placeholderShell: 'Type a command for the terminal',
     attach: 'Add attachment',
     more: 'Keys and quick replies',
