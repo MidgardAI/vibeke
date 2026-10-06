@@ -232,6 +232,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("task.finish", true),
     ("task.review.candidates", false),
     ("task.review.get", false),
+    ("task.review.diff", false),
     ("task.review.accept", true),
     ("task.check.list", false),
     ("task.check.authorize", true),

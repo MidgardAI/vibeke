@@ -52,6 +52,11 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE vt_snapshots ADD COLUMN holder_incarnation TEXT;
     "#,
+    // 3: per-task lookups of task-scoped entities (check runs, grants, end candidates…)
+    // without loading a kind's whole history (15 §11).
+    r#"
+    CREATE INDEX entities_task ON entities(kind, json_extract(json, '$.task'));
+    "#,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -541,6 +546,40 @@ impl Store {
         })
     }
 
+    /// Every entity of `kind` (open and closed) whose JSON `task` field equals `task`, in
+    /// insertion order. Uses the `entities_task` expression index.
+    pub fn load_by_task<T: DeserializeOwned>(&self, kind: &str, task: &str) -> Result<Vec<T>> {
+        let mut st = self.conn.prepare(
+            "SELECT json FROM entities WHERE kind=?1 AND json_extract(json, '$.task')=?2 ORDER BY rowid",
+        )?;
+        let rows = st.query_map(params![kind, task], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(serde_json::from_str(&r?)?);
+        }
+        Ok(out)
+    }
+
+    /// Every entity of `kind` (open and closed) whose JSON value at `path` (e.g.
+    /// `$.acceptance.task_id`) equals `value`, in insertion order. Filters inside SQLite, so
+    /// only matching rows are decoded; not indexed beyond `kind`.
+    pub fn load_by_field<T: DeserializeOwned>(
+        &self,
+        kind: &str,
+        path: &str,
+        value: &str,
+    ) -> Result<Vec<T>> {
+        let mut st = self.conn.prepare(
+            "SELECT json FROM entities WHERE kind=?1 AND json_extract(json, ?2)=?3 ORDER BY rowid",
+        )?;
+        let rows = st.query_map(params![kind, path, value], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(serde_json::from_str(&r?)?);
+        }
+        Ok(out)
+    }
+
     /// Closed (ended) entities of a kind, newest first.
     pub fn load_closed<T: DeserializeOwned>(&self, kind: &str, limit: usize) -> Result<Vec<T>> {
         let mut st = self.conn.prepare("SELECT json FROM entities WHERE kind=?1 AND closed=1 ORDER BY updated_at DESC LIMIT ?2")?;
@@ -805,6 +844,37 @@ mod tests {
         let s = Store::open(&d.path().join("s/state.db")).unwrap();
         assert_eq!(s.session_uuid, uuid);
         assert_eq!(s.last_seq().unwrap(), 3);
+    }
+
+    #[test]
+    fn per_task_and_field_lookups_cover_open_and_closed_history() {
+        let mut s = Store::open_in_memory().unwrap();
+        let mut m = Mutation::new();
+        // Lots of unrelated closed history must not hide a task's older records.
+        m.close("check_run", "old-a", None, &json!({"task": "A", "n": 0}));
+        for i in 0..50 {
+            m.close("check_run", &format!("b{i}"), None, &json!({"task": "B"}));
+        }
+        m.put("check_run", "new-a", None, &json!({"task": "A", "n": 1}));
+        m.put("acc", "x", None, &json!({"acceptance": {"task_id": "A"}}));
+        m.put("acc", "y", None, &json!({"acceptance": {"task_id": "B"}}));
+        s.commit(m).unwrap();
+        let a: Vec<Value> = s.load_by_task("check_run", "A").unwrap();
+        assert_eq!(
+            a.iter().map(|v| v["n"].clone()).collect::<Vec<_>>(),
+            vec![json!(0), json!(1)]
+        );
+        let acc: Vec<Value> = s.load_by_field("acc", "$.acceptance.task_id", "A").unwrap();
+        assert_eq!(acc.len(), 1);
+        let plan: String = s
+            .conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT json FROM entities WHERE kind='check_run' AND json_extract(json, '$.task')='A'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("entities_task"), "{plan}");
     }
 
     #[test]

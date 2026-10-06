@@ -182,8 +182,9 @@ pub struct LiveState {
     /// Current digest of each defined check (check id → digest).
     #[serde(default)]
     pub check_definition_digests: BTreeMap<String, String>,
-    /// Current environment digest per check, when known. If present, evidence from another
-    /// environment is stale; if absent, environment does not constrain freshness.
+    /// Current environment digest per check. Evidence from another environment is stale; a
+    /// check without an entry has unknown environment identity, so its evidence has unknown
+    /// freshness (never "unconstrained").
     #[serde(default)]
     pub current_environment_digests: BTreeMap<String, String>,
     /// Checks whose current environment identity is explicitly unavailable: their evidence
@@ -386,7 +387,9 @@ fn assess_check_definition(
         .collect();
     let current_digest = live.check_definition_digests.get(def_id);
     let current_env = live.current_environment_digests.get(def_id);
-    let env_unavailable = live.environment_unavailable.contains(def_id);
+    // §7: unavailable environment identity yields unknown freshness. A missing current
+    // identity is unknown, never "unconstrained".
+    let env_unavailable = live.environment_unavailable.contains(def_id) || current_env.is_none();
 
     let on_subject: Vec<&Evidence> = ev
         .iter()
@@ -398,7 +401,7 @@ fn assess_check_definition(
             current_digest.is_some()
                 && !env_unavailable
                 && e.definition_digest.as_ref() == current_digest
-                && current_env.is_none_or(|env| e.environment_digest.as_ref() == Some(env))
+                && current_env.is_some_and(|env| e.environment_digest.as_ref() == Some(env))
         });
 
     // History: failures on other subjects stay visible but don't fail this revision.
@@ -1169,7 +1172,8 @@ pub struct FreshnessState {
     pub subject_id: Option<String>,
     #[serde(default)]
     pub check_definition_digests: BTreeMap<String, String>,
-    /// Current environment digest per check; a missing entry does not constrain freshness.
+    /// Current environment digest per check; a missing entry means unknown identity
+    /// (→ `environment_unknown` for an acceptance that relied on that check).
     #[serde(default)]
     pub environment_digests: BTreeMap<String, String>,
     /// Checks whose environment identity is unavailable (→ `environment_unknown`).
@@ -1256,14 +1260,16 @@ pub fn outdated_reasons(
                 check_id: k.check_definition_id.clone(),
             });
         }
-        if current
-            .environment_unavailable
-            .contains(&k.check_definition_id)
+        let cur_env = current.environment_digests.get(&k.check_definition_id);
+        if cur_env.is_none()
+            || current
+                .environment_unavailable
+                .contains(&k.check_definition_id)
         {
             out.push(OutdatedReason::EnvironmentUnknown {
                 check_id: k.check_definition_id.clone(),
             });
-        } else if let Some(cur) = current.environment_digests.get(&k.check_definition_id)
+        } else if let Some(cur) = cur_env
             && k.environment_digest.as_ref() != Some(cur)
         {
             out.push(OutdatedReason::EnvironmentChanged {
@@ -1360,6 +1366,11 @@ mod tests {
             check_definition_digests: [
                 (REDIRECT.to_string(), DIG.to_string()),
                 (SSO.to_string(), DIG.to_string()),
+            ]
+            .into(),
+            current_environment_digests: [
+                (REDIRECT.to_string(), ENV.to_string()),
+                (SSO.to_string(), ENV.to_string()),
             ]
             .into(),
             ..Default::default()
@@ -1531,8 +1542,18 @@ mod tests {
         let mut other_env = verify("e3", REDIRECT, &s, EvidenceOutcome::Failed);
         other_env.environment_digest = Some("env-linux".into());
         ev.push(other_env);
+        // The current environment is env-1: a failure from another environment is neither a
+        // flake of nor a pass for this one.
         let a = assess(Some(&intent()), Some(&s), &ev, &live(), true);
-        // Failure in another environment is a real failure, not a flake.
+        assert_eq!(
+            a.criterion("return").unwrap().status,
+            CriterionStatus::Supported
+        );
+        // When that other environment is the current one, its failure is a real failure.
+        let mut l = live();
+        l.current_environment_digests
+            .insert(REDIRECT.into(), "env-linux".into());
+        let a = assess(Some(&intent()), Some(&s), &ev, &l, true);
         assert_eq!(
             a.criterion("return").unwrap().status,
             CriterionStatus::Failed
@@ -1544,6 +1565,30 @@ mod tests {
             .insert(SSO.into(), "env-2".into());
         let a = assess(Some(&intent()), Some(&s), &all_pass(&s), &l, true);
         assert_eq!(a.criterion("sso").unwrap().status, CriterionStatus::Stale);
+    }
+
+    #[test]
+    fn missing_current_environment_identity_is_unknown_not_fresh() {
+        let s = subject("abc");
+        let mut l = live();
+        l.current_environment_digests.remove(SSO);
+        let a = assess(Some(&intent()), Some(&s), &all_pass(&s), &l, true);
+        let sso = a.criterion("sso").unwrap();
+        assert_eq!(sso.status, CriterionStatus::Unknown, "{sso:?}");
+        assert!(sso.reasons.iter().any(|r| r.contains("freshness unknown")));
+        assert_ne!(a.label, ReadinessLabel::ReadyForReview);
+        // An acceptance that relied on that check has unknown freshness, too.
+        let i = intent();
+        let a = assess(Some(&i), Some(&s), &all_pass(&s), &live(), true);
+        let acc = accept(&req(&s, vec![]), &snap(&i, &s, &a), 1).unwrap();
+        let mut f = FreshnessState::from_live(&i, Some(&s), &live());
+        f.environment_digests.remove(SSO);
+        assert_eq!(
+            outdated_reasons(&acc, &f),
+            vec![OutdatedReason::EnvironmentUnknown {
+                check_id: SSO.into()
+            }]
+        );
     }
 
     #[test]
@@ -1592,6 +1637,8 @@ mod tests {
             .push(criterion("lint", Evaluation::Check, &["lint"], false));
         let mut l = live();
         l.check_definition_digests.insert("lint".into(), DIG.into());
+        l.current_environment_digests
+            .insert("lint".into(), ENV.into());
         let mut ev = all_pass(&s);
         ev.push(verify("lint1", "lint", &s, EvidenceOutcome::Failed));
         let a = assess(Some(&i), Some(&s), &ev, &l, true);

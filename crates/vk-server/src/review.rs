@@ -16,19 +16,26 @@
 //!   turns, with per-user seen/snooze/pin preferences.
 //!
 //! Git work and check execution never run under the core lock or on the render path: API
-//! handlers use `spawn_blocking`, hooks spawn threads.
+//! handlers use `spawn_blocking`; background refreshes go through one bounded, coalescing
+//! queue (at most [`MAX_REFRESH_WORKERS`] threads, one refresh per task at a time).
+//!
+//! Reads are authorized before retrieval (15 §11): pane-token callers only see tasks, checks
+//! and attention items of their pane's workspace.
+
+pub mod receipts;
 
 use crate::Server;
 use crate::api::{Ctx, R, err, internal, invalid, not_found, req, s, u};
-use crate::core::Tx;
+use crate::core::{Core, Tx};
 use crate::tracking::{self, MessageState};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 use vk_proto::model::*;
 use vk_proto::rpc::{ErrorKind, RpcError};
 use vk_review::attention::{self as att, AttentionItem, AttentionKind, Effort, ItemKey};
@@ -55,6 +62,11 @@ const K_PREF: &str = "attention_pref";
 
 /// Default check timeout when a recipe does not set one.
 const DEFAULT_CHECK_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+/// Background review refreshes run on at most this many threads (15 §11 bounded queues).
+pub const MAX_REFRESH_WORKERS: usize = 2;
+/// `task.review.diff` default and maximum response sizes.
+const DIFF_DEFAULT_BYTES: usize = 256 * 1024;
+const DIFF_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 // ---- records ------------------------------------------------------------------------------------
 
@@ -107,6 +119,10 @@ pub struct Projection {
     pub failed_checks: Vec<FailedCheck>,
     pub explanation: Option<String>,
     pub updated_at_ms: i64,
+    /// Token of the live state (runs, writers, interactions, sends, switches) the label was
+    /// computed under. A reader whose current token differs must not show a cached Ready.
+    #[serde(default)]
+    pub live_token: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,16 +171,144 @@ fn cancels() -> &'static Mutex<HashMap<String, checks::CancelToken>> {
     M.get_or_init(Default::default)
 }
 
-/// Tasks with a refresh running → whether another refresh was requested meanwhile.
-fn refreshing() -> &'static Mutex<HashMap<String, bool>> {
-    static M: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    M.get_or_init(Default::default)
+/// Every record of a task-scoped kind (`task` field) for one task: open and closed, no global
+/// history limit (15 §11; indexed lookup).
+fn by_task<T: DeserializeOwned>(c: &Core, kind: &str, task: &str) -> Vec<T> {
+    c.store.load_by_task(kind, task).unwrap_or_default()
 }
 
-fn load_all<T: DeserializeOwned>(c: &crate::core::Core, kind: &str) -> Vec<T> {
-    let mut v: Vec<T> = c.store.load(kind).unwrap_or_default();
-    v.extend(c.store.load_closed(kind, 5000).unwrap_or_default());
+fn acceptances_of(c: &Core, task: &str) -> Vec<AcceptanceRec> {
+    c.store
+        .load_by_field(K_ACCEPT, "$.acceptance.task_id", task)
+        .unwrap_or_default()
+}
+
+fn bindings_of(c: &Core, task: &str) -> Vec<TaskRunBinding> {
+    let mut v: Vec<TaskRunBinding> = c
+        .store
+        .load_by_field(tracking::K_BINDING, "$.task_id", task)
+        .unwrap_or_default();
+    v.sort_by_key(|b| b.created_at_ms);
     v
+}
+
+// ---- bounded, coalescing refresh queue (15 §11) ---------------------------------------------
+
+struct RefreshJob {
+    server: Weak<Server>,
+    task: String,
+    not_before: Instant,
+}
+
+#[derive(Default)]
+struct RefreshQueue {
+    jobs: VecDeque<RefreshJob>,
+    queued: HashSet<String>,
+    running: HashSet<String>,
+    /// Tasks asked to refresh again while their refresh was running.
+    again: HashMap<String, Weak<Server>>,
+    workers: usize,
+}
+
+fn refresh_queue() -> &'static (Mutex<RefreshQueue>, Condvar) {
+    static Q: OnceLock<(Mutex<RefreshQueue>, Condvar)> = OnceLock::new();
+    Q.get_or_init(Default::default)
+}
+
+/// Queue a refresh of `task` after `delay`. At most one refresh per task runs at a time; a
+/// request while it runs coalesces into one follow-up; requests for an already queued task
+/// are dropped. Never spawns more than [`MAX_REFRESH_WORKERS`] threads.
+fn enqueue_refresh(server: &Arc<Server>, task: &str, delay: Duration) {
+    let (m, cv) = refresh_queue();
+    let mut q = m.lock().unwrap();
+    if q.running.contains(task) {
+        q.again.insert(task.to_string(), Arc::downgrade(server));
+        return;
+    }
+    if !q.queued.insert(task.to_string()) {
+        return;
+    }
+    q.jobs.push_back(RefreshJob {
+        server: Arc::downgrade(server),
+        task: task.to_string(),
+        not_before: Instant::now() + delay,
+    });
+    if q.workers < MAX_REFRESH_WORKERS {
+        q.workers += 1;
+        let spawned = std::thread::Builder::new()
+            .name("vk-review-refresh".into())
+            .spawn(refresh_worker);
+        if spawned.is_err() {
+            q.workers -= 1;
+        }
+    }
+    cv.notify_one();
+}
+
+fn refresh_worker() {
+    let (m, cv) = refresh_queue();
+    loop {
+        let job = {
+            let mut q = m.lock().unwrap();
+            loop {
+                let now = Instant::now();
+                if let Some(i) = q.jobs.iter().position(|j| j.not_before <= now) {
+                    let job = q.jobs.remove(i).expect("position is valid");
+                    q.queued.remove(&job.task);
+                    q.running.insert(job.task.clone());
+                    break job;
+                }
+                let wait = q
+                    .jobs
+                    .iter()
+                    .map(|j| j.not_before.saturating_duration_since(now))
+                    .min();
+                match wait {
+                    Some(w) => q = cv.wait_timeout(q, w).unwrap().0,
+                    None => {
+                        let (g, to) = cv.wait_timeout(q, Duration::from_secs(10)).unwrap();
+                        q = g;
+                        if to.timed_out() && q.jobs.is_empty() {
+                            q.workers -= 1;
+                            return;
+                        }
+                    }
+                }
+            }
+        };
+        if let Some(srv) = job.server.upgrade() {
+            let task = job.task.clone();
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(pkg) = build_package(&srv, &task, None) {
+                    persist(&srv, &pkg);
+                    ensure_watcher(&srv);
+                }
+            }));
+        }
+        let mut q = m.lock().unwrap();
+        q.running.remove(&job.task);
+        if let Some(w) = q.again.remove(&job.task)
+            && q.queued.insert(job.task.clone())
+        {
+            q.jobs.push_back(RefreshJob {
+                server: w,
+                task: job.task,
+                not_before: Instant::now(),
+            });
+            cv.notify_one();
+        }
+    }
+}
+
+/// Test/diagnostic: whether any refresh is queued or running for `task`.
+pub fn refresh_pending(task: &str) -> bool {
+    let q = refresh_queue().0.lock().unwrap();
+    q.queued.contains(task) || q.running.contains(task) || q.again.contains_key(task)
+}
+
+/// Test/diagnostic: how many refresh worker threads exist right now.
+pub fn refresh_workers() -> usize {
+    refresh_queue().0.lock().unwrap().workers
 }
 
 async fn blocking<T: Send + 'static>(
@@ -412,9 +556,23 @@ fn checkout_of(task: &Task) -> Option<PathBuf> {
     p.is_dir().then_some(p)
 }
 
+/// The workspace's default branch for review-base proposals (15 §5): `origin/HEAD`'s branch,
+/// else a local `main`/`master`. Locally resolvable only; never fetches.
+pub fn default_branch(path: &Path) -> Option<String> {
+    subject::default_branch(path)
+}
+
 /// The proposed review base (15 §5): the base recorded at tracking time, the owned task's
-/// resolved base, or the merge-base/HEAD fallback.
+/// resolved base, the merge-base with the workspace default branch, or the HEAD fallback.
+/// A recorded HEAD fallback is replaced by the default-branch merge-base when the checkout is
+/// on another branch (otherwise tracking already-committed work yields no candidate).
 fn base_for(server: &Server, task: &Task, path: &Path) -> (Option<String>, Value) {
+    let default = default_branch(path);
+    let off_default = || {
+        default
+            .as_deref()
+            .is_some_and(|d| subject::current_branch(path).as_deref() != Some(d))
+    };
     let stored = tracking::baseline_of(server, &task.id);
     if let Some(b) = stored
         .as_ref()
@@ -423,24 +581,38 @@ fn base_for(server: &Server, task: &Task, path: &Path) -> (Option<String>, Value
         && let Some(sha) = b.get("base_sha").and_then(Value::as_str)
         && subject::rev_parse(path, sha).is_ok()
     {
+        let head_fallback = b["reason"]["kind"] == "head_fallback";
+        if !(head_fallback && off_default()) {
+            return (Some(sha.to_string()), b.clone());
+        }
+        if let Ok(p) = subject::propose_review_base(path, None, None, default.as_deref())
+            && matches!(p.reason, subject::BaseReason::MergeBaseWithDefault { .. })
+        {
+            return (Some(p.base_sha.clone()), json!(p));
+        }
         return (Some(sha.to_string()), b.clone());
     }
     let owned = (task.ownership == TaskOwnership::Owned)
         .then_some(task.base_ref.as_deref())
         .flatten();
-    match subject::propose_review_base(path, owned, None, None) {
+    match subject::propose_review_base(path, owned, None, default.as_deref()) {
         Ok(p) => (Some(p.base_sha.clone()), json!(p)),
         Err(e) => (None, json!({"error": e.to_string()})),
     }
 }
 
+/// Only an **active** binding follows the checkout: a suspended binding (`/clear`, `/new`, a
+/// fork …) is not live for candidate purposes (15 §4.2).
+fn is_live(task: &Task, bs: &[TaskRunBinding]) -> bool {
+    bs.iter().any(|b| b.state == BindingState::Active)
+        || (bs.is_empty() && task.ownership == TaskOwnership::Owned)
+}
+
 fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> Candidates {
     let checkout = checkout_of(task);
-    let live = bs.iter().any(|b| b.state != BindingState::Closed)
-        || (bs.is_empty() && task.ownership == TaskOwnership::Owned);
+    let live = is_live(task, bs);
     let mut ends: Vec<(EndRec, Option<ChangeSubject>)> = server.with_core(|c| {
-        let mut v: Vec<EndRec> = load_all(c, K_END);
-        v.retain(|e| e.task == task.id);
+        let mut v: Vec<EndRec> = by_task(c, K_END, &task.id);
         v.sort_by_key(|e| e.at_ms);
         v.into_iter()
             .map(|e| {
@@ -465,11 +637,25 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
         warnings: vec![],
     };
     let Some(path) = checkout else {
-        out.warnings
-            .push("Checkout unavailable; only retained candidates can be inspected".into());
+        // Historically inspectable, not currently verifiable (15 §4.3/§7): the retained end
+        // candidate is shown, but sources can't be revalidated, so acceptance is unavailable.
+        out.warnings.push(
+            "Checkout unavailable; retained candidates are inspect only (sources cannot be verified)"
+                .into(),
+        );
         out.current = out.ends.iter().rev().find_map(|(_, s)| s.clone());
         return out;
     };
+    if !live
+        && let Some(b) = bs.iter().find(|b| {
+            b.state == BindingState::Suspended && !out.ends.iter().any(|(e, _)| e.binding == b.id)
+        })
+    {
+        out.warnings.push(format!(
+            "Conversation changed for binding {}: its end candidate was not pinned; choose a committed range explicitly",
+            b.id
+        ));
+    }
     let (base, review_base) = base_for(server, task, &path);
     out.base_sha = base.clone();
     out.review_base = review_base;
@@ -512,14 +698,19 @@ fn candidates_blocking(server: &Server, task: &Task, bs: &[TaskRunBinding]) -> C
     out
 }
 
-/// Pin the end-boundary candidate of a closed binding (15 §4.2), or record that there is none.
-pub fn pin_end(server: &Server, b: &TaskRunBinding) {
-    if server.with_core(|c| c.store.get::<Value>(K_END, &b.id).ok().flatten().is_some()) {
-        return;
+/// Pin the end-boundary candidate of a binding that just closed or was suspended (15 §4.2), or
+/// record that there is none — **synchronously**: the checkout's HEAD is read before this
+/// returns, so a commit made by the next task after the boundary cannot become this task's
+/// end candidate. Only cheap Git plumbing runs here (`rev-parse`, `merge-base`); the review
+/// package is rebuilt later by the refresh queue from the pinned SHA.
+///
+/// Idempotent per binding: an existing pin is returned unchanged. Call it right after the
+/// transaction that closed/suspended the binding has committed, without the core lock held.
+pub fn pin_end_candidate_sync(server: &Server, b: &TaskRunBinding) -> Option<EndRec> {
+    if let Some(e) = server.with_core(|c| c.store.get::<EndRec>(K_END, &b.id).ok().flatten()) {
+        return Some(e);
     }
-    let Ok(task) = tracking::find_task(server, &b.task_id) else {
-        return;
-    };
+    let task = tracking::find_task(server, &b.task_id).ok()?;
     let mut rec = EndRec {
         binding: b.id.clone(),
         task: task.id.clone(),
@@ -533,40 +724,36 @@ pub fn pin_end(server: &Server, b: &TaskRunBinding) {
     match checkout_of(&task) {
         None => rec.note = Some("No bound end candidate: checkout unavailable".into()),
         Some(path) => {
-            let (base, _) = base_for(server, &task, &path);
+            // HEAD first: this is the boundary.
             let head = subject::rev_parse(&path, "HEAD").ok();
-            let dirty = subject::observation_baseline(&path)
-                .map(|b| b.dirty_state)
-                .unwrap_or(DirtyState::Unknown);
+            let (base, _) = base_for(server, &task, &path);
             match (base, head) {
                 (Some(base), Some(head)) if base != head => {
                     match subject::capture_committed(&path, &base, &head) {
                         Ok(s) => {
                             rec.subject_id = Some(s.id.clone());
                             rec.head_sha = Some(s.head_sha.clone());
-                            if dirty != DirtyState::Clean {
-                                rec.note = Some(
-                                    "Uncommitted changes at close are not part of this candidate"
-                                        .into(),
-                                );
-                            }
                             subj = Some(s);
                         }
                         Err(e) => rec.note = Some(format!("No bound end candidate: {e}")),
                     }
                 }
+                (_, None) => {
+                    rec.note = Some("No bound end candidate: HEAD unavailable".into());
+                }
                 _ => {
-                    rec.note = Some(if dirty == DirtyState::Clean {
-                        "No bound end candidate: no commits since the review base".into()
-                    } else {
-                        "No bound end candidate: only uncommitted work; choose a committed range later"
-                            .into()
-                    })
+                    rec.note = Some(
+                        "No bound end candidate: no commits since the review base; uncommitted work can't be a candidate — choose a committed range later"
+                            .into(),
+                    )
                 }
             }
         }
     }
     let mut c = server.core.lock().unwrap();
+    if let Some(e) = c.store.get::<EndRec>(K_END, &b.id).ok().flatten() {
+        return Some(e);
+    }
     let mut tx = Tx::new();
     if let Some(s) = &subj {
         if c.store
@@ -600,27 +787,24 @@ pub fn pin_end(server: &Server, b: &TaskRunBinding) {
     tx.event(
         "review.end_candidate_pinned",
         json!({"task": task.id, "binding": b.id, "run": b.run_id}),
-        json!({"subject": rec.subject_id, "note": rec.note}),
+        json!({"subject": rec.subject_id, "head": rec.head_sha, "note": rec.note}),
     );
     let _ = server.commit(&mut c, tx);
+    Some(rec)
 }
 
-/// Hook: bindings closed (unbind / switch). Pins their end candidates off the state path.
+/// Hook: bindings closed (unbind / switch) or suspended (conversation boundary). Pins each end
+/// candidate synchronously (HEAD is read before this returns), then queues the expensive
+/// package refresh.
 pub fn on_bindings_closed(server: &Arc<Server>, closed: Vec<TaskRunBinding>) {
-    if closed.is_empty() {
-        return;
+    let mut tasks = BTreeSet::new();
+    for b in &closed {
+        pin_end_candidate_sync(server, b);
+        tasks.insert(b.task_id.clone());
     }
-    let srv = server.clone();
-    std::thread::spawn(move || {
-        let mut tasks = BTreeSet::new();
-        for b in &closed {
-            pin_end(&srv, b);
-            tasks.insert(b.task_id.clone());
-        }
-        for t in tasks {
-            spawn_refresh(&srv, &t);
-        }
-    });
+    for t in tasks {
+        spawn_refresh(server, &t);
+    }
 }
 
 /// Hook: a bound run's turn settled — a checkpoint for a changed candidate (15 §8.1).
@@ -634,46 +818,16 @@ pub fn on_turn_settled(server: &Arc<Server>, run: &str) {
             .map(|b| b.task_id)
             .collect()
     });
-    if tasks.is_empty() {
-        return;
-    }
     // The adapter applies the idle state right after reporting Stop; let it settle first.
-    let srv = server.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        for t in tasks {
-            spawn_refresh(&srv, &t);
-        }
-    });
+    for t in tasks {
+        enqueue_refresh(server, &t, Duration::from_millis(300));
+    }
 }
 
-/// Recompute a task's package off the state path and persist label/projection/invalidation.
-/// Coalesces concurrent requests for the same task.
+/// Recompute a task's package off the state path and persist label/projection/invalidation,
+/// through the bounded refresh queue (coalesced per task).
 pub fn spawn_refresh(server: &Arc<Server>, task: &str) {
-    {
-        let mut m = refreshing().lock().unwrap();
-        if let Some(again) = m.get_mut(task) {
-            *again = true;
-            return;
-        }
-        m.insert(task.to_string(), false);
-    }
-    let srv = server.clone();
-    let task = task.to_string();
-    std::thread::spawn(move || {
-        loop {
-            if let Ok(pkg) = build_package(&srv, &task, None) {
-                persist(&srv, &pkg);
-            }
-            let mut m = refreshing().lock().unwrap();
-            if m.get(&task) == Some(&true) {
-                m.insert(task.clone(), false);
-                continue;
-            }
-            m.remove(&task);
-            break;
-        }
-    });
+    enqueue_refresh(server, task, Duration::ZERO);
 }
 
 /// Recompute and persist a task's package synchronously (blocking; tests and tools).
@@ -767,53 +921,82 @@ fn activity(e: &Execution) -> RunActivity {
     }
 }
 
+/// The model/store facts live readiness depends on, snapshotted under one lock (no Git).
+struct LiveSnap {
+    runs: Vec<AgentRun>,
+    interactions: Vec<Interaction>,
+    panes: HashMap<String, Option<String>>,
+    /// Open task messages (any state; delivered/cancelled ones are closed rows).
+    messages: Vec<tracking::TaskMessage>,
+    /// Runs with a queued binding switch.
+    pending_runs: BTreeSet<String>,
+}
+
+fn live_snap(c: &Core) -> LiveSnap {
+    let runs = c.model.runs.clone();
+    let pending_runs = runs
+        .iter()
+        .filter(|r| {
+            c.store
+                .kv_get("tracking", &tracking::pending_key(&r.id))
+                .ok()
+                .flatten()
+                .is_some()
+        })
+        .map(|r| r.id.clone())
+        .collect();
+    LiveSnap {
+        interactions: c.model.interactions.clone(),
+        panes: c
+            .model
+            .panes
+            .iter()
+            .map(|p| (p.id.clone(), p.cwd.clone()))
+            .collect(),
+        messages: c
+            .store
+            .load::<tracking::TaskMessage>(tracking::K_MESSAGE)
+            .unwrap_or_default(),
+        pending_runs,
+        runs,
+    }
+}
+
 /// Live facts for readiness (15 §7): bound runs, other active writers in the same checkout,
-/// open interactions on bound runs, pending switches and unresolved deliveries.
-fn live_state(
-    server: &Server,
-    task: &Task,
+/// open interactions on bound runs, pending switches and unresolved deliveries — plus the
+/// token identifying exactly these facts (and the bound runs' turn counts). A cached label is
+/// only valid while the token is unchanged.
+fn live_from(
+    snap: &LiveSnap,
+    task_id: &str,
     bs: &[TaskRunBinding],
     checkout: Option<&Path>,
-) -> LiveState {
+) -> (LiveState, u64) {
     let active: Vec<&TaskRunBinding> = bs
         .iter()
         .filter(|b| b.state == BindingState::Active && b.role == BindingRole::Implementation)
         .collect();
-    let (runs, interactions, pending, panes) = server.with_core(|c| {
-        (
-            c.model.runs.clone(),
-            c.model.interactions.clone(),
-            active
-                .iter()
-                .filter(|b| {
-                    c.store
-                        .kv_get("tracking", &tracking::pending_key(&b.run_id))
-                        .ok()
-                        .flatten()
-                        .is_some()
-                })
-                .count(),
-            c.model
-                .panes
-                .iter()
-                .map(|p| (p.id.clone(), p.cwd.clone()))
-                .collect::<HashMap<_, _>>(),
-        )
-    });
     let bound: BTreeSet<&str> = active.iter().map(|b| b.run_id.as_str()).collect();
-    let bound_runs: Vec<BoundRun> = active
+    let mut h = blake3::Hasher::new();
+    let bound_runs: Vec<BoundRun> = bound
         .iter()
-        .map(|b| BoundRun {
-            run_id: b.run_id.clone(),
-            activity: runs
-                .iter()
-                .find(|r| r.id == b.run_id)
+        .map(|id| {
+            let r = snap.runs.iter().find(|r| r.id == *id);
+            let act = r
                 .map(|r| activity(&r.execution.value))
-                .unwrap_or(RunActivity::Exited),
+                .unwrap_or(RunActivity::Exited);
+            h.update(
+                format!("run {id} {act:?} {}\n", r.map_or(0, |r| r.turns_completed)).as_bytes(),
+            );
+            BoundRun {
+                run_id: id.to_string(),
+                activity: act,
+            }
         })
         .collect();
     let checkout = checkout.map(|p| canon(&p.to_string_lossy()));
-    let known_writers = runs
+    let mut known_writers: Vec<String> = snap
+        .runs
         .iter()
         .filter(|r| !bound.contains(r.id.as_str()) && r.ended_at_ms.is_none())
         .filter(|r| {
@@ -826,7 +1009,7 @@ fn live_state(
             let cwd = r
                 .cwd
                 .clone()
-                .or_else(|| panes.get(&r.pane).cloned().flatten());
+                .or_else(|| snap.panes.get(&r.pane).cloned().flatten());
             match (&checkout, cwd) {
                 (Some(co), Some(cwd)) => canon(&cwd).starts_with(co),
                 _ => false,
@@ -834,32 +1017,49 @@ fn live_state(
         })
         .map(|r| r.handle.clone())
         .collect();
-    let open_interactions = interactions
+    known_writers.sort();
+    let mut open_interactions: Vec<String> = snap
+        .interactions
         .iter()
         .filter(|i| i.status == InteractionStatus::Open && bound.contains(i.run.as_str()))
         .map(|i| i.id.clone())
         .collect();
-    let unresolved_deliveries = tracking::messages_of(server, &task.id)
-        .into_iter()
+    open_interactions.sort();
+    let mut unresolved_deliveries: Vec<String> = snap
+        .messages
+        .iter()
         .filter(|m| {
-            matches!(
-                m.state,
-                MessageState::Sending | MessageState::DeliveryUnknown
-            )
+            m.task == task_id
+                && matches!(
+                    m.state,
+                    MessageState::Sending | MessageState::DeliveryUnknown
+                )
         })
-        .map(|m| m.id)
+        .map(|m| m.id.clone())
         .collect();
-    LiveState {
-        turn_finished: runs
+    unresolved_deliveries.sort();
+    let pending = active.iter().any(|b| snap.pending_runs.contains(&b.run_id));
+    h.update(
+        format!(
+            "writers {known_writers:?}\ninteractions {open_interactions:?}\nsends {unresolved_deliveries:?}\npending {pending}\n"
+        )
+        .as_bytes(),
+    );
+    let mut n = [0u8; 8];
+    n.copy_from_slice(&h.finalize().as_bytes()[..8]);
+    let token = u64::from_le_bytes(n) & ((1u64 << 53) - 1);
+    let live = LiveState {
+        turn_finished: snap
+            .runs
             .iter()
             .any(|r| bound.contains(r.id.as_str()) && r.turns_completed > 0),
         has_inspectable_changes: false,
         subject_is_current: false,
-        sources_verified: true,
+        sources_verified: false,
         bound_runs,
         known_writers,
         open_interactions,
-        pending_binding_switch: pending > 0,
+        pending_binding_switch: pending,
         unresolved_deliveries,
         open_blocking_concerns: vec![],
         check_definition_digests: BTreeMap::new(),
@@ -867,7 +1067,311 @@ fn live_state(
         environment_unavailable: BTreeSet::new(),
         external_outcome_changed: false,
         acceptance: None,
+    };
+    (live, token)
+}
+
+/// A cheap token over everything acceptance must not silently miss (15 §7 "known competing
+/// update"): intent revision, the task's bindings and pinned end candidates, its check runs
+/// and their states, recorded acceptances and the live state. Computed with the core lock
+/// held, both when a package build starts and inside the acceptance transaction.
+fn state_token(c: &Core, task_id: &str) -> Option<u64> {
+    let task = c
+        .task(task_id)
+        .cloned()
+        .or_else(|| c.store.find::<Task>("task", task_id).ok().flatten())?;
+    let bs = bindings_of(c, task_id);
+    let mut h = blake3::Hasher::new();
+    h.update(format!("intent {:?}\n", task.intent_revision).as_bytes());
+    for b in &bs {
+        h.update(format!("binding {} {:?} {:?}\n", b.id, b.state, b.end_turn).as_bytes());
     }
+    let mut ends: Vec<EndRec> = by_task(c, K_END, task_id);
+    ends.sort_by(|a, b| a.binding.cmp(&b.binding));
+    for e in &ends {
+        h.update(format!("end {} {:?}\n", e.binding, e.subject_id).as_bytes());
+    }
+    let mut runs: Vec<CheckRunRec> = by_task(c, K_CHECK, task_id);
+    runs.sort_by(|a, b| a.run.id.cmp(&b.run.id));
+    for r in &runs {
+        h.update(
+            format!(
+                "check {} {:?} {}\n",
+                r.run.id, r.run.state, r.run.subject_id
+            )
+            .as_bytes(),
+        );
+    }
+    let mut accs: Vec<String> = acceptances_of(c, task_id)
+        .into_iter()
+        .map(|a| a.acceptance.id)
+        .collect();
+    accs.sort();
+    h.update(format!("acceptances {accs:?}\n").as_bytes());
+    let snap = live_snap(c);
+    let (_, live) = live_from(&snap, task_id, &bs, checkout_of(&task).as_deref());
+    h.update(format!("live {live}\n").as_bytes());
+    let mut n = [0u8; 8];
+    n.copy_from_slice(&h.finalize().as_bytes()[..8]);
+    Some(u64::from_le_bytes(n))
+}
+
+// ---- environment identity (§6.3, §7) ------------------------------------------------------------
+
+/// Tools whose `--version` output identifies them (well-known toolchain binaries only; repo
+/// files and unknown programs are never executed to learn their identity).
+const VERSIONED_TOOLS: &[&str] = &[
+    "cargo", "rustc", "node", "npm", "npx", "pnpm", "yarn", "bun", "deno", "python", "python3",
+    "pip", "pip3", "go", "make", "gmake", "java", "mvn", "gradle", "ruby", "bundle", "uv",
+    "pytest", "swift", "zig", "dotnet", "php", "composer", "cmake", "ninja", "gcc", "clang",
+];
+
+const SHELL_WORDS: &[&str] = &[
+    "cd", "echo", "test", "[", "[[", "exit", "true", "false", "export", "set", "unset", "if",
+    "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "until", "case", "esac", ".",
+    "source", "exec", "env", "time", "command", "builtin", "!", "{", "}", "printf", "read",
+    "shift", "return", "local", "trap", "wait", "eval",
+];
+
+/// Program names a check's command runs, in command position (argv[0]; first word of each
+/// simple shell command), plus implied toolchain companions (cargo → rustc, npm → node).
+fn command_tools(c: &CheckCommand) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut add = |w: &str| {
+        let w = w.trim_matches(|ch| ch == '"' || ch == '\'');
+        if w.is_empty() || SHELL_WORDS.contains(&w) || w.contains('=') || w.starts_with('$') {
+            return;
+        }
+        out.insert(w.to_string());
+    };
+    match c {
+        CheckCommand::Argv(v) => {
+            if let Some(p) = v.first() {
+                add(p);
+            }
+        }
+        CheckCommand::Shell(s) => {
+            add("sh");
+            for seg in s.split([';', '|', '&', '\n', '(', ')', '`']) {
+                let mut words = seg.split_whitespace();
+                for w in words.by_ref() {
+                    // Skip leading assignments and wrappers: `FOO=1 env time cargo test`.
+                    let bare = w.trim_matches(|ch| ch == '"' || ch == '\'');
+                    if bare.contains('=') || matches!(bare, "env" | "time" | "exec" | "command") {
+                        continue;
+                    }
+                    add(w);
+                    break;
+                }
+            }
+        }
+    }
+    let implied: Vec<&str> = out
+        .iter()
+        .flat_map(|t| match t.as_str() {
+            "cargo" => vec!["rustc"],
+            "npm" | "npx" | "pnpm" | "yarn" => vec!["node"],
+            _ => vec![],
+        })
+        .collect();
+    let implied: Vec<String> = implied.into_iter().map(str::to_string).collect();
+    out.extend(implied);
+    out
+}
+
+/// Cached tool identities: (path, mtime, size, cwd) → (identity, probed at).
+fn tool_cache() -> &'static Mutex<HashMap<(PathBuf, i128, u64, PathBuf), (String, Instant)>> {
+    static M: OnceLock<Mutex<HashMap<(PathBuf, i128, u64, PathBuf), (String, Instant)>>> =
+        OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+const TOOL_CACHE_TTL: Duration = Duration::from_secs(60);
+
+fn resolve_on_path(tool: &str, repo: &Path) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        // Relative PATH entries could resolve into the repository: never.
+        if !dir.is_absolute() {
+            continue;
+        }
+        let p = dir.join(tool);
+        if let Ok(m) = std::fs::metadata(&p)
+            && m.is_file()
+            && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0
+        {
+            return Some(p);
+        }
+    }
+    let _ = repo;
+    None
+}
+
+fn file_stamp(p: &Path) -> Option<(i128, u64)> {
+    let m = std::fs::metadata(p).ok()?;
+    let mtime = m
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0);
+    Some((mtime, m.len()))
+}
+
+/// Identity of one tool: `--version` output for well-known toolchains (cached per
+/// path+mtime+size+cwd for a minute), `path mtime size` for other programs on PATH,
+/// `missing` when not found. Repo-relative programs belong to the subject and are skipped.
+/// `Err` = identity unavailable (probe failed or timed out).
+fn tool_identity(tool: &str, repo: &Path) -> Result<Option<String>, String> {
+    let repo_c = canon(&repo.to_string_lossy());
+    let path = if tool.contains('/') {
+        let p = Path::new(tool);
+        if !p.is_absolute() {
+            return Ok(None);
+        }
+        p.to_path_buf()
+    } else {
+        match resolve_on_path(tool, repo) {
+            Some(p) => p,
+            None => return Ok(Some("missing".into())),
+        }
+    };
+    let real = canon(&path.to_string_lossy());
+    if real.starts_with(&repo_c) {
+        return Ok(None);
+    }
+    let Some((mtime, size)) = file_stamp(&real) else {
+        return Ok(Some("missing".into()));
+    };
+    let base = Path::new(tool)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !VERSIONED_TOOLS.contains(&base.as_str()) {
+        return Ok(Some(format!(
+            "{} mtime={mtime} size={size}",
+            real.display()
+        )));
+    }
+    let key = (real.clone(), mtime, size, repo_c.clone());
+    if let Some((v, at)) = tool_cache().lock().unwrap().get(&key)
+        && at.elapsed() < TOOL_CACHE_TTL
+    {
+        return Ok(Some(v.clone()));
+    }
+    let arg = if base == "go" { "version" } else { "--version" };
+    let mut cmd = std::process::Command::new(&path);
+    cmd.arg(arg)
+        .current_dir(&repo_c)
+        .env("RUSTUP_AUTO_INSTALL", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("{tool}: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{tool} --version timed out"));
+            }
+        }
+    };
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("{tool} {arg} exited with {status}"));
+    }
+    let text = String::from_utf8_lossy(if out.stdout.is_empty() {
+        &out.stderr
+    } else {
+        &out.stdout
+    })
+    .lines()
+    .next()
+    .unwrap_or("")
+    .trim()
+    .to_string();
+    if text.is_empty() {
+        return Err(format!("{tool} {arg} printed nothing"));
+    }
+    tool_cache()
+        .lock()
+        .unwrap()
+        .insert(key, (text.clone(), Instant::now()));
+    Ok(Some(text))
+}
+
+/// Tool versions for a check's resolved command (recorded in the run's environment manifest
+/// and compared for freshness). `Err` when any tool's identity is unavailable.
+pub fn check_tools(def: &CheckDefinition, repo: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    for t in command_tools(&def.command) {
+        if let Some(v) = tool_identity(&t, repo)? {
+            out.insert(t, v);
+        }
+    }
+    Ok(out)
+}
+
+/// The environment digest a host run of `def` would record now (same hash as the run's
+/// [`checks::EnvironmentManifest`]: os, arch, runner, tool versions).
+pub fn current_environment(def: &CheckDefinition, repo: &Path) -> Result<String, String> {
+    check_tools(def, repo).map(|t| checks::EnvironmentManifest::new("host", None, t, vec![]).digest)
+}
+
+// ---- authorization before retrieval (§11) -------------------------------------------------------
+
+/// The workspace a pane-scoped caller may read (`None` = full scope).
+fn caller_workspace(server: &Server, ctx: &Ctx) -> Result<Option<String>, RpcError> {
+    let Some(pane) = &ctx.pane_scope else {
+        return Ok(None);
+    };
+    server
+        .with_core(|c| c.pane(pane).map(|p| p.workspace.clone()))
+        .map(Some)
+        .ok_or_else(|| {
+            err(
+                ErrorKind::PermissionDenied,
+                "the caller's pane no longer exists",
+            )
+            .details(json!({"scope": "pane"}))
+        })
+}
+
+/// Workspaces a task belongs to: its own `workspace` and those of the panes of runs bound to
+/// it (default scope rule: workspace).
+fn task_workspaces(c: &Core, task: &Task) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = task.workspace.iter().cloned().collect();
+    for b in bindings_of(c, &task.id) {
+        if let Some(ws) = c
+            .run(&b.run_id)
+            .and_then(|r| c.pane(&r.pane))
+            .map(|p| p.workspace.clone())
+        {
+            out.insert(ws);
+        }
+    }
+    out
+}
+
+/// Refuse before retrieving anything when a pane-scoped caller asks about a task outside its
+/// pane's workspace.
+fn authorize_task(server: &Server, ctx: &Ctx, task_id: &str) -> Result<(), RpcError> {
+    let Some(ws) = caller_workspace(server, ctx)? else {
+        return Ok(());
+    };
+    let task = tracking::find_task(server, task_id)?;
+    if server.with_core(|c| task_workspaces(c, &task).contains(&ws)) {
+        return Ok(());
+    }
+    Err(err(
+        ErrorKind::PermissionDenied,
+        "this task is outside the calling pane's workspace",
+    )
+    .details(json!({"scope": "pane", "reason": "outside_scope"})))
 }
 
 // ---- the review package (§6–§7) -----------------------------------------------------------------
@@ -884,6 +1388,13 @@ pub struct Pkg {
     pub label: String,
     pub package_revision: u64,
     pub json: Value,
+    /// Sources of the selected subject can be revalidated now (checkout present, immutable
+    /// objects readable). `false` = historically inspectable only; no new acceptance.
+    pub sources_verified: bool,
+    /// [`state_token`] taken under the core lock when this build started.
+    pub state_token: Option<u64>,
+    /// Checkout and HEAD the current candidate was captured from, while a binding is live.
+    pub live_head: Option<(PathBuf, String)>,
     subjects: Vec<ChangeSubject>,
     cand_recs: Vec<CandidateRec>,
     projection: Option<Projection>,
@@ -924,8 +1435,7 @@ fn package_revision(
 
 fn task_check_runs(server: &Server, task: &str) -> Vec<CheckRunRec> {
     server.with_core(|c| {
-        let mut v: Vec<CheckRunRec> = load_all(c, K_CHECK);
-        v.retain(|r| r.task == task);
+        let mut v: Vec<CheckRunRec> = by_task(c, K_CHECK, task);
         v.sort_by(|a, b| a.run.id.cmp(&b.run.id));
         v.dedup_by(|a, b| a.run.id == b.run.id);
         v
@@ -933,30 +1443,20 @@ fn task_check_runs(server: &Server, task: &str) -> Vec<CheckRunRec> {
 }
 
 fn task_grants(server: &Server, task: &str) -> Vec<GrantRec> {
+    server.with_core(|c| by_task(c, K_GRANT, task))
+}
+
+fn acceptance_history(server: &Server, task: &str) -> Vec<AcceptanceRec> {
     server.with_core(|c| {
-        let mut v: Vec<GrantRec> = load_all(c, K_GRANT);
-        v.retain(|g| g.task == task);
+        let mut v = acceptances_of(c, task);
+        v.sort_by_key(|a| a.acceptance.accepted_at_ms);
+        v.dedup_by(|a, b| a.acceptance.id == b.acceptance.id);
         v
     })
 }
 
 fn latest_acceptance(server: &Server, task: &str) -> Option<AcceptanceRec> {
-    server.with_core(|c| {
-        let v: Vec<AcceptanceRec> = load_all(c, K_ACCEPT);
-        v.into_iter()
-            .filter(|a| a.acceptance.task_id == task)
-            .max_by_key(|a| a.acceptance.accepted_at_ms)
-    })
-}
-
-fn acceptance_history(server: &Server, task: &str) -> Vec<AcceptanceRec> {
-    server.with_core(|c| {
-        let mut v: Vec<AcceptanceRec> = load_all(c, K_ACCEPT);
-        v.retain(|a| a.acceptance.task_id == task);
-        v.sort_by_key(|a| a.acceptance.accepted_at_ms);
-        v.dedup_by(|a, b| a.acceptance.id == b.acceptance.id);
-        v
-    })
+    acceptance_history(server, task).pop()
 }
 
 fn subject_json(s: &ChangeSubject, current: bool, source: &str, extra: Value) -> Value {
@@ -986,10 +1486,13 @@ pub fn build_package(
     want_subject: Option<&str>,
 ) -> Result<Pkg, RpcError> {
     let task = tracking::find_task(server, task_id)?;
+    // Taken before any input is read: anything acceptance-relevant that changes later makes
+    // the acceptance transaction's token differ (15 §7).
+    let state_token = server.with_core(|c| state_token(c, &task.id));
     let intent = task
         .intent_revision
         .and_then(|r| tracking::intent_at(server, &task.id, r));
-    let bs = tracking::task_bindings(server, &task.id);
+    let bs = server.with_core(|c| bindings_of(c, &task.id));
     let cands = candidates_blocking(server, &task, &bs);
 
     // Every subject we know about for this task.
@@ -1070,11 +1573,52 @@ pub fn build_package(
         evidence.push(Evidence::from_observed(cl, None));
     }
 
-    let mut live = live_state(server, &task, &bs, cands.checkout.as_deref());
+    let snap = server.with_core(|c| live_snap(c));
+    let (mut live, live_token) = live_from(&snap, &task.id, &bs, cands.checkout.as_deref());
+    drop(snap);
     live.subject_is_current = subject_is_current;
     live.has_inspectable_changes =
         cands.current.is_some() || cands.live_subject.is_some() || !observed.is_empty();
     live.check_definition_digests = digests.clone();
+    // Current environment identity per check (§7): unknown stays unknown, never "fresh".
+    let mut env_errors: Vec<String> = Vec::new();
+    if let Some(s) = &selected {
+        let root = Path::new(&s.repo.root);
+        for e in &entries {
+            match current_environment(&e.def, root) {
+                Ok(d) => {
+                    live.current_environment_digests.insert(e.def.id.clone(), d);
+                }
+                Err(why) => {
+                    live.environment_unavailable.insert(e.def.id.clone());
+                    env_errors.push(format!(
+                        "{}: environment identity unavailable ({why})",
+                        e.def.id
+                    ));
+                }
+            }
+        }
+    }
+    // Historically inspectable vs currently verifiable (§7, §10.3): sources must be
+    // revalidated now — the checkout exists and the subject's immutable objects are readable.
+    let mut warnings = cands.warnings.clone();
+    warnings.extend(env_errors);
+    let diff_stat = match selected.as_ref().filter(|s| s.is_committed()) {
+        Some(s) => match subject::diff_stat(s) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                warnings.push(format!(
+                    "Sources of revision {} unavailable: {e}",
+                    short(&s.head_sha)
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+    let committed_selected = selected.as_ref().is_some_and(|s| s.is_committed());
+    let sources_verified = cands.checkout.is_some() && (!committed_selected || diff_stat.is_some());
+    live.sources_verified = sources_verified;
     let acc = latest_acceptance(server, &task.id);
     live.acceptance = acc.as_ref().map(|a| a.acceptance.clone());
 
@@ -1267,11 +1811,6 @@ pub fn build_package(
         .map(|(e, _)| json!({"binding": e.binding, "run": e.run, "note": e.note.as_deref().unwrap_or("No bound end candidate"), "at_ms": e.at_ms}))
         .collect();
 
-    let diff_stat = selected
-        .as_ref()
-        .filter(|s| s.is_committed())
-        .and_then(|s| subject::diff_stat(s).ok());
-
     let requires_exceptions: Vec<String> = assessment
         .criteria
         .iter()
@@ -1290,6 +1829,10 @@ pub fn build_package(
         Some("Select a committed revision to record acceptance")
     } else if !subject_is_current {
         Some("Only the current candidate can be accepted; earlier candidates are inspect only")
+    } else if cands.checkout.is_none() {
+        Some("Checkout unavailable: retained candidates are inspect only")
+    } else if !sources_verified {
+        Some("Sources of this revision cannot be verified now; acceptance is unavailable")
     } else {
         None
     };
@@ -1331,8 +1874,10 @@ pub fn build_package(
         "no_end_candidate": no_end,
         "review_base": cands.review_base,
         "baseline": baseline,
-        "warnings": cands.warnings,
+        "warnings": warnings,
         "diff_stat": diff_stat,
+        "sources_verified": sources_verified,
+        "historical_only": cands.checkout.is_none() || !sources_verified,
         "observed_commands": observed.iter().map(command_json).collect::<Vec<_>>(),
         "claims": claims.iter().map(command_json).collect::<Vec<_>>(),
         "checks": check_json,
@@ -1394,10 +1939,22 @@ pub fn build_package(
             failed_checks: failed,
             explanation: assessment.explanation.first().cloned(),
             updated_at_ms: now(),
+            live_token: Some(live_token),
         }
     });
+    let live_head = (cands.live)
+        .then(|| {
+            cands
+                .checkout
+                .clone()
+                .zip(cands.current.as_ref().map(|s| s.head_sha.clone()))
+        })
+        .flatten();
 
     Ok(Pkg {
+        sources_verified,
+        state_token,
+        live_head,
         task,
         intent,
         current: cands.current,
@@ -1457,7 +2014,11 @@ fn persist(server: &Server, pkg: &Pkg) {
                 || o.intent_revision != p.intent_revision
         });
         p.revision = old.as_ref().map_or(1, |o| o.revision + u64::from(changed));
-        if changed || old.as_ref().is_some_and(|o| o.explanation != p.explanation) {
+        if changed
+            || old
+                .as_ref()
+                .is_some_and(|o| o.explanation != p.explanation || o.live_token != p.live_token)
+        {
             tx.m.put(K_PROJ, &pkg.task.id, None, &p);
         }
     }
@@ -1500,6 +2061,124 @@ fn persist(server: &Server, pkg: &Pkg) {
     if !tx.m.is_empty() {
         let _ = server.commit(&mut c, tx);
     }
+}
+
+// ---- live-state invalidation of cached Ready (§7, §8) -------------------------------------------
+
+const LIVE_DOWNGRADE_TEXT: &str = "Review available — agent/writer active or state unavailable";
+
+/// Make sure a live-state watcher runs for this server: whenever the model changes it
+/// compares each Ready task's cached live token with the current one and immediately
+/// downgrades a stale Ready (turn started, question opened, uncertain send, another writer in
+/// the checkout …), then queues a full refresh. One thread per server; it exits with the
+/// server.
+pub fn ensure_watcher(server: &Arc<Server>) {
+    static W: OnceLock<Mutex<Vec<Weak<Server>>>> = OnceLock::new();
+    let mut w = W.get_or_init(Default::default).lock().unwrap();
+    w.retain(|x| x.strong_count() > 0);
+    if w.iter()
+        .any(|x| std::ptr::eq(x.as_ptr(), Arc::as_ptr(server)))
+    {
+        return;
+    }
+    w.push(Arc::downgrade(server));
+    let weak = Arc::downgrade(server);
+    let _ = std::thread::Builder::new()
+        .name("vk-review-live".into())
+        .spawn(move || {
+            let mut last = u64::MAX;
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let Some(srv) = weak.upgrade() else { break };
+                let rev = *srv.model_rev.borrow();
+                if rev != last {
+                    last = rev;
+                    downgrade_stale_ready(&srv);
+                }
+            }
+        });
+}
+
+/// Downgrade every task whose cached Ready label was computed under a different live state.
+/// Cheap: model + store reads under one lock, no Git. Returns the downgraded task ids.
+pub fn downgrade_stale_ready(server: &Arc<Server>) -> Vec<String> {
+    let ready: Vec<(Task, Option<Projection>, Vec<TaskRunBinding>)> = server.with_core(|c| {
+        c.model
+            .tasks
+            .iter()
+            .filter(|t| t.review_label.as_deref() == Some("ready_for_review"))
+            .map(|t| {
+                (
+                    t.clone(),
+                    c.store.get::<Projection>(K_PROJ, &t.id).ok().flatten(),
+                    bindings_of(c, &t.id),
+                )
+            })
+            .collect()
+    });
+    if ready.is_empty() {
+        return vec![];
+    }
+    let snap = server.with_core(|c| live_snap(c));
+    let stale: Vec<(String, Option<u64>)> = ready
+        .into_iter()
+        .filter_map(|(t, p, bs)| {
+            let (_, token) = live_from(&snap, &t.id, &bs, checkout_of(&t).as_deref());
+            let cached = p.as_ref().and_then(|p| p.live_token);
+            (cached != Some(token)).then_some((t.id, cached))
+        })
+        .collect();
+    let mut out = Vec::new();
+    if stale.is_empty() {
+        return out;
+    }
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        for (id, cached) in &stale {
+            let Some(mut t) = c.task(id).cloned() else {
+                continue;
+            };
+            if t.review_label.as_deref() != Some("ready_for_review") {
+                continue;
+            }
+            let mut p = c
+                .store
+                .get::<Projection>(K_PROJ, id)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            if p.live_token != *cached {
+                // A refresh landed meanwhile; it is authoritative.
+                continue;
+            }
+            if p.task.is_empty() {
+                p.task = id.clone();
+            }
+            p.label = "review_available".into();
+            p.label_text = label_text("review_available").into();
+            p.explanation = Some(LIVE_DOWNGRADE_TEXT.into());
+            p.revision += 1;
+            p.updated_at_ms = now();
+            tx.m.put(K_PROJ, id, None, &p);
+            t.review_label = Some("review_available".into());
+            t.rev += 1;
+            tx.task(t);
+            tx.event(
+                "review.label_changed",
+                json!({"task": id}),
+                json!({"from": "ready_for_review", "to": "review_available", "reason": "live_state_changed"}),
+            );
+            out.push(id.clone());
+        }
+        if !tx.m.is_empty() {
+            let _ = server.commit(&mut c, tx);
+        }
+    }
+    for id in &out {
+        spawn_refresh(server, id);
+    }
+    out
 }
 
 // ---- API ----------------------------------------------------------------------------------------
@@ -1590,13 +2269,53 @@ fn with_aliases(mut j: Value) -> Value {
     j
 }
 
+/// Test-only interleaving points (barrier-controlled concurrency tests).
+#[cfg(test)]
+pub(crate) mod hooks {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    pub type Hook = Arc<dyn Fn() + Send + Sync>;
+
+    fn map() -> &'static Mutex<HashMap<String, Hook>> {
+        static M: OnceLock<Mutex<HashMap<String, Hook>>> = OnceLock::new();
+        M.get_or_init(Default::default)
+    }
+
+    pub fn set(point: &str, task: &str, f: Hook) {
+        map().lock().unwrap().insert(format!("{point}:{task}"), f);
+    }
+
+    pub fn clear(point: &str, task: &str) {
+        map().lock().unwrap().remove(&format!("{point}:{task}"));
+    }
+
+    pub fn fire(point: &str, task: &str) {
+        let h = map()
+            .lock()
+            .unwrap()
+            .get(&format!("{point}:{task}"))
+            .cloned();
+        if let Some(h) = h {
+            h();
+        }
+    }
+}
+
+#[inline]
+fn test_hook(_point: &str, _task: &str) {
+    #[cfg(test)]
+    hooks::fire(_point, _task);
+}
+
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     let p = &normalize(method, p);
     Some(match method {
-        "task.review.candidates" => review_candidates(server, p).await,
-        "task.review.get" => review_get(server, p).await.map(with_aliases),
+        "task.review.candidates" => review_candidates(server, ctx, p).await,
+        "task.review.get" => review_get(server, ctx, p).await.map(with_aliases),
+        "task.review.diff" => review_diff(server, ctx, p).await,
         "task.review.accept" => review_accept(server, ctx, p).await,
-        "task.check.list" => check_list(server, p).await,
+        "task.check.list" => check_list(server, ctx, p).await,
         "task.check.authorize" => check_authorize(server, ctx, p).await,
         // `authorize: true` = the explicit per-candidate authorization and the run in one user
         // action (still full scope only; the grant is recorded like task.check.authorize).
@@ -1609,13 +2328,13 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 o.remove("authorize");
             }
             match check_authorize(server, ctx, &ap).await {
-                Ok(_) => check_run(server, p).await,
+                Ok(_) => check_run(server, ctx, p).await,
                 Err(e) => Err(e),
             }
         }
-        "task.check.run" => check_run(server, p).await,
-        "task.check.cancel" => check_cancel(server, p),
-        "task.check.get" => check_get(server, p),
+        "task.check.run" => check_run(server, ctx, p).await,
+        "task.check.cancel" => check_cancel(server, ctx, p),
+        "task.check.get" => check_get(server, ctx, p),
         _ => return None,
     })
 }
@@ -1623,17 +2342,21 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 async fn package(server: &Arc<Server>, task: &str, subject: Option<&str>) -> Result<Pkg, RpcError> {
     let srv = server.clone();
     let (task, subject) = (task.to_string(), subject.map(str::to_string));
-    blocking(move || {
+    let pkg = blocking(move || {
         let pkg = build_package(&srv, &task, subject.as_deref())?;
         persist(&srv, &pkg);
-        Ok(pkg)
+        Ok::<_, RpcError>(pkg)
     })
-    .await?
+    .await??;
+    ensure_watcher(server);
+    Ok(pkg)
 }
 
 /// `task.review.candidates {task}`.
-async fn review_candidates(server: &Arc<Server>, p: &Value) -> R {
-    let pkg = package(server, req(p, "task")?, None).await?;
+async fn review_candidates(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let task = req(p, "task")?;
+    authorize_task(server, ctx, task)?;
+    let pkg = package(server, task, None).await?;
     let j = &pkg.json;
     Ok(json!({
         "task": pkg.task.id,
@@ -1647,9 +2370,76 @@ async fn review_candidates(server: &Arc<Server>, p: &Value) -> R {
 }
 
 /// `task.review.get {task, subject?}`: the deterministic package; no model call, no checks run.
-async fn review_get(server: &Arc<Server>, p: &Value) -> R {
-    let pkg = package(server, req(p, "task")?, s(p, "subject")).await?;
+async fn review_get(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let task = req(p, "task")?;
+    authorize_task(server, ctx, task)?;
+    let pkg = package(server, task, s(p, "subject")).await?;
     Ok(pkg.json)
+}
+
+/// `task.review.diff {task, subject?, path?, max_bytes?}`: the full diff of a committed
+/// candidate from immutable Git objects (never the live tree), bounded to `max_bytes`
+/// (default 256 KiB, at most 4 MiB). `subject` defaults to the current candidate.
+async fn review_diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let task_id = req(p, "task")?.to_string();
+    authorize_task(server, ctx, &task_id)?;
+    let max = u(p, "max_bytes")
+        .map(|m| (m as usize).clamp(1, DIFF_MAX_BYTES))
+        .unwrap_or(DIFF_DEFAULT_BYTES);
+    let path = s(p, "path").map(str::to_string);
+    let want = s(p, "subject").map(str::to_string);
+    let task = tracking::find_task(server, &task_id)?;
+    // Fast path: a subject already recorded as a candidate of this task.
+    let known = want.as_ref().and_then(|id| {
+        server.with_core(|c| {
+            let assoc = c
+                .store
+                .get::<Value>(K_CAND, &format!("{}:{id}", task.id))
+                .ok()
+                .flatten()
+                .is_some();
+            assoc
+                .then(|| c.store.get::<ChangeSubject>(K_SUBJECT, id).ok().flatten())
+                .flatten()
+        })
+    });
+    let subj = match known {
+        Some(s) => s,
+        None => {
+            let pkg = package(server, &task.id, want.as_deref()).await?;
+            pkg.selected.ok_or_else(|| match &want {
+                Some(id) => not_found("subject", id),
+                None => conflict("no_subject", "this task has no committed candidate yet"),
+            })?
+        }
+    };
+    if !subj.is_committed() {
+        return Err(conflict(
+            "subject_not_committed",
+            "Uncommitted work has no immutable diff; inspect the live checkout",
+        ));
+    }
+    let s2 = subj.clone();
+    let p2 = path.clone();
+    let d = blocking(move || subject::diff_text_path(&s2, p2.as_deref(), max))
+        .await?
+        .map_err(|e| {
+            conflict(
+                "sources_unavailable",
+                format!("the diff of this revision is unavailable: {e}"),
+            )
+        })?;
+    Ok(json!({
+        "task": task.id,
+        "subject": subj.id,
+        "base_sha": subj.base_sha,
+        "head_sha": subj.head_sha,
+        "path": path,
+        "diff": d.text,
+        "truncated": d.truncated,
+        "total_bytes": d.total_bytes,
+        "max_bytes": max,
+    }))
 }
 
 fn parse_exceptions(p: &Value) -> Result<Vec<CriterionException>, RpcError> {
@@ -1672,10 +2462,21 @@ fn parse_exceptions(p: &Value) -> Result<Vec<CriterionException>, RpcError> {
         .collect()
 }
 
+fn review_changed(msg: impl Into<String>, details: Value) -> RpcError {
+    let mut d = details;
+    d["reason"] = json!("review_changed");
+    err(ErrorKind::Conflict, msg).details(d)
+}
+
 /// `task.review.accept {task, intent_revision, subject_id, exceptions, package_revision?,
-/// idempotency_key}` (15 §7).
+/// idempotency_key}` (15 §7). The package is rebuilt, the request validated against it, and
+/// then — inside the transaction that records acceptance — the task's state token (intent
+/// revision, bindings/end candidates, check runs and outcomes, acceptances, live blockers) is
+/// recomputed and compared with the one the package was built under: any known competing
+/// update returns `conflict` / `review_changed`.
 async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    if let Some(r) = tracking::replay(server, "task.review.accept", p) {
+    const M: &str = "task.review.accept";
+    if let Some(r) = receipts::replay(server, ctx, M, p) {
         return r;
     }
     let task_id = req(p, "task")?;
@@ -1684,6 +2485,7 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         u(p, "intent_revision").ok_or_else(|| invalid("missing param `intent_revision`"))? as u32;
     let exceptions = parse_exceptions(p)?;
     let pkg = package(server, task_id, None).await?;
+    test_hook("accept_after_package", &pkg.task.id);
     let stored_live = server.with_core(|c| {
         c.store
             .get::<ChangeSubject>(K_SUBJECT, &subject_id)
@@ -1715,13 +2517,15 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         actor: tracking::user(ctx),
         idempotency_key: s(p, "idempotency_key").unwrap_or_default().to_string(),
     };
+    // Unverifiable sources (checkout gone, objects unreadable) make retained candidates
+    // inspect-only: `sources_unverified` (15 §4.3, §7).
     let snap = PackageSnapshot {
         task_id: &pkg.task.id,
         intent: &intent,
         package_revision: pkg.package_revision,
         subject: pkg.current.as_ref(),
         assessment: &pkg.assessment,
-        sources_verified: true,
+        sources_verified: pkg.sources_verified,
     };
     let acc = readiness::accept(&areq, &snap, now()).map_err(|e| {
         let mut d = serde_json::to_value(&e).unwrap_or(json!({}));
@@ -1731,19 +2535,42 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         d["package_revision"] = json!(pkg.package_revision);
         err(ErrorKind::Conflict, e.to_string()).details(d)
     })?;
+    // Revalidate the source observation right before the transaction: a commit since the
+    // package was captured is a known competing update.
+    if let Some((path, head)) = pkg.live_head.clone() {
+        let now_head = blocking(move || subject::rev_parse(&path, "HEAD").ok()).await?;
+        if now_head.as_deref() != Some(head.as_str()) {
+            return Err(review_changed(
+                "the checkout moved to another revision during acceptance",
+                json!({"field": "subject", "expected": head, "actual": now_head}),
+            ));
+        }
+    }
+    test_hook("accept_before_commit", &pkg.task.id);
     let mut c = server.core.lock().unwrap();
-    // Serialize the expected-version check with the write (15 §7).
+    // A concurrent duplicate of this request may have committed meanwhile.
+    if let Some(r) = receipts::replay_in(&c, ctx, M, p) {
+        return r;
+    }
+    // Serialize the expected-version checks with the write (15 §7).
     let cur_task = c
         .task(&pkg.task.id)
         .cloned()
         .ok_or_else(|| not_found("task", &pkg.task.id))?;
     if cur_task.intent_revision != Some(intent.revision) {
-        return Err(conflict(
-            "review_changed",
+        return Err(review_changed(
             format!(
                 "intent changed to revision {:?} during acceptance",
                 cur_task.intent_revision
             ),
+            json!({"field": "intent_revision", "expected": intent.revision, "actual": cur_task.intent_revision}),
+        ));
+    }
+    let token_now = state_token(&c, &pkg.task.id);
+    if pkg.state_token.is_none() || token_now != pkg.state_token {
+        return Err(review_changed(
+            "the review changed after it was shown (a check finished, a binding or candidate changed, another acceptance was recorded, or work resumed); refresh and review again",
+            json!({"field": "state", "package_revision": pkg.package_revision}),
         ));
     }
     let label = if acc.with_exceptions() {
@@ -1775,7 +2602,7 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "task": t,
         "note": "Acceptance records this intent revision and revision only; it does not merge, finish or clean up.",
     });
-    tracking::record(&mut tx, "task.review.accept", p, &result);
+    receipts::record(&mut tx, ctx, M, p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
     drop(c);
     spawn_refresh(server, &t.id);
@@ -1783,8 +2610,10 @@ async fn review_accept(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 }
 
 /// `task.check.list {task, subject?}`.
-async fn check_list(server: &Arc<Server>, p: &Value) -> R {
-    let pkg = package(server, req(p, "task")?, s(p, "subject")).await?;
+async fn check_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let task = req(p, "task")?;
+    authorize_task(server, ctx, task)?;
+    let pkg = package(server, task, s(p, "subject")).await?;
     Ok(json!({
         "task": pkg.task.id,
         "subject": pkg.selected,
@@ -1803,7 +2632,8 @@ fn find_entry<'a>(pkg: &'a Pkg, check: &str) -> Result<&'a CheckEntry, RpcError>
 /// `task.check.authorize {task, check, subject, idempotency_key}`: the user's per-candidate
 /// **Runs code modified by this task** action (15 §6.3). Never runs anything.
 async fn check_authorize(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    if let Some(r) = tracking::replay(server, "task.check.authorize", p) {
+    const M: &str = "task.check.authorize";
+    if let Some(r) = receipts::replay(server, ctx, M, p) {
         return r;
     }
     let subject_id = req(p, "subject")?;
@@ -1837,6 +2667,9 @@ async fn check_authorize(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "execution": {"machine": server.opts.machine, "runner": "host", "checkout": "disposable checkout of the candidate commit"},
     });
     let mut c = server.core.lock().unwrap();
+    if let Some(r) = receipts::replay_in(&c, ctx, M, p) {
+        return r;
+    }
     let mut tx = Tx::new();
     tx.m.close(K_GRANT, &grant.id, None, &rec);
     tx.event_by(
@@ -1845,7 +2678,7 @@ async fn check_authorize(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         json!({"kind": "user", "id": grant.authorized_by.id}),
         json!({"subject": subj.id, "definition_digest": entry.def.definition_digest, "trust": entry.def.trust}),
     );
-    tracking::record(&mut tx, "task.check.authorize", p, &result);
+    receipts::record(&mut tx, ctx, M, p, &result);
     server.commit(&mut c, tx).map_err(internal)?;
     Ok(result)
 }
@@ -1861,8 +2694,13 @@ fn put_check(tx: &mut Tx, r: &CheckRunRec) {
 /// `task.check.run {task, check, subject, idempotency_key}`: refuses without a matching
 /// per-candidate grant (a changed definition needs fresh authorization); runs in a disposable
 /// checkout on a background thread.
-async fn check_run(server: &Arc<Server>, p: &Value) -> R {
-    if let Some(r) = tracking::replay(server, "task.check.run", p) {
+///
+/// Idempotent per caller and key, also under concurrency: the run record and the caller's
+/// receipt are inserted in one transaction after rechecking the receipt under the core lock,
+/// so concurrent identical requests get the same run and exactly one execution starts.
+async fn check_run(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    const M: &str = "task.check.run";
+    if let Some(r) = receipts::replay(server, ctx, M, p) {
         return r;
     }
     let subject_id = req(p, "subject")?;
@@ -1910,8 +2748,14 @@ async fn check_run(server: &Arc<Server>, p: &Value) -> R {
     };
     let result =
         json!({"check_run": rec.run, "definition": rec.definition, "provenance": entry.provenance});
+    test_hook("check_run_before_reserve", &pkg.task.id);
     {
         let mut c = server.core.lock().unwrap();
+        // Transactional reservation: whoever commits first owns the key; everyone else
+        // replays that run.
+        if let Some(r) = receipts::replay_in(&c, ctx, M, p) {
+            return r;
+        }
         let mut tx = Tx::new();
         put_check(&mut tx, &rec);
         tx.event(
@@ -1919,7 +2763,7 @@ async fn check_run(server: &Arc<Server>, p: &Value) -> R {
             json!({"task": rec.task, "check": rec.run.check_id, "check_run": rec.run.id}),
             json!({"subject": subj.id, "head": subj.head_sha}),
         );
-        tracking::record(&mut tx, "task.check.run", p, &result);
+        receipts::record(&mut tx, ctx, M, p, &result);
         server.commit(&mut c, tx).map_err(internal)?;
     }
     let token = checks::CancelToken::new();
@@ -1951,8 +2795,12 @@ fn execute(
         );
         let _ = server.commit(&mut c, tx);
     }
+    // The run's environment manifest carries the same tool identities freshness compares
+    // against (§6.3, §7). If some identity is unavailable, the current side is unavailable too.
+    let tools = check_tools(&rec.definition, Path::new(&rec.subject.repo.root)).unwrap_or_default();
     let opts = checks::RunOptions {
         idempotency_key: rec.run.idempotency_key.clone(),
+        tool_versions: tools,
         ..Default::default()
     };
     let out = checks::run_in_disposable_checkout(
@@ -2013,9 +2861,10 @@ fn load_check(server: &Server, id: &str) -> Result<CheckRunRec, RpcError> {
 }
 
 /// `task.check.cancel {check_run}`: cooperative; partial output kept, never a fabricated result.
-fn check_cancel(server: &Arc<Server>, p: &Value) -> R {
+fn check_cancel(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let id = req(p, "check_run")?;
     let rec = load_check(server, id)?;
+    authorize_task(server, ctx, &rec.task)?;
     if rec.run.state.is_terminal() {
         return Ok(json!({"check_run": rec.run, "cancelling": false}));
     }
@@ -2036,8 +2885,10 @@ fn check_cancel(server: &Arc<Server>, p: &Value) -> R {
 }
 
 /// `task.check.get {check_run}`: the run, its definition and the log tail.
-fn check_get(server: &Server, p: &Value) -> R {
+/// Authorized before the log is read (15 §11).
+fn check_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let rec = load_check(server, req(p, "check_run")?)?;
+    authorize_task(server, ctx, &rec.task)?;
     let tail = rec.run.log_path.as_ref().and_then(|lp| {
         let b = std::fs::read(lp).ok()?;
         let start = b.len().saturating_sub(8192);
@@ -2050,7 +2901,8 @@ fn check_get(server: &Server, p: &Value) -> R {
 
 /// Startup: queued/running checks from a previous server can't be reconciled with a runner,
 /// so queued → interrupted and running → unknown. Never relaunched (15 §6.3).
-pub fn recover(server: &Server) {
+pub fn recover(server: &Arc<Server>) {
+    ensure_watcher(server);
     let stale: Vec<CheckRunRec> =
         server.with_core(|c| c.store.load::<CheckRunRec>(K_CHECK).unwrap_or_default());
     if stale.is_empty() {
@@ -2146,32 +2998,51 @@ struct Collected {
     notes: Vec<String>,
     complete: bool,
     stale_tasks: Vec<String>,
+    /// Workspaces each item belongs to (object id → workspaces), for scoped callers.
+    item_ws: HashMap<String, BTreeSet<String>>,
 }
 
 /// Gather attention items from the model and cached projections (no git, one lock).
 fn collect(server: &Server, now_ms: i64) -> Collected {
     let machine = server.opts.machine.clone();
     let inflight_cutoff = now_ms - 24 * 3600 * 1000;
-    let (ints, runs, tasks, reads, open_bindings, projections, messages, prefs, closed_ints) =
-        server.with_core(|c| {
-            (
-                c.model.interactions.clone(),
-                c.model.runs.clone(),
-                c.model.tasks.clone(),
-                c.store.reads("local").unwrap_or_default(),
-                c.store
-                    .load::<TaskRunBinding>(tracking::K_BINDING)
-                    .unwrap_or_default(),
-                c.store.load::<Projection>(K_PROJ).unwrap_or_default(),
-                c.store
-                    .load::<tracking::TaskMessage>(tracking::K_MESSAGE)
-                    .unwrap_or_default(),
-                c.store.load::<Pref>(K_PREF).unwrap_or_default(),
-                c.store
-                    .load_closed::<Interaction>("interaction", 200)
-                    .unwrap_or_default(),
-            )
-        });
+    let (
+        ints,
+        runs,
+        tasks,
+        reads,
+        open_bindings,
+        projections,
+        messages,
+        prefs,
+        closed_ints,
+        pane_ws,
+        snap,
+    ) = server.with_core(|c| {
+        (
+            c.model.interactions.clone(),
+            c.model.runs.clone(),
+            c.model.tasks.clone(),
+            c.store.reads("local").unwrap_or_default(),
+            c.store
+                .load::<TaskRunBinding>(tracking::K_BINDING)
+                .unwrap_or_default(),
+            c.store.load::<Projection>(K_PROJ).unwrap_or_default(),
+            c.store
+                .load::<tracking::TaskMessage>(tracking::K_MESSAGE)
+                .unwrap_or_default(),
+            c.store.load::<Pref>(K_PREF).unwrap_or_default(),
+            c.store
+                .load_closed::<Interaction>("interaction", 200)
+                .unwrap_or_default(),
+            c.model
+                .panes
+                .iter()
+                .map(|p| (p.id.clone(), p.workspace.clone()))
+                .collect::<HashMap<String, String>>(),
+            live_snap(c),
+        )
+    });
     let tasks_by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
     let runs_by_id: HashMap<&str, &AgentRun> = runs.iter().map(|r| (r.id.as_str(), r)).collect();
     let proj_by_task: HashMap<&str, &Projection> =
@@ -2352,6 +3223,21 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
             stale_tasks.push(t.id.clone());
             continue;
         };
+        // A cached Ready is only shown while the live state it was computed under holds
+        // (turn started, question opened, uncertain send, another writer → not Ready).
+        let mut label_text_now = p.label_text.clone();
+        if p.label == "ready_for_review" {
+            let bs: Vec<TaskRunBinding> = open_bindings
+                .iter()
+                .filter(|b| b.task_id == t.id)
+                .cloned()
+                .collect();
+            let (_, token) = live_from(&snap, &t.id, &bs, checkout_of(t).as_deref());
+            if p.live_token != Some(token) {
+                label_text_now = LIVE_DOWNGRADE_TEXT.into();
+                stale_tasks.push(t.id.clone());
+            }
+        }
         if let Some(sid) = &p.subject_id
             && REVIEW_LABELS.contains(&p.label.as_str())
         {
@@ -2366,7 +3252,7 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
             it.task_id = Some(t.id.clone());
             it.priority = t.priority.unwrap_or(0);
             it.effort = effort_of(t.effort.as_deref());
-            let mut sub = vec![p.label_text.clone()];
+            let mut sub = vec![label_text_now.clone()];
             if let Some(h) = &p.head_sha {
                 sub.push(format!("revision {}", short(h)));
             }
@@ -2525,7 +3411,9 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
                 if let Some(snap) = &pf.snapshot
                     && let Some(w) = att::wake(it, snap, now_ms, &aprefs)
                 {
+                    // Woken: clients must not keep hiding it behind the old deadline.
                     m.woke = Some(w.text(now_ms));
+                    m.snoozed_until_ms = None;
                     it.snoozed_until_ms = None;
                 }
             }
@@ -2535,22 +3423,59 @@ fn collect(server: &Server, now_ms: i64) -> Collected {
     let complete = stale_tasks.is_empty();
     if !complete {
         notes.push(format!(
-            "{} tracked task(s) have no review projection yet; refreshing",
+            "{} tracked task(s) have no current review projection yet; refreshing",
             stale_tasks.len()
         ));
     }
+    // Scope of each item: its task's workspace(s) (own workspace + panes of bound runs), and
+    // the workspace of its pane/run.
+    let task_ws = |tid: &str| -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = tasks_by_id
+            .get(tid)
+            .and_then(|t| t.workspace.clone())
+            .into_iter()
+            .collect();
+        for b in open_bindings.iter().filter(|b| b.task_id == tid) {
+            if let Some(ws) = runs_by_id
+                .get(b.run_id.as_str())
+                .and_then(|r| pane_ws.get(&r.pane))
+            {
+                out.insert(ws.clone());
+            }
+        }
+        out
+    };
+    let item_ws: HashMap<String, BTreeSet<String>> = meta
+        .iter()
+        .map(|(k, m)| {
+            let mut ws = m.task.as_deref().map(task_ws).unwrap_or_default();
+            if let Some(w) = m.pane.as_ref().and_then(|p| pane_ws.get(p)) {
+                ws.insert(w.clone());
+            }
+            if let Some(w) = m
+                .run
+                .as_deref()
+                .and_then(|r| runs_by_id.get(r))
+                .and_then(|r| pane_ws.get(&r.pane))
+            {
+                ws.insert(w.clone());
+            }
+            (k.clone(), ws)
+        })
+        .collect();
     Collected {
         items,
         meta,
         notes,
         complete,
         stale_tasks,
+        item_ws,
     }
 }
 
 pub async fn attention_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
-        "attention.list" => attention_list(server, p),
+        "attention.list" => attention_list(server, ctx, p),
         "attention.update" => attention_update(server, ctx, p),
         _ => return None,
     })
@@ -2562,11 +3487,28 @@ fn key_json(m: &Meta) -> Value {
 
 /// `attention.list {budget_ms?, effort?}` (15 §8). `effort` caps the coarse effort of
 /// non-urgent shortlist entries; either parameter enables the five-minute view.
-pub fn attention_list(server: &Arc<Server>, p: &Value) -> R {
+pub fn attention_list(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let now_ms = now();
-    let col = collect(server, now_ms);
+    // Authorization before retrieval (15 §11): resolve the caller's scope first, then only
+    // project items inside it; report how many were excluded, never their contents.
+    let scope = caller_workspace(server, ctx)?;
+    let mut col = collect(server, now_ms);
     for t in &col.stale_tasks {
         spawn_refresh(server, t);
+    }
+    let mut excluded = 0usize;
+    if let Some(ws) = &scope {
+        let item_ws = std::mem::take(&mut col.item_ws);
+        let visible = |id: &str| item_ws.get(id).is_some_and(|s| s.contains(ws));
+        let before = col.items.len();
+        col.items.retain(|i| visible(&i.key.object_id));
+        excluded = before - col.items.len();
+        col.meta.retain(|id, _| visible(id));
+        if excluded > 0 {
+            col.notes.push(format!(
+                "excluded {excluded} item(s) outside this pane's scope (workspace)"
+            ));
+        }
     }
     let aprefs = att::AttentionPrefs::default();
     let ranked = att::rank(&col.items, now_ms, &aprefs);
@@ -2634,7 +3576,12 @@ pub fn attention_list(server: &Arc<Server>, p: &Value) -> R {
     });
     Ok(json!({
         "items": items,
-        "coverage": {"complete": col.complete, "notes": col.notes},
+        "coverage": {
+            "complete": col.complete,
+            "notes": col.notes,
+            "scope": scope.as_ref().map_or_else(|| json!("all"), |w| json!({"workspace": w})),
+            "excluded": excluded,
+        },
         "five_minute": five,
     }))
 }
