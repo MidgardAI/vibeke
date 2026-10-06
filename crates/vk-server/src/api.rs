@@ -246,6 +246,8 @@ pub const METHODS: &[(&str, bool)] = &[
     ("worktree.list", false),
     ("worktree.remove", true),
     ("worktree.repo_root", false),
+    ("worktree.create", true),
+    ("worktree.open", true),
 ];
 
 /// Capability check for pane-scoped callers (09 §5.2): reads are open; writes are limited to
@@ -713,6 +715,11 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 x.order = k as f64 + 1.0;
                 tx.tab(x);
             }
+            tx.event(
+                "tab.moved",
+                json!({"tab": t.id, "workspace": t.workspace}),
+                json!({"index": j}),
+            );
             server.commit(&mut c, tx).map_err(internal)?;
             Ok(json!({}))
         }

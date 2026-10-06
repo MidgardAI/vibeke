@@ -1,21 +1,32 @@
-//! Herdr compatibility endpoint (07 §7.7, §8.3; 09 §6) — first slice of M5.
+//! Herdr compatibility endpoint (07 §7.7, §8.3; 09 §6) — M5, slices 1 and 2.
 //!
-//! * **Compat listener** (`[compat.herdr] enabled = true`, off by default): a second socket at
-//!   `$RUNTIME/<session>/herdr-compat/herdr.sock` speaking Herdr's wire protocol
-//!   (`vk_compat::herdr::wire`). Never placed on Herdr's own socket path. Caller identity comes
-//!   from peer credentials with the native pane-scope rule.
-//! * **Plugin brokers**: every plugin invocation gets a private 0600 socket bound server-side to
-//!   the plugin id and its legacy-grant digest; it is exported as `HERDR_SOCKET_PATH`. Brokers
-//!   work whether or not the public listener is enabled, re-check the grant on every request
-//!   and close when the invocation's process exits.
+//! * **Compat listener** (`[compat.herdr] enabled = true`, off by default): a second socket
+//!   speaking Herdr's wire protocol (`vk_compat::herdr::wire`), laid out like Herdr's: the
+//!   default session at `$RUNTIME/herdr-compat/herdr.sock`, a named session at
+//!   `$RUNTIME/herdr-compat/sessions/<name>/herdr.sock`. Never placed on Herdr's own socket
+//!   path; removed on a clean stop. Caller identity comes from peer credentials with the native
+//!   pane-scope rule.
+//! * **Plugin brokers** ([`brokers`]): every plugin invocation and plugin pane gets a private
+//!   0600 socket bound server-side to the plugin id and its legacy-grant digest, exported as
+//!   `HERDR_SOCKET_PATH`. Brokers work whether or not the public listener is enabled,
+//!   re-check the grant on every request, are re-issued after a server restart for live
+//!   invocations, and outlive the invocation's process only for the manifest's long-running
+//!   entrypoints (`[[startup]]` process groups, `[[panes]]`).
 //! * **Method mapping**: Herdr methods are translated onto the native API (`api::dispatch`, so
 //!   native authorization and events apply) and results are projected to Herdr shapes with
-//!   Herdr-style ids (Vibeke handles). Known-but-unimplemented baseline methods return an
-//!   explicit `unsupported` error; `method_not_found` is reserved for unknown methods.
+//!   Herdr-style ids (Vibeke handles); slice-2 methods live in [`ext`]. Known-but-unimplemented
+//!   baseline methods return an explicit `unsupported` error; `method_not_found` is reserved
+//!   for unknown methods.
 //! * **Plugins**: `plugin.action.list/run` (native) and `plugin.action.invoke` (compat) run
-//!   argv actions asynchronously with log records; `[[events]]` hooks fire on projected Herdr
-//!   events; `[[startup]]` runs once per server activation. Nothing runs without a valid
-//!   `herdr_legacy` grant (`vibeke plugin trust <id> --legacy`).
+//!   argv actions asynchronously with log records (output tailed from files so it survives a
+//!   server restart, credentials redacted with `vk-redact`); `[[events]]` hooks fire on
+//!   projected Herdr events; `[[startup]]` runs once per server activation. Nothing runs without
+//!   a valid `herdr_legacy` grant (`vibeke plugin trust <id> --legacy`). Invocations and
+//!   mutating broker calls are audited as metadata-only events (`plugin.invocation_started`,
+//!   `plugin.invocation_finished`, `plugin.api_call` with `actor.kind = plugin`).
+
+mod brokers;
+mod ext;
 
 use crate::Server;
 use crate::api::{self, Ctx, R, err, invalid};
@@ -54,8 +65,11 @@ const MAX_STREAM: usize = 64 * 1024;
 struct State {
     logs: Mutex<VecDeque<Value>>,
     next: AtomicU64,
-    /// Live broker sockets: path → plugin id.
-    brokers: Mutex<HashMap<PathBuf, String>>,
+    /// Live broker bindings by socket path.
+    bindings: Mutex<HashMap<PathBuf, brokers::Live>>,
+    /// Reported metadata (`pane.report_metadata`, `workspace.report_metadata`) by Vibeke id,
+    /// and the plugin-set window title (`client.window_title.set`).
+    meta: Mutex<ext::Meta>,
 }
 
 static STATES: LazyLock<Mutex<HashMap<String, Arc<State>>>> =
@@ -92,8 +106,22 @@ pub fn compat_root(server: &Server) -> PathBuf {
     server.paths.runtime.join("herdr-compat")
 }
 
+/// `$RUNTIME/herdr-compat`: the machine's Herdr-style socket root, shared by all sessions so
+/// tools that discover Herdr sessions see them all (07 §8.3).
+pub fn herdr_root(server: &Server) -> PathBuf {
+    server
+        .paths
+        .runtime
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(crate::paths::runtime_root)
+        .join("herdr-compat")
+}
+
+/// The public listener of this session: `<root>/herdr.sock` for `default`, else
+/// `<root>/sessions/<name>/herdr.sock`.
 pub fn listener_path(server: &Server) -> PathBuf {
-    compat_root(server).join("herdr.sock")
+    herdr::session_socket(&herdr_root(server), &server.opts.session)
 }
 
 fn private_dir(p: &Path) -> std::io::Result<()> {
@@ -132,9 +160,14 @@ fn compat_enabled() -> bool {
 
 // ---- startup ----------------------------------------------------------------------------------
 
-/// Called once from `run::serve` after recovery: event-hook dispatcher, startup hooks, and the
-/// public listener when enabled.
+/// Called once from `run::serve` after recovery: broker re-issue, event-hook dispatcher,
+/// startup hooks, and the public listener when enabled.
 pub fn start(server: &Arc<Server>) {
+    load_logs(server);
+    let (ok, dropped) = brokers::recover(server);
+    if ok + dropped > 0 {
+        tracing::info!(recovered = ok, dropped, "herdr plugin brokers");
+    }
     let s = server.clone();
     tokio::spawn(async move { hook_dispatcher(s).await });
     let s = server.clone();
@@ -155,17 +188,26 @@ pub fn start(server: &Arc<Server>) {
     }
 }
 
-fn bind_listener(server: &Server) -> std::io::Result<UnixListener> {
+fn bind_listener(server: &Arc<Server>) -> std::io::Result<UnixListener> {
     let path = listener_path(server);
     if is_herdr_owned(&path) {
         return Err(std::io::Error::other(
             "refusing to bind inside Herdr's config directory",
         ));
     }
-    private_dir(&compat_root(server))?;
+    let root = herdr_root(server);
+    private_dir(&root)?;
+    if let Some(dir) = path.parent()
+        && dir != root
+    {
+        private_dir(&root.join("sessions"))?;
+        private_dir(dir)?;
+    }
     let l = bind_socket(&path)?;
-    // Remove the socket on a clean stop (clients treat presence as liveness).
+    // Remove the socket on a clean stop (clients treat presence as liveness): on SIGTERM/SIGINT
+    // and on `server.stop`.
     let p = path.clone();
+    let srv = server.clone();
     tokio::spawn(async move {
         use tokio::signal::unix::{SignalKind, signal};
         let (Ok(mut term), Ok(mut int)) = (
@@ -174,8 +216,17 @@ fn bind_listener(server: &Server) -> std::io::Result<UnixListener> {
         ) else {
             return;
         };
-        tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+        tokio::select! {
+            _ = term.recv() => {},
+            _ = int.recv() => {},
+            _ = srv.shutdown.notified() => {},
+        }
         let _ = std::fs::remove_file(&p);
+        if let Some(dir) = p.parent()
+            && dir != herdr_root(&srv)
+        {
+            let _ = std::fs::remove_dir(dir);
+        }
     });
     Ok(l)
 }
@@ -223,6 +274,7 @@ async fn accept_public(server: Arc<Server>, l: UnixListener) {
             },
             plugin: None,
             default_pane: None,
+            invocation: None,
         };
         let s = server.clone();
         tokio::spawn(async move { serve_wire(s, stream, caller).await });
@@ -239,6 +291,8 @@ pub struct Caller {
     pub plugin: Option<(String, String)>,
     /// The invocation's pane, used when a request omits `pane_id`.
     pub default_pane: Option<String>,
+    /// The invocation's log id (audit correlation), for broker connections.
+    pub invocation: Option<String>,
 }
 
 impl Caller {
@@ -248,8 +302,68 @@ impl Caller {
             ctx,
             plugin: None,
             default_pane: None,
+            invocation: None,
         }
     }
+}
+
+/// Herdr methods that only read; every other method a broker calls is audited (09 §6).
+fn read_only(method: &str) -> bool {
+    matches!(
+        method,
+        "ping"
+            | "api.schema"
+            | "session.snapshot"
+            | "workspace.list"
+            | "workspace.get"
+            | "tab.list"
+            | "pane.list"
+            | "pane.get"
+            | "pane.current"
+            | "pane.read"
+            | "pane.wait_for_output"
+            | "pane.process_info"
+            | "agent.list"
+            | "agent.get"
+            | "agent.read"
+            | "agent.wait"
+            | "worktree.list"
+            | "worktree.repo_root"
+            | "layout.export"
+            | "events.subscribe"
+            | "events.wait"
+            | "plugin.list"
+            | "plugin.action.list"
+            | "plugin.log.list"
+    )
+}
+
+/// Commit one metadata-only audit event.
+fn audit(server: &Server, kind: &str, subject: Value, actor: Value, data: Value) {
+    let mut c = server.core.lock().unwrap();
+    let mut tx = crate::core::Tx::new();
+    tx.event_by(kind, subject, actor, data);
+    if let Err(e) = server.commit(&mut c, tx) {
+        tracing::warn!(error = %e, kind, "audit event not recorded");
+    }
+}
+
+/// Audit a mutating call made with a plugin's broker identity: method and outcome only, never
+/// parameters or text (09 §6 "Audit compat mutations with the plugin identity").
+fn audit_call(server: &Server, caller: &Caller, method: &str, outcome: Result<(), &str>) {
+    let Some((plugin, _)) = &caller.plugin else {
+        return;
+    };
+    if read_only(method) {
+        return;
+    }
+    audit(
+        server,
+        "plugin.api_call",
+        json!({"plugin": plugin}),
+        json!({"kind": "plugin", "id": plugin, "invocation": caller.invocation}),
+        json!({"method": method, "ok": outcome.is_ok(), "error_code": outcome.err()}),
+    );
 }
 
 /// The broker's grant must still be valid: registered, trusted with the same digest, enabled.
@@ -345,7 +459,14 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
             }
         }
     }
-    let line = match call(&server, &caller, &req.method, &req.params).await {
+    let r = call(&server, &caller, &req.method, &req.params).await;
+    audit_call(
+        &server,
+        &caller,
+        &req.method,
+        r.as_ref().map(|_| ()).map_err(|e| e.code.as_str()),
+    );
+    let line = match r {
         Ok(v) => wire::ok_line(&req.id, v),
         Err(e) => wire::err_line(&req.id, &e),
     };
@@ -362,12 +483,14 @@ struct Snap {
     pane_run: HashMap<String, AgentRun>,
     blocked: HashSet<String>,
     focus: ClientFocus,
+    meta: ext::Meta,
 }
 
 fn snap(server: &Server) -> Snap {
     let focus = crate::notify::recent_client(server)
         .map(|c| server.client_focus(&c))
         .unwrap_or_default();
+    let meta = state(server).meta.lock().unwrap().clone();
     server.with_core(|c| {
         let mut ws = c.model.workspaces.clone();
         ws.sort_by(|a, b| a.order.total_cmp(&b.order));
@@ -393,6 +516,7 @@ fn snap(server: &Server) -> Snap {
             pane_run,
             blocked,
             focus,
+            meta,
         }
     })
 }
@@ -440,7 +564,7 @@ impl Snap {
             .filter(|p| p.workspace == w.id)
             .filter_map(|p| self.pane_status(&p.id))
             .collect();
-        json!({
+        let mut v = json!({
             "workspace_id": w.handle,
             "number": idx + 1,
             "label": w.display_name(),
@@ -450,7 +574,11 @@ impl Snap {
             "active_tab_id": active,
             "agent_status": status::most_urgent(statuses),
             "cwd": w.root_path,
-        })
+        });
+        if let Some(m) = self.meta.workspaces.get(&w.id) {
+            v["metadata"] = json!(m);
+        }
+        v
     }
     fn tab_json(&self, t: &Tab) -> Value {
         json!({
@@ -492,6 +620,9 @@ impl Snap {
         });
         if let Some(t) = &p.title {
             v["label"] = json!(t);
+        }
+        if let Some(m) = self.meta.panes.get(&p.id) {
+            v["metadata"] = json!(m);
         }
         v
     }
@@ -607,8 +738,45 @@ fn project_event(
                     ),
                 );
             }
-            if name == "worktree.removed" {
-                d.insert("data".into(), ev.data.clone());
+            match name {
+                "worktree.created" | "worktree.opened" | "worktree.removed" => {
+                    let mut wt = ev.data.clone();
+                    if let Some(o) = wt.as_object_mut() {
+                        o.retain(|k, _| matches!(k.as_str(), "path" | "branch" | "repo_root"));
+                    }
+                    d.insert("worktree".into(), wt);
+                    d.insert("data".into(), ev.data.clone());
+                }
+                "pane.moved" => {
+                    for k in [
+                        "from_tab_id",
+                        "to_tab_id",
+                        "from_workspace_id",
+                        "to_workspace_id",
+                    ] {
+                        if let Some(v) = ev.data.get(k) {
+                            d.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+                "tab.moved" => {
+                    if let Some(i) = ev.data.get("index") {
+                        d.insert("insert_index".into(), i.clone());
+                    }
+                }
+                "layout.updated" => {
+                    if let Some(t) = sid("tab").and_then(|t| sn.tab(t)) {
+                        d.insert("layout".into(), ext::tab_snapshot(&sn, t));
+                    }
+                }
+                "pane.output_matched" => {
+                    for k in ["matched", "revision"] {
+                        if let Some(v) = ev.data.get(k) {
+                            d.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
             (name, pane.clone(), Value::Object(d))
         })
@@ -734,7 +902,7 @@ pub async fn call(
                     "tabs": sn.tabs.iter().map(|t| sn.tab_json(t)).collect::<Vec<_>>(),
                     "panes": sn.panes.iter().map(|x| sn.pane_json(server, x)).collect::<Vec<_>>(),
                     "agents": sn.pane_run.values().map(|r| sn.agent_json(server, r)).collect::<Vec<_>>(),
-                    "layouts": [],
+                    "layouts": sn.tabs.iter().map(|t| ext::tab_snapshot(&sn, t)).collect::<Vec<_>>(),
                     "focused_workspace_id": fw,
                     "focused_tab_id": ft,
                     "focused_pane_id": fp,
@@ -1103,6 +1271,17 @@ pub async fn call(
                 }
             }
             let r = native(server, caller, "pane.wait_output", np).await?;
+            // Registered matchers feed the `pane.output_matched` event (07 §8.3).
+            if let Some(x) = sn.pane(&id) {
+                let mut c = server.core.lock().unwrap();
+                let mut tx = crate::core::Tx::new();
+                tx.event(
+                    "pane.output_matched",
+                    crate::core::subject_pane(x),
+                    json!({"matched": r["matched"], "revision": r["revision"]}),
+                );
+                let _ = server.commit(&mut c, tx);
+            }
             Ok(typed(
                 "pane_output_matched",
                 json!({"pane_id": sn.pane(&id).map(|x| x.handle.clone()), "matched": r["matched"], "revision": r["revision"]}),
@@ -1250,6 +1429,7 @@ pub async fn call(
             "unsupported",
             "server.stop is refused on the Herdr compatibility endpoint; use `vibeke server stop`",
         )),
+        m if ext::METHODS.contains(&m) => ext::call(server, caller, &sn, m, p).await,
         other => match inventory::method_status(other) {
             Some(_) => Err(WireError::new(
                 "unsupported",
@@ -1497,6 +1677,7 @@ pub fn invoke_action(
             event: None,
             entrypoint: Some(a.id.clone()),
             ctx,
+            long_lived: false,
         },
     ))
 }
@@ -1507,6 +1688,86 @@ struct Spawn<'a> {
     event: Option<(String, Value)>,
     entrypoint: Option<String>,
     ctx: InvokeContext,
+    /// The manifest declares this entrypoint long-running (`[[startup]]`): its broker stays
+    /// while the invocation's process group is alive.
+    long_lived: bool,
+}
+
+fn logs_path(server: &Server) -> PathBuf {
+    compat_root(server).join("logs.json")
+}
+
+/// Persist the log records (so a restarted server still lists them, 07 §7.7).
+fn persist_logs(server: &Server) {
+    let st = state(server);
+    // Keep the file small: the persisted copy holds the last 4 KiB of each stream.
+    let trim = |v: &Value| -> Value {
+        let mut v = v.clone();
+        for k in ["stdout", "stderr"] {
+            if let Some(t) = v.get(k).and_then(Value::as_str)
+                && t.len() > 4096
+            {
+                let mut cut = t.len() - 4096;
+                while !t.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                v[k] = json!(t[cut..].to_string());
+            }
+        }
+        v
+    };
+    let bytes = {
+        let logs = st.logs.lock().unwrap();
+        serde_json::to_vec(&logs.iter().map(trim).collect::<Vec<_>>()).unwrap_or_default()
+    };
+    if private_dir(&compat_root(server)).is_err() {
+        return;
+    }
+    let path = logs_path(server);
+    let tmp = path.with_extension("json.tmp");
+    use std::os::unix::fs::OpenOptionsExt;
+    let ok = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
+    if ok.is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// Load persisted log records at server start. Records still `running` whose invocation is not
+/// re-attached by broker recovery are finalized with an unknown exit status.
+fn load_logs(server: &Server) {
+    let Some(list) = std::fs::read(logs_path(server))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Vec<Value>>(&b).ok())
+    else {
+        return;
+    };
+    let st = state(server);
+    let mut logs = st.logs.lock().unwrap();
+    for mut l in list {
+        if l["status"] == "running" {
+            let pid = l["pid"].as_u64().map(|p| p as i32);
+            if !pid.is_some_and(brokers::pid_alive) {
+                l["status"] = json!("failed");
+                l["error"] = json!("the server restarted; exit status unknown");
+                if l["finished_at"].is_null() {
+                    l["finished_at"] = json!(now_ms());
+                }
+            }
+        }
+        logs.push_back(l);
+    }
+    while logs.len() > MAX_LOGS {
+        logs.pop_front();
+    }
+    let n = logs.len() as u64;
+    drop(logs);
+    st.next.fetch_max(n, Ordering::Relaxed);
 }
 
 fn update_log(server: &Server, id: &str, f: impl FnOnce(&mut Map<String, Value>)) {
@@ -1518,12 +1779,15 @@ fn update_log(server: &Server, id: &str, f: impl FnOnce(&mut Map<String, Value>)
 }
 
 fn push_log(server: &Server, rec: Value) {
-    let st = state(server);
-    let mut logs = st.logs.lock().unwrap();
-    logs.push_back(rec);
-    while logs.len() > MAX_LOGS {
-        logs.pop_front();
+    {
+        let st = state(server);
+        let mut logs = st.logs.lock().unwrap();
+        logs.push_back(rec);
+        while logs.len() > MAX_LOGS {
+            logs.pop_front();
+        }
     }
+    persist_logs(server);
 }
 
 fn logs(server: &Server, plugin: Option<&str>, limit: Option<u64>) -> Vec<Value> {
@@ -1543,15 +1807,152 @@ fn logs(server: &Server, plugin: Option<&str>, limit: Option<u64>) -> Vec<Value>
     v
 }
 
-fn tail_push(buf: &mut String, chunk: &[u8]) {
-    buf.push_str(&String::from_utf8_lossy(chunk));
+/// Keep the last [`MAX_STREAM`] bytes of a stream.
+fn tail_keep(buf: &mut Vec<u8>) {
     if buf.len() > MAX_STREAM {
-        let mut cut = buf.len() - MAX_STREAM;
-        while !buf.is_char_boundary(cut) {
-            cut += 1;
-        }
-        buf.drain(..cut);
+        buf.drain(..buf.len() - MAX_STREAM);
     }
+}
+
+/// The text of a stream tail as stored in a log record: lossy UTF-8 with credentials redacted
+/// (09 §6 "Logs and audit records redact credentials").
+fn redacted(buf: &[u8]) -> String {
+    let text = String::from_utf8_lossy(buf);
+    vk_redact::redact(&text).into_owned()
+}
+
+/// Tails an invocation's stdout/stderr files into its log record.
+struct Tail {
+    files: [(Option<PathBuf>, u64, Vec<u8>); 2],
+}
+
+impl Tail {
+    fn new(out: Option<PathBuf>, err: Option<PathBuf>) -> Self {
+        Tail {
+            files: [(out, 0, Vec::new()), (err, 0, Vec::new())],
+        }
+    }
+
+    /// Read what was appended since the last poll; update the record when anything changed.
+    fn poll(&mut self, server: &Server, log_id: &str) {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut changed = false;
+        for (path, off, buf) in self.files.iter_mut() {
+            let Some(p) = path else { continue };
+            let Ok(mut f) = std::fs::File::open(&*p) else {
+                continue;
+            };
+            if f.seek(SeekFrom::Start(*off)).is_err() {
+                continue;
+            }
+            let mut chunk = Vec::new();
+            if f.read_to_end(&mut chunk).is_ok() && !chunk.is_empty() {
+                *off += chunk.len() as u64;
+                buf.extend_from_slice(&chunk);
+                tail_keep(buf);
+                changed = true;
+            }
+        }
+        if changed {
+            let (o, e) = (redacted(&self.files[0].2), redacted(&self.files[1].2));
+            update_log(server, log_id, |l| {
+                l.insert("stdout".into(), json!(o));
+                l.insert("stderr".into(), json!(e));
+            });
+        }
+    }
+
+    /// The output files are transient (they may hold unredacted output): removed once read.
+    fn remove(&self) {
+        for (p, ..) in &self.files {
+            if let Some(p) = p {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+}
+
+/// Finish a log record and audit it.
+fn finish_log(server: &Server, log_id: &str, ok: bool, code: Option<i32>, note: Option<&str>) {
+    let mut meta = (String::new(), Value::Null, Value::Null);
+    update_log(server, log_id, |l| {
+        l.insert(
+            "status".into(),
+            json!(if ok { "completed" } else { "failed" }),
+        );
+        l.insert("exit_code".into(), json!(code));
+        l.insert("finished_at".into(), json!(now_ms()));
+        if let Some(n) = note {
+            l.insert("error".into(), json!(n));
+        }
+        meta = (
+            l.get("plugin_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            l.get("started_at").cloned().unwrap_or(Value::Null),
+            l.get("source").cloned().unwrap_or(Value::Null),
+        );
+    });
+    persist_logs(server);
+    let (plugin, started, source) = meta;
+    audit(
+        server,
+        "plugin.invocation_finished",
+        json!({"plugin": plugin}),
+        json!({"kind": "plugin", "id": plugin, "invocation": log_id}),
+        json!({
+            "log_id": log_id,
+            "source": source,
+            "status": if ok { "completed" } else { "failed" },
+            "exit_code": code,
+            "duration_ms": started.as_i64().map(|s| now_ms() - s),
+        }),
+    );
+}
+
+/// After a server restart: keep tailing a re-attached invocation's output until its process
+/// exits (its exit status is not observable any more).
+fn resume_tail(
+    server: &Arc<Server>,
+    log_id: String,
+    out: Option<PathBuf>,
+    err: Option<PathBuf>,
+    pid: u32,
+) {
+    let srv = server.clone();
+    tokio::spawn(async move {
+        let mut tail = Tail::new(out, err);
+        while brokers::pid_alive(pid as i32) {
+            tail.poll(&srv, &log_id);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        tail.poll(&srv, &log_id);
+        tail.remove();
+        let running = logs(&srv, None, None)
+            .iter()
+            .any(|l| l["log_id"] == log_id.as_str() && l["status"] == "running");
+        if running {
+            finish_log(
+                &srv,
+                &log_id,
+                true,
+                None,
+                Some("re-attached after a server restart; exit status unknown"),
+            );
+        }
+    });
+}
+
+/// A 0600 output file for an invocation stream.
+fn out_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
 }
 
 /// Start one plugin process with its private broker and log record; returns the record as it
@@ -1592,6 +1993,7 @@ fn spawn_invocation(
         "plugin_id": entry.id,
         "action_id": sp_.action,
         "event": sp_.event.as_ref().map(|e| e.0.clone()),
+        "entrypoint_id": sp_.entrypoint,
         "source": sp_.source,
         "status": "running",
         "started_at": now_ms(),
@@ -1601,49 +2003,47 @@ fn spawn_invocation(
         "stderr": "",
         "context": context,
     });
+    let fail = |mut rec: Value, msg: String| {
+        rec["status"] = json!("failed");
+        rec["stderr"] = json!(vk_redact::redact(&msg));
+        rec["finished_at"] = json!(now_ms());
+        push_log(server, rec.clone());
+        rec
+    };
+    // Output goes to files, not pipes: a long-lived invocation keeps writing across a server
+    // restart (a pipe would break and SIGPIPE it).
+    let out_dir = compat_root(server).join("out");
+    let (out_path, err_path) = (
+        out_dir.join(format!("{log_id}.out")),
+        out_dir.join(format!("{log_id}.err")),
+    );
+    let files =
+        private_dir(&out_dir).and_then(|_| Ok((out_file(&out_path)?, out_file(&err_path)?)));
+    let (out_f, err_f) = match files {
+        Ok(f) => f,
+        Err(e) => return fail(rec, format!("output: {e}")),
+    };
     // Private broker bound to this invocation's grant.
-    let broker_dir = compat_root(server).join("brokers");
-    let broker = broker_dir.join(format!("{}.sock", &crate::core::ulid()[14..]));
-    let listener = private_dir(&compat_root(server))
-        .and_then(|_| private_dir(&broker_dir))
-        .and_then(|_| bind_socket(&broker));
-    let listener = match listener {
-        Ok(l) => l,
-        Err(e) => {
-            rec["status"] = json!("failed");
-            rec["stderr"] = json!(format!("broker: {e}"));
-            rec["finished_at"] = json!(now_ms());
-            push_log(server, rec.clone());
-            return rec;
-        }
+    let broker = match brokers::new_path(server) {
+        Ok(p) => p,
+        Err(e) => return fail(rec, format!("broker: {e}")),
     };
-    st.brokers
-        .lock()
-        .unwrap()
-        .insert(broker.clone(), entry.id.clone());
-    let caller = Caller {
-        ctx: Ctx {
-            client_id: format!("plugin:{}", entry.id),
-            kind: "plugin".into(),
-            pane_scope: None,
-            remote: false,
-        },
-        plugin: Some((entry.id.clone(), digest)),
+    let binding = brokers::Binding {
+        path: broker.clone(),
+        plugin_id: entry.id.clone(),
+        digest,
         default_pane: sp_.ctx.pane.clone(),
+        entrypoint: sp_.entrypoint.clone(),
+        source: sp_.source.to_string(),
+        log_id: Some(log_id.clone()),
+        life: brokers::Life::Pending,
+        created_at_ms: now_ms(),
+        stdout: Some(out_path.clone()),
+        stderr: Some(err_path.clone()),
     };
-    let srv = server.clone();
-    let broker_task = tokio::spawn(async move {
-        loop {
-            let Ok((s, _)) = listener.accept().await else {
-                return;
-            };
-            if !same_uid(&s) {
-                continue;
-            }
-            let (srv, c) = (srv.clone(), caller.clone());
-            tokio::spawn(async move { serve_wire(srv, s, c).await });
-        }
-    });
+    if let Err(e) = brokers::bind(server, binding) {
+        return fail(rec, format!("broker: {e}"));
+    }
     let inv = launch::Invocation {
         plugin_id: entry.id.clone(),
         root: entry.root.clone(),
@@ -1669,61 +2069,73 @@ fn spawn_invocation(
         .env_clear()
         .envs(env)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let cleanup = {
-        let st = st.clone();
-        let broker = broker.clone();
-        move || {
-            broker_task.abort();
-            st.brokers.lock().unwrap().remove(&broker);
-            let _ = std::fs::remove_file(&broker);
-        }
-    };
+        .stdout(out_f)
+        .stderr(err_f)
+        // Its own process group: the group is what a long-running entrypoint's lifetime
+        // follows, and it survives the server.
+        .process_group(0);
     match cmd.spawn() {
         Err(e) => {
-            cleanup();
-            rec["status"] = json!("failed");
-            rec["stderr"] = json!(format!("spawn {}: {e}", argv[0]));
-            rec["finished_at"] = json!(now_ms());
-            push_log(server, rec.clone());
-            rec
+            brokers::close(server, &broker);
+            let _ = std::fs::remove_file(&out_path);
+            let _ = std::fs::remove_file(&err_path);
+            fail(rec, format!("spawn {}: {e}", argv[0]))
         }
         Ok(mut child) => {
-            rec["pid"] = json!(child.id());
+            let pid = child.id().unwrap_or_default();
+            rec["pid"] = json!(pid);
+            brokers::set_life(
+                server,
+                &broker,
+                if sp_.long_lived {
+                    brokers::Life::Group { pid, pgid: pid }
+                } else {
+                    brokers::Life::Process { pid }
+                },
+            );
             push_log(server, rec.clone());
+            audit(
+                server,
+                "plugin.invocation_started",
+                json!({"plugin": entry.id}),
+                json!({"kind": "plugin", "id": entry.id, "invocation": log_id}),
+                json!({
+                    "log_id": log_id,
+                    "source": sp_.source,
+                    "action_id": sp_.action,
+                    "event": sp_.event.as_ref().map(|e| e.0.clone()),
+                    "entrypoint_id": sp_.entrypoint,
+                    "pid": pid,
+                    "long_lived": sp_.long_lived,
+                }),
+            );
             let srv = server.clone();
             let id = log_id.clone();
-            let mut out = child.stdout.take();
-            let mut errp = child.stderr.take();
+            let long_lived = sp_.long_lived;
             tokio::spawn(async move {
-                let (mut o, mut e) = (String::new(), String::new());
-                let (mut ob, mut eb) = ([0u8; 4096], [0u8; 4096]);
-                let (mut o_done, mut e_done) = (out.is_none(), errp.is_none());
-                while !(o_done && e_done) {
+                let mut tail = Tail::new(Some(out_path), Some(err_path));
+                let status = loop {
                     tokio::select! {
-                        r = async { out.as_mut().unwrap().read(&mut ob).await }, if !o_done => match r {
-                            Ok(0) | Err(_) => o_done = true,
-                            Ok(n) => { tail_push(&mut o, &ob[..n]); let v = o.clone(); update_log(&srv, &id, |l| { l.insert("stdout".into(), json!(v)); }); }
-                        },
-                        r = async { errp.as_mut().unwrap().read(&mut eb).await }, if !e_done => match r {
-                            Ok(0) | Err(_) => e_done = true,
-                            Ok(n) => { tail_push(&mut e, &eb[..n]); let v = e.clone(); update_log(&srv, &id, |l| { l.insert("stderr".into(), json!(v)); }); }
-                        },
+                        s = child.wait() => break s,
+                        _ = tokio::time::sleep(Duration::from_millis(150)) => tail.poll(&srv, &id),
                     }
+                };
+                tail.poll(&srv, &id);
+                // A long-running entrypoint's children may still write; keep the files until
+                // the broker (group) closes.
+                if !long_lived {
+                    tail.remove();
+                    brokers::close(&srv, &broker);
                 }
-                let status = child.wait().await;
-                cleanup();
                 let code = status.as_ref().ok().and_then(|s| s.code());
                 let ok = status.as_ref().is_ok_and(|s| s.success());
-                update_log(&srv, &id, |l| {
-                    l.insert(
-                        "status".into(),
-                        json!(if ok { "completed" } else { "failed" }),
-                    );
-                    l.insert("exit_code".into(), json!(code));
-                    l.insert("finished_at".into(), json!(now_ms()));
-                });
+                finish_log(&srv, &id, ok, code, None);
+                if long_lived {
+                    while brokers::get(&srv, &broker).is_some() {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    tail.remove();
+                }
             });
             rec
         }
@@ -1750,6 +2162,7 @@ fn run_startup_hooks(server: &Arc<Server>) {
                     event: None,
                     entrypoint: Some(format!("startup[{i}]")),
                     ctx: InvokeContext::default(),
+                    long_lived: true,
                 },
             );
         }
@@ -1836,6 +2249,7 @@ async fn hook_dispatcher(server: Arc<Server>) {
                                 h.id.clone().unwrap_or_else(|| format!("events[{i}]")),
                             ),
                             ctx,
+                            long_lived: false,
                         },
                     );
                 }
@@ -1905,12 +2319,40 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             } else {
                 json!({})
             };
-            Ok(
-                match call(server, &Caller::user(ctx.clone()), m, &params).await {
-                    Ok(v) => json!({"result": v}),
-                    Err(e) => json!({"error": {"code": e.code, "message": e.message}}),
-                },
-            )
+            // A plugin invocation that selected this session (`herdr --session`) keeps its
+            // plugin identity: the grant is re-checked here, on the destination (09 §6).
+            let mut caller = Caller::user(ctx.clone());
+            if let Some(id) = s("as_plugin") {
+                if ctx.pane_scope.is_some() {
+                    return Some(Err(err(
+                        ErrorKind::PermissionDenied,
+                        "a pane cannot act as a plugin",
+                    )));
+                }
+                let digest = Registry::load(&plugin_dirs())
+                    .ok()
+                    .and_then(|r| r.get(id).ok().cloned())
+                    .filter(|e| matches!(registry::entry_status(e), (Status::Active, _)))
+                    .and_then(|e| e.trust.map(|g| g.manifest_sha256));
+                let Some(digest) = digest else {
+                    return Some(Ok(
+                        json!({"error": {"code": "permission_denied", "message": format!("plugin {id} is not trusted and enabled")}}),
+                    ));
+                };
+                caller.plugin = Some((id.to_string(), digest));
+                caller.ctx.kind = "plugin".into();
+            }
+            let r = call(server, &caller, m, &params).await;
+            audit_call(
+                server,
+                &caller,
+                m,
+                r.as_ref().map(|_| ()).map_err(|e| e.code.as_str()),
+            );
+            Ok(match r {
+                Ok(v) => json!({"result": v}),
+                Err(e) => json!({"error": {"code": e.code, "message": e.message}}),
+            })
         }
         "compat.status" => {
             let (i, pa, mi) = inventory::counts(None);
@@ -1920,7 +2362,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 "support": "partial",
                 "listener": {"enabled": compat_enabled(), "path": path, "live": path.exists()},
                 "inventory": {"implemented": i, "partial": pa, "missing": mi},
-                "brokers": state(server).brokers.lock().unwrap().len(),
+                "brokers": brokers::all(server).len(),
+                "herdr_root": herdr_root(server),
                 "registry": plugin_dirs().registry,
             }))
         }
@@ -2121,6 +2564,103 @@ mod tests {
         };
         assert_eq!(check_broker(&ghost).unwrap_err().code, "permission_denied");
         assert!(check_broker(&user()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn listener_uses_herdrs_session_layout() {
+        let (srv, d) = server();
+        let root = d.path().canonicalize().unwrap();
+        assert_eq!(herdr_root(&srv), root.join("herdr-compat"));
+        assert_eq!(
+            listener_path(&srv),
+            root.join("herdr-compat/sessions/t/herdr.sock"),
+            "a named session lives under sessions/<name>/"
+        );
+        assert!(compat_root(&srv).starts_with(root.join("run")));
+    }
+
+    #[tokio::test]
+    async fn recovery_drops_bindings_without_a_live_process_or_a_grant() {
+        let (srv, _d) = server();
+        private_dir(&compat_root(&srv)).unwrap();
+        let sock = |n: &str| compat_root(&srv).join(format!("{n}.sock"));
+        let b = |n: &str, plugin: &str, life: brokers::Life| brokers::Binding {
+            path: sock(n),
+            plugin_id: plugin.into(),
+            digest: "d".into(),
+            default_pane: None,
+            entrypoint: None,
+            source: "startup".into(),
+            log_id: None,
+            life,
+            created_at_ms: 0,
+            stdout: None,
+            stderr: None,
+        };
+        let me = std::process::id();
+        let list = vec![
+            // Alive, but the plugin is not registered (no grant): dropped.
+            b("ungranted", "acme.gone", brokers::Life::Process { pid: me }),
+            // Dead process: dropped.
+            b(
+                "dead",
+                "acme.gone",
+                brokers::Life::Process { pid: 0x7fff_fff0 },
+            ),
+            // Never started: dropped.
+            b("pending", "acme.gone", brokers::Life::Pending),
+        ];
+        for x in &list {
+            std::fs::write(&x.path, "").unwrap();
+        }
+        std::fs::write(
+            compat_root(&srv).join("brokers.json"),
+            serde_json::to_vec(&list).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(brokers::recover(&srv), (0, 3));
+        for x in &list {
+            assert!(
+                !x.path.exists(),
+                "stale socket {} removed",
+                x.path.display()
+            );
+        }
+        assert!(brokers::all(&srv).is_empty());
+        assert!(brokers::pid_alive(me as i32));
+    }
+
+    #[test]
+    fn plugin_log_tails_are_redacted() {
+        let token = format!("ghp_{}", "A".repeat(36));
+        let out = redacted(format!("pushing with {token}\n").as_bytes());
+        assert!(!out.contains(&token), "{out}");
+        assert!(out.contains("pushing with"));
+        let mut big = vec![b'x'; MAX_STREAM + 10];
+        tail_keep(&mut big);
+        assert_eq!(big.len(), MAX_STREAM);
+    }
+
+    #[tokio::test]
+    async fn read_only_methods_are_not_audited() {
+        assert!(read_only("pane.list") && read_only("layout.export"));
+        assert!(!read_only("pane.send_text") && !read_only("pane.move"));
+        let (srv, _d) = server();
+        let plugin = Caller {
+            plugin: Some(("acme.audit".into(), "d".into())),
+            invocation: Some("l1".into()),
+            ..user()
+        };
+        audit_call(&srv, &plugin, "pane.list", Ok(()));
+        audit_call(&srv, &plugin, "pane.rename", Err("pane_not_found"));
+        audit_call(&srv, &user(), "pane.rename", Ok(()));
+        let evs = srv.with_core(|c| c.store.events_after(0, 100, &[]).unwrap());
+        let calls: Vec<_> = evs.iter().filter(|e| e.kind == "plugin.api_call").collect();
+        assert_eq!(calls.len(), 1, "only the plugin's mutating call");
+        assert_eq!(calls[0].actor["kind"], "plugin");
+        assert_eq!(calls[0].actor["id"], "acme.audit");
+        assert_eq!(calls[0].data["method"], "pane.rename");
+        assert_eq!(calls[0].data["error_code"], "pane_not_found");
     }
 
     #[test]

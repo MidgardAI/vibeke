@@ -58,13 +58,18 @@ pub const PROJECTED: &[&str] = &[
     "tab.closed",
     "tab.focused",
     "tab.renamed",
+    "tab.moved",
     "pane.created",
     "pane.closed",
     "pane.focused",
+    "pane.moved",
     "pane.exited",
     "pane.agent_detected",
     "pane.agent_status_changed",
+    "pane.output_matched",
     "layout.updated",
+    "worktree.created",
+    "worktree.opened",
     "worktree.removed",
 ];
 
@@ -133,6 +138,7 @@ impl Projector {
                 out.push("tab.closed")
             }
             "tab.renamed" => out.push("tab.renamed"),
+            "tab.moved" => out.push("tab.moved"),
             "tab.layout_changed" | "layout.applied" => out.push("layout.updated"),
             "pane.created" => out.push("pane.created"),
             "pane.closed" => {
@@ -142,6 +148,9 @@ impl Projector {
                 out.push("pane.closed")
             }
             "pane.exited" => out.push("pane.exited"),
+            "pane.moved" => out.push("pane.moved"),
+            // Emitted by the compat `pane.wait_for_output` matcher (07 §8.3).
+            "pane.output_matched" => out.push("pane.output_matched"),
             "pane.focused" => {
                 if e.workspace.is_some() && self.focused_ws.as_deref() != e.workspace {
                     self.focused_ws = e.workspace.map(str::to_string);
@@ -167,6 +176,8 @@ impl Projector {
             | "interaction.cancelled"
             | "interaction.expired"
             | "pane.marked_unread" => self.status_change(e, &mut out),
+            "worktree.created" => out.push("worktree.created"),
+            "worktree.opened" => out.push("worktree.opened"),
             "worktree.removed" => out.push("worktree.removed"),
             _ => {}
         }
@@ -316,6 +327,14 @@ mod tests {
         );
         assert_eq!(k(&mut p, "tab.layout_changed"), vec!["layout.updated"]);
         assert_eq!(k(&mut p, "worktree.removed"), vec!["worktree.removed"]);
+        assert_eq!(k(&mut p, "worktree.created"), vec!["worktree.created"]);
+        assert_eq!(k(&mut p, "worktree.opened"), vec!["worktree.opened"]);
+        assert_eq!(k(&mut p, "tab.moved"), vec!["tab.moved"]);
+        assert_eq!(k(&mut p, "pane.moved"), vec!["pane.moved"]);
+        assert_eq!(
+            k(&mut p, "pane.output_matched"),
+            vec!["pane.output_matched"]
+        );
         assert!(k(&mut p, "task.created").is_empty());
         for e in PROJECTED {
             assert!(BASELINE_EVENTS.contains(e), "{e}");

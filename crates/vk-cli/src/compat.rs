@@ -32,6 +32,9 @@ const PLUGIN_HELP: &str = "vibeke plugin — Herdr-compatible plugins (M5, parti
   vibeke plugin action list [--plugin id]
   vibeke plugin action run <plugin> <action> | <plugin>.<action> [--pane P]
   vibeke plugin logs [--plugin id] [--limit n]
+  vibeke plugin migrate --from <dir> [--plugin id]... [--dry-run] [--link]
+                                         copy Herdr plugin config/state (source read only)
+  vibeke plugin migrate --rollback       remove what the last migration created
 
 Herdr plugins declare no capabilities; nothing they ship runs until trusted.";
 
@@ -456,6 +459,168 @@ fn untrust_cmd(g: &Global, args: &[String]) -> i32 {
     }
 }
 
+/// Where migration records live (`$STATE/plugins/migrations`).
+fn migration_records() -> PathBuf {
+    vk_server::paths::state_root().join("plugins/migrations")
+}
+
+/// `vibeke plugin migrate --from <dir> [--plugin id]… [--dry-run] [--link]` and
+/// `vibeke plugin migrate --rollback`: copy Herdr plugin config/state into Vibeke's plugin
+/// dirs (07 §7.7). The source is only ever the directory the user names; it is read, never
+/// changed. Conflicts are reported and left alone. `--link` also registers the source
+/// registry's plugin directories (untrusted, nothing runs).
+fn migrate_cmd(g: &Global, args: &[String]) -> i32 {
+    if pane_scoped() || in_plugin() {
+        return fail(
+            "permission_denied",
+            "plugin migration is an operator action; run it outside panes and plugins",
+            EXIT_PERMISSION,
+        );
+    }
+    let records = migration_records();
+    if flag(args, "--rollback") {
+        let Some((path, rec)) = herdr::migrate::latest(&records) else {
+            return fail("not_found", "no migration to roll back", EXIT_API);
+        };
+        let rb = herdr::migrate::rollback(&rec);
+        let done = path.with_extension("rolled-back");
+        let _ = std::fs::rename(&path, &done);
+        print(
+            g,
+            &json!({"rolled_back": rec.id, "from": rec.from, "result": rb}),
+            || {
+                format!(
+                    "rolled back {}: removed {} path(s), kept {} changed file(s); {} was never modified",
+                    rec.id,
+                    rb.removed.len(),
+                    rb.kept_changed.len(),
+                    rec.from.display()
+                )
+            },
+        );
+        return EXIT_OK;
+    }
+    let Some(from) = value(args, "--from") else {
+        eprintln!(
+            "vibeke plugin migrate --from <herdr config dir or a copy> [--plugin id]... [--dry-run] [--link]\n\
+             vibeke plugin migrate --rollback\n\
+             The source is never assumed: name it explicitly. It is only read."
+        );
+        return EXIT_USAGE;
+    };
+    let only: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| *a == "--plugin" && *i + 1 < args.len())
+        .map(|(i, _)| args[i + 1].clone())
+        .collect();
+    let dirs = vk_server::compat::plugin_dirs();
+    let plan = match herdr::migrate::plan(Path::new(&from), &dirs, &only) {
+        Ok(p) => p,
+        Err(e) => return fail("invalid_params", e, EXIT_API),
+    };
+    use herdr::migrate::Action;
+    let summary = json!({
+        "copy": plan.count(Action::Copy),
+        "same": plan.count(Action::Same),
+        "conflict": plan.count(Action::Conflict),
+        "skipped": plan.count(Action::Skipped),
+    });
+    if flag(args, "--dry-run") {
+        print(
+            g,
+            &json!({"dry_run": true, "plan": plan, "summary": summary}),
+            || {
+                let mut s = format!(
+                    "from {} (read only): {} plugin(s), {summary}\n",
+                    plan.from.display(),
+                    plan.plugins.len()
+                );
+                for f in &plan.files {
+                    s.push_str(&format!(
+                        "  {:?} {} {} -> {}\n",
+                        f.action,
+                        f.plugin,
+                        f.from.display(),
+                        f.to.display()
+                    ));
+                }
+                s
+            },
+        );
+        return EXIT_OK;
+    }
+    let rec = match herdr::migrate::apply(&plan, &records) {
+        Ok(r) => r,
+        Err(e) => return fail("internal", e, EXIT_API),
+    };
+    let mut linked = Vec::new();
+    let mut link_errors = Vec::new();
+    if flag(args, "--link") {
+        match Registry::load(&dirs) {
+            Ok(mut reg) => {
+                for p in plan.plugins.iter().filter(|p| p.has_manifest) {
+                    let Some(root) = &p.root else { continue };
+                    match reg.link(root) {
+                        Ok((e, _)) => linked.push(e.id),
+                        Err(e) => link_errors.push(format!("{}: {e}", p.id)),
+                    }
+                }
+                if let Err(e) = reg.save(&dirs) {
+                    return reg_fail(e);
+                }
+            }
+            Err(e) => return reg_fail(e),
+        }
+    }
+    let suggestions: Vec<String> = plan
+        .plugins
+        .iter()
+        .filter(|p| p.has_manifest && !linked.contains(&p.id))
+        .filter_map(|p| p.root.as_ref())
+        .map(|r| format!("vibeke plugin link {}", r.display()))
+        .collect();
+    print(
+        g,
+        &json!({
+            "migration": rec.id,
+            "from": plan.from,
+            "summary": summary,
+            "created": rec.created.len(),
+            "conflicts": rec.conflicts,
+            "plugins": plan.plugins,
+            "layouts": plan.layouts,
+            "linked": linked,
+            "link_errors": link_errors,
+            "suggested": suggestions,
+            "warnings": plan.warnings,
+            "rollback": "vibeke plugin migrate --rollback",
+        }),
+        || {
+            let mut s = format!(
+                "migrated {} file(s) from {} (unchanged); {} conflict(s) left alone\n",
+                plan.count(Action::Copy),
+                plan.from.display(),
+                rec.conflicts.len()
+            );
+            for c in &rec.conflicts {
+                s.push_str(&format!("  conflict: {}\n", c.display()));
+            }
+            for l in &linked {
+                s.push_str(&format!(
+                    "  linked {l} (untrusted: review with `vibeke plugin trust {l} --legacy`)\n"
+                ));
+            }
+            for x in &suggestions {
+                s.push_str(&format!("  next: {x}\n"));
+            }
+            s.push_str("undo with `vibeke plugin migrate --rollback`");
+            s
+        },
+    );
+    EXIT_OK
+}
+
 async fn api_call(g: &Global, method: &str, params: Value) -> i32 {
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     let stream = match client::connect_or_spawn(&g.session, &socket, g.no_spawn).await {
@@ -482,6 +647,7 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
             if verb.is_empty() { EXIT_USAGE } else { EXIT_OK }
         }
         "list" | "ls" => local(g, Local::PluginList),
+        "migrate" => migrate_cmd(g, rest),
         "install" => {
             let pos = positionals(rest, &["--ref"]);
             let [src] = pos.as_slice() else {
@@ -629,12 +795,56 @@ fn broker() -> Option<PathBuf> {
     .then_some(b)
 }
 
-/// The session's public compat listener, if it is running.
-fn listener(g: &Global) -> Option<PathBuf> {
-    let p = vk_server::paths::Paths::new(&g.session)
-        .runtime
-        .join("herdr-compat/herdr.sock");
+/// A session's public compat listener (Herdr layout under `$RUNTIME/herdr-compat`), if running.
+fn listener(session: &str) -> Option<PathBuf> {
+    let root = vk_server::paths::runtime_root().join("herdr-compat");
+    let p = herdr::session_socket(&root, session);
     p.exists().then_some(p)
+}
+
+/// The Vibeke session a broker belongs to (`$RUNTIME/<session>/herdr-compat/brokers/…`).
+fn broker_session(b: &Path) -> Option<String> {
+    let rel = b.strip_prefix(vk_server::paths::runtime_root()).ok()?;
+    rel.components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+}
+
+/// A request to an explicitly selected session through its native socket (never spawns a
+/// server). From a plugin invocation the destination re-checks the plugin's grant (09 §6).
+async fn session_call(
+    session: &str,
+    method: &str,
+    params: Value,
+    as_plugin: Option<String>,
+) -> i32 {
+    let socket = vk_server::paths::Paths::new(session).socket();
+    let stream = match client::connect(&socket).await {
+        Ok(s) => s,
+        Err(e) => {
+            return fail(
+                "server_unavailable",
+                format!("session {session} is not running: {e:#}"),
+                EXIT_NO_SERVER,
+            );
+        }
+    };
+    let mut c = Client::new(stream);
+    if let Err(e) = c.hello("herdr-shim").await {
+        crate::print_error(&e);
+        return crate::exit_code_for(&e);
+    }
+    let mut p = json!({"method": method, "params": params});
+    if let Some(id) = as_plugin {
+        p["as_plugin"] = json!(id);
+    }
+    match c.call("compat.herdr.call", p).await {
+        Ok(v) => print_herdr(&v.to_string()),
+        Err(e) => {
+            crate::print_error(&e);
+            crate::exit_code_for(&e)
+        }
+    }
 }
 
 /// One raw Herdr request; prints the result (or streams events). Returns the exit code.
@@ -688,8 +898,25 @@ fn print_herdr(line: &str) -> i32 {
 }
 
 /// `vibeke compat herdr <args>` / `herdr <args>`.
+///
+/// Session selection (07 §8.2): Herdr's global `--session NAME`, then `HERDR_SESSION`, then
+/// the invocation's own session (its broker's, else `VIBEKE_SESSION`/`--session` of vibeke).
+/// Selecting another session from a pane is refused; from a plugin invocation the destination
+/// re-checks the plugin's grant. An explicitly selected session is never spawned.
 pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
-    match herdr::cli::parse(args) {
+    let (selected, args) = match herdr::cli::take_session(args) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    let selected = selected.or_else(|| {
+        std::env::var("HERDR_SESSION")
+            .ok()
+            .filter(|s| herdr::valid_session_name(s))
+    });
+    match herdr::cli::parse(&args) {
         Parsed::Version => {
             println!(
                 "herdr {} (Vibeke {} compatibility layer, partial)",
@@ -712,7 +939,8 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             EXIT_API,
         ),
         Parsed::Local(op) => {
-            // The Herdr CLI prints JSON; so does the shim.
+            // The Herdr CLI prints JSON; so does the shim. The registry is per user, shared by
+            // every session, so session selection does not change it.
             let g = Global {
                 json: Some(true),
                 ..g.clone()
@@ -720,11 +948,51 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             local(&g, op)
         }
         Parsed::Call { method, params } => {
-            if let Some(b) = broker() {
+            let broker = broker();
+            // Inside a plugin invocation whose broker is gone (the action ended, the grant was
+            // revoked): never fall back to the user-level socket, which would bypass the grant.
+            if in_plugin() && broker.is_none() {
+                return fail(
+                    "permission_denied",
+                    "this plugin invocation's broker is closed (the invocation ended or its grant was revoked)",
+                    EXIT_PERMISSION,
+                );
+            }
+            let current = broker
+                .as_deref()
+                .and_then(broker_session)
+                .unwrap_or_else(|| g.session.clone());
+            let target = selected.unwrap_or_else(|| current.clone());
+            if target != current {
+                if pane_scoped() {
+                    return fail(
+                        "permission_denied",
+                        "a pane cannot select another session",
+                        EXIT_PERMISSION,
+                    );
+                }
+                if method == "events.subscribe" {
+                    return match listener(&target) {
+                        Some(l) if broker.is_none() => raw(&l, &method, params).await,
+                        _ => fail(
+                            "unsupported",
+                            format!(
+                                "events.subscribe to session {target} needs its compat listener (and is not available to plugins across sessions)"
+                            ),
+                            EXIT_API,
+                        ),
+                    };
+                }
+                let as_plugin = broker
+                    .as_ref()
+                    .and_then(|_| std::env::var("HERDR_PLUGIN_ID").ok());
+                return session_call(&target, &method, params, as_plugin).await;
+            }
+            if let Some(b) = broker {
                 return raw(&b, &method, params).await;
             }
             if method == "events.subscribe" {
-                return match listener(g) {
+                return match listener(&target) {
                     Some(l) => raw(&l, &method, params).await,
                     None => fail(
                         "unsupported",

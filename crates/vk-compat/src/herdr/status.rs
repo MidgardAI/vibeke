@@ -44,6 +44,27 @@ pub fn herdr_agent_name(harness: &str) -> &str {
     }
 }
 
+/// The Vibeke harness id for a Herdr agent name (`agent.start`).
+pub fn vibeke_harness(agent: &str) -> &str {
+    match agent {
+        "oh-my-pi" => "omp",
+        "claude-code" => "claude",
+        a => a,
+    }
+}
+
+/// Herdr wait targets → Vibeke `agent.wait` conditions.
+pub fn wait_conditions(herdr_status: &str) -> &'static [&'static str] {
+    match herdr_status {
+        "idle" => &["idle"],
+        "done" => &["done"],
+        "working" => &["working"],
+        "blocked" => &["needs_approval", "needs_answer"],
+        "exited" | "unknown" => &["exited"],
+        _ => &[],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +81,12 @@ mod tests {
         assert_eq!(most_urgent(["idle", "blocked"]), Some("blocked"));
         assert_eq!(most_urgent([]), None);
         assert_eq!(herdr_agent_name("omp"), "oh-my-pi");
+        assert_eq!(vibeke_harness("oh-my-pi"), "omp");
+        assert_eq!(vibeke_harness("codex"), "codex");
+        assert_eq!(
+            wait_conditions("blocked"),
+            &["needs_approval", "needs_answer"]
+        );
+        assert!(wait_conditions("nope").is_empty());
     }
 }

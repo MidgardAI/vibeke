@@ -563,6 +563,8 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
                 Err(e) => Err(invalid(e.to_string())),
             }
         }
+        "worktree.create" => worktree_create(server, ctx, p).await,
+        "worktree.open" => worktree_open(server, ctx, p),
         "worktree.repo_root" => {
             let cwd = s(p, "cwd").unwrap_or(".");
             match vk_tasks::repo_root(Path::new(cwd)) {
@@ -604,6 +606,182 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
         }
         _ => return None,
     })
+}
+
+/// `[tasks]` worktree settings from the config, overridden by request params.
+fn worktree_cfg(p: &Value) -> vk_tasks::WorktreeConfig {
+    let mut cfg = vk_tasks::WorktreeConfig::default();
+    if let Ok((c, _)) = vk_config::Config::load(vk_config::config_path()) {
+        if let Ok(r) = vk_tasks::WorktreeRoot::parse(&c.tasks.root) {
+            cfg.root = r;
+        }
+        cfg.branch_template = c.tasks.branch_template.clone();
+        cfg.fetch_before_create = c.tasks.fetch_before_create;
+    }
+    let o = task_cfg(p);
+    if s(p, "root").is_some() {
+        cfg.root = o.root;
+    }
+    if s(p, "branch_template").is_some() {
+        cfg.branch_template = o.branch_template;
+    }
+    if p.get("fetch").is_some() {
+        cfg.fetch_before_create = o.fetch_before_create;
+    }
+    cfg
+}
+
+/// A workspace already rooted at `path`, if any.
+fn workspace_at(server: &Server, path: &Path) -> Option<vk_proto::model::Workspace> {
+    let want = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    server.with_core(|c| {
+        c.model
+            .workspaces
+            .iter()
+            .find(|w| {
+                let r = Path::new(&w.root_path);
+                r.canonicalize().unwrap_or_else(|_| r.to_path_buf()) == want
+            })
+            .cloned()
+    })
+}
+
+/// `worktree.create {repo|cwd, branch, base?, open?: false, focus?: false, name?}` →
+/// `{worktree, workspace?, tab?, root_pane?}` (07 §2.10). Emits `worktree.created`.
+fn no_focus_from_pane(ctx: &Ctx, p: &Value) -> Result<(), vk_proto::rpc::RpcError> {
+    if ctx.pane_scope.is_some() && p.get("focus").and_then(Value::as_bool) == Some(true) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "agents can't move the user's focus",
+        ));
+    }
+    Ok(())
+}
+
+async fn worktree_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    no_focus_from_pane(ctx, p)?;
+    let branch = req(p, "branch")?.to_string();
+    let repo = s(p, "repo")
+        .or(s(p, "cwd"))
+        .map(str::to_string)
+        .or_else(|| {
+            api::resolve_pane(server, ctx, None)
+                .ok()
+                .and_then(|x| server.pane_cwd(&x.id))
+        })
+        .ok_or_else(|| invalid("repo or cwd is required"))?;
+    let cfg = worktree_cfg(p);
+    let slug = vk_tasks::slugify(&branch, cfg.slug_max_len);
+    let creq = vk_tasks::CreateRequest {
+        repo: repo.clone().into(),
+        title: branch.clone(),
+        base: s(p, "base").map(str::to_string),
+        branch: Some(branch.clone()),
+        slug: Some(slug),
+    };
+    let checkout = tokio::task::spawn_blocking(move || vk_tasks::create_worktree(&creq, &cfg))
+        .await
+        .map_err(internal)?
+        .map_err(|e| match e {
+            vk_tasks::Error::NotARepo(_) => not_found("repo", &repo),
+            e => err(ErrorKind::Conflict, e.to_string()),
+        })?;
+    let path = checkout.path.to_string_lossy().into_owned();
+    let wt = json!({
+        "path": path,
+        "branch": checkout.branch,
+        "base_ref": checkout.base_ref,
+        "repo_root": checkout.repo_root,
+        "created_branch": checkout.created_branch,
+    });
+    let opened = if p.get("open").and_then(Value::as_bool).unwrap_or(false) {
+        let focus = p
+            .get("focus")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then_some(ctx.client_id.as_str());
+        Some(
+            server
+                .create_workspace(
+                    &path,
+                    s(p, "name").map(str::to_string).or(checkout.branch.clone()),
+                    None,
+                    focus,
+                )
+                .map_err(internal)?,
+        )
+    } else {
+        None
+    };
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.event(
+            "worktree.created",
+            json!({"workspace": opened.as_ref().map(|o| o.0.id.clone())}),
+            wt.clone(),
+        );
+        server.commit(&mut c, tx).map_err(internal)?;
+    }
+    Ok(match opened {
+        Some((ws, tab, pane)) => {
+            json!({"worktree": wt, "workspace": ws, "tab": tab, "root_pane": pane, "warnings": checkout.warnings})
+        }
+        None => json!({"worktree": wt, "warnings": checkout.warnings}),
+    })
+}
+
+/// `worktree.open {path, focus?: false, name?}` → `{worktree, workspace, created}`: reuse the
+/// workspace rooted at the worktree, else create one. Emits `worktree.opened`.
+fn worktree_open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    no_focus_from_pane(ctx, p)?;
+    let path = req(p, "path")?;
+    let co = vk_tasks::open_worktree(Path::new(path), Path::new(path)).map_err(|e| match e {
+        vk_tasks::Error::NotARepo(_) | vk_tasks::Error::WorktreeNotFound(_) => {
+            not_found("worktree", path)
+        }
+        e => invalid(e.to_string()),
+    })?;
+    let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(false);
+    let cwd = co.path.to_string_lossy().into_owned();
+    let (ws, created) = match workspace_at(server, &co.path) {
+        Some(ws) => {
+            if focus {
+                let pane = server.with_core(|c| {
+                    c.tabs_of(&ws.id)
+                        .first()
+                        .and_then(|t| t.focused_pane.clone())
+                });
+                if let Some(pane) = pane {
+                    server.focus_pane(&ctx.client_id, &pane);
+                }
+            }
+            (ws, false)
+        }
+        None => {
+            let (ws, _, _) = server
+                .create_workspace(
+                    &cwd,
+                    s(p, "name").map(str::to_string).or(co.branch.clone()),
+                    None,
+                    focus.then_some(ctx.client_id.as_str()),
+                )
+                .map_err(internal)?;
+            (ws, true)
+        }
+    };
+    let wt = json!({"path": cwd, "branch": co.branch, "repo_root": co.repo_root});
+    {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.event(
+            "worktree.opened",
+            json!({"workspace": ws.id}),
+            json!({"path": cwd, "branch": co.branch, "repo_root": co.repo_root, "created_workspace": created}),
+        );
+        server.commit(&mut c, tx).map_err(internal)?;
+    }
+    Ok(json!({"worktree": wt, "workspace": ws, "created": created}))
 }
 
 async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
@@ -737,6 +915,14 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             json!({"task": id, "workspace": ws.id}),
             json!({"title": title, "branch": checkout.branch, "path": cwd}),
         );
+        // A task checkout is a worktree too (Herdr `worktree.created`, 07 §8.3).
+        if info.kind == "worktree" {
+            tx.event(
+                "worktree.created",
+                json!({"task": id, "workspace": ws.id}),
+                json!({"path": cwd, "branch": checkout.branch, "base_ref": checkout.base_ref, "repo_root": info.root, "created_branch": checkout.created_branch}),
+            );
+        }
         server.commit(&mut c, tx).map_err(internal)?;
     }
     // Setup script in the background (05 §7).
