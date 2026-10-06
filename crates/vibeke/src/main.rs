@@ -261,6 +261,27 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        // `browser console --pane <browser pane> [--follow]`: a browser pane's console split
+        // feed (06 B3.2); `browser console <session>` stays the agent browser's method.
+        Some("browser")
+            if args.get(1).map(String::as_str) == Some("console")
+                && args[2..]
+                    .iter()
+                    .any(|a| a == "--pane" || a.starts_with("--pane=")) =>
+        {
+            let params = match vk_cli::build_params(&[], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::noun_help("browser"));
+                    return EXIT_USAGE;
+                }
+            };
+            let gr = &g;
+            with_client(gr, |mut c| async move {
+                vk_cli::browser_console::run(&mut c, gr, params).await
+            })
+            .await
+        }
         Some("screenshot") if args.get(1).map(String::as_str) == Some("code-state") => {
             vk_cli::code_state(&args[2..])
         }

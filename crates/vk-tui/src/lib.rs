@@ -4,6 +4,7 @@ pub mod app;
 pub mod appearance;
 pub mod assist;
 pub mod browser;
+pub mod browser_io;
 pub mod caps;
 pub mod chrome;
 pub mod clipboard;

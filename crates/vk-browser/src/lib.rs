@@ -19,8 +19,12 @@
 //! - [`snapshot`]: accessibility-tree text snapshots.
 //! - [`fake`]: a fake CDP browser for tests.
 //! - [`diff`]: visual diff of two screenshots (Stage 4, 06 B6).
+//! - [`devices`]: device presets, pinned viewports and letterboxing (06 B3.2, B5 `--device`).
+//! - [`capture`]: console/network rings from CDP events (06 B5 capture, the pane's console split).
 
+pub mod capture;
 pub mod cdp;
+pub mod devices;
 pub mod diff;
 pub mod fake;
 /// Fake Chromium speaking CDP over the pipe (browser-pane tests, `vibeke debug fake-chromium`).

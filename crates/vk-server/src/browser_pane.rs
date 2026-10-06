@@ -47,11 +47,17 @@ pub const METHODS: &[(&str, bool)] = &[
     ("browser.pane.status", false),
     ("browser.command", true),
     ("browser.watch", true),
+    ("browser.pane.console", true),
+    ("browser.pane.console_push", true),
 ];
 
 /// Watch mode (06 B7): a browser pane showing an agent browser session (`browser.watch`).
 #[path = "browser_watch.rs"]
 pub mod watch;
+
+/// Console/network capture, page clipboard, files into the page, pinned viewports (06 B3.2).
+#[path = "browser_page.rs"]
+pub mod page_io;
 
 /// Tiles are `TILE_COLS × TILE_ROWS` host cells (64×64 device px for 16×32 cells).
 pub const TILE_COLS: u16 = 4;
@@ -242,6 +248,8 @@ struct Sub {
     dirty: BTreeSet<u32>,
     reset: bool,
     state_dirty: bool,
+    /// A page clipboard write for this viewer (sent as `ServerFrame::Clipboard`).
+    clip: Option<Vec<u8>>,
 }
 
 struct TState {
@@ -274,6 +282,8 @@ struct TState {
     decode_ms: f64,
     /// Watch mode: frames come from an agent browser session, not a page of our own.
     watch: Option<watch::Watch>,
+    /// Console/network capture, clipboard, drops and the pinned viewport.
+    io: page_io::PageIo,
 }
 
 pub struct Target {
@@ -437,6 +447,9 @@ pub struct Host {
     pub idle_proc: Mutex<Duration>,
     pub tiles_sent: AtomicU64,
     pub media_bytes: AtomicU64,
+    /// Console/network entries relayed by the media host for browser panes in this layout
+    /// rendered elsewhere (`browser.pane.console_push`).
+    pub relayed: Mutex<HashMap<String, vk_browser::capture::Capture>>,
 }
 
 impl Default for Host {
@@ -452,6 +465,7 @@ impl Default for Host {
             idle_proc: Mutex::new(Duration::from_secs(30)),
             tiles_sent: AtomicU64::new(0),
             media_bytes: AtomicU64::new(0),
+            relayed: Mutex::default(),
         }
     }
 }
@@ -687,6 +701,7 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                         frame_times: Vec::new(),
                         decode_ms: 0.0,
                         watch: watched.map(watch::Watch::new),
+                        io: page_io::PageIo::with_pin(&mp.spec),
                     }),
                 });
                 inner.targets.insert(mp.pane.clone(), t.clone());
@@ -706,10 +721,14 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                 s.state_dirty = true;
                 s.notify.notify_one();
             }
-            let resize = geom.valid() && st.want != Some(geom);
+            let mut resize = geom.valid() && st.want != Some(geom);
             if resize {
                 st.want = Some(geom);
                 st.want_at = Instant::now();
+            }
+            // The owner pinned or unpinned a device/viewport.
+            if st.watch.is_none() && page_io::update_pin(&mut st, &mp.spec) {
+                resize = st.want.is_some();
             }
             (st.page.is_some() && !st.screencast, resize)
         };
@@ -752,7 +771,7 @@ pub fn unsubscribe(server: &Arc<Server>, sub: u64) {
 }
 
 fn set_screencast(t: &Arc<Target>, on: bool) {
-    let page = {
+    let (page, params) = {
         let mut st = t.st.lock().unwrap();
         let Some(p) = st.page.clone() else {
             st.screencast = false;
@@ -762,13 +781,10 @@ fn set_screencast(t: &Arc<Target>, on: bool) {
             return;
         }
         st.screencast = on;
-        p
+        (p, page_io::screencast_params(&st))
     };
     if on {
-        let _ = page.send(
-            "Page.startScreencast",
-            json!({"format": "jpeg", "quality": 80, "everyNthFrame": 1}),
-        );
+        let _ = page.send("Page.startScreencast", params);
     } else {
         let _ = page.send("Page.stopScreencast", json!({}));
     }
@@ -822,13 +838,7 @@ fn apply_viewport(server: &Arc<Server>, t: &Arc<Target>) {
         }
         return;
     }
-    match page.set_viewport_for_cells(
-        geom.cols as u32,
-        geom.rows as u32,
-        geom.cell_w as u32,
-        geom.cell_h as u32,
-        geom.dpr as f64,
-    ) {
+    match page_io::set_viewport(&page, t, geom) {
         Ok(css) => {
             let mut st = t.st.lock().unwrap();
             st.applied = Some(geom);
@@ -926,16 +936,11 @@ fn ensure_blocking(server: &Arc<Server>, t: &Arc<Target>, socks: Option<u16>) ->
         .insert(session.clone(), Arc::downgrade(t));
     let page = Page::attached(proc.cdp.clone(), session, target_id);
     page.call("Page.enable", json!({}))?;
+    page_io::setup_page(&page, t);
     if let Some(g) = geom
         && g.valid()
     {
-        let css = page.set_viewport_for_cells(
-            g.cols as u32,
-            g.rows as u32,
-            g.cell_w as u32,
-            g.cell_h as u32,
-            g.dpr as f64,
-        )?;
+        let css = page_io::set_viewport(&page, t, g)?;
         let mut st = t.st.lock().unwrap();
         st.applied = Some(g);
         st.css = css;
@@ -948,13 +953,10 @@ fn ensure_blocking(server: &Arc<Server>, t: &Arc<Target>, socks: Option<u16>) ->
         st.error = None;
         st.screencast = !st.subs.is_empty();
         Target::mark_state(&mut st);
-        st.screencast
+        st.screencast.then(|| page_io::screencast_params(&st))
     };
-    if screencast {
-        page.call(
-            "Page.startScreencast",
-            json!({"format": "jpeg", "quality": 80, "everyNthFrame": 1}),
-        )?;
+    if let Some(params) = screencast {
+        page.call("Page.startScreencast", params)?;
     }
     // Geometry may have changed while we were creating.
     let stale = {
@@ -1165,6 +1167,9 @@ fn pump(
 }
 
 fn on_event(server: &Weak<Server>, proc: &Arc<Proc>, t: &Arc<Target>, ev: Event) {
+    if ev.method != "Page.screencastFrame" {
+        page_io::on_event(t, &ev);
+    }
     match ev.method.as_str() {
         "Page.screencastFrame" => {
             let Ok(f) = ScreencastFrame::from_event(&ev) else {
@@ -1179,6 +1184,7 @@ fn on_event(server: &Weak<Server>, proc: &Arc<Proc>, t: &Arc<Target>, ev: Event)
             let t0 = Instant::now();
             match vk_browser::frame::decode(&f.data) {
                 Ok(img) => {
+                    let img = page_io::fit_frame(t, img);
                     let ms = t0.elapsed().as_secs_f64() * 1000.0;
                     t.st.lock().unwrap().decode_ms = ms;
                     t.on_frame(img);
@@ -1396,6 +1402,9 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
             if !key_releases && ev.kind == KeyKind::Release {
                 return;
             }
+            if ev.kind != KeyKind::Release {
+                page_io::note_input(&mut t.st.lock().unwrap());
+            }
             let opts = MapOptions {
                 host_reports_text: false,
                 ..Default::default()
@@ -1409,6 +1418,7 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
         }
         BrowserCmd::Text(text) => {
             if let Some(page) = page {
+                page_io::note_input(&mut t.st.lock().unwrap());
                 let (m, p) = input::map_paste(&text).to_command();
                 let _ = page.send(m, p);
             }
@@ -1422,6 +1432,19 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
             clicks,
         } => {
             let Some(page) = page else { return };
+            // Pinned viewports: pane position -> page position (nothing outside the page).
+            let (x, y) = {
+                let mut st = t.st.lock().unwrap();
+                let clamp = matches!(kind, MouseKind::Release | MouseKind::Drag);
+                let Some(pt) = page_io::map_point(&st, x, y, clamp) else {
+                    return;
+                };
+                st.io.last_mouse = Some(pt);
+                if matches!(kind, MouseKind::Press | MouseKind::Release) {
+                    page_io::note_input(&mut st);
+                }
+                pt
+            };
             let ty = match kind {
                 MouseKind::Press => "mousePressed",
                 MouseKind::Release => "mouseReleased",
@@ -1448,7 +1471,8 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
             let _ = page.mouse(p);
         }
         BrowserCmd::Wheel { x, y, dx, dy, mods } => {
-            if let Some(page) = page {
+            let pt = page_io::map_point(&t.st.lock().unwrap(), x, y, false);
+            if let (Some(page), Some((x, y))) = (page, pt) {
                 let _ = page.mouse(json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy, "modifiers": input::cdp_modifiers(mods)}));
             }
         }
@@ -1520,6 +1544,7 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
             st.notice = Some("not watching an agent browser session".into());
             Target::mark_state(&mut st);
         }
+        BrowserCmd::DropFiles(paths) => page_io::drop_files(&t, paths),
         BrowserCmd::Screenshot => {
             let server = server.clone();
             tokio::spawn(async move {
@@ -1573,13 +1598,16 @@ pub(crate) async fn screenshot(
     let page = t
         .page()
         .ok_or_else(|| err(ErrorKind::Conflict, "the page is not running"))?;
-    let (route, url, css, dpr) = {
+    let (route, url, css, dpr, device) = {
         let st = t.st.lock().unwrap();
+        let host_dpr = st.applied.map(|g| g.dpr as f64).unwrap_or(1.0);
+        let pin = st.io.pin.as_ref();
         (
             st.route.clone(),
             st.url.clone(),
             st.css,
-            st.applied.map(|g| g.dpr as f64).unwrap_or(1.0),
+            pin.and_then(|p| p.dpr).unwrap_or(host_dpr),
+            pin.and_then(|p| p.device.clone()),
         )
     };
     // The document's identity right before and right after the pixels.
@@ -1625,7 +1653,7 @@ pub(crate) async fn screenshot(
         },
         dpr,
         color_scheme: None,
-        device: None,
+        device,
         fresh_context: false,
         profile: Some(route.profile.clone()),
     };
@@ -1810,6 +1838,8 @@ fn start_gc(server: &Arc<Server>) {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let Some(server) = weak.upgrade() else { return };
             gc(&server);
+            page_io::relay(&server);
+            page_io::gc_splits(&server);
         }
     });
 }
@@ -2078,6 +2108,17 @@ impl MediaSession {
                 )
                 .await?;
             }
+            if let Some(data) = page_io::take_clip(&t, self.id) {
+                asyncio::write_frame(
+                    wr,
+                    &ServerFrame::Clipboard {
+                        selection: vk_proto::render::ClipSel::Clipboard,
+                        data,
+                        pane: pane.clone(),
+                    },
+                )
+                .await?;
+            }
         }
         let started = Instant::now();
         let mut written = 0u64;
@@ -2211,6 +2252,80 @@ fn split_dir(s: &str) -> Option<Option<Direction>> {
     })
 }
 
+/// `device` / `viewport` params of `browser.pane.create` and `browser.pane.update`: a known
+/// preset name, or `WxH` (64..=8192 CSS px each); `viewport: "fit"` or `fit: true` = neither.
+fn pin_params(p: &Value) -> Result<(Option<String>, Option<String>), RpcError> {
+    use vk_browser::devices;
+    if b(p, "fit") == Some(true) || s(p, "viewport") == Some("fit") {
+        return Ok((None, None));
+    }
+    let device = match s(p, "device").filter(|d| !d.is_empty()) {
+        Some(d) => Some(
+            devices::preset(d)
+                .map(|x| x.name.to_string())
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "unknown device {d:?} (one of: {})",
+                        devices::names().join(", ")
+                    ))
+                })?,
+        ),
+        None => None,
+    };
+    let viewport = match p.get("viewport") {
+        Some(Value::String(v)) if !v.is_empty() => Some(v.clone()),
+        Some(Value::Object(o)) => Some(format!(
+            "{}x{}",
+            o.get("width").and_then(Value::as_u64).unwrap_or(0),
+            o.get("height").and_then(Value::as_u64).unwrap_or(0)
+        )),
+        _ => None,
+    };
+    let viewport = match viewport {
+        Some(v) => Some(
+            devices::parse_viewport(&v)
+                .map(|(w, h)| format!("{w}x{h}"))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "viewport must be WxH with {}..={} CSS px per edge (e.g. 390x844), or fit",
+                        devices::MIN_EDGE,
+                        devices::MAX_EDGE
+                    ))
+                })?,
+        ),
+        None => None,
+    };
+    if device.is_some() && viewport.is_some() {
+        return Err(invalid("give a device or a viewport, not both"));
+    }
+    Ok((device, viewport))
+}
+
+/// Persist a browser pane's pinned device/viewport (the media host follows the spec).
+fn update_pin_record(server: &Server, pane: &str, pin: (Option<String>, Option<String>)) -> bool {
+    let mut c = server.core.lock().unwrap();
+    let Some(mut p) = c.pane(pane).cloned() else {
+        return false;
+    };
+    let Some(b) = p.browser.as_mut() else {
+        return false;
+    };
+    if (b.device.clone(), b.viewport.clone()) == pin {
+        return true;
+    }
+    b.device = pin.0.clone();
+    b.viewport = pin.1.clone();
+    let mut tx = Tx::new();
+    tx.event(
+        "browser.viewport_changed",
+        subject_pane(&p),
+        json!({"device": pin.0, "viewport": pin.1}),
+    );
+    tx.pane(p);
+    let _ = server.commit(&mut c, tx);
+    true
+}
+
 /// `browser.pane.create {pane?, preview? | url?, split?, machine?, focus?, focus_client?}`:
 /// a browser pane in this server's layout next to `pane` (default: the preview's pane, else
 /// the focused pane). `split = tab` opens it in a new tab; `float` is a right split until
@@ -2300,6 +2415,7 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .filter(|m| !preview::is_local_machine(server, m))
         .unwrap_or("")
         .to_string();
+    let (device, viewport) = pin_params(p)?;
     let spec = BrowserPane {
         url: url.clone(),
         machine,
@@ -2310,6 +2426,8 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         history_index: 0,
         title: String::new(),
         watch: watch.clone(),
+        device,
+        viewport,
     };
     let created_by = ctx
         .pane_scope
@@ -2461,6 +2579,11 @@ pub async fn open_pane(
     if let Some(src) = s(p, "pane") {
         params["pane"] = json!(src);
     }
+    for k in ["device", "viewport"] {
+        if let Some(v) = p.get(k).filter(|v| !v.is_null()) {
+            params[k] = v.clone();
+        }
+    }
     let r = if machine.is_empty() {
         create_pane(server, ctx, &params)?
     } else {
@@ -2492,11 +2615,25 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     Some(match method {
         "browser.pane.create" => create_pane(server, ctx, p),
         "browser.watch" => watch::create(server, ctx, p),
-        "browser.pane.update" | "browser.command" if ctx.pane_scope.is_some() => Err(err(
-            ErrorKind::PermissionDenied,
-            format!("{method} is not allowed from a pane"),
-        )
-        .details(json!({"scope": "pane"}))),
+        "browser.console" | "browser.network"
+            if p.get("pane").is_some() && s(p, "session").or_else(|| s(p, "target")).is_none() =>
+        {
+            page_io::console_api(server, ctx, method, p)
+        }
+        "browser.pane.update"
+        | "browser.command"
+        | "browser.pane.console"
+        | "browser.pane.console_push"
+            if ctx.pane_scope.is_some() =>
+        {
+            Err(err(
+                ErrorKind::PermissionDenied,
+                format!("{method} is not allowed from a pane"),
+            )
+            .details(json!({"scope": "pane"})))
+        }
+        "browser.pane.console" => page_io::console_split(server, ctx, p),
+        "browser.pane.console_push" => page_io::push_api(server, ctx, p),
         "browser.pane.update" => {
             let pane = match s(p, "pane") {
                 Some(x) => x,
@@ -2523,6 +2660,16 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
+            if p.get("device").is_some() || p.get("viewport").is_some() || b(p, "fit") == Some(true)
+            {
+                let pin = match pin_params(p) {
+                    Ok(x) => x,
+                    Err(e) => return Some(Err(e)),
+                };
+                if !update_pin_record(server, &target.id, pin) {
+                    return Some(Err(invalid("not a browser pane")));
+                }
+            }
             if !update_pane_record(
                 server,
                 &target.id,
@@ -2623,6 +2770,10 @@ pub fn status_json(server: &Server) -> Value {
                 "css": [st.css.0, st.css.1],
                 "frame": st.frame.as_ref().map(|f| json!([f.width, f.height])),
                 "history": st.history, "error": st.error,
+                "pin": st.io.pin.as_ref().map(|p| json!({"device": p.device, "width": p.width, "height": p.height})),
+                "letterbox": st.io.letterbox.map(|l| json!({"rect": [l.rect.0, l.rect.1, l.rect.2, l.rect.3], "scale": l.scale})),
+                "console": st.io.capture.console.len(), "network": st.io.capture.network.len(),
+                "clipboard": {"forwarded": st.io.clips, "blocked": st.io.clips_blocked},
             })
         })
         .collect();
@@ -2688,6 +2839,7 @@ mod tests {
                 frame_times: vec![],
                 decode_ms: 0.0,
                 watch: None,
+                io: page_io::PageIo::default(),
             }),
         }
     }
@@ -2988,3 +3140,7 @@ mod tests {
 #[cfg(test)]
 #[path = "browser_pane_followup_tests.rs"]
 mod followup_tests;
+
+#[cfg(test)]
+#[path = "browser_page_tests.rs"]
+mod page_tests;

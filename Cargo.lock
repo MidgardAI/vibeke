@@ -2920,6 +2920,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "vk-browser",
  "vk-compat",
  "vk-config",
  "vk-proto",

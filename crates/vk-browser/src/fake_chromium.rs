@@ -34,6 +34,35 @@ struct Page {
     frame_seq: u64,
     /// Bumped on every navigation/reload (the document's `performance.timeOrigin`).
     nav_seq: u32,
+    /// `Page.startScreencast {maxWidth, maxHeight}`: frames are scaled down to fit.
+    max: Option<(u32, u32)>,
+    /// Last `Emulation.setDeviceMetricsOverride {deviceScaleFactor, mobile}`.
+    emu_dpr: Option<f64>,
+    mobile: bool,
+    /// `Emulation.setUserAgentOverride`.
+    ua: Option<String>,
+    /// `Runtime.addBinding` names.
+    bindings: Vec<String>,
+    /// `Page.addScriptToEvaluateOnNewDocument` sources.
+    scripts: Vec<String>,
+}
+
+impl Page {
+    /// Frame size in device px: CSS × launch DPR, scaled down into `max` (aspect kept).
+    fn frame_size(&self) -> (u32, u32) {
+        let w = ((self.css.0 as f64 * self.dpr).round() as u32).max(1);
+        let h = ((self.css.1 as f64 * self.dpr).round() as u32).max(1);
+        match self.max {
+            Some((mw, mh)) if mw > 0 && mh > 0 && (w > mw || h > mh) => {
+                let k = (mw as f64 / w as f64).min(mh as f64 / h as f64);
+                (
+                    ((w as f64 * k).round() as u32).max(1),
+                    ((h as f64 * k).round() as u32).max(1),
+                )
+            }
+            _ => (w, h),
+        }
+    }
 }
 
 /// Shared state of one fake browser, inspectable by tests.
@@ -49,6 +78,8 @@ pub struct State {
     kill: Option<std::os::unix::net::UnixStream>,
     /// Frames are pixel noise (incompressible tiles: large media frames).
     pub noise: bool,
+    /// Events queued by a test ([`State::inject`]), sent by the frame pump thread.
+    inject: Vec<(String, Value, Option<String>)>,
 }
 
 impl State {
@@ -76,6 +107,50 @@ impl State {
     pub fn viewports(&self) -> Vec<(u32, u32)> {
         self.pages.values().map(|p| p.css).collect()
     }
+    /// Flattened session ids of the attached pages.
+    pub fn sessions(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .pages
+            .keys()
+            .filter(|k| !k.starts_with("pending-"))
+            .cloned()
+            .collect();
+        v.sort();
+        v
+    }
+    /// Send an event as if Chromium had (on `session`, or browser-level with `None`).
+    pub fn inject(&mut self, method: &str, params: Value, session: Option<&str>) {
+        self.inject
+            .push((method.to_string(), params, session.map(str::to_owned)));
+    }
+    /// `Runtime.addBinding` names of a page.
+    pub fn bindings(&self, session: &str) -> Vec<String> {
+        self.pages
+            .get(session)
+            .map(|p| p.bindings.clone())
+            .unwrap_or_default()
+    }
+    /// `Page.addScriptToEvaluateOnNewDocument` sources of a page.
+    pub fn scripts(&self, session: &str) -> Vec<String> {
+        self.pages
+            .get(session)
+            .map(|p| p.scripts.clone())
+            .unwrap_or_default()
+    }
+    /// Emulation of a page: (deviceScaleFactor override, mobile, user agent override).
+    pub fn emulation(&self, session: &str) -> Option<(Option<f64>, bool, Option<String>)> {
+        self.pages
+            .get(session)
+            .map(|p| (p.emu_dpr, p.mobile, p.ua.clone()))
+    }
+    /// Commands received for a method (params, session).
+    pub fn calls(&self, method: &str) -> Vec<(Value, Option<String>)> {
+        self.log
+            .iter()
+            .filter(|(m, _, _)| m == method)
+            .map(|(_, p, s)| (p.clone(), s.clone()))
+            .collect()
+    }
     /// Simulate Chromium dying: the transport closes under the client (its event stream
     /// ends, like a crashed process's pipe).
     pub fn crash(&mut self) {
@@ -85,6 +160,9 @@ impl State {
         self.closed = true;
     }
 }
+
+/// The fake's own user agent (`Browser.getVersion`); setting it again clears the override.
+pub const DEFAULT_UA: &str = "Mozilla/5.0 (FakeChromium) HeadlessChrome/153.0.0.0";
 
 /// The colour a page shows at `generation` (distinct for consecutive generations).
 pub fn color_for(generation: u32) -> [u8; 3] {
@@ -101,8 +179,7 @@ pub fn color_for(generation: u32) -> [u8; 3] {
 }
 
 fn frame_jpeg(p: &Page, noise: bool) -> Vec<u8> {
-    let w = ((p.css.0 as f64 * p.dpr).round() as u32).max(1);
-    let h = ((p.css.1 as f64 * p.dpr).round() as u32).max(1);
+    let (w, h) = p.frame_size();
     let c = color_for(p.generation);
     let mut img = image::RgbImage::from_pixel(w, h, image::Rgb(c));
     if noise {
@@ -205,11 +282,13 @@ pub fn serve(
                     std::thread::sleep(Duration::from_millis(15));
                     let mut todo = Vec::new();
                     let noise;
+                    let injected;
                     {
                         let mut st = state.lock().unwrap();
                         if st.closed {
                             return;
                         }
+                        injected = std::mem::take(&mut st.inject);
                         noise = st.noise;
                         let mut sent = 0;
                         for (sess, p) in st.pages.iter_mut() {
@@ -222,6 +301,9 @@ pub fn serve(
                             }
                         }
                         st.frames_sent += sent;
+                    }
+                    for (m, p, sess) in injected {
+                        out.event(&m, p, sess.as_deref());
                     }
                     for (sess, p) in todo {
                         let data =
@@ -283,7 +365,9 @@ fn handle<W: Write>(
     ));
     let sess = session.unwrap_or("").to_string();
     match method {
-        "Browser.getVersion" => json!({"product": "FakeChromium/1.0", "protocolVersion": "1.3"}),
+        "Browser.getVersion" => {
+            json!({"product": "FakeChromium/1.0", "protocolVersion": "1.3", "userAgent": DEFAULT_UA})
+        }
         "Target.createTarget" => {
             st.next += 1;
             let n = st.next;
@@ -304,6 +388,12 @@ fn handle<W: Write>(
                     generation: 0,
                     frame_seq: 0,
                     nav_seq: 0,
+                    max: None,
+                    emu_dpr: None,
+                    mobile: false,
+                    ua: None,
+                    bindings: Vec::new(),
+                    scripts: Vec::new(),
                 },
             );
             json!({"targetId": format!("T{n}")})
@@ -340,12 +430,41 @@ fn handle<W: Write>(
                     params["width"].as_u64().unwrap_or(800) as u32,
                     params["height"].as_u64().unwrap_or(600) as u32,
                 );
+                p.emu_dpr = params["deviceScaleFactor"].as_f64();
+                p.mobile = params["mobile"].as_bool().unwrap_or(false);
                 p.dirty = true;
             }
             json!({})
         }
+        "Emulation.setUserAgentOverride" => {
+            if let Some(p) = st.pages.get_mut(&sess) {
+                let ua = params["userAgent"].as_str().unwrap_or("");
+                p.ua = (!ua.is_empty() && ua != DEFAULT_UA).then(|| ua.to_string());
+            }
+            json!({})
+        }
+        "Runtime.addBinding" => {
+            if let Some(p) = st.pages.get_mut(&sess)
+                && let Some(n) = params["name"].as_str()
+            {
+                p.bindings.push(n.to_string());
+            }
+            json!({})
+        }
+        "Page.addScriptToEvaluateOnNewDocument" => {
+            if let Some(p) = st.pages.get_mut(&sess)
+                && let Some(src) = params["source"].as_str()
+            {
+                p.scripts.push(src.to_string());
+            }
+            json!({"identifier": "1"})
+        }
         "Page.startScreencast" => {
             if let Some(p) = st.pages.get_mut(&sess) {
+                p.max = match (params["maxWidth"].as_u64(), params["maxHeight"].as_u64()) {
+                    (Some(w), Some(h)) => Some((w as u32, h as u32)),
+                    _ => None,
+                };
                 p.screencast = true;
                 p.awaiting_ack = false;
                 p.dirty = true;
@@ -377,6 +496,28 @@ fn handle<W: Write>(
             }
             drop(st);
             navigated(out, &sess, &url);
+            // The document's request and a console line, as a page would produce them.
+            out.event(
+                "Network.requestWillBeSent",
+                json!({"requestId": format!("R{url}"), "type": "Document",
+                       "request": {"method": "GET", "url": url}}),
+                Some(&sess),
+            );
+            out.event(
+                "Network.responseReceived",
+                json!({"requestId": format!("R{url}"), "response": {"status": 200, "mimeType": "text/html"}}),
+                Some(&sess),
+            );
+            out.event(
+                "Network.loadingFinished",
+                json!({"requestId": format!("R{url}")}),
+                Some(&sess),
+            );
+            out.event(
+                "Runtime.consoleAPICalled",
+                json!({"type": "log", "args": [{"type": "string", "value": format!("loaded {url}")}]}),
+                Some(&sess),
+            );
             json!({"frameId": "F", "loaderId": "L"})
         }
         "Page.getNavigationHistory" => match st.pages.get(&sess) {
@@ -428,6 +569,10 @@ fn handle<W: Write>(
             None => json!({"data": ""}),
         },
         "Input.dispatchKeyEvent" | "Input.insertText" | "Input.dispatchMouseEvent" => {
+            if method == "Input.insertText" {
+                let text = params["text"].as_str().unwrap_or("").to_string();
+                page_script(&mut st, &sess, &text);
+            }
             let bump = match method {
                 "Input.dispatchKeyEvent" => params["type"] != "keyUp",
                 "Input.insertText" => true,
@@ -460,6 +605,60 @@ fn handle<W: Write>(
             json!({"result": {"type": "string", "value": v}})
         }
         _ => json!({}),
+    }
+}
+
+/// What the fake page does with typed text (so end-to-end tests can drive page behaviour
+/// through the pipe): `log:<t>` / `warn:<t>` log to the console, `error:<t>` throws,
+/// `fail:<url>` makes a failed request, `copy:<t>` writes `<t>` to the clipboard through the
+/// page's binding (as the injected clipboard hook would), `chooser` opens a file chooser.
+fn page_script(st: &mut State, sess: &str, text: &str) {
+    let s = Some(sess);
+    if let Some(t) = text
+        .strip_prefix("log:")
+        .or_else(|| text.strip_prefix("warn:"))
+    {
+        let ty = if text.starts_with("warn:") {
+            "warning"
+        } else {
+            "log"
+        };
+        st.inject(
+            "Runtime.consoleAPICalled",
+            json!({"type": ty, "args": [{"type": "string", "value": t}]}),
+            s,
+        );
+    } else if let Some(t) = text.strip_prefix("error:") {
+        st.inject(
+            "Runtime.exceptionThrown",
+            json!({"exceptionDetails": {"text": "Uncaught", "exception": {"description": format!("Error: {t}")}}}),
+            s,
+        );
+    } else if let Some(u) = text.strip_prefix("fail:") {
+        st.inject(
+            "Network.requestWillBeSent",
+            json!({"requestId": format!("F{u}"), "type": "Fetch", "request": {"method": "GET", "url": u}}),
+            s,
+        );
+        st.inject(
+            "Network.loadingFailed",
+            json!({"requestId": format!("F{u}"), "errorText": "net::ERR_CONNECTION_REFUSED"}),
+            s,
+        );
+    } else if let Some(t) = text.strip_prefix("copy:") {
+        if let Some(b) = st.pages.get(sess).and_then(|p| p.bindings.last().cloned()) {
+            st.inject(
+                "Runtime.bindingCalled",
+                json!({"name": b, "payload": t, "executionContextId": 1}),
+                s,
+            );
+        }
+    } else if text == "chooser" {
+        st.inject(
+            "Page.fileChooserOpened",
+            json!({"frameId": "F", "mode": "selectSingle", "backendNodeId": 42}),
+            s,
+        );
     }
 }
 
@@ -553,5 +752,85 @@ mod tests {
         let px = img.pixel(120, 60);
         assert!(px[0] > 150 && px[1] < 80, "second page colour {px:?}");
         assert_eq!(state.lock().unwrap().inputs().len(), 1);
+    }
+
+    #[test]
+    fn fake_bounds_frames_records_emulation_and_runs_page_scripts() {
+        let (cdp, events, state) = spawn_pair(2.0);
+        let t = cdp
+            .call(None, "Target.createTarget", json!({"url": "about:blank"}))
+            .unwrap()["targetId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let s = cdp
+            .call(
+                None,
+                "Target.attachToTarget",
+                json!({"targetId": t, "flatten": true}),
+            )
+            .unwrap()["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        cdp.call(
+            Some(&s),
+            "Emulation.setDeviceMetricsOverride",
+            json!({"width": 393, "height": 852, "deviceScaleFactor": 3, "mobile": true}),
+        )
+        .unwrap();
+        cdp.call(
+            Some(&s),
+            "Emulation.setUserAgentOverride",
+            json!({"userAgent": "UA-phone"}),
+        )
+        .unwrap();
+        cdp.call(Some(&s), "Runtime.addBinding", json!({"name": "__b"}))
+            .unwrap();
+        cdp.call(
+            Some(&s),
+            "Page.startScreencast",
+            json!({"format": "jpeg", "maxWidth": 200, "maxHeight": 300}),
+        )
+        .unwrap();
+        let frame = loop {
+            let e = events.recv_timeout(Duration::from_secs(5)).unwrap();
+            if e.method == "Page.screencastFrame" {
+                break e;
+            }
+        };
+        let img = crate::frame::decode(
+            &crate::cdp::ScreencastFrame::from_event(&frame)
+                .unwrap()
+                .data,
+        )
+        .unwrap();
+        // 393×852 CSS at the launch DPR 2 = 786×1704, scaled into 200×300.
+        assert_eq!(img.height, 300);
+        assert!((img.width as i32 - 138).abs() <= 1, "{}", img.width);
+        assert_eq!(
+            state.lock().unwrap().emulation(&s),
+            Some((Some(3.0), true, Some("UA-phone".into())))
+        );
+        // Setting the browser's own UA clears the override.
+        cdp.call(
+            Some(&s),
+            "Emulation.setUserAgentOverride",
+            json!({"userAgent": DEFAULT_UA}),
+        )
+        .unwrap();
+        assert_eq!(state.lock().unwrap().emulation(&s).unwrap().2, None);
+        // Typed `copy:` text calls the page's binding.
+        cdp.call(Some(&s), "Input.insertText", json!({"text": "copy:hi"}))
+            .unwrap();
+        let ev = loop {
+            let e = events.recv_timeout(Duration::from_secs(5)).unwrap();
+            if e.method == "Runtime.bindingCalled" {
+                break e;
+            }
+        };
+        assert_eq!(ev.params["name"], "__b");
+        assert_eq!(ev.params["payload"], "hi");
+        assert_eq!(ev.session_id.as_deref(), Some(s.as_str()));
     }
 }

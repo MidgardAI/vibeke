@@ -845,3 +845,324 @@ fn watch_agent_session_real_chromium() {
         std::thread::sleep(Duration::from_millis(200));
     }
 }
+
+/// Next clipboard frame for `pane` (acking media on the way).
+fn clipboard_frame(r: &mut Render, pane: &str, timeout: Duration) -> Vec<u8> {
+    let t0 = Instant::now();
+    loop {
+        let left = timeout.saturating_sub(t0.elapsed());
+        assert!(!left.is_zero(), "no clipboard frame");
+        match r.rx.recv_timeout(left) {
+            Ok(ServerFrame::Clipboard { data, pane: p, .. }) if p == pane => return data,
+            Ok(ServerFrame::Media(m)) => {
+                r.send(&ClientFrame::MediaAck {
+                    pane: m.pane.clone(),
+                    seq: m.seq,
+                });
+                release(&m);
+            }
+            Ok(_) => {}
+            Err(_) => panic!("no clipboard frame"),
+        }
+    }
+}
+
+/// 06 B3.2 "not built yet" items, end to end through the CLI, the server and the out-of-process
+/// fake Chromium: `--device` letterboxing, console/network capture (`vibeke browser console
+/// --pane`) and the console split running its follower in a pane, page clipboard → the render
+/// client, dropped files (drag events, or an open file chooser), unpinning.
+#[test]
+fn browser_pane_console_clipboard_drops_and_device_with_fake_chromium() {
+    let s = Session::new(true);
+    let src = root_pane(&s);
+    let port = http(vec![("/", "<p>one</p>".into())]);
+    let url = format!("http://localhost:{port}/");
+    let o = s.json(&[
+        "preview",
+        "open",
+        &url,
+        "--split",
+        "right",
+        "--pane",
+        &src,
+        "--device",
+        "iphone-15",
+    ]);
+    let bp = o["pane"].as_str().unwrap().to_string();
+    let spec = s.browser_spec(&bp);
+    assert_eq!(spec.device.as_deref(), Some("iphone-15"));
+
+    // Letterboxed: the frame fills the 40×20-cell content area; the phone sits in the middle.
+    let mut r = Render::attach(&s.socket(), "bp-io");
+    r.view(vec![media_pane(&bp, spec.clone(), 40, 20)]);
+    let (m, _) = r.media(|m| m.reset, Duration::from_secs(20));
+    assert_eq!((m.width, m.height), (640, 640));
+    let corner = tile_px(&m.tiles[0]);
+    assert_eq!(
+        &corner[..4],
+        &vk_browser::devices::FILL,
+        "neutral fill in the margin"
+    );
+    release(&m);
+    let log = s.wait_cdp("device emulation", |l| {
+        l.iter().any(|v| {
+            v["method"] == "Emulation.setDeviceMetricsOverride"
+                && v["params"]["width"] == 393
+                && v["params"]["mobile"] == true
+        }) && l
+            .iter()
+            .any(|v| v["method"] == "Page.startScreencast" && v["params"]["maxHeight"] == 640)
+    });
+    assert!(log.iter().any(|v| {
+        v["method"] == "Emulation.setUserAgentOverride"
+            && v["params"]["userAgent"]
+                .as_str()
+                .unwrap_or("")
+                .contains("iPhone")
+    }));
+
+    // Console and network capture through the CLI (redacted, filterable).
+    r.cmd(
+        &bp,
+        BrowserCmd::Text("error:boom token=hunter2hunter2".into()),
+    );
+    r.cmd(&bp, BrowserCmd::Text("fail:http://localhost:9/api".into()));
+    let t0 = Instant::now();
+    let entries = loop {
+        let v = s.json(&["browser", "console", "--pane", &bp]);
+        let e = v["entries"].as_array().cloned().unwrap_or_default();
+        let has = |f: &dyn Fn(&Value) -> bool| e.iter().any(f);
+        if has(&|x| x["text"].as_str().is_some_and(|t| t.contains("boom")))
+            && has(&|x| x["error"].is_string())
+            && has(&|x| x["text"].as_str().is_some_and(|t| t.starts_with("loaded")))
+        {
+            break e;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "capture: {v}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let boom = entries
+        .iter()
+        .find(|x| x["text"].as_str().is_some_and(|t| t.contains("boom")))
+        .unwrap();
+    assert!(!boom.to_string().contains("hunter2hunter2"), "{boom}");
+    let errs = s.json(&["browser", "console", "--pane", &bp, "--errors"]);
+    let errs = errs["entries"].as_array().unwrap();
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    let net = s.json(&["browser", "console", "--pane", &bp, "--network"]);
+    assert!(
+        net["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["kind"] == "network")
+    );
+
+    // The console split: a pane under the browser pane running the follower.
+    let c = s.json(&["browser", "console-split", &bp]);
+    let cp = c["pane"].as_str().expect("split pane").to_string();
+    let p = s.json(&["pane", "get", &cp]);
+    assert_eq!(
+        p["pane"]["created_by"],
+        json!(format!("browser-console:{bp}")),
+        "{p}"
+    );
+    let screen = |s: &Session| {
+        s.json(&["pane", "read", &cp, "--source", "recent", "--lines", "40"])["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    let t0 = Instant::now();
+    while !screen(&s).contains("boom") {
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "follower output: {}",
+            screen(&s)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    r.cmd(&bp, BrowserCmd::Text("log:after the split".into()));
+    let t0 = Instant::now();
+    while !screen(&s).contains("after the split") {
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "follower output: {}",
+            screen(&s)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Toggle: the second call closes it.
+    let c = s.json(&["browser", "console-split", &bp]);
+    assert_eq!(c["closed"], json!(cp));
+
+    // Page clipboard → the viewer (after user input to the page, which the Text above was).
+    r.cmd(&bp, BrowserCmd::Text("copy:hello from the page".into()));
+    assert_eq!(
+        clipboard_frame(&mut r, &bp, Duration::from_secs(10)),
+        b"hello from the page"
+    );
+
+    // Files: dropped at the pointer, or into a file chooser the page opened.
+    let file = s.path().join("upload me.txt");
+    std::fs::write(&file, b"hello").unwrap();
+    let canon = file.canonicalize().unwrap().display().to_string();
+    r.cmd(&bp, BrowserCmd::DropFiles(vec![file.display().to_string()]));
+    s.wait_cdp("drop", |l| {
+        l.iter().any(|v| {
+            v["method"] == "Input.dispatchDragEvent"
+                && v["params"]["type"] == "drop"
+                && v["params"]["data"]["files"] == json!([canon])
+        })
+    });
+    r.cmd(&bp, BrowserCmd::Text("chooser".into()));
+    r.state(
+        |st| {
+            st.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("file chooser"))
+        },
+        Duration::from_secs(10),
+    );
+    r.cmd(&bp, BrowserCmd::DropFiles(vec![canon.clone()]));
+    s.wait_cdp("file chooser", |l| {
+        l.iter().any(|v| {
+            v["method"] == "DOM.setFileInputFiles"
+                && v["params"]["backendNodeId"] == 42
+                && v["params"]["files"] == json!([canon])
+        })
+    });
+
+    // Unpin from the CLI: the pane's own size again.
+    s.json(&["browser", "viewport", &bp, "fit"]);
+    let spec = s.browser_spec(&bp);
+    assert_eq!((spec.device.clone(), spec.viewport.clone()), (None, None));
+    r.view(vec![media_pane(&bp, spec, 40, 20)]);
+    s.wait_cdp("unpinned", |l| {
+        l.iter().any(|v| {
+            v["method"] == "Emulation.setDeviceMetricsOverride"
+                && v["params"]["width"] == 320
+                && v["params"]["mobile"] == false
+        })
+    });
+}
+
+/// Real Chromium: the page clipboard hook, console capture, a drop and a pinned device.
+#[test]
+fn browser_pane_io_real_chromium() {
+    if std::env::var("VIBEKE_BROWSER_TESTS").as_deref() != Ok("1") {
+        eprintln!("VIBEKE_BROWSER_TESTS != 1; skipping");
+        return;
+    }
+    if vk_browser::cdp::discover_chromium(true).is_none() {
+        eprintln!("no Playwright Chromium on disk; skipping");
+        return;
+    }
+    let s = Session::new(false);
+    let src = root_pane(&s);
+    let page = r#"<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+      <body style="margin:0">
+      <input id=i autofocus style="width:300px;height:30px" value="copy me">
+      <div id=drop style="position:fixed;left:0;top:60px;width:100%;height:300px;background:#eee">drop here</div>
+      <script>
+        console.log('page ready', innerWidth + 'x' + innerHeight, devicePixelRatio, navigator.userAgent.includes('iPhone'));
+        const d = document.getElementById('drop');
+        d.addEventListener('dragover', e => e.preventDefault());
+        d.addEventListener('drop', e => { e.preventDefault();
+          console.log('dropped ' + [...e.dataTransfer.files].map(f => f.name + ':' + f.size).join(',')); });
+        document.addEventListener('keydown', e => {
+          if (e.key === 'k') navigator.clipboard.writeText('from writeText');
+          if (e.key === 'x') { fetch('http://localhost:9/nothing').catch(() => {}); throw new Error('boom'); }
+        });
+      </script></body></html>"#;
+    let port = http(vec![("/", page.to_string())]);
+    let url = format!("http://localhost:{port}/");
+    let o = s.json(&[
+        "preview",
+        "open",
+        &url,
+        "--split",
+        "right",
+        "--pane",
+        &src,
+        "--device",
+        "iphone-15",
+    ]);
+    let bp = o["pane"].as_str().unwrap().to_string();
+    let spec = s.browser_spec(&bp);
+    let mut r = Render::attach(&s.socket(), "bp-io-real");
+    r.view(vec![media_pane(&bp, spec, 100, 40)]);
+    let (m, _) = r.media(|m| m.reset, Duration::from_secs(30));
+    assert_eq!((m.width, m.height), (1600, 1280));
+    release(&m);
+    let wait_entry = |s: &Session, what: &str, f: &dyn Fn(&Value) -> bool| -> Value {
+        let t0 = Instant::now();
+        loop {
+            let v = s.json(&["browser", "console", "--pane", &bp]);
+            if let Some(e) = v["entries"]
+                .as_array()
+                .and_then(|a| a.iter().find(|e| f(e)).cloned())
+            {
+                return e;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "{what}: {v}");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let ready = wait_entry(&s, "page ready", &|e| {
+        e["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("page ready"))
+    });
+    eprintln!("REAL CHROMIUM DEVICE: {}", ready["text"]);
+    assert!(
+        ready["text"].as_str().unwrap().contains("393x852 3 true"),
+        "{ready}"
+    );
+    // Clipboard: a key press makes the page call writeText.
+    r.cmd(&bp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('k')));
+    assert_eq!(
+        clipboard_frame(&mut r, &bp, Duration::from_secs(10)),
+        b"from writeText"
+    );
+    // A copy of the input's selection (Cmd+A, Cmd+C: Chromium editing commands) reaches the
+    // viewer through the copy-event hook.
+    if cfg!(target_os = "macos") {
+        let cmd = |c| {
+            vk_proto::input::KeyEvent::new(
+                vk_proto::input::Key::Char(c),
+                vk_proto::input::Mods::SUPER,
+            )
+        };
+        r.cmd(&bp, BrowserCmd::Key(cmd('a')));
+        r.cmd(&bp, BrowserCmd::Key(cmd('c')));
+        assert_eq!(
+            clipboard_frame(&mut r, &bp, Duration::from_secs(10)),
+            b"kcopy me" // the `k` above was typed into the focused input
+        );
+    }
+    // Errors and failed requests.
+    r.cmd(&bp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('x')));
+    wait_entry(&s, "exception", &|e| {
+        e["level"] == "error" && e["text"].as_str().is_some_and(|t| t.contains("boom"))
+    });
+    wait_entry(&s, "failed request", &|e| {
+        e["kind"] == "network" && e["error"].is_string()
+    });
+    // A drop on the page's drop zone (pointer there first; pane coords are letterboxed).
+    let file = s.path().join("dropped.txt");
+    std::fs::write(&file, b"12345").unwrap();
+    r.cmd(
+        &bp,
+        BrowserCmd::Mouse {
+            kind: vk_proto::input::MouseKind::Move,
+            button: vk_proto::input::MouseButton::None,
+            x: 400.0,
+            y: 200.0,
+            mods: vk_proto::input::Mods::empty(),
+            clicks: 0,
+        },
+    );
+    r.cmd(&bp, BrowserCmd::DropFiles(vec![file.display().to_string()]));
+    wait_entry(&s, "drop", &|e| e["text"] == "dropped dropped.txt:5");
+}

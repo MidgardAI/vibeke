@@ -287,9 +287,15 @@ pub struct BrowserPane {
     pub title: String,
     /// Watch mode (06 B7): the pane shows this agent browser session (handle such as `b3`,
     /// on this pane's machine) instead of a page of its own. Read-only until taken over.
-    /// Last field (postcard is positional).
     #[serde(default)]
     pub watch: Option<String>,
+    /// Pinned device preset (`--device iphone-15`, `vk_browser::devices`): the viewport is the
+    /// device's, letterboxed in the pane (06 B3.2). Appended (postcard is positional).
+    #[serde(default)]
+    pub device: Option<String>,
+    /// Pinned CSS viewport `WxH` (`--viewport 390x844`); `device` wins when both are set.
+    #[serde(default)]
+    pub viewport: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -806,6 +812,8 @@ mod tests {
             history_index: 0,
             title: "app".into(),
             watch: None,
+            device: Some("iphone-15".into()),
+            viewport: None,
         });
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["browser"]["url"], "http://localhost:5173/");

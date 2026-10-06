@@ -248,7 +248,7 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `declare` | `<port>` | `preview.declare` | --port N [--path /p] [--label l] [--pane p] [--task k] |
 | `list` | - | `preview.list` | [--machine m] [--task k] [--pane p] [--all] (suggestions with --all) |
 | `get` | `<preview>` | `preview.get` |  |
-| `open` | `<preview>` | `preview.open` | <v4\|devbox/v4\|url> [--split right\|down\|tab\|float \| --window \| --proxy [--no-open]] [--pane p] [--machine m] |
+| `open` | `<preview>` | `preview.open` | <v4\|devbox/v4\|url> [--split right\|down\|tab\|float \| --window \| --proxy [--no-open]] [--pane p] [--machine m] [--viewport WxH \| --device iphone-15] |
 | `url` | `<preview>` | `preview.url` |  |
 | `mirror` | `<preview>` | `preview.mirror` | <devbox/v4> bind the remote port number on this machine's loopback (unauthenticated; explicit) |
 | `unmirror` | `<preview>` | `preview.unmirror` | <devbox/v4 \| port> stop a mirror |
@@ -271,7 +271,9 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `screenshot` | `<session>` | `browser.screenshot` | <session> [--full-page] [--selector css] [--out f.png] |
 | `snapshot` | `<session>` | `browser.snapshot` | <session> [--format a11y\|text\|html] [--selector css] |
 | `dom` | `<session>` | `browser.dom` | alias of snapshot |
-| `console` | `<session>` | `browser.console` | <session> [--level error\|warn\|all] [--since 5m] |
+| `console` | `<session>` | `browser.console` | <session> [--level error\|warn\|all] [--since 5m] \| --pane <browser pane> [--follow] [--console\|--network] [--errors] (follow keys: c n e a q) |
+| `console-split` | `<pane>` | `browser.pane.console` | <browser pane> toggle the console/network split under it (prefix+alt+c) |
+| `viewport` | `<pane>` `<viewport>` | `browser.pane.update` | <browser pane> <WxH \| fit> \| --device iphone-15\|pixel-8\|ipad\|desktop-1280\|desktop-1440\|desktop-1920 — pin the page size (letterboxed) |
 | `network` | `<session>` | `browser.network` | <session> [--failed] [--since 5m] |
 | `close` | `<session>` | `browser.close` |  |
 | `list` | - | `browser.list` | sessions you can see + browser status |
@@ -282,7 +284,7 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `watch` | `<session>` | `browser.watch` | <session> [--pane p] [--split right\|down\|tab] — watch an agent's session in a browser pane (read-only; prefix+t takes over) |
 | `pane-status` | - | `browser.pane.status` | browser panes rendered here: browsers, targets, fps |
 | `panes` | - | `browser.pane.list` | browser panes in this server's layout |
-| `pane` | `<url>` | `browser.pane.create` | <url> [--pane p] [--split right\|down\|tab] |
+| `pane` | `<url>` | `browser.pane.create` | <url> [--pane p] [--split right\|down\|tab] [--viewport WxH \| --device iphone-15] |
 | `command` | `<pane>` `<cmd>` | `browser.command` | <pane> back\|forward\|reload\|stop\|navigate --url u\|screenshot\|window\|pane |
 | `diff` | `<a>` `<b>` | `browser.diff` | <shotA> <shotB> [--threshold 0.1] [--force] [--out diff.png] — changed ratio, regions, diff image |
 

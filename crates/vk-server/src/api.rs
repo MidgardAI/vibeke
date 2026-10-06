@@ -335,6 +335,8 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "browser.screencast_frame",
     "browser.pane.update",
     "browser.command",
+    "browser.pane.console",
+    "browser.pane.console_push",
     "group.create",
     "group.rename",
     "group.move",
