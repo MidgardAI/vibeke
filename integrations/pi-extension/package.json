@@ -1,0 +1,27 @@
+{
+  "name": "@vibeke/pi-extension",
+  "version": "0.1.0",
+  "description": "Observe-only Vibeke integration for pi and omp (state, session identity, file changes, usage, reconnect snapshots)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "keywords": [
+    "pi-package",
+    "omp",
+    "vibeke"
+  ],
+  "main": "dist/vibeke.js",
+  "files": [
+    "dist/vibeke.js",
+    "DESIGN.md",
+    "PROTOCOL.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/vibeke.js"
+    ]
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outfile dist/vibeke.js --target node --format esm",
+    "test": "bun test"
+  }
+}

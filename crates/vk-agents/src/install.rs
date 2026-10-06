@@ -37,6 +37,10 @@ pub const CODEX_TRUST_INSTRUCTION: &str = "run /hooks in Codex once to trust the
 pub enum Harness {
     Claude,
     Codex,
+    /// pi (`@earendil-works/pi-coding-agent`): extension file, see [`EXTENSION_BUNDLE`].
+    Pi,
+    /// omp (`@oh-my-pi/pi-coding-agent`): extension file.
+    Omp,
 }
 
 impl Harness {
@@ -44,7 +48,14 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+            Harness::Pi => "pi",
+            Harness::Omp => "omp",
         }
+    }
+
+    /// Installed as a single extension file rather than merged into a JSON config.
+    fn is_extension(self) -> bool {
+        matches!(self, Harness::Pi | Harness::Omp)
     }
 }
 
@@ -52,10 +63,16 @@ impl Harness {
 pub struct Dirs {
     pub claude: PathBuf,
     pub codex: PathBuf,
+    /// pi root (`~/.pi`); the agent dir is `<pi>/agent`.
+    pub pi: PathBuf,
+    /// omp root (`~/.omp`); the agent dir is `<omp>/agent`.
+    pub omp: PathBuf,
 }
 
 impl Dirs {
-    /// `CLAUDE_CONFIG_DIR` (default `~/.claude`), `CODEX_HOME` (default `~/.codex`).
+    /// `CLAUDE_CONFIG_DIR` (default `~/.claude`), `CODEX_HOME` (default `~/.codex`),
+    /// `PI_CODING_AGENT_DIR` (pi's agent dir, default `~/.pi/agent`; honoured when it ends in
+    /// `agent`, in which case its parent is the pi root), omp `~/.omp`.
     pub fn from_env() -> Dirs {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -67,12 +84,21 @@ impl Dirs {
         Dirs {
             claude: pick("CLAUDE_CONFIG_DIR", ".claude"),
             codex: pick("CODEX_HOME", ".codex"),
+            pi: match std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from) {
+                Some(a) if a.file_name().is_some_and(|n| n == "agent") && a.parent().is_some() => {
+                    a.parent().map(Path::to_path_buf).unwrap_or_default()
+                }
+                _ => home.join(".pi"),
+            },
+            omp: home.join(".omp"),
         }
     }
     pub fn config_file(&self, h: Harness) -> PathBuf {
         match h {
             Harness::Claude => self.claude.join("settings.json"),
             Harness::Codex => self.codex.join("hooks.json"),
+            Harness::Pi => self.pi.join("agent/extensions/vibeke/index.js"),
+            Harness::Omp => self.omp.join("agent/extensions/vibeke.js"),
         }
     }
 }
@@ -134,6 +160,7 @@ fn events(h: Harness) -> &'static [EventSpec] {
     match h {
         Harness::Claude => CLAUDE_EVENTS,
         Harness::Codex => CODEX_EVENTS,
+        Harness::Pi | Harness::Omp => &[],
     }
 }
 
@@ -209,6 +236,7 @@ fn is_ours_group(h: Harness, group: &Value) -> bool {
             let mut it = hook_commands(group).peekable();
             it.peek().is_some() && it.all(|c| is_ours_command(h, c))
         }
+        Harness::Pi | Harness::Omp => false,
     }
 }
 
@@ -272,11 +300,13 @@ pub struct FileChange {
     /// on uninstall).
     pub after: Option<String>,
     pub stamp: Option<FileStamp>,
+    /// Delete the file (uninstall of a managed single-file extension).
+    pub remove: bool,
 }
 
 impl FileChange {
     pub fn changed(&self) -> bool {
-        self.before.as_deref() != self.after.as_deref() && self.after.is_some()
+        self.remove || (self.before.as_deref() != self.after.as_deref() && self.after.is_some())
     }
 
     /// Plain line diff (`-`/`+`/` ` prefixed) for `--dry-run`.
@@ -410,6 +440,9 @@ pub fn plan_uninstall(h: Harness, dirs: &Dirs) -> Result<Plan> {
 }
 
 fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
+    if h.is_extension() {
+        return plan_extension(h, dirs, bin.is_some());
+    }
     let path = resolve_symlink(&dirs.config_file(h));
     let existing = read_file(&path)?;
     let (text, stamp) = match &existing {
@@ -455,6 +488,7 @@ fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
             before: existing.map(|(t, _)| t),
             after,
             stamp,
+            remove: false,
         }],
         notes,
     })
@@ -575,7 +609,6 @@ pub fn apply(plan: &Plan) -> Result<Vec<PathBuf>> {
         if !f.changed() {
             continue;
         }
-        let after = f.after.as_deref().expect("changed implies after");
         // Abort if the file changed since planning.
         let now = read_file(&f.path)?.map(|(_, s)| s);
         if now != f.stamp {
@@ -584,6 +617,18 @@ pub fn apply(plan: &Plan) -> Result<Vec<PathBuf>> {
                 f.path.display()
             );
         }
+        if f.remove {
+            // Managed file: its content is reproducible, no backup needed.
+            fs::remove_file(&f.path).with_context(|| format!("removing {}", f.path.display()))?;
+            if let Some(parent) = f.path.parent()
+                && parent.file_name().is_some_and(|n| n == "vibeke")
+            {
+                let _ = fs::remove_dir(parent); // pi: only if empty
+            }
+            written.push(f.path.clone());
+            continue;
+        }
+        let after = f.after.as_deref().expect("changed implies after");
         if let Some(parent) = f.path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -697,6 +742,9 @@ pub struct Status {
 }
 
 pub fn status(h: Harness, dirs: &Dirs) -> Status {
+    if h.is_extension() {
+        return status_extension(h, dirs);
+    }
     let file = dirs.config_file(h);
     let mut st = Status {
         harness: h,
@@ -752,6 +800,7 @@ pub fn status(h: Harness, dirs: &Dirs) -> Status {
                 let ours = match h {
                     Harness::Claude => group_ours,
                     Harness::Codex => is_ours_command(h, cmd),
+                    Harness::Pi | Harness::Omp => false,
                 };
                 if ours {
                     found = true;
@@ -868,6 +917,169 @@ fn codex_features_hooks_disabled(config: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// pi / omp extension (integrations/pi-extension)
+// ---------------------------------------------------------------------------
+//
+// ASSUMPTIONS (documented, not verified against a live pi/omp here):
+// * pi and omp load plain `.js` (ESM) extension files: pi from
+//   `<pi>/agent/extensions/<name>/index.js` (or `<name>.js`), omp from
+//   `<omp>/agent/extensions/<name>.js`. The bundle is a single self-contained ES module
+//   (`export default function (pi)`), runnable under Node and Bun.
+// * The file starts with a one-line managed header; a file without it is never overwritten.
+// * Other files in the extensions dir (e.g. Herdr's `herdr-omp-agent-state.ts`) are left alone
+//   and listed as foreign in `status`.
+
+/// The built `integrations/pi-extension/dist/vibeke.js` (committed so Rust builds don't need bun).
+pub const EXTENSION_BUNDLE: &str =
+    include_str!("../../../integrations/pi-extension/dist/vibeke.js");
+
+const EXTENSION_MARKER_PREFIX: &str = "// managed by vibeke (vibeke-integration=";
+
+fn extension_header(h: Harness) -> String {
+    format!(
+        "{EXTENSION_MARKER_PREFIX}{}@{VERSION}); reinstall overwrites\n",
+        h.id()
+    )
+}
+
+/// `Some(version)` when `text` starts with Vibeke's managed header for `h`.
+fn extension_marker_version(h: Harness, text: &str) -> Option<String> {
+    let first = text.lines().next()?;
+    let rest = first.strip_prefix(EXTENSION_MARKER_PREFIX)?;
+    let rest = rest.strip_prefix(&format!("{}@", h.id()))?;
+    let (v, tail) = rest.split_once(')')?;
+    tail.starts_with(';').then(|| v.to_string())
+}
+
+fn extension_content(h: Harness) -> String {
+    format!("{}{}", extension_header(h), EXTENSION_BUNDLE)
+}
+
+fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
+    let path = resolve_symlink(&dirs.config_file(h));
+    let existing = read_file(&path)?;
+    let (before, stamp) = match existing {
+        Some((t, s)) => (Some(t), Some(s)),
+        None => (None, None),
+    };
+    let ours = before
+        .as_deref()
+        .is_some_and(|t| extension_marker_version(h, t).is_some());
+    if before.is_some() && !ours {
+        bail!(
+            "{} exists and is not managed by Vibeke; refusing to {} it",
+            path.display(),
+            if install { "overwrite" } else { "remove" }
+        );
+    }
+    let (after, remove) = if install {
+        (Some(extension_content(h)), false)
+    } else {
+        (None, ours)
+    };
+    let mut notes = vec![];
+    if install && h == Harness::Pi {
+        notes.push(
+            "pi loads the extension from ~/.pi/agent/extensions/vibeke/index.js (restart pi or /reload)"
+                .to_string(),
+        );
+    }
+    if install && h == Harness::Omp {
+        notes.push(
+            "omp loads the extension from ~/.omp/agent/extensions/vibeke.js (restart omp)"
+                .to_string(),
+        );
+    }
+    Ok(Plan {
+        harness: h,
+        kind: if install {
+            PlanKind::Install
+        } else {
+            PlanKind::Uninstall
+        },
+        files: vec![FileChange {
+            path,
+            before,
+            after,
+            stamp,
+            remove,
+        }],
+        notes,
+    })
+}
+
+fn status_extension(h: Harness, dirs: &Dirs) -> Status {
+    let file = dirs.config_file(h);
+    let mut st = Status {
+        harness: h,
+        file: file.clone(),
+        file_exists: false,
+        state: InstallState::NotInstalled,
+        hooks: vec![],
+        missing_events: vec!["extension".to_string()],
+        foreign: vec![],
+        problems: vec![],
+        todo: vec![],
+    };
+    match read_file(&file) {
+        Ok(None) => {}
+        Ok(Some((text, _))) => {
+            st.file_exists = true;
+            match extension_marker_version(h, &text) {
+                Some(version) => {
+                    st.missing_events.clear();
+                    st.state = InstallState::Installed;
+                    if version != VERSION {
+                        st.todo.push(format!(
+                            "integration_outdated: installed {version}, this build bundles {VERSION}; reinstall"
+                        ));
+                    } else if text != extension_content(h) {
+                        st.todo.push(
+                            "extension content differs from this build; reinstall".to_string(),
+                        );
+                    }
+                    st.hooks.push(HookStatus {
+                        event: "extension".to_string(),
+                        group: 0,
+                        index: 0,
+                        command: file.to_string_lossy().to_string(),
+                        version: Some(version),
+                        trust: None,
+                    });
+                }
+                None => st.problems.push(format!(
+                    "{} exists but is not managed by Vibeke (install will refuse to overwrite it)",
+                    file.display()
+                )),
+            }
+        }
+        Err(e) => st.problems.push(format!("{e:#}")),
+    }
+    // Everything else in the extensions dir is foreign (Herdr's herdr-omp-agent-state.ts, user extensions).
+    let ext_dir = match h {
+        Harness::Pi => dirs.pi.join("agent/extensions"),
+        _ => dirs.omp.join("agent/extensions"),
+    };
+    let own = match h {
+        Harness::Pi => "vibeke",
+        _ => "vibeke.js",
+    };
+    if let Ok(rd) = fs::read_dir(&ext_dir) {
+        let mut names: Vec<String> = rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != own && !n.contains(".vibeke-") && !n.starts_with('.'))
+            .collect();
+        names.sort();
+        st.foreign = names
+            .into_iter()
+            .map(|n| format!("extension: {n}"))
+            .collect();
+    }
+    st
+}
+
+// ---------------------------------------------------------------------------
 // Codex PATH shim (spec 04 §6.2)
 // ---------------------------------------------------------------------------
 
@@ -960,6 +1172,8 @@ mod tests {
         let d = Dirs {
             claude: t.path().join("claude"),
             codex: t.path().join("codex"),
+            pi: t.path().join("pi"),
+            omp: t.path().join("omp"),
         };
         fs::create_dir_all(&d.claude).unwrap();
         fs::create_dir_all(&d.codex).unwrap();
@@ -1644,5 +1858,129 @@ mod tests {
         );
         assert_eq!(o.status.code(), Some(127));
         assert!(String::from_utf8_lossy(&o.stderr).contains("not found"));
+    }
+
+    // ----- pi / omp extension -----
+
+    #[test]
+    fn extension_install_paths_header_and_idempotence() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        for (h, rel) in [
+            (Harness::Pi, "pi/agent/extensions/vibeke/index.js"),
+            (Harness::Omp, "omp/agent/extensions/vibeke.js"),
+        ] {
+            assert_eq!(status(h, &d).state, InstallState::NotInstalled);
+            let p = install(h, &d);
+            assert!(p.changed());
+            let path = t.path().join(rel);
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.starts_with(&format!(
+                "// managed by vibeke (vibeke-integration={}@{VERSION}); reinstall overwrites\n",
+                h.id()
+            )));
+            assert!(text.ends_with(EXTENSION_BUNDLE));
+            assert!(EXTENSION_BUNDLE.contains("VIBEKE_PANE_TOKEN"));
+            let st = status(h, &d);
+            assert_eq!(st.state, InstallState::Installed);
+            assert_eq!(st.hooks[0].version.as_deref(), Some(VERSION));
+            assert!(st.todo.is_empty());
+            // second install: no change, no backup
+            let again = plan_install(h, &d, Path::new(BIN)).unwrap();
+            assert!(!again.changed());
+            apply(&again).unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+            assert!(backups(path.parent().unwrap()).is_empty());
+        }
+    }
+
+    #[test]
+    fn extension_reinstall_overwrites_stale_managed_file() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let path = d.config_file(Harness::Omp);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "// managed by vibeke (vibeke-integration=omp@0.0.1); reinstall overwrites\nold();\n",
+        )
+        .unwrap();
+        let st = status(Harness::Omp, &d);
+        assert_eq!(st.state, InstallState::Installed);
+        assert!(st.todo[0].contains("integration_outdated"));
+        install(Harness::Omp, &d);
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .ends_with(EXTENSION_BUNDLE)
+        );
+        assert!(status(Harness::Omp, &d).todo.is_empty());
+    }
+
+    #[test]
+    fn extension_never_clobbers_a_foreign_file_and_reports_siblings() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let dir = t.path().join("omp/agent/extensions");
+        fs::create_dir_all(&dir).unwrap();
+        let herdr = dir.join("herdr-omp-agent-state.ts");
+        fs::write(&herdr, "// herdr\n").unwrap();
+        let st = status(Harness::Omp, &d);
+        assert_eq!(st.state, InstallState::NotInstalled);
+        assert_eq!(st.foreign, ["extension: herdr-omp-agent-state.ts"]);
+        install(Harness::Omp, &d);
+        assert_eq!(fs::read_to_string(&herdr).unwrap(), "// herdr\n");
+        assert_eq!(
+            status(Harness::Omp, &d).foreign,
+            ["extension: herdr-omp-agent-state.ts"]
+        );
+
+        // a user's own vibeke.js without our header: refuse, untouched
+        let t2 = tempfile::tempdir().unwrap();
+        let d2 = dirs(&t2);
+        let own = d2.config_file(Harness::Omp);
+        fs::create_dir_all(own.parent().unwrap()).unwrap();
+        fs::write(&own, "mine\n").unwrap();
+        assert!(plan_install(Harness::Omp, &d2, Path::new(BIN)).is_err());
+        assert!(plan_uninstall(Harness::Omp, &d2).is_err());
+        assert_eq!(fs::read_to_string(&own).unwrap(), "mine\n");
+        assert!(!status(Harness::Omp, &d2).problems.is_empty());
+        // pi: sibling extension directories are foreign
+        fs::create_dir_all(t.path().join("pi/agent/extensions/other")).unwrap();
+        install(Harness::Pi, &d);
+        assert_eq!(status(Harness::Pi, &d).foreign, ["extension: other"]);
+    }
+
+    #[test]
+    fn extension_uninstall_removes_only_the_managed_file() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let sib = t.path().join("pi/agent/extensions/other/index.ts");
+        fs::create_dir_all(sib.parent().unwrap()).unwrap();
+        fs::write(&sib, "x").unwrap();
+        install(Harness::Pi, &d);
+        let p = plan_uninstall(Harness::Pi, &d).unwrap();
+        assert!(p.changed());
+        apply(&p).unwrap();
+        assert!(!d.config_file(Harness::Pi).exists());
+        assert!(!d.config_file(Harness::Pi).parent().unwrap().exists());
+        assert!(sib.exists());
+        // uninstalling when absent is a no-op
+        assert!(!plan_uninstall(Harness::Pi, &d).unwrap().changed());
+        assert_eq!(status(Harness::Pi, &d).state, InstallState::NotInstalled);
+    }
+
+    #[test]
+    fn extension_apply_detects_concurrent_modification() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        install(Harness::Omp, &d);
+        let p = plan_uninstall(Harness::Omp, &d).unwrap();
+        let path = d.config_file(Harness::Omp);
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("// edited\n");
+        fs::write(&path, text).unwrap();
+        assert!(apply(&p).is_err());
+        assert!(path.exists());
     }
 }
