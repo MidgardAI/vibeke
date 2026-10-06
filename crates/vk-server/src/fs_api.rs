@@ -150,7 +150,7 @@ async fn log(root: PathBuf, p: Value) -> R {
 /// `a...b`). With `file`: that file's diff. Without: the changed files with counts.
 pub(crate) async fn diff_revs(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let root = root_for(server, ctx, p).await?;
-    diff_revs_at(&root, p).await
+    Box::pin(diff_revs_at(&root, p)).await
 }
 
 async fn diff_revs_at(root: &Path, p: &Value) -> R {

@@ -186,7 +186,8 @@ pub(crate) async fn git_raw(
     let mut out = Vec::new();
     let mut stdout = child.stdout.take().expect("piped");
     let read = async {
-        let mut buf = [0u8; 64 * 1024];
+        // Heap buffer: a 64 KiB array would live inside the (copied) future and blow debug stacks.
+        let mut buf = vec![0u8; 64 * 1024];
         loop {
             let n = stdout.read(&mut buf).await?;
             if n == 0 || out.len() >= MAX_OUTPUT {
@@ -525,7 +526,8 @@ fn read_untracked(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, RpcError> {
 
 async fn diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if p.get("base").is_some() || p.get("range").is_some() {
-        return crate::fs_api::diff_revs(server, ctx, p).await;
+        // Boxed: the revision-diff future is large (debug-build worker stacks).
+        return Box::pin(crate::fs_api::diff_revs(server, ctx, p)).await;
     }
     let file = req(p, "file")?;
     if !safe_relative(file) {
