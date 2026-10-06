@@ -32,6 +32,8 @@ pub struct CopyMode {
     last_search: Option<(String, bool)>,
     height: Cell<u16>,
     message: Option<String>,
+    /// `g` was pressed: stay at the top while older pages load.
+    want_top: bool,
 }
 
 pub enum Outcome {
@@ -73,6 +75,7 @@ impl CopyMode {
             last_search: None,
             height: Cell::new(h as u16),
             message: None,
+            want_top: false,
         }
     }
 
@@ -93,14 +96,19 @@ impl CopyMode {
             let count = total.min(20_000);
             return Some((total - count, count));
         }
+        // Each page is older than everything loaded so far: prepend it.
         let n = rows.len();
         let mut new = rows;
-        new.extend(self.lines.drain(self.hist..));
-        // Keep any history already loaded that is newer than this batch.
+        new.append(&mut self.lines);
         self.lines = new;
-        self.hist = n;
-        self.top += n;
-        self.cy += n;
+        self.hist += n;
+        if self.want_top {
+            self.top = 0;
+            self.cy = 0;
+        } else {
+            self.top += n;
+            self.cy += n;
+        }
         if let Some((l, c, k)) = self.sel {
             self.sel = Some((l + n, c, k));
         }
@@ -194,8 +202,14 @@ impl CopyMode {
             Key::Char('$') | Key::Named(NamedKey::End) => {
                 self.cx = self.line_len(self.cy).saturating_sub(1) as u16
             }
-            Key::Char('g') => self.cy = 0,
-            Key::Char('G') => self.cy = self.lines.len().saturating_sub(1),
+            Key::Char('g') => {
+                self.cy = 0;
+                self.want_top = true;
+            }
+            Key::Char('G') => {
+                self.cy = self.lines.len().saturating_sub(1);
+                self.want_top = false;
+            }
             Key::Char('H') => self.cy = self.top,
             Key::Char('M') => self.cy = self.top + h / 2,
             Key::Char('L') => self.cy = self.top + h - 1,
@@ -425,6 +439,27 @@ mod tests {
             }],
             wrapped,
         }
+    }
+
+    #[test]
+    fn older_pages_are_prepended_and_g_stays_on_top() {
+        let screen = vec![row("prompt", false)];
+        let mut cm = CopyMode::new("p", screen, 20, Cursor::default());
+        cm.height.set(5);
+        cm.pending_req = Some(1);
+        assert_eq!(cm.on_history(1, 0, 30_000, vec![]), Some((10_000, 20_000)));
+        cm.pending_req = Some(2);
+        let page = |a: usize, b: usize| (a..b).map(|i| row(&format!("l{i}"), false)).collect::<Vec<_>>();
+        assert_eq!(cm.on_history(2, 10_000, 30_000, page(10_000, 30_000)), None);
+        assert_eq!(cm.lines.len(), 20_001);
+        let Outcome::Fetch { start, count } = cm.key(&KeyEvent::ch('g')) else { panic!("expected a fetch for older rows") };
+        assert_eq!((start, count), (0, 10_000));
+        cm.pending_req = Some(3);
+        cm.on_history(3, 0, 30_000, page(0, 10_000));
+        assert_eq!(cm.lines.len(), 30_001);
+        assert_eq!(cm.lines[0].text(), "l0");
+        assert_eq!(cm.lines[29_999].text(), "l29999");
+        assert_eq!((cm.top, cm.cy), (0, 0));
     }
 
     #[test]

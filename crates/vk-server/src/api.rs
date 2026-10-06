@@ -562,8 +562,12 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 )
             });
             let rev = server.pane_rt(&pane.id).map(|r| r.rev());
+            let history = server.pane_rt(&pane.id).map(|rt| {
+                let sc = rt.screen.lock().unwrap();
+                json!({"in_memory": sc.engine.history_len(), "scrolled_total": sc.engine.scrolled_total(), "archived_upto": sc.archived_upto})
+            });
             Ok(
-                json!({"pane": pane, "run": run, "open_interactions": ints, "revision": rev, "cwd": server.pane_cwd(&pane.id)}),
+                json!({"pane": pane, "run": run, "open_interactions": ints, "revision": rev, "cwd": server.pane_cwd(&pane.id), "history": history}),
             )
         }
         "pane.split" => {
