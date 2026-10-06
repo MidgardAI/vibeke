@@ -886,6 +886,7 @@ impl Server {
         Ok((ws, tab, pane))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tab_in(
         self: &Arc<Self>,
         c: &mut Core,
