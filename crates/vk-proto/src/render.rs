@@ -16,7 +16,11 @@ use serde::{Deserialize, Serialize};
 ///   share a `seq`, only the first with `reset`), `ClientFrame::MediaView`/`MediaAck`/`Browser`.
 /// - 3: `BrowserPane.device`/`viewport` (pinned, letterboxed viewports) and
 ///   `BrowserCmd::DropFiles` (files into the page, 06 B3.2).
-pub const PROTOCOL: u32 = 3;
+/// - 4: terminal effects (03 §8): `Row.mark` (OSC 133 prompt rows) and `Row.links` (OSC 8),
+///   `SessionModel.pane_live` (OSC 9;4 progress, last exit code, user vars),
+///   `ServerFrame::ClipboardQuery` / `ClientFrame::ClipboardReply` (OSC 52 read), and
+///   `ServerFrame::Image` / `PaneImages` (inbound kitty graphics, 03 §9).
+pub const PROTOCOL: u32 = 4;
 
 /// `render.attach` error kind when client and server speak different render protocols.
 pub const VERSION_MISMATCH: &str = "version_mismatch";
@@ -94,11 +98,53 @@ pub struct Row {
     pub spans: Vec<Span>,
     /// The line continues on the next row (soft wrap); copy mode unwraps.
     pub wrapped: bool,
+    /// OSC 133 shell-integration state of the row ([`mark`]): copy-mode prompt jumps and
+    /// "select command output" (03 §8). Appended (render protocol 4).
+    #[serde(default)]
+    pub mark: u8,
+    /// OSC 8 hyperlinks on this row, left to right, non-overlapping (03 §8). Appended (render
+    /// protocol 4).
+    #[serde(default)]
+    pub links: Vec<Link>,
+}
+
+/// Values of [`Row::mark`].
+pub mod mark {
+    /// Not a prompt row (command output, or no shell integration).
+    pub const NONE: u8 = 0;
+    /// The row where a prompt starts (`OSC 133 ; A`).
+    pub const PROMPT: u8 = 1;
+    /// A continuation row of a multi-line prompt or command line.
+    pub const PROMPT_CONT: u8 = 2;
+}
+
+/// An OSC 8 hyperlink run: `cols` cells from column `col` link to `uri`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct Link {
+    pub col: u16,
+    pub cols: u16,
+    pub uri: String,
 }
 
 impl Row {
     pub fn text(&self) -> String {
         self.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// A row of plain spans (no prompt mark, no links).
+    pub fn new(spans: Vec<Span>, wrapped: bool) -> Self {
+        Row {
+            spans,
+            wrapped,
+            ..Default::default()
+        }
+    }
+
+    /// The hyperlink covering column `col`, if any.
+    pub fn link_at(&self, col: u16) -> Option<&Link> {
+        self.links
+            .iter()
+            .find(|l| col >= l.col && col < l.col.saturating_add(l.cols))
     }
 }
 
@@ -258,6 +304,47 @@ pub enum ServerFrame {
         events: Vec<PushedEvent>,
         lagged: bool,
     },
+    /// OSC 52 read (03 §8): a pane asked for the clipboard. Sent to one client (the most
+    /// recently active one showing the pane); the client applies `clipboard.osc52_read`
+    /// (deny / ask / allow) and answers with `ClientFrame::ClipboardReply`. Appended
+    /// (render protocol 4).
+    ClipboardQuery {
+        req: u64,
+        pane: String,
+        selection: ClipSel,
+    },
+    /// Inbound kitty graphics (03 §9): an image's pixels, sent once per client per content
+    /// hash before the first `PaneImages` that places it. `rgba_z` is zlib-deflated RGBA of
+    /// `width × height`. Appended (render protocol 4).
+    Image {
+        hash: String,
+        width: u32,
+        height: u32,
+        rgba_z: Vec<u8>,
+    },
+    /// The visible kitty placements of a terminal pane (replaces the previous set; empty =
+    /// none). Sent after the cell frame whenever the set or a position changed. Appended
+    /// (render protocol 4).
+    PaneImages {
+        pane: String,
+        epoch: u32,
+        places: Vec<ImagePlace>,
+    },
+}
+
+/// One kitty image placement on a terminal pane (03 §9): image `hash` scaled into `cols ×
+/// rows` cells whose top-left is (`col`, `row`) of the pane screen (negative when partly
+/// scrolled off; the client clips).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImagePlace {
+    pub hash: String,
+    pub width: u32,
+    pub height: u32,
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
+    pub z: i32,
 }
 
 /// One pushed event: its sequence number and type for cheap routing, and the full event as
@@ -502,6 +589,13 @@ pub enum ClientFrame {
         offset: u32,
         total: u32,
     },
+    /// Answer to `ServerFrame::ClipboardQuery`: the clipboard text, or `None` when the client
+    /// denied the read (policy or user). Appended (render protocol 4).
+    ClipboardReply {
+        req: u64,
+        pane: String,
+        data: Option<Vec<u8>>,
+    },
 }
 
 #[cfg(test)]
@@ -645,6 +739,72 @@ mod tests {
         };
         assert_eq!(rt_client(&sv), sv);
         assert_eq!(encode(&sv).unwrap()[4], 16);
+    }
+
+    #[test]
+    fn terminal_effect_frames_roundtrip() {
+        let q = ServerFrame::ClipboardQuery {
+            req: 9,
+            pane: "P".into(),
+            selection: ClipSel::Clipboard,
+        };
+        assert_eq!(rt_server(&q), q);
+        assert_eq!(encode(&q).unwrap()[4], 15);
+        let r = ClientFrame::ClipboardReply {
+            req: 9,
+            pane: "P".into(),
+            data: Some(b"hi".to_vec()),
+        };
+        assert_eq!(rt_client(&r), r);
+        assert_eq!(encode(&r).unwrap()[4], 17);
+        let img = ServerFrame::Image {
+            hash: "ab".into(),
+            width: 2,
+            height: 1,
+            rgba_z: vec![1, 2, 3],
+        };
+        assert_eq!(rt_server(&img), img);
+        assert_eq!(encode(&img).unwrap()[4], 16);
+        let pi = ServerFrame::PaneImages {
+            pane: "P".into(),
+            epoch: 3,
+            places: vec![ImagePlace {
+                hash: "ab".into(),
+                width: 2,
+                height: 1,
+                col: -1,
+                row: 4,
+                cols: 3,
+                rows: 2,
+                z: 0,
+            }],
+        };
+        assert_eq!(rt_server(&pi), pi);
+        assert_eq!(encode(&pi).unwrap()[4], 17);
+        let row = Row {
+            spans: vec![Span {
+                style: Style::default(),
+                text: "see docs".into(),
+                cols: 8,
+            }],
+            wrapped: false,
+            mark: mark::PROMPT,
+            links: vec![Link {
+                col: 4,
+                cols: 4,
+                uri: "https://example.com/".into(),
+            }],
+        };
+        let f = ServerFrame::History {
+            pane: "P".into(),
+            req: 1,
+            start: 0,
+            total: 1,
+            lines: vec![row.clone()],
+        };
+        assert_eq!(rt_server(&f), f);
+        assert_eq!(row.link_at(5).unwrap().uri, "https://example.com/");
+        assert!(row.link_at(3).is_none() && row.link_at(8).is_none());
     }
 
     /// New variants are appended, so existing postcard discriminants are unchanged.

@@ -4,9 +4,9 @@
 //! expected row/column diacritics.
 //!
 //! This also pins what the vendored engine accepts *inbound* (spec 03 §9): raw RGB/RGBA direct
-//! transmission yes; PNG only with a host-supplied decoder (not configured → "unsupported
-//! format"); shm / temp-file media not at all ("unsupported medium"); zlib only for some
-//! streams (see `zlib_acceptance_of_vendored_engine`).
+//! transmission yes; PNG through the decoder `vk-term` installs; shm and temp-file (temp
+//! directory) media yes, as `vk-term` enables them; zlib only for some streams (see
+//! `zlib_acceptance_of_vendored_engine`).
 
 use vk_browser::frame::{Rgba, TileDiffer};
 use vk_browser::kitty::{self, Header, PLACEHOLDER, PixelFormat, TileEncoder, Transfer};
@@ -82,15 +82,15 @@ fn kitty_output_parses_in_vk_term_engine() {
                 format: PixelFormat::Png,
                 zlib: false,
             },
-            "EINVAL: unsupported format",
+            "OK", // vk-term installs a PNG decoder (03 §9)
         ),
-        (600, Transfer::Shm, "EINVAL: unsupported medium"),
+        (600, Transfer::Shm, "OK"), // shared memory medium enabled
         (
             700,
             Transfer::TempFile {
                 dir: std::env::temp_dir(),
             },
-            "EINVAL: unsupported medium",
+            "OK", // temp-file medium enabled for the temp directory
         ),
     ];
     let mut out = Vec::new();

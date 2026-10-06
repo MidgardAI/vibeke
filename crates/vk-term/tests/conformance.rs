@@ -1,6 +1,7 @@
 //! In-repo VT conformance suite for `vk_term::Engine` (spec 10 §6, "own corpus").
 //!
-//! This is NOT esctest2 or vttest: neither is vendored and the build has no network. It is a
+//! This is NOT esctest2 (GPL-2.0, so neither vendored nor derived here); vttest (MIT/X11) cases
+//! are replayed in `tests/vttest_derived.rs`. This file is a
 //! deterministic table of escape-sequence cases written from ECMA-48, the xterm ctlseqs
 //! document, the kitty keyboard protocol and DEC STD 070 behaviour, in the same spirit (input
 //! bytes in, expected screen/cursor/modes/replies/effects out). Each case is fed whole and again
@@ -905,7 +906,54 @@ fn cases() -> Vec<Case> {
             2,
             "\x1b]8;id=a;https://e.x\x07hi\x1b]8;;\x07",
         )
-        .screen(&["hi"]),
+        .screen(&["hi"])
+        .check(|o| {
+            let r = o.e.row(0);
+            (r.links.len() == 1 && r.links[0].uri == "https://e.x" && r.links[0].cols == 2)
+                .then_some(())
+                .ok_or(format!("links {:?}", r.links))
+        }),
+    );
+    v.push(
+        case(
+            os,
+            "OSC 133 marks: prompt row and exit code",
+            20,
+            3,
+            "\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07a\r\n\x1b]133;D;2\x07",
+        )
+        .effect(Effect::Mark {
+            kind: 'D',
+            exit: Some(2),
+        })
+        .check(|o| {
+            let m: Vec<u8> = o.e.visible_rows().iter().map(|r| r.mark).collect();
+            (m[0] == vk_proto::render::mark::PROMPT && m[1] == 0)
+                .then_some(())
+                .ok_or(format!("marks {m:?}"))
+        }),
+    );
+    v.push(
+        case(
+            os,
+            "OSC 1337 SetUserVar",
+            20,
+            2,
+            "\x1b]1337;SetUserVar=who=dmliZWtl\x07",
+        )
+        .effect(Effect::UserVar {
+            name: "who".into(),
+            value: "vibeke".into(),
+        })
+        .screen(&[]),
+    );
+    v.push(
+        case(os, "OSC 9;4 paused progress", 20, 2, "\x1b]9;4;4;70\x07")
+            .effect(Effect::Progress {
+                state: 4,
+                pct: Some(70),
+            })
+            .screen(&[]),
     );
     v.push(
         case(os, "OSC 52 set", 10, 2, "\x1b]52;c;aGVsbG8=\x07").effect(Effect::Clipboard {

@@ -926,8 +926,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 let sc = rt.screen.lock().unwrap();
                 json!({"in_memory": sc.engine.history_len(), "scrolled_total": sc.engine.scrolled_total(), "archived_upto": sc.archived_upto})
             });
+            let live = server.with_core(|c| c.model.live(&pane.id).cloned());
             Ok(
-                json!({"pane": pane, "run": run, "open_interactions": ints, "revision": rev, "cwd": server.pane_cwd(&pane.id), "history": history}),
+                json!({"pane": pane, "run": run, "open_interactions": ints, "revision": rev, "cwd": server.pane_cwd(&pane.id), "history": history, "live": live}),
             )
         }
         "pane.split" => {
@@ -1124,6 +1125,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             let pane = resolve_pane(server, ctx, s(p, "pane"))?;
             let source = s(p, "source").unwrap_or("visible");
             let lines = u(p, "lines").unwrap_or(200) as usize;
+            if matches!(source, "last-command" | "last_command") {
+                return read_last_command(server, &pane.id, lines);
+            }
             let text = read_text(server, &pane.id, source, lines);
             let rev = server.pane_rt(&pane.id).map(|r| r.rev()).unwrap_or(0);
             Ok(json!({"text": text, "revision": rev, "source": source}))
@@ -1385,6 +1389,44 @@ async fn send(server: &Server, ctx: &Ctx, pane: &str, bytes: Vec<u8>) -> Result<
         }
         _ => Ok(()),
     }
+}
+
+/// `pane.read --source last-command` (03 §8): the last command's output from OSC 133 marks
+/// (the previous command at an idle prompt, the running one otherwise), its last `lines` lines.
+/// `no_marks` when the shell sent no prompt marks (`vibeke shell-integration` snippets).
+fn read_last_command(server: &Server, pane: &str, lines: usize) -> R {
+    let rt = server
+        .pane_rt(pane)
+        .ok_or_else(|| not_found("pane", pane))?;
+    let (lc, rev) = {
+        let sc = rt.screen.lock().unwrap();
+        (sc.engine.last_command(), sc.rev)
+    };
+    let Some(lc) = lc else {
+        return Err(err(
+            ErrorKind::NotFound,
+            "no OSC 133 prompt marks in this pane (no shell integration, or no command yet)",
+        )
+        .details(json!({"reason": "no_marks"})));
+    };
+    let mut out = String::new();
+    for (i, r) in lc.rows.iter().enumerate() {
+        let t = r.text();
+        out.push_str(if r.wrapped { &t } else { t.trim_end() });
+        if !r.wrapped && i + 1 < lc.rows.len() {
+            out.push('\n');
+        }
+    }
+    let all: Vec<&str> = out.lines().collect();
+    let text = all[all.len().saturating_sub(lines)..].join("\n");
+    Ok(json!({
+        "text": text,
+        "revision": rev,
+        "source": "last-command",
+        "running": lc.running,
+        "exit_code": lc.exit,
+        "prompt_line": lc.prompt_line,
+    }))
 }
 
 pub fn read_text(server: &Server, pane: &str, source: &str, lines: usize) -> String {

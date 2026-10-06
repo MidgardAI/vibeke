@@ -274,6 +274,19 @@ export type Pane = {
   browser?: BrowserPane | null;
 };
 
+export type PaneLive = {
+  pane: string;
+  progress: {
+    state: "normal" | "error" | "indeterminate" | "paused";
+    pct: number | null;
+  } | null;
+  last_exit: {
+    code: number;
+    at_ms: number;
+  } | null;
+  user_vars: string[][];
+};
+
 export type PolicyRule = Record<string, unknown>;
 
 export type PrLookup = {
@@ -2589,6 +2602,7 @@ export type PaneGetResult = {
   pane: Pane;
   run?: AgentRun | null;
   open_interactions?: Interaction[];
+  live?: PaneLive | null;
 };
 
 export type PaneListParams = {
@@ -2631,7 +2645,7 @@ export type PanePinResult = {
 
 export type PaneReadParams = {
   pane?: Target;
-  source?: "visible" | "recent" | "recent_unwrapped" | "scrollback" | "detection";
+  source?: "visible" | "recent" | "recent_unwrapped" | "scrollback" | "detection" | "last-command";
   lines?: number;
   from_line?: number;
   format?: "text" | "ansi" | "cells";
@@ -2646,6 +2660,9 @@ export type PaneReadResult = {
   truncated?: boolean;
   scroll?: unknown;
   cursor?: unknown;
+  running?: boolean;
+  exit_code?: number | null;
+  prompt_line?: number;
 };
 
 export type PaneRenameParams = {

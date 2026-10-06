@@ -137,6 +137,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Palette { filter, sel } => crate::nav::palette_key(app, ev, filter, sel),
         Popup::Hints(h) => crate::nav::hints_key(app, ev, h),
         Popup::PluginLink(c) => crate::plugins::link_key(app, ev, c),
+        Popup::ClipboardRead(r) => crate::osc::read_key(app, ev, r),
         Popup::Inbox => crate::inbox::key(app, ev),
         Popup::Track => crate::tasks::track_key(app, ev),
         Popup::Task => crate::tasks::task_key(app, ev),
@@ -482,6 +483,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             }
             Popup::Hints(h) => crate::nav::draw_hints(app, g, h),
             Popup::PluginLink(c) => crate::plugins::draw_link(app, g, c),
+            Popup::ClipboardRead(r) => crate::osc::draw_read(app, g, r),
             p @ (Popup::GroupPick { .. } | Popup::Search(_) | Popup::LayoutPick { .. }) => {
                 return crate::parity::popup_draw(app, g, p);
             }

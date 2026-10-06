@@ -1300,6 +1300,86 @@
         "recovered"
       ]
     },
+    "PaneLive": {
+      "type": "object",
+      "properties": {
+        "pane": {
+          "type": "string"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "normal",
+                    "error",
+                    "indeterminate",
+                    "paused"
+                  ]
+                },
+                "pct": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "pct"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_exit": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "integer"
+                },
+                "at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "code",
+                "at_ms"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user_vars": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "pane",
+        "progress",
+        "last_exit",
+        "user_vars"
+      ]
+    },
     "PolicyRule": {
       "type": "object"
     },
@@ -10426,6 +10506,16 @@
             "items": {
               "$ref": "#/$defs/Interaction"
             }
+          },
+          "live": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PaneLive"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -10570,7 +10660,8 @@
               "recent",
               "recent_unwrapped",
               "scrollback",
-              "detection"
+              "detection",
+              "last-command"
             ],
             "default": "visible"
           },
@@ -10612,7 +10703,23 @@
             "type": "boolean"
           },
           "scroll": {},
-          "cursor": {}
+          "cursor": {},
+          "running": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt_line": {
+            "type": "integer"
+          }
         }
       }
     },

@@ -429,6 +429,7 @@ PreviewCa = {path: string, sha256: string, spki_sha256: string, trust: string}
 PreviewMirror = {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user}
 BrowserSession = {session: string, session_id: string, owner: {pane: string, pane_handle: string|null, run: string|null} | {user: string}, preview: string|null, url: string, created_ms: int, viewport: {width: int, height: int}, device: string|null, previews: own|machine, human_control: bool, screencast: bool, proxy_port: int|null, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device: string|null, viewport: {width: int, height: int}, dpr: number}, status?: int|null, final_url?: string, title?: string}
 Appearance = {known: bool, dark: bool, mode: string, theme: string, source: string}
+PaneLive = {pane: string, progress: {state: normal|error|indeterminate|paused, pct: int|null}|null, last_exit: {code: int, at_ms: int}|null, user_vars: [[string]]}
 LayoutSpec = object
 ScreenshotMeta = {id: string, handle?: string, workspace?: string, task?: string|null, run?: string|null, preview?: string|null, mime?: string, width?: int, height?: int, ts?: int, blob?: string, environment?: object, code?: object}
 AgentSummary = {working: int, needs_input: int, done: int, idle: int}
@@ -500,7 +501,7 @@ tab.floats :: {tab?: Target, visible?: bool} => {tab: Tab}
 
 # --- panes ---
 pane.list :: {workspace?: Target, tab?: Target, has_agent?: bool} => {panes: [Pane]}
-pane.get :: {pane?: Target} => {pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction]}
+pane.get :: {pane?: Target} => {pane: Pane, run?: AgentRun|null, open_interactions?: [Interaction], live?: PaneLive|null}
 pane.current :: {} => {pane: Pane}
 pane.split :: {pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string], env?: {*: string}, focus?: bool = false, title?: string} => {pane: Pane}
 pane.close :: {pane?: Target, force?: bool} => {}
@@ -516,8 +517,8 @@ pane.embed :: {pane: Target, target?: Target, direction?: right|down|left|up = r
 pane.send_text :: {pane?: Target, text: string, paste?: auto|bracketed|raw = auto} => {bytes: int}
 pane.send_keys :: {pane?: Target, keys: [string]} => {}
 pane.run :: {pane?: Target, command: string, wait?: bool, timeout_ms?: int} => {exit_code?: int|null, output_tail?: string}
-pane.read :: {pane?: Target, source?: visible|recent|recent_unwrapped|scrollback|detection = visible, lines?: int = 200, from_line?: int, format?: text|ansi|cells = text, include_cursor?: bool}
-  => {text?: string, cells?: any, rows?: int, revision?: int, truncated?: bool, scroll?: any, cursor?: any}
+pane.read :: {pane?: Target, source?: visible|recent|recent_unwrapped|scrollback|detection|last-command = visible, lines?: int = 200, from_line?: int, format?: text|ansi|cells = text, include_cursor?: bool}
+  => {text?: string, cells?: any, rows?: int, revision?: int, truncated?: bool, scroll?: any, cursor?: any, running?: bool, exit_code?: int|null, prompt_line?: int}
 pane.wait_idle :: {pane?: Target, quiet_ms?: int = 2000, timeout_ms?: int} => {revision: int}
 pane.wait_output :: {pane?: Target, match?: string, regex?: string, source?: string, timeout_ms?: int, since_revision?: int} => {matched: string, line: any, revision: int}
 

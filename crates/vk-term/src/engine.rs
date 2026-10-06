@@ -12,9 +12,9 @@ use crate::ghostty_sys as sys;
 use crate::tracker::{Tracked, Tracker};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
-use vk_proto::render::{Color, Cursor, CursorShape, PaneModes, Row, Span, Style, attr};
+use vk_proto::render::{Color, Cursor, CursorShape, Link, PaneModes, Row, Span, Style, attr, mark};
 
 pub const ENGINE: &str = "libghostty-vt";
 pub const ENGINE_VERSION: &str = concat!("libghostty-vt+", env!("VK_GHOSTTY_SHORT_COMMIT"));
@@ -58,10 +58,72 @@ pub enum Effect {
         kind: char,
         exit: Option<i32>,
     },
+    /// OSC 9;4 progress: `state` 0 = remove, 1 = normal, 2 = error, 3 = indeterminate,
+    /// 4 = paused/warning.
     Progress {
         state: u8,
         pct: Option<u8>,
     },
+    /// OSC 1337 `SetUserVar=name=base64` (iTerm2), decoded. Names are limited to
+    /// [`USER_VAR_NAME_MAX`] bytes of `[A-Za-z0-9_.-]`, values to [`USER_VAR_VALUE_MAX`] bytes;
+    /// anything else is dropped.
+    UserVar {
+        name: String,
+        value: String,
+    },
+}
+
+pub const USER_VAR_NAME_MAX: usize = 64;
+pub const USER_VAR_VALUE_MAX: usize = 4096;
+/// Longest OSC 8 URI kept on a row; longer links render as plain text.
+pub const LINK_URI_MAX: usize = 2048;
+/// Largest decoded image a pane may store (03 §9 `graphics.max_image_bytes`): bigger kitty
+/// transmissions and PNGs are refused by the engine.
+pub const MAX_IMAGE_BYTES: usize = 32 << 20;
+/// Kitty image storage per pane screen (03 §9 `graphics.max_total_per_pane`); the engine
+/// evicts the oldest images beyond it.
+pub const MAX_IMAGES_PER_PANE: u64 = 256 << 20;
+/// Largest PNG side accepted by the decoder.
+const PNG_MAX_SIDE: u32 = 10_000;
+
+/// Content hashes of cropped images by (image id, generation, source rect).
+type ImageHashes = std::collections::HashMap<(u32, u64, [u32; 4]), [u8; 16]>;
+
+/// A visible kitty-graphics placement on the pane screen (03 §9), ready to forward: which
+/// pixels (the image cropped to the placement's source rectangle) go into which cells.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImagePlacement {
+    pub image_id: u32,
+    pub placement_id: u32,
+    /// Content hash of the cropped RGBA pixels and their size (16 bytes of blake3).
+    pub hash: [u8; 16],
+    /// Pixel size of the cropped image.
+    pub width: u32,
+    pub height: u32,
+    /// Top-left cell relative to the visible screen; negative when partly scrolled off.
+    pub col: i32,
+    pub row: i32,
+    /// Cells covered.
+    pub cols: u32,
+    pub rows: u32,
+    /// Kitty z-index (negative = below text).
+    pub z: i32,
+    /// Source rectangle in the stored image and its generation (to fetch the pixels).
+    src: (u32, u32, u32, u32),
+    generation: u64,
+}
+
+/// The output of the last command, from OSC 133 marks (`pane.read --source last-command`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastCommand {
+    /// Absolute line of the command's prompt row.
+    pub prompt_line: u64,
+    /// The command's output rows (prompt and command-line rows excluded).
+    pub rows: Vec<Row>,
+    /// No new prompt yet: the command is still running.
+    pub running: bool,
+    /// Exit code from `OSC 133 ; D ; code` for a finished command, when the shell sent one.
+    pub exit: Option<i32>,
 }
 
 /// Default colours; also what OSC 10/11/12/4 queries answer (unless the app overrode them).
@@ -153,6 +215,11 @@ pub struct Engine {
     scrollback: usize,
     /// Longest single `vt_write`, so no write can scroll past the retained history.
     write_chunk: usize,
+    /// Exit code of the last finished command (`OSC 133 ; D ; code`); cleared when the next
+    /// command's output starts. Not part of snapshots.
+    last_exit: Option<i32>,
+    /// Content hashes of cropped images by (image id, generation, source rect).
+    image_hashes: RefCell<ImageHashes>,
 }
 
 // SAFETY: the libghostty-vt handles are plain heap objects without thread affinity; `Engine`
@@ -550,7 +617,10 @@ impl Engine {
             replaying: false,
             scrollback,
             write_chunk: usize::MAX,
+            last_exit: None,
+            image_hashes: RefCell::new(std::collections::HashMap::new()),
         };
+        e.configure_graphics();
         e.set_line_limit();
         e.set_palette(Palette::default());
         e
@@ -577,6 +647,206 @@ impl Engine {
                 self.scrollback + margin,
             )
         };
+    }
+
+    /// Kitty graphics limits and media (03 §9): direct, shared-memory and temp-file (in the
+    /// temp directory only) transmissions; arbitrary file paths (`t=f`) stay off, since the
+    /// server would read them on the program's behalf. PNG payloads are decoded by
+    /// [`decode_png`].
+    fn configure_graphics(&mut self) {
+        install_png_decoder();
+        let limit: u64 = MAX_IMAGES_PER_PANE;
+        let apc: usize = MAX_IMAGE_BYTES / 3 * 4 + (1 << 16);
+        let yes = true;
+        let no = false;
+        let tmp = std::env::temp_dir().to_string_lossy().into_owned();
+        let tmp_s = sys::GhosttyString {
+            ptr: tmp.as_ptr(),
+            len: tmp.len(),
+        };
+        unsafe {
+            let t = self.term;
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                (&raw const limit).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY,
+                (&raw const apc).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+                (&raw const no).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+                (&raw const yes).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+                (&raw const tmp_s).cast(),
+            );
+        }
+    }
+
+    /// Stamp that changes on any kitty transmit, placement or delete on the active screen.
+    pub fn images_generation(&self) -> u64 {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        if g.is_null() {
+            return 0;
+        }
+        let mut gen_ = 0u64;
+        unsafe {
+            sys::ghostty_kitty_graphics_get(
+                g,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,
+                (&raw mut gen_).cast(),
+            )
+        };
+        gen_
+    }
+
+    /// Visible, non-virtual kitty placements of the active screen, bottom z first.
+    pub fn image_placements(&self) -> Vec<ImagePlacement> {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        let mut out = Vec::new();
+        if g.is_null() {
+            return out;
+        }
+        unsafe {
+            let mut it: sys::GhosttyKittyGraphicsPlacementIterator = ptr::null_mut();
+            if sys::ghostty_kitty_graphics_placement_iterator_new(ptr::null(), &mut it)
+                != sys::GHOSTTY_SUCCESS
+            {
+                return out;
+            }
+            if sys::ghostty_kitty_graphics_get(
+                g,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+                (&raw mut it).cast(),
+            ) == sys::GHOSTTY_SUCCESS
+            {
+                while sys::ghostty_kitty_graphics_placement_next(it) {
+                    if let Some(p) = self.placement(g, it) {
+                        out.push(p);
+                    }
+                }
+            }
+            sys::ghostty_kitty_graphics_placement_iterator_free(it);
+        }
+        out.sort_by_key(|p| (p.z, p.row, p.col));
+        out
+    }
+
+    unsafe fn placement(
+        &self,
+        g: sys::GhosttyKittyGraphics,
+        it: sys::GhosttyKittyGraphicsPlacementIterator,
+    ) -> Option<ImagePlacement> {
+        let (mut id, mut pid, mut virt, mut z) = (0u32, 0u32, false, 0i32);
+        unsafe {
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+                (&raw mut id).cast(),
+            );
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID,
+                (&raw mut pid).cast(),
+            );
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+                (&raw mut virt).cast(),
+            );
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
+                (&raw mut z).cast(),
+            );
+        }
+        if virt {
+            return None;
+        }
+        let img = unsafe { sys::ghostty_kitty_graphics_image(g, id) };
+        if img.is_null() {
+            return None;
+        }
+        let mut info = sys::GhosttyKittyGraphicsPlacementRenderInfo {
+            size: size_of::<sys::GhosttyKittyGraphicsPlacementRenderInfo>(),
+            ..Default::default()
+        };
+        if unsafe {
+            sys::ghostty_kitty_graphics_placement_render_info(it, img, self.term, &mut info)
+        } != sys::GHOSTTY_SUCCESS
+            || !info.viewport_visible
+            || info.source_width == 0
+            || info.source_height == 0
+        {
+            return None;
+        }
+        let generation = image_u64(img, sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION);
+        let src = (
+            info.source_x,
+            info.source_y,
+            info.source_width,
+            info.source_height,
+        );
+        let key = (id, generation, [src.0, src.1, src.2, src.3]);
+        let cached = self.image_hashes.borrow().get(&key).copied();
+        let hash = match cached {
+            Some(h) => h,
+            None => {
+                let px = crop_rgba(img, src)?;
+                let mut hs = blake3::Hasher::new();
+                hs.update(&src.2.to_le_bytes());
+                hs.update(&src.3.to_le_bytes());
+                hs.update(&px);
+                let mut h = [0u8; 16];
+                h.copy_from_slice(&hs.finalize().as_bytes()[..16]);
+                let mut c = self.image_hashes.borrow_mut();
+                if c.len() > 256 {
+                    c.clear();
+                }
+                c.insert(key, h);
+                h
+            }
+        };
+        Some(ImagePlacement {
+            image_id: id,
+            placement_id: pid,
+            hash,
+            width: src.2,
+            height: src.3,
+            col: info.viewport_col,
+            row: info.viewport_row,
+            cols: info.grid_cols,
+            rows: info.grid_rows,
+            z,
+            src,
+            generation,
+        })
+    }
+
+    /// The RGBA pixels of a placement (its image cropped to the source rectangle), if the
+    /// image is still stored unchanged.
+    pub fn image_rgba(&self, p: &ImagePlacement) -> Option<Vec<u8>> {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        if g.is_null() {
+            return None;
+        }
+        let img = unsafe { sys::ghostty_kitty_graphics_image(g, p.image_id) };
+        if img.is_null() || image_u64(img, sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION) != p.generation
+        {
+            return None;
+        }
+        crop_rgba(img, p.src)
     }
 
     fn cb(&mut self) -> &mut CbState {
@@ -679,6 +949,11 @@ impl Engine {
                 Tracked::ModifyOtherKeys(l) => self.modify_other_keys = l,
                 Tracked::Reset => self.modify_other_keys = 0,
                 Tracked::Osc99(body) => self.cb().effects.push(osc99(&body)),
+                Tracked::SetUserVar(body) => {
+                    if let Some(e) = user_var(&body) {
+                        self.cb().effects.push(e);
+                    }
+                }
             }
         }
         // Each write scrolls at most one line per byte; keeping writes shorter than the history
@@ -689,6 +964,17 @@ impl Engine {
         }
         self.cb().swallow_clip_reply = false;
         self.render.get_mut().stale = true;
+        let mut last_exit = self.last_exit;
+        for e in &self.cb_ref().effects {
+            if let Effect::Mark { kind, exit } = e {
+                match kind {
+                    'D' => last_exit = *exit,
+                    'C' => last_exit = None,
+                    _ => {}
+                }
+            }
+        }
+        self.last_exit = last_exit;
         let replaying = self.replaying;
         out.extend(
             self.cb()
@@ -886,6 +1172,8 @@ impl Engine {
             return Row::default();
         }
         let mut wrapped = false;
+        let mut has_links = false;
+        let mut sem = 0i32;
         unsafe {
             let mut raw_row: sys::GhosttyRow = 0;
             sys::ghostty_grid_ref_row(&r, &mut raw_row);
@@ -894,7 +1182,19 @@ impl Engine {
                 sys::GHOSTTY_ROW_DATA_WRAP,
                 (&raw mut wrapped).cast(),
             );
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_HYPERLINK,
+                (&raw mut has_links).cast(),
+            );
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_SEMANTIC_PROMPT,
+                (&raw mut sem).cast(),
+            );
         }
+        let mut links: Vec<Link> = Vec::new();
+        let mut ubuf: Vec<u8> = Vec::new();
         let cols = self.cols();
         let mut spans: Vec<Span> = Vec::new();
         let mut last_style: Option<(u16, Style)> = None;
@@ -904,8 +1204,8 @@ impl Engine {
             r.x = x;
             let mut cell: sys::GhosttyCell = 0;
             unsafe { sys::ghostty_grid_ref_cell(&r, &mut cell) };
-            let (mut tag_v, mut wide, mut styled, mut cp, mut sid) =
-                (0i32, 0i32, false, 0u32, 0u16);
+            let (mut tag_v, mut wide, mut styled, mut cp, mut sid, mut linked) =
+                (0i32, 0i32, false, 0u32, 0u16, false);
             unsafe {
                 let keys = [
                     sys::GHOSTTY_CELL_DATA_CONTENT_TAG,
@@ -913,17 +1213,19 @@ impl Engine {
                     sys::GHOSTTY_CELL_DATA_HAS_STYLING,
                     sys::GHOSTTY_CELL_DATA_CODEPOINT,
                     sys::GHOSTTY_CELL_DATA_STYLE_ID,
+                    sys::GHOSTTY_CELL_DATA_HAS_HYPERLINK,
                 ];
-                let mut vals: [*mut c_void; 5] = [
+                let mut vals: [*mut c_void; 6] = [
                     (&raw mut tag_v).cast(),
                     (&raw mut wide).cast(),
                     (&raw mut styled).cast(),
                     (&raw mut cp).cast(),
                     (&raw mut sid).cast(),
+                    (&raw mut linked).cast(),
                 ];
                 sys::ghostty_cell_get_multi(
                     cell,
-                    5,
+                    if has_links { 6 } else { 5 },
                     keys.as_ptr(),
                     vals.as_mut_ptr(),
                     ptr::null_mut(),
@@ -931,6 +1233,23 @@ impl Engine {
             }
             if wide == sys::GHOSTTY_CELL_WIDE_SPACER_TAIL {
                 continue;
+            }
+            if linked {
+                let w = if wide == sys::GHOSTTY_CELL_WIDE_WIDE {
+                    2
+                } else {
+                    1
+                };
+                if let Some(uri) = cell_uri(&r, &mut ubuf) {
+                    match links.last_mut() {
+                        Some(l) if l.col + l.cols == x && l.uri == uri => l.cols += w,
+                        _ => links.push(Link {
+                            col: x,
+                            cols: w,
+                            uri: uri.to_string(),
+                        }),
+                    }
+                }
             }
             let mut style = if !styled {
                 Style::default()
@@ -1035,7 +1354,119 @@ impl Engine {
                 spans.pop();
             }
         }
-        Row { spans, wrapped }
+        Row {
+            spans,
+            wrapped,
+            mark: mark_of(sem),
+            links,
+        }
+    }
+
+    /// OSC 133 semantic-prompt state of one row, without reading its cells.
+    fn row_mark(&self, tag: i32, y: u32) -> u8 {
+        let mut r = sys::GhosttyGridRef {
+            size: size_of::<sys::GhosttyGridRef>(),
+            node: ptr::null_mut(),
+            x: 0,
+            y: 0,
+        };
+        let mut sem = 0i32;
+        unsafe {
+            if sys::ghostty_terminal_grid_ref(self.term, point(tag, 0, y), &mut r)
+                != sys::GHOSTTY_SUCCESS
+            {
+                return mark::NONE;
+            }
+            let mut raw_row: sys::GhosttyRow = 0;
+            sys::ghostty_grid_ref_row(&r, &mut raw_row);
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_SEMANTIC_PROMPT,
+                (&raw mut sem).cast(),
+            );
+        }
+        mark_of(sem)
+    }
+
+    /// Marks of every row the engine exposes: history (oldest first) then the visible screen.
+    fn all_marks(&self) -> Vec<u8> {
+        let all = self.engine_history();
+        let len = all.min(self.scrollback);
+        let mut v: Vec<u8> = (0..len)
+            .map(|i| self.row_mark(sys::GHOSTTY_POINT_TAG_HISTORY, (all - len + i) as u32))
+            .collect();
+        v.extend((0..self.rows()).map(|y| self.row_mark(sys::GHOSTTY_POINT_TAG_ACTIVE, y as u32)));
+        v
+    }
+
+    /// Row `i` of the history-then-screen index space used by [`Engine::all_marks`].
+    fn any_row(&self, i: usize) -> Row {
+        let h = self.history_len();
+        if i < h {
+            self.history_row(i).unwrap_or_default()
+        } else {
+            self.row((i - h) as u16)
+        }
+    }
+
+    /// Absolute line numbers (as in [`Engine::scrolled_total`]) of OSC 133 prompt rows in
+    /// memory (history and screen), oldest first. Empty on the alternate screen.
+    pub fn prompt_lines(&self) -> Vec<u64> {
+        let first = self.scrolled_total - self.history_len() as u64;
+        self.all_marks()
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| **m == mark::PROMPT)
+            .map(|(i, _)| first + i as u64)
+            .collect()
+    }
+
+    /// Exit code of the last finished command (`OSC 133 ; D ; code`), if the shell reported
+    /// one and no command has started since.
+    pub fn last_exit(&self) -> Option<i32> {
+        self.last_exit
+    }
+
+    /// The last command's output from OSC 133 marks. At an idle prompt (the cursor is on a
+    /// prompt row) that is the block between the previous prompt and this one; while a
+    /// command runs, the output since the latest prompt. `None` without shell integration.
+    pub fn last_command(&self) -> Option<LastCommand> {
+        if self.alt_screen() {
+            return None;
+        }
+        let marks = self.all_marks();
+        let h = self.history_len();
+        let cur = h + self.cursor().row as usize;
+        let prompts: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| **m == mark::PROMPT && *i <= cur)
+            .map(|(i, _)| i)
+            .collect();
+        let latest = *prompts.last()?;
+        let idle = marks.get(cur).is_some_and(|m| *m != mark::NONE);
+        let (start, end, running) = if idle {
+            let prev = *prompts.iter().rev().nth(1)?;
+            (prev, latest, false)
+        } else {
+            (latest, cur + 1, true)
+        };
+        // Skip the prompt row and its continuation rows (the command line).
+        let mut first = start + 1;
+        while first < end && marks[first] != mark::NONE {
+            first += 1;
+        }
+        let mut rows: Vec<Row> = (first..end).map(|i| self.any_row(i)).collect();
+        while rows.last().is_some_and(|r| r.text().trim().is_empty()) {
+            rows.pop();
+        }
+        let base = self.scrolled_total - h as u64;
+        Some(LastCommand {
+            prompt_line: base + start as u64,
+            rows,
+            running,
+            exit: if running { None } else { self.last_exit },
+        })
     }
 
     /// Lines (visible rows) damaged since the last call; `None` means everything.
@@ -1327,6 +1758,195 @@ fn cwd_from_pwd(raw: &str) -> String {
     percent_decode(path)
 }
 
+fn image_u32(img: sys::GhosttyKittyGraphicsImage, key: c_int) -> u32 {
+    let mut v = 0u32;
+    unsafe { sys::ghostty_kitty_graphics_image_get(img, key, (&raw mut v).cast()) };
+    v
+}
+
+fn image_u64(img: sys::GhosttyKittyGraphicsImage, key: c_int) -> u64 {
+    let mut v = 0u64;
+    unsafe { sys::ghostty_kitty_graphics_image_get(img, key, (&raw mut v).cast()) };
+    v
+}
+
+/// An image's stored pixels (any kitty format) as RGBA, cropped to `src`.
+fn crop_rgba(img: sys::GhosttyKittyGraphicsImage, src: (u32, u32, u32, u32)) -> Option<Vec<u8>> {
+    let (w, h) = (
+        image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH),
+        image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT),
+    );
+    let mut fmt = 0i32;
+    let mut data: *const u8 = ptr::null();
+    let mut len = 0usize;
+    unsafe {
+        sys::ghostty_kitty_graphics_image_get(
+            img,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_FORMAT,
+            (&raw mut fmt).cast(),
+        );
+        if sys::ghostty_kitty_graphics_image_get(
+            img,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+            (&raw mut data).cast(),
+        ) != sys::GHOSTTY_SUCCESS
+        {
+            return None;
+        }
+        sys::ghostty_kitty_graphics_image_get(
+            img,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+            (&raw mut len).cast(),
+        );
+    }
+    let bpp = match fmt {
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_RGB => 3,
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_RGBA => 4,
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA => 2,
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_GRAY => 1,
+        _ => return None,
+    };
+    if data.is_null() || len < w as usize * h as usize * bpp {
+        return None;
+    }
+    let px = unsafe { std::slice::from_raw_parts(data, len) };
+    let (sx, sy, sw, sh) = src;
+    if sx.checked_add(sw)? > w || sy.checked_add(sh)? > h {
+        return None;
+    }
+    if sw as usize * sh as usize * 4 > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let mut out = Vec::with_capacity(sw as usize * sh as usize * 4);
+    for y in sy..sy + sh {
+        let row = &px[(y as usize * w as usize + sx as usize) * bpp..][..sw as usize * bpp];
+        for p in row.chunks_exact(bpp) {
+            match bpp {
+                4 => out.extend_from_slice(p),
+                3 => out.extend_from_slice(&[p[0], p[1], p[2], 255]),
+                2 => out.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
+                _ => out.extend_from_slice(&[p[0], p[0], p[0], 255]),
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Install the PNG decoder for kitty `f=100` transmissions (process-wide, once).
+fn install_png_decoder() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        sys::ghostty_sys_set(
+            sys::GHOSTTY_SYS_OPT_DECODE_PNG,
+            decode_png as sys::GhosttySysDecodePngFn as *const c_void,
+        );
+    });
+}
+
+/// Decode a PNG into RGBA bytes owned by the engine's allocator. Bounded by
+/// [`MAX_IMAGE_BYTES`] and [`PNG_MAX_SIDE`]; never panics across the FFI boundary.
+unsafe extern "C" fn decode_png(
+    _ud: *mut c_void,
+    alloc: *const sys::GhosttyAllocator,
+    data: *const u8,
+    len: usize,
+    out: *mut sys::GhosttySysImage,
+) -> bool {
+    let input = unsafe { bytes(sys::GhosttyString { ptr: data, len }) };
+    let decoded = std::panic::catch_unwind(|| decode_png_rgba(input))
+        .ok()
+        .flatten();
+    let Some((w, h, px)) = decoded else {
+        return false;
+    };
+    let buf = unsafe { sys::ghostty_alloc(alloc, px.len()) };
+    if buf.is_null() {
+        return false;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(px.as_ptr(), buf, px.len());
+        *out = sys::GhosttySysImage {
+            width: w,
+            height: h,
+            data: buf,
+            data_len: px.len(),
+        };
+    }
+    true
+}
+
+/// PNG bytes -> (width, height, RGBA), within the image limits.
+pub fn decode_png_rgba(input: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut r =
+        image::ImageReader::with_format(std::io::Cursor::new(input), image::ImageFormat::Png);
+    let mut lim = image::Limits::default();
+    lim.max_image_width = Some(PNG_MAX_SIDE);
+    lim.max_image_height = Some(PNG_MAX_SIDE);
+    lim.max_alloc = Some(2 * MAX_IMAGE_BYTES as u64);
+    r.limits(lim);
+    let img = r.decode().ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    let px = img.into_raw();
+    (px.len() <= MAX_IMAGE_BYTES).then_some((w, h, px))
+}
+
+fn mark_of(sem: i32) -> u8 {
+    match sem {
+        sys::GHOSTTY_ROW_SEMANTIC_PROMPT => mark::PROMPT,
+        sys::GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION => mark::PROMPT_CONT,
+        _ => mark::NONE,
+    }
+}
+
+/// The OSC 8 URI of the cell at `r`, read into `buf`. `None` without a link, or when the URI is
+/// longer than [`LINK_URI_MAX`] or not UTF-8.
+fn cell_uri<'a>(r: &sys::GhosttyGridRef, buf: &'a mut Vec<u8>) -> Option<&'a str> {
+    let mut n = 0usize;
+    let res = unsafe { sys::ghostty_grid_ref_hyperlink_uri(r, ptr::null_mut(), 0, &mut n) };
+    if !(res == sys::GHOSTTY_SUCCESS || res == sys::GHOSTTY_OUT_OF_SPACE)
+        || n == 0
+        || n > LINK_URI_MAX
+    {
+        return None;
+    }
+    buf.resize(n, 0);
+    let res = unsafe { sys::ghostty_grid_ref_hyperlink_uri(r, buf.as_mut_ptr(), n, &mut n) };
+    if res != sys::GHOSTTY_SUCCESS {
+        return None;
+    }
+    buf.truncate(n);
+    std::str::from_utf8(buf).ok()
+}
+
+/// `name=base64` from `OSC 1337 ; SetUserVar=` -> [`Effect::UserVar`] (bounded, sanitized).
+fn user_var(body: &[u8]) -> Option<Effect> {
+    use base64::Engine as _;
+    let s = std::str::from_utf8(body).ok()?;
+    let (name, b64) = s.split_once('=')?;
+    if name.is_empty()
+        || name.len() > USER_VAR_NAME_MAX
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        return None;
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
+    if raw.len() > USER_VAR_VALUE_MAX {
+        return None;
+    }
+    let value: String = String::from_utf8_lossy(&raw)
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect();
+    Some(Effect::UserVar {
+        name: name.to_string(),
+        value,
+    })
+}
+
 fn xterm256(i: u8) -> (u8, u8, u8) {
     if i >= 232 {
         let v = 8 + (i - 232) * 10;
@@ -1474,6 +2094,240 @@ mod tests {
         fx(&mut e, b"\r\n0123456789xy");
         assert!(e.row(1).wrapped);
         assert_eq!(e.row(2).text(), "xy");
+    }
+
+    /// A shell-integrated prompt: `A` prompt `B` command line, `C` output, `D;exit`.
+    fn cmd(prompt: &str, line: &str, out: &str, exit: i32) -> String {
+        format!(
+            "\x1b]133;A\x07{prompt}\x1b]133;B\x07{line}\r\n\x1b]133;C\x07{out}\x1b]133;D;{exit}\x07"
+        )
+    }
+
+    #[test]
+    fn prompt_marks_rows_and_last_command() {
+        let mut e = Engine::new(20, 8, 100);
+        assert_eq!(e.last_command(), None);
+        let mut s = cmd("$ ", "echo one", "one\r\n", 0);
+        s += &cmd("$ ", "false", "boom\r\nmore\r\n", 1);
+        s += "\x1b]133;A\x07$ \x1b]133;B\x07";
+        fx(&mut e, s.as_bytes());
+        let rows = e.visible_rows();
+        let marks: Vec<u8> = rows.iter().map(|r| r.mark).collect();
+        assert_eq!(marks[0], mark::PROMPT, "{rows:?}");
+        assert_eq!(marks[1], mark::NONE);
+        assert_eq!(marks[2], mark::PROMPT);
+        assert_eq!(&marks[3..5], &[mark::NONE, mark::NONE]);
+        assert_eq!(marks[5], mark::PROMPT);
+        assert_eq!(e.prompt_lines(), vec![0, 2, 5]);
+        // Idle at a prompt: the previous command's output.
+        let lc = e.last_command().unwrap();
+        assert_eq!(lc.prompt_line, 2);
+        let text: Vec<String> = lc.rows.iter().map(|r| r.text()).collect();
+        assert_eq!(text, vec!["boom", "more"]);
+        assert!(!lc.running);
+        assert_eq!(lc.exit, Some(1));
+        assert_eq!(e.last_exit(), Some(1));
+        // A command running: its output so far.
+        fx(&mut e, b"sleep 9\r\n\x1b]133;C\x07zzz");
+        let lc = e.last_command().unwrap();
+        assert!(lc.running);
+        assert_eq!(lc.prompt_line, 5);
+        assert_eq!(
+            lc.rows.iter().map(|r| r.text()).collect::<Vec<_>>(),
+            vec!["zzz"]
+        );
+        assert_eq!(lc.exit, None);
+        assert_eq!(e.last_exit(), None);
+    }
+
+    #[test]
+    fn prompt_lines_follow_scrolling_and_snapshots() {
+        let mut e = Engine::new(20, 4, 100);
+        let mut s = String::new();
+        for i in 0..10 {
+            s += &cmd("$ ", &format!("c{i}"), &format!("o{i}\r\n"), 0);
+        }
+        fx(&mut e, s.as_bytes());
+        // Each command takes 2 lines: prompts on even absolute lines.
+        let want: Vec<u64> = (0..10).map(|i| 2 * i).collect();
+        assert_eq!(e.prompt_lines(), want);
+        let first = e.scrolled_total() - e.history_len() as u64;
+        let h0 = e.history_row(0).unwrap();
+        assert_eq!(h0.mark, mark::PROMPT, "{first} {h0:?}");
+        let r = Engine::restore(&e.snapshot(), 100).unwrap();
+        assert_eq!(r.prompt_lines(), want);
+    }
+
+    #[test]
+    fn hyperlinks_on_rows() {
+        let mut e = Engine::new(30, 3, 100);
+        fx(
+            &mut e,
+            b"see \x1b]8;;https://example.com/a\x1b\\docs\x1b]8;;\x1b\\ and \x1b]8;id=x;file:///tmp/f\x07f\x1b]8;;\x07",
+        );
+        let r = e.row(0);
+        assert_eq!(r.text(), "see docs and f");
+        assert_eq!(
+            r.links,
+            vec![
+                Link {
+                    col: 4,
+                    cols: 4,
+                    uri: "https://example.com/a".into()
+                },
+                Link {
+                    col: 13,
+                    cols: 1,
+                    uri: "file:///tmp/f".into()
+                },
+            ]
+        );
+        assert_eq!(r.link_at(6).unwrap().uri, "https://example.com/a");
+        // A link wrapping onto the next row is on both rows.
+        let mut e = Engine::new(10, 3, 100);
+        fx(&mut e, b"12345\x1b]8;;https://x.y/\x07abcdefgh\x1b]8;;\x07");
+        assert_eq!(e.row(0).links[0].col, 5);
+        assert_eq!(e.row(0).links[0].cols, 5);
+        assert_eq!(e.row(1).links[0].col, 0);
+        assert_eq!(e.row(1).links[0].cols, 3);
+        // Overlong URIs are dropped (the text stays).
+        let long = format!(
+            "\x1b]8;;https://x/{}\x07L\x1b]8;;\x07",
+            "a".repeat(LINK_URI_MAX)
+        );
+        let mut e = Engine::new(10, 3, 100);
+        fx(&mut e, long.as_bytes());
+        assert_eq!(e.row(0).text(), "L");
+        assert!(e.row(0).links.is_empty());
+    }
+
+    /// Kitty transmit+place of raw pixels: `w`×`h` RGBA at the cursor, `cols`×`rows` cells.
+    fn kitty_rgba(id: u32, w: u32, h: u32, px: &[u8], extra: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(px);
+        format!("\x1b_Ga=T,i={id},f=32,s={w},v={h},q=2{extra};{b64}\x1b\\").into_bytes()
+    }
+
+    #[test]
+    fn kitty_placements_and_pixels() {
+        let mut e = Engine::new(20, 6, 10);
+        assert!(e.image_placements().is_empty());
+        let g0 = e.images_generation();
+        // 4x2 pixels, red then green rows; placed over 3x2 cells at (2,1).
+        let mut px = Vec::new();
+        for y in 0..2 {
+            for _ in 0..4 {
+                px.extend_from_slice(if y == 0 {
+                    &[255, 0, 0, 255]
+                } else {
+                    &[0, 255, 0, 255]
+                });
+            }
+        }
+        let mut b = b"\x1b[2;3H".to_vec();
+        b.extend(kitty_rgba(7, 4, 2, &px, ",c=3,r=2"));
+        fx(&mut e, &b);
+        assert_ne!(e.images_generation(), g0);
+        let ps = e.image_placements();
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        let p = &ps[0];
+        assert_eq!((p.image_id, p.col, p.row, p.cols, p.rows), (7, 2, 1, 3, 2));
+        assert_eq!((p.width, p.height), (4, 2));
+        assert_eq!(e.image_rgba(p).unwrap(), px);
+        // A source rectangle crops: the bottom row only, a different content hash.
+        let mut b = b"\x1b[5;1H".to_vec();
+        b.extend_from_slice(b"\x1b_Ga=p,i=7,p=2,x=0,y=1,w=4,h=1,c=2,r=1,q=2\x1b\\");
+        fx(&mut e, &b);
+        let ps = e.image_placements();
+        assert_eq!(ps.len(), 2, "{ps:?}");
+        let crop = ps.iter().find(|p| p.placement_id == 2).unwrap();
+        assert_eq!((crop.width, crop.height, crop.row), (4, 1, 4));
+        assert_eq!(e.image_rgba(crop).unwrap(), px[16..].to_vec());
+        assert_ne!(crop.hash, p.hash);
+        // Scrolling moves placements up; off the top they are gone.
+        fx(&mut e, b"\x1b[6;1H\r\n");
+        let moved: Vec<i32> = e.image_placements().iter().map(|p| p.row).collect();
+        assert!(moved.contains(&0) && moved.contains(&3), "{moved:?}");
+        fx(&mut e, b"\r\n\r\n\r\n\r\n\r\n\r\n");
+        assert!(e.image_placements().is_empty());
+        // Delete.
+        let mut e = Engine::new(20, 6, 10);
+        fx(&mut e, &kitty_rgba(9, 4, 2, &px, ",c=2,r=1"));
+        assert_eq!(e.image_placements().len(), 1);
+        fx(&mut e, b"\x1b_Ga=d,d=I,i=9,q=2\x1b\\");
+        assert!(e.image_placements().is_empty());
+    }
+
+    #[test]
+    fn kitty_png_is_decoded_and_oversized_images_refused() {
+        // A 2x1 PNG (red, blue) made with the image crate.
+        let mut png = Vec::new();
+        image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255])
+            .unwrap()
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let mut e = Engine::new(20, 6, 10);
+        let out = fx(
+            &mut e,
+            format!("\x1b_Ga=T,i=3,f=100,c=2,r=1;{b64}\x1b\\").as_bytes(),
+        );
+        assert!(
+            out.contains(&Effect::Reply(b"\x1b_Gi=3;OK\x1b\\".to_vec())),
+            "{out:?}"
+        );
+        let p = &e.image_placements()[0];
+        assert_eq!((p.width, p.height), (2, 1));
+        assert_eq!(
+            e.image_rgba(p).unwrap(),
+            vec![255, 0, 0, 255, 0, 0, 255, 255]
+        );
+        assert!(decode_png_rgba(b"not a png").is_none());
+        // More pixels than the per-image limit: refused, nothing placed.
+        let side = 3000u32; // 3000*3000*4 > 32 MiB
+        let big = format!("\x1b_Ga=T,i=4,f=32,s={side},v={side},t=d,q=1;AAAA\x1b\\");
+        let mut e = Engine::new(20, 6, 10);
+        fx(&mut e, big.as_bytes());
+        assert!(e.image_placements().is_empty());
+        // Arbitrary file paths (t=f) are not read on the program's behalf.
+        let path = base64::engine::general_purpose::STANDARD.encode("/etc/hosts");
+        let out = fx(
+            &mut e,
+            format!("\x1b_Ga=T,i=5,f=100,t=f;{path}\x1b\\").as_bytes(),
+        );
+        assert!(e.image_placements().is_empty());
+        assert!(
+            out.iter().any(
+                |f| matches!(f, Effect::Reply(r) if String::from_utf8_lossy(r).contains("i=5;E"))
+            ),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn set_user_var() {
+        let mut e = Engine::new(20, 3, 100);
+        assert_eq!(
+            fx(&mut e, b"\x1b]1337;SetUserVar=branch=bWFpbg==\x07"),
+            vec![Effect::UserVar {
+                name: "branch".into(),
+                value: "main".into()
+            }]
+        );
+        // Bad names, bad base64 and control characters.
+        assert_eq!(fx(&mut e, b"\x1b]1337;SetUserVar=a b=eA==\x07"), vec![]);
+        assert_eq!(fx(&mut e, b"\x1b]1337;SetUserVar=k=!!\x07"), vec![]);
+        assert_eq!(
+            fx(&mut e, b"\x1b]1337;SetUserVar=k=YRti\x07"),
+            vec![Effect::UserVar {
+                name: "k".into(),
+                value: "ab".into()
+            }]
+        );
+        // Not replayed.
+        e.set_replaying(true);
+        assert_eq!(fx(&mut e, b"\x1b]1337;SetUserVar=k=YQ==\x07"), vec![]);
     }
 
     #[test]

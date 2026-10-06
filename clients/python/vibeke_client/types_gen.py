@@ -293,6 +293,23 @@ Pane = TypedDict("Pane", {
     "browser": NotRequired[Optional["BrowserPane"]],
 })
 
+PaneLiveProgressV0 = TypedDict("PaneLiveProgressV0", {
+    "state": Literal["normal", "error", "indeterminate", "paused"],
+    "pct": Optional[int],
+})
+
+PaneLiveLastExitV0 = TypedDict("PaneLiveLastExitV0", {
+    "code": int,
+    "at_ms": int,
+})
+
+PaneLive = TypedDict("PaneLive", {
+    "pane": str,
+    "progress": Optional["PaneLiveProgressV0"],
+    "last_exit": Optional["PaneLiveLastExitV0"],
+    "user_vars": List[List[str]],
+})
+
 PolicyRule: TypeAlias = Dict[str, Any]
 
 PrLookupPr = TypedDict("PrLookupPr", {
@@ -2784,6 +2801,7 @@ PaneGetResult = TypedDict("PaneGetResult", {
     "pane": "Pane",
     "run": NotRequired[Optional["AgentRun"]],
     "open_interactions": NotRequired[List["Interaction"]],
+    "live": NotRequired[Optional["PaneLive"]],
 })
 
 PaneListParams = TypedDict("PaneListParams", {
@@ -2826,7 +2844,7 @@ PanePinResult = TypedDict("PanePinResult", {
 
 PaneReadParams = TypedDict("PaneReadParams", {
     "pane": NotRequired["Target"],
-    "source": NotRequired[Literal["visible", "recent", "recent_unwrapped", "scrollback", "detection"]],
+    "source": NotRequired[Literal["visible", "recent", "recent_unwrapped", "scrollback", "detection", "last-command"]],
     "lines": NotRequired[int],
     "from_line": NotRequired[int],
     "format": NotRequired[Literal["text", "ansi", "cells"]],
@@ -2841,6 +2859,9 @@ PaneReadResult = TypedDict("PaneReadResult", {
     "truncated": NotRequired[bool],
     "scroll": NotRequired[Any],
     "cursor": NotRequired[Any],
+    "running": NotRequired[bool],
+    "exit_code": NotRequired[Optional[int]],
+    "prompt_line": NotRequired[int],
 })
 
 PaneRenameParams = TypedDict("PaneRenameParams", {

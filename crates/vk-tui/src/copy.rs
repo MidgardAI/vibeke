@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::layout::Rect;
-use vk_proto::render::{Cursor, Row, Style, attr};
+use vk_proto::render::{Cursor, Row, Style, attr, mark};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelKind {
@@ -409,8 +409,69 @@ impl CopyMode {
                     line: self.view_top_abs(),
                 };
             }
+            Some(A::PromptPrev) => self.prompt_jump(true),
+            Some(A::PromptNext) => self.prompt_jump(false),
+            Some(A::SelectOutput) => self.select_output(),
         }
         self.after_move()
+    }
+
+    /// `[` / `]` (03 §8): the previous / next OSC 133 prompt row. At the top of the loaded rows
+    /// without an earlier prompt, older rows load (press again).
+    fn prompt_jump(&mut self, back: bool) {
+        let is_prompt = |r: &Row| r.mark == mark::PROMPT;
+        let found = if back {
+            (0..self.cy).rev().find(|&y| is_prompt(&self.lines[y]))
+        } else {
+            (self.cy + 1..self.lines.len()).find(|&y| is_prompt(&self.lines[y]))
+        };
+        match found {
+            Some(y) => {
+                self.cy = y;
+                self.cx = 0;
+                self.want_top = false;
+                // Show the prompt near the top of the view, with its output below.
+                self.top = y.saturating_sub(1);
+            }
+            None if !self.lines.iter().any(is_prompt) => {
+                self.message = Some("no prompt marks (shell integration, OSC 133)".into());
+            }
+            None if back => {
+                self.message = Some("no earlier prompt loaded".into());
+                self.cy = 0;
+            }
+            None => self.message = Some("no later prompt".into()),
+        }
+    }
+
+    /// `o` (03 §8): select the output of the command whose prompt is at or above the cursor,
+    /// up to the next prompt (command-line rows and trailing blank rows excluded).
+    fn select_output(&mut self) {
+        let Some(p) = (0..=self.cy.min(self.lines.len().saturating_sub(1)))
+            .rev()
+            .find(|&y| self.lines[y].mark == mark::PROMPT)
+        else {
+            self.message = Some("no prompt marks (shell integration, OSC 133)".into());
+            return;
+        };
+        let end = (p + 1..self.lines.len())
+            .find(|&y| self.lines[y].mark == mark::PROMPT)
+            .unwrap_or(self.lines.len());
+        let mut start = p + 1;
+        while start < end && self.lines[start].mark != mark::NONE {
+            start += 1;
+        }
+        let mut last = end;
+        while last > start && self.lines[last - 1].text().trim().is_empty() {
+            last -= 1;
+        }
+        if last <= start {
+            self.message = Some("the command printed nothing".into());
+            return;
+        }
+        self.sel = Some((start, 0, SelKind::Line));
+        self.cy = last - 1;
+        self.cx = 0;
     }
 
     /// Clamp the cursor, then ask for older rows when it reached the top.
@@ -737,6 +798,7 @@ mod tests {
                 cols: s.chars().count() as u16,
             }],
             wrapped,
+            ..Default::default()
         }
     }
 

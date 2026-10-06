@@ -4,8 +4,7 @@
 use crate::caps::{self, EnvHints, ProbeResult};
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    EnableFocusChange, EnableMouseCapture, PopKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -16,9 +15,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 static KITTY_PUSHED: AtomicBool = AtomicBool::new(false);
+
+/// Total time the attach probe waits for answers (03 §6.1).
+pub const PROBE_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Kitty keyboard flags the client pushes (03 §7.1): disambiguate (1), report event types (2),
+/// alternate keys (4), all keys as escapes (8) and associated text (16). crossterm has no
+/// constant for bit 16, so the push is written directly; crossterm's decoder accepts the
+/// extra text field (`CSI code ; mods ; text u`).
+pub const KITTY_FLAGS: u8 = 0b1_1111;
+
+/// `CSI > flags u`: push [`KITTY_FLAGS`] onto the host's keyboard-mode stack.
+pub fn kitty_push_sequence() -> Vec<u8> {
+    format!("\x1b[>{KITTY_FLAGS}u").into_bytes()
+}
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Query the host and wait (≤ 200 ms) for replies, ending at the DA1 sentinel. Also probes
+/// Query the host and wait (≤ 150 ms, 03 §6.1) for replies, ending at the DA1 sentinel. Also probes
 /// kitty graphics (direct and shared memory), cell/window pixel size and SGR-pixels mouse for
 /// browser panes (03 §6.1, 06 B3.2).
 pub fn probe() -> (ProbeResult, vk_browser::probe::GraphicsCaps) {
@@ -57,7 +70,7 @@ pub fn graphics_queries(shm_name: Option<&str>) -> Vec<u8> {
 
 fn read_replies(env: &EnvHints) -> (ProbeResult, Vec<u8>) {
     let mut buf = Vec::new();
-    let deadline = Instant::now() + Duration::from_millis(200);
+    let deadline = Instant::now() + PROBE_TIMEOUT;
     let mut stdin = std::io::stdin();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -108,15 +121,7 @@ pub fn enter(kitty: bool) -> std::io::Result<()> {
         EnableFocusChange
     )?;
     if kitty {
-        execute!(
-            out,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            )
-        )?;
+        out.write_all(&kitty_push_sequence())?;
         KITTY_PUSHED.store(true, Ordering::SeqCst);
     } else {
         // modifyOtherKeys level 2 for hosts without the kitty protocol (03 §7.1).
@@ -185,4 +190,16 @@ pub fn cell_px() -> Option<(u16, u16)> {
         return None;
     }
     Some((w.width / w.columns, w.height / w.rows))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kitty_push_includes_associated_text() {
+        assert_eq!(KITTY_FLAGS, 31);
+        assert_eq!(kitty_push_sequence(), b"\x1b[>31u");
+        assert!(PROBE_TIMEOUT <= Duration::from_millis(150));
+    }
 }

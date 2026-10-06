@@ -16,12 +16,24 @@ pub enum Osc52 {
     Unknown,
 }
 
+/// Desktop notification escape the host shows natively (03 §6.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Notifications {
+    Osc9,
+    Osc777,
+    Osc99,
+    #[default]
+    None,
+}
+
 /// Environment hints merged with probe replies.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvHints {
     pub term: String,
     pub term_program: String,
     pub colorterm: String,
+    /// VTE-based (`VTE_VERSION`) or Windows Terminal (`WT_SESSION`): OSC 8 capable.
+    pub vte_or_wt: bool,
 }
 
 impl EnvHints {
@@ -31,6 +43,7 @@ impl EnvHints {
             term: g("TERM"),
             term_program: g("TERM_PROGRAM"),
             colorterm: g("COLORTERM"),
+            vte_or_wt: !g("VTE_VERSION").is_empty() || !g("WT_SESSION").is_empty(),
         }
     }
 }
@@ -49,6 +62,49 @@ pub struct ProbeResult {
     pub da2: Option<Vec<u32>>,
     /// The DA1 sentinel (second DA1 reply) arrived: no more answers are coming.
     pub complete: bool,
+    /// Curly/coloured underlines (SGR 4:3, 58).
+    pub undercurl: bool,
+    /// OSC 8 hyperlinks: the compositor passes pane links through.
+    pub osc8: bool,
+    /// Focus reporting (DECRQM 1004 answered set/reset).
+    pub focus_events: bool,
+    /// SGR mouse encoding (DECRQM 1006).
+    pub sgr_mouse: bool,
+    /// Bracketed paste (DECRQM 2004).
+    pub bracketed_paste: bool,
+    /// Sixel graphics (DA1 attribute 4).
+    pub sixel: bool,
+    pub notifications: Notifications,
+}
+
+impl ProbeResult {
+    /// `terminal.host_overrides` (03 §6.1): the escape hatch for terminals that misreport.
+    /// Returns the keys that are not probe fields (the caller applies them elsewhere, e.g.
+    /// `kitty_graphics`).
+    pub fn apply_overrides<'a>(
+        &mut self,
+        o: impl IntoIterator<Item = (&'a String, &'a bool)>,
+    ) -> Vec<(String, bool)> {
+        let mut rest = Vec::new();
+        for (k, &v) in o {
+            match k.as_str() {
+                "kitty_keyboard" | "kitty_kbd" => self.kitty_keyboard = v,
+                "sync_update" => self.sync_update = v,
+                "truecolor" => self.truecolor = v,
+                "undercurl" => self.undercurl = v,
+                "osc52" => {
+                    self.osc52 = if v { Osc52::Allowed } else { Osc52::Unknown };
+                }
+                "osc8" | "hyperlinks" => self.osc8 = v,
+                "focus_events" => self.focus_events = v,
+                "sgr_mouse" => self.sgr_mouse = v,
+                "bracketed_paste" => self.bracketed_paste = v,
+                "sixel" => self.sixel = v,
+                _ => rest.push((k.clone(), v)),
+            }
+        }
+        rest
+    }
 }
 
 /// Queries to write before entering the alternate screen. Replies arrive in query order; the
@@ -66,6 +122,9 @@ pub fn probe_queries_with(extra: &[u8]) -> Vec<u8> {
     q.extend_from_slice(b"\x1b[>0q"); // XTVERSION
     q.extend_from_slice(b"\x1b[?u"); // kitty keyboard flags
     q.extend_from_slice(b"\x1b[?2026$p"); // DECRQM synchronized output
+    q.extend_from_slice(b"\x1b[?2004$p"); // DECRQM bracketed paste
+    q.extend_from_slice(b"\x1b[?1004$p"); // DECRQM focus events
+    q.extend_from_slice(b"\x1b[?1006$p"); // DECRQM SGR mouse
     q.extend_from_slice(b"\x1b]11;?\x1b\\"); // OSC 11 background colour
     q.extend_from_slice(extra);
     q.extend_from_slice(b"\x1b[c"); // DA1 sentinel
@@ -173,8 +232,16 @@ pub fn parse_replies(bytes: &[u8], env: &EnvHints) -> ProbeResult {
                     (Some(b'?'), [], b'u') => r.kitty_keyboard = true,
                     (Some(b'?'), [b'$'], b'y') => {
                         let nums = parse_nums(&params[1..]);
-                        if let [2026, state] = nums[..] {
-                            r.sync_update = matches!(state, 1..=3);
+                        if let [mode, state] = nums[..] {
+                            // 1 set, 2 reset, 3 permanently set (0 unknown, 4 permanently reset).
+                            let known = matches!(state, 1..=3);
+                            match mode {
+                                2026 => r.sync_update = known,
+                                2004 => r.bracketed_paste = known,
+                                1004 => r.focus_events = known,
+                                1006 => r.sgr_mouse = known,
+                                _ => {}
+                            }
                         }
                     }
                     _ => {}
@@ -213,7 +280,106 @@ pub fn parse_replies(bytes: &[u8], env: &EnvHints) -> ProbeResult {
     let xt = r.xtversion.as_deref().unwrap_or("").to_ascii_lowercase();
     r.truecolor = detect_truecolor(env, &xt);
     r.osc52 = detect_osc52(env, &xt);
+    r.osc8 = detect_osc8(env, &xt);
+    r.undercurl = r.kitty_keyboard || detect_undercurl(env, &xt);
+    r.sixel = r
+        .da1
+        .as_ref()
+        .is_some_and(|a| a.get(1..).is_some_and(|f| f.contains(&4)));
+    r.notifications = detect_notifications(env, &xt);
     r
+}
+
+/// The graphics part of `terminal.host_overrides` (keys the probe result does not hold).
+pub fn graphics_overrides<'a>(
+    mut caps: crate::screen::HostCaps,
+    o: impl IntoIterator<Item = (&'a String, &'a bool)>,
+) -> crate::screen::HostCaps {
+    for (k, &v) in o {
+        match k.as_str() {
+            "kitty_graphics" => caps.kitty_graphics = v,
+            "kitty_shm" => caps.kitty_shm = v,
+            "iterm2_images" => caps.iterm2_images = v,
+            "sgr_pixels" => caps.sgr_pixels = v,
+            _ => {}
+        }
+    }
+    caps
+}
+
+/// Known terminal by `TERM_PROGRAM`, `TERM` or the XTVERSION name.
+fn known(env: &EnvHints, xt: &str, progs: &[&str], terms: &[&str], xts: &[&str]) -> bool {
+    let term = env.term.to_ascii_lowercase();
+    progs.contains(&env.term_program.as_str())
+        || terms
+            .iter()
+            .any(|t| term == *t || term.starts_with(&format!("{t}-")))
+        || xts.iter().any(|n| xt.starts_with(n))
+}
+
+/// OSC 8 hyperlinks: terminals known to render them (unknown ones get plain text; an
+/// override turns them on).
+fn detect_osc8(env: &EnvHints, xt: &str) -> bool {
+    known(
+        env,
+        xt,
+        &[
+            "iTerm.app",
+            "ghostty",
+            "WezTerm",
+            "vscode",
+            "rio",
+            "kitty",
+            "Hyper",
+        ],
+        &[
+            "xterm-kitty",
+            "xterm-ghostty",
+            "wezterm",
+            "foot",
+            "alacritty",
+            "contour",
+            "rio",
+        ],
+        &[
+            "kitty",
+            "ghostty",
+            "wezterm",
+            "iterm2",
+            "foot",
+            "alacritty",
+            "contour",
+            "rio",
+        ],
+    ) || env.vte_or_wt
+}
+
+fn detect_undercurl(env: &EnvHints, xt: &str) -> bool {
+    known(
+        env,
+        xt,
+        &["iTerm.app", "ghostty", "WezTerm", "kitty", "vscode"],
+        &["xterm-kitty", "xterm-ghostty", "wezterm", "foot", "contour"],
+        &["kitty", "ghostty", "wezterm", "iterm2", "foot", "contour"],
+    )
+}
+
+fn detect_notifications(env: &EnvHints, xt: &str) -> Notifications {
+    if known(env, xt, &["kitty"], &["xterm-kitty"], &["kitty"]) {
+        Notifications::Osc99
+    } else if known(
+        env,
+        xt,
+        &["ghostty", "WezTerm"],
+        &["xterm-ghostty", "wezterm", "foot"],
+        &["ghostty", "wezterm", "foot"],
+    ) {
+        Notifications::Osc777
+    } else if known(env, xt, &["iTerm.app"], &[], &["iterm2"]) {
+        Notifications::Osc9
+    } else {
+        Notifications::None
+    }
 }
 
 fn detect_truecolor(env: &EnvHints, xt: &str) -> bool {
@@ -279,6 +445,7 @@ mod tests {
             term: term.into(),
             term_program: prog.into(),
             colorterm: ct.into(),
+            vte_or_wt: false,
         }
     }
 
@@ -293,6 +460,9 @@ mod tests {
             "\x1b[>0q",
             "\x1b[?u",
             "\x1b[?2026$p",
+            "\x1b[?2004$p",
+            "\x1b[?1004$p",
+            "\x1b[?1006$p",
             "\x1b]11;?",
         ] {
             assert!(s.contains(needle), "{needle:?}");
@@ -403,6 +573,42 @@ mod tests {
         assert!(t("alacritty", "", ""));
         assert!(!t("xterm-256color", "Apple_Terminal", ""));
         assert!(!t("xterm", "", ""));
+    }
+
+    #[test]
+    fn decrqm_modes_and_derived_caps() {
+        let e = env("", "", "");
+        let r = parse_replies(
+            b"\x1b[?2004;2$y\x1b[?1004;1$y\x1b[?1006;0$y\x1b[?62;4;22c\x1b[?62;4;22c",
+            &e,
+        );
+        assert!(r.bracketed_paste && r.focus_events && !r.sgr_mouse);
+        assert!(r.sixel, "DA1 attribute 4");
+        assert!(r.complete);
+        let r = parse_replies(GHOSTTY, &env("xterm-ghostty", "ghostty", "truecolor"));
+        assert!(r.osc8 && r.undercurl && !r.sixel);
+        assert_eq!(r.notifications, Notifications::Osc777);
+        let r = parse_replies(KITTY, &env("xterm-kitty", "", ""));
+        assert_eq!(r.notifications, Notifications::Osc99);
+        let r = parse_replies(ITERM, &env("xterm-256color", "iTerm.app", ""));
+        assert!(r.osc8);
+        assert_eq!(r.notifications, Notifications::Osc9);
+        let r = parse_replies(TERMINAL_APP, &env("xterm-256color", "Apple_Terminal", ""));
+        assert!(!r.osc8 && !r.undercurl);
+        assert_eq!(r.notifications, Notifications::None);
+    }
+
+    #[test]
+    fn host_overrides_win() {
+        let mut r = parse_replies(TERMINAL_APP, &env("xterm-256color", "Apple_Terminal", ""));
+        let mut o = std::collections::BTreeMap::new();
+        o.insert("osc8".to_string(), true);
+        o.insert("kitty_keyboard".to_string(), true);
+        o.insert("truecolor".to_string(), true);
+        o.insert("kitty_graphics".to_string(), false);
+        let rest = r.apply_overrides(&o);
+        assert!(r.osc8 && r.kitty_keyboard && r.truecolor);
+        assert_eq!(rest, vec![("kitty_graphics".to_string(), false)]);
     }
 
     #[test]

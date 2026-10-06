@@ -3756,7 +3756,9 @@ name = "vk-term"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "blake3",
+ "image",
  "postcard",
  "serde",
  "serde_json",
@@ -3770,6 +3772,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "blake3",
  "crossterm",
  "futures",
  "libc",

@@ -712,6 +712,61 @@ pub struct SessionModel {
     /// Host appearance and effective theme (theme propagation, 08 §11).
     #[serde(default)]
     pub appearance: Appearance,
+    /// Live terminal-effect state per pane (03 §8): OSC 9;4 progress, the last non-zero
+    /// OSC 133 exit code, OSC 1337 user vars. In memory only (never persisted); only panes
+    /// with something to show are listed. Appended (render protocol 4).
+    #[serde(default)]
+    pub pane_live: Vec<PaneLive>,
+}
+
+impl SessionModel {
+    pub fn live(&self, pane: &str) -> Option<&PaneLive> {
+        self.pane_live.iter().find(|l| l.pane == pane)
+    }
+}
+
+/// Terminal-effect state of one pane (03 §8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PaneLive {
+    pub pane: String,
+    /// OSC 9;4 progress (ConEmu / Windows Terminal); `None` once the app clears it.
+    pub progress: Option<Progress>,
+    /// The last command's exit code when it was non-zero (OSC 133 ; D ; code), with the time
+    /// it arrived; the TUI shows it in the pane frame for 5 s.
+    pub last_exit: Option<ExitMark>,
+    /// OSC 1337 SetUserVar values, sorted by name (plugins read them via `pane.get`).
+    pub user_vars: Vec<(String, String)>,
+}
+
+impl PaneLive {
+    pub fn is_empty(&self) -> bool {
+        self.progress.is_none() && self.last_exit.is_none() && self.user_vars.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressState {
+    /// `OSC 9;4;1;pct`.
+    Normal,
+    /// `OSC 9;4;2[;pct]`.
+    Error,
+    /// `OSC 9;4;3`: busy without a percentage.
+    Indeterminate,
+    /// `OSC 9;4;4[;pct]` (paused / warning).
+    Paused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Progress {
+    pub state: ProgressState,
+    pub pct: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitMark {
+    pub code: i32,
+    pub at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

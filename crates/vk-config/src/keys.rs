@@ -101,6 +101,9 @@ pub const COPY_MODE_ACTIONS: &[&str] = &[
     "search_prev",
     "copy",
     "edit_scrollback",
+    "prompt_prev",
+    "prompt_next",
+    "select_output",
 ];
 
 pub fn is_copy_mode_action(name: &str) -> bool {

@@ -27,6 +27,8 @@ struct PaneView {
     screen_rev: u64,
     scrolled: u64,
     dirty_since_ack: bool,
+    /// Kitty placements this client has for the pane (03 §9).
+    images: Vec<ImagePlace>,
 }
 
 pub struct Session {
@@ -45,6 +47,13 @@ pub struct Session {
     media: crate::browser_pane::MediaSession,
     /// A `ClientFrame::Subscribe` waiting to be applied by the session loop (event push).
     pending_sub: Option<(Vec<String>, Option<i64>)>,
+    /// Kitty image hashes whose pixels this client already has (03 §9: once per hash).
+    images_sent: std::collections::HashSet<String>,
+}
+
+/// Hex form of an image content hash (the render protocol's image key).
+fn image_key(h: &[u8; 16]) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The `render.attach` features this server supports (listed in the attach result).
@@ -222,6 +231,7 @@ where
         acks: ack_tx,
         media: crate::browser_pane::MediaSession::new(&server, remote),
         pending_sub: None,
+        images_sent: Default::default(),
     };
     let mut push = EventPush::default();
     let hello = ServerFrame::Hello {
@@ -384,6 +394,25 @@ impl Session {
             UiEvent::Goodbye(reason) => {
                 asyncio::write_frame(wr, &ServerFrame::Goodbye { reason }).await?;
                 return Ok(false);
+            }
+            UiEvent::ClipboardQuery {
+                client,
+                req,
+                pane,
+                primary,
+            } => {
+                if client != self.client_id {
+                    return Ok(true);
+                }
+                ServerFrame::ClipboardQuery {
+                    req,
+                    pane,
+                    selection: if primary {
+                        ClipSel::Primary
+                    } else {
+                        ClipSel::Clipboard
+                    },
+                }
             }
         };
         asyncio::write_frame(wr, &f).await?;
@@ -569,6 +598,15 @@ impl Session {
                 self.media.on_view(&self.server, panes, shm, key_releases);
             }
             ClientFrame::MediaAck { pane, seq } => self.media.on_ack(&pane, seq),
+            ClientFrame::ClipboardReply { req, pane, data } => {
+                let _ = crate::term_effects::clipboard_reply(
+                    &self.server,
+                    &self.client_id,
+                    req,
+                    &pane,
+                    data,
+                );
+            }
             ClientFrame::Browser {
                 input_id,
                 pane,
@@ -661,14 +699,14 @@ impl Session {
                     .map(|r| {
                         (
                             r.n,
-                            Row {
-                                spans: vec![Span {
+                            Row::new(
+                                vec![Span {
                                     style: Style::default(),
                                     cols: unicode_cols(&r.t),
                                     text: r.t,
                                 }],
-                                wrapped: r.w,
-                            },
+                                r.w,
+                            ),
                         )
                     })
                     .collect();
@@ -720,11 +758,36 @@ impl Session {
                     continue;
                 }
             }
-            let (epoch, rows, cursor, modes, title, cols, nrows, scrolled) = {
+            let (epoch, rows, cursor, modes, title, cols, nrows, scrolled, places, pixels) = {
                 let sc = rt.screen.lock().unwrap();
                 if sc.recovering {
                     continue;
                 }
+                // Kitty placements, and the pixels of images this client lacks (03 §9).
+                let placements = sc.engine.image_placements();
+                let mut pixels: Vec<(String, u32, u32, Vec<u8>)> = Vec::new();
+                for p in &placements {
+                    let k = image_key(&p.hash);
+                    if !self.images_sent.contains(&k)
+                        && !pixels.iter().any(|(x, ..)| *x == k)
+                        && let Some(px) = sc.engine.image_rgba(p)
+                    {
+                        pixels.push((k, p.width, p.height, px));
+                    }
+                }
+                let places: Vec<ImagePlace> = placements
+                    .iter()
+                    .map(|p| ImagePlace {
+                        hash: image_key(&p.hash),
+                        width: p.width,
+                        height: p.height,
+                        col: p.col,
+                        row: p.row,
+                        cols: p.cols.min(u16::MAX as u32) as u16,
+                        rows: p.rows.min(u16::MAX as u32) as u16,
+                        z: p.z,
+                    })
+                    .collect();
                 (
                     sc.epoch,
                     sc.engine.visible_rows(),
@@ -734,6 +797,8 @@ impl Session {
                     sc.engine.cols(),
                     sc.engine.rows(),
                     sc.engine.scrolled_total(),
+                    places,
+                    pixels,
                 )
             };
             match self.views.get_mut(&v.pane) {
@@ -828,11 +893,54 @@ impl Session {
                             screen_rev,
                             scrolled,
                             dirty_since_ack: true,
+                            images: Vec::new(),
                         },
                     );
                     asyncio::write_frame(wr, &f).await?;
                 }
             }
+            self.send_images(wr, &v.pane, epoch, places, pixels).await?;
+        }
+        Ok(())
+    }
+
+    /// After a pane's cell frame: pixels of images new to this client, then the placement
+    /// set when it changed (03 §9).
+    async fn send_images<W: AsyncWrite + Unpin>(
+        &mut self,
+        wr: &mut W,
+        pane: &str,
+        epoch: u32,
+        places: Vec<ImagePlace>,
+        pixels: Vec<(String, u32, u32, Vec<u8>)>,
+    ) -> Result<()> {
+        for (hash, width, height, px) in pixels {
+            let rgba_z = vk_browser::kitty::zlib(&px, 1);
+            self.images_sent.insert(hash.clone());
+            asyncio::write_frame(
+                wr,
+                &ServerFrame::Image {
+                    hash,
+                    width,
+                    height,
+                    rgba_z,
+                },
+            )
+            .await?;
+        }
+        if let Some(view) = self.views.get_mut(pane)
+            && view.images != places
+        {
+            view.images = places.clone();
+            asyncio::write_frame(
+                wr,
+                &ServerFrame::PaneImages {
+                    pane: pane.to_string(),
+                    epoch,
+                    places,
+                },
+            )
+            .await?;
         }
         Ok(())
     }

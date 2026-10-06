@@ -613,6 +613,7 @@ mod tests {
                 },
             ],
             wrapped: false,
+            ..Default::default()
         };
         let v = styled_rows(&[row]);
         assert_eq!(v[0]["text"], "abcd");

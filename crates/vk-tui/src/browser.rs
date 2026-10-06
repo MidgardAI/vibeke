@@ -1315,6 +1315,14 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
             open_url(app, cur, &pane, &url);
             return true;
         }
+        // Any other plain-text http(s) URL (the linkifier fallback for OSC 8, 03 §8).
+        if down
+            && modded
+            && let Some(url) = crate::osc::plain_url_at(app, cur, &pane, x - r.x, y - r.y)
+        {
+            crate::nav::open_url(app, cur, &pane, &url);
+            return true;
+        }
         return false;
     }
     if down && app.focused_pane().as_deref() != Some(&pane) {
@@ -2538,6 +2546,7 @@ mod tests {
                         cols: 40,
                     }],
                     wrapped: false,
+                    ..Default::default()
                 }],
                 cursor: Default::default(),
                 modes: PaneModes::default(),

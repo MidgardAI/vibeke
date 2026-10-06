@@ -34,6 +34,7 @@ pub mod screenshots;
 pub mod search;
 pub mod shape;
 pub mod task_workspace;
+pub mod term_effects;
 pub mod theme;
 pub mod timers;
 pub mod tracking;
@@ -86,6 +87,13 @@ pub enum UiEvent {
     },
     Notify(Notification),
     Goodbye(String),
+    /// OSC 52 read (03 §8): only the render session of `client` forwards it.
+    ClipboardQuery {
+        client: String,
+        req: u64,
+        pane: String,
+        primary: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -135,6 +143,8 @@ pub struct Server {
     pub notifier: notify::State,
     /// Host appearance reports and the effective theme (08 §11 `[theme]`).
     pub theme: theme::State,
+    /// Terminal effects state: open OSC 52 read queries (03 §8).
+    pub term_fx: term_effects::State,
     /// Session desk conversation index (research R2).
     pub desk: desk::State,
     /// Drafts composer in-flight sends (research R3).
@@ -232,6 +242,7 @@ impl Server {
             browser: browser_pane::Host::default(),
             notifier: notify::State::default(),
             theme: theme::State::default(),
+            term_fx: term_effects::State::default(),
             desk: Default::default(),
             drafts: Default::default(),
             assist: assist::State::default(),
@@ -954,14 +965,20 @@ impl Server {
         Ok(pane)
     }
 
-    /// Current cwd of a pane: OSC 7 if reported, else the foreground process cwd.
+    /// Current cwd of a pane (03 §8): OSC 7 if reported, else the foreground process's cwd
+    /// read now (`/proc/<pid>/cwd` on Linux, `proc_pidinfo` on macOS; the holder runs on this
+    /// machine), else the last one the holder reported, else the cwd the pane started in.
     pub fn pane_cwd(&self, pane: &str) -> Option<String> {
         let rt = self.pane_rt(pane)?;
         if let Some(c) = rt.screen.lock().unwrap().engine.cwd() {
             return Some(c.to_string());
         }
         let st = rt.status.lock().unwrap().clone();
-        st.and_then(|s| s.fg_cwd)
+        let live = st
+            .as_ref()
+            .and_then(|s| s.fg_pgid.or((s.child_pid != 0).then_some(s.child_pid)))
+            .and_then(vk_hold::procinfo::cwd);
+        live.or_else(|| st.and_then(|s| s.fg_cwd))
             .or_else(|| self.with_core(|c| c.pane(pane).and_then(|p| p.cwd.clone())))
     }
 
@@ -977,6 +994,7 @@ impl Server {
     /// Remove a pane whose process ended from the layout (closing empty tabs/workspaces).
     pub fn pane_ended(&self, pane_id: &str, reason: &str) {
         self.panes.lock().unwrap().remove(pane_id);
+        term_effects::forget(self, pane_id);
         let had_archive = {
             let mut a = self.archive.lock().unwrap();
             let _ = a.close_pane(pane_id);
@@ -1341,6 +1359,17 @@ impl Server {
                 }
             }
             Effect::TitleChanged => self.bump_model(),
+            // Terminal effects (03 §8); none of them are replayed after a restart.
+            Effect::Mark { kind, exit } if !replaying => term_effects::mark(self, pane, kind, exit),
+            Effect::Progress { state, pct } if !replaying => {
+                term_effects::progress(self, pane, state, pct)
+            }
+            Effect::UserVar { name, value } if !replaying => {
+                term_effects::user_var(self, pane, name, value)
+            }
+            Effect::ClipboardQuery { primary } if !replaying => {
+                let _ = term_effects::clipboard_query(self, pane, primary);
+            }
             _ => {}
         }
     }
