@@ -103,6 +103,8 @@ right    = ["agents_summary", "clock"]
 
 Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` (task port range and live previews), `attention`, `agents_summary` (`●3 ✓1 ⚠1`), `cpu`, `clock`, `prefix_indicator`, `mode` (normal/navigate/copy/resize), `sync_input`.
 
+*Implementation (M4, server side):* `status.segments {pane?, client?}` (07 §2.1) returns the data for every built-in segment from a client's focus: machine, session, workspace, task, branch, ports with live previews, attention (count plus oldest unfocused interaction), agents_summary (working/done/needs_input/error), cpu load, clock and sync_input. `mode` and `prefix_indicator` are client state. Open TUI work: draw the bar from `ui.status_bar`, refresh on model changes plus a 1 s clock tick, and make the `attention` click open the oldest card.
+
 **Plugin segments** (M5): plugins contribute `status.segment` with `{id, interval_ms | event_driven, render → spans}` (07). They appear as `plugin:<id>/<segment>` in the lists above. A segment that renders slower than 50 ms is dropped with a warning.
 
 ## 5. Panes, floating panes, popups, zoom, resize
@@ -111,6 +113,7 @@ Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` 
 - **Zoom**: `prefix+z` toggles the focused pane to fill the tab. A `Z` marker appears in the tab.
 - **Resize mode**: `prefix+r` then `h j k l` / arrows (shift = ×5), `=` equalizes, `esc`/`enter` exits. Mouse: drag borders.
 - **Floating panes** (M4): `prefix+f` creates a floating pane (default 70%×70%, centred); `prefix+shift+f` toggles visibility of all floats in the tab. Floats can be moved/resized with the mouse or in resize mode (`m` toggles move). A tiled pane can be floated and back (`pane float`/`pane embed`).
+  - *Implementation (M4, server side):* `Tab.floating: [{pane, x, y, w, h, z}]` (percent of the pane area) and `Tab.floats_hidden`; `pane.float`, `pane.embed`, `tab.floats` (07 §2.6). Floats survive layout export/apply; closing a tab's last tiled pane closes its floats. Open TUI work: draw floats over the tiling (z order, border, focus ring), skip them when `floats_hidden`, `prefix+f`/`prefix+shift+f`, mouse move/resize and resize-mode `m`, and include floats in `ViewHint` so their PTYs get real sizes (they stay 80×24 until then).
 - **Popups** (`type = "popup"`): session-modal terminals that don't change the layout and close when the command exits (used by `[[keys.command]]`, edit-scrollback, plugin actions). Width and height accept cells or `%`.
 - **Synchronized input** (post-1.0): `prefix+shift+s` toggles sync for the current tab. Input to the focused pane is mirrored to every pane in the tab that is in the sync set (default all; `prefix+alt+s` toggles a single pane's membership). A bright `SYNC` badge shows in the tab bar and the status bar. Paste is mirrored too. Agent panes are **excluded by default** (`ui.sync_input.include_agents = false`) to avoid prompting N agents by accident.
 - **Focus follows mouse**: `ui.focus_follows_mouse = false`. When enabled, hovering a pane focuses it after `ui.focus_follows_mouse_delay_ms = 120`; it never applies while a popup or card is open.
@@ -163,6 +166,25 @@ notification.created → policy (rules, quiet hours, presence) → channels
 - **Inbound OSC from panes** (cmux-compatible): OSC 9 (iTerm2/ConEmu text), OSC 99 (kitty, incl. title/body/urgency), OSC 777 `notify;title;body` from any pane become `Notification{kind: osc}` attributed to the pane. Scripts and agents without an adapter can also run **`vibeke notify [--pane <id>|--current] [--urgency low|normal|high] <title> [body]`**, which works from any pane (and from a remote machine via the bridge).
 - **Sound**: `notifications.sound = "default" | "none" | path`, configurable per kind.
 - **Quiet hours**: `notifications.quiet_hours = "22:00-07:00"` (only `urgency = high` gets through).
+
+*Implementation (M4, server side; `vk-server/src/notify.rs`):*
+- **Pipeline.** Every `notification.created` passes through `notifications.on` (interaction → needs_approval/needs_answer, agent_state → done, bell, osc*), presence, quiet hours and `coalesce_ms` per pane, then the channels: `notifications.channels`, or derived from `channel` (`native` → toast + native, with OSC fallback when native is unavailable). The decision is recorded on the notification (`channels`, 07 §2.12).
+- **Presence** is decided server-side: a TUI client with the pane focused and visible, whose `ViewHint.active` reports host focus.
+- **Native notifiers.**
+  - macOS: `terminal-notifier` when installed. Clicking runs `vibeke --session <s> focus <url>`.
+  - macOS without it: `osascript display notification`. These notifications can't be clicked, because AppleScript notifications carry no action. **The signed helper bundle (`UNUserNotificationCenter`, Allow/Deny actions) is not built.**
+  - Linux: `notify-send --action=default=Focus --wait` (freedesktop over D-Bus) in a background thread. Clicking runs `vibeke focus`.
+  - `VIBEKE_NOTIFIER=none | auto | log:<file>` overrides the backend. Tests use `log:` or an injected notifier.
+- **Native is not automatic yet.** It fires only once some client has reported `host` metadata (07 §2.1). Headless servers never pop OS notifications. **The TUI doesn't report it yet**, so until it does, native delivery needs `VIBEKE_NOTIFIER=auto`.
+- **Click-to-focus.** `vibeke focus <pane | vibeke://focus?…>` (`client.focus`) switches to the URL's session and focuses the pane in the most recently active TUI client.
+  - macOS raising: `osascript -e 'tell application id "<bundle>" to activate'`. The bundle id comes from the client's `host` metadata, else from the server's own `__CFBundleIdentifier`/`TERM_PROGRAM` (mapped for iTerm2, Terminal, Ghostty, WezTerm, kitty, VS Code, Warp, Alacritty…).
+  - Linux raising (xdg-activation) is not implemented.
+- **Sound and bell** are recorded as channels for clients; the server plays nothing.
+- **Open TUI work:**
+  - send `host: {bundle_id: $__CFBundleIdentifier, term_program: $TERM_PROGRAM}` in `render.attach`;
+  - skip the OSC forward when `Notify.delivered` contains `native`;
+  - drop the TUI's own presence check for frames the server already filtered;
+  - show coalesced counts on toasts.
 
 ### 7.2 Toasts
 Stacked at the top-right of the pane area, max 3, auto-dismiss after 6 s (except interactions, which stay until answered or dismissed). `prefix+o` (`open_notification_target`) jumps to the newest toast's target.
@@ -281,6 +303,7 @@ Location: `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). Unknow
 onboarding = false
 
 [theme]
+mode        = "auto"                  # auto (follow the host terminal's reported light/dark) | light | dark
 name        = "catppuccin"            # built-ins: catppuccin(-latte), terminal, tokyo-night, dracula, nord, gruvbox,
                                       # one-dark, solarized, kanagawa, rose-pine, vesper + any themes/*.toml
 auto_switch = true
@@ -386,6 +409,7 @@ sound                 = "default"
 suppress_when_focused = true
 coalesce_ms           = 3000
 quiet_hours           = ""            # "22:00-07:00"
+channels              = []            # toast | native | osc | sound | bell; [] = derived from `channel` (§7.1)
 [notifications.on]                    # which events notify
 needs_approval = true
 needs_answer   = true
@@ -394,6 +418,12 @@ error          = true
 bell           = false
 osc            = true
 remote_disconnected = true
+
+[layouts.dev]                         # named layouts (07 §2.14 LayoutSpec): `vibeke layout apply dev`,
+cwd = "~/code/app"                    # `vibeke workspace create --layout dev`
+[[layouts.dev.tab]]
+title = "edit"
+pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
 
 [agents]                              # see 04 for harness manifests and adapter options
 auto_detect       = true
@@ -550,10 +580,10 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Persistent server, detach/attach, named sessions | 01 §1, holders | M1 |
 | Multiple clients on one session | render stream per client, geometry controller lease (03) | M1 |
 | Notifications (terminal-routed) | §7 OSC out + OSC 9/99/777 in + `vibeke notify` | M1 |
-| Native notifications, click-to-focus | §7 | M4 |
+| Native notifications, click-to-focus | §7 | M4 — server pipeline, notifiers and `vibeke focus` built; TUI `host` report + helper bundle open |
 | Keybindings with prefix, custom commands (shell/pane/popup) | §10 | M1 |
-| Themes | §11 | M1 (fixed), M4 (auto light/dark + propagation) |
-| Copy mode | 03 §11 | M1 (vi keys, `/` in buffer), M4 (archive search, edit scrollback) |
+| Themes | §11 | M1 (fixed), M4 (auto light/dark + propagation) — server side built (`theme.mode`, `client.appearance`, `theme.changed`, `SessionModel.appearance`, `COLORFGBG`/`VIBEKE_THEME` in new panes); open TUI work: query OSC 11 / subscribe `CSI ? 2031 h` + `CSI ? 996 n` and report it, switch `dark_name`/`light_name` on `appearance` changes, answer panes' OSC 10/11 queries with the effective palette |
+| Copy mode | 03 §11 | M1 (vi keys, `/` in buffer), M4 (archive search, edit scrollback) — server side built (`search.query`, `pane.read {source: archive}` paging by absolute line); open TUI work: copy-mode `/` falling back to `search.query` for the pane, paging older rows via `pane.read archive` instead of `FetchHistory` past memory, edit-scrollback popup writing the archive range to a temp file for `$EDITOR`, a search popup over `search.query` |
 | Config reload | §11.2 | M1 |
 | Socket API + CLI | 07 | M1 |
 | `agent start / prompt --wait / wait / read / send-keys` | 04, 07 | M1 |
@@ -564,7 +594,7 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Worktree helpers | git worktree tasks (05) | M1 |
 | Remote via SSH, saved machines, `--machine` forwarding | 06 | M3 |
 | Remote image paste | 06 | M3 |
-| Layout export/apply | 07 `layout.*` | M4 |
+| Layout export/apply | 07 `layout.*` | M4 — built (API + CLI, named layouts in `[layouts.<name>]`); open TUI work: palette entries "save layout"/"apply layout" |
 | Plugins (full Herdr plugin contract + native process/UI/storage additions) | 07 | M5; Windows M6; marketplace post-1.0 |
 | Live handoff on update | normal path via holders | M1 |
 | Update channels | §11 `[update]` | M1 |
@@ -580,15 +610,15 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Mark unread | `marked_unread`, `prefix+u` | M1 |
 | `/` search in copy mode | in-buffer vi search (M1); FTS over archived scrollback (M4) | M1 / M4 |
 | Async worktree delete | background removal job with progress; UI never blocks (05) | M1 |
-| D#1620 Hierarchical groups | `Group` entity, aggregate badges | M4 |
+| D#1620 Hierarchical groups | `Group` entity, aggregate badges | M4 — model/API built (`group.*`, `SessionModel.groups`, aggregate `agent_summary`); open TUI work: group level in the sidebar tree with collapse, drag-into-group, badges |
 | D#748 Copy-on-select (PRIMARY) | `clipboard.copy_on_select`, `primary_selection` | M4 |
 | D#587 Configurable copy-mode keys | `[keys.copy_mode]` | M4 |
-| D#480 / D#2209 Jujutsu workspaces | `tasks.vcs = "jj"` (05) | M4 |
+| D#480 / D#2209 Jujutsu workspaces | `tasks.vcs = "jj"` (05) | M4 — built (`task new --isolation jj_workspace`, auto-detected); open TUI work: show bookmark/change instead of branch for jj tasks |
 | D#834 Tab bar at the bottom | `ui.tabs.position = "bottom"` | M4 |
-| D#1629 Status bar | built-in segments (M4); plugin segments (M5) | M4 / M5 |
+| D#1629 Status bar | built-in segments (M4); plugin segments (M5) | M4 / M5 — segment data API built (`status.segments`); drawing is TUI work |
 | D#1465 Sidebar left/right | `ui.sidebar.position` | M4 |
-| D#782 Floating panes | floating panes + popups (popups for custom commands in M1) | M4 |
-| D#625 Click notification to focus | native notifier with `vibeke://focus` | M4 |
+| D#782 Floating panes | floating panes + popups (popups for custom commands in M1) | M4 — model/API built (`Tab.floating`, `pane.float/embed`, `tab.floats`); drawing/input is TUI work (§5) |
+| Click notification to focus | native notifier with `vibeke://focus` | M4 — `vibeke focus <url>` + notifiers built (§7.1 notes) |
 | Command palette | `prefix+:` / `ctrl+shift+p` | M4 |
 | Mosh transport | QUIC roaming + predictive echo (06) | post-1.0 |
 | Synchronized input | `prefix+shift+s`, agents excluded by default | post-1.0 |

@@ -85,6 +85,7 @@ choice_enum!(Bootstrap { Push = "push", RemoteDownload = "remote-download" } def
 choice_enum!(InputWhenOffline { Drop = "drop", Ask = "ask" } default Drop);
 choice_enum!(PredictiveEcho { Auto = "auto", Always = "always", Never = "never" } default Auto);
 choice_enum!(SizePolicy { Latest = "latest", Smallest = "smallest", Pinned = "pinned" } default Latest);
+choice_enum!(ThemeMode { Auto = "auto", Light = "light", Dark = "dark" } default Auto);
 choice_enum!(UpdateChannel { Stable = "stable", Preview = "preview" } default Stable);
 
 fn t() -> bool {
@@ -115,6 +116,9 @@ pub struct Config {
     pub render: Render,
     pub compat: Compat,
     pub update: Update,
+    /// `[layouts.<name>]`: named declarative layouts (07 §2.14 `LayoutSpec`, parsed by the
+    /// server) for `vibeke layout apply <name>` and `workspace create --layout <name>`.
+    pub layouts: BTreeMap<String, toml::Value>,
     /// Sections owned by other crates (`collision`, `isolation`, `preview`, `security`,
     /// `plugins`), preserved verbatim so they are not reported as unknown.
     #[serde(skip_deserializing)]
@@ -136,6 +140,9 @@ impl Default for ConfigMeta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Theme {
+    /// `auto` follows the host terminal's light/dark appearance reported by clients;
+    /// `light`/`dark` force it (theme propagation, 03 §10.4).
+    pub mode: ThemeMode,
     pub name: String,
     pub auto_switch: bool,
     pub dark_name: String,
@@ -148,6 +155,7 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Theme {
+            mode: ThemeMode::Auto,
             name: s("catppuccin"),
             auto_switch: true,
             dark_name: s("catppuccin"),
@@ -488,6 +496,9 @@ pub struct Notifications {
     pub coalesce_ms: u32,
     /// `"22:00-07:00"` or empty.
     pub quiet_hours: String,
+    /// Explicit channel list (08 §7.1): `toast`, `native`, `osc`, `sound`, `bell`. Empty =
+    /// derived from `channel` (native → toast+native, osc fallback when native is unavailable).
+    pub channels: Vec<String>,
     pub on: NotifyOn,
 }
 impl Default for Notifications {
@@ -498,6 +509,7 @@ impl Default for Notifications {
             suppress_when_focused: true,
             coalesce_ms: 3000,
             quiet_hours: String::new(),
+            channels: Vec::new(),
             on: NotifyOn::default(),
         }
     }

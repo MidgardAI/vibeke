@@ -104,6 +104,16 @@ impl Archive {
         Ok(read_seg(last)?.last().map(|r| r.n))
     }
 
+    /// Lowest archived absolute line number still on disk (retention deletes old segments).
+    pub fn first_line(&mut self, pane: &str) -> Result<Option<u64>> {
+        self.flush()?;
+        let segs = self.segments(pane);
+        let Some(first) = segs.first() else {
+            return Ok(None);
+        };
+        Ok(read_seg(first)?.first().map(|r| r.n))
+    }
+
     fn segments(&self, pane: &str) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = std::fs::read_dir(self.pane_dir(pane))
             .map(|rd| {
@@ -212,6 +222,8 @@ mod tests {
         assert_eq!(r.len(), 10);
         assert_eq!(r[0].n, 15_500);
         assert_eq!(a.last_line("p1").unwrap(), Some(29_999));
+        assert_eq!(a.first_line("p1").unwrap(), Some(0));
+        assert_eq!(a.first_line("nope").unwrap(), None);
         a.enforce_retention("p1", 1).unwrap();
         assert!(a.read("p1", 0, 10).unwrap().is_empty());
     }

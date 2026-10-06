@@ -21,6 +21,9 @@ usage:
   vibeke ssh <host>               attach to a remote machine over SSH (installs vibeke there)
   vibeke <noun> <verb> [args]     API commands (vibeke <noun> for help)
   vibeke notify <title> [body]    notification from a pane or script
+  vibeke search <query>           search live and archived scrollback
+  vibeke focus <pane|url>         focus a pane in the active client (vibeke://focus?…)
+  vibeke layout export|apply|list declarative layouts ([layouts.<name>] in config)
   vibeke import herdr [--config] [--session] [--dry-run]
   vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all>
   vibeke doctor                   diagnose install, sockets, integrations, terminal, remote
@@ -157,6 +160,26 @@ fn main() {
 }
 
 async fn dispatch(g: Global, args: Vec<String>) -> i32 {
+    let mut g = g;
+    let mut args = args;
+    // `vibeke search <q>` = `vibeke search query <q>` (07 §5.3).
+    if args.first().map(String::as_str) == Some("search")
+        && args.len() > 1
+        && !matches!(args[1].as_str(), "query" | "--help" | "-h")
+    {
+        args.insert(1, "query".into());
+    }
+    // `vibeke focus <pane | vibeke://focus?session=…&pane=…>` (08 §7.1 click-to-focus): routes
+    // to the URL's session, focuses in the most recently active client and raises its terminal.
+    if args.first().map(String::as_str) == Some("focus") {
+        if let Some((Some(sess), _)) = args
+            .get(1)
+            .and_then(|u| vk_server::notify::parse_focus_url(u))
+        {
+            g.session = sess;
+        }
+        args.splice(0..1, ["client".to_string(), "focus".to_string()]);
+    }
     let first = args.first().map(String::as_str);
     match first {
         None | Some("attach") => commands::attach(&g, &args).await,

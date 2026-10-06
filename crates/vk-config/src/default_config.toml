@@ -14,6 +14,7 @@ watch = true
 [theme]
 # Built-ins: catppuccin, catppuccin-latte, terminal, tokyo-night, dracula, nord, gruvbox,
 # one-dark, solarized, kanagawa, rose-pine, vesper, plus any themes/*.toml.
+mode        = "auto"                  # auto (follow the host terminal's light/dark) | light | dark
 name        = "catppuccin"
 auto_switch = true
 dark_name   = "catppuccin"
@@ -196,6 +197,7 @@ sound                 = "default"     # default | none | <path>
 suppress_when_focused = true
 coalesce_ms           = 3000
 quiet_hours           = ""            # "22:00-07:00"
+channels              = []            # toast | native | osc | sound | bell; [] = derived from `channel`
 
 [notifications.on]
 needs_approval      = true
@@ -278,6 +280,13 @@ herdr_socket = false
 channel        = "stable"             # stable | preview
 version_check  = true
 manifest_check = true
+
+# Named layouts for `vibeke layout apply <name>` / `workspace create --layout <name>` (07 §2.14):
+# [layouts.dev]
+# cwd = "~/code/app"
+# [[layouts.dev.tab]]
+# title = "edit"
+# pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
 
 # Sections owned by other components and documented with them:
 # [collision], [isolation], [preview], [security], [plugins]

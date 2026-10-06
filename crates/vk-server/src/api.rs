@@ -374,6 +374,10 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
 
 async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
     authorize(server, ctx, method, p)?;
+    crate::search::authorize_read(server, ctx, method, p)?;
+    if let Some(r) = crate::parity::api(server, ctx, method, p).await {
+        return r;
+    }
     if let Some(r) = crate::gateway_api::api(server, ctx, method, p).await {
         return r;
     }
@@ -420,6 +424,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                     .iter()
                     .chain(crate::preview::METHODS)
                     .chain(crate::sandbox::METHODS)
+                    .chain(crate::parity::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
@@ -1104,56 +1109,12 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             "events.subscribe must be called on a control connection",
         )),
 
-        // ---- search / blobs / layout ----------------------------------------------------
-        "search.query" => {
-            let q = req(p, "q")?;
-            let pane = s(p, "pane")
-                .map(|x| resolve_pane(server, ctx, Some(x)))
-                .transpose()?
-                .map(|x| x.id);
-            let mut hits: Vec<Value> = Vec::new();
-            // In-memory scrollback + screen first (newest), then the archive (FTS).
-            let panes: Vec<String> = match &pane {
-                Some(x) => vec![x.clone()],
-                None => server.panes.lock().unwrap().keys().cloned().collect(),
-            };
-            let needle = q.to_lowercase();
-            for pid in &panes {
-                let text = read_text(server, pid, "scrollback", 10_000);
-                for (i, line) in text.lines().enumerate() {
-                    if line.to_lowercase().contains(&needle) {
-                        hits.push(
-                            json!({"pane": pid, "source": "scrollback", "line": i, "text": line}),
-                        );
-                    }
-                }
-            }
-            let fts = server
-                .with_core(|c| {
-                    c.store
-                        .fts_search(q, pane.as_deref(), u(p, "limit").unwrap_or(50) as usize)
-                })
-                .map_err(internal)?;
-            for (pid, line, ts, text) in fts {
-                hits.push(
-                    json!({"pane": pid, "source": "archive", "line": line, "ts": ts, "text": text}),
-                );
-            }
-            hits.truncate(u(p, "limit").unwrap_or(200) as usize);
-            Ok(json!({"hits": hits}))
-        }
+        // ---- blobs (search and layouts: parity.rs) --------------------------------------
         "blob.put" | "image.upload" => blob_put(server, p),
         "blob.begin" => blob_begin(server, ctx, p),
         "blob.append" => blob_append(ctx, p),
         "blob.commit" => blob_commit(ctx, p),
         "blob.abort" => blob_abort(ctx, p),
-        "layout.export" => {
-            let tab = resolve_tab(server, ctx, s(p, "tab"))?;
-            let panes: Vec<Value> = server.with_core(|c| {
-                tab.layout.panes().iter().filter_map(|id| c.pane(id)).map(|x| json!({"id": x.id, "cwd": x.cwd, "title": x.title, "command": x.fg_cmdline})).collect()
-            });
-            Ok(json!({"layout": {"tab": tab, "panes": panes}}))
-        }
         _ => Err(err(
             ErrorKind::MethodNotFound,
             format!("unknown method {method}"),

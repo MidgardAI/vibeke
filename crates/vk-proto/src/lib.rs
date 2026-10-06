@@ -10,6 +10,7 @@ pub mod frame;
 pub mod holder;
 pub mod input;
 pub mod layout;
+pub mod layout_spec;
 pub mod model;
 pub mod render;
 pub mod rpc;

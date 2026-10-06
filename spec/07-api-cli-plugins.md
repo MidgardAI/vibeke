@@ -83,6 +83,12 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 |---|---|
 | `client.hello` | `{client, version, api, kind: tui|cli|plugin|gateway|agent, token?}` → `{server_version, api, session, machine, capabilities[], features[]}` |
 | `client.list` | `{}` → `{clients: [{id, kind, client, version, attached_at, peer: {uid, pid?, machine?}, focused_pane?}]}` |
+| `client.appearance` | `{dark: bool, source?: osc11\|csi996}` → `{appearance, colorfgbg}` — host terminal light/dark report (theme propagation, 08 §11) [M4] |
+| `client.focus` | `{pane \| url: "vibeke://focus?session=…&pane=…", raise?: true}` → `{pane, client, focused, raised, host}` — focus in the most recently active attached client and raise its host terminal (08 §7.1 click-to-focus); full scope only [M4] |
+| `theme.get` / `theme.set_mode` | `{}` / `{mode: auto\|light\|dark\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4] |
+| `status.segments` | `{pane?, client?}` → `{segments: {machine, session, workspace, task, branch, ports, attention, agents_summary, cpu, clock, sync_input}, focus, appearance, client_side: [mode, prefix_indicator]}` — data for the built-in status-bar segments (08 §4) from that client's focus [M4] |
+
+`render.attach` and `client.hello` accept an optional `host: {bundle_id?, term_program?}` (the host terminal's `__CFBundleIdentifier` / `TERM_PROGRAM`), used to raise the window on click-to-focus and to enable native notifications (08 §7.1). *(M4: server side implemented; the TUI does not send it yet.)*
 | `api.schema` | `{method?}` → `{schema}` |
 | `api.methods` | `{}` → `{methods: [{name, milestone, capability, mutating}]}` |
 | `server.status` | `{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}` |
@@ -117,6 +123,9 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 |---|---|
 | `group.create` | `{name, parent?}` → `{group}` |
 | `group.rename` / `group.move` / `group.delete` / `group.collapse` | `{group, …}` → `{group}` |
+| `group.list` / `group.add` / `group.remove` | `{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}` |
+
+*Implementation (M4):* `Group {id, handle g<N>, name, parent?, collapsed, order, workspaces: [workspace_id]}`. Membership is the group's ordered `workspaces` list, not a `group_id` on the workspace (02 §1.1 deviation; a workspace is in at most one group). `group.move {parent?, index? | delta?}` refuses cycles. `group.delete` moves members and child groups up to the parent; nothing is closed. `workspace.create {group}`, `workspace.move {workspace, group: id | ""}` and `workspace.list {group?}` (every entry gains `group`) apply. All `group.*` mutations are refused for pane scope. `session.snapshot` includes `groups`.
 | `workspace.list` | `{group?}` → `{workspaces: [Workspace + {agent_summary: {working, needs_input, done, idle}, tab_count, pane_count}]}` |
 | `workspace.get` | `{workspace}` → `{workspace}` |
 | `workspace.create` | `{cwd, name?, group?, focus?: false, layout?: LayoutSpec, command?: argv}` → `{workspace, tab, root_pane}` |
@@ -144,7 +153,9 @@ Notation: `params → result`. `?` = optional. All methods return `seq` when mut
 | `pane.get` | `{pane}` → `{pane, run?, open_interactions[]}` |
 | `pane.current` | `{}` → `{pane}` (requires pane token / `@current`) |
 | `pane.split` | `{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}` |
-| `pane.float` | `{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] |
+| `pane.float` | `{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centred); with `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout` |
+| `pane.embed` | `{pane, target?, direction?: right, ratio?}` → `{pane, tab}` — a floating pane back into the tiling, split next to `target` (default the focused tiled pane) [M4] |
+| `tab.floats` | `{tab?, visible?}` → `{tab}` — show/hide all floats (`Tab.floats_hidden`; toggles without `visible`) [M4] |
 | `pane.move` | `{pane, to: {tab} | {workspace} | {new_tab_in: workspace}, position?}` → `{pane, previous_pane_handle}` |
 | `pane.resize` | `{pane, direction, cells?|percent?}` → `{layout}` |
 | `pane.zoom` | `{pane, zoomed?: toggle}` → `{tab}` |
@@ -226,7 +237,7 @@ Pane-scoped callers (agents) may read tasks but not `task.track`, `task.intent.u
 
 | Method | Params → Result |
 |---|---|
-| `task.create` | `{title, repo: path, base?: ref, isolation?: worktree|jj_workspace|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` |
+| `task.create` | `{title, repo: path, base?: ref, isolation?: worktree|jj_workspace|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — *M4:* `isolation` also accepts `auto` (default from `tasks.checkout`/`tasks.vcs`: jj workspace when the repo has `.jj` and `jj` is installed, else worktree); the choice is recorded as `Task.checkout`; `task.get` of a jj task returns `branch_status {vcs: jj, branch, bookmark_exists, bookmarks, change_id, commit_id, dirty, conflict}` and `jj {workspace, colocated}`; `task.finish {remove_worktree}` runs `jj workspace forget` and deletes the directory (never for `none`) |
 | `task.list` | `{status?, repo?}` → `{tasks}` |
 | `task.get` | `{task}` → `{task, workspace, runs, previews, collisions[]}` |
 | `task.park` / `task.resume` | `{task}` → `{task}` — park = stop agents gracefully, keep worktree |
@@ -305,7 +316,9 @@ CLI: `vibeke preview declare <port> [--path p] [--label l] [--pane p] [--task k]
 | `notification.list` | `{unread_only?: true, limit?}` → `{notifications}` |
 | `notification.send` | `{title, body?, urgency?: normal, subject?: pane|run|task, sound?: bool}` → `{notification}` — for scripts/plugins |
 | `notification.read` | `{notification|all: true}` → `{}` |
-| `notification.config` | `{}` → `{channels: [os, terminal_bell, osc9, sound, plugin:<id>], rules}` |
+| `notification.config` | `{}` → `{channels: [os, terminal_bell, osc9, sound, plugin:<id>], rules}` — *M4:* `{channels: [toast, native, osc, …], native: {backend, unavailable_reason}, rules: {on, suppress_when_focused, coalesce_ms, quiet_hours}, hosts}` |
+
+*M4:* every `Notification` carries `channels`: where the pipeline delivered it, or why it skipped a channel (`native`, `native:headless`, `native:unavailable`, `coalesced`, `suppressed:focused`, `quiet_hours`, `filtered:<kind>`). The render-stream `Notify` frame carries `delivered: [native]`, so clients skip their own OSC forward.
 
 ### 2.13 `events.*` [M1]
 
@@ -337,6 +350,38 @@ Server push (JSON-RPC notification):
 | `config.set` | `{key, value, persist?: false}` → `{}` — runtime override |
 | `config.validate` | `{path?}` → `{errors: [{line, col, message}]}` |
 | `search.query` | `{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts |
+| `layout.list` / `layout.get` | `{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4] |
+
+**Implemented (M4).**
+
+`layout.export {tab | workspace, format?: toml}` returns `{layout, scope, toml?}`. `layout.apply` takes `{layout: LayoutSpec | name, doc?: TOML/JSON text, name?, workspace? | new_workspace?: {cwd, name}, cwd?, ws_name?, focus?}`. A JSON `doc` may be a whole export result. Applying validates first: at most 64 panes, depth 16. It spawns one pane per leaf, builds the split tree with normalised ratios, creates floats, then types each `run` line once the shell has drawn. It emits `layout.applied`. `workspace.create {layout}` and `tab.create {layout}` go through the same path. The layout's `cwd` wins over the caller's cwd; the CLI sends its own cwd as `default_cwd`. Export turns a pane started with a command into `command` (`sh -c` is unwrapped). It turns a foreground command typed into a shell, or an agent's harness id, into `run`. Cwds are relative to the workspace root.
+
+`LayoutSpec` (`vk_proto::layout_spec`), TOML/JSON:
+
+```toml
+name = "dev"                     # optional
+cwd = "~/code/app"               # workspace root for a new workspace
+[[tab]]
+title = "edit"
+focus = true
+[tab.pane]                       # a node: split + children, or a leaf
+split = "right"                  # right = side by side · down = stacked
+[[tab.pane.children]]
+size = 0.6                       # share of the parent (normalised)
+run = "nvim ."                   # typed into the shell after start
+[[tab.pane.children]]
+cwd = "src"                      # relative to the tab/layout cwd
+command = ["npm", "run", "dev"]  # the pane's process (string → /bin/sh -c)
+[[tab.float]]
+command = "lazygit"
+rect = { x = 15, y = 15, w = 70, h = 70 }
+```
+
+`search.query` takes `{q | text, pane?, workspace?, machine?, since?: epoch-ms | "30m"/"2h"/"7d", limit?: 50, context?: 2, regex?: false, sources?: [live, archive]}`. It returns `{hits: [{pane, pane_handle, workspace, title, source: screen|scrollback|archive, live, line, text, ts?, context: {before, after}, position: {line, from, to}}], truncated}`. Live panes are searched first, newest line first. Archive hits come from FTS5, with rows still in memory reported once, as live hits. With `regex`, the archive segments of the panes in scope are scanned instead. `line` is the absolute history line, shared by the archive, the in-memory scrollback and the screen. `machine` must name this machine; other machines are reached with the global `--machine`. Transcript and event sources are not searched yet.
+
+`pane.read {source: "archive", from?, to?, lines?: 200}` returns `{rows: [{n, text, wrapped}], text, first, end, from, to, more_before, more_after}`. It covers archive segments, then the in-memory scrollback, then the screen, at most 5000 rows per call. It also works for closed panes whose archive is still on disk (`archive_panes`, 02 §3).
+
+Read scope (09 §5.1 rule 4) applies to `pane.read`, `pane.wait_output` and `search.query` for pane-scoped callers. `security.pane_scope.read = "workspace"` (default) \| `session` \| `self`.
 
 ### 2.15 `blob.*` [M1]
 
@@ -511,9 +556,9 @@ vibeke server [start|stop|restart|status|reload-config] [--kill-panes]
 vibeke session list|new <name>|stop <name>|rename <a> <b>
 
 vibeke workspace list|get|create|rename|move|focus|close
-vibeke group     list|create|rename|move|delete
+vibeke group     list|create|rename|move|delete|collapse|add|remove
 vibeke tab       list|create|rename|move|focus|close
-vibeke pane      list|get|current|split|float|move|resize|zoom|focus|rename|close
+vibeke pane      list|get|current|split|float|embed|move|resize|zoom|focus|rename|close
                  send-text|send-keys|run|read|wait-output|wait-idle
                  mark-unread|pin|sync-input|scroll|screenshot
 vibeke agent     list|get|start|spawn|prompt|wait|interrupt|send-keys|read|transcript
@@ -527,8 +572,11 @@ vibeke browser   open|navigate|click|type|press|wait|eval|screenshot|console|net
 vibeke image     show|upload
 vibeke notification list|send|read
 vibeke events    tail [--types agent.*] [--after-seq N] [--follow] | read | wait
-vibeke search    <query> [--pane p] [--workspace w] [--source scrollback,transcript]
-vibeke layout    export|apply
+vibeke search    <query> [--pane p] [--workspace w] [--since 2h] [--regex] [--context n] [--sources live,archive]
+vibeke layout    export|apply|list|get     # apply <name | file.toml | --doc text> [--workspace w | --cwd d]
+vibeke focus     <pane | vibeke://focus?session=…&pane=…>   # click-to-focus target (08 §7.1)
+vibeke theme     get|set-mode <auto|light|dark>
+vibeke status    segments [--pane p]
 vibeke machine   list|add|connect|disconnect|remove|status|install
 vibeke integration list|install <harness>|uninstall <harness>|doctor
 vibeke plugin    list|install|link|unlink|enable|disable|remove|uninstall|config-dir|action|log|logs|pane

@@ -592,6 +592,7 @@ fn is_free_table(path: &str) -> bool {
     matches!(
         path,
         "theme.custom"
+            | "layouts"
             | "theme.pane"
             | "terminal.env"
             | "terminal.host_overrides"

@@ -176,6 +176,10 @@ pub enum ServerFrame {
         body: String,
         pane: Option<String>,
         urgency: String,
+        /// Channels the server already delivered to (`native`): a client then skips its own
+        /// host-terminal OSC forward (08 §7.1). Appended (postcard).
+        #[serde(default)]
+        delivered: Vec<String>,
     },
     Bell {
         pane: String,

@@ -237,6 +237,12 @@ impl Session {
                 body: n.body,
                 pane: n.pane,
                 urgency: n.urgency,
+                delivered: n
+                    .channels
+                    .iter()
+                    .filter(|c| *c == "native")
+                    .cloned()
+                    .collect(),
             },
             UiEvent::Goodbye(reason) => {
                 asyncio::write_frame(wr, &ServerFrame::Goodbye { reason }).await?;

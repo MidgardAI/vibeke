@@ -72,7 +72,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "create",
         "workspace.create",
         &["cwd"],
-        "--cwd DIR [--name N] [--focus]",
+        "--cwd DIR [--name N] [--focus] [--layout NAME] [--group G]",
     ),
     (
         "workspace",
@@ -159,7 +159,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "read",
         "pane.read",
         &["pane"],
-        "[--source visible|recent|recent_unwrapped|scrollback] [--lines n]",
+        "[--source visible|recent|recent_unwrapped|scrollback|archive] [--lines n] [--from N --to M (archive: absolute lines)]",
     ),
     (
         "pane",
@@ -310,13 +310,19 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &[],
         "--types t [--timeout-ms n]",
     ),
-    ("search", "query", "search.query", &["q"], "[--pane p]"),
+    (
+        "search",
+        "query",
+        "search.query",
+        &["q"],
+        "[--pane p] [--workspace w] [--since 2h|epoch-ms] [--limit n] [--context n] [--regex] [--sources live,archive]  (also: vibeke search <q>)",
+    ),
     (
         "task",
         "new",
         "task.create",
         &["title"],
-        "[--repo .] [--agent claude:name] [--base ref] [--root sibling] [--yolo] [--isolate host|sandbox|container] [--network none|harness-apis|package-registries|dev|open]",
+        "[--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree|jj_workspace|none|auto] [--yolo] [--isolate host|sandbox|container] [--network none|harness-apis|package-registries|dev|open]",
     ),
     ("task", "list", "task.list", &[], ""),
     (
@@ -442,7 +448,130 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "[--force] (async)",
     ),
     ("worktree", "repo-root", "worktree.repo_root", &["cwd"], ""),
-    ("layout", "export", "layout.export", &["tab"], ""),
+    (
+        "layout",
+        "export",
+        "layout.export",
+        &["tab"],
+        "[tab] | --workspace w  [--format toml|json]",
+    ),
+    (
+        "layout",
+        "apply",
+        "layout.apply",
+        &["name"],
+        "<name from [layouts.*] | file.toml|.json> | --file f | --doc text  [--workspace w | --cwd d --ws-name n] [--focus]",
+    ),
+    (
+        "layout",
+        "list",
+        "layout.list",
+        &[],
+        "named layouts in config",
+    ),
+    ("layout", "get", "layout.get", &["name"], ""),
+    ("group", "list", "group.list", &[], "workspace groups"),
+    ("group", "create", "group.create", &["name"], "[--parent g]"),
+    ("group", "rename", "group.rename", &["group", "name"], ""),
+    (
+        "group",
+        "move",
+        "group.move",
+        &["group"],
+        "[--parent g] [--index n | --delta n]",
+    ),
+    (
+        "group",
+        "delete",
+        "group.delete",
+        &["group"],
+        "members move to the parent",
+    ),
+    (
+        "group",
+        "collapse",
+        "group.collapse",
+        &["group"],
+        "[--collapsed true|false]",
+    ),
+    (
+        "group",
+        "add",
+        "group.add",
+        &["group", "workspace"],
+        "[--index n]",
+    ),
+    ("group", "remove", "group.remove", &["workspace"], ""),
+    (
+        "workspace",
+        "move",
+        "workspace.move",
+        &["workspace"],
+        "[--group g | --group ''] [--delta n]",
+    ),
+    (
+        "pane",
+        "float",
+        "pane.float",
+        &["pane"],
+        "[pane] float/move it | --tab t [--command c] [--cwd d]  [--rect '{\"x\":15,\"y\":15,\"w\":70,\"h\":70}'] [--focus]",
+    ),
+    (
+        "pane",
+        "embed",
+        "pane.embed",
+        &["pane"],
+        "[--target p] [--direction right|down|left|up]",
+    ),
+    (
+        "tab",
+        "floats",
+        "tab.floats",
+        &["tab"],
+        "show/hide floats [--visible true|false]",
+    ),
+    (
+        "theme",
+        "get",
+        "theme.get",
+        &[],
+        "effective light/dark theme",
+    ),
+    (
+        "theme",
+        "set-mode",
+        "theme.set_mode",
+        &["mode"],
+        "auto|light|dark (runtime, not persisted)",
+    ),
+    (
+        "client",
+        "appearance",
+        "client.appearance",
+        &[],
+        "--dark true|false (host terminal appearance)",
+    ),
+    (
+        "client",
+        "focus",
+        "client.focus",
+        &["pane"],
+        "[--url vibeke://focus?…] [--no-raise]  (also: vibeke focus <pane|url>)",
+    ),
+    (
+        "notification",
+        "config",
+        "notification.config",
+        &[],
+        "channels, native backend, rules",
+    ),
+    (
+        "status",
+        "segments",
+        "status.segments",
+        &[],
+        "[--pane p] [--client c] status-bar segment data",
+    ),
     ("blob", "put", "blob.put", &[], "--path file | --data-b64 …"),
     (
         "machine",
@@ -519,7 +648,8 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
 
 pub fn nouns() -> Vec<&'static str> {
     let mut v: Vec<&str> = COMMANDS.iter().map(|c| c.0).collect();
-    v.dedup();
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|n| seen.insert(*n));
     v
 }
 
@@ -645,6 +775,10 @@ fn adjust(method: &str, p: &mut Value) {
         "text",
         "machine",
         "label",
+        "q",
+        "group",
+        "mode",
+        "layout",
     ] {
         if let Some(v) = o.get_mut(k)
             && (v.is_number() || v.is_boolean())
@@ -725,6 +859,16 @@ fn adjust(method: &str, p: &mut Value) {
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or(c);
                 o.insert("cwd".into(), json!(abs));
+            } else if method == "workspace.create" && o.contains_key("layout") {
+                // A layout's own cwd wins; the caller's cwd is only the fallback.
+                o.insert(
+                    "default_cwd".into(),
+                    json!(
+                        std::env::current_dir()
+                            .map(|d| d.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    ),
+                );
             } else if method == "workspace.create" {
                 o.insert(
                     "cwd".into(),
@@ -734,6 +878,54 @@ fn adjust(method: &str, p: &mut Value) {
                             .unwrap_or_default()
                     ),
                 );
+            }
+        }
+        // `layout apply <file.toml>` / `--file f`: the server parses the text (07 §2.14).
+        "layout.apply" => {
+            let file = o
+                .remove("file")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .or_else(|| {
+                    o.get("name")
+                        .and_then(Value::as_str)
+                        .filter(|n| {
+                            (n.ends_with(".toml") || n.ends_with(".json") || n.contains('/'))
+                                && std::path::Path::new(n).is_file()
+                        })
+                        .map(str::to_string)
+                });
+            if let Some(f) = file {
+                o.remove("name");
+                match std::fs::read_to_string(&f) {
+                    Ok(text) => {
+                        o.insert("doc".into(), json!(text));
+                    }
+                    Err(e) => {
+                        o.insert("doc".into(), json!(format!("# unreadable {f}: {e}")));
+                    }
+                }
+            }
+            if let Some(Value::String(c)) = o.get("cwd").cloned() {
+                let abs = std::fs::canonicalize(&c)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or(c);
+                o.insert("cwd".into(), json!(abs));
+            }
+            o.insert(
+                "default_cwd".into(),
+                json!(
+                    std::env::current_dir()
+                        .map(|d| d.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
+            );
+        }
+        "client.focus" => {
+            if let Some(Value::String(t)) = o.get("pane").cloned()
+                && t.starts_with("vibeke://")
+            {
+                o.remove("pane");
+                o.insert("url".into(), json!(t));
             }
         }
         "blob.put" => {
