@@ -45,6 +45,8 @@ mod data;
 mod ext;
 mod forget;
 mod gather_ext;
+#[cfg(test)]
+mod process_tests;
 mod stale;
 
 pub use forget::forget_scope;

@@ -89,12 +89,15 @@ fn path_safe(model: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
 }
 
+/// URL, headers and JSON body of one request.
+type Built = (String, Vec<(&'static str, String)>, Value);
+
 fn request(
     r: &Resolved,
     key: Option<&str>,
     p: &Payload,
     mode: &Mode,
-) -> Result<(String, Vec<(&'static str, String)>, Value), AssistError> {
+) -> Result<Built, AssistError> {
     let base = r.endpoint.trim_end_matches('/');
     let schema = mode.native_schema.as_ref();
     Ok(match r.connection.adapter {

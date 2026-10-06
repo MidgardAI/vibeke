@@ -87,9 +87,12 @@ pub fn start(server: &Arc<Server>) {
     ensure(server);
 }
 
+/// Workspace ids with an activity flag, and live (run, workspace) pairs.
+type Raw = (Vec<(String, bool)>, Vec<(String, String)>);
+
 fn collect(server: &Server) -> (Vec<WorkspaceView>, Vec<(String, String)>) {
     // (workspace ids with an activity flag, live (run, workspace) pairs)
-    let (ws, runs): (Vec<(String, bool)>, Vec<(String, String)>) = server.with_core(|c| {
+    let (ws, runs): Raw = server.with_core(|c| {
         let mut ws = vec![];
         for w in &c.model.workspaces {
             let panes: Vec<&str> = c

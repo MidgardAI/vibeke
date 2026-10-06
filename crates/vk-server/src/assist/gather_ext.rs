@@ -261,7 +261,7 @@ pub(super) async fn gather(
 
 /// Navigation candidates of the target's workspace (only that workspace: its consent was
 /// checked).
-fn candidates(server: &Arc<Server>, t: &Target) -> Vec<Candidate> {
+pub(super) fn candidates(server: &Arc<Server>, t: &Target) -> Vec<Candidate> {
     let (runs, tasks, inters, panes) = server.with_core(|c| {
         let panes: Vec<Pane> = c
             .model
