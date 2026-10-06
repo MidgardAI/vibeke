@@ -16,6 +16,7 @@ vk-redact = { workspace = true }
 vk-config = { workspace = true }
 vk-agents = { workspace = true }
 vk-preview = { workspace = true }
+vk-browser = { workspace = true }
 vk-remote = { workspace = true }
 tokio.workspace = true
 serde.workspace = true

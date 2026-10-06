@@ -2881,7 +2881,9 @@ dependencies = [
  "image",
  "libc",
  "serde_json",
+ "sha2",
  "tempfile",
+ "tokio",
  "vk-proto",
  "vk-term",
 ]
@@ -3100,6 +3102,7 @@ dependencies = [
  "tracing",
  "ulid",
  "vk-agents",
+ "vk-browser",
  "vk-config",
  "vk-hold",
  "vk-preview",
