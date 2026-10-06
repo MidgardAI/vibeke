@@ -29,13 +29,15 @@ case "$cmd" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --interactive|--tty) shift;;
-        --workdir|--user|--env) shift 2;;
+        --workdir) wd="$2"; shift 2;;
+        --user|--env) shift 2;;
         *) break;;
       esac
     done
     shift
     if [ "$1" = git ]; then exec git "$2" {b}; fi
     if [ "$1" = /bin/sh ] && [ "$2" = -c ]; then
+      if [ "$wd" = /workspace ]; then cd {b} 2>/dev/null || true; fi
       s=$(printf '%s' "$3" | sed "s#/workspace#{b}#g")
       exec /bin/sh -c "$s"
     fi
@@ -627,6 +629,99 @@ async fn devcontainer_configures_the_box_and_waits_for_trust() {
         "postCreateCommand ran in the box"
     );
     teardown(&e.server, task2);
+}
+
+/// `task.setup` on a container task reruns `.vibeke/setup.sh` through the container runner:
+/// the script is `exec`ed into the box and writes inside the box's workspace, never in the host
+/// worktree or the host checkout.
+#[tokio::test]
+async fn container_task_setup_rerun_runs_in_the_box() {
+    let e = Env::new();
+    let task = "ctask01JABCDEFGHJKMNPQRS7";
+    std::fs::create_dir_all(e.checkout.join(".vibeke")).unwrap();
+    std::fs::write(
+        e.checkout.join(".vibeke/setup.sh"),
+        "pwd > setup-ran\necho run >> setup-count\n",
+    )
+    .unwrap();
+    git(&e.checkout, &["add", "-A"]);
+    git(&e.checkout, &["commit", "-q", "-m", "setup"]);
+    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "policy.trust", "params": {"path": e.checkout}}).to_string();
+    crate::api::handle_line(&e.server, &e.user_ctx(), &line).await;
+    let wt = worktree(&e, "c7");
+    let boxdir = sbx_root(task).join("workspace");
+    let fake = fake_runtime(&e.root, &boxdir);
+    e.server.sandbox.set_container_runtime(fake.cli.clone());
+    e.task_with_pane(task, container_iso());
+    prepare_box(
+        &e.server,
+        task,
+        Some(task),
+        &wt,
+        container_req(NetworkProfile::None),
+    )
+    .await
+    .unwrap();
+    let count = || std::fs::read_to_string(boxdir.join("setup-count")).unwrap_or_default();
+    for _ in 0..200 {
+        if count().lines().count() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        count().lines().count(),
+        1,
+        "create-time setup ran in the box"
+    );
+
+    let line = json!({"jsonrpc": "2.0", "id": 2, "method": "task.setup", "params": {"task": task}})
+        .to_string();
+    let r: Value =
+        serde_json::from_str(&crate::api::handle_line(&e.server, &e.user_ctx(), &line).await)
+            .unwrap();
+    assert_eq!(r["result"]["in_container"], true, "{r}");
+    assert_eq!(r["result"]["started"], true, "{r}");
+    for _ in 0..200 {
+        if count().lines().count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(count().lines().count(), 2, "rerun went through the box");
+    // The script ran in the box's workspace (`/workspace`), not in a host checkout.
+    let pwd = std::fs::read_to_string(boxdir.join("setup-ran")).unwrap();
+    assert_eq!(
+        Path::new(pwd.trim()).canonicalize().unwrap(),
+        boxdir.canonicalize().unwrap()
+    );
+    assert!(
+        !wt.join("setup-ran").exists(),
+        "nothing ran in the host worktree"
+    );
+    assert!(
+        !e.checkout.join("setup-ran").exists(),
+        "nothing ran in the host checkout"
+    );
+    assert!(
+        !wt.join(".vibeke/setup.log").exists(),
+        "the host setup runner was not used"
+    );
+    let execs = log_of(&fake)
+        .lines()
+        .filter(|l| l.starts_with("exec") && l.contains("sh .vibeke/setup.sh"))
+        .count();
+    assert_eq!(execs, 2, "both runs were container execs");
+    teardown(&e.server, task);
+
+    // No box: refused, never a host fallback.
+    let line = json!({"jsonrpc": "2.0", "id": 3, "method": "task.setup", "params": {"task": task}})
+        .to_string();
+    let r: Value =
+        serde_json::from_str(&crate::api::handle_line(&e.server, &e.user_ctx(), &line).await)
+            .unwrap();
+    assert!(r["error"].is_object(), "{r}");
+    assert!(!e.checkout.join("setup-ran").exists());
 }
 
 #[tokio::test]

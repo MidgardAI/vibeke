@@ -96,8 +96,12 @@ impl Resolved {
 /// Everything the setup step will do for one task.
 #[derive(Debug, Clone)]
 pub(crate) struct SetupPlan {
-    /// Rendered shell commands, in order: install, then `setup.run`.
+    /// Rendered shell commands, in order: install, then `setup.run`. Template variables
+    /// are references to `template_env` (`"$VIBEKE_BRANCH"`), never pasted values.
     pub commands: Vec<PlannedCommand>,
+    /// Values of the template variables, exported to the setup commands (last, so `[env]`
+    /// cannot redefine them).
+    pub template_env: Vec<(String, String)>,
     /// Repo-relative script, if it exists in the checkout.
     pub script: Option<String>,
     /// Does any step run code the user has not vouched for?
@@ -166,7 +170,8 @@ pub(crate) fn plan_setup(
         .filter(|c| c.source != "setup.script")
         .collect();
     let all_user_owned = raw.iter().all(|c| resolved.user_owns(c.source, &c.command));
-    // Commands are rendered with shell-quoted values (a branch name is not shell code).
+    // Commands reference `$VIBEKE_BRANCH` & co. instead of containing the values (a branch
+    // name is not shell code); `template_env` carries the values.
     let commands: Vec<PlannedCommand> = raw
         .iter()
         .map(|c| PlannedCommand {
@@ -183,10 +188,20 @@ pub(crate) fn plan_setup(
     } else if !trusted {
         env_file.env.clear();
     }
+    // `[ports] env`: an untrusted repo may only set `PORT`/`*_PORT` (a name like `ZDOTDIR`
+    // would point the pane's shell at a repo directory); shell and loader variables are
+    // never settable. Names the user declared in their own override pass.
+    let declared = resolved
+        .user
+        .as_ref()
+        .map(|u| u.ports.env.clone())
+        .unwrap_or_default();
+    env_file.ports.env = vk_tasks::filter_port_env(&env_file.ports.env, &declared, trusted);
     let mut env = vec![("VIBEKE_TASK_SLUG".to_string(), vars.slug.clone())];
     env.extend(vars.env_pairs(&env_file));
     SetupPlan {
         commands,
+        template_env: vars.shell_env(),
         script,
         needs_trust,
         timeout: file.setup_timeout().unwrap_or(DEFAULT_SETUP_TIMEOUT),
@@ -286,16 +301,7 @@ pub(crate) fn launch_setup(
         )
         .ok()
         .map(|p| p.id);
-    let opts = vk_tasks::SetupOptions {
-        worktree: checkout.to_path_buf(),
-        script: plan.script.clone().map(PathBuf::from).unwrap_or_default(),
-        commands: plan.commands.iter().map(|c| c.command.clone()).collect(),
-        task_id: task_id.to_string(),
-        lease,
-        extra_env: plan.env.clone(),
-        log_path: log,
-        timeout: Some(plan.timeout),
-    };
+    let opts = setup_options(plan, task_id, checkout, lease, log);
     let (tx_done, rx_done) = tokio::sync::oneshot::channel();
     let srv = server.clone();
     let id = task_id.to_string();
@@ -353,6 +359,27 @@ pub(crate) fn launch_setup(
     }
 }
 
+/// What the host setup runner gets for a plan: the plan's env, then the template variables
+/// its commands reference (last, so `[env]` cannot redefine them).
+fn setup_options(
+    plan: &SetupPlan,
+    task_id: &str,
+    checkout: &Path,
+    lease: Option<vk_tasks::Lease>,
+    log: PathBuf,
+) -> vk_tasks::SetupOptions {
+    vk_tasks::SetupOptions {
+        worktree: checkout.to_path_buf(),
+        script: plan.script.clone().map(PathBuf::from).unwrap_or_default(),
+        commands: plan.commands.iter().map(|c| c.command.clone()).collect(),
+        task_id: task_id.to_string(),
+        lease,
+        extra_env: plan.env.iter().chain(&plan.template_env).cloned().collect(),
+        log_path: log,
+        timeout: Some(plan.timeout),
+    }
+}
+
 fn set_setup(server: &Server, task_id: &str, status: &str, event: &str, data: Value) {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
@@ -405,6 +432,11 @@ fn owned_task(server: &Server, t: &str) -> Result<Task, vk_proto::rpc::RpcError>
 pub(crate) async fn task_setup(server: &Arc<Server>, p: &Value) -> R {
     let t = req(p, "task")?;
     let task = owned_task(server, t)?;
+    // A container task's setup runs in its box, through the container runner; never on the
+    // host (where a trusted container script would get host files and network).
+    if task.isolation.level == vk_proto::model::IsolationLevel::Container {
+        return container_setup(server, &task).await;
+    }
     let wt = task
         .worktree_path
         .clone()
@@ -464,6 +496,34 @@ pub(crate) async fn task_setup(server: &Arc<Server>, p: &Value) -> R {
         "commands": commands_json(&plan),
         "needs_trust": plan.needs_trust && !trusted,
     }))
+}
+
+/// `task.setup` for a container task: refuse unless its box exists and is a container box.
+async fn container_setup(server: &Arc<Server>, task: &Task) -> R {
+    let tb = server.sandbox.get(&task.id).ok_or_else(|| {
+        err(
+            ErrorKind::Conflict,
+            "the task's container box is gone; setup is not run on the host (start the box with `vibeke sandbox start`)",
+        )
+    })?;
+    if !matches!(tb.runner, crate::sandbox::BoxRunner::Container(_)) {
+        return Err(err(
+            ErrorKind::Conflict,
+            "the task is container-isolated but its box is not a container; refusing to run setup",
+        ));
+    }
+    let srv = server.clone();
+    let mut out = tokio::task::spawn_blocking(move || {
+        let crate::sandbox::BoxRunner::Container(c) = &tb.runner else {
+            unreachable!()
+        };
+        crate::sandbox::container::rerun_setup(&srv, &tb, c)
+    })
+    .await
+    .map_err(internal)??;
+    out["task"] = json!(task.id);
+    out["in_container"] = json!(true);
+    Ok(out)
 }
 
 fn pr_cache() -> &'static vk_tasks::PrCache {
@@ -697,4 +757,153 @@ pub fn port_health() -> Result<vk_tasks::PoolHealth, String> {
     vk_tasks::PortLeases::new(crate::paths::state_root(), pool)
         .health()
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lease(start: u16) -> vk_tasks::Lease {
+        vk_tasks::Lease {
+            start,
+            end: start + 9,
+            task_id: "t1".into(),
+            session: "s".into(),
+            owner_pid: None,
+            created_at: 0,
+        }
+    }
+
+    fn repo_with(task_toml: &str) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".vibeke")).unwrap();
+        std::fs::write(d.path().join(".vibeke/task.toml"), task_toml).unwrap();
+        d
+    }
+
+    fn plan_for(
+        dir: &Path,
+        branch: &str,
+        cfg: &vk_config::Tasks,
+        trusted: bool,
+    ) -> (SetupPlan, vk_tasks::Lease) {
+        let resolved = resolve(dir, dir, cfg);
+        let l = lease(20000);
+        let vars = vars_for("t1", "fix", Some(branch), Some(&l), dir, dir);
+        let plan = plan_setup(&resolved, None, &vars, dir, None, "", trusted);
+        (plan, l)
+    }
+
+    fn user_override(cfg: &mut vk_config::Tasks, dir: &Path, v: Value) {
+        cfg.repos.insert(
+            dir.to_string_lossy().into_owned(),
+            serde_json::from_value(v).unwrap(),
+        );
+    }
+
+    /// Finding: an untrusted `[ports] env` naming `ZDOTDIR` pointed the pane's zsh at a repo
+    /// directory (`20000/.zshenv`), running repo code at shell startup before trust.
+    #[test]
+    fn untrusted_ports_env_cannot_hijack_shell_startup() {
+        let repo = repo_with(
+            "[ports]\nenv = {ZDOTDIR = 0, BASH_ENV = 1, ENV = 1, API_PORT = 2, PATH = 3}\n",
+        );
+        let dir = repo.path();
+        let sentinel = dir.join("SENTINEL");
+        let touch = format!("touch '{}'\n", sentinel.display());
+        std::fs::create_dir_all(dir.join("20000")).unwrap();
+        std::fs::write(dir.join("20000/.zshenv"), &touch).unwrap();
+        std::fs::write(dir.join("20001"), &touch).unwrap();
+        for trusted in [false, true] {
+            let (plan, _) = plan_for(dir, "main", &vk_config::Tasks::default(), trusted);
+            let names: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
+            assert!(names.contains(&"API_PORT"), "{names:?}");
+            for bad in ["ZDOTDIR", "BASH_ENV", "ENV", "PATH"] {
+                assert!(!names.contains(&bad), "trusted={trusted}: {names:?}");
+            }
+            // A shell started with exactly this env never runs the repo file.
+            for sh in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+                if !Path::new(sh).exists() {
+                    continue;
+                }
+                let _ = std::process::Command::new(sh)
+                    .args(["-c", "true"])
+                    .current_dir(dir)
+                    .env_remove("ZDOTDIR")
+                    .env_remove("BASH_ENV")
+                    .env_remove("ENV")
+                    .envs(plan.env.iter().cloned())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                assert!(!sentinel.exists(), "{sh} ran repo startup code");
+            }
+        }
+        // The probe is real: exporting the old mapping does run the file.
+        if Path::new("/bin/zsh").exists() {
+            let _ = std::process::Command::new("/bin/zsh")
+                .args(["-c", "true"])
+                .current_dir(dir)
+                .env("ZDOTDIR", "20000")
+                .status();
+            assert!(sentinel.exists(), "probe should detect ZDOTDIR startup");
+        }
+        // A name the user declared in their own override passes; a denied one never does.
+        let mut cfg = vk_config::Tasks::default();
+        user_override(
+            &mut cfg,
+            dir,
+            json!({"ports": {"env": {"DEV_SERVER": 3, "ZDOTDIR": 0}}}),
+        );
+        let (plan, _) = plan_for(dir, "main", &cfg, false);
+        let names: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(names.contains(&"DEV_SERVER"), "{names:?}");
+        assert!(!names.contains(&"ZDOTDIR"), "{names:?}");
+    }
+
+    /// Finding: `echo "{branch}"` with a branch like `feature/$(…)` executed the substitution.
+    /// Setup commands now reference `$VIBEKE_BRANCH`; run them through the real host runner.
+    #[test]
+    fn setup_commands_print_hostile_branch_names_literally() {
+        let branch = "feature/$(printf${IFS}P1_INJECTED)'$(touch pwned)'`touch pwned2`";
+        // `[env]` cannot redefine a template variable.
+        let repo = repo_with("[env]\nVIBEKE_BRANCH = \"$(touch pwned3)\"\n");
+        let dir = repo.path();
+        let mut cfg = vk_config::Tasks::default();
+        user_override(
+            &mut cfg,
+            dir,
+            json!({"setup": {"run": [
+                "printf '%s\\n' \"{branch}\" > out-double",
+                "printf '%s\\n' '{branch}' > out-single",
+                "printf '%s\\n' {branch} > out-bare",
+            ]}}),
+        );
+        let (plan, l) = plan_for(dir, branch, &cfg, true);
+        assert!(!plan.needs_trust);
+        assert!(
+            plan.commands
+                .iter()
+                .all(|c| !c.command.contains("P1_INJECTED"))
+        );
+        let opts = setup_options(&plan, "t1", dir, Some(l), dir.join("setup.log"));
+        let out = vk_tasks::run_setup(&opts, &vk_tasks::CancelToken::default()).unwrap();
+        assert!(
+            matches!(out.status, vk_tasks::SetupStatus::Succeeded),
+            "{:?}: {}",
+            out.status,
+            std::fs::read_to_string(dir.join("setup.log")).unwrap_or_default()
+        );
+        for f in ["out-double", "out-single", "out-bare"] {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(f)).unwrap(),
+                format!("{branch}\n"),
+                "{f}"
+            );
+        }
+        for f in ["pwned", "pwned2", "pwned3"] {
+            assert!(!dir.join(f).exists(), "{f}");
+        }
+    }
 }
