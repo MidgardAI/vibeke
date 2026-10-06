@@ -662,6 +662,10 @@ fn test(server: &Server, ctx: &Ctx, p: &Value) -> R {
 /// `policy.trust {path, digest?, allow_policy_grants?}`: the repo trust of `run::policy_trust`,
 /// plus whether the repository's `allow` rules may apply (09 §4 rule 2), audited.
 fn trust(server: &Server, ctx: &Ctx, p: &Value) -> R {
+    // `check: true` only reports the repo file and its trust state; it records nothing.
+    if p.get("check").and_then(Value::as_bool) == Some(true) {
+        return crate::repo_config::check(server, p);
+    }
     let mut r = crate::run::policy_trust(server, p)?;
     let grants = p
         .get("allow_policy_grants")
