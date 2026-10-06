@@ -405,7 +405,7 @@ Pacing: server sends at most `min(client.max_fps, adaptive)` frames per pane; un
 
 Between server and `vibeke hold`. Kept deliberately small and **separately versioned** (`holder/1`). Lives in `vk-proto::holder`, no dependency on the rest of the server.
 
-Frame: `u32 LE length | u8 type | postcard payload`. Socket: `$RUNTIME/<session>/holders/<pane-ulid>.sock`, 0600, peer-UID checked.
+Frame: `u32 LE length | postcard(enum)` — the postcard enum discriminant is the type (Goal 01; the type numbers below document intent). Implemented additions: `Rejected{reason}`, `ReplayDone{offset, queued_queries}` (end of the replayed region; carries queries the holder queued while no server was attached), `CheckpointWanted{offset}`, `FgChanged`. Pipe mode is specified but not built yet (needed with headless adapters). Socket: `$RUNTIME/<session>/holders/<pane-ulid>.sock`, 0600, peer-UID checked.
 
 **Authentication.** At spawn the server generates a 32-byte **holder key** and passes it to the holder through the 0600 env file (not the child's env). `HelloOk` carries a random `nonce`; `Acquire` must carry `hmac = HMAC-SHA256(holder_key, nonce ‖ epoch)`. Every later frame from the server is accepted only on the authenticated, acquired connection. The key is persisted (0600) in `state.db` so a restarted server can re-acquire. Pane processes never see it (09 §3.1).
 

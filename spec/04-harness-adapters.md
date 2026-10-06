@@ -280,7 +280,9 @@ Injected into every pane (01 §3.3):
 VIBEKE=1  VIBEKE_SOCKET=…/vibeke.sock  VIBEKE_PANE_ID=w3:p5  VIBEKE_PANE_ULID=01J…
 VIBEKE_WORKSPACE_ID=w3  VIBEKE_TAB_ID=w3:t2  VIBEKE_SESSION=default  VIBEKE_BIN=/…/vibeke
 VIBEKE_TASK_ID=k7 (if any)  VIBEKE_PANE_TOKEN=<pane token, see 09 §3.2>
-# compat (compat.herdr_env = true, default true in M1–M4):
+# compat (compat.herdr_env = true, M5 with the compat socket). Goal 01: outer HERDR_* vars are
+# stripped from pane env instead — inherited from a Herdr pane they would make Herdr's own hooks
+# report into the live Herdr session:
 HERDR_ENV=1  HERDR_PANE_ID=w3:p5  HERDR_SOCKET_PATH=…/herdr-compat.sock  HERDR_WORKSPACE_ID=w3  HERDR_TAB_ID=w3:t2
 ```
 

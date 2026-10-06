@@ -28,6 +28,8 @@ Crates: `vk-remote` (machines, bootstrap, bridge, transports, forwarding) and `v
                   local SOCKS5 / proxy  ◄══════════ same link ══════════►  127.0.0.1:5173 (vite)
 ```
 
+**Implementation note (Goal 01):** the first build puts the per-machine SSH link in the local *client* (TUI/CLI) instead of the local server: the client owns one bridge mux per machine and opens raw channels to each remote server, over which the unchanged control and render protocols run. The unified sidebar, `--machine` forwarding (no local fallback) and reconnection work this way; a local-server proxy can be added when a non-terminal surface (Phase 2 gateway) needs it.
+
 ### A2. Saved machines
 
 ```

@@ -244,9 +244,11 @@ Vibeke additions beyond the base set are marked ✚.
 | goto | `prefix+g` | | focus_pane_left/down/up/right | `prefix+h/j/k/l` |
 | new_workspace | `prefix+shift+n` | | cycle_pane_next / previous | `prefix+tab` / `prefix+shift+tab` |
 | new_worktree | `prefix+shift+g` | | edit_scrollback | `prefix+e` |
-| rename_workspace | `prefix+shift+w` | | ✚ copy_mode | `prefix+[` |
+| rename_workspace | `prefix+shift+w` | | ✚ enter_copy_mode | `prefix+[` |
 | close_workspace | `prefix+shift+d` | | ✚ paste_buffer | `prefix+]` |
 | new_tab | `prefix+c` | | ✚ command_palette | `prefix+:` |
+| | | | ✚ inbox | `prefix+i` |
+| | | | ✚ next_attention_focus | `prefix+shift+a` |
 | rename_tab | `prefix+shift+t` | | ✚ search_scrollback | `prefix+/` |
 | previous_tab / next_tab | `prefix+p` / `prefix+n` | | ✚ next_attention | `prefix+a` |
 | switch_tab | `prefix+1..9` | | ✚ mark_unread | `prefix+u` |
@@ -255,6 +257,8 @@ Vibeke additions beyond the base set are marked ✚.
 | remote_image_paste | `ctrl+v` (remote only) | | ✚ sync_input | `prefix+shift+s` |
 | | | | ✚ new_task | `prefix+shift+k` |
 | | | | ✚ preview_list / open | `prefix+shift+o` |
+
+Action names: the copy-mode binding is `enter_copy_mode` and the picker is `workspace_picker`, because `[keys.copy_mode]`/`[keys.navigate]` are tables (Goal 01 deviation).
 
 \* `rename_pane` is bound to `prefix+shift+p`, so we default `pin_pane` to `prefix+alt+p` (§2.3 references to "pin" use this binding). `vibeke keys check` must report no conflicts on the shipped defaults (CI test).
 
