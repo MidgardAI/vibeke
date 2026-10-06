@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 291,
+  "method_count": 294,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -3137,7 +3137,35 @@
       "milestone": "M1",
       "spec": "`{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts",
       "params": "{q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false}",
-      "result": "{hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}"
+      "result": "{hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}], redacted?: bool}"
+    },
+    {
+      "name": "security.encryption.migrate",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "privacy"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{to?: sealed|plain|encrypted|decrypted = sealed, dry_run?: bool = false}",
+      "result": "{to: sealed|plain, dry_run: bool, files: int, changed: int, unchanged: int, failed: [string]}"
+    },
+    {
+      "name": "security.encryption.status",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "privacy"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{encrypt_state: bool, active: bool, key_id: string|null, keychain: string|null, readable: bool, error: string|null, files: {sealed: int, plain: int}, covers: [string], not_covered: [string], redact_scrollback_index: bool, note: string}"
     },
     {
       "name": "server.reload_config",
@@ -3264,6 +3292,20 @@
       "spec": "`{name, kill_panes?: false}` → `{}`",
       "params": "{name: string, kill_panes?: bool = false}",
       "result": "{session: object, stopped: bool}"
+    },
+    {
+      "name": "state.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "privacy"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string, scrollback_only?: bool = false}",
+      "result": "{scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, scrollback_only?: bool, also?: {blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, assistant: {purged: any, error?: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}"
     },
     {
       "name": "status.segments",

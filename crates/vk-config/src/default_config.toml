@@ -326,5 +326,13 @@ manifest_check = true
 # title = "edit"
 # pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
 
+# Secrets and privacy (09 §9.1-9.2; read by the server, shown here with their defaults):
+# [security]
+# encrypt_state           = false     # seal scrollback segments and session blobs with a key kept in the OS keychain
+# keychain                = "os"      # "os" (macOS Keychain or Secret Service via secret-tool) | "file:<path>" (0600 file; tests, headless hosts)
+# redact_scrollback_index = true      # the search index and search.query results hold redacted text; segments stay as shown
+# [security.redact]
+# patterns = []                       # extra regular expressions redacted in logs, events, bundles, index and assistant payloads
+
 # Sections owned by other components and documented with them:
 # [collision], [isolation], [preview], [security], [plugins]

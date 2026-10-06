@@ -4394,6 +4394,43 @@ SearchQueryResultHitsItem = TypedDict("SearchQueryResultHitsItem", {
 
 SearchQueryResult = TypedDict("SearchQueryResult", {
     "hits": List["SearchQueryResultHitsItem"],
+    "redacted": NotRequired[bool],
+})
+
+SecurityEncryptionMigrateParams = TypedDict("SecurityEncryptionMigrateParams", {
+    "to": NotRequired[Literal["sealed", "plain", "encrypted", "decrypted"]],
+    "dry_run": NotRequired[bool],
+})
+
+SecurityEncryptionMigrateResult = TypedDict("SecurityEncryptionMigrateResult", {
+    "to": Literal["sealed", "plain"],
+    "dry_run": bool,
+    "files": int,
+    "changed": int,
+    "unchanged": int,
+    "failed": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+SecurityEncryptionStatusParams: TypeAlias = Dict[str, Any]
+
+SecurityEncryptionStatusResultFiles = TypedDict("SecurityEncryptionStatusResultFiles", {
+    "sealed": int,
+    "plain": int,
+})
+
+SecurityEncryptionStatusResult = TypedDict("SecurityEncryptionStatusResult", {
+    "encrypt_state": bool,
+    "active": bool,
+    "key_id": Optional[str],
+    "keychain": Optional[str],
+    "readable": bool,
+    "error": Optional[str],
+    "files": "SecurityEncryptionStatusResultFiles",
+    "covers": List[str],
+    "not_covered": List[str],
+    "redact_scrollback_index": bool,
+    "note": str,
 })
 
 ServerReloadConfigParams: TypeAlias = Dict[str, Any]
@@ -4506,6 +4543,69 @@ SessionStopParams = TypedDict("SessionStopParams", {
 SessionStopResult = TypedDict("SessionStopResult", {
     "session": Dict[str, Any],
     "stopped": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+StateForgetParams = TypedDict("StateForgetParams", {
+    "pane": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "before": NotRequired[Union[str, int]],
+    "all": NotRequired[bool],
+    "dry_run": NotRequired[bool],
+    "plan": NotRequired[str],
+    "scrollback_only": NotRequired[bool],
+})
+
+StateForgetResultAlsoBlobs = TypedDict("StateForgetResultAlsoBlobs", {
+    "screenshots": int,
+    "files": int,
+})
+
+StateForgetResultAlsoUploads = TypedDict("StateForgetResultAlsoUploads", {
+    "removed": int,
+    "kept_shared": int,
+})
+
+StateForgetResultAlsoDrafts = TypedDict("StateForgetResultAlsoDrafts", {
+    "drafts": int,
+    "notes": int,
+    "failed": int,
+})
+
+StateForgetResultAlsoAssistant = TypedDict("StateForgetResultAlsoAssistant", {
+    "purged": Any,
+    "error": NotRequired[str],
+})
+
+StateForgetResultAlsoDesk = TypedDict("StateForgetResultAlsoDesk", {
+    "calls": int,
+    "rows": Optional[int],
+    "errors": NotRequired[List[str]],
+})
+
+StateForgetResultAlso = TypedDict("StateForgetResultAlso", {
+    "blobs": "StateForgetResultAlsoBlobs",
+    "uploads": "StateForgetResultAlsoUploads",
+    "drafts": "StateForgetResultAlsoDrafts",
+    "assistant": "StateForgetResultAlsoAssistant",
+    "desk": "StateForgetResultAlsoDesk",
+    "snapshots": int,
+    "events_tombstoned": int,
+})
+
+StateForgetResult = TypedDict("StateForgetResult", {
+    "scope": Any,
+    "pane_ids": Optional[List[str]],
+    "plan": Any,
+    "dry_run": bool,
+    "panes": NotRequired[int],
+    "segments_deleted": NotRequired[int],
+    "bytes_deleted": NotRequired[int],
+    "fts_rows_deleted": NotRequired[int],
+    "archive_panes_dropped": NotRequired[int],
+    "scrollback_only": NotRequired[bool],
+    "also": NotRequired["StateForgetResultAlso"],
+    "not_covered": NotRequired[List[str]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -5754,6 +5854,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "screenshot.open": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "scrollback.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "search.query": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "security.encryption.migrate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "security.encryption.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "server.reload_config": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -5763,6 +5865,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "state.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -7041,6 +7144,14 @@ ScrollbackForgottenData = TypedDict("ScrollbackForgottenData", {
     "panes_dropped": int,
 })
 
+SecurityEncryptionMigratedSubject: TypeAlias = Dict[str, Any]
+
+SecurityEncryptionMigratedData = TypedDict("SecurityEncryptionMigratedData", {
+    "to": Literal["sealed", "plain"],
+    "files": int,
+    "failed": int,
+})
+
 SecurityRateLimitedSubject = TypedDict("SecurityRateLimitedSubject", {
     "pane": str,
 })
@@ -7071,6 +7182,14 @@ SessionServerRestartedData = TypedDict("SessionServerRestartedData", {
     "recovered_panes": NotRequired[int],
     "pid": NotRequired[int],
     "prev_pid": NotRequired[int],
+})
+
+StateForgottenSubject = TypedDict("StateForgottenSubject", {
+    "scope": Any,
+})
+
+StateForgottenData = TypedDict("StateForgottenData", {
+    "counts": Dict[str, Any],
 })
 
 TabClosedSubject = TypedDict("TabClosedSubject", {
@@ -7423,6 +7542,10 @@ ThemeChangedSubject: TypeAlias = Dict[str, Any]
 
 ThemeChangedData: TypeAlias = Any
 
+TombstoneSubject: TypeAlias = Dict[str, Any]
+
+TombstoneData: TypeAlias = Dict[str, Any]
+
 WorkspaceClosedSubject = TypedDict("WorkspaceClosedSubject", {
     "workspace": str,
 })
@@ -7616,10 +7739,12 @@ EVENT_TYPES = (
     "screenshot.captured",
     "screenshot.deleted",
     "scrollback.forgotten",
+    "security.encryption_migrated",
     "security.rate_limited",
     "session.config_rejected",
     "session.config_reloaded",
     "session.server_restarted",
+    "state.forgotten",
     "tab.closed",
     "tab.created",
     "tab.layout_changed",
@@ -7655,6 +7780,7 @@ EVENT_TYPES = (
     "task.tracked",
     "task.updated",
     "theme.changed",
+    "tombstone",
     "workspace.closed",
     "workspace.created",
     "workspace.moved",

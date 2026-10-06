@@ -1796,7 +1796,11 @@ async fn run(
         let _ = save(&server, &r, Some("assistant.request_started"));
         mark_dispatched(&server, &id);
     }
-    let key = match vk_assist::config::resolve_credential(&prep.resolved.connection) {
+    // Keychain references use the backend `[security] keychain` selects (09 §9.1).
+    let key = match vk_assist::config::resolve_credential_with(
+        &prep.resolved.connection,
+        &crate::privacy::keychain(&server),
+    ) {
         Ok(k) => k,
         Err(e) => {
             finish(&server, &id, Err(e), Usage::default(), 0, None, &prep);

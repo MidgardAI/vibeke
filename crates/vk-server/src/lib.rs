@@ -59,6 +59,9 @@ pub mod pane_render;
 pub mod sync_input;
 pub mod tab_renumber;
 pub mod task_lifecycle;
+// Lane 3E: encryption at rest, index redaction, forget coverage (09 §9).
+pub mod forget_scope;
+pub mod privacy;
 
 #[cfg(test)]
 mod scope_catalog_tests;
@@ -184,6 +187,8 @@ pub struct Server {
     pub housekeeping_runs: AtomicU64,
     /// Audit log, token revocation and elevation, integration tamper state (09).
     pub security: security::State,
+    /// Encryption at rest and redaction settings (09 §9.1–9.2).
+    pub privacy: privacy::State,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -239,7 +244,7 @@ impl Server {
         let (model_rev, _) = watch::channel(1);
         let (events, _) = broadcast::channel(4096);
         let (ui, _) = broadcast::channel(256);
-        Ok(Arc::new(Server {
+        let server = Arc::new(Server {
             archive: Mutex::new(Archive::new(&paths.scrollback())),
             paths,
             opts,
@@ -278,7 +283,11 @@ impl Server {
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
             security: Default::default(),
-        }))
+            privacy: Default::default(),
+        });
+        // Unlock the state key before anything is archived (09 §9.1).
+        privacy::init(&server);
+        Ok(server)
     }
 
     pub fn with_core<T>(&self, f: impl FnOnce(&mut Core) -> T) -> T {
@@ -1549,6 +1558,7 @@ impl Server {
         }
         if !rows.is_empty() {
             let c = self.core.lock().unwrap();
+            let rows = crate::privacy::index_rows(self, rows);
             let _ = c.store.fts_insert(&rows);
             // Remember each archived pane's workspace for scoped archive search (09 §5.1).
             let mut seen: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();

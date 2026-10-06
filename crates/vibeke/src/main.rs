@@ -11,6 +11,7 @@ mod debug;
 mod doctor;
 mod idle;
 mod integration;
+mod keychain_cmd;
 mod remote;
 mod setup;
 
@@ -316,6 +317,9 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("compat") => vk_cli::compat::compat_cmd(&g, &args[1..]).await,
         Some("integration") => commands::integration(&g, &args[1..]).await,
         Some("doctor") => commands::doctor(&g, &args[1..]).await,
+        Some("security") if args.get(1).map(String::as_str) == Some("keychain") => {
+            keychain_cmd::run(&args[2..])
+        }
         Some("forget") => {
             let params = match vk_cli::build_params(&[], &args[1..]) {
                 Ok(p) => p,

@@ -119,7 +119,8 @@ pub struct Credential {
     pub env: Option<String>,
     /// A key file the user created for Vibeke (0600, owned by the user).
     pub file: Option<String>,
-    /// OS keychain item. Accepted in config, not implemented yet (reported as unsupported).
+    /// OS keychain item: `account` (service `vibeke`) or `service/account`, read through the
+    /// backend `[security] keychain` selects (09 §9.1).
     pub keychain: Option<String>,
 }
 
@@ -371,9 +372,40 @@ fn forbidden(path: &Path) -> bool {
     })
 }
 
-/// Resolve the API key for a connection. `Ok(None)` only for adapters without credentials
-/// (local Ollama) and no credential configured.
+/// Resolve the API key for a connection with the OS keychain backend. `Ok(None)` only for
+/// adapters without credentials (local Ollama) and no credential configured.
 pub fn resolve_credential(c: &Connection) -> Result<Option<String>> {
+    resolve_credential_with(c, &vk_store::keychain::Keychain::Os)
+}
+
+/// Read a keychain credential reference. Messages never include the reference or the value.
+fn keychain_credential(r: &str, keychain: &vk_store::keychain::Keychain) -> Result<String> {
+    use vk_store::keychain::{KeychainError, parse_ref};
+    let (service, account) = parse_ref(r).map_err(|_| {
+        nc("keychain credential: use `account` or `service/account` (letters, digits, -_.:@)")
+    })?;
+    match keychain.get(&service, &account) {
+        Ok(Some(v)) if !v.trim().is_empty() => Ok(v.trim().to_string()),
+        Ok(_) => Err(AssistError::new(
+            Category::AuthenticationFailed,
+            "the configured keychain item does not exist or is empty",
+        )),
+        Err(KeychainError::Unsupported(_)) => Err(AssistError::new(
+            Category::UnsupportedCapability,
+            "no OS keychain is available on this machine; use env or file, or [security] keychain = \"file:<path>\"",
+        )),
+        Err(_) => Err(AssistError::new(
+            Category::AuthenticationFailed,
+            "the keychain refused to return the credential (locked or access denied)",
+        )),
+    }
+}
+
+/// [`resolve_credential`] with an explicit keychain backend (`[security] keychain`).
+pub fn resolve_credential_with(
+    c: &Connection,
+    keychain: &vk_store::keychain::Keychain,
+) -> Result<Option<String>> {
     let Some(cred) = &c.credential else {
         if c.adapter.needs_credential() {
             return Err(nc(format!(
@@ -407,11 +439,8 @@ pub fn resolve_credential(c: &Connection) -> Result<Option<String>> {
         }
         return Ok(Some(v.to_string()));
     }
-    if cred.keychain.is_some() {
-        return Err(AssistError::new(
-            Category::UnsupportedCapability,
-            "keychain credentials are not implemented yet; use env or file",
-        ));
+    if let Some(r) = &cred.keychain {
+        return keychain_credential(r, keychain).map(Some);
     }
     let path = expand(cred.file.as_deref().unwrap_or_default());
     if forbidden(&path) {
@@ -642,6 +671,42 @@ mod tests {
             resolve_credential(&conn(&real)).unwrap().as_deref(),
             Some("sk-test-123")
         );
+    }
+
+    #[test]
+    fn keychain_credentials_resolve_through_the_configured_backend() {
+        use vk_store::keychain::Keychain;
+        let d = tempfile::tempdir().unwrap();
+        let kc = Keychain::File(d.path().join("kc.json"));
+        let c = |r: &str| Connection {
+            adapter: Adapter::Anthropic,
+            endpoint: None,
+            credential: Some(Credential {
+                keychain: Some(r.into()),
+                ..Default::default()
+            }),
+        };
+        // Missing item: an authentication failure that names neither the item nor a value.
+        let e = resolve_credential_with(&c("anthropic-SENTINEL"), &kc).unwrap_err();
+        assert_eq!(e.category, Category::AuthenticationFailed);
+        assert!(!e.message.contains("SENTINEL"));
+        kc.set("vibeke", "anthropic", "sk-ant-test-123").unwrap();
+        assert_eq!(
+            resolve_credential_with(&c("anthropic"), &kc)
+                .unwrap()
+                .as_deref(),
+            Some("sk-ant-test-123")
+        );
+        kc.set("team", "key", "k2").unwrap();
+        assert_eq!(
+            resolve_credential_with(&c("team/key"), &kc)
+                .unwrap()
+                .as_deref(),
+            Some("k2")
+        );
+        let e = resolve_credential_with(&c("bad name"), &kc).unwrap_err();
+        assert_eq!(e.category, Category::NotConfigured);
+        assert_eq!(credential_source(&c("team/key")), "keychain:team/key");
     }
 
     #[test]

@@ -8,8 +8,12 @@
 
 pub mod archive;
 pub mod conv;
+pub mod crypt;
+pub mod keychain;
 mod purge;
+mod tombstone;
 pub use purge::{PurgeRecovery, PurgeReport, RebuildReport};
+pub use tombstone::{EventScope, TombstoneReport};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};

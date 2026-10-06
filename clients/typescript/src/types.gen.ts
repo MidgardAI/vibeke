@@ -4079,6 +4079,41 @@ export type SearchQueryResult = {
     ts?: number;
     context?: unknown;
   }[];
+  redacted?: boolean;
+};
+
+export type SecurityEncryptionMigrateParams = {
+  to?: "sealed" | "plain" | "encrypted" | "decrypted";
+  dry_run?: boolean;
+};
+
+export type SecurityEncryptionMigrateResult = {
+  to: "sealed" | "plain";
+  dry_run: boolean;
+  files: number;
+  changed: number;
+  unchanged: number;
+  failed: string[];
+  cursor?: Cursor;
+};
+
+export type SecurityEncryptionStatusParams = Record<string, unknown>;
+
+export type SecurityEncryptionStatusResult = {
+  encrypt_state: boolean;
+  active: boolean;
+  key_id: string | null;
+  keychain: string | null;
+  readable: boolean;
+  error: string | null;
+  files: {
+    sealed: number;
+    plain: number;
+  };
+  covers: string[];
+  not_covered: string[];
+  redact_scrollback_index: boolean;
+  note: string;
 };
 
 export type ServerReloadConfigParams = Record<string, unknown>;
@@ -4187,6 +4222,57 @@ export type SessionStopParams = {
 export type SessionStopResult = {
   session: Record<string, unknown>;
   stopped: boolean;
+  cursor?: Cursor;
+};
+
+export type StateForgetParams = {
+  pane?: Target;
+  workspace?: Target;
+  before?: string | number;
+  all?: boolean;
+  dry_run?: boolean;
+  plan?: string;
+  scrollback_only?: boolean;
+};
+
+export type StateForgetResult = {
+  scope: unknown;
+  pane_ids: string[] | null;
+  plan: unknown;
+  dry_run: boolean;
+  panes?: number;
+  segments_deleted?: number;
+  bytes_deleted?: number;
+  fts_rows_deleted?: number;
+  archive_panes_dropped?: number;
+  scrollback_only?: boolean;
+  also?: {
+    blobs: {
+      screenshots: number;
+      files: number;
+    };
+    uploads: {
+      removed: number;
+      kept_shared: number;
+    };
+    drafts: {
+      drafts: number;
+      notes: number;
+      failed: number;
+    };
+    assistant: {
+      purged: unknown;
+      error?: string;
+    };
+    desk: {
+      calls: number;
+      rows: number | null;
+      errors?: string[];
+    };
+    snapshots: number;
+    events_tombstoned: number;
+  };
+  not_covered?: string[];
   cursor?: Cursor;
 };
 
@@ -5349,6 +5435,8 @@ export interface Methods {
   "screenshot.open": { params: ScreenshotOpenParams; result: ScreenshotOpenResult };
   "scrollback.forget": { params: ScrollbackForgetParams; result: ScrollbackForgetResult };
   "search.query": { params: SearchQueryParams; result: SearchQueryResult };
+  "security.encryption.migrate": { params: SecurityEncryptionMigrateParams; result: SecurityEncryptionMigrateResult };
+  "security.encryption.status": { params: SecurityEncryptionStatusParams; result: SecurityEncryptionStatusResult };
   "server.reload_config": { params: ServerReloadConfigParams; result: ServerReloadConfigResult };
   "server.restart": { params: ServerRestartParams; result: ServerRestartResult };
   "server.status": { params: ServerStatusParams; result: ServerStatusResult };
@@ -5358,6 +5446,7 @@ export interface Methods {
   "session.rename": { params: SessionRenameParams; result: SessionRenameResult };
   "session.snapshot": { params: SessionSnapshotParams; result: SessionSnapshotResult };
   "session.stop": { params: SessionStopParams; result: SessionStopResult };
+  "state.forget": { params: StateForgetParams; result: StateForgetResult };
   "status.segments": { params: StatusSegmentsParams; result: StatusSegmentsResult };
   "tab.close": { params: TabCloseParams; result: TabCloseResult };
   "tab.create": { params: TabCreateParams; result: TabCreateResult };
@@ -5646,6 +5735,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "screenshot.open": { mutating: false, scope: "pane", paneScope: "open" },
   "scrollback.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "search.query": { mutating: false, scope: "pane", paneScope: "open" },
+  "security.encryption.migrate": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "security.encryption.status": { mutating: false, scope: "full", paneScope: "forbidden" },
   "server.reload_config": { mutating: true, scope: "full", paneScope: "forbidden" },
   "server.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
   "server.status": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5655,6 +5746,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "session.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
   "session.snapshot": { mutating: false, scope: "pane", paneScope: "open" },
   "session.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "state.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "status.segments": { mutating: false, scope: "pane", paneScope: "open" },
   "tab.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "tab.create": { mutating: true, scope: "pane", paneScope: "open" },
@@ -6929,6 +7021,14 @@ export type ScrollbackForgottenData = {
   panes_dropped: number;
 };
 
+export type SecurityEncryptionMigratedSubject = Record<string, unknown>;
+
+export type SecurityEncryptionMigratedData = {
+  to: "sealed" | "plain";
+  files: number;
+  failed: number;
+};
+
 export type SecurityRateLimitedSubject = {
   pane: string;
 };
@@ -6959,6 +7059,14 @@ export type SessionServerRestartedData = {
   recovered_panes?: number;
   pid?: number;
   prev_pid?: number;
+};
+
+export type StateForgottenSubject = {
+  scope: unknown;
+};
+
+export type StateForgottenData = {
+  counts: Record<string, unknown>;
 };
 
 export type TabClosedSubject = {
@@ -7305,6 +7413,10 @@ export type ThemeChangedSubject = Record<string, unknown>;
 
 export type ThemeChangedData = unknown;
 
+export type TombstoneSubject = Record<string, unknown>;
+
+export type TombstoneData = Record<string, unknown>;
+
 export type WorkspaceClosedSubject = {
   workspace: string;
 };
@@ -7498,10 +7610,12 @@ export interface EventMap {
   "screenshot.captured": { subject: ScreenshotCapturedSubject; data: ScreenshotCapturedData };
   "screenshot.deleted": { subject: ScreenshotDeletedSubject; data: ScreenshotDeletedData };
   "scrollback.forgotten": { subject: ScrollbackForgottenSubject; data: ScrollbackForgottenData };
+  "security.encryption_migrated": { subject: SecurityEncryptionMigratedSubject; data: SecurityEncryptionMigratedData };
   "security.rate_limited": { subject: SecurityRateLimitedSubject; data: SecurityRateLimitedData };
   "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
   "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
+  "state.forgotten": { subject: StateForgottenSubject; data: StateForgottenData };
   "tab.closed": { subject: TabClosedSubject; data: TabClosedData };
   "tab.created": { subject: TabCreatedSubject; data: TabCreatedData };
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };
@@ -7537,6 +7651,7 @@ export interface EventMap {
   "task.tracked": { subject: TaskTrackedSubject; data: TaskTrackedData };
   "task.updated": { subject: TaskUpdatedSubject; data: TaskUpdatedData };
   "theme.changed": { subject: ThemeChangedSubject; data: ThemeChangedData };
+  "tombstone": { subject: TombstoneSubject; data: TombstoneData };
   "workspace.closed": { subject: WorkspaceClosedSubject; data: WorkspaceClosedData };
   "workspace.created": { subject: WorkspaceCreatedSubject; data: WorkspaceCreatedData };
   "workspace.moved": { subject: WorkspaceMovedSubject; data: WorkspaceMovedData };

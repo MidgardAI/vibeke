@@ -195,7 +195,9 @@ pub fn find(server: &Server, ctx: &Ctx, hash: &str) -> Option<Found> {
     }
     let refs = hits.len();
     let (path, mime, created_at_ms) = hits.into_iter().min_by_key(|h| h.2)?;
-    let size = std::fs::metadata(&path).ok()?.len();
+    // A sealed blob (09 §9.1) reports its plaintext size.
+    std::fs::metadata(&path).ok()?;
+    let size = crate::privacy::blob_len(&path);
     let mime = mime.unwrap_or_else(|| mime_for(&path).to_string());
     Some(Found {
         path,
@@ -234,7 +236,7 @@ fn blob_stat(server: &Server, ctx: &Ctx, p: &Value) -> R {
         "size": f.size,
         "created_at": f.created_at_ms,
         "refs": f.refs,
-        "path": f.path,
+        "path": crate::privacy::readable_path(server, &f.path),
     }))
 }
 
@@ -259,10 +261,17 @@ fn blob_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
         )
         .details(json!({"size": f.size, "max": MAX_GET})));
     }
-    let mut file = std::fs::File::open(&f.path).map_err(internal)?;
-    file.seek(SeekFrom::Start(offset)).map_err(internal)?;
-    let mut buf = Vec::with_capacity(length as usize);
-    file.take(length).read_to_end(&mut buf).map_err(internal)?;
+    let buf = if vk_store::crypt::file_is_sealed(&f.path) {
+        let all = crate::privacy::read_blob(&f.path).map_err(internal)?;
+        let start = (offset as usize).min(all.len());
+        all[start..(start + length as usize).min(all.len())].to_vec()
+    } else {
+        let mut file = std::fs::File::open(&f.path).map_err(internal)?;
+        file.seek(SeekFrom::Start(offset)).map_err(internal)?;
+        let mut buf = Vec::with_capacity(length as usize);
+        file.take(length).read_to_end(&mut buf).map_err(internal)?;
+        buf
+    };
     Ok(json!({
         "hash": hash,
         "mime": f.mime,

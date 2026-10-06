@@ -3416,6 +3416,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vk-redact",
+ "vk-store",
 ]
 
 [[package]]
@@ -3737,7 +3738,9 @@ dependencies = [
 name = "vk-store"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "blake3",
  "libc",
  "rand 0.9.5",
  "rusqlite",

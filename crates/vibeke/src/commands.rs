@@ -275,7 +275,8 @@ async fn run_server(g: &Global) -> i32 {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
-        .with_writer(std::io::stderr)
+        // server.log (stderr): every record goes through vk-redact (09 §9.2).
+        .with_writer(vk_server::privacy::log_writer)
         .try_init();
     let cfg = load_config();
     let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vibeke"));

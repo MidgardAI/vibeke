@@ -1512,6 +1512,21 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &[],
         "recompute the audit log's hash chain (also part of `vibeke doctor`)",
     ),
+    // Lane 3E (09 §9.1): state encryption.
+    (
+        "security",
+        "status",
+        "security.encryption.status",
+        &[],
+        "state encryption (security.encrypt_state): key, keychain, sealed/plain file counts",
+    ),
+    (
+        "security",
+        "migrate",
+        "security.encryption.migrate",
+        &["to"],
+        "sealed|plain [--dry-run] — rewrite existing scrollback segments and blobs",
+    ),
 ];
 
 pub fn nouns() -> Vec<&'static str> {
@@ -2481,7 +2496,7 @@ where
     }
 }
 
-pub const FORGET_USAGE: &str = "vibeke forget --pane <p> | --workspace <w> | --before <time> | --all  [--yes] [--dry-run]\n  Deletes archived scrollback (segments, search index rows, archive metadata) for the scope.\n  Does not delete the event log, blobs, the session desk index, drafts, notes, or what a live pane still holds in memory.\n  --before takes a date, an RFC 3339 time or a duration back from now (7d, 12h); it is segment-granular.";
+pub const FORGET_USAGE: &str = "vibeke forget --pane <p> | --workspace <w> | --before <time> | --all  [--yes] [--dry-run] [--scrollback-only]\n  Deletes what Vibeke stored for the scope: archived scrollback (segments, search index rows, archive metadata),\n  screenshots and other session blobs, inbox uploads, drafts and workspace notes, assistant requests, session desk rows,\n  VT snapshots of closed panes; events in scope become tombstones (sequence numbers stay gapless).\n  Pane scope leaves per-workspace drafts, notes and assistant requests. Never touches what a live pane holds in memory,\n  task/review records, the audit log or native harness transcripts. --scrollback-only deletes only the archive.\n  --before takes a date, an RFC 3339 time or a duration back from now (7d, 12h); it is segment-granular for scrollback.";
 
 /// `vibeke forget`: preview the scope with `scrollback.forget {dry_run}`, ask (or require
 /// `--yes` without a terminal), then delete. Idempotent.
@@ -2497,6 +2512,7 @@ where
     };
     let yes = flag(&mut params, &["yes", "y"]);
     let dry = flag(&mut params, &["dry_run"]);
+    let scrollback_only = flag(&mut params, &["scrollback_only"]);
     for k in ["pane", "workspace"] {
         if let Some(v) = params.get_mut(k)
             && v.is_number()
@@ -2522,7 +2538,10 @@ where
     }
     let mut plan_params = params.clone();
     plan_params["dry_run"] = json!(true);
-    let plan = match client.call("scrollback.forget", plan_params).await {
+    if scrollback_only {
+        plan_params["scrollback_only"] = json!(true);
+    }
+    let plan = match client.call("state.forget", plan_params).await {
         Ok(v) => v,
         Err(e) => {
             print_error(&e);
@@ -2530,8 +2549,11 @@ where
         }
     };
     let n = |k: &str| plan[k].as_u64().unwrap_or(0);
-    let empty =
-        n("segments_deleted") == 0 && n("fts_rows_deleted") == 0 && n("archive_panes_dropped") == 0;
+    let also = forget_also_summary(&plan["also"]);
+    let empty = n("segments_deleted") == 0
+        && n("fts_rows_deleted") == 0
+        && n("archive_panes_dropped") == 0
+        && also.is_none();
     let where_ = g.machine.as_deref().unwrap_or("this machine");
     eprintln!(
         "vibeke forget {} on {where_} {} {} segments ({} bytes) of {} panes, {} search rows and {} archive records.",
@@ -2543,6 +2565,9 @@ where
         n("fts_rows_deleted"),
         n("archive_panes_dropped"),
     );
+    if let Some(a) = &also {
+        eprintln!("Also: {a}.");
+    }
     if dry {
         if !g.quiet {
             println!(
@@ -2573,10 +2598,11 @@ where
     // Execute exactly the plan that was shown: its resolved scope (pane/workspace id, absolute
     // cutoff) and digest, never the original `@focused` or relative `--before` again. The
     // server refuses if the scope no longer resolves to that plan.
-    match client
-        .call("scrollback.forget", forget_confirmed_params(&plan))
-        .await
-    {
+    let mut confirmed = forget_confirmed_params(&plan);
+    if scrollback_only {
+        confirmed["scrollback_only"] = json!(true);
+    }
+    match client.call("state.forget", confirmed).await {
         Ok(v) => {
             if !g.quiet {
                 println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -2590,8 +2616,39 @@ where
     }
 }
 
-/// The confirmed `scrollback.forget` call for a dry run's result: its canonical `scope` plus
-/// its `plan` digest.
+/// One line for `state.forget`'s `also` counts, `None` when nothing else is in scope.
+fn forget_also_summary(also: &Value) -> Option<String> {
+    let n = |v: &Value| v.as_u64().unwrap_or(0);
+    let parts: Vec<String> = [
+        ("screenshots", n(&also["blobs"]["screenshots"])),
+        ("blob files", n(&also["blobs"]["files"])),
+        ("uploads", n(&also["uploads"]["removed"])),
+        ("drafts", n(&also["drafts"]["drafts"])),
+        ("notes", n(&also["drafts"]["notes"])),
+        ("assistant requests", n(&also["assistant"]["purged"])),
+        ("snapshots", n(&also["snapshots"])),
+        ("events (tombstoned)", n(&also["events_tombstoned"])),
+    ]
+    .iter()
+    .filter(|(_, c)| *c > 0)
+    .map(|(k, c)| format!("{c} {k}"))
+    .collect();
+    let desk = n(&also["desk"]["calls"]) > 0;
+    if parts.is_empty() && !desk {
+        return None;
+    }
+    let mut s = parts.join(", ");
+    if desk {
+        if !s.is_empty() {
+            s.push_str(", ");
+        }
+        s.push_str("matching session desk rows");
+    }
+    Some(s)
+}
+
+/// The confirmed `state.forget` call for a dry run's result: its canonical `scope` plus its
+/// `plan` digest.
 fn forget_confirmed_params(plan: &Value) -> Value {
     let mut p = match &plan["scope"] {
         Value::Object(o) => Value::Object(o.clone()),
@@ -2855,7 +2912,7 @@ mod tests {
                 let mut lines = BufReader::new(rd).lines();
                 while let Ok(Some(l)) = lines.next_line().await {
                     let req: Value = serde_json::from_str(&l).unwrap();
-                    let result = if req["method"] == "scrollback.forget" {
+                    let result = if req["method"] == "state.forget" {
                         rec.lock().unwrap().push(req["params"].clone());
                         json!({"scope": plan_scope, "pane_ids": null, "plan": "fp1-abc",
                             "dry_run": req["params"]["dry_run"] == true, "panes": 1,

@@ -190,6 +190,7 @@ const EXTRA: &[(&str, &[&str])] = &[
     ("mcp", &[]),
     ("doctor", &[]),
     ("forget", &[]),
+    ("security", &["keychain"]),
     ("update", &[]),
     (
         "server",

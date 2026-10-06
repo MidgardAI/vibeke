@@ -775,7 +775,7 @@ pub async fn probe_runtime(url: &str, preview_ports: &BTreeSet<u16>) -> RuntimeI
 
 // ---- reads & scope --------------------------------------------------------------------------
 
-fn load_all(server: &Server) -> Vec<ScreenshotMeta> {
+pub(crate) fn load_all(server: &Server) -> Vec<ScreenshotMeta> {
     server.with_core(|c| c.store.load::<ScreenshotMeta>(KIND).unwrap_or_default())
 }
 
@@ -834,13 +834,13 @@ fn with_path(server: &Server, m: &ScreenshotMeta) -> Value {
     let mut v = serde_json::to_value(m).unwrap_or_default();
     let path = m.path(server);
     v["exists"] = json!(path.exists());
-    v["path_on_machine"] = json!(path);
+    v["path_on_machine"] = json!(crate::privacy::readable_path(server, &path));
     v
 }
 
 fn inline_into(v: &mut Value, path: &Path) {
     use base64::Engine as _;
-    match std::fs::read(path) {
+    match crate::privacy::read_blob(path) {
         Ok(data) if data.len() <= MAX_INLINE => {
             v["data_b64"] = json!(base64::engine::general_purpose::STANDARD.encode(&data));
             v["mime"] = json!("image/png");
@@ -956,7 +956,7 @@ fn referenced_by_acceptance(server: &Server, m: &ScreenshotMeta) -> bool {
 
 /// Delete records (one transaction + `screenshot.deleted` event) and every blob no remaining
 /// record references. Returns the number of blobs removed.
-fn remove_records(server: &Server, gone: &[ScreenshotMeta], reason: &str) -> usize {
+pub(crate) fn remove_records(server: &Server, gone: &[ScreenshotMeta], reason: &str) -> usize {
     if gone.is_empty() {
         return 0;
     }
@@ -1181,8 +1181,8 @@ async fn diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .details(json!({"reason": "environment_mismatch", "a": x.environment.kind, "b": y.environment.kind})));
     }
     let r = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let da = std::fs::read(&pa)?;
-        let db = std::fs::read(&pb)?;
+        let da = crate::privacy::read_blob(&pa)?;
+        let db = crate::privacy::read_blob(&pb)?;
         vk_browser::diff::diff_png(&da, &db, threshold)
     })
     .await
@@ -1222,7 +1222,7 @@ async fn diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "regions_total": r.regions_total,
         "forced": force && ma.as_ref().zip(mb.as_ref()).is_some_and(|(x, y)| x.environment.kind != y.environment.kind),
         "blob": hash,
-        "path_on_machine": path,
+        "path_on_machine": crate::privacy::readable_path(server, &path),
         "bytes": r.diff_png.len(),
     });
     if b(p, "inline").unwrap_or(false) {

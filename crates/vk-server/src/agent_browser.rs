@@ -2178,10 +2178,8 @@ pub fn store_blob(
     }
     let path = dir.join(format!("{hash}.{ext}"));
     if !path.exists() {
-        let tmp = dir.join(format!(".{hash}.tmp-{}", std::process::id()));
-        std::fs::write(&tmp, data)?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::rename(&tmp, &path)?;
+        // Sealed while `security.encrypt_state` is active (09 §9.1); atomic, 0600.
+        crate::privacy::write_blob(server, &path, data)?;
     }
     let mpath = dir.join(format!("{hash}.json"));
     std::fs::write(&mpath, serde_json::to_vec_pretty(meta).unwrap_or_default())?;
@@ -2326,7 +2324,7 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         "id": meta.id,
         "handle": meta.handle,
         "blob": hash,
-        "path_on_machine": path,
+        "path_on_machine": crate::privacy::readable_path(server, &path),
         "width": width,
         "height": height,
         "bytes": png.len(),
