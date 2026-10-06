@@ -76,11 +76,64 @@ describe('connect to this Mac', () => {
     expect(ok({ file: false })).toMatchObject({ ok: false, reason: 'is not a regular file' });
     expect(ok({}, { mode: 0o40777 })).toMatchObject({ ok: false, reason: 'is in a directory anyone can write to' });
     expect(ok({}, { uid: 999 })).toMatchObject({ ok: false, reason: 'is in a directory owned by another user' });
-    expect(ok({}, { mode: 0o40775 })).toEqual({ ok: true, path: '/d/vibeke' }); // group-writable dir (Homebrew) is fine
+    expect(ok({}, { mode: 0o40775 })).toMatchObject({ ok: false, reason: 'is in a directory other users can write to' });
     expect(checkExecutable('vibeke', fakeFs({}))).toMatchObject({ ok: false, reason: 'not an absolute path' });
     // Symlinks are judged by their target.
     const linked = fakeFs({ '/real/vibeke': exe() }, {}, { '/bin2/vibeke': '/real/vibeke' });
     expect(checkExecutable('/bin2/vibeke', linked)).toEqual({ ok: true, path: '/real/vibeke' });
+  });
+  test('every ancestor directory up to / is checked, not just the parent', () => {
+    const at = (path: string, dirs: Record<string, Partial<Meta>>) => checkExecutable(path, fakeFs({ [path]: exe() }, dirs), 'darwin');
+    // Owned by another user higher up.
+    expect(at('/home/other/bin/vibeke', { '/home/other': { uid: 999 } })).toMatchObject({ ok: false, reason: 'is under /home/other, a directory owned by another user' });
+    // Group- or world-writable ancestors (a writable ancestor can swap the whole subtree).
+    expect(at('/opt/tools/bin/vibeke', { '/opt': { mode: 0o40775 } })).toMatchObject({ ok: false, reason: 'is under /opt, a directory other users can write to' });
+    expect(at('/opt/tools/bin/vibeke', { '/opt/tools': { mode: 0o40777 } })).toMatchObject({ ok: false, reason: 'is under /opt/tools, a directory anyone can write to' });
+    expect(at('/opt/tools/bin/vibeke', { '/': { mode: 0o40775 } })).toMatchObject({ ok: false, reason: 'is under /, a directory other users can write to' });
+    // A root-owned sticky directory is fine higher up, but never as the immediate parent …
+    expect(at('/tmp/mine/vibeke', { '/tmp': { uid: 0, mode: 0o41777 } })).toEqual({ ok: true, path: '/tmp/mine/vibeke' });
+    expect(at('/tmp/vibeke', { '/tmp': { uid: 0, mode: 0o41777 } })).toMatchObject({ ok: false, reason: 'is in a directory anyone can write to' });
+    // … and only when owned by root.
+    expect(at('/tmp/mine/vibeke', { '/tmp': { mode: 0o41777 } })).toMatchObject({ ok: false, reason: 'is under /tmp, a directory anyone can write to' });
+    // A clean chain passes.
+    expect(at('/home/me/.local/bin/vibeke', {})).toEqual({ ok: true, path: '/home/me/.local/bin/vibeke' });
+  });
+  test('Homebrew prefixes writable by the admin group are trusted on macOS only', () => {
+    const brew = { mode: 0o40775, gid: 80 };
+    const at = (path: string, dirs: Record<string, Partial<Meta>>, platform = 'darwin') =>
+      checkExecutable(path, fakeFs({ [path]: exe() }, dirs), platform);
+    expect(at('/opt/homebrew/bin/vibeke', { '/opt/homebrew': brew, '/opt/homebrew/bin': brew })).toEqual({ ok: true, path: '/opt/homebrew/bin/vibeke' });
+    expect(at('/usr/local/bin/vibeke', { '/usr/local/bin': brew })).toEqual({ ok: true, path: '/usr/local/bin/vibeke' });
+    // Not another group, not world-writable, not outside the prefixes, not on Linux.
+    expect(at('/opt/homebrew/bin/vibeke', { '/opt/homebrew/bin': { mode: 0o40775, gid: 20 } })).toMatchObject({ ok: false });
+    expect(at('/opt/homebrew/bin/vibeke', { '/opt/homebrew/bin': { mode: 0o40777, gid: 80 } })).toMatchObject({ ok: false });
+    expect(at('/opt/tools/bin/vibeke', { '/opt/tools/bin': brew })).toMatchObject({ ok: false });
+    expect(at('/opt/homebrew-evil/bin/vibeke', { '/opt/homebrew-evil/bin': brew })).toMatchObject({ ok: false });
+    expect(at('/usr/local/bin/vibeke', { '/usr/local/bin': brew }, 'linux')).toMatchObject({ ok: false });
+  });
+  test('Windows: only the standard install roots are trusted without the picker', () => {
+    const files: Record<string, Meta> = {
+      'C:\\Program Files\\Vibeke\\vibeke.exe': exe(),
+      'C:\\Users\\me\\AppData\\Local\\Programs\\Vibeke\\vibeke.exe': exe(),
+      'C:\\tools\\vibeke.exe': exe(),
+      'C:\\Users\\me\\.cargo\\bin\\vibeke.exe': exe(),
+    };
+    const fs = { ...fakeFs(files), uid: null };
+    const env = { ProgramFiles: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' };
+    const o = { fs, platform: 'win32' };
+    expect(discoverVibeke({ ...env, PATH: 'C:\\tools;C:\\Program Files\\Vibeke' }, '', o)).toEqual({ kind: 'found', path: 'C:\\Program Files\\Vibeke\\vibeke.exe' });
+    expect(discoverVibeke({ ...env, PATH: 'C:\\Users\\me\\AppData\\Local\\Programs\\Vibeke' }, '', o)).toMatchObject({ kind: 'found' });
+    // Elsewhere on PATH, or via $VIBEKE_BIN: the user must choose it in the picker.
+    expect(discoverVibeke({ ...env, PATH: 'C:\\tools' }, '', o)).toEqual({ kind: 'unexpected', path: 'C:\\tools\\vibeke.exe' });
+    expect(discoverVibeke({ ...env, PATH: 'C:\\Users\\me\\.cargo\\bin' }, '', o)).toMatchObject({ kind: 'unexpected' });
+    expect(discoverVibeke({ ...env, VIBEKE_BIN: 'C:\\tools\\vibeke.exe', PATH: '' }, '', o)).toMatchObject({ kind: 'unexpected' });
+    // "C:\\Program Files Evil" is not under "C:\\Program Files".
+    const evil = { ...fakeFs({ 'C:\\Program Files Evil\\vibeke.exe': exe() }), uid: null };
+    expect(discoverVibeke({ ...env, PATH: 'C:\\Program Files Evil' }, '', { fs: evil, platform: 'win32' })).toMatchObject({ kind: 'unexpected' });
+    // Chosen in the native picker: trusted.
+    expect(discoverVibeke(env, 'C:\\tools\\vibeke.exe', o)).toEqual({ kind: 'found', path: 'C:\\tools\\vibeke.exe' });
+    // Relative entries are ignored.
+    expect(discoverVibeke({ ...env, PATH: 'tools' }, '', o)).toEqual({ kind: 'missing' });
   });
   test('gateway dir mirrors vk-gateway', () => {
     expect(defaultGatewayDir({ VIBEKE_GATEWAY_DIR: '/x' }, 'darwin', '/h')).toBe('/x');
@@ -120,6 +173,7 @@ describe('windows', () => {
 interface Meta {
   mode: number;
   uid: number;
+  gid?: number;
   file: boolean;
 }
 const ME = 501;
@@ -127,6 +181,7 @@ const exe = (m: Partial<Meta> = {}): Meta => ({ mode: 0o100755, uid: ME, file: t
 /** Files (and optional directory metadata / symlinks); every other directory is the user's 0755. */
 function fakeFs(files: Record<string, Meta>, dirs: Record<string, Partial<Meta>> = {}, links: Record<string, string> = {}): FsProbe {
   const meta = (p: string): Meta => {
+    if (p === '/') return { mode: 0o40755, uid: 0, file: false, ...dirs[p] };
     const f = files[p];
     if (f) return f;
     if (Object.keys(files).some((k) => k.startsWith(`${p}/`)) || dirs[p]) return { mode: 0o40755, uid: ME, file: false, ...dirs[p] };
@@ -141,7 +196,7 @@ function fakeFs(files: Record<string, Meta>, dirs: Record<string, Partial<Meta>>
     },
     stat: (p) => {
       const m = meta(p);
-      return { isFile: () => m.file, isDirectory: () => !m.file, mode: m.mode, uid: m.uid };
+      return { isFile: () => m.file, isDirectory: () => !m.file, mode: m.mode, uid: m.uid, gid: m.gid };
     },
   };
 }

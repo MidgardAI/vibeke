@@ -12,6 +12,7 @@ bun run dist:desktop        # installers for this OS into apps/desktop/dist
 bun run test:desktop        # desktop unit tests (headless; also part of `bun run test`)
 bun run e2e:desktop         # Playwright for Electron (smoke, real gateway, memory budget)
 bun run dist:desktop -- --dir   # unsigned/ad-hoc app directory (CSC_IDENTITY_AUTO_DISCOVERY=false)
+bun run --cwd apps/desktop verify:package   # after dist: fuses, app.asar only, codesign --verify --deep (macOS)
 
 # from web/apps/desktop/
 bun run dist:dir            # app directory only, signed ad hoc (runs on this machine)
@@ -71,9 +72,17 @@ main process (Node)                                    renderer (sandboxed, per 
   (a broken choice is reported, never skipped), else `$VIBEKE_BIN`, else the usual install
   locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, `/usr/bin`),
   else absolute `PATH` entries. Every candidate is canonicalized and must be a regular executable
-  owned by you or root, not writable by others, in a directory others cannot write to; relative
-  `PATH` entries are ignored, and a CLI found only somewhere unusual on `PATH` must be confirmed in
-  the native picker (which also checks that `--version` prints a Vibeke version). If the gateway is
+  owned by you or root, not writable by group or others, and every directory from its parent up to
+  `/` must be owned by you or root and not group- or world-writable (a root-owned sticky directory
+  such as `/tmp` is allowed higher up, never as the immediate parent). On macOS, Homebrew's own
+  layout is trusted: directories under `/opt/homebrew` or `/usr/local` that are writable only by
+  the `admin` group (gid 80); admins can already run anything via sudo. Any other group-writable
+  install dir is rejected. Relative `PATH` entries are ignored, and a CLI found only somewhere unusual on
+  `PATH` must be confirmed in the native picker (which also checks that `--version` prints a
+  Vibeke version). **Windows** has no POSIX ownership/mode bits, so only `vibeke.exe` under the
+  standard install roots (`%ProgramFiles%`, `%ProgramFiles(x86)%`, `%LOCALAPPDATA%\Programs`) is
+  used automatically; anything else (`$VIBEKE_BIN`, `~\.cargo\bin`, other `PATH` entries) must be
+  chosen in the native picker. If the gateway is
   not running it offers **Start gateway** (`vibeke gateway run`, detached, log in
   `<userData>/logs/gateway.log`); if the gateway waits for the server it says so.
 - **Pairing links**: paste on the pairing screen, or open `vibeke://pair?d=…` /
@@ -136,10 +145,12 @@ runs on the machine that built it.
   path or update feed), the vault with a fake `safeStorage` (encryption at rest, 0600, atomic
   get-or-create, `basic_text` refusal, corrupt vault), deep links, transport selection,
   notification content and privacy levels, the alert tracker (baseline, merge, stopped/finished),
-  the notifier with fakes (fails closed until prefs are known, one `prefs.get` per host, restrictive
-  prefs kept on failure, re-validation after awaiting, finished notifications tracked by host,
-  quiet content updates), `pair --local` output parsing, CLI discovery and trust checks (relative
-  PATH, ownership, writability, symlinks, unexpected locations), the packaged update feed, window
+  the notifier with fakes (fails closed until prefs are known, one `prefs.get` per host, a
+  response superseded by an invalidation is never used, quiet resolution updates gated like new
+  alerts, alerts kept and replayed after a transient prefs failure, re-validation after awaiting,
+  finished notifications tracked by host), `pair --local` output parsing, CLI discovery and trust
+  checks (relative PATH, ownership, writability of the whole ancestor chain, sticky dirs, symlinks,
+  unexpected locations, Windows install roots), the packaged update feed, window
   bounds / popover placement, app:// path traversal, shortcut recording.
 - `e2e/` (Playwright `_electron`, launches `out/`; skipped without a display; `bun run e2e:desktop`
   builds first):
@@ -156,10 +167,21 @@ runs on the machine that built it.
     Takes light/dark screenshots of the inbox, panes, settings, palette, popover and pane window
     into `test-results/` after animations settle (page screenshots cannot see native vibrancy, so
     a stand-in sidebar material is painted for the capture).
+  - `security.e2e.ts`: the `app://` page carries the strict CSP header and it is enforced (inline
+    script, `eval` and page `fetch` blocked); `window.open` never opens an app window (http(s) is
+    handed to the browser, stubbed in the test); page content cannot navigate the window away; the
+    bridge refuses unknown channels and main refuses non-allow-listed host methods and forged
+    arguments.
   - `memory.e2e.ts`: three isolated servers + gateways, paired over their local sockets; prints
     working set and physical footprint per process with the main window, the popover, and menu
     bar only (after hidden renderers are released), and asserts the 250 MB budget on the
-    footprint. `VIBEKE_E2E_MEMORY_BUDGET=0` only reports.
+    footprint (on macOS an unmeasurable footprint fails). Startup to the pairing screen is logged
+    and must stay under 5 s (regression guard; the spec's 1 s is aspirational).
+    `VIBEKE_E2E_MEMORY_BUDGET=0` only reports the budget.
+- `scripts/verify-package.ts` (`bun run --cwd apps/desktop verify:package`, after
+  `bun run dist:desktop -- --dir`): reads the packaged app's fuse wire (`@electron/fuses`) and
+  asserts the hardening fuses, that the app ships as `app.asar` only (with its integrity hash in
+  `Info.plist` on macOS), and on macOS runs `codesign --verify --deep --strict` on the `.app`.
   - The CLI comes from `VIBEKE_BIN`, else `VIBEKE_TEST_BIN`, else `target/debug/vibeke`
     (`cargo build -p vibeke`). All processes started (servers, gateways, pane holders) are stopped
     and their temp dirs removed afterwards.

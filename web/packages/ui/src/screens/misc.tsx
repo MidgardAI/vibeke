@@ -7,6 +7,7 @@ import { InteractionCard } from '../components/interaction-card';
 import { Dialog } from '../components/dialog';
 import { Button, Card, Dot, Empty, IconButton, Spinner } from '../components/ui';
 import { t } from '../i18n';
+import { IdleLock } from '../lib/idle-lock';
 import { useStore } from '../lib/store';
 import { navigate } from '../router';
 import { useWide } from '../app/shell';
@@ -154,24 +155,20 @@ export function Tour() {
 
 export const IDLE_LOCK_MS = 30 * 60_000;
 
-/** Idle lock (spec 16 §9.1 Shell): 30 min visible but untouched → pause polling. */
+/**
+ * Idle lock (spec 16 §9.1 Shell): 30 min visible but untouched → pause polling. No timers while
+ * the window is hidden; the lock timer resumes (re-armed) when it is shown.
+ */
 export function useIdleLock(): void {
   const app = useApp();
   useEffect(() => {
-    let last = Date.now();
-    const touch = () => {
-      last = Date.now();
-    };
+    const lock = new IdleLock({ clock: app.platform.clock, visible: app.visible, locked: app.locked, idleMs: IDLE_LOCK_MS }).start();
+    const touch = () => lock.touch();
     const evs = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
     evs.forEach((e) => window.addEventListener(e, touch, { passive: true }));
-    const offVis = app.platform.lifecycle.onVisible(touch);
-    const id = setInterval(() => {
-      if (app.platform.lifecycle.isVisible() && Date.now() - last > IDLE_LOCK_MS && !app.locked.get()) app.locked.set(true);
-    }, 30_000);
     return () => {
       evs.forEach((e) => window.removeEventListener(e, touch));
-      offVis();
-      clearInterval(id);
+      lock.stop();
     };
   }, [app]);
 }

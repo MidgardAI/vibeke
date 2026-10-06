@@ -44,7 +44,7 @@ function harness(rec: HostRecord = record) {
     puts: [] as HostRecord[],
     /** While true, `dashboard.get` answers only when its gate is released (in any order). */
     gated: false,
-    gates: [] as { at: number; release(): void }[],
+    gates: [] as { at: number; release(): void; fail(): void }[],
   };
   const platform = testPlatform((sock) => {
     if (state.refuse === 'offline') return false;
@@ -61,7 +61,7 @@ function harness(rec: HostRecord = record) {
           case 'dashboard.get': {
             const d = dashboard(state.at);
             if (!state.gated) return d;
-            return new Promise((resolve) => state.gates.push({ at: d.at, release: () => resolve(d) }));
+            return new Promise((resolve, reject) => state.gates.push({ at: d.at, release: () => resolve(d), fail: () => reject({ code: -32000, message: 'busy' }) }));
           }
           case 'events.subscribe':
             return params.after !== undefined && state.resetOnResume && params.after !== state.at ? { at: state.at, reset: true } : { at: state.at };
@@ -215,6 +215,59 @@ describe('HostManager', () => {
     expect(h().getSnapshot().dashboard?.at).toBe(20);
     expect(methods().filter((m) => m === 'dashboard.get').length).toBe(3); // connect + 2
     for (let i = 1; i < seen.length; i++) expect(seen[i]!).toBeGreaterThanOrEqual(seen[i - 1]!);
+    mgr.stop();
+  });
+
+  test('a failed refresh does not lose the queued follow-up (issued after a backoff)', async () => {
+    const { mgr, h, methods, state, platform } = harness();
+    await mgr.start();
+    await flush(20);
+    state.gated = true;
+    const first = h().refresh();
+    await flush();
+    state.at = 20;
+    const second = h().refresh(); // joins: wants a fetch issued after now
+    await flush();
+    expect(state.gates.length).toBe(1);
+    const outcomes: string[] = [];
+    first.then(() => outcomes.push('first ok'), () => outcomes.push('first err'));
+    second.then(() => outcomes.push('second ok'), () => outcomes.push('second err'));
+    state.gates.shift()!.fail();
+    await flush(10);
+    expect(outcomes).toEqual([]); // not rejected: the follow-up is still owed
+    await platform.clock.advance(250);
+    await flush(10);
+    expect(state.gates.length).toBe(1);
+    expect(state.gates[0]!.at).toBe(20);
+    state.gates.shift()!.release();
+    await flush(10);
+    expect(outcomes.sort()).toEqual(['first ok', 'second ok']);
+    expect(h().getSnapshot().dashboard?.at).toBe(20);
+    expect(methods().filter((m) => m === 'dashboard.get').length).toBe(3); // connect + 2
+    mgr.stop();
+  });
+
+  test('when the follow-up fails too, all waiters reject together', async () => {
+    const { mgr, h, state, platform } = harness();
+    await mgr.start();
+    await flush(20);
+    state.gated = true;
+    const first = h().refresh();
+    await flush();
+    const second = h().refresh();
+    const outcomes: string[] = [];
+    first.then(() => outcomes.push('ok'), () => outcomes.push('err'));
+    second.then(() => outcomes.push('ok'), () => outcomes.push('err'));
+    await flush();
+    state.gates.shift()!.fail();
+    await platform.clock.advance(250);
+    await flush(10);
+    state.gates.shift()!.fail();
+    await flush(10);
+    expect(outcomes).toEqual(['err', 'err']);
+    // The next refresh starts afresh.
+    state.gated = false;
+    await h().refresh();
     mgr.stop();
   });
 

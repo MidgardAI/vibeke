@@ -147,6 +147,10 @@ export interface ConnectionOptions {
 
 const REFRESH_PREFIXES = ['agent.', 'interaction.', 'pane.', 'tab.', 'workspace.', 'task.', 'notification.', 'session.'];
 const UNAUTHORIZED_LIMIT = 3;
+/** A queued dashboard follow-up after a failed fetch: backoff 250 ms, 500 ms, … (≤ 5 s), ≤ 5 retries. */
+const REFRESH_BACKOFF_MS = 250;
+const REFRESH_BACKOFF_MAX_MS = 5_000;
+const REFRESH_MAX_RETRIES = 5;
 
 export class HostConnection implements HostConnectionApi {
   private state: HostState;
@@ -266,7 +270,9 @@ export class HostConnection implements HostConnectionApi {
   /**
    * Refetch the dashboard. Serialized per connection: a call while a fetch is in flight does not
    * start a second one; it marks a follow-up and resolves when a fetch issued after the call has
-   * landed, so events arriving mid-request are never lost and responses never overtake.
+   * landed, so events arriving mid-request are never lost and responses never overtake. A failed
+   * fetch with a follow-up queued still issues the follow-up (backed off); all callers sharing the
+   * loop resolve or reject together.
    */
   refresh(): Promise<void> {
     const rpc = this.rpc;
@@ -277,11 +283,25 @@ export class HostConnection implements HostConnectionApi {
     }
     const id = ++this.refreshId;
     const loop = (async () => {
+      let failures = 0;
       try {
-        do {
+        for (;;) {
           this.refreshAgain = false;
-          await this.fetchDashboard(rpc);
-        } while (this.refreshAgain && rpc === this.rpc);
+          try {
+            await this.fetchDashboard(rpc);
+            failures = 0;
+          } catch (e) {
+            // Callers that joined mid-flight wait for a fetch issued after their call: a failure
+            // must not drop it. Issue the follow-up after a backoff; if that fails too (and
+            // nobody asked again meanwhile), every waiter rejects with the same error.
+            if (!this.refreshAgain || rpc !== this.rpc || failures >= REFRESH_MAX_RETRIES) throw e;
+            failures++;
+            await new Promise<void>((r) => this.o.platform.clock.setTimeout(r, Math.min(REFRESH_BACKOFF_MAX_MS, REFRESH_BACKOFF_MS * 2 ** (failures - 1))));
+            if (rpc !== this.rpc) throw e;
+            continue;
+          }
+          if (!this.refreshAgain || rpc !== this.rpc) return;
+        }
       } finally {
         if (this.refreshId === id) {
           this.refreshing = null;

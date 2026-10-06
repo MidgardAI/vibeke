@@ -2,7 +2,8 @@
 // gateways in temp dirs, paired over their local sockets, then the app's summed working set is
 // measured with the main window shown, after the quick popover was used, and with every window
 // closed (menu bar only), before and after hidden renderers are released. Prints working set and
-// physical footprint per process type; the budget is asserted on the footprint.
+// physical footprint per process type; the budget is asserted on the footprint (on macOS a
+// footprint that cannot be measured fails the test), and startup must stay under 5 s.
 
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
@@ -15,6 +16,8 @@ test.skip(!built(), 'run `bun run build` first');
 test.skip(!bin, 'build the CLI first: cargo build -p vibeke (or set VIBEKE_BIN)');
 
 const BUDGET_MB = 250;
+/** Regression guard on launch → pairing screen (spec target 1 s is aspirational; see below). */
+const STARTUP_GUARD_MS = 5_000;
 const hosts: TestHost[] = [];
 let a: LaunchedApp | null = null;
 
@@ -63,6 +66,8 @@ test('three hosts stay within the memory budget', async () => {
     h.workspace(`ws${i}`);
     hosts.push(h);
   }
+  // Let the freshly started servers/gateways go idle so startup measures the app, not them.
+  await settle(3000);
   const t0 = Date.now();
   // Short release delays (defaults: popover 60 s, main window 10 min hidden).
   a = await launchApp({ VIBEKE_BIN: bin!, VIBEKE_POPOVER_TTL_MS: '3000', VIBEKE_MAIN_TTL_MS: '4000' });
@@ -123,8 +128,24 @@ test('three hosts stay within the memory budget', async () => {
 
   // Budget on physical footprint (stable between runs; the summed working set double-counts the
   // Electron framework pages every process maps and swings ±50 MB with system memory pressure).
+  // On macOS an unmeasurable footprint is a failure, never a silent skip.
+  if (process.platform === 'darwin') {
+    for (const [name, x] of [['0 hosts', idle], ['3 hosts', three], ['menu bar only', released]] as const) {
+      expect(x.footprint, `${name}: footprint could not be measured (\`footprint\` failed)`).toBeGreaterThan(0);
+    }
+  }
   if (process.env.VIBEKE_E2E_MEMORY_BUDGET !== '0' && three.footprint >= 0) {
     expect(three.footprint, 'three hosts, main window (footprint)').toBeLessThan(BUDGET_MB);
     expect(released.footprint, 'three hosts, menu bar only (footprint)').toBeLessThan(BUDGET_MB);
+  }
+  // Startup regression guard. Spec 16 targets 1 s to interactive; that is aspirational here (the
+  // number includes Playwright's attach and is logged above), so the gate is 5 s. A saturated
+  // machine (load per CPU > 2) says nothing about the app, so the gate only applies when it isn't.
+  const { loadavg, cpus } = await import('node:os');
+  const loadPerCpu = (loadavg()[0] ?? 0) / Math.max(1, cpus().length);
+  if (loadPerCpu <= 2) {
+    expect(startup, 'startup → pairing screen (ms)').toBeLessThan(STARTUP_GUARD_MS);
+  } else {
+    console.log(`  startup gate skipped: load per CPU ${loadPerCpu.toFixed(1)} (machine saturated)`);
   }
 });

@@ -20,7 +20,34 @@ const flush = async (n = 10) => {
   for (let i = 0; i < n; i++) await Promise.resolve();
 };
 
-function setup() {
+/** Replace setTimeout for one test: returns the queued callbacks (run them by hand). */
+function fakeTimers() {
+  const orig = globalThis.setTimeout;
+  const origClear = globalThis.clearTimeout;
+  const timers: { f: () => void; ms: number; cleared: boolean }[] = [];
+  globalThis.setTimeout = ((f: () => void, ms: number) => {
+    const t = { f, ms, cleared: false };
+    timers.push(t);
+    return t;
+  }) as never;
+  globalThis.clearTimeout = ((t: { cleared: boolean } | undefined) => {
+    if (t && typeof t === 'object') t.cleared = true;
+  }) as never;
+  const live = () => timers.filter((t) => !t.cleared);
+  const fire = () => {
+    const t = live()[0];
+    if (!t) throw new Error('no timer');
+    t.cleared = true;
+    t.f();
+  };
+  const restore = () => {
+    globalThis.setTimeout = orig;
+    globalThis.clearTimeout = origClear;
+  };
+  return { live, fire, restore };
+}
+
+function setup(hooks: { enabled?: () => boolean; appFocused?: () => boolean } = {}) {
   let states: HostState[] = [];
   const subs = new Set<() => void>();
   const requests: string[] = [];
@@ -38,7 +65,7 @@ function setup() {
     const n: NotificationLike = { show: () => void shown.push(rec), close: () => void (rec.closed = true), on: () => n };
     return n;
   };
-  const notifier = new Notifier(engine, { appFocused: () => false, enabled: () => true, openMain: () => {}, approve: () => {} }, create as never);
+  const notifier = new Notifier(engine, { appFocused: hooks.appFocused ?? (() => false), enabled: hooks.enabled ?? (() => true), openMain: () => {}, approve: () => {} }, create as never);
   const set = (s: HostState[]) => {
     states = s;
     for (const cb of [...subs]) cb();
@@ -82,12 +109,15 @@ describe('notifier', () => {
     replies[2]!.resolve(prefs('minimal'));
     await flush();
     expect(shown.at(-1)).toMatchObject({ title: 'Vibeke', body: '1 agent needs you' });
-    // … and after an invalidation whose refetch fails, still minimal (never the defaults).
+    // … and after an invalidation whose refetch fails, the new preferences are unknown: nothing
+    // is delivered with the old (or default) ones; the shown notification is withdrawn.
+    const before = shown.length;
     notifier.invalidatePrefs('h1');
     replies[3]!.reject(new Error('offline'));
     set([host(dash([interaction('i2'), interaction('i3')]))]);
     await flush();
-    expect(shown.at(-1)).toMatchObject({ title: 'Vibeke', body: '2 agents need you' });
+    expect(shown).toHaveLength(before);
+    expect(shown.at(-1)!.closed).toBe(true);
     expect(shown.every((s) => !s.title.includes('secret-host') && !s.body.includes('secret-host'))).toBe(true);
   });
 
@@ -157,6 +187,125 @@ describe('notifier', () => {
       expect(shown.at(-1)!.closed).toBe(true);
     } finally {
       globalThis.setTimeout = orig;
+    }
+  });
+
+  test('an obsolete preferences response is never used to deliver (P1)', async () => {
+    const { notifier, set, replies, shown } = setup();
+    set([host(dash([]))]);
+    notifier.start(); // gen 0 request: replies[0]
+    set([host(dash([interaction('i1', 'curl secret.example/token')]))]);
+    await flush();
+    notifier.invalidatePrefs('h1'); // gen 1 request: replies[1]
+    // The obsolete (permissive) response arrives first: waiters must not deliver with it.
+    replies[0]!.resolve(prefs('full'));
+    await flush();
+    expect(shown).toHaveLength(0);
+    // The current generation says minimal + DND: still nothing.
+    replies[1]!.resolve(prefs('minimal', {}, Date.now() / 1000 + 600));
+    await flush();
+    expect(shown).toHaveLength(0);
+  });
+
+  test('waiters on an obsolete response deliver with the current generation\'s preferences', async () => {
+    const { notifier, set, replies, shown } = setup();
+    set([host(dash([]))]);
+    notifier.start();
+    set([host(dash([interaction('i1', 'curl secret.example/token')]))]);
+    await flush();
+    notifier.invalidatePrefs('h1');
+    replies[0]!.resolve(prefs('full'));
+    await flush();
+    replies[1]!.resolve(prefs('minimal'));
+    await flush();
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatchObject({ title: 'Vibeke', body: '1 agent needs you' });
+  });
+
+  for (const [name, o] of [
+    ['notifications disabled', { enabled: false }],
+    ['window focused', { focused: true }],
+    ['DND on', { dnd: true }],
+    ['notify_input off', { notifyInput: false }],
+  ] as const) {
+    test(`a resolution update is gated like a new alert: ${name}`, async () => {
+      let enabled = true;
+      let focused = false;
+      const { notifier, set, replies, shown } = setup({ enabled: () => enabled, appFocused: () => focused });
+      set([host(dash([]))]);
+      notifier.start();
+      replies[0]!.resolve(prefs('full'));
+      await flush();
+      set([host(dash([interaction('i1'), interaction('i2', 'cat ~/.ssh/id_rsa')]))]);
+      await flush();
+      expect(shown).toHaveLength(1);
+      // Gate changes, then one item resolves.
+      if ('enabled' in o) enabled = false;
+      if ('focused' in o) focused = true;
+      if ('dnd' in o || 'notifyInput' in o) {
+        notifier.invalidatePrefs('h1');
+        replies[1]!.resolve('dnd' in o ? prefs('full', {}, Date.now() / 1000 + 600) : prefs('full', { notify_input: false }));
+        await flush();
+      }
+      set([host(dash([interaction('i2', 'cat ~/.ssh/id_rsa')]))]);
+      await flush();
+      expect(shown).toHaveLength(1); // not recreated
+      expect(shown[0]!.closed).toBe(true); // withdrawn
+    });
+  }
+
+  test('a transient preferences failure does not drop the alert: retried and replayed', async () => {
+    const timers = fakeTimers();
+    try {
+      const { notifier, set, replies, requests, shown } = setup();
+      set([host(dash([]))]);
+      notifier.start();
+      set([host(dash([interaction('i1')]))]);
+      await flush();
+      replies[0]!.reject(new Error('timeout'));
+      await flush();
+      expect(shown).toHaveLength(0);
+      // A retry is scheduled (backoff) …
+      expect(timers.live()).toHaveLength(1);
+      const first = timers.live()[0]!.ms;
+      timers.fire();
+      await flush();
+      expect(requests).toHaveLength(2);
+      replies[1]!.reject(new Error('timeout'));
+      await flush();
+      expect(timers.live()).toHaveLength(1);
+      expect(timers.live()[0]!.ms).toBeGreaterThan(first);
+      timers.fire();
+      await flush();
+      // … and once preferences load, the still-open interaction is announced.
+      replies[2]!.resolve(prefs('summary'));
+      await flush();
+      expect(shown).toHaveLength(1);
+      expect(shown[0]).toMatchObject({ title: 'Codex needs approval', silent: false });
+      expect(timers.live()).toHaveLength(0);
+    } finally {
+      timers.restore();
+    }
+  });
+
+  test('an alert pending on preferences that loaded via another path is replayed', async () => {
+    const timers = fakeTimers();
+    try {
+      const { notifier, set, replies, shown } = setup();
+      set([host(dash([]))]);
+      notifier.start();
+      set([host(dash([interaction('i1')]))]);
+      await flush();
+      replies[0]!.reject(new Error('timeout'));
+      await flush();
+      notifier.invalidatePrefs('h1'); // e.g. the renderer saved prefs
+      replies[1]!.resolve(prefs('summary'));
+      await flush();
+      expect(shown).toHaveLength(1);
+      expect(timers.live()).toHaveLength(0); // the retry was cancelled
+      notifier.stop();
+    } finally {
+      timers.restore();
     }
   });
 });

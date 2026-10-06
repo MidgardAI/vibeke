@@ -52,3 +52,6 @@ jobs:
         run: bun run dist:desktop -- --dir
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - working-directory: web
+        # Fuses, asar-only loading with integrity, and codesign --verify (spec 16 §16.3).
+        run: bun run --cwd apps/desktop verify:package

@@ -7,6 +7,7 @@
   "type": "module",
   "main": "out/main/index.cjs",
   "devDependencies": {
+    "@electron/fuses": "^1.8.0",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.2.0",
@@ -35,6 +36,7 @@
     "dist:mac": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --mac",
     "dist:linux": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --linux",
     "dist:win": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --win",
+    "verify:package": "bun scripts/verify-package.ts",
     "test": "bun test test",
     "e2e": "bun scripts/build.ts && playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
