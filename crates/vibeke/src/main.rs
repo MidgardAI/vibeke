@@ -255,6 +255,19 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("sandbox") if args.get(1).map(String::as_str) == Some("bridge") => {
             remote::box_bridge(&args[2..]).await
         }
+        Some("sandbox") if args.get(1).map(String::as_str) == Some("shell") => {
+            let params = match vk_cli::build_params(&["task"], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::SANDBOX_SHELL_USAGE);
+                    return EXIT_USAGE;
+                }
+            };
+            with_client(&g, |mut c| async move {
+                vk_cli::sandbox_shell(&mut c, params).await
+            })
+            .await
+        }
         Some("ssh") => commands::ssh(&g, &args[1..]).await,
         Some("notify") => commands::notify(&g, &args[1..]).await,
         Some("import") => commands::import(&g, &args[1..]).await,

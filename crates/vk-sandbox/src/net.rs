@@ -262,6 +262,10 @@ pub struct EgressPolicy {
     /// host" (ssh on 22, a database, …).
     #[serde(default)]
     pub ports: BTreeSet<u16>,
+    /// Endpoints the user allowed for every contained task ("allow always", 13 §7), persisted
+    /// by the server; same entry syntax as `task_allow`.
+    #[serde(default)]
+    pub global_allow: BTreeSet<String>,
 }
 
 /// Ports allowlisted domains are reachable on unless the config lists others.
@@ -318,6 +322,10 @@ impl EgressPolicy {
                     }
                 };
             }
+            // An endpoint the user approved (`1.2.3.4:443`) is exactly that endpoint.
+            if let Some(rule) = self.approved_endpoint(&host, port) {
+                return HostVerdict::Allow { rule };
+            }
             return if self.profile == NetworkProfile::Open {
                 HostVerdict::Allow {
                     rule: "profile open".into(),
@@ -338,12 +346,18 @@ impl EgressPolicy {
             };
         }
         let port_ok = self.port_allowed(port);
-        if let Some(d) = self.task_allow.iter().find(|d| {
+        let listed = |d: &&String| {
             let (pat, p) = split_allow_entry(d);
             domain_matches(pat, &host) && p.map_or(port_ok, |p| p == port)
-        }) {
+        };
+        if let Some(d) = self.task_allow.iter().find(listed) {
             return HostVerdict::Allow {
                 rule: format!("task:{d}"),
+            };
+        }
+        if let Some(d) = self.global_allow.iter().find(listed) {
+            return HostVerdict::Allow {
+                rule: format!("global:{d}"),
             };
         }
         if port_ok {
@@ -371,6 +385,20 @@ impl EgressPolicy {
         HostVerdict::Ask
     }
 
+    /// `host:port` exactly on the task or global allowlist (IP literals: no patterns).
+    fn approved_endpoint(&self, host: &str, port: u16) -> Option<String> {
+        let want = format!("{host}:{port}");
+        let bracketed = format!("[{host}]:{port}");
+        let hit = |d: &String| *d == want || *d == bracketed;
+        if let Some(d) = self.task_allow.iter().find(|d| hit(d)) {
+            return Some(format!("task:{d}"));
+        }
+        self.global_allow
+            .iter()
+            .find(|d| hit(d))
+            .map(|d| format!("global:{d}"))
+    }
+
     /// Is `port` one listed domains may use ([`EgressPolicy::ports`], default 80/443)?
     pub fn port_allowed(&self, port: u16) -> bool {
         if self.ports.is_empty() {
@@ -396,6 +424,35 @@ impl EgressPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_and_ip_endpoint_approvals() {
+        let mut p = EgressPolicy::new(NetworkProfile::HarnessApis);
+        assert_eq!(p.check_host("example.org", 443), HostVerdict::Ask);
+        p.global_allow.insert("example.org:443".into());
+        assert_eq!(
+            p.check_host("example.org", 443),
+            HostVerdict::Allow {
+                rule: "global:example.org:443".into()
+            }
+        );
+        // Exactly the approved endpoint: another port asks again.
+        assert_eq!(p.check_host("example.org", 8443), HostVerdict::Ask);
+        // A task approval of an IP literal endpoint applies to that endpoint only.
+        assert_eq!(p.check_host("203.0.113.7", 443), HostVerdict::Ask);
+        p.task_allow.insert("203.0.113.7:443".into());
+        assert!(matches!(
+            p.check_host("203.0.113.7", 443),
+            HostVerdict::Allow { .. }
+        ));
+        assert_eq!(p.check_host("203.0.113.7", 22), HostVerdict::Ask);
+        // Deny rules still win over a global approval.
+        p.deny.insert("example.org".into());
+        assert!(matches!(
+            p.check_host("example.org", 443),
+            HostVerdict::Deny { .. }
+        ));
+    }
 
     #[test]
     fn domain_patterns() {

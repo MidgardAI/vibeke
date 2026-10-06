@@ -28,16 +28,34 @@ use vk_sandbox::net::{EgressPolicy, NetworkProfile};
 use vk_sandbox::proxy::{AskDecision, Asker, BoxFut, EgressEvent, EgressProxy, ProxyConfig};
 use vk_sandbox::runner::{Runner, SandboxRunner, SandboxSetup, SpawnRequest};
 
+#[path = "sandbox_boundary.rs"]
+pub mod boundary;
 #[path = "sandbox_container.rs"]
 pub mod container;
+#[path = "sandbox_extras.rs"]
+pub mod extras;
+#[path = "sandbox_preview.rs"]
+pub mod forward;
+#[path = "sandbox_pool.rs"]
+pub mod pool;
 
 pub const METHODS: &[(&str, bool)] = &[
     ("sandbox.status", false),
     ("sandbox.list", false),
     ("sandbox.allow", true),
+    ("sandbox.disallow", true),
     ("sandbox.start", true),
     ("sandbox.stop", true),
     ("sandbox.remove", true),
+    ("sandbox.shell", false),
+    ("sandbox.logs", false),
+    ("sandbox.prune", true),
+    ("sandbox.recover", true),
+    ("sandbox.relaunch", true),
+    ("sandbox.request", true),
+    ("sandbox.push", true),
+    ("sandbox.copy_out", true),
+    ("sandbox.setup_token", true),
     ("task.sync", true),
 ];
 
@@ -53,6 +71,8 @@ pub const BROKER_METHODS: &[&str] = &[
     "agent.get",
     "pane.current",
     "preview.declare",
+    // Ask the host for a boundary action (push, copy out) behind an Interaction (13 §8).
+    "sandbox.request",
 ];
 
 /// How long an unanswered egress Interaction stays open (the proxy itself holds a connection
@@ -82,6 +102,10 @@ pub struct IsoRequest {
     /// Build the devcontainer image (explicit; still needs repo trust).
     #[serde(default)]
     pub build: bool,
+    /// Warm-pool slot whose box and host dirs this context adopted (13 §9); the slot names the
+    /// container and the storage dirs instead of the task.
+    #[serde(default)]
+    pub slot: Option<String>,
 }
 
 impl IsoRequest {
@@ -136,6 +160,7 @@ impl IsoRequest {
             code: code.map(str::to_string),
             devcontainer: s(p, "devcontainer").map(str::to_string),
             build: p.get("build").and_then(Value::as_bool).unwrap_or(false),
+            slot: None,
         })
     }
 }
@@ -195,6 +220,12 @@ struct Inner {
 #[derive(Default)]
 pub struct State {
     inner: Mutex<Inner>,
+    /// Lifecycle/UX extras (crash handling, idle suspend, pressure, nudges, ...).
+    pub extras: extras::ExState,
+    /// Host listeners forwarding box ports (previews out of containers).
+    pub forwards: forward::FwdState,
+    /// Container templates and the warm pool.
+    pub pool: pool::PoolState,
 }
 
 impl State {
@@ -301,20 +332,25 @@ fn project_all(
     let creds_dir = credentials_dir();
     let mut parts = Vec::new();
     for h in harnesses {
+        let inp = ProjectionInput {
+            home: &home,
+            host_env: &server.opts.env,
+            vibeke_credentials: &creds_dir,
+            private_dir: private,
+            trust_checkout: trust,
+            claude_dir: None,
+            codex_dir: None,
+            pi_agent_dir: None,
+        };
         if let Some(a) = HarnessAuth::from_id(h) {
-            parts.push(creds::project(
-                a,
-                &ProjectionInput {
-                    home: &home,
-                    host_env: &server.opts.env,
-                    vibeke_credentials: &creds_dir,
-                    private_dir: private,
-                    trust_checkout: trust,
-                    claude_dir: None,
-                    codex_dir: None,
-                    pi_agent_dir: None,
-                },
-            )?);
+            parts.push(creds::project(a, &inp)?);
+        } else if let Some(decl) = extras::declared_auth(h) {
+            // A custom harness: only what its (user/built-in) manifest's `[auth]` declares.
+            let (pr, warnings) = creds::project_declared(h, &decl, &inp)?;
+            for w in warnings {
+                tracing::warn!(harness = %h, "{w}");
+            }
+            parts.push(pr);
         }
     }
     Ok(creds::merge(parts))
@@ -369,15 +405,29 @@ pub async fn prepare_box_opts(
     if let Some(b) = server.sandbox.get(key) {
         return Ok(b);
     }
-    let cfg = load_cfg();
+    let cfg = extras::cfg(server);
     if req.level == IsolationLevel::Container {
         // A repo's `.vibeke/sandbox.toml` may only narrow the network (09).
         req.network = vk_sandbox::config::RepoSandbox::load(checkout)
             .unwrap_or_default()
             .narrow_network(req.network);
     }
+    // Warm pool (13 §9): a new task box adopts a pre-started slot with the same inputs.
+    let pool_key = (task.is_some() && start)
+        .then(|| pool::pool_key(&cfg, checkout, &req))
+        .flatten();
+    let mut claimed = false;
+    if req.slot.is_none()
+        && let Some(pk) = &pool_key
+        && let Some(slot) = pool::claim(server, pk, cfg.warm_ttl())
+    {
+        req.slot = Some(slot);
+        claimed = true;
+    }
+    // Storage and container names follow the slot when there is one.
+    let root_key = req.slot.clone().unwrap_or_else(|| key.to_string());
     let home = server.sandbox.home();
-    let root = sbx_root(key);
+    let root = sbx_root(&root_key);
     std::fs::create_dir_all(&root).map_err(internal)?;
     {
         use std::os::unix::fs::PermissionsExt;
@@ -412,7 +462,15 @@ pub async fn prepare_box_opts(
         pol.local_ports
             .extend(cfg.sandbox.local_ports.iter().copied());
         pol.allow_private = cfg.sandbox.allow_private;
+        // Harness manifests declare the provider endpoints they need (13 §7 `[sandbox.network]`),
+        // and "allow always" approvals apply to every box.
+        let (needs, _, _) = extras::manifest_needs(&home, &req.harnesses);
+        pol.extra_allow.extend(needs);
+        if cfg.sandbox.global_approvals {
+            pol.global_allow.extend(extras::global_entries(server));
+        }
         let mut pc = ProxyConfig::new(pol);
+        pc.sni_check = cfg.sandbox.sni_check;
         pc.asker = Some(Arc::new(ServerAsker {
             server: Arc::downgrade(server),
             key: key.to_string(),
@@ -426,6 +484,7 @@ pub async fn prepare_box_opts(
                 EgressEvent::Allowed { host, port, rule } => {
                     // Only non-profile rules are worth an event (task approvals, open profile).
                     if rule.starts_with("task:")
+                        || rule.starts_with("global:")
                         || rule.contains("open")
                         || rule.starts_with("approved")
                     {
@@ -486,6 +545,12 @@ pub async fn prepare_box_opts(
         IsolationLevel::Sandbox => {
             let mut extra_read = vec![paths::Paths::inbox(), paths::Paths::shims()];
             extra_read.extend(cfg.sandbox.read.iter().map(|r| expand(&home, r)));
+            // Paths the harness manifests declare (`[sandbox] read/write`, 13 §5).
+            let (_, m_read, m_write) = extras::manifest_needs(&home, &req.harnesses);
+            extra_read.extend(m_read.into_iter().filter(|p| p.exists()));
+            let mut extra_write: Vec<PathBuf> =
+                cfg.sandbox.write.iter().map(|w| expand(&home, w)).collect();
+            extra_write.extend(m_write.into_iter().filter(|p| p.exists()));
             let setup = SandboxSetup {
                 home: home.clone(),
                 checkout: checkout.clone(),
@@ -495,7 +560,7 @@ pub async fn prepare_box_opts(
                 proxy_port: req.proxy_port,
                 local_ports: req.local_ports.clone(),
                 extra_read,
-                extra_write: cfg.sandbox.write.iter().map(|w| expand(&home, w)).collect(),
+                extra_write,
                 hidden: hidden_paths(),
                 home_read: None,
                 projection,
@@ -513,6 +578,7 @@ pub async fn prepare_box_opts(
         IsolationLevel::Container => {
             let srv = server.clone();
             let (k, t, co) = (key.to_string(), task.map(str::to_string), checkout.clone());
+            let rk = root_key.clone();
             let (cfg2, net, image, dc, build, home2, prot) = (
                 cfg.clone(),
                 req.network,
@@ -527,7 +593,7 @@ pub async fn prepare_box_opts(
             let c = tokio::task::spawn_blocking(move || {
                 let c = container::build(container::BuildIn {
                     server: &srv,
-                    key: &k,
+                    key: &rk,
                     task: t.as_deref(),
                     checkout: &co,
                     cfg: &cfg2,
@@ -544,7 +610,11 @@ pub async fn prepare_box_opts(
                     .check()
                     .map_err(|e| err(ErrorKind::Unsupported, e.to_string()))?;
                 if start {
-                    container::ensure(&srv, &k, t.as_deref(), &c)?;
+                    let created = container::ensure(&srv, &k, t.as_deref(), &c)?;
+                    // A claimed warm box was created without setup (empty workspace then).
+                    if claimed && !created && !c.lifecycle.is_empty() {
+                        container::spawn_lifecycle(&srv, &k, t.as_deref(), &c, c.lifecycle.clone());
+                    }
                 }
                 Ok::<_, vk_proto::rpc::RpcError>(c)
             })
@@ -616,6 +686,23 @@ pub async fn prepare_box_opts(
             json!({"level": req.level.as_str(), "provider": provider, "network": req.network.as_str(), "yolo": req.yolo, "proxy_port": req.proxy_port, "credentials": projection_names}),
         );
         let _ = server.commit(&mut c, tx);
+    }
+    if start {
+        extras::credentials_projected(
+            server,
+            key,
+            task,
+            req.level,
+            req.network.as_str(),
+            &req.harnesses,
+            &projection_names,
+        );
+    }
+    if let Some(slot) = req.slot.as_deref().filter(|_| claimed) {
+        pool::claimed(server, key, task, slot);
+    }
+    if let Some(pk) = &pool_key {
+        pool::refill(server, pk, &checkout, &req);
     }
     if let BoxRunner::Container(c) = &b.runner
         && c.b().spec.in_box_vibeke
@@ -713,6 +800,8 @@ pub fn wrap_spawn(
     if b.task.is_none() {
         return Ok((argv.to_vec(), env, Isolation::default()));
     }
+    // An idle-suspended (paused) box runs again before a pane execs into it (13 §11).
+    extras::before_spawn(server, &b);
     let prepared = b.runner.runner().prepare(SpawnRequest {
         pane_id: pane_id.to_string(),
         argv: argv.to_vec(),
@@ -908,7 +997,17 @@ where
                     continue;
                 }
                 let (srv, c, t) = (server.clone(), ctx.clone(), tx.clone());
-                tokio::spawn(async move { let _ = t.send(crate::api::handle_line(&srv, &c, &l).await); });
+                tokio::spawn(async move {
+                    // A box port declared from a container pane becomes its forwarded host port.
+                    let l = match req.filter(|r| r.method == "preview.declare") {
+                        Some(mut r) => {
+                            r.params = forward::rewrite_declare(&srv, c.pane_scope.as_deref().unwrap_or(""), r.params).await;
+                            serde_json::to_string(&r).unwrap_or(l)
+                        }
+                        None => l,
+                    };
+                    let _ = t.send(crate::api::handle_line(&srv, &c, &l).await);
+                });
             }
             Some(out) = rx.recv() => {
                 wr.write_all(out.as_bytes()).await?;
@@ -1007,9 +1106,13 @@ pub fn broker_authorize(
 
 // ---- egress Interactions (13 §7) --------------------------------------------------------------
 
-fn decision_of(it: &Interaction) -> AskDecision {
+fn decision_of(it: &Interaction, global_ok: bool) -> AskDecision {
     match it.answer.as_ref().and_then(|a| a.decision) {
         Some(Decision::Allow) => AskDecision::AllowOnce,
+        // "allow always" + scope always = every contained task (persisted, 13 §7).
+        Some(Decision::AllowAlways) if global_ok && extras::answered_global(it) => {
+            AskDecision::AllowAlways
+        }
         Some(Decision::AllowAlways) => AskDecision::AllowTask,
         _ => AskDecision::Deny,
     }
@@ -1090,6 +1193,12 @@ fn open_egress_interaction(
     let (tx, rx) = watch::channel(None);
     let id = ulid();
     let profile = b.isolation.network.clone();
+    let global_ok = extras::cfg(server).sandbox.global_approvals;
+    let scopes = if global_ok {
+        "**allow always** = for this task (answer with `scope: always` for every task, persistently)"
+    } else {
+        "**allow always** = for this task"
+    };
     let it = {
         let mut c = server.core.lock().unwrap();
         let it = Interaction {
@@ -1101,7 +1210,7 @@ fn open_egress_interaction(
             status: InteractionStatus::Open,
             title: format!("Allow network access to {host}:{port}?"),
             body_md: Some(format!(
-                "A sandboxed process in {} wants to reach `{host}:{port}`, which is not on the `{profile}` network profile.\n\n**allow** = this connection only · **allow always** = for this task · **deny**",
+                "A sandboxed process in {} wants to reach `{host}:{port}`, which is not on the `{profile}` network profile.\n\n**allow** = this connection only · {scopes} · **deny**",
                 if task_handle.is_empty() {
                     "this pane".to_string()
                 } else {
@@ -1169,7 +1278,7 @@ fn open_egress_interaction(
         let decision = match answered {
             Ok(Ok(true)) => srv
                 .with_core(|c| c.interaction(&id).cloned())
-                .map(|it| decision_of(&it))
+                .map(|it| decision_of(&it, global_ok))
                 .unwrap_or(AskDecision::Deny),
             _ => {
                 crate::agents::close_interaction(
@@ -1188,6 +1297,16 @@ fn open_egress_interaction(
                 {
                     p.allow_for_task(&host, port);
                 }
+            }
+            AskDecision::AllowAlways => {
+                // Persisted and pushed into every live proxy, this one included.
+                extras::add_global(&srv, &format!("{host}:{port}"));
+                emit(
+                    &srv,
+                    "sandbox.egress_allowed",
+                    json!({"sandbox": key}),
+                    json!({"host": host, "port": port, "rule": "user", "scope": "global"}),
+                );
             }
             AskDecision::Deny => {
                 srv.sandbox
@@ -1226,12 +1345,15 @@ pub struct LaunchOpts {
     pub yolo: bool,
     pub isolate: Option<IsolationLevel>,
     pub network: Option<NetworkProfile>,
+    /// The one-time confirmation for `--yolo --isolate host` (13 §3, `confirm_host_yolo`).
+    pub confirm_host_yolo: bool,
 }
 
 impl LaunchOpts {
     pub fn from_params(p: &Value) -> Result<LaunchOpts, vk_proto::rpc::RpcError> {
         Ok(LaunchOpts {
             yolo: p.get("yolo").and_then(Value::as_bool).unwrap_or(false),
+            confirm_host_yolo: extras::confirm_param(p),
             isolate: match s(p, "isolate") {
                 Some(l) => Some(
                     IsolationLevel::parse(l)
@@ -1301,6 +1423,15 @@ pub async fn prepare_agent(
     }
     let bin = server.opts.bin.to_string_lossy().into_owned();
     if level == IsolationLevel::Host {
+        if opts.yolo {
+            // Vibeke launching yolo on the host: once per workspace, explicitly (13 §3).
+            let at = server
+                .pane_cwd(pane_id)
+                .or(pane.cwd.clone())
+                .map(PathBuf::from)
+                .unwrap_or_else(paths::home);
+            extras::check_host_yolo(server, &at, opts.confirm_host_yolo)?;
+        }
         return Ok(AgentLaunch {
             line: shell_line(&argv),
             argv,
@@ -1474,6 +1605,8 @@ fn set_pane_isolation(server: &Server, pane_id: &str, iso: Isolation) {
 /// box first syncs its clone back; it is removed only when nothing would be lost
 /// (`[isolation.container] on_finish`), otherwise stopped and kept.
 pub fn teardown(server: &Arc<Server>, key: &str) {
+    extras::expect_down(server, key);
+    forward::stop_all(server, key);
     stop_link(server, key);
     let removed = {
         let mut i = server.sandbox.inner.lock().unwrap();
@@ -1570,6 +1703,8 @@ fn ensure_tick(server: &Arc<Server>) {
             t.tick().await;
             let Some(srv) = weak.upgrade() else { return };
             tick(&srv);
+            extras::tick(&srv);
+            pool::check(&srv);
             // Nothing left to watch: stop ticking (no idle wakeups, spec 10 §1.3); the next
             // context or broker restarts it. Checked under the lock they are inserted under.
             let mut i = srv.sandbox.inner.lock().unwrap();
@@ -1640,6 +1775,8 @@ fn tick(server: &Arc<Server>) {
 /// contexts (proxy on the same port when free) and re-bind brokers for live sandboxed panes —
 /// the contained processes themselves survived in their holders.
 pub async fn restore(server: &Arc<Server>) {
+    // Nudges for user-typed host yolo runs (13 §3) watch the event stream from now on.
+    extras::start(server);
     let stale: Vec<Interaction> = server.with_core(|c| {
         c.model
             .interactions
@@ -1853,7 +1990,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     Err(h) => json!({"level": l.as_str(), "available": false, "hint": h}),
                 })
                 .collect();
-            let cfg = load_cfg();
+            let cfg = extras::cfg(server);
             let home = server.sandbox.home();
             let container = json!({
                 "runtime": server.sandbox.container_runtime().map(|p| p.to_string_lossy().into_owned()).or(cfg.container.runtime.clone()),
@@ -1874,6 +2011,20 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .values()
                 .cloned()
                 .collect();
+            // Usage samples, forwarded ports and idle state, for hovers and `sandbox list`.
+            let extra: HashMap<String, Value> = boxes
+                .iter()
+                .map(|b| {
+                    let fw: Vec<Value> = forward::list(server, &b.key)
+                        .into_iter()
+                        .map(|(bp, hp)| json!({"box_port": bp, "host_port": hp}))
+                        .collect();
+                    (
+                        b.key.clone(),
+                        json!({"usage": extras::usage(server, &b.key), "forwards": fw, "idle_suspended": extras::is_paused(server, &b.key), "slot": b.request.slot}),
+                    )
+                })
+                .collect();
             let list = tokio::task::spawn_blocking(move || {
                 boxes
                     .iter()
@@ -1889,13 +2040,18 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                         if let BoxRunner::Container(c) = &b.runner {
                             v["container"] = container::describe(c);
                         }
+                        if let Some(Value::Object(m)) = extra.get(&b.key) {
+                            for (k, x) in m {
+                                v[k] = x.clone();
+                            }
+                        }
                         v
                     })
                     .collect::<Vec<Value>>()
             })
             .await
             .unwrap_or_default();
-            Ok(json!({"sandboxes": list}))
+            Ok(json!({"sandboxes": list, "global_allow": extras::global_entries(server)}))
         }
         "sandbox.start" | "sandbox.stop" | "sandbox.remove" | "task.sync" => {
             if ctx.pane_scope.is_some() {
@@ -1903,6 +2059,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     ErrorKind::PermissionDenied,
                     format!("{method} needs a user client"),
                 )));
+            }
+            if matches!(method, "sandbox.stop" | "sandbox.remove")
+                && let Some(t) = s(p, "task")
+            {
+                let key = server
+                    .with_core(|c| c.task(t).map(|x| x.id.clone()))
+                    .unwrap_or_else(|| t.to_string());
+                extras::expect_down(server, &key);
             }
             container::api(server, method, p).await
         }
@@ -1913,8 +2077,22 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     "sandbox.allow needs a user client",
                 )));
             }
+            if p.get("global").and_then(Value::as_bool).unwrap_or(false) {
+                // Every contained task, persistently (13 §7 "always").
+                let Some(host) = s(p, "host") else {
+                    return Some(Err(invalid("host required")));
+                };
+                extras::add_global(server, host);
+                emit(
+                    server,
+                    "sandbox.egress_allowed",
+                    json!({}),
+                    json!({"host": host, "rule": "user", "scope": "global"}),
+                );
+                return Some(Ok(json!({"allowed": host, "scope": "global"})));
+            }
             let (Some(t), Some(host)) = (s(p, "task"), s(p, "host")) else {
-                return Some(Err(invalid("task and host required")));
+                return Some(Err(invalid("task and host required (or global: true)")));
             };
             let key = server
                 .with_core(|c| c.task(t).map(|x| x.id.clone()))
@@ -1940,7 +2118,12 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 None => Err(crate::api::not_found("sandbox", t)),
             }
         }
-        _ => return None,
+        _ => {
+            if let Some(r) = extras::api(server, ctx, method, p).await {
+                return Some(r);
+            }
+            return boundary::api(server, ctx, method, p).await;
+        }
     })
 }
 

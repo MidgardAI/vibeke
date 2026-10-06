@@ -3935,13 +3935,52 @@ PreviewUrlResult = TypedDict("PreviewUrlResult", {
 })
 
 SandboxAllowParams = TypedDict("SandboxAllowParams", {
-    "task": "Target",
+    "task": NotRequired["Target"],
     "host": str,
+    "global": NotRequired[bool],
 })
 
-SandboxAllowResult = TypedDict("SandboxAllowResult", {
+SandboxAllowResultXV0 = TypedDict("SandboxAllowResultXV0", {
     "task": str,
     "allowed": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxAllowResultXV1 = TypedDict("SandboxAllowResultXV1", {
+    "allowed": str,
+    "scope": Literal["global"],
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxAllowResult: TypeAlias = Union["SandboxAllowResultXV0", "SandboxAllowResultXV1"]
+
+SandboxCopyOutParams = TypedDict("SandboxCopyOutParams", {
+    "task": "Target",
+    "path": str,
+})
+
+SandboxCopyOutResultDetail = TypedDict("SandboxCopyOutResultDetail", {
+    "path": str,
+})
+
+SandboxCopyOutResult = TypedDict("SandboxCopyOutResult", {
+    "kind": Literal["copy_out"],
+    "outcome": Literal["applied"],
+    "detail": "SandboxCopyOutResultDetail",
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxDisallowParams = TypedDict("SandboxDisallowParams", {
+    "host": str,
+    "task": NotRequired["Target"],
+    "global": NotRequired[bool],
+})
+
+SandboxDisallowResult = TypedDict("SandboxDisallowResult", {
+    "host": str,
+    "scope": Literal["global", "task"],
+    "removed": bool,
+    "task": NotRequired[Optional[str]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -3964,6 +4003,11 @@ SandboxListResultSandboxesItemContainer = TypedDict("SandboxListResultSandboxesI
     "in_box_vibeke": Any,
 })
 
+SandboxListResultSandboxesItemForwardsItem = TypedDict("SandboxListResultSandboxesItemForwardsItem", {
+    "box_port": int,
+    "host_port": int,
+})
+
 SandboxListResultSandboxesItem = TypedDict("SandboxListResultSandboxesItem", {
     "sandbox": str,
     "task": NotRequired[str],
@@ -3976,10 +4020,110 @@ SandboxListResultSandboxesItem = TypedDict("SandboxListResultSandboxesItem", {
     "task_allow": NotRequired[Any],
     "credentials": Any,
     "container": NotRequired["SandboxListResultSandboxesItemContainer"],
+    "usage": NotRequired[Any],
+    "forwards": NotRequired[List["SandboxListResultSandboxesItemForwardsItem"]],
+    "idle_suspended": NotRequired[bool],
+    "slot": NotRequired[Optional[str]],
 })
 
 SandboxListResult = TypedDict("SandboxListResult", {
     "sandboxes": List["SandboxListResultSandboxesItem"],
+    "global_allow": NotRequired[List[str]],
+})
+
+SandboxLogsParams = TypedDict("SandboxLogsParams", {
+    "task": "Target",
+    "tail": NotRequired[int],
+})
+
+SandboxLogsResultEventsItem = TypedDict("SandboxLogsResultEventsItem", {
+    "seq": int,
+    "ts": int,
+    "type": str,
+    "data": Any,
+})
+
+SandboxLogsResult = TypedDict("SandboxLogsResult", {
+    "sandbox": str,
+    "task": Optional[str],
+    "level": str,
+    "container": Optional[str],
+    "setup": Optional[str],
+    "events": List["SandboxLogsResultEventsItem"],
+})
+
+SandboxPruneParams = TypedDict("SandboxPruneParams", {
+    "dry_run": NotRequired[bool],
+})
+
+SandboxPruneResultContainersItem = TypedDict("SandboxPruneResultContainersItem", {
+    "container": str,
+    "key": str,
+    "state": str,
+    "removed": bool,
+})
+
+SandboxPruneResultDirsItem = TypedDict("SandboxPruneResultDirsItem", {
+    "dir": str,
+    "removed": bool,
+})
+
+SandboxPruneResult = TypedDict("SandboxPruneResult", {
+    "dry_run": bool,
+    "containers": List["SandboxPruneResultContainersItem"],
+    "dirs": List["SandboxPruneResultDirsItem"],
+    "warnings": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxPushParams = TypedDict("SandboxPushParams", {
+    "task": "Target",
+    "remote": NotRequired[str],
+})
+
+SandboxPushResultDetail = TypedDict("SandboxPushResultDetail", {
+    "remote": str,
+    "branch": str,
+    "synced": Any,
+    "output": str,
+})
+
+SandboxPushResult = TypedDict("SandboxPushResult", {
+    "kind": Literal["push"],
+    "outcome": Literal["applied"],
+    "detail": "SandboxPushResultDetail",
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxRecoverParams = TypedDict("SandboxRecoverParams", {
+    "task": "Target",
+})
+
+SandboxRecoverResultSkippedItem = TypedDict("SandboxRecoverResultSkippedItem", {
+    "run": str,
+    "reason": str,
+})
+
+SandboxRecoverResult = TypedDict("SandboxRecoverResult", {
+    "task": str,
+    "created": bool,
+    "synced": Any,
+    "resumed": List[Any],
+    "skipped": List["SandboxRecoverResultSkippedItem"],
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxRelaunchParams = TypedDict("SandboxRelaunchParams", {
+    "run": "Target",
+    "isolate": NotRequired[Literal["sandbox", "container"]],
+    "network": NotRequired[Literal["none", "harness-apis", "package-registries", "dev", "open"]],
+})
+
+SandboxRelaunchResult = TypedDict("SandboxRelaunchResult", {
+    "run": "AgentRun",
+    "from": str,
+    "level": str,
+    "cursor": NotRequired["Cursor"],
 })
 
 SandboxRemoveParams = TypedDict("SandboxRemoveParams", {
@@ -3995,6 +4139,43 @@ SandboxRemoveResult = TypedDict("SandboxRemoveResult", {
     "error": NotRequired[str],
     "unsynced_kept": bool,
     "cursor": NotRequired["Cursor"],
+})
+
+SandboxRequestParams = TypedDict("SandboxRequestParams", {
+    "kind": Literal["push", "copy_out"],
+    "remote": NotRequired[str],
+    "path": NotRequired[str],
+    "pane": NotRequired["Target"],
+})
+
+SandboxRequestResult = TypedDict("SandboxRequestResult", {
+    "interaction": str,
+    "kind": str,
+    "status": Literal["pending"],
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxSetupTokenParams = TypedDict("SandboxSetupTokenParams", {
+    "token": str,
+})
+
+SandboxSetupTokenResult = TypedDict("SandboxSetupTokenResult", {
+    "stored": bool,
+    "path": str,
+    "env": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+SandboxShellParams = TypedDict("SandboxShellParams", {
+    "task": "Target",
+})
+
+SandboxShellResult = TypedDict("SandboxShellResult", {
+    "sandbox": str,
+    "level": Literal["container", "sandbox"],
+    "argv": List[str],
+    "env": List[List[str]],
+    "cwd": Any,
 })
 
 SandboxStartParams = TypedDict("SandboxStartParams", {
@@ -5358,8 +5539,18 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "preview.unmirror": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.url": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "sandbox.allow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.copy_out": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.disallow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "sandbox.logs": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.push": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.recover": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.relaunch": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.request": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "sandbox.setup_token": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "sandbox.shell": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.start": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "sandbox.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -6447,6 +6638,20 @@ ReviewSnapshotRefsRemovedSubject = TypedDict("ReviewSnapshotRefsRemovedSubject",
 
 ReviewSnapshotRefsRemovedData: TypeAlias = Any
 
+SandboxBoundaryActionSubject = TypedDict("SandboxBoundaryActionSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": str,
+})
+
+SandboxBoundaryActionData = TypedDict("SandboxBoundaryActionData", {
+    "kind": Literal["push", "copy_out", "credential_use"],
+    "interaction": Optional[str],
+    "outcome": Literal["applied", "failed", "denied", "expired", "cancelled"],
+    "detail": NotRequired[Any],
+    "credentials": NotRequired[List[str]],
+    "harnesses": NotRequired[List[str]],
+})
+
 SandboxCreatedSubject = TypedDict("SandboxCreatedSubject", {
     "task": str,
     "sandbox": str,
@@ -6459,6 +6664,142 @@ SandboxCreatedData = TypedDict("SandboxCreatedData", {
     "yolo": bool,
     "proxy_port": NotRequired[Optional[int]],
     "credentials": NotRequired[Any],
+})
+
+SandboxCredentialsNoticeSubject = TypedDict("SandboxCredentialsNoticeSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": str,
+})
+
+SandboxCredentialsNoticeData = TypedDict("SandboxCredentialsNoticeData", {
+    "harness": str,
+    "level": str,
+    "message": str,
+})
+
+SandboxEgressRevokedSubject = TypedDict("SandboxEgressRevokedSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": NotRequired[str],
+})
+
+SandboxEgressRevokedData = TypedDict("SandboxEgressRevokedData", {
+    "host": str,
+    "scope": Literal["global", "task"],
+})
+
+SandboxHostYoloConfirmedSubject = TypedDict("SandboxHostYoloConfirmedSubject", {
+    "workspace": str,
+})
+
+SandboxHostYoloConfirmedData: TypeAlias = Dict[str, Any]
+
+SandboxPortForwardedSubject = TypedDict("SandboxPortForwardedSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": str,
+})
+
+SandboxPortForwardedData = TypedDict("SandboxPortForwardedData", {
+    "box_port": int,
+    "host_port": int,
+    "source": Literal["declared", "discovered"],
+})
+
+SandboxPrunedSubject: TypeAlias = Dict[str, Any]
+
+SandboxPrunedData = TypedDict("SandboxPrunedData", {
+    "containers": int,
+    "dirs": int,
+})
+
+SandboxRecoveredSubject = TypedDict("SandboxRecoveredSubject", {
+    "task": str,
+    "sandbox": str,
+})
+
+SandboxRecoveredData = TypedDict("SandboxRecoveredData", {
+    "created": bool,
+    "resumed": int,
+    "skipped": int,
+})
+
+SandboxRelaunchedSubject = TypedDict("SandboxRelaunchedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+SandboxRelaunchedData = TypedDict("SandboxRelaunchedData", {
+    "from": str,
+    "level": str,
+})
+
+SandboxResourcePressureSubject = TypedDict("SandboxResourcePressureSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": str,
+})
+
+SandboxResourcePressureData = TypedDict("SandboxResourcePressureData", {
+    "resource": Literal["memory", "pids", "cpus"],
+    "value": float,
+    "limit": float,
+    "share": float,
+})
+
+SandboxRunnerLostSubject = TypedDict("SandboxRunnerLostSubject", {
+    "task": str,
+    "sandbox": str,
+})
+
+SandboxRunnerLostData = TypedDict("SandboxRunnerLostData", {
+    "state": str,
+    "runs": List[str],
+    "resumable": List[str],
+})
+
+SandboxSuggestedSubject = TypedDict("SandboxSuggestedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+SandboxSuggestedData = TypedDict("SandboxSuggestedData", {
+    "harness": str,
+    "level": str,
+    "hint": str,
+})
+
+SandboxTemplateCreatedSubject = TypedDict("SandboxTemplateCreatedSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": str,
+})
+
+SandboxTemplateCreatedData = TypedDict("SandboxTemplateCreatedData", {
+    "template": str,
+    "image": str,
+})
+
+SandboxWarmClaimedSubject = TypedDict("SandboxWarmClaimedSubject", {
+    "task": NotRequired[Optional[str]],
+    "sandbox": str,
+})
+
+SandboxWarmClaimedData = TypedDict("SandboxWarmClaimedData", {
+    "slot": str,
+})
+
+SandboxWarmReadySubject = TypedDict("SandboxWarmReadySubject", {
+    "sandbox": str,
+})
+
+SandboxWarmReadyData = TypedDict("SandboxWarmReadyData", {
+    "pool": str,
+    "index": int,
+})
+
+SandboxWarmRecycledSubject = TypedDict("SandboxWarmRecycledSubject", {
+    "sandbox": str,
+})
+
+SandboxWarmRecycledData = TypedDict("SandboxWarmRecycledData", {
+    "pool": str,
 })
 
 ScreenshotCapturedSubject = TypedDict("ScreenshotCapturedSubject", {
@@ -6964,7 +7305,22 @@ EVENT_TYPES = (
     "review.reviewer_unknown",
     "review.snapshot_created",
     "review.snapshot_refs_removed",
+    "sandbox.boundary_action",
     "sandbox.created",
+    "sandbox.credentials_notice",
+    "sandbox.egress_revoked",
+    "sandbox.host_yolo_confirmed",
+    "sandbox.port_forwarded",
+    "sandbox.pruned",
+    "sandbox.recovered",
+    "sandbox.relaunched",
+    "sandbox.resource_pressure",
+    "sandbox.runner_lost",
+    "sandbox.suggested",
+    "sandbox.template_created",
+    "sandbox.warm_claimed",
+    "sandbox.warm_ready",
+    "sandbox.warm_recycled",
     "screenshot.captured",
     "screenshot.deleted",
     "scrollback.forgotten",

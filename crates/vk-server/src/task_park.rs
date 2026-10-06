@@ -140,6 +140,8 @@ async fn park(server: &Arc<Server>, p: &Value) -> R {
         server.agents.end_run(server, &r.id, "parked");
         stopped.push(json!({"run": r.id, "handle": r.handle, "pane": r.pane, "harness": r.harness, "name": r.name, "pane_closed": pane_closed, "resumable": !r.resume_argv.is_empty() || r.harness_session_id.is_some()}));
     }
+    // A container task's box stops with it (13 §11: park = stop, resume restores).
+    crate::sandbox::extras::on_task_parked(server, &task.id).await;
     let record = json!({"runs": runs.iter().map(|r| &r.id).collect::<Vec<_>>()}).to_string();
     let mut out = set_status(
         server,
@@ -172,6 +174,7 @@ async fn resume(server: &Arc<Server>, p: &Value) -> R {
     let mut resumed = vec![];
     let mut skipped = vec![];
     if task.ownership != TaskOwnership::Attached {
+        crate::sandbox::extras::on_task_resumed(server, &task.id).await;
         for id in ids {
             let Some(run) = server.with_core(|c| {
                 c.run(&id)

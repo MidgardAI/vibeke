@@ -813,9 +813,29 @@ preview.profile :: {action?: list|reset = list, profile?: string, machine?: stri
 preview.profile.list :: {} => {profiles: [{name: string, path: string, running: bool, pid: int|null, machine: string|null, route: string|null, bytes: int}], root: string}
 # not allowed from a pane
 preview.profile.reset :: {profile?: string, machine?: string} => {profile: string, removed: bool}
-# not allowed from a pane
-sandbox.allow :: {task: Target, host: string} => {task: string, allowed: string}
-sandbox.list :: {} => {sandboxes: [{sandbox: string, task?: string, checkout?: string, level: string, provider?: string, network: any, yolo: bool, proxy_port?: int, task_allow?: any, credentials: any, container?: {container: string, state: string, image: any, code: any, workdir: any, clone?: {branch: string, base: string}, devcontainer: any, warnings: any, in_box_vibeke: any}}]}
+# not allowed from a pane; global = every contained task, persisted (13 §7 "always")
+sandbox.allow :: {task?: Target, host: string, global?: bool = false} => {task: string, allowed: string} | {allowed: string, scope: 'global'}
+# not allowed from a pane; without task (or with global) removes a global entry
+sandbox.disallow :: {host: string, task?: Target, global?: bool = false} => {host: string, scope: 'global'|'task', removed: bool, task?: string|null}
+sandbox.list :: {} => {sandboxes: [{sandbox: string, task?: string, checkout?: string, level: string, provider?: string, network: any, yolo: bool, proxy_port?: int, task_allow?: any, credentials: any, container?: {container: string, state: string, image: any, code: any, workdir: any, clone?: {branch: string, base: string}, devcontainer: any, warnings: any, in_box_vibeke: any}, usage?: any, forwards?: [{box_port: int, host_port: int}], idle_suspended?: bool, slot?: string|null}], global_allow?: [string]}
+# not allowed from a pane; the argv of an interactive debugging shell in the box (no credentials), run by the CLI
+sandbox.shell :: {task: Target} => {sandbox: string, level: container|sandbox, argv: [string], env: [[string]], cwd: any}
+# not allowed from a pane; container output (tail lines), setup log and the box's recent sandbox.* events
+sandbox.logs :: {task: Target, tail?: int = 200} => {sandbox: string, task: string|null, level: string, container: string|null, setup: string|null, events: [{seq: int, ts: int, type: string, data: any}]}
+# not allowed from a pane; removes this session's boxes without a context, orphan box dirs and stale broker dirs
+sandbox.prune :: {dry_run?: bool = false} => {dry_run: bool, containers: [{container: string, key: string, state: string, removed: bool}], dirs: [{dir: string, removed: bool}], warnings: [string]}
+# not allowed from a pane; a fresh box for a task whose box was lost (runner_lost), then resumes the lost runs
+sandbox.recover :: {task: Target} => {task: string, created: bool, synced: any, resumed: [any], skipped: [{run: string, reason: string}]}
+# not allowed from a pane; restart a host run from its native session inside an isolation level (13 §3 nudge)
+sandbox.relaunch :: {run: Target, isolate?: sandbox|container, network?: none|harness-apis|package-registries|dev|open} => {run: AgentRun, from: string, level: string}
+# a contained pane asks for a boundary action; answered through an approval Interaction on that pane
+sandbox.request :: {kind: push|copy_out, remote?: string = origin, path?: string, pane?: Target} => {interaction: string, kind: string, status: 'pending'}
+# not allowed from a pane; push the task branch from the host (container clone pulled first, hooks off)
+sandbox.push :: {task: Target, remote?: string = origin} => {kind: 'push', outcome: 'applied', detail: {remote: string, branch: string, synced: any, output: string}}
+# not allowed from a pane; copy one regular file of the checkout/clone into <state>/outbox/<box>/
+sandbox.copy_out :: {task: Target, path: string} => {kind: 'copy_out', outcome: 'applied', detail: {path: string}}
+# not allowed from a pane; stores the `claude setup-token` output (0600) for projection as CLAUDE_CODE_OAUTH_TOKEN
+sandbox.setup_token :: {token: string} => {stored: bool, path: string, env: string}
 # not allowed from a pane; container boxes only
 sandbox.remove :: {task: Target, force?: bool = false} => {container: string, action: string, sync: any, leftovers: any, error?: string, unsynced_kept: bool}
 # not allowed from a pane; container boxes only
@@ -1035,6 +1055,21 @@ assistant.consent_revoked :: {workspace: string} => {grants: int, cancelled: int
 assistant.purged :: {} => {count: int, reason: string}
 assistant.request_finished :: {assistant_request: string} => any
 sandbox.created :: {task: string, sandbox: string} => {level: string, provider: string, network: string, yolo: bool, proxy_port?: int|null, credentials?: any}
+sandbox.boundary_action :: {task?: string|null, sandbox: string} => {kind: push|copy_out|credential_use, interaction: string|null, outcome: applied|failed|denied|expired|cancelled, detail?: any, credentials?: [string], harnesses?: [string]}
+sandbox.runner_lost :: {task: string, sandbox: string} => {state: string, runs: [string], resumable: [string]}
+sandbox.recovered :: {task: string, sandbox: string} => {created: bool, resumed: int, skipped: int}
+sandbox.resource_pressure :: {task?: string|null, sandbox: string} => {resource: memory|pids|cpus, value: number, limit: number, share: number}
+sandbox.suggested :: {run: string, pane: string} => {harness: string, level: string, hint: string}
+sandbox.relaunched :: {run: string, pane: string} => {from: string, level: string}
+sandbox.host_yolo_confirmed :: {workspace: string} => {}
+sandbox.credentials_notice :: {task?: string|null, sandbox: string} => {harness: string, level: string, message: string}
+sandbox.port_forwarded :: {task?: string|null, sandbox: string} => {box_port: int, host_port: int, source: declared|discovered}
+sandbox.template_created :: {task?: string|null, sandbox: string} => {template: string, image: string}
+sandbox.warm_ready :: {sandbox: string} => {pool: string, index: int}
+sandbox.warm_claimed :: {task?: string|null, sandbox: string} => {slot: string}
+sandbox.warm_recycled :: {sandbox: string} => {pool: string}
+sandbox.pruned :: {} => {containers: int, dirs: int}
+sandbox.egress_revoked :: {task?: string|null, sandbox?: string} => {host: string, scope: global|task}
 screenshot.captured :: {machine?: string} => any
 screenshot.deleted :: {machine: string} => {ids: [string]}
 client.action :: {method: string, pane: any, target: any} => any

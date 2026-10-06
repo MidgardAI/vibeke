@@ -111,7 +111,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 |---|---|---|---|
 | `list` | - | `agent.list` | [--workspace w] [--harness h] [--all-machines] |
 | `get` | `<target>` | `agent.get` |  |
-| `start` | `<name>` | `agent.start` | --harness claude\|codex [--pane p] [--args a,b] [--yolo] [--isolate host\|sandbox] [--network p] |
+| `start` | `<name>` | `agent.start` | --harness claude\|codex [--pane p] [--args a,b] [--yolo] [--isolate host\|sandbox\|container] [--confirm-host-yolo] [--network p] |
 | `spawn` | `<name>` | `agent.spawn` | --harness h [--split-of p] [--prompt text] [--focus] |
 | `prompt` | `<target>` `<text>` | `agent.prompt` | [--wait] [--timeout-ms n] |
 | `wait` | `<target>` | `agent.wait` | [--until idle,done,needs_approval,...] [--timeout-ms n] |
@@ -166,7 +166,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `new` | `<title>` | `task.create` | [--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree\|jj_workspace\|none\|auto] [--yolo] [--isolate host\|sandbox\|container] [--network none\|harness-apis\|package-registries\|dev\|open] [--image ref] [--code clone\|worktree] [--devcontainer] [--build] |
+| `new` | `<title>` | `task.create` | [--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree\|jj_workspace\|none\|auto] [--yolo] [--isolate host\|sandbox\|container] [--confirm-host-yolo] [--network none\|harness-apis\|package-registries\|dev\|open] [--image ref] [--code clone\|worktree] [--devcontainer] [--build] |
 | `list` | - | `task.list` |  |
 | `park` | `<task>` | `task.park` | <task> stop its agents gracefully, keep the worktree |
 | `resume` | `<task>` | `task.resume` | <task> restart the parked agents from their sessions |
@@ -209,6 +209,15 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `start` | `<task>` | `sandbox.start` | create or start a container task's box |
 | `stop` | `<task>` | `sandbox.stop` | Stop the task container. Its pane processes end. |
 | `rm` | `<task>` | `sandbox.remove` | <task> [--force]: sync, then remove a container box (kept when unsynced unless --force) |
+| `disallow` | `<host>` | `sandbox.disallow` | <host> [--task t \| --global]: drop an egress approval (global without --task) |
+| `logs` | `<task>` | `sandbox.logs` | <task> [--tail n]: box output, setup log and recent sandbox events |
+| `prune` | - | `sandbox.prune` | [--dry-run]: remove boxes and box dirs no task owns any more |
+| `recover` | `<task>` | `sandbox.recover` | <task>: fresh box after the old one was lost; resumes the lost runs |
+| `relaunch` | `<run>` | `sandbox.relaunch` | <run> [--isolate sandbox\|container] [--network p]: restart a host yolo run from its session inside a box |
+| `push` | `<task>` | `sandbox.push` | <task> [--remote origin]: push the task branch from the host (boundary action) |
+| `copy-out` | `<task>` `<path>` | `sandbox.copy_out` | <task> <path>: copy one file out of the box into the host outbox |
+| `request` | `<kind>` | `sandbox.request` | push\|copy_out [--path p] [--remote r]: from inside a box, ask the host for a boundary action |
+| `setup-token` | - | `sandbox.setup_token` | store `claude setup-token` output read from stdin (projected as CLAUDE_CODE_OAUTH_TOKEN) |
 
 ## `vibeke policy`
 

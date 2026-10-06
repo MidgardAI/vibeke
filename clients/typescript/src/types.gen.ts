@@ -3662,13 +3662,46 @@ export type PreviewUrlResult = {
 };
 
 export type SandboxAllowParams = {
-  task: Target;
+  task?: Target;
   host: string;
+  global?: boolean;
 };
 
 export type SandboxAllowResult = {
   task: string;
   allowed: string;
+  cursor?: Cursor;
+} | {
+  allowed: string;
+  scope: "global";
+  cursor?: Cursor;
+};
+
+export type SandboxCopyOutParams = {
+  task: Target;
+  path: string;
+};
+
+export type SandboxCopyOutResult = {
+  kind: "copy_out";
+  outcome: "applied";
+  detail: {
+    path: string;
+  };
+  cursor?: Cursor;
+};
+
+export type SandboxDisallowParams = {
+  host: string;
+  task?: Target;
+  global?: boolean;
+};
+
+export type SandboxDisallowResult = {
+  host: string;
+  scope: "global" | "task";
+  removed: boolean;
+  task?: string | null;
   cursor?: Cursor;
 };
 
@@ -3700,7 +3733,100 @@ export type SandboxListResult = {
       warnings: unknown;
       in_box_vibeke: unknown;
     };
+    usage?: unknown;
+    forwards?: {
+      box_port: number;
+      host_port: number;
+    }[];
+    idle_suspended?: boolean;
+    slot?: string | null;
   }[];
+  global_allow?: string[];
+};
+
+export type SandboxLogsParams = {
+  task: Target;
+  tail?: number;
+};
+
+export type SandboxLogsResult = {
+  sandbox: string;
+  task: string | null;
+  level: string;
+  container: string | null;
+  setup: string | null;
+  events: {
+    seq: number;
+    ts: number;
+    type: string;
+    data: unknown;
+  }[];
+};
+
+export type SandboxPruneParams = {
+  dry_run?: boolean;
+};
+
+export type SandboxPruneResult = {
+  dry_run: boolean;
+  containers: {
+    container: string;
+    key: string;
+    state: string;
+    removed: boolean;
+  }[];
+  dirs: {
+    dir: string;
+    removed: boolean;
+  }[];
+  warnings: string[];
+  cursor?: Cursor;
+};
+
+export type SandboxPushParams = {
+  task: Target;
+  remote?: string;
+};
+
+export type SandboxPushResult = {
+  kind: "push";
+  outcome: "applied";
+  detail: {
+    remote: string;
+    branch: string;
+    synced: unknown;
+    output: string;
+  };
+  cursor?: Cursor;
+};
+
+export type SandboxRecoverParams = {
+  task: Target;
+};
+
+export type SandboxRecoverResult = {
+  task: string;
+  created: boolean;
+  synced: unknown;
+  resumed: unknown[];
+  skipped: {
+    run: string;
+    reason: string;
+  }[];
+  cursor?: Cursor;
+};
+
+export type SandboxRelaunchParams = {
+  run: Target;
+  isolate?: "sandbox" | "container";
+  network?: "none" | "harness-apis" | "package-registries" | "dev" | "open";
+};
+
+export type SandboxRelaunchResult = {
+  run: AgentRun;
+  from: string;
+  level: string;
+  cursor?: Cursor;
 };
 
 export type SandboxRemoveParams = {
@@ -3716,6 +3842,43 @@ export type SandboxRemoveResult = {
   error?: string;
   unsynced_kept: boolean;
   cursor?: Cursor;
+};
+
+export type SandboxRequestParams = {
+  kind: "push" | "copy_out";
+  remote?: string;
+  path?: string;
+  pane?: Target;
+};
+
+export type SandboxRequestResult = {
+  interaction: string;
+  kind: string;
+  status: "pending";
+  cursor?: Cursor;
+};
+
+export type SandboxSetupTokenParams = {
+  token: string;
+};
+
+export type SandboxSetupTokenResult = {
+  stored: boolean;
+  path: string;
+  env: string;
+  cursor?: Cursor;
+};
+
+export type SandboxShellParams = {
+  task: Target;
+};
+
+export type SandboxShellResult = {
+  sandbox: string;
+  level: "container" | "sandbox";
+  argv: string[];
+  env: string[][];
+  cwd: unknown;
 };
 
 export type SandboxStartParams = {
@@ -4983,8 +5146,18 @@ export interface Methods {
   "preview.unmirror": { params: PreviewUnmirrorParams; result: PreviewUnmirrorResult };
   "preview.url": { params: PreviewUrlParams; result: PreviewUrlResult };
   "sandbox.allow": { params: SandboxAllowParams; result: SandboxAllowResult };
+  "sandbox.copy_out": { params: SandboxCopyOutParams; result: SandboxCopyOutResult };
+  "sandbox.disallow": { params: SandboxDisallowParams; result: SandboxDisallowResult };
   "sandbox.list": { params: SandboxListParams; result: SandboxListResult };
+  "sandbox.logs": { params: SandboxLogsParams; result: SandboxLogsResult };
+  "sandbox.prune": { params: SandboxPruneParams; result: SandboxPruneResult };
+  "sandbox.push": { params: SandboxPushParams; result: SandboxPushResult };
+  "sandbox.recover": { params: SandboxRecoverParams; result: SandboxRecoverResult };
+  "sandbox.relaunch": { params: SandboxRelaunchParams; result: SandboxRelaunchResult };
   "sandbox.remove": { params: SandboxRemoveParams; result: SandboxRemoveResult };
+  "sandbox.request": { params: SandboxRequestParams; result: SandboxRequestResult };
+  "sandbox.setup_token": { params: SandboxSetupTokenParams; result: SandboxSetupTokenResult };
+  "sandbox.shell": { params: SandboxShellParams; result: SandboxShellResult };
   "sandbox.start": { params: SandboxStartParams; result: SandboxStartResult };
   "sandbox.status": { params: SandboxStatusParams; result: SandboxStatusResult };
   "sandbox.stop": { params: SandboxStopParams; result: SandboxStopResult };
@@ -5261,8 +5434,18 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "preview.unmirror": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.url": { mutating: false, scope: "pane", paneScope: "open" },
   "sandbox.allow": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.copy_out": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.disallow": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "sandbox.logs": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "sandbox.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.push": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.recover": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.relaunch": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.request": { mutating: true, scope: "pane", paneScope: "open" },
+  "sandbox.setup_token": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "sandbox.shell": { mutating: false, scope: "full", paneScope: "forbidden" },
   "sandbox.start": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.status": { mutating: false, scope: "pane", paneScope: "open" },
   "sandbox.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -6346,6 +6529,20 @@ export type ReviewSnapshotRefsRemovedSubject = {
 
 export type ReviewSnapshotRefsRemovedData = unknown;
 
+export type SandboxBoundaryActionSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxBoundaryActionData = {
+  kind: "push" | "copy_out" | "credential_use";
+  interaction: string | null;
+  outcome: "applied" | "failed" | "denied" | "expired" | "cancelled";
+  detail?: unknown;
+  credentials?: string[];
+  harnesses?: string[];
+};
+
 export type SandboxCreatedSubject = {
   task: string;
   sandbox: string;
@@ -6358,6 +6555,142 @@ export type SandboxCreatedData = {
   yolo: boolean;
   proxy_port?: number | null;
   credentials?: unknown;
+};
+
+export type SandboxCredentialsNoticeSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxCredentialsNoticeData = {
+  harness: string;
+  level: string;
+  message: string;
+};
+
+export type SandboxEgressRevokedSubject = {
+  task?: string | null;
+  sandbox?: string;
+};
+
+export type SandboxEgressRevokedData = {
+  host: string;
+  scope: "global" | "task";
+};
+
+export type SandboxHostYoloConfirmedSubject = {
+  workspace: string;
+};
+
+export type SandboxHostYoloConfirmedData = Record<string, unknown>;
+
+export type SandboxPortForwardedSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxPortForwardedData = {
+  box_port: number;
+  host_port: number;
+  source: "declared" | "discovered";
+};
+
+export type SandboxPrunedSubject = Record<string, unknown>;
+
+export type SandboxPrunedData = {
+  containers: number;
+  dirs: number;
+};
+
+export type SandboxRecoveredSubject = {
+  task: string;
+  sandbox: string;
+};
+
+export type SandboxRecoveredData = {
+  created: boolean;
+  resumed: number;
+  skipped: number;
+};
+
+export type SandboxRelaunchedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type SandboxRelaunchedData = {
+  from: string;
+  level: string;
+};
+
+export type SandboxResourcePressureSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxResourcePressureData = {
+  resource: "memory" | "pids" | "cpus";
+  value: number;
+  limit: number;
+  share: number;
+};
+
+export type SandboxRunnerLostSubject = {
+  task: string;
+  sandbox: string;
+};
+
+export type SandboxRunnerLostData = {
+  state: string;
+  runs: string[];
+  resumable: string[];
+};
+
+export type SandboxSuggestedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type SandboxSuggestedData = {
+  harness: string;
+  level: string;
+  hint: string;
+};
+
+export type SandboxTemplateCreatedSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxTemplateCreatedData = {
+  template: string;
+  image: string;
+};
+
+export type SandboxWarmClaimedSubject = {
+  task?: string | null;
+  sandbox: string;
+};
+
+export type SandboxWarmClaimedData = {
+  slot: string;
+};
+
+export type SandboxWarmReadySubject = {
+  sandbox: string;
+};
+
+export type SandboxWarmReadyData = {
+  pool: string;
+  index: number;
+};
+
+export type SandboxWarmRecycledSubject = {
+  sandbox: string;
+};
+
+export type SandboxWarmRecycledData = {
+  pool: string;
 };
 
 export type ScreenshotCapturedSubject = {
@@ -6859,7 +7192,22 @@ export interface EventMap {
   "review.reviewer_unknown": { subject: ReviewReviewerUnknownSubject; data: ReviewReviewerUnknownData };
   "review.snapshot_created": { subject: ReviewSnapshotCreatedSubject; data: ReviewSnapshotCreatedData };
   "review.snapshot_refs_removed": { subject: ReviewSnapshotRefsRemovedSubject; data: ReviewSnapshotRefsRemovedData };
+  "sandbox.boundary_action": { subject: SandboxBoundaryActionSubject; data: SandboxBoundaryActionData };
   "sandbox.created": { subject: SandboxCreatedSubject; data: SandboxCreatedData };
+  "sandbox.credentials_notice": { subject: SandboxCredentialsNoticeSubject; data: SandboxCredentialsNoticeData };
+  "sandbox.egress_revoked": { subject: SandboxEgressRevokedSubject; data: SandboxEgressRevokedData };
+  "sandbox.host_yolo_confirmed": { subject: SandboxHostYoloConfirmedSubject; data: SandboxHostYoloConfirmedData };
+  "sandbox.port_forwarded": { subject: SandboxPortForwardedSubject; data: SandboxPortForwardedData };
+  "sandbox.pruned": { subject: SandboxPrunedSubject; data: SandboxPrunedData };
+  "sandbox.recovered": { subject: SandboxRecoveredSubject; data: SandboxRecoveredData };
+  "sandbox.relaunched": { subject: SandboxRelaunchedSubject; data: SandboxRelaunchedData };
+  "sandbox.resource_pressure": { subject: SandboxResourcePressureSubject; data: SandboxResourcePressureData };
+  "sandbox.runner_lost": { subject: SandboxRunnerLostSubject; data: SandboxRunnerLostData };
+  "sandbox.suggested": { subject: SandboxSuggestedSubject; data: SandboxSuggestedData };
+  "sandbox.template_created": { subject: SandboxTemplateCreatedSubject; data: SandboxTemplateCreatedData };
+  "sandbox.warm_claimed": { subject: SandboxWarmClaimedSubject; data: SandboxWarmClaimedData };
+  "sandbox.warm_ready": { subject: SandboxWarmReadySubject; data: SandboxWarmReadyData };
+  "sandbox.warm_recycled": { subject: SandboxWarmRecycledSubject; data: SandboxWarmRecycledData };
   "screenshot.captured": { subject: ScreenshotCapturedSubject; data: ScreenshotCapturedData };
   "screenshot.deleted": { subject: ScreenshotDeletedSubject; data: ScreenshotDeletedData };
   "scrollback.forgotten": { subject: ScrollbackForgottenSubject; data: ScrollbackForgottenData };

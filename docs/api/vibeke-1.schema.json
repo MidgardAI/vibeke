@@ -14633,29 +14633,163 @@
           },
           "host": {
             "type": "string"
+          },
+          "global": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "host"
+        ]
+      },
+      "result": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "task": {
+                "type": "string"
+              },
+              "allowed": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "task",
+              "allowed"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "allowed": {
+                "type": "string"
+              },
+              "scope": {
+                "const": "global"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "allowed",
+              "scope"
+            ]
+          }
+        ]
+      }
+    },
+    "sandbox.copy_out": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "path": {
+            "type": "string"
           }
         },
         "required": [
           "task",
-          "host"
+          "path"
         ]
       },
       "result": {
         "type": "object",
         "properties": {
-          "task": {
-            "type": "string"
+          "kind": {
+            "const": "copy_out"
           },
-          "allowed": {
-            "type": "string"
+          "outcome": {
+            "const": "applied"
+          },
+          "detail": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
-          "task",
-          "allowed"
+          "kind",
+          "outcome",
+          "detail"
+        ]
+      }
+    },
+    "sandbox.disallow": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "global": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "host"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "task"
+            ]
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "host",
+          "scope",
+          "removed"
         ]
       }
     },
@@ -14739,6 +14873,38 @@
                     "warnings",
                     "in_box_vibeke"
                   ]
+                },
+                "usage": {},
+                "forwards": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "box_port": {
+                        "type": "integer"
+                      },
+                      "host_port": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "box_port",
+                      "host_port"
+                    ]
+                  }
+                },
+                "idle_suspended": {
+                  "type": "boolean"
+                },
+                "slot": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -14749,10 +14915,365 @@
                 "credentials"
               ]
             }
+          },
+          "global_allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "sandboxes"
+        ]
+      }
+    },
+    "sandbox.logs": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "tail": {
+            "type": "integer",
+            "default": 200
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "sandbox": {
+            "type": "string"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level": {
+            "type": "string"
+          },
+          "container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "setup": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer"
+                },
+                "ts": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "seq",
+                "ts",
+                "type",
+                "data"
+              ]
+            }
+          }
+        },
+        "required": [
+          "sandbox",
+          "task",
+          "level",
+          "container",
+          "setup",
+          "events"
+        ]
+      }
+    },
+    "sandbox.prune": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "containers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "container": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "removed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "container",
+                "key",
+                "state",
+                "removed"
+              ]
+            }
+          },
+          "dirs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "dir": {
+                  "type": "string"
+                },
+                "removed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "dir",
+                "removed"
+              ]
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "dry_run",
+          "containers",
+          "dirs",
+          "warnings"
+        ]
+      }
+    },
+    "sandbox.push": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "remote": {
+            "type": "string",
+            "default": "origin"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "push"
+          },
+          "outcome": {
+            "const": "applied"
+          },
+          "detail": {
+            "type": "object",
+            "properties": {
+              "remote": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "synced": {},
+              "output": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "remote",
+              "branch",
+              "synced",
+              "output"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "kind",
+          "outcome",
+          "detail"
+        ]
+      }
+    },
+    "sandbox.recover": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "synced": {},
+          "resumed": {
+            "type": "array",
+            "items": {}
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "reason"
+              ]
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "created",
+          "synced",
+          "resumed",
+          "skipped"
+        ]
+      }
+    },
+    "sandbox.relaunch": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "isolate": {
+            "type": "string",
+            "enum": [
+              "sandbox",
+              "container"
+            ]
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "none",
+              "harness-apis",
+              "package-registries",
+              "dev",
+              "open"
+            ]
+          }
+        },
+        "required": [
+          "run"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/AgentRun"
+          },
+          "from": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "run",
+          "from",
+          "level"
         ]
       }
     },
@@ -14802,6 +15323,150 @@
           "sync",
           "leftovers",
           "unsynced_kept"
+        ]
+      }
+    },
+    "sandbox.request": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "push",
+              "copy_out"
+            ]
+          },
+          "remote": {
+            "type": "string",
+            "default": "origin"
+          },
+          "path": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "interaction": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "status": {
+            "const": "pending"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "interaction",
+          "kind",
+          "status"
+        ]
+      }
+    },
+    "sandbox.setup_token": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "stored": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "env": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "stored",
+          "path",
+          "env"
+        ]
+      }
+    },
+    "sandbox.shell": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "sandbox": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "container",
+              "sandbox"
+            ]
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "cwd": {}
+        },
+        "required": [
+          "sandbox",
+          "level",
+          "argv",
+          "env",
+          "cwd"
         ]
       }
     },
@@ -22376,6 +23041,80 @@
       },
       "data": {}
     },
+    "sandbox.boundary_action": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "push",
+              "copy_out",
+              "credential_use"
+            ]
+          },
+          "interaction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "failed",
+              "denied",
+              "expired",
+              "cancelled"
+            ]
+          },
+          "detail": {},
+          "credentials": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "harnesses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "interaction",
+          "outcome"
+        ]
+      }
+    },
     "sandbox.created": {
       "subject": {
         "type": "object",
@@ -22424,6 +23163,490 @@
           "provider",
           "network",
           "yolo"
+        ]
+      }
+    },
+    "sandbox.credentials_notice": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness",
+          "level",
+          "message"
+        ]
+      }
+    },
+    "sandbox.egress_revoked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "task"
+            ]
+          }
+        },
+        "required": [
+          "host",
+          "scope"
+        ]
+      }
+    },
+    "sandbox.host_yolo_confirmed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object"
+      }
+    },
+    "sandbox.port_forwarded": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "box_port": {
+            "type": "integer"
+          },
+          "host_port": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "declared",
+              "discovered"
+            ]
+          }
+        },
+        "required": [
+          "box_port",
+          "host_port",
+          "source"
+        ]
+      }
+    },
+    "sandbox.pruned": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "containers": {
+            "type": "integer"
+          },
+          "dirs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "containers",
+          "dirs"
+        ]
+      }
+    },
+    "sandbox.recovered": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "created": {
+            "type": "boolean"
+          },
+          "resumed": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created",
+          "resumed",
+          "skipped"
+        ]
+      }
+    },
+    "sandbox.relaunched": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "level"
+        ]
+      }
+    },
+    "sandbox.resource_pressure": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string",
+            "enum": [
+              "memory",
+              "pids",
+              "cpus"
+            ]
+          },
+          "value": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "share": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "resource",
+          "value",
+          "limit",
+          "share"
+        ]
+      }
+    },
+    "sandbox.runner_lost": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resumable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "state",
+          "runs",
+          "resumable"
+        ]
+      }
+    },
+    "sandbox.suggested": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness",
+          "level",
+          "hint"
+        ]
+      }
+    },
+    "sandbox.template_created": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "template",
+          "image"
+        ]
+      }
+    },
+    "sandbox.warm_claimed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "slot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slot"
+        ]
+      }
+    },
+    "sandbox.warm_ready": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "pool": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pool",
+          "index"
+        ]
+      }
+    },
+    "sandbox.warm_recycled": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "sandbox": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "pool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pool"
         ]
       }
     },

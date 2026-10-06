@@ -9,6 +9,9 @@
 //! - host → box `listen:<id>`: the box binds `<broker_dir>/<id>.sock` for one pane and keeps it
 //!   while the channel stays open; each local connection becomes a box → host `broker:<id>`
 //!   channel, which the host bridges to that pane's broker socket.
+//! - host → box `tcp:<port>`: the box connects to its own `127.0.0.1:<port>` (a dev server);
+//!   the host's preview forwarder carries box ports out this way (13 §4, acceptance 2). The box
+//!   can never open a `tcp:` channel towards the host.
 
 use crate::mux::{Acceptor, Mux, Stream};
 use anyhow::{Result, bail};
@@ -66,6 +69,21 @@ where
         let cell = c2.clone();
         let dir = dir.clone();
         Box::pin(async move {
+            // Host → box `tcp:<port>`: a preview of a dev server listening inside the box
+            // (13 §4, acceptance 2). Only the box's own loopback, never another address.
+            if let Some(port) = kind.strip_prefix("tcp:") {
+                let port: u16 = port
+                    .parse()
+                    .ok()
+                    .filter(|p| *p > 0)
+                    .ok_or_else(|| anyhow::anyhow!("bad tcp channel {kind}"))?;
+                let s = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                    Ok(s) => s,
+                    Err(_) => tokio::net::TcpStream::connect(("::1", port)).await?,
+                };
+                let _ = s.set_nodelay(true);
+                return Ok(Box::new(s) as Box<dyn Stream>);
+            }
             let Some(id) = kind.strip_prefix("listen:").filter(|i| valid_id(i)) else {
                 bail!("channel {kind} is not offered by the box");
             };
@@ -212,6 +230,45 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert!(!sock.exists());
+    }
+
+    #[tokio::test]
+    async fn tcp_channel_reaches_the_box_loopback_only() {
+        let t = tempfile::tempdir().unwrap();
+        // "Inside the box": a dev server on loopback.
+        let dev = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dport = dev.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = dev.accept().await {
+                tokio::spawn(async move {
+                    let mut b = [0u8; 3];
+                    s.read_exact(&mut b).await.unwrap();
+                    s.write_all(b"pong").await.unwrap();
+                });
+            }
+        });
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+        let host = Mux::start(
+            ar,
+            aw,
+            "bridge",
+            Some(host_acceptor(None, t.path().to_path_buf())),
+        );
+        let bd = t.path().join("brokers");
+        tokio::spawn(async move { box_side(br, bw, None, bd).await });
+        let mut ch = host.open(&format!("tcp:{dport}")).await.unwrap();
+        ch.write_all(b"pin").await.unwrap();
+        let mut out = [0u8; 4];
+        ch.read_exact(&mut out).await.unwrap();
+        assert_eq!(&out, b"pong");
+        // Ports only, never an address; port 0 is refused.
+        assert!(host.open("tcp:0").await.is_err());
+        assert!(host.open("tcp:10.0.0.1:80").await.is_err());
+        // The box can never open a tcp channel towards the host.
+        let acc = host_acceptor(None, t.path().to_path_buf());
+        assert!(acc(format!("tcp:{dport}")).await.is_err());
     }
 
     #[tokio::test]
