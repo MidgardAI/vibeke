@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 242,
+  "method_count": 243,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -553,8 +553,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{upload_id: string, stage?: browser}",
-      "result": "{hash: string, sha256: string, size: int, path_on_machine: string, path: string}"
+      "params": "{upload_id: string, stage?: browser, unpack?: tar}",
+      "result": "{hash: string, sha256: string, size: int, path_on_machine: string, path: string, unpacked?: bool}"
     },
     {
       "name": "blob.put",
@@ -2186,6 +2186,20 @@
       "spec": "`{pane, zoomed?: toggle}` → `{tab}`",
       "params": "{pane?: Target, zoomed?: bool}",
       "result": "{tab: Tab}"
+    },
+    {
+      "name": "paste.translated",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, files: [{blob: string, bytes?: int, local_name?: string, dir?: bool}], target_namespace?: string}",
+      "result": "{recorded: int}"
     },
     {
       "name": "plugin.action.list",
