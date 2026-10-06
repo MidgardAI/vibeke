@@ -262,6 +262,25 @@ Semantics in [06](06-remote-and-preview.md) Part B.
 | `preview.mirror` / `preview.unmirror` | `{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only |
 | `preview.forget` | `{preview}` → `{}` |
 | `preview.profile_list` / `preview.profile_reset` | `{machine?|task?}` → `{profiles}` / `{}` |
+
+**As built (Goal 03 Stage 1; `vk-server::preview`).** `Preview` = `{id, handle: "v<N>", machine, pane?: pane ULID, task?, port, path, label?, url, scheme, status: suggested|declared|up|down|gone, source: declared|listener|output_url|banner, pid?, first_seen_ms, last_seen_ms}`; JSON results add `pane_handle` and `task_handle`. Previews are entity documents (`kind = "preview"`, gone ones closed) and `SessionModel.previews` (render stream; last field). A target is `v4`, a ULID, or `devbox/v4`; `machine` in params does the same. Machine-qualified calls are executed by the local server on the remote server over its own bridge link.
+
+| Method | Params → Result (as built) |
+|---|---|
+| `preview.declare` | `{port, path?: "/", label?, scheme?: http|https, pane?: target (default: the calling pane), task?}` → `{preview, cursor}` — a live preview on that port (any source) is promoted and becomes `source: declared`; otherwise a new `declared` record, probed at once (→ `up`/`down`). Event `preview.declared`. |
+| `preview.list` | `{machine?, task?, pane?, all?: bool, status?: suggested|declared|up|down|all}` → `{previews, machine}` — suggestions only with `all` or `status`. |
+| `preview.get` | `{preview}` → `{preview}` |
+| `preview.promote` | `{preview}` → `{preview}` — `suggested → up` (event `preview.up`). |
+| `preview.forget` (alias `preview.dismiss`) | `{preview}` → `{}` — closes the record (event `preview.gone`) and suppresses re-suggestion of the same `(port, pid)`. |
+| `preview.url` | `{preview}` → `{remote_url, profile_url}` |
+| `preview.open` | `{preview | url, window?: bool, split?, machine?}` → `{opened_in: "window"|"default_browser", url, machine, profile, profile_dir, browser, browser_kind, pid, reused, socks_port, route: none|loopback|remote}` — Stage 1 opens windows only: without `window: true` (or `preview.mode = "window"`) → `unsupported {fallback: "window"}`. Opening promotes a suggestion. URLs must be `http(s)`; from a pane only loopback URLs and only this machine's previews (`permission_denied`). A profile already open for another machine/route → `conflict`; no browser found → `unsupported`. Event `preview.opened`. |
+| `preview.profile.list` (aliases `preview.profile_list`, `preview.profile {action: "list"}`) | `{}` → `{profiles: [{name, path, running, pid?, machine?, route?, bytes}], root}` |
+| `preview.profile.reset` (aliases `preview.profile_reset`, `preview.profile {action: "reset", profile}`) | `{profile}` → `{profile, removed}` — `conflict` while its browser runs; not allowed from a pane. |
+| `preview.status` | `{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`. |
+
+Events: `preview.discovered`, `preview.declared`, `preview.up`, `preview.down`, `preview.gone` (subject `{preview, preview_handle, pane, task, machine}`, data `{preview}`) and `preview.opened` (data `{url, opened_in, profile, browser}`). `preview.test.register_browser {pid, profile, machine, route?}` exists only when the server runs with `VIBEKE_TEST_HOOKS=1`. Not built yet: `preview.mirror`/`unmirror`, proxy mode (B4), `client` routing of `open`.
+
+CLI: `vibeke preview declare <port> [--path p] [--label l] [--pane p] [--task k]`, `list [--all] [--task k] [--pane p]`, `get|url|promote|forget <v>`, `open <v|machine/v|url> --window`, `profile list|reset <name>`, `status`. With `--machine m`, `open`, `url`, `profile` and `status` run on the local server with `machine: m` (the browser runs on the viewing machine); the others are forwarded to `m` as usual.
 | `browser.session_open` | `{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run |
 | `browser.navigate` | `{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5) |
 | `browser.click` / `browser.type` / `browser.press` | `{browser_session, selector|text|role, text?, key?, submit?}` → `{}` |

@@ -30,6 +30,8 @@ Crates: `vk-remote` (machines, bootstrap, bridge, transports, forwarding) and `v
 
 **Implementation note (Goal 01):** the first build puts the per-machine SSH link in the local *client* (TUI/CLI) instead of the local server: the client owns one bridge mux per machine and opens raw channels to each remote server, over which the unchanged control and render protocols run. The unified sidebar, `--machine` forwarding (no local fallback) and reconnection work this way; a local-server proxy can be added when a non-terminal surface (Phase 2 gateway) needs it.
 
+**Implementation note (Goal 03 Stage 1, partial reversal):** the preview route needs a link owned by the *local server* (the SOCKS listener and the managed browser live there, not in a short-lived CLI). `Link` moved from the `vibeke` binary into `vk-remote::link` (reconnecting, with an injectable connector) and the local server now holds **one ControlMaster-backed link per machine, opened on demand** for `tcp:`/`egress:` channels and for preview lookups (`preview.get` on the remote server over a `socket` channel). The TUI/CLI still own their own links for control and render streams; with ControlMaster the extra link costs no new SSH handshake. Federating clients through the local server remains future work.
+
 ### A2. Saved machines
 
 ```
@@ -80,7 +82,7 @@ One SSH stdio stream carries many logical channels.
   - `control`: JSON-RPC, exactly as on the local socket.
   - `render`: the render stream for one client.
   - `events`: an event subscription.
-  - `tcp_forward{host, port}`: preview forwarding, opened by the local side.
+  - `tcp_forward{host, port}`: preview forwarding, opened by the local side. *(Built as kind string `tcp:<host>:<port>`; the bridge refuses any host that is not `localhost`/`*.localhost`, `127.0.0.0/8` or `::1` before connecting. `egress:<host>:<port>` is the separate kind for `profile_route = "remote"`, refused when the remote's `preview.allow_remote_egress = false`.)*
   - `blob_put` / `blob_get`: images, screenshots, uploads.
   - `holder_direct`: reserved.
 - **Flow control**: per-channel credit windows (default 256 KiB), so a bulk screenshot or blob transfer can't starve keystrokes.
@@ -240,6 +242,15 @@ Priorities: **declared previews first**; automatic discovery produces *suggestio
    - Suggestions become `up` previews automatically only when `preview.auto_discover = "promote"`; default `"suggest"`.
 3. **Lifecycle**: `suggested|declared → up ⇄ down → gone` (gone after 60 s absent + process change, or task removal). Scoped to `(machine, runner, pane, task)`.
 
+**Implementation notes (Goal 03 Stage 1)** — `vk-preview` (primitives) + `vk-server::preview` (wiring):
+- **One preview per port per machine.** A listener, an output URL and a declaration for the same port merge into one record (banner adds `label`/`path`, the listener scan adds `pid`/`pane`; declaring a suggested port promotes it and sets `source = declared`).
+- **Which panes are scanned:** a pane whose foreground is not a shell, *or* whose shell has child processes (one `proc_listchildpids`/procfs call). Deviation: the foreground report lags for programs that print nothing (e.g. a server stuck in `getfqdn()`), and `pnpm dev &` is common. A shell with no children costs nothing else. Scans run every 2 s and on `pane.process_changed` (debounced 300 ms), in a blocking task: process tree (depth 8) → libproc `PROC_PIDLISTFDS` + `PROC_PIDFDSOCKETINFO` (macOS) / `/proc/<pid>/fd` ⨝ `/proc/net/tcp{,6}` (Linux) → LISTEN sockets bound to loopback or wildcard.
+- **Classification:** new ports get a 1 s `HEAD / HTTP/1.0` probe (any `HTTP/` reply = HTTP; others hidden). No TLS probe yet: `https` output URLs count as up on TCP connect.
+- **Output URLs:** the pane feed loop only splits new bytes into lines and keeps those containing `://` (bounded tail, 4 KiB lines, 256-line queue, dropped when full); escape stripping (CSI/OSC, with OSC 8 targets kept), the URL regex and the Vite `➜  Local:` / Next `- Local:` banner match run in a separate task. The `<hostname>` alternative of the regex is not implemented. A URL creates a suggestion only if its port answers within ~5 s (10 probes); `0.0.0.0` becomes `localhost` in the stored URL. Replayed output (recovery) is never scanned.
+- **Presence:** a listener found in the scan, else (pane not scanned, declared, or output-sourced) a TCP connect to `127.0.0.1`/`::1`. `last_seen_ms` updates stay in memory; only status/pid/pane/label/path/url changes are committed (with events), so a running preview costs no writes.
+- **Gone:** after 60 s absent (no extra "process change" condition); declared previews stay `down` until forgotten; previews of a closed pane retire unless declared. `preview.forget` remembers `(port, pid)` so the same listener isn't re-suggested; a new process on the port is.
+- Bound: 64 previews per server. Task `[previews]` port-lease declarations and MCP `preview_declare` are not built yet.
+
 ### B3. Primary: a Vibeke-managed browser routed over SOCKS5, in a pane or a window (M3)
 
 One route, two ways to look at it. The route (B3.1) makes `localhost` mean the remote's localhost. The **browser pane** (B3.2) is the default view; the **external window** (B3.3) uses the same profile and route.
@@ -289,6 +300,13 @@ A **browser pane** is a non-PTY pane kind whose content is a live Chromium viewp
 #### B3.3 The external window
 
 - **Open in window** (from the browser pane, `vibeke preview open v4 --window`, or `preview.mode = "window"`) hands the same profile to a headful browser: the server closes the headless instance (a profile can be open in only one Chromium process) and opens the window at the same URL with logins intact. Closing the window, or "back to pane", hands it back. Use it for DevTools, extensions, password managers or a second screen.
+
+**Implementation notes (Goal 03 Stage 1, window only):**
+- `vibeke preview open <v4 | devbox/v4 | url> --window [--machine devbox]`. `--machine` is *not* forwarded for `preview.open`/`url`/`profile`/`status`: the CLI sends them to the local server with `machine` set, because the browser runs on the viewing machine. The local server resolves a remote preview with `preview.get`/`preview.promote` on the remote server over its own link.
+- Browser discovery: `[preview] browser` (or an absolute `profile_browser` path), `$VIBEKE_BROWSER`, newest Playwright `chromium-<rev>` build, then `/Applications` (and `~/Applications`) Chromium, Chrome, Brave, Edge bundles (Linux: `chromium`, `google-chrome`, `brave-browser`, `microsoft-edge` on `PATH`). Firefox is not supported yet.
+- Arguments: `--user-data-dir=<state>/browser-profiles/<profile>` (directory created 0700 and checked to be under that root), `--no-first-run --no-default-browser-check --disable-sync --password-store=basic --use-mock-keychain`, and for remote machines `--proxy-server=socks5://127.0.0.1:<port> --proxy-bypass-list=<-loopback>`. Local-machine previews get no proxy (`profile` named `local`), or the system browser with `preview.local_browser = "default"`.
+- One browser process per profile: the root pid (+ start time) is tracked and persisted; a second open runs the same command line, which hands the URL to the running instance (new tab) and exits. A profile already open for another machine/route is a `conflict`. After a server restart, still-running browsers on our profile dirs are re-adopted (pid, start time and `--user-data-dir` argv must match) and the previous SOCKS port is re-bound so their proxy setting keeps working.
+- Pane mode returns `unsupported {fallback: "window"}` until Stage 2.
 #### B3.4 Profiles, routing and authentication (both views)
 
 - Both views use a **Vibeke-managed browser profile** for the preview's machine (or task, `preview.profile_scope = "machine" | "task"`) and open `http://localhost:5173/<path>`: exactly the URL the dev server printed.
@@ -302,6 +320,11 @@ A **browser pane** is a non-PTY pane kind whose content is a live Chromium viewp
   - Container/VM runners (13): loopback means the box's loopback; non-loopback follows the box's egress policy when `"remote"`.
 - **Why this is primary:** the app sees `Host: localhost:5173` and its real origin, so Vite `allowedHosts`, hard-coded HMR `clientPort`, `localhost` OAuth redirect URIs, service workers (localhost is a secure context), cookies and CORS all behave exactly as on the remote machine. No mirror listeners and no rewriting.
 - **Authentication of the SOCKS listener.** Chromium does not support SOCKS5 username/password auth, so the listener authenticates by **peer lookup**: for each accepted loopback connection, the server resolves the client socket's owning PID (macOS: libproc socket enumeration matching the 4-tuple; Linux: `/proc/net/tcp` inode → `/proc/<pid>/fd`) and accepts only if the PID belongs to the managed browser's process tree for that profile. Other processes (including other local users) get the SOCKS failure reply. This is a guardrail against other users and stray processes, not against same-UID malware (09 §2).
+
+**Implementation notes (Goal 03 Stage 1):**
+- One listener per server on `127.0.0.1`, started lazily on the first remote-profile open (nothing listens until then), ephemeral port persisted and preferred on restart; shown as `server.status.preview.socks_port` and `preview.status`. SOCKS5 no-auth `CONNECT` with IPv4, domain and IPv6 address types; other commands get `0x07`, unknown address types `0x08`.
+- Peer check after the handshake, in a blocking task: for each live managed browser (root pid + start time), its process tree (depth 6) is searched for a TCP socket whose local port is the client's port and whose remote port is the listener's (libproc on macOS; `/proc/net/tcp{,6}` inode → `/proc/<pid>/fd` on Linux). Only the browser's tree is enumerated, never the whole system. The owning tree determines the profile, and with it the machine and route. Failure → reply `0x02`, logged and counted (`preview.status.rejected`).
+- Routing: `localhost`, `*.localhost`, `127/8`, `::1` (incl. v4-mapped) and `0.0.0.0`/`::` → the profile's machine (local: direct connect to 127.0.0.1/::1; remote: `tcp:` channel; a closed port gives `0x05`). Otherwise `loopback` route = direct from this machine, **except** that a name resolving to a loopback address is still sent to the profile's machine (never this machine's loopback); `remote` route = `egress:` channel, refused with `0x02` when `preview.allow_remote_egress = false`.
 - **Isolation between tasks**: per-task profiles (`profile_scope = "task"`) separate cookies and storage when two tasks run the same app. Same-port collisions across machines are impossible because each profile routes to one machine.
 - **Local-machine previews** need no proxy: the browser pane or window uses the profile without a proxy (or the default browser if `preview.local_browser = "default"`).
 - Profiles persist (logins survive), live under Vibeke state, and never touch the user's real browser profile. `vibeke preview profile reset devbox` wipes one.
@@ -470,6 +493,8 @@ pane_location   = "client"     # client (render on the viewing machine; recommen
 profile_browser = "auto"       # window only: auto | chrome | chromium | edge | brave | firefox (the pane always uses Chromium)
 profile_scope   = "machine"    # machine | task
 profile_route   = "loopback"   # loopback | remote
+allow_remote_egress = true     # remote-routed profiles may egress via the machine (local side opens egress: channels; the remote's bridge accepts them)
+browser         = ""           # window browser binary (Chromium family); empty = discover (Stage 1)
 local_browser   = "profile"    # profile | default
 proxy_port      = 47800
 tls_origin      = false
