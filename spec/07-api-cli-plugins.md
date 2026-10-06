@@ -463,6 +463,7 @@ Server push (JSON-RPC notification):
 | `config.set` | `{key, value, persist?: false}` → `{}` — runtime override |
 | `config.validate` | `{path?}` → `{errors: [{line, col, message}]}` |
 | `search.query` | `{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts |
+| `scrollback.forget` | `{pane}\|{workspace}\|{before}\|{all: true}` (exactly one), `dry_run?: false` → `{scope, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata, in one transaction. Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`. |
 | `layout.list` / `layout.get` | `{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4] |
 
 **Implemented (M4).**
@@ -775,6 +776,8 @@ vibeke config    path|get|set|validate|edit|reset-keys
 vibeke import    herdr [--config] [--session] [--dry-run]
 vibeke api       schema|methods|call <method> [json]      # raw access
 vibeke doctor    [--fix] [--rebuild-index]   # --rebuild-index: rebuild FTS + derived caches (state tables are the source of truth, 02)
+                                # as built: --rebuild-index rebuilds scrollback_fts/archive_panes from the segments, offline, server stopped (02); --fix is not built
+vibeke forget    --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   # scrollback archive only (02, 09 §9.3); method scrollback.forget
 vibeke debug     bundle [--out file] | holders | replay <pane>
 vibeke update    [--check] [--channel stable|preview] [--rollback]
 vibeke channel   get|set <stable|preview>

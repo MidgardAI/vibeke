@@ -712,7 +712,7 @@ fn status_of(server: &Server, sessions: &[(String, String)]) -> HashMap<String, 
 // ---- params -----------------------------------------------------------------------------
 
 /// `since`/`until`: epoch ms, `7d`/`12h`/`30m` ago, or an RFC 3339 date/time.
-fn time_param(p: &Value, k: &str) -> Result<Option<i64>, RpcError> {
+pub(crate) fn time_param(p: &Value, k: &str) -> Result<Option<i64>, RpcError> {
     let Some(v) = p.get(k).filter(|v| !v.is_null()) else {
         return Ok(None);
     };

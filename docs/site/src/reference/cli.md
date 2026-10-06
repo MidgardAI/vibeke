@@ -4,7 +4,7 @@
 
 Every command is `vibeke <noun> <verb> [positionals] [--flag value]` and maps onto one control-API method (see the [API reference](api.md)). Global flags: `--session NAME`, `--machine NAME`, `--socket PATH`, `--timeout MS`, `--json`, `--pretty`, `--quiet`, `--no-spawn`. Results print as JSON on stdout when `--json` is set or stdout is not a terminal.
 
-Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the server if needed), `vibeke ssh <host>`, `vibeke update`, `vibeke doctor`, `vibeke --skill`, `vibeke --default-config`, `vibeke --version`.
+Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the server if needed), `vibeke ssh <host>`, `vibeke update`, `vibeke doctor [--rebuild-index]` (offline rebuild of the scrollback search index, server stopped), `vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]` (delete archived scrollback; calls `scrollback.forget`), `vibeke --skill`, `vibeke --default-config`, `vibeke --version`.
 
 ## `vibeke server`
 
