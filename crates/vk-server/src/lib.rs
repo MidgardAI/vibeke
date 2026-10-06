@@ -111,7 +111,12 @@ pub struct Server {
     pub boot_id: String,
     pub started: Instant,
     pub archive: Mutex<Archive>,
+    /// Rows waiting for the next FTS flush. Lock order: `archive` → `core` → `fts_buf`; the
+    /// batch is drained and indexed under the archive lock, which purges also hold.
     pub fts_buf: Mutex<Vec<(String, u64, i64, String)>>,
+    /// Test hook: runs in [`Server::housekeeping`] right after the FTS batch was drained.
+    #[cfg(test)]
+    pub(crate) after_fts_drain: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     pub tokens: Mutex<HashMap<String, String>>,
     pub tracking: tracking::State,
     pub gateway: gateway_api::State,
@@ -203,6 +208,8 @@ impl Server {
             boot_id: ulid(),
             started: Instant::now(),
             fts_buf: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            after_fts_drain: Mutex::new(None),
             tokens: Mutex::new(tokens),
             tracking: Default::default(),
             gateway: Default::default(),
@@ -1358,14 +1365,16 @@ impl Server {
     pub fn archive_rows(&self, pane: &str, rows: Vec<ArchivedRow>) {
         let ts = now_ms();
         {
-            let mut f = self.fts_buf.lock().unwrap();
-            f.extend(
+            // Under the archive lock (see `fts_buf`): a purge sees the rows either in both the
+            // archive and the buffer, or in neither.
+            let mut a = self.archive.lock().unwrap();
+            self.fts_buf.lock().unwrap().extend(
                 rows.iter()
                     .filter(|r| !r.t.is_empty())
                     .map(|r| (pane.to_string(), r.n, ts, r.t.clone())),
             );
+            let _ = a.append(pane, &rows);
         }
-        let _ = self.archive.lock().unwrap().append(pane, &rows);
         self.housekeeping_wake.notify_one();
     }
 
@@ -1377,8 +1386,16 @@ impl Server {
     /// second while there is something to do ([`Server::housekeeping_wake`]), never when idle.
     pub fn housekeeping(&self) {
         self.housekeeping_runs.fetch_add(1, Ordering::Relaxed);
-        let _ = self.archive.lock().unwrap().flush();
+        // The archive lock is held from the drain until the batch is indexed: `forget` and
+        // retention purge under it, so a purge can't run between the two and have this batch
+        // re-insert text it just deleted (leftovers review finding 7).
+        let mut a = self.archive.lock().unwrap();
+        let _ = a.flush();
         let rows = std::mem::take(&mut *self.fts_buf.lock().unwrap());
+        #[cfg(test)]
+        if let Some(hook) = self.after_fts_drain.lock().unwrap().as_ref() {
+            hook();
+        }
         if !rows.is_empty() {
             let c = self.core.lock().unwrap();
             let _ = c.store.fts_insert(&rows);
@@ -1401,6 +1418,7 @@ impl Server {
                 .collect();
             let _ = c.store.fts_register_panes(&ids);
         }
+        drop(a);
         if self.degraded.lock().unwrap().is_some() {
             let ok = self.with_core(|c| c.store.probe().is_ok());
             if ok {

@@ -200,6 +200,55 @@ async fn forget_scopes_dry_run_and_idempotence() {
     );
 }
 
+/// Review finding 7: a housekeeping pass paused right after draining the FTS buffer must not
+/// re-insert its batch after a `forget` of that pane: the forget waits for the batch (both run
+/// under the archive lock), then deletes the batch's rows with the rest.
+#[test]
+fn in_flight_fts_batch_cannot_resurrect_forgotten_text() {
+    use std::sync::mpsc;
+    let e = Env::new();
+    e.fill("p1", 1);
+    e.fill("p2", 1);
+    // A batch that is archived but not indexed yet.
+    let rows = (1000..1100)
+        .map(|n| ArchivedRow {
+            n,
+            t: format!("needle p1 secret {n}"),
+            w: false,
+        })
+        .collect();
+    e.server.archive_rows("p1", rows);
+    let (drained_tx, drained_rx) = mpsc::channel::<()>();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    *e.server.after_fts_drain.lock().unwrap() = Some(Box::new(move || {
+        let _ = drained_tx.send(());
+        let _ = go_rx.lock().unwrap().recv();
+    }));
+    let srv = e.server.clone();
+    let hk = std::thread::spawn(move || srv.housekeeping());
+    drained_rx.recv().unwrap();
+    // Housekeeping holds its private batch. Forget the pane meanwhile.
+    let srv = e.server.clone();
+    let fg = std::thread::spawn(move || {
+        crate::search::forget(&srv, &ctx_full(), &json!({"pane": "p1"}))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !fg.is_finished(),
+        "forget must wait for the in-flight FTS batch"
+    );
+    go_tx.send(()).unwrap();
+    hk.join().unwrap();
+    let r = fg.join().unwrap().unwrap();
+    *e.server.after_fts_drain.lock().unwrap() = None;
+    assert_eq!(r["fts_rows_deleted"], 1100, "{r}");
+    // Nothing of p1 is searchable, now or after the next flush; p2 is untouched.
+    e.server.housekeeping();
+    assert_eq!(e.fts_rows("p1"), 0);
+    assert_eq!(e.fts_rows("p2"), 1000);
+}
+
 fn put_pane(e: &Env, id: &str, ws: &str) {
     let p = vk_proto::model::Pane {
         id: id.into(),
