@@ -319,6 +319,7 @@ fn blank_interaction(
         delivery_error: None,
         answer: None,
         answered_by: None,
+        answer_key: None,
         opened_at_ms: vk_store::now_ms(),
         answered_at_ms: None,
     }
@@ -718,9 +719,14 @@ pub fn version(h: Harness) -> Option<String> {
         .arg("--version")
         .output()
         .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.split_whitespace()
-        .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    parse_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// First version-looking token: `2.1.290 (Claude Code)`, `codex-cli 0.160.1`, `omp/17.2.12`, `v0.84.1`.
+pub fn parse_version(s: &str) -> Option<String> {
+    s.split(|c: char| c.is_whitespace() || c == '/')
+        .map(|w| w.trim_start_matches('v'))
+        .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()) && w.contains('.'))
         .map(str::to_string)
 }
 
@@ -892,6 +898,14 @@ mod tests {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    #[test]
+    fn version_strings() {
+        assert_eq!(parse_version("omp/17.2.12\n").as_deref(), Some("17.2.12"));
+        assert_eq!(parse_version("0.84.1").as_deref(), Some("0.84.1"));
+        assert_eq!(parse_version("codex-cli 0.160.1").as_deref(), Some("0.160.1"));
+        assert_eq!(parse_version("2.1.290 (Claude Code)").as_deref(), Some("2.1.290"));
+    }
 
     #[test]
     fn validated_ranges() {
