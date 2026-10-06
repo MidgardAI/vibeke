@@ -157,6 +157,14 @@ fn track_after_the_fact() {
     );
     assert_eq!(tracked["intent"]["stop_at"], "unspecified");
     assert_eq!(tracked["task"]["review_label"], "needs_task_details");
+    s.until("run.task projected from the binding", 5, || {
+        let runs = s.json(&["agent", "list"]);
+        runs["runs"]
+            .as_array()?
+            .iter()
+            .any(|r| r["id"] == run.as_str() && r["task"] == task.as_str())
+            .then_some(())
+    });
     let again = s.api("task.track", p).unwrap();
     assert_eq!(again["replayed"], true);
     assert_eq!(again["task"]["id"], task.as_str());

@@ -1504,13 +1504,112 @@ fn persist(server: &Server, pkg: &Pkg) {
 
 // ---- API ----------------------------------------------------------------------------------------
 
+/// Accept the TUI's parameter spellings alongside the canonical ones: `subject_id` for
+/// `subject`, `expected_intent_revision` / `expected_package_revision` on accept.
+fn normalize(method: &str, p: &Value) -> Value {
+    let mut p = p.clone();
+    let Some(o) = p.as_object_mut() else { return p };
+    if method.starts_with("task.check.")
+        && !o.contains_key("subject")
+        && let Some(v) = o.get("subject_id").cloned()
+    {
+        o.insert("subject".into(), v);
+    }
+    if method == "task.review.accept" {
+        for (from, to) in [
+            ("expected_intent_revision", "intent_revision"),
+            ("expected_package_revision", "package_revision"),
+        ] {
+            if !o.contains_key(to)
+                && let Some(v) = o.get(from).cloned()
+            {
+                o.insert(to.into(), v);
+            }
+        }
+    }
+    p
+}
+
+/// Flat aliases of the package for clients: `revision`, `criteria` (assessment rows merged with
+/// the intent's text), `observed` (commands + claims with `category: "claim"`), `blockers`, and
+/// `subject.accept_capable`.
+fn with_aliases(mut j: Value) -> Value {
+    let texts: std::collections::HashMap<String, String> = j["intent"]["criteria"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| {
+                    Some((
+                        c["id"].as_str()?.to_string(),
+                        c["text"].as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let criteria: Vec<Value> = j["assessment"]["criteria"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| {
+                    let mut c = c.clone();
+                    let id = c["criterion_id"].as_str().unwrap_or("").to_string();
+                    c["text"] = json!(texts.get(&id));
+                    c["evidence"] = c["evidence_refs"].clone();
+                    let st = c["status"].as_str().unwrap_or("");
+                    let needs = match st {
+                        "supported" => false,
+                        "needs_judgment" => c["evaluation"] == "check",
+                        _ => true,
+                    };
+                    c["needs_exception"] = json!(needs && c["required"] == true);
+                    c
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut observed: Vec<Value> = j["observed_commands"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for mut c in j["claims"].as_array().cloned().unwrap_or_default() {
+        c["category"] = json!("claim");
+        observed.push(c);
+    }
+    j["revision"] = j["package_revision"].clone();
+    j["criteria"] = json!(criteria);
+    j["observed"] = json!(observed);
+    j["blockers"] = j["assessment"]["blockers"].clone();
+    let accept_capable = j["accept_capable"].clone();
+    if j["subject"].is_object() {
+        j["subject"]["accept_capable"] = accept_capable;
+    }
+    j
+}
+
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
+    let p = &normalize(method, p);
     Some(match method {
         "task.review.candidates" => review_candidates(server, p).await,
-        "task.review.get" => review_get(server, p).await,
+        "task.review.get" => review_get(server, p).await.map(with_aliases),
         "task.review.accept" => review_accept(server, ctx, p).await,
         "task.check.list" => check_list(server, p).await,
         "task.check.authorize" => check_authorize(server, ctx, p).await,
+        // `authorize: true` = the explicit per-candidate authorization and the run in one user
+        // action (still full scope only; the grant is recorded like task.check.authorize).
+        "task.check.run" if p.get("authorize").and_then(Value::as_bool) == Some(true) => {
+            let mut ap = p.clone();
+            if let Some(k) = s(p, "idempotency_key") {
+                ap["idempotency_key"] = json!(format!("{k}:authorize"));
+            }
+            if let Some(o) = ap.as_object_mut() {
+                o.remove("authorize");
+            }
+            match check_authorize(server, ctx, &ap).await {
+                Ok(_) => check_run(server, p).await,
+                Err(e) => Err(e),
+            }
+        }
         "task.check.run" => check_run(server, p).await,
         "task.check.cancel" => check_cancel(server, p),
         "task.check.get" => check_get(server, p),
@@ -2627,3 +2726,34 @@ fn attention_update(server: &Arc<Server>, _ctx: &Ctx, p: &Value) -> R {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    #[test]
+    fn client_spellings_and_flat_aliases() {
+        let p = normalize(
+            "task.review.accept",
+            &json!({"expected_intent_revision": 2, "expected_package_revision": 9}),
+        );
+        assert_eq!(p["intent_revision"], 2);
+        assert_eq!(p["package_revision"], 9);
+        let p = normalize("task.check.run", &json!({"subject_id": "s1"}));
+        assert_eq!(p["subject"], "s1");
+        let j = with_aliases(json!({
+            "package_revision": 4,
+            "accept_capable": true,
+            "subject": {"id": "s1"},
+            "intent": {"criteria": [{"id": "c1", "text": "Preserve SSO"}]},
+            "assessment": {"criteria": [{"criterion_id": "c1", "status": "missing", "required": true, "evaluation": "check", "evidence_refs": []}], "blockers": []},
+            "observed_commands": [{"command": "cargo test"}],
+            "claims": [{"text": "tests pass"}],
+        }));
+        assert_eq!(j["revision"], 4);
+        assert_eq!(j["criteria"][0]["text"], "Preserve SSO");
+        assert_eq!(j["criteria"][0]["needs_exception"], true);
+        assert_eq!(j["observed"][1]["category"], "claim");
+        assert_eq!(j["subject"]["accept_capable"], true);
+    }
+}

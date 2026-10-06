@@ -260,6 +260,31 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     if settled {
         crate::review::on_turn_settled(server, &run.id);
     }
+    if matches!(event, "SessionStart" | "UserPromptSubmit") {
+        sync_run_tasks(server);
+    }
+}
+
+/// `AgentRun.task` is a projection of the run's active implementation binding (15 §4.3).
+pub fn sync_run_tasks(server: &Server) {
+    let mut c = server.core.lock().unwrap();
+    let active: HashMap<String, String> = bindings(&c)
+        .into_iter()
+        .filter(|b| b.state == BindingState::Active && b.role == BindingRole::Implementation)
+        .map(|b| (b.run_id, b.task_id))
+        .collect();
+    let mut tx = Tx::new();
+    for r in c.model.runs.iter().filter(|r| r.ended_at_ms.is_none()) {
+        let want = active.get(&r.id).cloned();
+        if r.task != want {
+            let mut r2 = r.clone();
+            r2.task = want;
+            tx.run(r2);
+        }
+    }
+    if !tx.m.is_empty() {
+        let _ = server.commit(&mut c, tx);
+    }
 }
 
 fn shell_command(tool: &str, input: &Value) -> Option<String> {
@@ -460,12 +485,14 @@ pub fn record(tx: &mut Tx, method: &str, p: &Value, result: &Value) {
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "task.sources" => sources(server, ctx, p),
-        "task.track" => track(server, ctx, p).await,
+        "task.track" => track(server, ctx, p)
+            .await
+            .inspect(|_| sync_run_tasks(server)),
         "task.detail" => detail(server, p),
         "task.intent.get" => intent_get(server, p),
         "task.intent.update" => intent_update(server, ctx, p),
-        "task.bind" => bind(server, ctx, p),
-        "task.unbind" => unbind(server, p),
+        "task.bind" => bind(server, ctx, p).inspect(|_| sync_run_tasks(server)),
+        "task.unbind" => unbind(server, p).inspect(|_| sync_run_tasks(server)),
         "task.message.prepare" => message_prepare(server, p),
         "task.message.send" => message_send(server, p).await,
         "task.message.get" => message_get(server, p),
