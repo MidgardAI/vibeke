@@ -74,9 +74,9 @@ fn tab(id: &str, ws: &str, n: u32, panes: &[&str]) -> Tab {
         focused_pane: Some(panes[0].into()),
         zoomed_pane: None,
         order: n as f64,
+        floating: Default::default(),
+        floats_hidden: false,
     }
-    floating: Default::default(),
-    floats_hidden: false,
 }
 
 /// Two workspaces: `api` (branch `feature/login`, tab 1 with a claude agent `reviewer` whose
