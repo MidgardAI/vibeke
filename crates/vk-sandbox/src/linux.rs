@@ -36,7 +36,6 @@ pub fn bwrap_args(
         "--unshare-ipc".into(),
         "--unshare-uts".into(),
         "--unshare-cgroup-try".into(),
-        "--unshare-net".into(),
         // The whole host filesystem read-only, then hide and re-expose.
         "--ro-bind".into(),
         "/".into(),
@@ -57,6 +56,9 @@ pub fn bwrap_args(
         "--tmpfs".into(),
         "/run".into(),
     ];
+    if !p.network_open {
+        a.push("--unshare-net".into());
+    }
     if std::fs::symlink_metadata("/var/run").is_ok_and(|m| m.is_dir()) {
         a.extend(["--tmpfs".into(), "/var/run".into()]);
     }

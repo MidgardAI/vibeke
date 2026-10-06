@@ -80,6 +80,8 @@ pub enum NetMode {
     None,
     /// Only the egress proxy on `127.0.0.1:port`, plus declared loopback ports (task port lease).
     Proxy { port: u16, local_ports: Vec<u16> },
+    /// Unrestricted outbound network (restricted plugins that were granted network; 07 §7.7).
+    Open,
 }
 
 /// Inputs for one contained process tree.
@@ -187,6 +189,9 @@ pub struct Policy {
     pub deny_write_literal: Vec<PathBuf>,
     pub unix_sockets: Vec<PathBuf>,
     pub network: Option<(u16, Vec<u16>)>,
+    /// Unrestricted outbound network ([`NetMode::Open`]).
+    #[serde(default)]
+    pub network_open: bool,
     pub allow_bind_localhost: bool,
     /// The checkout (for cwd mapping and paste visibility).
     pub checkout: PathBuf,
@@ -364,7 +369,9 @@ impl Policy {
         p.network = match &spec.network {
             NetMode::None => None,
             NetMode::Proxy { port, local_ports } => Some((*port, local_ports.clone())),
+            NetMode::Open => None,
         };
+        p.network_open = matches!(spec.network, NetMode::Open);
         p
     }
 

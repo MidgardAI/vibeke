@@ -30,6 +30,8 @@ pub const TYPES: &[&str] = &[
     "notes.updated",
     "assistant.*",
     "client.window_title_changed",
+    "plugin.registry_changed",
+    "plugin.agent_view_changed",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -122,6 +124,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::assist::on_event(app, i, k);
         } else if k == "client.window_title_changed" {
             crate::plugins::on_title_event(app, i, &v);
+        } else if k == "plugin.registry_changed" || k == "plugin.agent_view_changed" {
+            crate::plugins::on_registry_event(app, i);
         }
     }
     if !confirms.is_empty() {

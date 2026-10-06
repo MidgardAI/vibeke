@@ -33,6 +33,8 @@
 
 mod brokers;
 mod ext;
+mod limits;
+mod views;
 
 use crate::Server;
 use crate::api::{self, Ctx, R, err, invalid};
@@ -64,11 +66,12 @@ pub const METHODS: &[(&str, bool)] = &[
     ("plugin.link.open", true),
     ("plugin.surface.close", true),
     ("compat.ui.state", false),
+    ("plugin.registry.notify", true),
 ];
 
-/// Log records kept per server (oldest dropped first) and bytes kept per stream.
+/// Log records kept per server (oldest dropped first); the per-plugin ring caps (bytes, lines,
+/// records) come from `[plugins]` settings ([`limits`]).
 const MAX_LOGS: usize = 100;
-const MAX_STREAM: usize = 64 * 1024;
 
 // ---- per-server state -------------------------------------------------------------------------
 
@@ -83,6 +86,12 @@ struct State {
     meta: Mutex<ext::Meta>,
     /// Single-use cross-session tickets: ticket → (issuing broker, expiry).
     tickets: Mutex<HashMap<String, (PathBuf, std::time::Instant)>>,
+    /// Running action/hook invocations per plugin (07 §7.7 concurrency limit).
+    running: Mutex<HashMap<String, usize>>,
+    /// Event-hook invocations waiting for a free slot, per plugin.
+    queues: Mutex<HashMap<String, VecDeque<limits::Queued>>>,
+    /// Plugin-provided agent views (`agent.view.set`).
+    views: Mutex<views::Views>,
 }
 
 static STATES: LazyLock<Mutex<HashMap<String, Arc<State>>>> =
@@ -1766,11 +1775,31 @@ fn plugin_list() -> Vec<Value> {
     let Ok(reg) = Registry::load(&dirs) else {
         return vec![];
     };
+    let keys = views::keybindings(&reg);
     reg.plugins
         .values()
         .map(|e| {
             let (st, m) = registry::entry_status(e);
+            let cfg = limits::settings(&e.id);
+            let sandboxed = cfg.isolate == herdr::settings::Isolate::Sandbox;
+            let sandbox_err = if sandboxed {
+                vk_sandbox::plugin::probe().err()
+            } else {
+                None
+            };
             json!({
+                "origin": e.origin,
+                "isolate": if sandboxed { "sandbox" } else { "host" },
+                "sandbox_available": sandboxed.then_some(sandbox_err.is_none()),
+                "sandbox_error": sandbox_err,
+                "network": sandboxed.then_some(cfg.network),
+                "max_concurrent": cfg.max_concurrent,
+                "settings_warnings": cfg.warnings,
+                "keybindings": keys
+                    .iter()
+                    .filter(|k| k["plugin_id"] == e.id.as_str())
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 "plugin_id": e.id,
                 "name": m.as_ref().and_then(|m| m.name.clone()),
                 "version": m.as_ref().and_then(|m| m.version.clone()),
@@ -2032,6 +2061,9 @@ pub fn invoke_action(
             )
         })?
         .clone();
+    // At most `max_concurrent` running invocations per plugin: a further action run is refused
+    // with `busy` (event hooks queue instead).
+    let slot = limits::try_slot(server, &entry.id).ok_or_else(|| limits::busy(&entry.id))?;
     Ok(spawn_invocation(
         server,
         &entry,
@@ -2045,6 +2077,7 @@ pub fn invoke_action(
             ctx,
             long_lived: false,
         },
+        Some(slot),
     ))
 }
 
@@ -2155,10 +2188,18 @@ fn update_log(server: &Server, id: &str, f: impl FnOnce(&mut Map<String, Value>)
 fn push_log(server: &Server, rec: Value) {
     {
         let st = state(server);
+        let plugin = rec["plugin_id"].as_str().map(str::to_string);
+        let cap = plugin
+            .as_deref()
+            .map(|p| limits::settings(p).log_max_records);
         let mut logs = st.logs.lock().unwrap();
         logs.push_back(rec);
         while logs.len() > MAX_LOGS {
             logs.pop_front();
+        }
+        // The per-plugin ring: one chatty plugin cannot push everyone else's records out.
+        if let (Some(p), Some(cap)) = (plugin, cap) {
+            limits::trim_records(&mut logs, &p, cap);
         }
     }
     persist_logs(server);
@@ -2181,57 +2222,107 @@ fn logs(server: &Server, plugin: Option<&str>, limit: Option<u64>) -> Vec<Value>
     v
 }
 
-/// Keep the last [`MAX_STREAM`] bytes of a stream.
-fn tail_keep(buf: &mut Vec<u8>) {
-    if buf.len() > MAX_STREAM {
-        buf.drain(..buf.len() - MAX_STREAM);
+/// Keep the last `caps.bytes` bytes and `caps.lines` lines of a stream; returns the number of
+/// bytes dropped by this call (for the truncation marker).
+fn tail_keep(buf: &mut Vec<u8>, caps: limits::LogCaps) -> u64 {
+    let mut dropped = 0u64;
+    if buf.len() > caps.bytes {
+        let cut = buf.len() - caps.bytes;
+        buf.drain(..cut);
+        dropped += cut as u64;
     }
+    let lines = buf.iter().filter(|b| **b == b'\n').count();
+    if lines > caps.lines {
+        // Drop leading lines until `caps.lines` complete lines remain.
+        let mut skip = lines - caps.lines;
+        let mut cut = 0;
+        for (i, b) in buf.iter().enumerate() {
+            if *b == b'\n' {
+                skip -= 1;
+                if skip == 0 {
+                    cut = i + 1;
+                    break;
+                }
+            }
+        }
+        buf.drain(..cut);
+        dropped += cut as u64;
+    }
+    dropped
 }
 
 /// The text of a stream tail as stored in a log record: lossy UTF-8 with credentials redacted
-/// (09 §6 "Logs and audit records redact credentials").
-fn redacted(buf: &[u8]) -> String {
+/// (09 §6 "Logs and audit records redact credentials"). Output that fell off the front of the
+/// ring is announced with a marker line.
+fn redacted(buf: &[u8], dropped: u64) -> String {
     let text = String::from_utf8_lossy(buf);
-    vk_redact::redact(&text).into_owned()
+    let body = vk_redact::redact(&text);
+    if dropped == 0 {
+        body.into_owned()
+    } else {
+        format!("{}{body}", limits::truncation_marker(dropped))
+    }
 }
 
 /// Tails an invocation's stdout/stderr files into its log record.
 struct Tail {
-    files: [(Option<PathBuf>, u64, Vec<u8>); 2],
+    /// `(file, read offset, kept tail, bytes dropped from the front)` for stdout and stderr.
+    files: [(Option<PathBuf>, u64, Vec<u8>, u64); 2],
+    caps: limits::LogCaps,
 }
 
 impl Tail {
-    fn new(out: Option<PathBuf>, err: Option<PathBuf>) -> Self {
+    fn new(out: Option<PathBuf>, err: Option<PathBuf>, caps: limits::LogCaps) -> Self {
         Tail {
-            files: [(out, 0, Vec::new()), (err, 0, Vec::new())],
+            files: [(out, 0, Vec::new(), 0), (err, 0, Vec::new(), 0)],
+            caps,
         }
     }
 
     /// Read what was appended since the last poll; update the record when anything changed.
+    /// A burst larger than the byte cap is skipped over without being read into memory.
     fn poll(&mut self, server: &Server, log_id: &str) {
         use std::io::{Read, Seek, SeekFrom};
         let mut changed = false;
-        for (path, off, buf) in self.files.iter_mut() {
+        let caps = self.caps;
+        for (path, off, buf, dropped) in self.files.iter_mut() {
             let Some(p) = path else { continue };
             let Ok(mut f) = std::fs::File::open(&*p) else {
                 continue;
             };
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            if len > *off && len - *off > caps.bytes as u64 {
+                let skip = len - *off - caps.bytes as u64;
+                *dropped += skip + buf.len() as u64;
+                buf.clear();
+                *off += skip;
+            }
             if f.seek(SeekFrom::Start(*off)).is_err() {
                 continue;
             }
             let mut chunk = Vec::new();
-            if f.read_to_end(&mut chunk).is_ok() && !chunk.is_empty() {
+            if f.take(caps.bytes as u64 + 1)
+                .read_to_end(&mut chunk)
+                .is_ok()
+                && !chunk.is_empty()
+            {
                 *off += chunk.len() as u64;
                 buf.extend_from_slice(&chunk);
-                tail_keep(buf);
+                *dropped += tail_keep(buf, caps);
                 changed = true;
             }
         }
         if changed {
-            let (o, e) = (redacted(&self.files[0].2), redacted(&self.files[1].2));
+            let (o, e) = (
+                redacted(&self.files[0].2, self.files[0].3),
+                redacted(&self.files[1].2, self.files[1].3),
+            );
+            let (od, ed) = (self.files[0].3, self.files[1].3);
             update_log(server, log_id, |l| {
                 l.insert("stdout".into(), json!(o));
                 l.insert("stderr".into(), json!(e));
+                l.insert("stdout_truncated_bytes".into(), json!(od));
+                l.insert("stderr_truncated_bytes".into(), json!(ed));
             });
         }
     }
@@ -2298,7 +2389,13 @@ fn resume_tail(
 ) {
     let srv = server.clone();
     tokio::spawn(async move {
-        let mut tail = Tail::new(out, err);
+        let plugin = logs(&srv, None, None)
+            .iter()
+            .find(|l| l["log_id"] == log_id.as_str())
+            .and_then(|l| l["plugin_id"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        let caps = limits::LogCaps::of(&limits::settings(&plugin));
+        let mut tail = Tail::new(out, err, caps);
         while brokers::pid_alive(pid as i32) {
             tail.poll(&srv, &log_id);
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2339,8 +2436,11 @@ fn spawn_invocation(
     m: &Manifest,
     command: &[String],
     sp_: Spawn,
+    slot: Option<limits::Slot>,
 ) -> Value {
     let st = state(server);
+    let settings = limits::settings(&entry.id);
+    let sandboxed = settings.isolate == herdr::settings::Isolate::Sandbox;
     let n = st.next.fetch_add(1, Ordering::Relaxed) + 1;
     let log_id = format!("l{n}-{}", &crate::core::ulid()[20..]);
     let dirs = plugin_dirs();
@@ -2378,6 +2478,8 @@ fn spawn_invocation(
         "entrypoint_id": sp_.entrypoint,
         "source": sp_.source,
         "command": command,
+        "long_lived": sp_.long_lived,
+        "isolation": if sandboxed { "sandbox" } else { "host" },
         "status": "running",
         "started_unix_ms": started,
         "finished_unix_ms": null,
@@ -2457,8 +2559,52 @@ fn spawn_invocation(
         clicked_url: sp_.ctx.clicked_url.clone(),
         link_handler_id: sp_.ctx.link_handler_id.clone(),
     };
-    let env = launch::runtime_env(&inv, std::env::vars());
     let argv = launch::resolve_argv(&entry.root, command);
+    // Restricted legacy mode: the argv runs under the `sandbox` level with the plugin dir
+    // read-only, its own state dir writable and the network off unless granted; where no
+    // working sandbox exists the plugin is refused, never run on the host.
+    let mut profile: Option<PathBuf> = None;
+    let (argv, env) = if sandboxed {
+        let inherited = vk_sandbox::plugin::scrubbed_env(std::env::vars());
+        let env = launch::runtime_env(&inv, inherited);
+        let mut hidden = vec![crate::paths::state_root(), crate::paths::runtime_root()];
+        if let Some(c) = dirs.registry.parent() {
+            hidden.push(c.to_path_buf());
+        }
+        let bx = vk_sandbox::plugin::PluginBox {
+            home: crate::paths::home(),
+            plugin_root: entry.root.clone(),
+            config_dir: inv.config_dir.clone(),
+            state_dir: inv.state_dir.clone(),
+            hidden,
+            extra_read: vec![
+                launcher(server)
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default(),
+                server.opts.bin.clone(),
+                compat_root(server).join("brokers.json"),
+            ],
+            sockets: vec![broker.clone()],
+            network: settings.network,
+            vibeke_bin: Some(server.opts.bin.clone()),
+            profile_dir: compat_root(server).join("sbx"),
+        };
+        match bx.prepare(&argv, &entry.root, env, &log_id) {
+            Ok(p) => {
+                profile = Some(p.profile.clone());
+                (p.argv, p.env)
+            }
+            Err(e) => {
+                brokers::close(server, &broker);
+                let _ = std::fs::remove_file(&out_path);
+                let _ = std::fs::remove_file(&err_path);
+                return fail(rec, e);
+            }
+        }
+    } else {
+        (argv, launch::runtime_env(&inv, std::env::vars()))
+    };
     let mut cmd = tokio::process::Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .current_dir(&entry.root)
@@ -2475,6 +2621,9 @@ fn spawn_invocation(
             brokers::close(server, &broker);
             let _ = std::fs::remove_file(&out_path);
             let _ = std::fs::remove_file(&err_path);
+            if let Some(p) = &profile {
+                let _ = std::fs::remove_file(p);
+            }
             fail(rec, format!("spawn {}: {e}", argv[0]))
         }
         Ok(mut child) => {
@@ -2508,8 +2657,10 @@ fn spawn_invocation(
             let srv = server.clone();
             let id = log_id.clone();
             let long_lived = sp_.long_lived;
+            let plugin_id = entry.id.clone();
+            let caps = limits::LogCaps::of(&settings);
             tokio::spawn(async move {
-                let mut tail = Tail::new(Some(out_path), Some(err_path));
+                let mut tail = Tail::new(Some(out_path), Some(err_path), caps);
                 let status = loop {
                     tokio::select! {
                         s = child.wait() => break s,
@@ -2526,6 +2677,12 @@ fn spawn_invocation(
                 let code = status.as_ref().ok().and_then(|s| s.code());
                 let ok = status.as_ref().is_ok_and(|s| s.success());
                 finish_log(&srv, &id, ok, code, None);
+                if let Some(p) = &profile {
+                    let _ = std::fs::remove_file(p);
+                }
+                // A finished action/hook frees its slot for the next queued hook.
+                drop(slot);
+                limits::drain(&srv, &plugin_id);
                 if long_lived {
                     while brokers::get(&srv, &broker).is_some() {
                         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -2588,6 +2745,7 @@ fn run_startup_hooks(server: &Arc<Server>) {
                     ctx: InvokeContext::default(),
                     long_lived: true,
                 },
+                None,
             );
         }
     }
@@ -2662,20 +2820,18 @@ async fn hook_dispatcher(server: Arc<Server>) {
                             .map(str::to_string),
                         ..Default::default()
                     };
-                    spawn_invocation(
+                    limits::dispatch_hook(
                         &server,
-                        entry,
-                        m,
-                        &h.command,
-                        Spawn {
-                            source: "event",
-                            action: None,
+                        limits::Queued {
+                            entry: entry.clone(),
+                            m: m.clone(),
+                            command: h.command.clone(),
+                            source: "event".into(),
                             event: Some((name.to_string(), data.clone())),
                             entrypoint: Some(
                                 h.id.clone().unwrap_or_else(|| format!("events[{i}]")),
                             ),
                             ctx,
-                            long_lived: false,
                         },
                     );
                 }
@@ -2706,8 +2862,26 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     Some(match method {
         "plugin.list" => Ok(json!({"plugins": plugin_list()})),
         "plugin.action.list" => action_list(s("plugin"))
-            .map(|a| json!({"actions": a}))
+            .map(|a| {
+                let keys = Registry::load(&plugin_dirs())
+                    .map(|r| views::keybindings(&r))
+                    .unwrap_or_default();
+                json!({"actions": a, "keybindings": keys})
+            })
             .map_err(wire_to_rpc),
+        // The CLI (or any registry editor) tells a running server that plugins.json changed:
+        // views of plugins that are no longer active are dropped and clients re-read key
+        // bindings and actions.
+        "plugin.registry.notify" => {
+            if ctx.pane_scope.is_some() {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "not available from a pane",
+                )));
+            }
+            views::registry_changed(server);
+            Ok(json!({"ok": true}))
+        }
         "plugin.action.run" => (|| {
             let (plugin, action) = match (s("plugin"), s("action")) {
                 (Some(pl), Some(a)) => (pl.to_string(), a.to_string()),
@@ -2773,7 +2947,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             let popup = ext::open_popup(server).map(|(id, pp)| {
                 json!({"pane": id, "plugin_id": pp.plugin, "entrypoint_id": pp.entrypoint})
             });
-            Ok(json!({"window_title": title, "popup": popup}))
+            Ok(json!({"window_title": title, "popup": popup, "agent_views": views::list(server)}))
         }
         "compat.herdr.call" => {
             let Some(m) = s("method") else {
@@ -3130,12 +3304,16 @@ mod tests {
     #[test]
     fn plugin_log_tails_are_redacted() {
         let token = format!("ghp_{}", "A".repeat(36));
-        let out = redacted(format!("pushing with {token}\n").as_bytes());
+        let out = redacted(format!("pushing with {token}\n").as_bytes(), 0);
         assert!(!out.contains(&token), "{out}");
         assert!(out.contains("pushing with"));
-        let mut big = vec![b'x'; MAX_STREAM + 10];
-        tail_keep(&mut big);
-        assert_eq!(big.len(), MAX_STREAM);
+        let caps = limits::LogCaps {
+            bytes: 100,
+            lines: 1000,
+        };
+        let mut big = vec![b'x'; 110];
+        assert_eq!(tail_keep(&mut big, caps), 10);
+        assert_eq!(big.len(), 100);
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@
     "proto": 1,
     "min": 1
   },
-  "method_count": 230,
+  "method_count": 231,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -1857,6 +1857,18 @@
       "scope": "pane",
       "pane_scope": "open",
       "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "plugin.registry.notify",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
       "tables": [
         "compat"
       ],

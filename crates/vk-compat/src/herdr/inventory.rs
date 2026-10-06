@@ -529,16 +529,16 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Method,
         "agent.view.set",
-        Missing,
+        Partial,
         "spec",
-        "the spec names it but defines no params, result or rendering, and no corpus plugin calls it; waits for the baseline schema capture (07 §8.0) before a TUI projection is built",
+        "Vibeke's own shape (`target`, `text` <= 80 chars, `detail`, `tone`), plugin identity only, <= 16 views per plugin, shown in the sidebar and peek, gone when the plugin is disabled or untrusted; the baseline schema is unverified",
     ),
     e(
         Method,
         "agent.view.clear",
-        Missing,
+        Partial,
         "spec",
-        "see `agent.view.set`",
+        "one run (`target`) or all of the plugin's views; see `agent.view.set`",
     ),
     e(
         Method,
@@ -739,9 +739,9 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Cli,
         "plugin install owner/repo[/subdir] [--ref]",
-        Missing,
+        Partial,
         "spec",
-        "git sources need network; not built",
+        "shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; `plugin update` re-fetches; `--ref` flag spelling and subdir grammar unverified",
     ),
     e(
         Cli,
@@ -921,7 +921,7 @@ pub const ENTRIES: &[Entry] = &[
         "[[actions]] contexts",
         Partial,
         "spec",
-        "validated; default when omitted (`global`) unverified",
+        "validated; default when omitted (`global`) unverified; the TUI palette shows only actions whose contexts apply (workspace/tab/pane need that focus, selection needs a selection)",
     ),
     e(
         Manifest,
@@ -949,7 +949,7 @@ pub const ENTRIES: &[Entry] = &[
         "[[keys.command]] key, type, command, description",
         Partial,
         "spec",
-        "manifest defaults parsed (resolution warns) but not installed; the user's `[[keys.command]] type = plugin_action` bindings work",
+        "manifest defaults are installed while the plugin is trusted and enabled, never over the user's keys (conflicts reported in `plugin.list`, skipped), and removed on disable/unlink; the user's `[[keys.command]] type = plugin_action` bindings work",
     ),
     e(
         Manifest,
@@ -1129,14 +1129,14 @@ pub const ENTRIES: &[Entry] = &[
         "[[events]] dispatch with baseline names",
         Partial,
         "spec",
-        "projected subset; concurrency/log limits unverified",
+        "projected subset; per-plugin concurrency (default 4, excess hooks queue up to 16, excess action runs get `busy`) and log ring caps with truncation markers are Vibeke's own, upstream limits unverified",
     ),
     e(
         Lifecycle,
         "actions in the command palette",
         Implemented,
         "spec",
-        "per machine; untrusted/stale/disabled plugins listed but disabled with the fixing command; contexts not filtered yet",
+        "per machine; untrusted/stale/disabled plugins listed but disabled with the fixing command; actions are filtered by their contexts",
     ),
     e(
         Lifecycle,

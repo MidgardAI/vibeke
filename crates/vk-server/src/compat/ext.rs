@@ -32,6 +32,8 @@ pub const METHODS: &[&str] = &[
     "workspace.report_metadata",
     "client.window_title.set",
     "client.window_title.clear",
+    "agent.view.set",
+    "agent.view.clear",
     "agent.start",
     "agent.prompt",
     "agent.wait",
@@ -562,6 +564,14 @@ async fn plugin_pane_open(
         return Err(denied(format!("plugin {plugin} is {}", st.as_str())));
     }
     let m = m.expect("active plugins have a manifest");
+    if super::limits::settings(plugin).isolate == herdr::settings::Isolate::Sandbox {
+        return Err(WireError::new(
+            "unsupported",
+            format!(
+                "{plugin} runs in restricted (sandboxed) mode, which supports actions, hooks and startup but not plugin panes; use isolate = \"host\" to open its panes"
+            ),
+        ));
+    }
     let pf = herdr::current_platform();
     let decl = m
         .panes
@@ -1253,6 +1263,8 @@ pub async fn call(
             Ok(ok())
         }
         // ---- agents ----------------------------------------------------------------------
+        "agent.view.set" => super::views::set(server, caller, sn, p),
+        "agent.view.clear" => super::views::clear(server, caller, sn, p),
         "agent.start" => {
             let agent = sp(p, "agent")
                 .or(sp(p, "harness"))
@@ -1376,9 +1388,11 @@ pub async fn call(
         // ---- plugin registry ---------------------------------------------------------------
         "plugin.link" => {
             let path = req_s(p, "path")?.to_string();
-            registry_change(caller, |reg| {
+            let r = registry_change(caller, |reg| {
                 reg.link(std::path::Path::new(&path)).map(|(e, _)| e.id)
-            })
+            })?;
+            super::views::registry_changed(server);
+            Ok(r)
         }
         "plugin.unlink" => {
             let id = sp(p, "plugin_id")
@@ -1389,6 +1403,7 @@ pub async fn call(
                 return Err(denied("plugin registrations cannot be changed from a pane"));
             }
             let e = Registry::update(&plugin_dirs(), |reg| reg.unlink(&id)).map_err(reg_err)?;
+            super::views::registry_changed(server);
             Ok(typed(
                 "plugin_info",
                 json!({"plugin": {"plugin_id": e.id, "root": e.root, "status": "unlinked"}}),
@@ -1400,7 +1415,9 @@ pub async fn call(
                 .ok_or_else(|| invalid("plugin_id is required"))?
                 .to_string();
             let on = method == "plugin.enable";
-            registry_change(caller, |reg| reg.set_enabled(&id, on).map(|e| e.id))
+            let r = registry_change(caller, |reg| reg.set_enabled(&id, on).map(|e| e.id))?;
+            super::views::registry_changed(server);
+            Ok(r)
         }
         // ---- plugin panes ----------------------------------------------------------------
         "plugin.pane.open" => plugin_pane_open(server, caller, sn, p).await,

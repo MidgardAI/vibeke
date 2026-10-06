@@ -694,3 +694,180 @@ fn copy_mode_scroll_is_reported_coalesced_and_reset() {
     report_scroll(&mut app, t0 + Duration::from_millis(1200));
     assert!(scrolls(&mut rx[0]).is_empty());
 }
+
+// ---- action contexts, manifest key bindings, agent views --------------------------------------
+
+fn ctx_actions() -> Value {
+    json!({"actions": [
+        {"plugin_id": "acme.ctx", "action_id": "any", "qualified_id": "acme.ctx.any",
+         "title": "Anywhere", "contexts": ["global"], "available": true, "status": "active"},
+        {"plugin_id": "acme.ctx", "action_id": "ws", "qualified_id": "acme.ctx.ws",
+         "title": "Workspace thing", "contexts": ["workspace"], "available": true, "status": "active"},
+        {"plugin_id": "acme.ctx", "action_id": "sel", "qualified_id": "acme.ctx.sel",
+         "title": "Selected text", "contexts": ["selection"], "available": true, "status": "active"},
+        {"plugin_id": "acme.ctx", "action_id": "pane", "qualified_id": "acme.ctx.pane",
+         "title": "Pane thing", "contexts": ["pane", "tab"], "available": true, "status": "active"},
+    ]})
+}
+
+fn plugin_ids(app: &App) -> Vec<String> {
+    crate::nav::palette_entries(app)
+        .into_iter()
+        .filter(|e| e.id.starts_with("plugin:0:acme.ctx."))
+        .map(|e| e.id.trim_start_matches("plugin:0:acme.ctx.").to_string())
+        .collect()
+}
+
+#[test]
+fn the_palette_only_offers_actions_that_apply_here() {
+    let (mut app, mut rx) = setup(&[], "p1");
+    connect(&mut app, &mut rx[0], ctx_actions(), json!({"handlers": []}));
+    // Focused workspace, tab and pane; no selection.
+    assert_eq!(plugin_ids(&app), vec!["any", "ws", "pane"]);
+    // Nothing focused: only `global` actions remain.
+    app.machines[0].focus = ClientFocus::default();
+    assert_eq!(plugin_ids(&app), vec!["any"]);
+    // Running a hidden action (stale palette id or key binding) explains instead of running.
+    crate::nav::run_palette(&mut app, "plugin:0:acme.ctx.ws");
+    assert!(commands(&mut rx[0]).is_empty());
+    let t = app.toasts.last().unwrap().text.clone();
+    assert!(
+        t.contains("not available here") && t.contains("workspace"),
+        "{t}"
+    );
+    app.config.keys.command.push(vk_config::KeyCommand {
+        key: "prefix+alt+s".into(),
+        kind: vk_config::CommandType::PluginAction,
+        command: "acme.ctx.sel".into(),
+        ..Default::default()
+    });
+    let c = app.config.keys.command[0].clone();
+    run_key_command(&mut app, &c);
+    assert!(commands(&mut rx[0]).is_empty());
+    assert!(app.toasts.last().unwrap().text.contains("selection"));
+    // A global action always runs.
+    crate::nav::run_palette(&mut app, "plugin:0:acme.ctx.any");
+    assert_eq!(commands(&mut rx[0])[0].1["method"], "plugin.action.run");
+}
+
+fn with_keys(keys: Value) -> Value {
+    let mut v = actions_reply();
+    v["keybindings"] = keys;
+    v
+}
+
+#[test]
+fn manifest_default_bindings_are_installed_and_removed_with_the_plugin() {
+    let (mut app, mut rx) = setup(&[], "p1");
+    // The user already uses prefix+alt+j for something else: the server reported that plugin
+    // binding as a conflict, and a stale installed duplicate cannot take it over either.
+    app.config
+        .keys
+        .bindings
+        .insert("help".into(), "prefix+alt+j".into());
+    app.keymap = crate::keymap::Keymap::from_config(&app.config);
+    connect(
+        &mut app,
+        &mut rx[0],
+        with_keys(json!([
+            {"plugin_id": "acme.demo", "key": "prefix+alt+k", "action": "acme.demo.open",
+             "installed": true},
+            {"plugin_id": "acme.demo", "key": "prefix+alt+j", "action": "acme.demo.open",
+             "installed": false, "reason": "conflict", "conflicts_with": "help"},
+        ])),
+        json!({"handlers": []}),
+    );
+    assert_eq!(
+        app.keymap.binding_for("plugin:0:acme.demo.open").as_deref(),
+        Some("prefix+alt+k")
+    );
+    let ev = |c: char| KeyEvent::new(Key::Char(c), Mods::ALT);
+    assert_eq!(
+        app.keymap.prefixed(&ev('k')).map(|b| b.action.as_str()),
+        Some("plugin:0:acme.demo.open")
+    );
+    assert_eq!(
+        app.keymap.prefixed(&ev('j')).map(|b| b.action.as_str()),
+        Some("help"),
+        "the user's key wins"
+    );
+    // The palette shows the installed binding.
+    let e = crate::nav::palette_entries(&app);
+    let open = e
+        .iter()
+        .find(|x| x.id == "plugin:0:acme.demo.open")
+        .unwrap();
+    assert_eq!(open.binding.as_deref(), Some("prefix+alt+k"));
+    // Firing it runs the action.
+    app.action("plugin:0:acme.demo.open", None);
+    assert_eq!(commands(&mut rx[0])[0].1["method"], "plugin.action.run");
+    // The plugin is disabled: the next list has no installed bindings and the key is gone.
+    on_registry_event(&mut app, 0);
+    for (req, c) in commands(&mut rx[0]) {
+        if c["method"] == "plugin.action.list" {
+            reply(
+                &mut app,
+                0,
+                req,
+                with_keys(json!([
+                    {"plugin_id": "acme.demo", "key": "prefix+alt+k", "action": "acme.demo.open",
+                     "installed": false, "reason": "disabled"}
+                ])),
+            );
+        }
+    }
+    assert!(app.keymap.binding_for("plugin:0:acme.demo.open").is_none());
+    assert!(app.keymap.prefixed(&ev('k')).is_none());
+    assert_eq!(
+        app.keymap.prefixed(&ev('j')).map(|b| b.action.as_str()),
+        Some("help")
+    );
+}
+
+#[test]
+fn agent_views_show_in_the_sidebar_and_go_away() {
+    let (mut app, mut rxs) = crate::drafts::tests::fleet();
+    on_connected(&mut app, 0);
+    let mut ui = None;
+    for (req, c) in commands(&mut rxs[0]) {
+        if c["method"] == "compat.ui.state" {
+            ui = Some(req);
+        }
+    }
+    let views = json!({"window_title": null, "agent_views": [
+        {"plugin_id": "acme.ci", "run": "r1", "text": "tests 41/50\u{1b}[31m",
+         "detail": "line1\nline2", "tone": "warn"},
+        {"plugin_id": "acme.ci", "run": "gone", "text": "x", "tone": "info"},
+    ]});
+    reply(&mut app, 0, ui.unwrap(), views);
+    let row = crate::draw::agent_row_text(&app, 0, "r1");
+    assert!(row.contains("▸ tests 41/50[31m"), "{row}");
+    assert!(!row.contains('\u{1b}'), "control characters are stripped");
+    assert_eq!(
+        agent_view(&app, 0, "r1").unwrap().detail.as_deref(),
+        Some("line1\nline2")
+    );
+    // The pushed event makes the client re-read; an empty list clears the line.
+    let ev = vk_proto::render::PushedEvent {
+        seq: 1,
+        kind: "plugin.agent_view_changed".into(),
+        json: json!({"type": "plugin.agent_view_changed", "subject": {}, "data": {"plugin": "acme.ci"}})
+            .to_string(),
+    };
+    crate::push::on_events(&mut app, 0, vec![ev], false);
+    let c = commands(&mut rxs[0]);
+    let req = c
+        .iter()
+        .find(|(_, c)| c["method"] == "compat.ui.state")
+        .unwrap()
+        .0;
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"window_title": null, "agent_views": []}),
+    );
+    assert!(!crate::draw::agent_row_text(&app, 0, "r1").contains('▸'));
+    assert!(crate::push::TYPES.contains(&"plugin.agent_view_changed"));
+    assert!(crate::push::TYPES.contains(&"plugin.registry_changed"));
+}

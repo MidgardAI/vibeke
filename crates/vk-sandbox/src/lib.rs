@@ -16,6 +16,7 @@ pub mod fsafe;
 pub mod gitexec;
 pub mod linux;
 pub mod net;
+pub mod plugin;
 pub mod policy;
 pub mod proxy;
 pub mod runner;

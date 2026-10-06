@@ -3242,6 +3242,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vk-browser",
+ "vk-compat",
  "vk-config",
  "vk-proto",
  "vk-term",

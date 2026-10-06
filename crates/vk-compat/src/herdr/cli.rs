@@ -137,6 +137,8 @@ const VERBS: &[(&str, &str, &str, &[&str])] = &[
     ("agent", "wait", "agent.wait", &["target"]),
     ("agent", "read", "agent.read", &["target"]),
     ("agent", "rename", "agent.rename", &["target", "name"]),
+    ("agent", "view-set", "agent.view.set", &["target"]),
+    ("agent", "view-clear", "agent.view.clear", &[]),
     ("agent", "send", "agent.send", &["target", "text"]),
     ("worktree", "list", "worktree.list", &[]),
     ("worktree", "create", "worktree.create", &["branch"]),

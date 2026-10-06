@@ -12,6 +12,7 @@ base64 = { workspace = true }
 anyhow = { workspace = true }
 vk-term = { workspace = true }
 vk-config = { workspace = true }
+vk-compat = { workspace = true }
 vk-browser = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }

@@ -19,12 +19,13 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use vk_compat::herdr::cli::{Local, Parsed};
 use vk_compat::herdr::registry::{self, Registry, RegistryError};
-use vk_compat::herdr::{self, launch};
+use vk_compat::herdr::{self, launch, source};
 
 const PLUGIN_HELP: &str = "vibeke plugin — Herdr-compatible plugins (M5, partial)
 
   vibeke plugin list
-  vibeke plugin install <dir | herdr-plugin.toml> [--yes] [--dry-run]
+  vibeke plugin install <dir | herdr-plugin.toml | owner/repo[/subdir][@ref]> [--ref R] [--yes] [--dry-run]
+  vibeke plugin update <id> [--yes]      re-fetch a repository install (a new commit needs review)
   vibeke plugin link <dir>
   vibeke plugin trust <id> --legacy      review and grant Herdr legacy trust (shows actions/events)
   vibeke plugin untrust <id>
@@ -214,6 +215,7 @@ fn entry_json(dirs: &registry::PluginDirs, e: &registry::Entry) -> Value {
         "built": e.built,
         "root": e.root,
         "source": e.origin.path,
+        "origin": e.origin,
         "trust": e.trust,
         "config_dir": dirs.config_dir(&e.id),
         "state_dir": dirs.state_dir(&e.id),
@@ -282,22 +284,21 @@ fn local(g: &Global, op: Local) -> i32 {
             yes,
         } => {
             let path = PathBuf::from(&source);
-            if !path.exists() {
-                let looks_remote = source.split('/').count() >= 2
-                    && !source.starts_with('.')
-                    && !source.starts_with('/');
-                return fail(
-                    "unsupported",
-                    if looks_remote {
-                        format!(
-                            "{source}: installing from a git repository is not supported yet; clone it and install the directory"
-                        )
-                    } else {
-                        format!("{source}: no such file or directory")
-                    },
-                    EXIT_API,
-                );
-            }
+            let remote = if path.exists() {
+                None
+            } else {
+                match source::parse(&source, git_ref.as_deref()) {
+                    Ok(Some(s)) => Some(s),
+                    Ok(None) => {
+                        return fail(
+                            "invalid_params",
+                            format!("{source}: no such file or directory"),
+                            EXIT_API,
+                        );
+                    }
+                    Err(e) => return fail("invalid_params", e, EXIT_USAGE),
+                }
+            };
             if yes && in_plugin() {
                 return fail(
                     "permission_denied",
@@ -305,11 +306,30 @@ fn local(g: &Global, op: Local) -> i32 {
                     EXIT_PERMISSION,
                 );
             }
-            let (entry, m) =
-                match Registry::update(&dirs, |r| r.install(&dirs, &path, git_ref.as_deref())) {
-                    Ok(x) => x,
-                    Err(e) => return reg_fail(e),
-                };
+            let (entry, m) = match remote {
+                None => {
+                    match Registry::update(&dirs, |r| r.install(&dirs, &path, git_ref.as_deref())) {
+                        Ok(x) => x,
+                        Err(e) => return reg_fail(e),
+                    }
+                }
+                Some(src) => {
+                    let fetched = match source::fetch(
+                        &src,
+                        &source::base(),
+                        &dirs.checkouts.join(".fetch"),
+                    ) {
+                        Ok(f) => f,
+                        Err(e) => return fail("fetch_failed", e, EXIT_API),
+                    };
+                    let r = Registry::update(&dirs, |r| r.install_git(&dirs, &fetched, &src));
+                    let _ = std::fs::remove_dir_all(&fetched.work);
+                    match r {
+                        Ok(x) => x,
+                        Err(e) => return reg_fail(e),
+                    }
+                }
+            };
             let digest = registry::read_manifest(&entry.root)
                 .map(|(_, d)| d)
                 .unwrap_or_default();
@@ -401,6 +421,73 @@ fn local(g: &Global, op: Local) -> i32 {
         }
         Local::PluginEnable { id } => toggle(g, &dirs, &id, true),
         Local::PluginDisable { id } => toggle(g, &dirs, &id, false),
+    }
+}
+
+/// `install --dry-run`: show the manifest and the trust terms for a directory or a repository
+/// source (fetched into a scratch directory that is removed again; nothing is registered).
+fn install_dry_run(g: &Global, src: &str, git_ref: Option<&str>) -> i32 {
+    let dirs = vk_server::compat::plugin_dirs();
+    let mut fetched = None;
+    let mut origin = registry::Origin {
+        kind: "local".into(),
+        path: PathBuf::from(src),
+        requested_ref: git_ref.map(str::to_string),
+        repo: None,
+        commit: None,
+    };
+    let mut dir = PathBuf::from(src);
+    if !dir.exists() {
+        match source::parse(src, git_ref) {
+            Ok(Some(s)) => match source::fetch(&s, &source::base(), &dirs.checkouts.join(".fetch"))
+            {
+                Ok(f) => {
+                    origin.kind = "git".into();
+                    origin.path = PathBuf::from(&f.url);
+                    origin.repo = Some(s.spec());
+                    origin.commit = Some(f.commit.clone());
+                    origin.requested_ref = s.git_ref.clone();
+                    dir = f.plugin_dir.clone();
+                    fetched = Some(f);
+                }
+                Err(e) => return fail("fetch_failed", e, EXIT_API),
+            },
+            Ok(None) => {
+                return fail(
+                    "invalid_params",
+                    format!("{src}: no such file or directory"),
+                    EXIT_API,
+                );
+            }
+            Err(e) => return fail("invalid_params", e, EXIT_USAGE),
+        }
+    }
+    let loaded = herdr::manifest::Manifest::load(&dir);
+    if let Some(f) = &fetched {
+        let _ = std::fs::remove_dir_all(&f.work);
+    }
+    match loaded {
+        Ok((m, text)) => {
+            let entry = registry::Entry {
+                id: m.id.clone(),
+                kind: "herdr".into(),
+                root: dir,
+                managed: true,
+                origin,
+                enabled: true,
+                built: false,
+                installed_at_ms: 0,
+                trust: None,
+            };
+            let terms = registry::trust_terms(&entry, &m, &registry::sha256_hex(text.as_bytes()));
+            print(
+                g,
+                &json!({"dry_run": true, "manifest": m, "trust_terms": terms, "commit": entry.origin.commit}),
+                || terms.clone(),
+            );
+            EXIT_OK
+        }
+        Err(e) => fail("invalid_params", e, EXIT_API),
     }
 }
 
@@ -685,8 +772,46 @@ async fn api_call(g: &Global, method: &str, params: Value) -> i32 {
     crate::run_api(&mut c, g, method, params).await
 }
 
+/// Tell a running server that the registry changed (best effort, never starts a server): it
+/// refreshes key bindings and agent views and emits `plugin.registry_changed`.
+async fn notify_registry(g: &Global) {
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let Ok(stream) = client::connect_or_spawn(&g.session, &socket, true).await else {
+        return;
+    };
+    let mut c = Client::new(stream);
+    if c.hello("cli").await.is_ok() {
+        let _ = c.call("plugin.registry.notify", json!({})).await;
+    }
+}
+
 /// `vibeke plugin …`.
 pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
+    let code = plugin_cmd_inner(g, args).await;
+    let verb = args.first().map(String::as_str).unwrap_or("");
+    if code == EXIT_OK
+        && matches!(
+            verb,
+            "install"
+                | "update"
+                | "link"
+                | "unlink"
+                | "uninstall"
+                | "remove"
+                | "enable"
+                | "disable"
+                | "trust"
+                | "untrust"
+                | "revoke"
+                | "migrate"
+        )
+    {
+        notify_registry(g).await;
+    }
+    code
+}
+
+async fn plugin_cmd_inner(g: &Global, args: &[String]) -> i32 {
     let verb = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);
     let one = |what: &str| -> Result<String, i32> {
@@ -705,41 +830,13 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
         "install" => {
             let pos = positionals(rest, &["--ref"]);
             let [src] = pos.as_slice() else {
-                eprintln!("vibeke plugin install <dir | herdr-plugin.toml> [--yes] [--dry-run]");
+                eprintln!(
+                    "vibeke plugin install <dir | herdr-plugin.toml | owner/repo[/subdir][@ref]> [--ref R] [--yes] [--dry-run]"
+                );
                 return EXIT_USAGE;
             };
             if flag(rest, "--dry-run") {
-                return match herdr::manifest::Manifest::load(Path::new(src)) {
-                    Ok((m, text)) => {
-                        let entry = registry::Entry {
-                            id: m.id.clone(),
-                            kind: "herdr".into(),
-                            root: PathBuf::from(src),
-                            managed: true,
-                            origin: registry::Origin {
-                                kind: "local".into(),
-                                path: PathBuf::from(src),
-                                requested_ref: None,
-                            },
-                            enabled: true,
-                            built: false,
-                            installed_at_ms: 0,
-                            trust: None,
-                        };
-                        let terms = registry::trust_terms(
-                            &entry,
-                            &m,
-                            &registry::sha256_hex(text.as_bytes()),
-                        );
-                        print(
-                            g,
-                            &json!({"dry_run": true, "manifest": m, "trust_terms": terms}),
-                            || terms.clone(),
-                        );
-                        EXIT_OK
-                    }
-                    Err(e) => fail("invalid_params", e, EXIT_API),
-                };
+                return install_dry_run(g, src, value(rest, "--ref").as_deref());
             }
             local(
                 g,
@@ -750,6 +847,33 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
                 },
             )
         }
+        "update" => match one("update") {
+            Ok(id) => {
+                // Update = reinstall from the recorded repository and requested ref. A new
+                // commit or manifest leaves the plugin inactive until it is reviewed again.
+                let dirs = vk_server::compat::plugin_dirs();
+                let e = match Registry::load(&dirs).and_then(|r| r.get(&id).cloned()) {
+                    Ok(e) => e,
+                    Err(e) => return reg_fail(e),
+                };
+                let Some(repo) = e.origin.repo.clone() else {
+                    return fail(
+                        "invalid_params",
+                        format!("{id} was not installed from a repository"),
+                        EXIT_API,
+                    );
+                };
+                local(
+                    g,
+                    Local::PluginInstall {
+                        source: repo,
+                        git_ref: e.origin.requested_ref.clone(),
+                        yes: flag(rest, "--yes"),
+                    },
+                )
+            }
+            Err(c) => c,
+        },
         "link" => match one("link") {
             Ok(path) => local(
                 g,
@@ -1022,7 +1146,12 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
                 json: Some(true),
                 ..g.clone()
             };
-            local(&g, op)
+            let mutating = !matches!(op, Local::PluginList | Local::PluginConfigDir { .. });
+            let code = local(&g, op);
+            if mutating && code == EXIT_OK {
+                notify_registry(&g).await;
+            }
+            code
         }
         Parsed::Call { method, params } => {
             if lifecycle(&method) {

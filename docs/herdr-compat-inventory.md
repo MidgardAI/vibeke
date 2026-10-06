@@ -7,13 +7,13 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | Area | Implemented | Partial | Missing | Total |
 |---|---|---|---|---|
 | Socket wire protocol and endpoints | 12 | 5 | 0 | 17 |
-| Socket methods | 28 | 43 | 3 | 74 |
+| Socket methods | 28 | 45 | 1 | 74 |
 | Events (subscriptions and `[[events]]` hooks) | 15 | 9 | 1 | 25 |
-| CLI commands | 7 | 19 | 5 | 31 |
+| CLI commands | 7 | 20 | 4 | 31 |
 | Plugin manifest fields | 9 | 5 | 0 | 14 |
 | Plugin invocation environment | 9 | 5 | 1 | 15 |
 | Plugin lifecycle, registry and trust | 14 | 6 | 1 | 21 |
-| **All** | **94** | **92** | **11** | **197** |
+| **All** | **94** | **95** | **8** | **197** |
 
 ## Socket wire protocol and endpoints
 
@@ -103,8 +103,8 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `pane.zoom` | partial | spec |  |
 | `client.window_title.set` | implemented | spec | evented (`client.window_title_changed`); the TUI shows it as the outer terminal title (OSC 2) with `ui.title_sync`, else in the tab bar; sanitized |
 | `client.window_title.clear` | implemented | spec | back to `ui.title_format`; see `client.window_title.set` |
-| `agent.view.set` | missing | spec | the spec names it but defines no params, result or rendering, and no corpus plugin calls it; waits for the baseline schema capture (07 §8.0) before a TUI projection is built |
-| `agent.view.clear` | missing | spec | see `agent.view.set` |
+| `agent.view.set` | partial | spec | Vibeke's own shape (`target`, `text` <= 80 chars, `detail`, `tone`), plugin identity only, <= 16 views per plugin, shown in the sidebar and peek, gone when the plugin is disabled or untrusted; the baseline schema is unverified |
+| `agent.view.clear` | partial | spec | one run (`target`) or all of the plugin's views; see `agent.view.set` |
 | `pane.report_metadata` | partial | spec | merged per pane (`metadata`, `key`/`value` or flat params), shown as `metadata` in pane records; in memory |
 | `workspace.report_metadata` | partial | spec | as `pane.report_metadata`, per workspace |
 | `ping` | partial | spec | reports the emulated baseline |
@@ -153,7 +153,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | --version | implemented | spec | reports the emulated baseline |
 | global session selection (`--session`, HERDR_SESSION) | partial | spec | `--session NAME` and `HERDR_SESSION`; explicit sessions never spawn; panes cannot switch sessions; plugins keep their identity (grant re-checked on the destination) |
 | plugin install <path> | partial | corpus | local directories and manifest paths; build runs after trust |
-| plugin install owner/repo[/subdir] [--ref] | missing | spec | git sources need network; not built |
+| plugin install owner/repo[/subdir] [--ref] | partial | spec | shallow, hardened clone (no hooks/fsmonitor/filters, https+file only) of `https://github.com/owner/repo` at a tag, branch or sha (`@ref` or `--ref`); the resolved commit is recorded and pinned by the trust grant; `plugin update` re-fetches; `--ref` flag spelling and subdir grammar unverified |
 | plugin install --yes | implemented | spec | accepts the displayed legacy trust terms (operator only) |
 | plugin link | implemented | corpus | no build |
 | plugin unlink | implemented | corpus | files preserved |
@@ -193,11 +193,11 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | [[build]] command, platforms | implemented | spec | entry platforms override the plugin's |
 | [[startup]] command, platforms | implemented | spec |  |
 | [[actions]] id, title, description, command, platforms | implemented | spec | per-platform twins with one id |
-| [[actions]] contexts | partial | spec | validated; default when omitted (`global`) unverified |
+| [[actions]] contexts | partial | spec | validated; default when omitted (`global`) unverified; the TUI palette shows only actions whose contexts apply (workspace/tab/pane need that focus, selection needs a selection) |
 | [[events]] on, command, platforms, id | implemented | spec | unknown event names warn |
 | [[panes]] id, title, description, placement, command, width, height, platforms | partial | spec | parsed and validated; opened by `plugin.pane.open` in every placement, `width`/`height` size popups; default placement unverified |
 | [[link_handlers]] id, title, pattern, action, platforms | partial | spec | offered by the TUI on hint labels and Ctrl/Alt+click; matching order (registry, then manifest) and modifier unverified |
-| [[keys.command]] key, type, command, description | partial | spec | manifest defaults parsed (resolution warns) but not installed; the user's `[[keys.command]] type = plugin_action` bindings work |
+| [[keys.command]] key, type, command, description | partial | spec | manifest defaults are installed while the plugin is trusted and enabled, never over the user's keys (conflicts reported in `plugin.list`, skipped), and removed on disable/unlink; the user's `[[keys.command]] type = plugin_action` bindings work |
 | qualified action resolution (`<plugin>.<action>`) | implemented | spec |  |
 | unknown-key warnings | partial | spec | warning text differs from upstream |
 
@@ -235,8 +235,8 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | link never builds | implemented | spec |  |
 | async action invocation with log records | implemented | spec | 100 records/session, 64 KiB per stream |
 | [[startup]] once per server activation | partial | spec | runs at server start for active plugins, in its own process group (its broker follows the group); takeover semantics unverified |
-| [[events]] dispatch with baseline names | partial | spec | projected subset; concurrency/log limits unverified |
-| actions in the command palette | implemented | spec | per machine; untrusted/stale/disabled plugins listed but disabled with the fixing command; contexts not filtered yet |
+| [[events]] dispatch with baseline names | partial | spec | projected subset; per-plugin concurrency (default 4, excess hooks queue up to 16, excess action runs get `busy`) and log ring caps with truncation markers are Vibeke's own, upstream limits unverified |
+| actions in the command palette | implemented | spec | per machine; untrusted/stale/disabled plugins listed but disabled with the fixing command; actions are filtered by their contexts |
 | plugin panes and popups (all placements) | partial | spec | popups: session-modal TUI window, keys to the popup, hidden from compat pane lists/events, no `HERDR_PANE_ID`, callbacks act on the pane underneath; overlays: full-area layer; dimension rules and busy/error codes unverified |
 | link handlers | partial | spec | TUI chooser lists matching handlers (untrusted ones disabled) next to the default action; baseline runs the handler without a chooser (unverified) |
 | `[[keys.command]] type = plugin_action` bindings | implemented | spec | `command = "<plugin>.<action>"`, `description` shown in the palette |

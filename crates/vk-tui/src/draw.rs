@@ -237,6 +237,16 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs.push((format!("{mark} "), t.s(c)));
     }
     segs.push((label, t.dim()));
+    // A plugin's status line for this run (`agent.view.set`).
+    if let Some(v) = crate::plugins::agent_view(app, mi, &r.id) {
+        let c = match v.tone.as_str() {
+            "ok" => t.green,
+            "warn" => t.yellow,
+            "error" => t.red,
+            _ => t.accent,
+        };
+        segs.push((format!(" ▸ {}", v.text), t.s(c)));
+    }
     // Screenshots captured since the gallery was last opened for this agent (06 B7/B8).
     if let Some(n) = crate::gallery::badge(app, mi, &r.pane) {
         segs.push((format!(" 📷{n}"), t.s(t.accent)));

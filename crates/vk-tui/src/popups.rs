@@ -529,6 +529,20 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     if let Some(tool) = &r.last_tool {
                         b.line(&format!("last tool: {tool}"), t.dim());
                     }
+                    if let Some(v) = crate::plugins::agent_view(app, app.cur, &r.id) {
+                        let c = match v.tone.as_str() {
+                            "ok" => t.green,
+                            "warn" => t.yellow,
+                            "error" => t.red,
+                            _ => t.accent,
+                        };
+                        b.line(&format!("▸ {} ({})", v.text, v.plugin), t.s(c));
+                        if let Some(d) = &v.detail {
+                            for l in d.lines().take(6) {
+                                b.line(l, t.dim());
+                            }
+                        }
+                    }
                 }
                 if let Some(buf) = m.panes.get(pane) {
                     b.line("─── screen ───", t.dim());

@@ -89,15 +89,26 @@ pub struct Grant {
     /// after a successful build (which may produce them). Checked on every status read.
     #[serde(default)]
     pub entry_sha256: String,
+    /// The commit the reviewed checkout was resolved to (`owner/repo` sources). A different
+    /// commit makes the grant stale: an update is reviewed again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Origin {
-    /// `local` (copied from a directory) or `link`.
+    /// `local` (copied from a directory), `git` (`owner/repo`) or `link`.
     pub kind: String,
+    /// The directory (local/link) or the repository URL plus subdirectory (git).
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_ref: Option<String>,
+    /// `owner/repo[/subdir]` of a repository source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// The commit the checkout was resolved to (repository sources).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -453,6 +464,46 @@ impl Registry {
         requested_ref: Option<&str>,
     ) -> Result<(Entry, Manifest), RegistryError> {
         let root = plugin_root(src)?;
+        let origin = Origin {
+            kind: "local".into(),
+            path: root.clone(),
+            requested_ref: requested_ref.map(str::to_string),
+            repo: None,
+            commit: None,
+        };
+        self.install_checkout(dirs, &root, origin)
+    }
+
+    /// Register a fetched `owner/repo` checkout ([`super::source::fetch`]) as a managed
+    /// install: the source is the repository URL, the pinned value the resolved commit.
+    pub fn install_git(
+        &mut self,
+        dirs: &PluginDirs,
+        fetched: &super::source::Fetched,
+        src: &super::source::GitSource,
+    ) -> Result<(Entry, Manifest), RegistryError> {
+        let root = plugin_root(&fetched.plugin_dir)?;
+        let mut path = PathBuf::from(&fetched.url);
+        if let Some(s) = &src.subdir {
+            path = path.join(s);
+        }
+        let origin = Origin {
+            kind: "git".into(),
+            path,
+            requested_ref: src.git_ref.clone(),
+            repo: Some(src.spec()),
+            commit: Some(fetched.commit.clone()),
+        };
+        self.install_checkout(dirs, &root, origin)
+    }
+
+    fn install_checkout(
+        &mut self,
+        dirs: &PluginDirs,
+        root: &Path,
+        origin: Origin,
+    ) -> Result<(Entry, Manifest), RegistryError> {
+        let root = root.to_path_buf();
         let (m, _) = read_manifest(&root)?;
         if let Some(old) = self.plugins.get(&m.id)
             && !old.managed
@@ -494,18 +545,18 @@ impl Registry {
         // source, and only when there is nothing to rebuild (the fresh checkout is unbuilt).
         let needs_build = !m.build_on(super::current_platform()).is_empty();
         let trust = prev.as_ref().and_then(|p| p.trust.clone()).filter(|g| {
-            !needs_build && g.source == root && !g.tree_sha256.is_empty() && g.tree_sha256 == tree
+            !needs_build
+                && g.source == origin.path
+                && g.commit == origin.commit
+                && !g.tree_sha256.is_empty()
+                && g.tree_sha256 == tree
         });
         let entry = Entry {
             id: m.id.clone(),
             kind: "herdr".into(),
             root: dest,
             managed: true,
-            origin: Origin {
-                kind: "local".into(),
-                path: root,
-                requested_ref: requested_ref.map(str::to_string),
-            },
+            origin,
             enabled: prev.as_ref().is_none_or(|p| p.enabled),
             built: false,
             installed_at_ms: now_ms(),
@@ -544,6 +595,8 @@ impl Registry {
                 kind: "link".into(),
                 path: root,
                 requested_ref: None,
+                repo: None,
+                commit: None,
             },
             enabled: prev.as_ref().is_none_or(|p| p.enabled),
             built: false,
@@ -615,6 +668,7 @@ impl Registry {
             source: e.origin.path.clone(),
             tree_sha256: tree,
             entry_sha256: entry_digest(&e.root, &m),
+            commit: e.origin.commit.clone(),
         };
         // A new review of a managed checkout requires a new build.
         if e.managed {
@@ -688,6 +742,7 @@ pub fn entry_status(e: &Entry) -> (Status, Option<Manifest>) {
                 || g.root != e.root
                 || m.id != e.id
                 || g.source != e.origin.path
+                || g.commit != e.origin.commit
                 || g.grant_id.is_empty()
                 || g.entry_sha256 != entry_digest(&e.root, &m)
                 || unbuilt =>
@@ -720,6 +775,9 @@ pub fn trust_terms(e: &Entry, m: &Manifest, digest: &str) -> String {
             .map(|r| format!(", ref {r}"))
             .unwrap_or_default()
     ));
+    if let Some(c) = &e.origin.commit {
+        s.push_str(&format!("  commit:   {c}\n"));
+    }
     s.push_str(&format!("  root:     {}\n", e.root.display()));
     s.push_str(&format!("  manifest: sha256 {digest}\n"));
     if let Some(v) = &m.min_herdr_version {
@@ -1044,5 +1102,113 @@ mod tests {
         assert!(s.contains("go [global]"));
         assert!(s.contains("worktree.created: bin/go hook"));
         assert!(s.contains(&digest));
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let o = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn repository_installs_pin_the_commit_and_updates_need_review() {
+        use super::super::source;
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(t.path());
+        // A repository `<srv>/acme/tool` whose plugin id is acme.tool.
+        let work = t.path().join("w");
+        let body = |v: &str| {
+            format!(
+                "id = \"acme.tool\"\nversion = \"{v}\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"bin/go\"]\n"
+            )
+        };
+        std::fs::create_dir_all(work.join("bin")).unwrap();
+        std::fs::write(work.join(MANIFEST_FILE), body("1")).unwrap();
+        std::fs::write(work.join("bin/go"), "#!/bin/sh\necho 1\n").unwrap();
+        run_git(&work, &["init", "-q", "-b", "main"]);
+        run_git(&work, &["add", "."]);
+        run_git(&work, &["commit", "-qm", "one"]);
+        run_git(&work, &["tag", "v1"]);
+        let c1 = run_git(&work, &["rev-parse", "HEAD"]);
+        let bare = t.path().join("srv/acme/tool");
+        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        run_git(
+            t.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        let base = format!("file://{}", t.path().join("srv").display());
+        let install = |reg: &mut Registry, r: Option<&str>| {
+            let src = source::parse("acme/tool", r).unwrap().unwrap();
+            let f = source::fetch(&src, &base, &t.path().join("fetch")).unwrap();
+            let out = reg.install_git(&d, &f, &src);
+            std::fs::remove_dir_all(&f.work).unwrap();
+            out.unwrap()
+        };
+        let mut reg = Registry::default();
+        let (e, _) = install(&mut reg, Some("v1"));
+        assert_eq!(e.origin.kind, "git");
+        assert_eq!(e.origin.commit.as_deref(), Some(c1.as_str()));
+        assert_eq!(e.origin.requested_ref.as_deref(), Some("v1"));
+        assert_eq!(e.origin.repo.as_deref(), Some("acme/tool"));
+        assert!(!e.root.join(".git").exists());
+        let g = reg.trust("acme.tool").unwrap();
+        assert_eq!(
+            g.commit.as_deref(),
+            Some(c1.as_str()),
+            "the grant pins the commit"
+        );
+        assert_eq!(reg.status("acme.tool").unwrap().0, Status::Active);
+
+        // Same commit again: the grant survives (identical reviewed content).
+        install(&mut reg, Some("v1"));
+        assert_eq!(reg.status("acme.tool").unwrap().0, Status::Active);
+
+        // A new upstream commit that changes the manifest: reinstalling it needs a new review.
+        std::fs::write(work.join(MANIFEST_FILE), body("2")).unwrap();
+        run_git(&work, &["commit", "-qam", "two"]);
+        run_git(&work, &["push", "-q", bare.to_str().unwrap(), "main"]);
+        let (e, _) = install(&mut reg, None);
+        assert_ne!(e.origin.commit.as_deref(), Some(c1.as_str()));
+        assert_eq!(reg.status("acme.tool").unwrap().0, Status::Untrusted);
+        reg.trust("acme.tool").unwrap();
+        assert_eq!(reg.status("acme.tool").unwrap().0, Status::Active);
+
+        // A grant recorded for another commit is stale.
+        reg.plugins
+            .get_mut("acme.tool")
+            .unwrap()
+            .trust
+            .as_mut()
+            .unwrap()
+            .commit = Some(c1.clone());
+        assert_eq!(reg.status("acme.tool").unwrap().0, Status::StaleTrust);
+
+        // The trust terms show the commit.
+        let e = reg.get("acme.tool").unwrap().clone();
+        let (m, dg) = read_manifest(&e.root).unwrap();
+        assert!(trust_terms(&e, &m, &dg).contains(e.origin.commit.as_deref().unwrap()));
     }
 }

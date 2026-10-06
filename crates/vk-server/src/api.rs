@@ -349,6 +349,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "task.sync",
     "compat.invocation.verify",
     "plugin.surface.close",
+    "plugin.registry.notify",
 ];
 
 /// Method prefixes whose every method is forbidden for pane scope (14 §9: pane/adapter tokens

@@ -268,7 +268,56 @@ fn unique<'a>(section: &str, ids: impl Iterator<Item = &'a str>) -> Result<(), M
     Ok(())
 }
 
+/// What the focused UI can offer an action right now (07 §7.7 contexts): `global` actions are
+/// always applicable; `workspace`, `tab` and `pane` need that object focused; `selection` needs
+/// a text selection in the focused pane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ActionContext {
+    pub workspace: bool,
+    pub tab: bool,
+    pub pane: bool,
+    pub selection: bool,
+}
+
+/// Whether an action declaring `contexts` applies in `c` (any declared context holds). An
+/// action with no contexts at all applies everywhere, like `global`.
+pub fn contexts_apply(contexts: &[String], c: ActionContext) -> bool {
+    contexts.is_empty()
+        || contexts.iter().any(|x| match x.as_str() {
+            "workspace" => c.workspace,
+            "tab" => c.tab,
+            "pane" => c.pane,
+            "selection" => c.selection,
+            // `global` and anything a newer baseline adds: shown (never silently hidden).
+            _ => true,
+        })
+}
+
+impl Action {
+    pub fn applies(&self, c: ActionContext) -> bool {
+        contexts_apply(&self.contexts, c)
+    }
+}
+
 impl Manifest {
+    /// Declared default key bindings that bind a plugin action, resolved to the qualified
+    /// action id (`<plugin>.<action>`): `(key, qualified, description)`. Bindings of other
+    /// types, or naming an action the plugin does not declare, are not installable.
+    pub fn plugin_key_bindings(&self) -> Vec<(String, String, Option<String>)> {
+        self.keys
+            .iter()
+            .filter(|k| k.kind == "plugin_action")
+            .filter_map(|k| {
+                let a = self.resolve_action(&k.command)?;
+                Some((
+                    k.key.clone(),
+                    format!("{}.{}", self.id, a.id),
+                    k.description.clone(),
+                ))
+            })
+            .collect()
+    }
+
     /// Parse and validate manifest text.
     pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
         let t: Table = toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
@@ -714,6 +763,63 @@ command = "acme.demo.open"
             m.entrypoints("linux")
                 .iter()
                 .any(|e| e.starts_with("pane main (popup)"))
+        );
+    }
+
+    #[test]
+    fn contexts_decide_where_an_action_applies() {
+        let m = Manifest::parse(MINI).unwrap();
+        let open = m.resolve_action("open").unwrap(); // pane, workspace
+        let staged = m.resolve_action("review:staged").unwrap(); // global
+        let nothing = ActionContext::default();
+        let ws = ActionContext {
+            workspace: true,
+            ..Default::default()
+        };
+        let sel = ActionContext {
+            pane: true,
+            selection: true,
+            ..Default::default()
+        };
+        assert!(!open.applies(nothing));
+        assert!(open.applies(ws));
+        assert!(open.applies(sel), "pane context");
+        assert!(staged.applies(nothing), "global applies everywhere");
+        let only_sel = vec!["selection".to_string()];
+        assert!(!contexts_apply(
+            &only_sel,
+            ActionContext {
+                pane: true,
+                ..Default::default()
+            }
+        ));
+        assert!(contexts_apply(&only_sel, sel));
+        let tab_only = vec!["tab".to_string()];
+        assert!(!contexts_apply(&tab_only, ws));
+        assert!(contexts_apply(
+            &tab_only,
+            ActionContext {
+                tab: true,
+                ..Default::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn default_key_bindings_resolve_to_qualified_actions() {
+        let m = Manifest::parse(MINI).unwrap();
+        assert_eq!(
+            m.plugin_key_bindings(),
+            vec![("prefix+d".to_string(), "acme.demo.open".to_string(), None)]
+        );
+        let m = Manifest::parse(
+            "id = 'a'\n[[actions]]\nid = 'x'\ncommand = ['x']\n[[keys.command]]\nkey = 'prefix+x'\ntype = 'plugin_action'\ncommand = 'nope'\n[[keys.command]]\nkey = 'prefix+y'\ntype = 'shell'\ncommand = 'ls'\n[[keys.command]]\nkey = 'prefix+z'\ntype = 'plugin_action'\ncommand = 'x'\ndescription = 'Do x'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.plugin_key_bindings(),
+            vec![("prefix+z".into(), "a.x".into(), Some("Do x".into()))],
+            "unresolved and non-plugin bindings are not installable"
         );
     }
 

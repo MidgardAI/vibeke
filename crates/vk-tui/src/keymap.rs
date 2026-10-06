@@ -72,6 +72,35 @@ impl Keymap {
         }
     }
 
+    /// Add a plugin's default binding for `action`. Existing bindings (the user's, the
+    /// defaults, earlier plugins) win: a chord already in use is not taken over. False when the
+    /// binding is unusable or clashes.
+    pub fn add_plugin_binding(&mut self, action: &str, spec: &str) -> bool {
+        let Ok(b) = parse_binding(spec) else {
+            return false;
+        };
+        if b.chords.is_empty() {
+            return false;
+        }
+        let clash = self.bindings.iter().any(|o| {
+            o.prefix == b.prefix
+                && o.chords
+                    .iter()
+                    .zip(b.chords.iter())
+                    .all(|(x, y)| key_matches(x, y))
+        });
+        if clash {
+            return false;
+        }
+        self.bindings.push(Bound {
+            prefix: b.prefix,
+            chords: b.chords,
+            action: action.to_string(),
+            index: None,
+        });
+        true
+    }
+
     pub fn is_prefix(&self, ev: &KeyEvent) -> bool {
         key_matches(&self.prefix, ev)
     }

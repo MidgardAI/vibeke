@@ -212,9 +212,100 @@ pub fn check_keys(cfg: &Config) -> Vec<Conflict> {
     out
 }
 
+/// Canonical `(canon, sequence)` pairs of a raw binding (ranges expanded).
+fn canon_seqs(raw: &str) -> Option<Vec<(String, Vec<String>)>> {
+    if raw.trim().is_empty() {
+        return None;
+    }
+    let b = parse_binding(raw).ok()?;
+    Some(
+        b.expand()
+            .into_iter()
+            .map(|canon| {
+                let body = canon.strip_prefix("prefix+").unwrap_or(&canon);
+                let mut seq: Vec<String> = body.split_whitespace().map(String::from).collect();
+                if b.prefix {
+                    seq.insert(0, "prefix".into());
+                }
+                (canon, seq)
+            })
+            .collect(),
+    )
+}
+
+/// Why a plugin's default binding `raw` cannot be installed next to the user's keymap: the
+/// action (or `command[i]`, or an earlier plugin's `claimed` entry) it duplicates or shadows, or
+/// that shadows it. `Err` means the binding does not parse. `Ok(None)` means it is free.
+/// Plugins never override user keys: the caller skips a clashing binding and reports it.
+pub fn binding_clash(
+    cfg: &Config,
+    raw: &str,
+    claimed: &[(String, String)],
+) -> Result<Option<String>, String> {
+    let Some(mine) = canon_seqs(raw) else {
+        return Err(format!("unusable key binding `{raw}`"));
+    };
+    let mut others: Vec<(String, String)> = Vec::new();
+    for (action, b) in &cfg.keys.bindings {
+        others.push((action.clone(), b.clone()));
+    }
+    for (i, c) in cfg.keys.command.iter().enumerate() {
+        others.push((format!("command[{i}]"), c.key.clone()));
+    }
+    others.extend(claimed.iter().cloned());
+    for (name, b) in others {
+        let Some(theirs) = canon_seqs(&b) else {
+            continue;
+        };
+        for (mc, ms) in &mine {
+            for (tc, ts) in &theirs {
+                if mc == tc || ms.starts_with(ts) || ts.starts_with(ms) {
+                    return Ok(Some(name));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_binding_clashes() {
+        let mut cfg = Config::default();
+        // `prefix+s` is the default `settings` binding; `prefix+shift+z` is free.
+        assert_eq!(
+            binding_clash(&cfg, "prefix+s", &[]).unwrap().as_deref(),
+            Some("settings")
+        );
+        assert_eq!(binding_clash(&cfg, "prefix+shift+z", &[]).unwrap(), None);
+        // A user's own command binding wins, and so does an earlier plugin's claim.
+        cfg.keys.command.push(crate::types::KeyCommand {
+            key: "prefix+shift+z".into(),
+            command: "lazygit".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            binding_clash(&cfg, "prefix+shift+z", &[])
+                .unwrap()
+                .as_deref(),
+            Some("command[0]")
+        );
+        let claimed = vec![("a.x".to_string(), "prefix+alt+k".to_string())];
+        assert_eq!(
+            binding_clash(&cfg, "prefix+alt+k", &claimed)
+                .unwrap()
+                .as_deref(),
+            Some("a.x")
+        );
+        // A sequence prefix shadows (and is shadowed by) a longer binding.
+        assert!(binding_clash(&cfg, "prefix+g w", &[]).unwrap().is_some());
+        // An unbound action never clashes; garbage is an error.
+        assert!(binding_clash(&cfg, "", &[]).is_err());
+        assert!(binding_clash(&cfg, "prefix+nonsense+++", &[]).is_err());
+    }
 
     #[test]
     fn shipped_defaults_have_no_conflicts() {

@@ -158,7 +158,11 @@ pub fn render(p: &Policy) -> String {
     for s in &p.unix_sockets {
         net.push(format!("(remote unix-socket (path-literal {}))", qp(s)));
     }
-    rule(&mut o, "allow", "network-outbound", &net);
+    if p.network_open {
+        o.push_str("(allow network-outbound)\n");
+    } else {
+        rule(&mut o, "allow", "network-outbound", &net);
+    }
     if p.allow_bind_localhost {
         o.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
         o.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");

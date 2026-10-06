@@ -13,6 +13,8 @@ pub mod launch;
 pub mod manifest;
 pub mod migrate;
 pub mod registry;
+pub mod settings;
+pub mod source;
 pub mod status;
 pub mod wire;
 

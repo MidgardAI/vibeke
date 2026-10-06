@@ -241,7 +241,7 @@ fn herdr_cli_shim_and_wire_protocol() {
     assert_eq!(v["error"]["code"], "invalid_request");
     let (v, _) = raw(&sock, r#"{"id":"x","method":"galaxy.explode","params":{}}"#);
     assert_eq!(v["error"]["code"], "method_not_found");
-    let (v, _) = raw(&sock, r#"{"id":"y","method":"agent.view.set","params":{}}"#);
+    let (v, _) = raw(&sock, r#"{"id":"y","method":"server.stop","params":{}}"#);
     assert_eq!(v["error"]["code"], "unsupported");
     let (v, _) = raw(&sock, "{oops");
     assert_eq!(v["error"]["code"], "parse_error");

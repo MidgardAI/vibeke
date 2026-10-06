@@ -13,7 +13,16 @@
 //! - **Palette entries.** `plugin.action.list` per machine (refreshed when the palette opens and
 //!   after a connect): trusted and enabled actions run with `plugin.action.run`; untrusted,
 //!   stale or disabled plugins are listed but disabled with the command that fixes them.
-//! - **Key bindings.** `[[keys.command]] type = "plugin_action"`, `command = "<plugin>.<action>"`.
+//! - **Action contexts.** An action declares where it applies (`global`, `workspace`, `tab`,
+//!   `pane`, `selection`); the palette lists only actions whose context holds for the focused
+//!   machine, and a key binding that fires elsewhere says why nothing ran.
+//! - **Key bindings.** `[[keys.command]] type = "plugin_action"`, `command = "<plugin>.<action>"`,
+//!   plus the default bindings plugin manifests declare: the server lists them (conflicts with
+//!   the user's keys already skipped) in `plugin.action.list` and they are added to the keymap
+//!   whenever that list is refreshed (connect, palette, config reload, `plugin.registry_changed`)
+//!   and gone again once the plugin is disabled or unlinked.
+//! - **Agent views.** `agent.view.set` lines (`compat.ui.state` / `plugin.agent_view_changed`)
+//!   are shown after the run's state in the sidebar and under it in the peek.
 //! - **Link handlers.** A hint label (`url_hints`) or Ctrl/Alt+click on a token that matches a
 //!   plugin's `[[link_handlers]]` pattern offers the matching handlers next to the default
 //!   action; the chosen handler runs with `plugin.link.open`, whose action gets
@@ -30,6 +39,7 @@ use crate::screen::{Grid, Rect as SRect};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+use vk_compat::herdr::manifest::{ActionContext, contexts_apply};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
 use vk_proto::layout::Rect;
 use vk_proto::model::{Pane, PluginSurface, SurfaceKind, Tab};
@@ -54,6 +64,24 @@ pub struct PluginAction {
     pub available: bool,
     /// `active`, `untrusted`, `stale_trust`, `disabled`, …
     pub status: String,
+    /// Declared contexts (`global`, `workspace`, `tab`, `pane`, `selection`).
+    pub contexts: Vec<String>,
+}
+
+/// A default key binding a plugin manifest declares and the server found free.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginKey {
+    pub key: String,
+    pub action: String,
+}
+
+/// A plugin-provided status line for an agent run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentView {
+    pub plugin: String,
+    pub text: String,
+    pub detail: Option<String>,
+    pub tone: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +99,10 @@ pub struct LinkHandler {
 pub struct Per {
     pub actions: Vec<PluginAction>,
     pub handlers: Vec<LinkHandler>,
+    /// Installed manifest default bindings (`plugin.action.list`).
+    pub keys: Vec<PluginKey>,
+    /// Agent views by run id (`compat.ui.state`).
+    pub views: HashMap<String, AgentView>,
     /// `client.window_title.set` override (sanitized), until `client.window_title.clear`.
     pub window_title: Option<String>,
 }
@@ -146,6 +178,83 @@ pub fn on_connected(app: &mut App, mi: usize) {
     app.plugins.scroll_sent.remove(&mi);
 }
 
+/// `plugin.registry_changed` / `plugin.agent_view_changed` (pushed): re-read actions, bindings
+/// and views of machine `mi`.
+pub fn on_registry_event(app: &mut App, mi: usize) {
+    refresh(app, mi);
+    if app.machines[mi].connected() {
+        app.command_on(mi, "compat.ui.state", json!({}), Pending::Plugin(Reply::Ui));
+    }
+}
+
+pub fn parse_keys(v: &Value) -> Vec<PluginKey> {
+    v["keybindings"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|k| k["installed"].as_bool() == Some(true))
+                .filter_map(|k| {
+                    Some(PluginKey {
+                        key: k["key"].as_str()?.to_string(),
+                        action: k["action"].as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn parse_views(v: &Value) -> HashMap<String, AgentView> {
+    v["agent_views"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    Some((
+                        x["run"].as_str()?.to_string(),
+                        AgentView {
+                            plugin: x["plugin_id"].as_str()?.to_string(),
+                            text: sanitize(x["text"].as_str()?, 80),
+                            detail: x["detail"].as_str().map(|d| sanitize_block(d, 512)),
+                            tone: x["tone"].as_str().unwrap_or("info").to_string(),
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Like [`sanitize`] but keeps newlines (peek detail).
+fn sanitize_block(s: &str, max: usize) -> String {
+    s.lines()
+        .map(|l| sanitize(l, 200))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .take(max)
+        .collect()
+}
+
+/// The view a plugin set for run `run` on machine `mi`.
+pub fn agent_view<'a>(app: &'a App, mi: usize, run: &str) -> Option<&'a AgentView> {
+    app.plugins.per(mi)?.views.get(run)
+}
+
+/// Rebuild the keymap from the config and add every machine's installed plugin bindings. A
+/// binding the keymap already uses (user keys win) is skipped.
+pub fn apply_keys(app: &mut App) {
+    let mut km = crate::keymap::Keymap::from_config(&app.config);
+    let mut mis: Vec<&usize> = app.plugins.per.keys().collect();
+    mis.sort();
+    for mi in mis {
+        for k in &app.plugins.per[mi].keys {
+            km.add_plugin_binding(&format!("plugin:{mi}:{}", k.action), &k.key);
+        }
+    }
+    app.keymap = km;
+}
+
 pub fn parse_actions(v: &Value) -> Vec<PluginAction> {
     let s = |x: &Value, k: &str| x[k].as_str().unwrap_or("").to_string();
     v["actions"]
@@ -164,6 +273,14 @@ pub fn parse_actions(v: &Value) -> Vec<PluginAction> {
                     description: x["description"].as_str().map(|d| sanitize(d, 120)),
                     available: x["available"].as_bool().unwrap_or(false),
                     status: s(x, "status"),
+                    contexts: x["contexts"]
+                        .as_array()
+                        .map(|c| {
+                            c.iter()
+                                .filter_map(|c| c.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
                 .collect()
         })
@@ -194,7 +311,17 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
     match r {
         // Older servers (no plugin API) answer method_not_found: nothing to show.
         Reply::Actions => {
-            app.plugins.per_mut(mi).actions = res.map(|v| parse_actions(&v)).unwrap_or_default()
+            let (actions, keys) = match &res {
+                Ok(v) => (parse_actions(v), parse_keys(v)),
+                Err(_) => (vec![], vec![]),
+            };
+            let p = app.plugins.per_mut(mi);
+            let keys_changed = p.keys != keys;
+            p.actions = actions;
+            p.keys = keys;
+            if keys_changed {
+                apply_keys(app);
+            }
         }
         Reply::Handlers => {
             app.plugins.per_mut(mi).handlers = res.map(|v| parse_handlers(&v)).unwrap_or_default()
@@ -202,6 +329,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Ui => {
             if let Ok(v) = res {
                 set_title(app, mi, v["window_title"].as_str());
+                app.plugins.per_mut(mi).views = parse_views(&v);
             }
         }
         Reply::Ran(what) => match res {
@@ -646,6 +774,7 @@ pub fn unavailable_hint(plugin: &str, status: &str) -> String {
 /// `plugin:<machine>:<plugin>.<action>`.
 pub fn palette_entries(app: &App) -> Vec<(String, String, bool)> {
     let multi = app.machines.len() > 1;
+    let ctx_of = |mi: usize| action_context(app, mi);
     let mut mis: Vec<&usize> = app.plugins.per.keys().collect();
     mis.sort();
     let mut out = Vec::new();
@@ -655,7 +784,12 @@ pub fn palette_entries(app: &App) -> Vec<(String, String, bool)> {
         } else {
             String::new()
         };
+        let ctx = ctx_of(*mi);
         for a in &app.plugins.per[mi].actions {
+            // Only actions that apply to what is focused are offered.
+            if !contexts_apply(&a.contexts, ctx) {
+                continue;
+            }
             let mut desc = format!("Plugin: {} ({}){on}", a.title, a.plugin);
             if !a.available {
                 desc.push_str(&format!(" — {}", unavailable_hint(&a.plugin, &a.status)));
@@ -666,8 +800,38 @@ pub fn palette_entries(app: &App) -> Vec<(String, String, bool)> {
     out
 }
 
-/// Binding of a plugin action from `[[keys.command]] type = "plugin_action"`.
+/// What is focused on machine `mi`, for action contexts. A selection exists only in copy mode
+/// (so a palette, which leaves copy mode, never offers `selection` actions).
+pub fn action_context(app: &App, mi: usize) -> ActionContext {
+    if mi == app.cur {
+        ActionContext {
+            workspace: app.focused_ws().is_some(),
+            tab: app.focused_tab().is_some(),
+            pane: app.focused_pane().is_some(),
+            selection: matches!(&app.mode, Mode::Copy(cm) if cm.selection_text().is_some()),
+        }
+    } else {
+        let pane = app.machines[mi].focus.pane.is_some();
+        ActionContext {
+            workspace: pane,
+            tab: pane,
+            pane,
+            selection: false,
+        }
+    }
+}
+
+/// Binding of a plugin action: the user's `[[keys.command]] type = "plugin_action"` first, then
+/// a manifest default the server installed.
 pub fn binding_for(app: &App, qualified: &str) -> Option<String> {
+    let manifest_default = || {
+        app.plugins
+            .per
+            .values()
+            .flat_map(|p| p.keys.iter())
+            .find(|k| k.action == qualified)
+            .map(|k| k.key.clone())
+    };
     app.config
         .keys
         .command
@@ -675,6 +839,7 @@ pub fn binding_for(app: &App, qualified: &str) -> Option<String> {
         .find(|c| c.kind == vk_config::CommandType::PluginAction && c.command == qualified)
         .map(|c| c.key.clone())
         .filter(|k| !k.is_empty())
+        .or_else(manifest_default)
 }
 
 /// Run palette entry `<machine>:<plugin>.<action>`.
@@ -693,6 +858,11 @@ fn run_palette(app: &mut App, rest: &str) {
         .cloned();
     match a {
         Some(a) if !a.available => app.toast(unavailable_hint(&a.plugin, &a.status)),
+        Some(a) if !contexts_apply(&a.contexts, action_context(app, mi)) => app.toast(format!(
+            "{}: not available here (needs {})",
+            a.title,
+            a.contexts.join(" or ")
+        )),
         Some(a) => run_action(app, mi, &a.plugin, Some(&a.action), &a.title, "palette"),
         None => app.toast(format!("{q}: no such plugin action")),
     }
@@ -727,6 +897,22 @@ pub fn run_action(
 
 /// A `[[keys.command]] type = "plugin_action"` binding fired.
 pub fn run_key_command(app: &mut App, c: &vk_config::KeyCommand) {
+    let cur = app.cur;
+    // A binding fired where the action does not apply: say so instead of running it.
+    if let Some(a) = app.plugins.per(cur).and_then(|p| {
+        p.actions
+            .iter()
+            .find(|a| a.qualified == c.command || a.action == c.command)
+            .cloned()
+    }) && !contexts_apply(&a.contexts, action_context(app, cur))
+    {
+        app.toast(format!(
+            "{}: not available here (needs {})",
+            a.title,
+            a.contexts.join(" or ")
+        ));
+        return;
+    }
     let title = c
         .description
         .clone()
