@@ -502,6 +502,9 @@ right    = ["agents_summary", "clock"]
 include_agents = false
 [ui.interactions]
 batch     = true                      # equivalent native approvals; fingerprint alone is insufficient (§8)
+deadline_window = "60s"               # 15 §8.1: "deadline approaching" when this little time is left
+[ui.inbox]
+also_working = true                   # 15 §8.1: "Also working" footer of busy agents without a question
 [ui.fleet]
 tile_view = "terminal"                # terminal (live miniature of the agent's own UI) | timeline
 
@@ -520,6 +523,8 @@ error          = true
 bell           = false
 osc            = true
 remote_disconnected = true
+deadline       = true                 # 15 §8.1: an inbox item's native deadline is approaching
+review         = true                 # 15 §8: a tracked task became ready for review, or its check failed
 
 [layouts.dev]                         # named layouts (07 §2.14 LayoutSpec): `vibeke layout apply dev`,
 cwd = "~/code/app"                    # `vibeke workspace create --layout dev`

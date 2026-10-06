@@ -217,7 +217,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # include_agents = false
 
 # [ui.interactions]
-# batch = true
+# batch           = true
+# deadline_window = "60s"               # "deadline approaching" in the inbox when this little time is left
+
+# [ui.inbox]
+# also_working = true                   # footer listing busy agents without an open question
 
 # [ui.fleet]
 # tile_view = "terminal"                # terminal | timeline
@@ -238,6 +242,8 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # bell                = false
 # osc                 = true
 # remote_disconnected = true
+# deadline            = true            # an inbox item's native deadline is approaching
+# review              = true            # a tracked task is ready for review, or its check failed
 
 # [agents]
 # auto_detect       = true

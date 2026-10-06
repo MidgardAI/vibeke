@@ -193,6 +193,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `depend` | `<task>` `<depends_on>` | `task.dependency.add` | <task> <depends-on> [--kind blocks\|related] — confirm a dependency link (cycles refused) |
 | `undepend` | `<task>` `<depends_on>` | `task.dependency.remove` | <task> <depends-on> [--kind k] \| --edge e |
 | `deps` | `<task>` | `task.dependency.list` | [task] — confirmed links and how many open tasks each blocks |
+| `select` | `<task>` | `task.review.snapshot` | <task> --paths f [--paths g …] \| --patch <unified diff> — capture only these files or hunks as a selected-patch subject (checks on it verify the selection alone) |
+| `human-review` | `<task>` `<criterion>` `<verdict>` | `task.review.human_review` | <task> <criterion> supported\|failed\|withdrawn [--note n] [--subject s] [--screenshots id] — your judgment of a human criterion on the shown revision |
+| `forget` | - | `task.review.forget` | --task t \| --pane p \| --workspace w \| --before t \| --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs) |
+| `link` | - | `task.link.status` | --run r \| --pane p — why a run's identity is not verified, how to verify it, and verified runs to track instead |
 | `message` | `<task>` `<text>` | `task.message.prepare` | [--communicates-intent] — draft only |
 | `send` | `<message>` | `task.message.send` | send a prepared message (refuses with zero bytes when unsafe) |
 | `message-status` | `<message>` | `task.message.get` |  |

@@ -619,6 +619,8 @@ pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
         "bytes_deleted": report.bytes,
         "fts_rows_deleted": report.fts_rows,
         "archive_panes_dropped": report.panes_dropped,
+        // Spec 15 derived objects in the same scope (lane 2C).
+        "review": crate::review::purge::on_scrollback_forget(server, &scope, pane_ids.as_deref(), dry_run),
     }))
 }
 

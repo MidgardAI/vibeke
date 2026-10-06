@@ -65,6 +65,13 @@ pub enum SnapshotError {
         what: &'static str,
         paths: Vec<String>,
     },
+    /// The selection holds no change relative to HEAD (selected-patch capture).
+    #[error("the selection contains no uncommitted change: {0}")]
+    NothingSelected(String),
+    /// A selected path is not a relative path inside the repository, or the patch does not
+    /// apply to HEAD.
+    #[error("invalid selection: {0}")]
+    InvalidSelection(String),
 }
 
 impl SnapshotError {
@@ -76,6 +83,8 @@ impl SnapshotError {
             SnapshotError::UnbornHead => "unborn_head",
             SnapshotError::Unmerged => "unmerged_paths",
             SnapshotError::UnsupportedCapture { .. } => "unsupported_capture",
+            SnapshotError::NothingSelected(_) => "nothing_selected",
+            SnapshotError::InvalidSelection(_) => "invalid_selection",
             _ => "snapshot_failed",
         }
     }
@@ -178,7 +187,7 @@ pub fn capture_dirty_snapshot_with(
 }
 
 /// Removes the private index copy on drop.
-struct TempIndex(PathBuf);
+pub(crate) struct TempIndex(pub(crate) PathBuf);
 
 impl Drop for TempIndex {
     fn drop(&mut self) {
@@ -190,7 +199,7 @@ impl Drop for TempIndex {
 }
 
 /// `(staged tree, full working-tree tree)` written through a private copy of the index.
-fn write_trees(root: &Path) -> Result<(Option<String>, String), SnapshotError> {
+pub(crate) fn write_trees(root: &Path) -> Result<(Option<String>, String), SnapshotError> {
     let git_dir = PathBuf::from(gitcmd::run(root, &["rev-parse", "--absolute-git-dir"])?);
     let index = PathBuf::from(gitcmd::run(root, &["rev-parse", "--git-path", "index"])?);
     let index = if index.is_absolute() {
