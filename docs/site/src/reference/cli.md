@@ -245,16 +245,17 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `declare` | `<port>` | `preview.declare` | --port N [--path /p] [--label l] [--pane p] [--task k] |
+| `declare` | `<port>` | `preview.declare` | --port N [--path /p] [--label l] [--pane p] [--task k] [--tls-origin \| --no-tls-origin] (proxy mode: serve this preview over https) |
 | `list` | - | `preview.list` | [--machine m] [--task k] [--pane p] [--all] (suggestions with --all) |
 | `get` | `<preview>` | `preview.get` |  |
-| `open` | `<preview>` | `preview.open` | <v4\|devbox/v4\|url> [--split right\|down\|tab\|float \| --window \| --proxy [--no-open]] [--pane p] [--machine m] [--viewport WxH \| --device iphone-15] |
+| `open` | `<preview>` | `preview.open` | <v4\|devbox/v4\|url> [--split right\|down\|tab\|float \| --window \| --proxy [--no-open] [--tls-origin \| --no-tls-origin]] [--pane p] [--machine m] [--viewport WxH \| --device iphone-15] |
 | `url` | `<preview>` | `preview.url` |  |
 | `mirror` | `<preview>` | `preview.mirror` | <devbox/v4> bind the remote port number on this machine's loopback (unauthenticated; explicit) |
 | `unmirror` | `<preview>` | `preview.unmirror` | <devbox/v4 \| port> stop a mirror |
 | `promote` | `<preview>` | `preview.promote` | accept a suggestion |
 | `forget` | `<preview>` | `preview.forget` |  |
 | `show` | `<preview>` | `screenshot.list` | <v4\|devbox/v4> [--no-image] the latest screenshot of a preview, inline (kitty graphics, iTerm2) or path + metadata |
+| `trust-ca` | - | `preview.trust_ca` | [--install] [--path] print the CA file, fingerprint and per-OS instructions to trust the tls_origin CA (local; never installs without --install and a typed confirmation) |
 | `profile` | `<action>` `<profile>` | `preview.profile` | list \| reset <profile> |
 | `status` | - | `preview.status` | SOCKS port, managed browsers, links |
 
