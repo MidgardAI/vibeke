@@ -209,8 +209,8 @@ pub fn synth_acp(id: &str) -> Option<Harness> {
 struct RepoCache {
     /// cwd → (checked at, repo root with `.vibeke/harnesses`, if any).
     roots: HashMap<PathBuf, (Instant, Option<PathBuf>)>,
-    /// root → digest currently loaded (trusted) or refused.
-    seen: HashMap<PathBuf, (String, bool)>,
+    /// root → (digest, trusted, checked at).
+    seen: HashMap<PathBuf, (String, bool, Instant)>,
 }
 
 static REPOS: LazyLock<Mutex<RepoCache>> = LazyLock::new(|| {
@@ -256,12 +256,14 @@ pub fn ensure_repo(server: &Server, cwd: &Path) {
     let Some(digest) = crate::run::vibeke_dir_digest(&root) else {
         return;
     };
+    // Unchanged and trusted: nothing to do. Unchanged and untrusted: re-check trust at most
+    // every 2 s (`vibeke policy trust` may have run since).
     if REPOS
         .lock()
         .unwrap()
         .seen
         .get(&root)
-        .is_some_and(|(d, _)| *d == digest)
+        .is_some_and(|(d, t, at)| *d == digest && (*t || at.elapsed() < Duration::from_secs(2)))
     {
         return;
     }
@@ -270,7 +272,7 @@ pub fn ensure_repo(server: &Server, cwd: &Path) {
         .lock()
         .unwrap()
         .seen
-        .insert(root.clone(), (digest, trusted));
+        .insert(root.clone(), (digest, trusted, Instant::now()));
     let mut r = REG.write().unwrap();
     let had = r.sources.trusted_repos.contains(&root);
     if trusted && !had {
@@ -286,6 +288,13 @@ pub fn ensure_repo(server: &Server, cwd: &Path) {
             root.display()
         );
     }
+}
+
+/// `policy.trust` changed: re-check every repo on its next detection.
+pub fn forget_repo_trust() {
+    let mut c = REPOS.lock().unwrap();
+    c.seen.clear();
+    c.roots.clear();
 }
 
 /// Is this slot's repo still trusted (a reload after distrust leaves the stale slot behind)?

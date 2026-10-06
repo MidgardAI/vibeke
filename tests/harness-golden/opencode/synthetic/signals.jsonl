@@ -1,0 +1,12 @@
+{"event": "session.created", "payload": {"info": {"id": "ses_main", "directory": "/work/app", "title": "fix login"}}}
+{"event": "chat.message", "payload": {"sessionID": "ses_main", "text": "Fix the login redirect"}}
+{"event": "session.status", "payload": {"sessionID": "ses_main", "status": {"type": "busy"}}}
+{"event": "tool.execute.before", "payload": {"tool": "bash", "sessionID": "ses_main", "callID": "call_1", "args": {"command": "cargo test", "description": "run tests"}}}
+{"event": "tool.execute.after", "payload": {"tool": "bash", "sessionID": "ses_main", "callID": "call_1", "title": "cargo test", "metadata": {"exit": 0}}}
+{"event": "tool.execute.before", "payload": {"tool": "edit", "sessionID": "ses_main", "callID": "call_2", "args": {"filePath": "/work/app/src/login.rs", "oldString": "a", "newString": "b"}}}
+{"event": "file.edited", "payload": {"file": "/work/app/src/login.rs"}}
+{"event": "session.created", "payload": {"info": {"id": "ses_child", "parentID": "ses_main", "directory": "/work/app"}}}
+{"event": "session.idle", "payload": {"sessionID": "ses_main"}}
+{"event": "session.idle", "payload": {"sessionID": "ses_child"}}
+{"event": "message.updated", "payload": {"info": {"id": "msg_1", "role": "assistant", "sessionID": "ses_main", "modelID": "claude-sonnet-4", "cost": 0.0123, "tokens": {"input": 1200, "output": 300, "reasoning": 0, "cache": {"read": 5000, "write": 100}}, "time": {"completed": 1}}}}
+{"event": "session.error", "payload": {"sessionID": "ses_main", "error": {"name": "ProviderAuthError", "data": {"message": "bad key"}}}}

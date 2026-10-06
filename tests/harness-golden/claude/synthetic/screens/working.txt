@@ -1,0 +1,3 @@
+⏺ Reading src/main.rs
+
+✻ Thinking… (3s · esc to interrupt)

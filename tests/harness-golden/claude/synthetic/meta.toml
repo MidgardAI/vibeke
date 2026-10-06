@@ -1,0 +1,8 @@
+# SYNTHETIC golden fixtures (spec 04 §12.1): hand-written from the spec 04 examples and the
+# shapes the adapters were built against. NOT live recordings: no session.cast exists yet.
+# Replace with `vibeke dev record-harness claude` output (session.cast, signals.jsonl,
+# expected.jsonl) once the mock-LLM recorder lands.
+synthetic = true
+harness = "claude"
+recorded_version = ""
+source = "spec 04 §9.1 examples + agents/screen.rs unit fixtures"

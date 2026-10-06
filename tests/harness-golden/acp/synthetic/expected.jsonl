@@ -1,0 +1,2 @@
+{"screen": "permission.txt", "dialog": {"kind": "approval", "options": 3, "command": "cargo test", "title_contains": "cargo test"}, "keys": {"allow": ["1", "enter"], "allow_always": ["2", "enter"], "deny": ["3", "enter"]}}
+{"screen": "answered.txt", "state": "working"}

@@ -5,6 +5,8 @@
 pub mod acp;
 pub mod channel;
 mod gemini;
+#[cfg(test)]
+mod golden;
 pub mod harness;
 pub mod hook;
 pub mod manifests;

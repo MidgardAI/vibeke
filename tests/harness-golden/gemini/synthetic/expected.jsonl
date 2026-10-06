@@ -1,0 +1,3 @@
+{"screen": "confirmation.txt", "dialog": {"kind": "approval", "options": 3, "pointer": 1, "command": "rm", "title_contains": "Allow execution"}, "keys": {"allow": ["1"], "allow_always": ["2"], "deny": ["3"]}}
+{"screen": "working.txt", "state": "working"}
+{"screen": "idle.txt", "state": "idle"}

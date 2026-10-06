@@ -1,0 +1,4 @@
+ permission-gate
+ Do you want to proceed? bash: rm -rf dist
+ › 1. Yes
+   2. No

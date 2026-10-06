@@ -1,0 +1,10 @@
+{"events": ["SessionStart"], "fields": {"0/session_id": "gem-1"}}
+{"events": ["UserPromptSubmit"], "fields": {"0/prompt": "Run the tests and fix failures"}}
+{"events": ["PreToolUse"], "fields": {"0/tool_name": "Bash", "0/tool_input/command": "rm -rf dist"}}
+{"events": ["Confirmation"], "fields": {"0/details/command": "rm -rf dist"}}
+{"events": ["PostToolUse"], "fields": {"0/exit_code": 0}}
+{"events": ["PreToolUse"], "fields": {"0/tool_name": "Edit", "0/tool_input/file_path": "/work/src/a.ts"}}
+{"events": ["PostToolUseFailure"]}
+{"events": ["PreCompact"]}
+{"events": ["Stop"], "fields": {"0/last_assistant_message": "Fixed: all 42 tests pass."}}
+{"events": ["SessionEnd"]}

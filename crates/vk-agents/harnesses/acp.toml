@@ -32,7 +32,7 @@ rows = 20
 id = "permission"
 opens = "approval"
 # Only while the prompt is the last thing on screen (answered prompts stay in scrollback).
-all = ['(?s)⏵ permission: [^\n]*\n.*Choose 1-\d then Enter: [^\n]*\s*\z']
+all = ['(?s)⏵ permission: [^\n]*\n.*Choose 1-\d then Enter:[^\n]*\s*\z']
 confidence = 0.95
 title_regex = '(?s).*⏵ permission: ([^\n]+)'
 command_regex = '(?s).*⏵ permission: [^\n]*\n  \$ ([^\n]+)'

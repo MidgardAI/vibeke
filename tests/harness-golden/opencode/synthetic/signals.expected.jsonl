@@ -1,0 +1,12 @@
+{"events": ["SessionStart"], "fields": {"0/session_id": "ses_main", "0/cwd": "/work/app"}}
+{"events": ["UserPromptSubmit"], "fields": {"0/prompt": "Fix the login redirect"}}
+{"events": ["Working"]}
+{"events": ["PreToolUse"], "fields": {"0/tool_name": "Bash", "0/tool_use_id": "call_1", "0/tool_input/command": "cargo test"}}
+{"events": ["PostToolUse"], "fields": {"0/tool_use_id": "call_1", "0/exit_code": 0}}
+{"events": ["PreToolUse"], "fields": {"0/tool_name": "Edit", "0/tool_input/file_path": "/work/app/src/login.rs"}}
+{"events": ["FileChanged"], "fields": {"0/path": "/work/app/src/login.rs"}}
+{"events": ["SubagentStart"]}
+{"events": []}
+{"events": ["Stop"]}
+{"events": ["Usage"], "fields": {"0/tokens/input": 1200}}
+{"events": ["StopFailure"], "fields": {"0/error_type": "ProviderAuthError"}}

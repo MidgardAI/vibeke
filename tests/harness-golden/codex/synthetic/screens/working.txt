@@ -1,0 +1,4 @@
+• Explored
+  └ Read main.rs
+
+• Working (5s • esc to interrupt)

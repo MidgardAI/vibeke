@@ -45,7 +45,7 @@ always = true
 rows = 40
 [[screen.rules]]
 id = "dialog"
-opens = "question"
+opens = "approval"
 all = ['(?i)(do you want to|allow|approve|proceed)[^?]*\?']
 confidence = 0.8
 title_regex = '(?i)((do you want to|allow|approve|proceed)[^?]*\?)'

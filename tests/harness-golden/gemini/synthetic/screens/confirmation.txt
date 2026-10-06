@@ -1,0 +1,11 @@
+╭──────────────────────────────────────────────────────────╮
+│ ?  Shell rm -rf dist [current working directory /work]   │
+│                                                          │
+│ rm -rf dist                                              │
+│                                                          │
+│ Allow execution of: 'rm'?                                │
+│                                                          │
+│ ● 1. Allow once                                          │
+│   2. Allow always                                        │
+│   3. No, suggest changes (esc)                           │
+╰──────────────────────────────────────────────────────────╯

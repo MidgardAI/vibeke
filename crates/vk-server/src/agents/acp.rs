@@ -374,11 +374,7 @@ pub type GateReply = Box<dyn FnOnce(Option<Value>, Option<String>, Option<String
 pub trait Sink: Send {
     fn signal(&mut self, event: &str, payload: Value);
     /// Open the interaction and wait (on another thread) for a decision.
-    fn gate(
-        &mut self,
-        payload: Value,
-        reply: GateReply,
-    );
+    fn gate(&mut self, payload: Value, reply: GateReply);
     fn ack(&mut self, interaction: &str, key: &str);
 }
 
@@ -416,11 +412,7 @@ impl Sink for SocketSink {
             ));
         }
     }
-    fn gate(
-        &mut self,
-        payload: Value,
-        reply: GateReply,
-    ) {
+    fn gate(&mut self, payload: Value, reply: GateReply) {
         let harness = self.harness.clone();
         std::thread::spawn(move || {
             let r = Link::connect().and_then(|mut l| {
@@ -1320,11 +1312,7 @@ mod tests {
         fn signal(&mut self, event: &str, payload: Value) {
             self.log.lock().unwrap().push((event.into(), payload));
         }
-        fn gate(
-            &mut self,
-            payload: Value,
-            reply: GateReply,
-        ) {
+        fn gate(&mut self, payload: Value, reply: GateReply) {
             self.log.lock().unwrap().push(("gate".into(), payload));
             reply(self.decide.clone(), Some("i1".into()), Some("i1:1".into()));
         }

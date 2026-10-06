@@ -22,7 +22,7 @@ usage:
   vibeke <noun> <verb> [args]     API commands (vibeke <noun> for help)
   vibeke notify <title> [body]    notification from a pane or script
   vibeke import herdr [--config] [--session] [--dry-run]
-  vibeke integration install|status|uninstall|doctor <claude|codex>
+  vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all>
   vibeke doctor                   diagnose install, sockets, integrations, terminal, remote
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart]

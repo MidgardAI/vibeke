@@ -1,0 +1,14 @@
+vibeke acp-host · acp · python3 fake_agent.py
+session sess-1
+
+acp› run the tests
+… working (esc to interrupt)
+
+⏺ cargo test
+
+⏵ permission: cargo test
+  $ cargo test
+  1. Allow once
+  2. Allow always
+  3. Reject
+Choose 1-3 then Enter:

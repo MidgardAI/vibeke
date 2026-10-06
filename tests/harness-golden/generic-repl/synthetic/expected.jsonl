@@ -1,0 +1,2 @@
+{"screen": "approval.txt", "dialog": {"kind": "approval", "options": 2, "title_contains": "Run this command"}, "keys": {"allow": ["1", "enter"], "deny": ["2", "enter"]}}
+{"screen": "prompt.txt", "state": "idle"}

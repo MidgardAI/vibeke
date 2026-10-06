@@ -16,8 +16,7 @@ use std::sync::LazyLock;
 /// pane → pending `(tool name, synthesized call id)`.
 type Pending = HashMap<String, VecDeque<(String, String)>>;
 
-static PENDING: LazyLock<Mutex<Pending>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PENDING: LazyLock<Mutex<Pending>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn tool_name(t: &str) -> String {
     match t {

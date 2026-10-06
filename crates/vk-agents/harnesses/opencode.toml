@@ -64,7 +64,7 @@ any = ['(?i)permission required', '(?i)allow once']
 all = ['(?i)reject']
 confidence = 0.85
 title_regex = '(?i)(permission required[^\n]*)'
-command_regex = '(?m)^\s*\$\s+(.+?)\s*$'
+command_regex = '(?m)^[\s┃│]*\$\s+(.+?)\s*$'
 [screen.rules.dialog]
 accelerators = "digits"
 map = { allow = 1, allow_always = 2, deny = 3 }

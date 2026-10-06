@@ -423,6 +423,9 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
         json!({"repo": repo, "digest": digest}),
     );
     server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    // Repo harness manifests (04 §5) are re-evaluated on the next detection.
+    crate::agents::manifests::forget_repo_trust();
     Ok(json!({"repo": repo, "digest": digest, "setup_script": script}))
 }
 
