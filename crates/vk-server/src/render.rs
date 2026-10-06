@@ -776,6 +776,7 @@ impl Session {
             // Don't wait for the holder ack on the hot path: a small task forwards it to the
             // session loop once the holder confirms the PTY write (07 §3.2), so the client
             // can drop the input from its resend ledger.
+            crate::sync_input::mirror(&self.server, pane, &bytes);
             let id = holder_input_id(&self.client_id, input_id);
             *rt.last_input.lock().unwrap() = Some(Instant::now());
             let (tx, rx) = tokio::sync::oneshot::channel();

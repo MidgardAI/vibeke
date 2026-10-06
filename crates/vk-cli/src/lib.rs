@@ -7,6 +7,7 @@ pub mod browser_console;
 pub mod client;
 pub mod compat;
 pub mod mcp;
+pub mod shell_integration;
 pub mod show;
 pub mod verbs;
 
@@ -97,7 +98,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "get",
         "config.get",
         &["key"],
-        "[key] effective value and its source (default|user|runtime)",
+        "[key] [--repo dir | --cwd dir | --pane p] effective value and its source (default|user|repo|runtime|cli)",
     ),
     (
         "config",
@@ -154,6 +155,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "[--workspace w] [--cwd d] [--title t]",
     ),
     ("tab", "rename", "tab.rename", &["tab", "title"], ""),
+    (
+        "tab",
+        "renumber",
+        "tab.renumber",
+        &["workspace"],
+        "[workspace] number the workspace's tabs 1..n in their current order",
+    ),
     ("tab", "focus", "tab.focus", &["tab"], ""),
     ("tab", "close", "tab.close", &["tab"], ""),
     (
@@ -258,7 +266,14 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "screenshot",
         "pane.screenshot",
         &["pane"],
-        "[pane] [--format ansi|text|html] [--source visible|recent] [--out file]",
+        "[pane] [--format ansi|text|html|svg|png] [--source visible|recent] [--include-cursor] [--out file]",
+    ),
+    (
+        "pane",
+        "sync-input",
+        "pane.sync_input",
+        &["action"],
+        "start|stop|status [--panes p1,p2 | --tab t] [--include-agents] [--group g] [--all]  synchronized input (agents excluded unless --include-agents)",
     ),
     (
         "agent",
@@ -655,6 +670,48 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "task.reconcile",
         &[],
         "[--repo r] compare tasks with the worktrees on disk (marks missing, reports orphans, deletes nothing)",
+    ),
+    (
+        "task",
+        "setup-log",
+        "task.setup_log",
+        &["task"],
+        "<task> [--max-bytes n] the tail of the task's setup log",
+    ),
+    (
+        "task",
+        "archive",
+        "task.archive",
+        &["task"],
+        "<task> [--force] stop agents (resume handles kept), delete the worktree, keep the branch",
+    ),
+    (
+        "task",
+        "adopt",
+        "task.adopt",
+        &["path"],
+        "[path] | --pane p [--title t] [--focus] record an existing worktree as a task; moves nothing",
+    ),
+    (
+        "task",
+        "recreate",
+        "task.recreate",
+        &["task"],
+        "<task> recreate a missing task's worktree at its path from its branch",
+    ),
+    (
+        "task",
+        "forget",
+        "task.forget",
+        &["task"],
+        "<task> [--force] drop a missing (or finished) task's record; touches no files",
+    ),
+    (
+        "task",
+        "ports",
+        "task.ports",
+        &["task"],
+        "<task> [--re-lease] the leased port block and its env; --re-lease moves to another block",
     ),
     ("worktree", "list", "worktree.list", &[], "[--cwd d]"),
     (
@@ -1543,6 +1600,16 @@ fn adjust(method: &str, p: &mut Value) {
         o.remove("current");
         o.insert("pane".into(), json!("@current"));
     }
+    // `config get` layers the repository of the current directory (its trusted
+    // `.vibeke/config.toml`) unless a repo, cwd or pane is named.
+    if method == "config.get"
+        && !o.contains_key("repo")
+        && !o.contains_key("cwd")
+        && !o.contains_key("pane")
+        && let Ok(d) = std::env::current_dir()
+    {
+        o.insert("cwd".into(), json!(d));
+    }
     match method {
         "pane.move" => {
             let mut to = Map::new();
@@ -2042,6 +2109,17 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     adjust(method, &mut params);
+    // `task ports <t> --re-lease` is its own (full-scope) method.
+    let method = if method == "task.ports"
+        && params
+            .as_object_mut()
+            .and_then(|o| o.remove("re_lease"))
+            .is_some_and(|v| v != json!(false))
+    {
+        "task.ports.re_lease"
+    } else {
+        method
+    };
     // `browser screenshot|diff --out f.png`, `screenshot get --out`: fetch the image inline and
     // write it here (the server never writes to caller-chosen paths). `screenshot open` writes
     // a temp file and opens it.

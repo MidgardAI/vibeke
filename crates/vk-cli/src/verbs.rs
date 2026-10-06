@@ -203,8 +203,18 @@ const EXTRA: &[(&str, &[&str])] = &[
     ("api", &["schema", "methods", "call"]),
     (
         "config",
-        &["path", "validate", "default", "get", "set", "reload"],
+        &[
+            "path",
+            "validate",
+            "default",
+            "get",
+            "set",
+            "reload",
+            "edit",
+            "reset-keys",
+        ],
     ),
+    ("shell-integration", &["zsh", "bash", "fish"]),
     ("keys", &["check"]),
     (
         "machine",

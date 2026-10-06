@@ -88,7 +88,7 @@ impl Tx {
         self
     }
     pub fn task(&mut self, t: Task) -> &mut Self {
-        if matches!(t.status.as_str(), "archived") {
+        if matches!(t.status.as_str(), "archived" | "forgotten") {
             self.m.close("task", &t.id, Some(&t.handle), &t);
         } else {
             self.m.put("task", &t.id, Some(&t.handle), &t);
@@ -208,7 +208,7 @@ impl Core {
             }
         }
         for t in tx.tasks {
-            if t.status == "archived" {
+            if matches!(t.status.as_str(), "archived" | "forgotten") {
                 self.model.tasks.retain(|x| x.id != t.id);
             } else {
                 upsert(&mut self.model.tasks, t, |a, b| a.id == b.id);

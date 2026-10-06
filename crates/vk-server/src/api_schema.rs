@@ -47,6 +47,9 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("pane_api", pane_api::METHODS),
         ("task_park", task_park::METHODS),
         ("security", security::METHODS),
+        ("sync_input", sync_input::METHODS),
+        ("tab_renumber", tab_renumber::METHODS),
+        ("task_lifecycle", task_lifecycle::METHODS),
     ]
 }
 
@@ -450,6 +453,9 @@ PolicyRepo = {repo: string, file: string, exists: bool, trusted: bool, allow_pol
 PolicyScope = string | {cwd?: string, repo?: string, pane?: Target, run?: Target}
 ElevationRequest = {request: string, pane: string, reason: string, created_at_ms: int, status: pending|approved|denied}
 AuditEntry = {seq: int, ts: int, type: string, actor: object, subject: any, data: any, prev_hash: string, hash: string}
+SyncGroup = {id: string, panes: [string], members: [{pane: string, handle: string|null, agent: bool}], tab: string|null, agents: [string], created_at_ms: int}
+ConfigLayer = {source: default|user|repo|runtime|cli, path?: string|null, exists?: bool, trusted?: bool, applied?: bool, keys?: [string]}
+TaskPorts = {task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
@@ -460,6 +466,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     INTERNAL_SHAPES,
     BATCH_2A_SHAPES,
     SECURITY_SHAPES,
+    V1_REMAINDER_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -837,9 +844,10 @@ session.rename :: {name: string, new_name: string} => {session: SessionEntry, pr
 # exec the server binary in place (holders keep running, the pid stays); full scope only
 server.restart :: {binary?: string} => {new_pid: int, binary: string}
 
-# --- config.* (source: default | user | runtime) ---
-config.get :: {key?: string}
-  => {key?: string, value: any, source: default|user|runtime, path: string, overrides: [string], errors: [ConfigDiagnostic]}
+# --- config.* (layers, lowest first: default < user < repo < runtime < cli) ---
+# repo | cwd | pane: layer that repository's .vibeke/config.toml in (only while trusted)
+config.get :: {key?: string, repo?: string, cwd?: string, pane?: Target}
+  => {key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic]}
 # runtime override unless persist (written to config.toml atomically, comments kept); value null resets the key; full scope only
 config.set :: {key: string, value: any, persist?: bool = false}
   => {key: string, value: any, persisted: bool, path: string, changed: [string]}
@@ -858,12 +866,43 @@ pane.move :: {pane?: Target, to: {tab?: Target, workspace?: Target, new_tab_in?:
 # asks attached clients to scroll their view (event pane.scroll_requested); offset = rows above the live screen
 pane.scroll :: {pane?: Target, to?: bottom|top|line, line?: int, delta?: int, client?: string}
   => {scroll: {offset: int, total: int, at_bottom: bool}}
-pane.screenshot :: {pane?: Target, format?: text|ansi|html|png|svg = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}
-  => {blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, cursor?: {row: int, col: int, visible: bool}, data?: string}
+# svg: text spans on a cell grid; png: rasterized with an embedded 8x16 bitmap font (inline png comes as data_b64)
+pane.screenshot :: {pane?: Target, format?: text|ansi|html|svg|png = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}
+  => {blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, width?: int, height?: int, cursor?: {row: int, col: int, visible: bool}, data?: string, data_b64?: string}
 
 # --- task.park / resume (full scope only) ---
 task.park :: {task: Target} => {task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}
 task.resume :: {task: Target} => {task: Task, resumed: [AgentRun], skipped: [{run: string, reason: string}]}
+"##;
+
+/// The v1 server/API remainder: `sync_input`, `task_lifecycle`.
+const V1_REMAINDER_SHAPES: &str = r##"
+# --- pane.sync_input (full scope only; agents join only with include_agents) ---
+# action defaults from enabled (true = start, false = stop), else status; start without panes = the tab (default: focused)
+pane.sync_input :: {action?: start|stop|status|on|off, enabled?: bool, panes?: [Target]|string, tab?: Target, pane?: Target, group?: string, all?: bool, include_agents?: bool = false}
+  => {group_id: string|null, group?: SyncGroup, excluded?: [{pane: string, handle: string, reason: string}], stopped?: [string], groups: [SyncGroup]}
+
+# --- tab.renumber (08 §3; full scope only): numbers 1..n in tab order, handles follow ---
+tab.renumber :: {workspace?: Target} => {workspace: string, tabs: [Tab], changed: int}
+
+# --- task lifecycle (05 §1, §4, §6, §8) ---
+# readable from a pane for tasks of its own workspace
+task.setup_log :: {task: Target, max_bytes?: int = 262144}
+  => {task: string, path: string, exists: bool, text: string, size: int, truncated: bool, setup_status: string|null}
+# full scope only: stops agents (park record kept), deletes the worktree, keeps the branch; dirty needs force
+task.archive :: {task: Target, force?: bool = false}
+  => {task: Task, job?: any, stopped?: [any], branch_kept?: string|null, worktree_removed?: bool, archived?: bool}
+# full scope only: records an existing git worktree (path, or a pane's cwd) as an owned task; moves nothing
+task.adopt :: {path?: string, pane?: Target, title?: string, slug?: string, focus?: bool = false}
+  => {task: Task, workspace: Workspace, created_workspace: bool, warnings: [string]}
+# full scope only: a missing task's worktree back at its path, from its branch
+task.recreate :: {task: Target} => {task: Task, path: string, branch: string, new_workspace: bool}
+# full scope only: closes a missing or finished task's record (force for others); never touches files
+task.forget :: {task: Target, force?: bool = false} => {task: Task, files_touched: bool}
+task.ports :: {task: Target} => TaskPorts
+# full scope only: another block of the same size; running panes keep the old env
+task.ports.re_lease :: {task: Target}
+  => {task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object, old_lease: {start: int, end: int}|null, note: string}
 "##;
 
 /// Server security (09, `crate::security`): policy, auth, audit, integration integrity.
@@ -895,7 +934,8 @@ auth.list :: {} => {pending: [ElevationRequest], elevated: [{pane: string, reque
 # --- audit.* (09 §11); full scope only ---
 audit.tail :: {limit?: int = 50, types?: [string]|string} => {entries: [AuditEntry], path: string}
 audit.search :: {query?: string, types?: [string]|string, since_ms?: int, limit?: int = 200} => {entries: [AuditEntry], path: string}
-audit.verify :: {} => {ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string}
+# verifies the rotated segments and the active log as one chain
+audit.verify :: {} => {ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string, segments: [string]}
 # --- integration.* (09 §5.3); full scope only ---
 integration.doctor :: {harness?: claude|codex|pi|omp|opencode|gemini}
   => {checks: [{name: string, harness: string, ok: bool, status: ok|changed|removed|unrecorded|not_installed, detail: string, file: string, fingerprint: string|null, recorded: string|null}]}
@@ -912,6 +952,14 @@ session.config_rejected :: {} => {errors: [ConfigDiagnostic], source: watch}
 security.rate_limited :: {pane: string} => {method: string, limit: requests|spawn|depth|descendants}
 pane.scroll_requested :: {pane: string, tab?: string, workspace?: string} => {offset: int, total: int, client: string|null}
 task.parked :: {task: string} => {runs: int, attached?: bool}
+tab.renumbered :: {workspace: string} => {tabs: [{tab: string, from: int, to: int}]}
+pane.sync_input_changed :: {group: string} => {enabled: bool, panes: [string], tab: string|null, reason: started|stopped|superseded}
+task.archived :: {task: string} => {path: string|null, branch: string|null, job: any, runs: int}
+task.adopted :: {task: string, workspace: string} => {path: string, branch: string|null, via: path|pane, main_worktree: bool, created_workspace: bool}
+task.recreated :: {task: string} => {path: string, branch: string, new_workspace: bool}
+task.forgotten :: {task: string} => {path: string|null, branch: string|null, previous_status: string}
+task.ports_changed :: {task: string} => {old: [int]|null, new: [int]}
+task.cleanup_suggested :: {task: string} => {reason: pr_merged, pr: int, url: string, hint: string}
 task.resumed :: {task: string} => {runs: int, skipped: int}
 group.created :: {group: string} => {name: string, parent: string|null}
 group.renamed :: {group: string} => {name: string}

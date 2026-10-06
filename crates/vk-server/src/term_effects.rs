@@ -204,6 +204,14 @@ pub fn clipboard_reply(
             _ => return None,
         }
     };
+    crate::audit::clipboard_decision(
+        server,
+        client,
+        pane,
+        data.is_some(),
+        data.as_ref().map_or(0, Vec::len),
+        q.primary,
+    );
     let data = data?;
     if data.len() > CLIP_REPLY_MAX {
         return None;

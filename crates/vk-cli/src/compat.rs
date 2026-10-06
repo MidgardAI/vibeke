@@ -827,6 +827,13 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
         )
     {
         notify_registry(g).await;
+        // 09 §11: plugin installs, updates and trust changes are audited (no server needed).
+        vk_server::audit::record_offline(
+            &g.session,
+            &format!("plugin.{}", verb.replace('-', "_")),
+            serde_json::json!({"plugin": args.iter().skip(1).find(|a| !a.starts_with('-'))}),
+            serde_json::json!({"args": args.iter().skip(1).filter(|a| a.starts_with("--")).collect::<Vec<_>>()}),
+        );
     }
     code
 }

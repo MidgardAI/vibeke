@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 272,
+  "method_count": 281,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -540,7 +540,7 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string}"
+      "result": "{ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string, segments: [string]}"
     },
     {
       "name": "auth.elevate",
@@ -1269,8 +1269,8 @@
       ],
       "milestone": "M1",
       "spec": "`{key?}` → `{value, source: default|user|repo|cli}`",
-      "params": "{key?: string}",
-      "result": "{key?: string, value: any, source: default|user|runtime, path: string, overrides: [string], errors: [ConfigDiagnostic]}"
+      "params": "{key?: string, repo?: string, cwd?: string, pane?: Target}",
+      "result": "{key?: string, value: any, source: default|user|repo|runtime|cli, path: string, overrides: [string], cli_overrides: [string], layers: [ConfigLayer], repo: {root: string, file: string|null, trusted: bool, applied: bool, warnings?: [string], error?: string}|null, errors: [ConfigDiagnostic]}"
     },
     {
       "name": "config.reload",
@@ -2310,8 +2310,8 @@
       ],
       "milestone": "M1",
       "spec": "`{pane, format?: png|svg|html}` → `{blob}` — renders the pane grid (for bug reports and Phase 2) [M3]",
-      "params": "{pane?: Target, format?: text|ansi|html|png|svg = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}",
-      "result": "{blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, cursor?: {row: int, col: int, visible: bool}, data?: string}"
+      "params": "{pane?: Target, format?: text|ansi|html|svg|png = ansi, source?: visible|recent = visible, lines?: int = 200, include_cursor?: bool, inline?: bool}",
+      "result": "{blob: {hash: string, size: int, mime: string, path: string}, format: string, source: string, cols: int, rows: int, lines: int, revision: int, width?: int, height?: int, cursor?: {row: int, col: int, visible: bool}, data?: string, data_b64?: string}"
     },
     {
       "name": "pane.scroll",
@@ -2382,6 +2382,20 @@
       "spec": "`{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}`",
       "params": "{pane?: Target, direction?: right|down|left|up = right, ratio?: number = 0.5, cwd?: string, command?: [string], env?: {*: string}, focus?: bool = false, title?: string}",
       "result": "{pane: Pane}"
+    },
+    {
+      "name": "pane.sync_input",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "sync_input"
+      ],
+      "milestone": "M1",
+      "spec": "`{panes: [pane], enabled: bool}` → `{group_id}` — synchronized input",
+      "params": "{action?: start|stop|status|on|off, enabled?: bool, panes?: [Target]|string, tab?: Target, pane?: Target, group?: string, all?: bool, include_agents?: bool = false}",
+      "result": "{group_id: string|null, group?: SyncGroup, excluded?: [{pane: string, handle: string, reason: string}], stopped?: [string], groups: [SyncGroup]}"
     },
     {
       "name": "pane.wait_idle",
@@ -3224,6 +3238,48 @@
       "result": "{tab: Tab}"
     },
     {
+      "name": "tab.renumber",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "tab_renumber"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{workspace?: Target}",
+      "result": "{workspace: string, tabs: [Tab], changed: int}"
+    },
+    {
+      "name": "task.adopt",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{path?: string, pane?: Target, title?: string, slug?: string, focus?: bool = false}",
+      "result": "{task: Task, workspace: Workspace, created_workspace: bool, warnings: [string]}"
+    },
+    {
+      "name": "task.archive",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task}` → `{task}`",
+      "params": "{task: Target, force?: bool = false}",
+      "result": "{task: Task, job?: any, stopped?: [any], branch_kept?: string|null, worktree_removed?: bool, archived?: bool}"
+    },
+    {
       "name": "task.check.authorize",
       "mutating": true,
       "scope": "full",
@@ -3382,6 +3438,20 @@
       "result": "{task: Task, job?: any}"
     },
     {
+      "name": "task.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, force?: bool = false}",
+      "result": "{task: Task, files_touched: bool}"
+    },
+    {
       "name": "task.get",
       "mutating": false,
       "scope": "pane",
@@ -3424,6 +3494,34 @@
       "result": "{task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}"
     },
     {
+      "name": "task.ports",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "TaskPorts"
+    },
+    {
+      "name": "task.ports.re_lease",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object, old_lease: {start: int, end: int}|null, note: string}"
+    },
+    {
       "name": "task.pr",
       "mutating": false,
       "scope": "pane",
@@ -3450,6 +3548,20 @@
       "spec": null,
       "params": "{repo?: string}",
       "result": "{reports: [{repo: string, missing: [{task_id: string, path: string, reason: string}], branch_moved: [{task_id: string, path: string, expected: string|null, actual: string|null}], orphans: [{path: string, kind: string, branch: string|null}]}]}"
+    },
+    {
+      "name": "task.recreate",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target}",
+      "result": "{task: Task, path: string, branch: string, new_workspace: bool}"
     },
     {
       "name": "task.resume",
@@ -3624,6 +3736,20 @@
       "spec": null,
       "params": "{task: Target, setup_script?: string}",
       "result": "{task: string, started: bool, pane: string|null, setup_status: string|null, commands: [{source: string, command: string}], needs_trust: bool}"
+    },
+    {
+      "name": "task.setup_log",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "task_lifecycle"
+      ],
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{task}` → `{text}`",
+      "params": "{task: Target, max_bytes?: int = 262144}",
+      "result": "{task: string, path: string, exists: bool, text: string, size: int, truncated: bool, setup_status: string|null}"
     },
     {
       "name": "task.sync",

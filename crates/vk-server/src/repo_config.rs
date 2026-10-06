@@ -72,7 +72,7 @@ pub fn tasks_cfg(server: &Server, repo: &Path) -> vk_config::Tasks {
     let root = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
     if let Some(Ok(rc)) = vk_config::repo::load(&root)
         && trusted(server, &root).1
-        && let Ok(c) = user.with_repo(&rc)
+        && let Ok((c, _)) = vk_config::Config::load_layered(&vk_config::config_path(), Some(&rc))
     {
         return c.tasks;
     }

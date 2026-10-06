@@ -42,7 +42,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `get` | `<key>` | `config.get` | [key] effective value and its source (default\|user\|runtime) |
+| `get` | `<key>` | `config.get` | [key] [--repo dir \| --cwd dir \| --pane p] effective value and its source (default\|user\|repo\|runtime\|cli) |
 | `set` | `<key>` `<value>` | `config.set` | <key> <value> [--persist]  (null resets; --persist writes config.toml, comments kept) |
 | `reload` | - | `config.reload` | re-read config.toml |
 
@@ -73,6 +73,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `list` | - | `tab.list` | [--workspace w] |
 | `create` | - | `tab.create` | [--workspace w] [--cwd d] [--title t] |
 | `rename` | `<tab>` `<title>` | `tab.rename` |  |
+| `renumber` | `<workspace>` | `tab.renumber` | [workspace] number the workspace's tabs 1..n in their current order |
 | `focus` | `<tab>` | `tab.focus` |  |
 | `close` | `<tab>` | `tab.close` |  |
 | `floats` | `<tab>` | `tab.floats` | show/hide floats [--visible true\|false] |
@@ -100,7 +101,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `pin` | `<pane>` | `pane.pin` |  |
 | `move` | `<pane>` | `pane.move` | [pane] --to-tab t \| --to-workspace w \| --new-tab-in w [--direction right] [--anchor p] [--focus] |
 | `scroll` | `<pane>` `<to>` | `pane.scroll` | [pane] bottom\|top\|line [--line n] \| --delta n |
-| `screenshot` | `<pane>` | `pane.screenshot` | [pane] [--format ansi\|text\|html] [--source visible\|recent] [--out file] |
+| `screenshot` | `<pane>` | `pane.screenshot` | [pane] [--format ansi\|text\|html\|svg\|png] [--source visible\|recent] [--include-cursor] [--out file] |
+| `sync-input` | `<action>` | `pane.sync_input` | start\|stop\|status [--panes p1,p2 \| --tab t] [--include-agents] [--group g] [--all]  synchronized input (agents excluded unless --include-agents) |
 | `float` | `<pane>` | `pane.float` | [pane] float/move it \| --tab t [--command c] [--cwd d]  [--rect '{"x":15,"y":15,"w":70,"h":70}'] [--focus] |
 | `embed` | `<pane>` | `pane.embed` | [--target p] [--direction right\|down\|left\|up] |
 | `revoke-token` | `<pane>` | `auth.revoke_token` | <pane> — Revoke the pane's API token. Its agent keeps running without API access until the pane restarts. |
@@ -198,6 +200,12 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `setup` | `<task>` | `task.setup` | run the task's setup again (after `policy trust`); shows the setup pane |
 | `pr` | `<task>` | `task.pr` | [--refresh] pull request status through gh (cached 60 s; needs gh installed and logged in) |
 | `reconcile` | - | `task.reconcile` | [--repo r] compare tasks with the worktrees on disk (marks missing, reports orphans, deletes nothing) |
+| `setup-log` | `<task>` | `task.setup_log` | <task> [--max-bytes n] the tail of the task's setup log |
+| `archive` | `<task>` | `task.archive` | <task> [--force] stop agents (resume handles kept), delete the worktree, keep the branch |
+| `adopt` | `<path>` | `task.adopt` | [path] \| --pane p [--title t] [--focus] record an existing worktree as a task; moves nothing |
+| `recreate` | `<task>` | `task.recreate` | <task> recreate a missing task's worktree at its path from its branch |
+| `forget` | `<task>` | `task.forget` | <task> [--force] drop a missing (or finished) task's record; touches no files |
+| `ports` | `<task>` | `task.ports` | <task> [--re-lease] the leased port block and its env; --re-lease moves to another block |
 
 ## `vibeke sandbox`
 

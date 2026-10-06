@@ -358,6 +358,59 @@ impl PortLeases {
         Err(Error::PortsExhausted)
     }
 
+    /// Move `task_id` to a different block of the same size (05 §6 `task ports --re-lease`,
+    /// after a dev server hit `EADDRINUSE` in its block): the old block is never handed back,
+    /// occupied blocks are skipped as usual, and the old lease is replaced in one locked
+    /// update. Returns `(old, new)`; without an old lease this is a plain lease of
+    /// `default_block` ports.
+    pub fn re_lease(
+        &self,
+        req: &LeaseRequest,
+        default_block: u16,
+    ) -> Result<(Option<Lease>, Lease)> {
+        let _g = self.lock()?;
+        let mut f = self.load()?;
+        f.leases.retain(is_live);
+        let old = f.leases.iter().find(|l| l.task_id == req.task_id).cloned();
+        let block = old.as_ref().map_or(default_block, Lease::count);
+        let pool = PortPool {
+            block: block.clamp(1, self.pool.end - self.pool.start + 1),
+            ..self.pool
+        };
+        let b = pool.block;
+        for s in pool.candidates() {
+            let e = s + b - 1;
+            if old.as_ref().is_some_and(|o| o.start <= e && s <= o.end) {
+                continue;
+            }
+            if f.leases
+                .iter()
+                .any(|l| l.task_id != req.task_id && l.start <= e && s <= l.end)
+            {
+                continue;
+            }
+            if self.probe && !(s..=e).all(port_free) {
+                continue;
+            }
+            let l = Lease {
+                start: s,
+                end: e,
+                task_id: req.task_id.clone(),
+                session: req.session.clone(),
+                owner_pid: req.owner_pid,
+                created_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            };
+            f.leases.retain(|x| x.task_id != req.task_id);
+            f.leases.push(l.clone());
+            self.store(&f)?;
+            return Ok((old, l));
+        }
+        self.store(&f)?;
+        Err(Error::PortsExhausted)
+    }
+
     /// Release the lease of `task_id`; returns whether one existed.
     pub fn release(&self, task_id: &str) -> Result<bool> {
         let _g = self.lock()?;

@@ -1012,7 +1012,7 @@ pub async fn attach_file(g: &Global, args: &[String]) -> i32 {
 
 // ---- saved machines --------------------------------------------------------------------------
 
-pub fn machine_cmd(_g: &Global, args: &[String]) -> i32 {
+pub fn machine_cmd(g: &Global, args: &[String]) -> i32 {
     let path = vk_config::config_path();
     let src = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc: toml_edit::DocumentMut = match src.parse() {
@@ -1076,6 +1076,12 @@ pub fn machine_cmd(_g: &Global, args: &[String]) -> i32 {
             }
             match std::fs::write(&path, doc.to_string()) {
                 Ok(()) => {
+                    vk_server::audit::record_offline(
+                        &g.session,
+                        "remote.machine_added",
+                        serde_json::json!({"machine": label}),
+                        serde_json::json!({"address": address, "auto_connect": auto}),
+                    );
                     println!("added {label} ({address}) to {}", path.display());
                     EXIT_OK
                 }

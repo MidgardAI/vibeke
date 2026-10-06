@@ -677,6 +677,7 @@ fn status_segments(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         })
     });
     let mut segs = v;
+    segs["sync_input"] = crate::sync_input::segment(server, focus.pane.as_deref());
     segs["cpu"] = json!({"load": load_avg()});
     segs["clock"] = json!({"ms": now, "local": local_hhmm(now)});
     let theme = server.theme.current();

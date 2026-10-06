@@ -675,6 +675,49 @@
         "message"
       ]
     },
+    "ConfigLayer": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "default",
+            "user",
+            "repo",
+            "runtime",
+            "cli"
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "trusted": {
+          "type": "boolean"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "source"
+      ]
+    },
     "ConfigWarning": {
       "type": "object",
       "properties": {
@@ -2149,6 +2192,76 @@
         "current"
       ]
     },
+    "SyncGroup": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "panes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "type": "string"
+              },
+              "handle": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "agent": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pane",
+              "handle",
+              "agent"
+            ]
+          }
+        },
+        "tab": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "created_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "panes",
+        "members",
+        "tab",
+        "agents",
+        "created_at_ms"
+      ]
+    },
     "Tab": {
       "type": "object",
       "properties": {
@@ -2403,6 +2516,52 @@
         "status",
         "setup_status",
         "created_at_ms"
+      ]
+    },
+    "TaskPorts": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "lease": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "type": "integer"
+                },
+                "end": {
+                  "type": "integer"
+                },
+                "count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "count"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "env": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "task",
+        "handle",
+        "lease",
+        "env"
       ]
     },
     "Workspace": {
@@ -4630,6 +4789,12 @@
           },
           "path": {
             "type": "string"
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -4641,7 +4806,8 @@
           "problems",
           "discontinuities",
           "head_seq",
-          "path"
+          "path",
+          "segments"
         ]
       }
     },
@@ -8483,6 +8649,15 @@
         "properties": {
           "key": {
             "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
           }
         }
       },
@@ -8498,7 +8673,9 @@
             "enum": [
               "default",
               "user",
-              "runtime"
+              "repo",
+              "runtime",
+              "cli"
             ]
           },
           "path": {
@@ -8509,6 +8686,64 @@
             "items": {
               "type": "string"
             }
+          },
+          "cli_overrides": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ConfigLayer"
+            }
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "root": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "trusted": {
+                    "type": "boolean"
+                  },
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "warnings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "error": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "root",
+                  "file",
+                  "trusted",
+                  "applied"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "errors": {
             "type": "array",
@@ -8522,6 +8757,9 @@
           "source",
           "path",
           "overrides",
+          "cli_overrides",
+          "layers",
+          "repo",
           "errors"
         ]
       }
@@ -12136,8 +12374,8 @@
               "text",
               "ansi",
               "html",
-              "png",
-              "svg"
+              "svg",
+              "png"
             ],
             "default": "ansi"
           },
@@ -12205,6 +12443,12 @@
           "revision": {
             "type": "integer"
           },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
           "cursor": {
             "type": "object",
             "properties": {
@@ -12225,6 +12469,9 @@
             ]
           },
           "data": {
+            "type": "string"
+          },
+          "data_b64": {
             "type": "string"
           }
         },
@@ -12458,6 +12705,117 @@
         },
         "required": [
           "pane"
+        ]
+      }
+    },
+    "pane.sync_input": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "status",
+              "on",
+              "off"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "panes": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Target"
+                }
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "tab": {
+            "$ref": "#/$defs/Target"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "group": {
+            "type": "string"
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "include_agents": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "$ref": "#/$defs/SyncGroup"
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pane": {
+                  "type": "string"
+                },
+                "handle": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pane",
+                "handle",
+                "reason"
+              ]
+            }
+          },
+          "stopped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SyncGroup"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "group_id",
+          "groups"
         ]
       }
     },
@@ -16006,6 +16364,154 @@
         ]
       }
     },
+    "tab.renumber": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          },
+          "tabs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Tab"
+            }
+          },
+          "changed": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "workspace",
+          "tabs",
+          "changed"
+        ]
+      }
+    },
+    "task.adopt": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "title": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "focus": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "workspace": {
+            "$ref": "#/$defs/Workspace"
+          },
+          "created_workspace": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "workspace",
+          "created_workspace",
+          "warnings"
+        ]
+      }
+    },
+    "task.archive": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "job": {},
+          "stopped": {
+            "type": "array",
+            "items": {}
+          },
+          "branch_kept": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "worktree_removed": {
+            "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
     "task.check.authorize": {
       "mutating": true,
       "scope": "full",
@@ -16914,6 +17420,44 @@
         ]
       }
     },
+    "task.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "files_touched": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "files_touched"
+        ]
+      }
+    },
     "task.get": {
       "mutating": false,
       "scope": "pane",
@@ -17120,6 +17664,117 @@
         ]
       }
     },
+    "task.ports": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "$ref": "#/$defs/TaskPorts"
+      }
+    },
+    "task.ports.re_lease": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "lease": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "start": {
+                    "type": "integer"
+                  },
+                  "end": {
+                    "type": "integer"
+                  },
+                  "count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "start",
+                  "end",
+                  "count"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "env": {
+            "type": "object"
+          },
+          "old_lease": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "start": {
+                    "type": "integer"
+                  },
+                  "end": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "handle",
+          "lease",
+          "env",
+          "old_lease",
+          "note"
+        ]
+      }
+    },
     "task.pr": {
       "mutating": false,
       "scope": "pane",
@@ -17284,6 +17939,48 @@
         },
         "required": [
           "reports"
+        ]
+      }
+    },
+    "task.recreate": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Task"
+          },
+          "path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "new_workspace": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "task",
+          "path",
+          "branch",
+          "new_workspace"
         ]
       }
     },
@@ -18354,6 +19051,68 @@
           "setup_status",
           "commands",
           "needs_trust"
+        ]
+      }
+    },
+    "task.setup_log": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "max_bytes": {
+            "type": "integer",
+            "default": 262144
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "setup_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "task",
+          "path",
+          "exists",
+          "text",
+          "size",
+          "truncated",
+          "setup_status"
         ]
       }
     },
@@ -21311,6 +22070,57 @@
         "type": "object"
       }
     },
+    "pane.sync_input_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "group"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "panes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "started",
+              "stopped",
+              "superseded"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "panes",
+          "tab",
+          "reason"
+        ]
+      }
+    },
     "pane.title_changed": {
       "subject": {
         "type": "object",
@@ -22746,6 +23556,104 @@
         ]
       }
     },
+    "tab.renumbered": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "tabs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tab": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "integer"
+                },
+                "to": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "tab",
+                "from",
+                "to"
+              ]
+            }
+          }
+        },
+        "required": [
+          "tabs"
+        ]
+      }
+    },
+    "task.adopted": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "workspace"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "path",
+              "pane"
+            ]
+          },
+          "main_worktree": {
+            "type": "boolean"
+          },
+          "created_workspace": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "branch",
+          "via",
+          "main_worktree",
+          "created_workspace"
+        ]
+      }
+    },
     "task.agents_withheld": {
       "subject": {
         "type": "object",
@@ -22771,6 +23679,54 @@
         "required": [
           "reason",
           "hint"
+        ]
+      }
+    },
+    "task.archived": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job": {},
+          "runs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "branch",
+          "job",
+          "runs"
         ]
       }
     },
@@ -22858,6 +23814,42 @@
           "path",
           "expected",
           "actual"
+        ]
+      }
+    },
+    "task.cleanup_suggested": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "const": "pr_merged"
+          },
+          "pr": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "pr",
+          "url",
+          "hint"
         ]
       }
     },
@@ -23007,6 +23999,52 @@
           "status",
           "attached",
           "reviewed"
+        ]
+      }
+    },
+    "task.forgotten": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previous_status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "branch",
+          "previous_status"
         ]
       }
     },
@@ -23169,6 +24207,47 @@
         ]
       }
     },
+    "task.ports_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "old": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "new": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "old",
+          "new"
+        ]
+      }
+    },
     "task.recovered": {
       "subject": {
         "type": "object",
@@ -23197,6 +24276,38 @@
         },
         "required": [
           "path"
+        ]
+      }
+    },
+    "task.recreated": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "new_workspace": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "branch",
+          "new_workspace"
         ]
       }
     },

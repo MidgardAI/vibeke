@@ -68,6 +68,7 @@ mod naming;
 mod ports;
 mod previews;
 mod reconcile;
+mod recreate;
 mod remove;
 mod repo;
 mod setup;
@@ -105,6 +106,7 @@ pub use reconcile::{
     BranchMoved, MissingReason, MissingTask, Orphan, OrphanKind, ReconcileReport, TrackedCheckout,
     reconcile,
 };
+pub use recreate::recreate_worktree;
 pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};
 pub use setup::{
