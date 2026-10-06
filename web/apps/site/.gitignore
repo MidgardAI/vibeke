@@ -1,0 +1,5 @@
+.tanstack/
+test-results/
+playwright-report/
+.output/
+.vercel/
