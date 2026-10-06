@@ -3,6 +3,7 @@
 //! session state (SQLite + outbox), connects to per-pane holders, runs VT engines, serves the
 //! JSON-RPC control API and per-client render streams, and hosts agent adapters.
 
+pub mod agent_browser;
 pub mod agents;
 pub mod api;
 pub mod core;
@@ -94,6 +95,7 @@ pub struct Server {
     pub previews: preview::Previews,
     /// Execution isolation contexts (13).
     pub sandbox: sandbox::State,
+    pub agent_browser: agent_browser::AgentBrowsers,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -165,6 +167,7 @@ impl Server {
             agents: agents::Agents::default(),
             previews: preview::Previews::default(),
             sandbox: sandbox::State::default(),
+            agent_browser: agent_browser::AgentBrowsers::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),

@@ -295,6 +295,55 @@ CLI: `vibeke preview declare <port> [--path p] [--label l] [--pane p] [--task k]
 | `browser.dom` | `{browser_session|preview, selector?, format?: text|html|a11y}` → `{content}` |
 | `browser.diff` | `{a: blob, b: blob, threshold?}` → `{blob, changed_ratio, regions}` — refuses different `environment.kind` unless `force` |
 | `browser.session_close` | `{browser_session}` → `{}` |
+
+**As built (Goal 03 Stage 3; `vk-server::agent_browser`).** Sessions run on the server that serves the call (use `--machine m` for another machine's previews; a machine-qualified preview is refused with that hint). `session` accepts the handle (`b3`) or the ULID (`session_id`); `browser_session` and `target` are accepted as aliases. Pane-scoped callers see and drive only sessions owned by their pane or panes it created (others are `not_found`); while a human holds a session every pane-scoped call on it fails with `human_control` (code -32004, retryable). New error kinds: `destination_denied` (-32003, `details {url, reason}`), `human_control` (-32004, `details {session}`), `navigation_failed` (-32004, `details {url, error}`).
+
+| Method | Params → Result (as built) |
+|---|---|
+| `browser.open` (alias `browser.session_open`) | `{preview? \| url?, viewport?: "WxH" \| {width, height}, dpr?, color_scheme?: light\|dark, dark?, wait?, timeout_ms?}` → `{session, session_id, owner: {pane, pane_handle, run} \| {user}, preview, url, created_ms, viewport, human_control, screencast, proxy_port, machine, environment: {kind: "remote_headless", machine, runner: "host", browser, fresh_context: true}, status?, final_url?, title?}` — no target opens `about:blank`; the destination is checked before anything starts; a failed first navigation closes the session. Opening a suggested preview promotes it. Event `browser.session_opened`. |
+| `browser.navigate` | `{session, url \| path, wait?: load\|domcontentloaded\|none, timeout_ms?: 15000}` → `{session, status, final_url, title}` — `path` (`/x`) is relative to the current origin; `destination_denied` for refused targets and denied redirect hops; `navigation_failed` for other network errors; `timeout`. |
+| `browser.click` | `{session, selector?: css \| "text=Label", text?, x?, y?, click_count?, timeout_ms?: 5000}` → `{session, x, y, element: {tag, text, width, height} \| null}` — waits for a visible element, scrolls it into view, clicks its centre (`not_found` with `details.selector`). |
+| `browser.type` | `{session, selector?, text, submit?, clear?, timeout_ms?}` → `{session, typed}` — focuses `selector` (else the focused element), `Input.insertText`; `submit` presses Enter. |
+| `browser.press` | `{session, key}` → `{session, key}` — Vibeke key grammar (`enter`, `ctrl+a`, `shift+tab`) and Playwright names (`ArrowDown`, `Control+A`); `invalid_key`. |
+| `browser.wait` | `{session, for: load\|networkidle\|"selector:<css>"\|"ms:<n>", timeout_ms?}` → `{session, waited}` |
+| `browser.eval` | `{session, expression}` → `{session, value}` — `returnByValue`, promises awaited; script errors → `invalid_params {exception}`; results over 256 KiB refused. From a pane only with `preview.browser_script = true` (else `permission_denied {capability: "browser.script"}`). |
+| `browser.screenshot` | `{session, full_page?, selector?, inline?}` → `{session, blob, path_on_machine, width, height, bytes, meta, data_b64?, mime?}` — PNG stored content-addressed at `<state>/blobs/<h2>/<blake3>.png` (0600) with a `<blake3>.json` sidecar; `meta = {kind: "screenshot", session, preview, url, taken_at, taken_by: {kind: agent, pane, run} \| {kind: user, client}, environment, code: null (Stage 4), viewport, full_page, selector, width, height, mime}`; `inline` adds base64 up to 8 MiB; full page is clipped at 16 384 CSS px. Event `browser.screenshot {blob, url, width, height}`. The CLI's `--out f.png` fetches inline and writes locally (the server never writes to caller-chosen paths). |
+| `browser.snapshot` (alias `browser.dom`) | `{session, format?: a11y\|text\|html, selector?, max_bytes?: 102400}` → `{session, url, format, content, truncated}` — `a11y` is the accessibility tree as an indented outline (`role "name" [value] {states}`). |
+| `browser.console` | `{session, level?: error\|warn\|all, since_ms? \| since?: "5m", limit?: 200}` → `{session, entries: [{ts, level, text, source: console\|exception\|network\|dialog\|…, url?, line?}]}` |
+| `browser.network` | `{session, failed_only? (CLI --failed), since_ms? \| since?, limit?}` → `{session, entries: [{ts, method, url, type, status, error, mime?, duration_ms?, blocked_by_policy?, layer?: proxy\|fetch\|api}]}` — `failed_only`: errors, policy blocks and status ≥ 400. |
+| `browser.close` (alias `browser.session_close`) | `{session}` → `{session, closed}` — disposes the context, stops its proxy. Event `browser.session_closed {reason: closed\|idle\|owner_pane_closed\|owner_run_ended\|browser_exited\|open_failed}`. |
+| `browser.list` | `{}` → `{sessions: [...], browser: <status>, machine}` — only sessions the caller may see. |
+| `browser.status` | `{}` → `{running, pid?, product?, binary, kind, sessions, denied, profile_dir, idle_timeout_ms, uptime_ms?}` |
+| `browser.install` | `{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`; with `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only. |
+| `browser.take_over` / `browser.release` | `{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`. |
+| `browser.attach_screencast` / `browser.detach_screencast` / `browser.screencast_frame` | `{session}` → `{session, delivery: "internal+poll", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: "image/jpeg", width, height, received_ms, data_b64 \| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`. |
+
+Events: `browser.session_opened`, `browser.session_closed`, `browser.request_denied {session, url, reason, layer, resource_type}` (≤ 20 per session per 10 s), `browser.screenshot`, `browser.taken_over`, `browser.released`; subject `{browser_session, session_id, pane, machine}`. Not built: `browser.diff`, `--device`, one-shot screenshots of a preview/URL without a session, `code` in screenshot metadata (Stage 4).
+
+CLI: `vibeke browser open <preview|url> [--viewport WxH] [--dark]`, `navigate <s> <url|/path>`, `click <s> <css|text=…>` (or `--x --y`), `type <s> [selector] <text> [--submit] [--clear]`, `press <s> <key>`, `wait <s> <for>`, `eval <s> <js>`, `screenshot <s> [--full-page] [--selector css] [--out f.png]`, `snapshot|dom <s> [--format a11y|text|html]`, `console <s> [--level error] [--since 5m]`, `network <s> [--failed]`, `close <s>`, `list`, `status`, `install [--yes] [--sha256 hex] [--url u]` (shows the plan and asks; without a terminal needs `--yes`), `take-over <s>`, `release <s>`.
+
+#### 2.11.1 `vibeke mcp` (as built, Goal 03 Stage 3)
+
+A stdio MCP server for agent harnesses (06 B7): JSON-RPC 2.0, one message per line; protocol versions `2025-11-25` (preferred), `2025-06-18`, `2025-03-26`, `2024-11-05`; methods `initialize` (→ `{protocolVersion, capabilities: {tools: {listChanged: false}}, serverInfo: {name: "vibeke", title, version}, instructions}`), `ping`, `tools/list`, `tools/call`, empty `resources/list`/`prompts/list`; notifications are accepted silently; batches answered as arrays; unknown method -32601, unknown tool -32602, bad JSON -32700.
+
+| Tool | API method | Arguments |
+|---|---|---|
+| `preview_declare` | `preview.declare` | `{port, path?, label?}` |
+| `preview_list` | `preview.list` | `{all?}` |
+| `browser_open` | `browser.open` | `{preview?, url?, viewport?, color_scheme?}` |
+| `browser_navigate` | `browser.navigate` | `{session, url}` |
+| `browser_click` | `browser.click` | `{session, selector?, x?, y?}` |
+| `browser_type` | `browser.type` | `{session, selector?, text, submit?, clear?}` |
+| `browser_press` | `browser.press` | `{session, key}` |
+| `browser_wait` | `browser.wait` | `{session, for, timeout_ms?}` |
+| `browser_eval` | `browser.eval` | `{session, expression}` |
+| `browser_screenshot` | `browser.screenshot` (+`inline`) | `{session, full_page?, selector?}` → `[{type: image, data, mimeType: "image/png"}, {type: text, <metadata JSON>}]` |
+| `browser_snapshot` | `browser.snapshot` | `{session, format?, selector?}` → text |
+| `browser_console` | `browser.console` | `{session, level?, since_ms?}` |
+| `browser_network` | `browser.network` | `{session, failed_only?, since_ms?}` |
+| `browser_close` | `browser.close` | `{session}` |
+
+Results are text content with the API result as JSON; API errors are `{isError: true}` results whose text is `<kind>: <message>` plus details. The process connects to the pane's server like the CLI (`VIBEKE_SOCKET`/`VIBEKE_SESSION`, token from `VIBEKE_PANE_TOKEN`; process ancestry also yields pane scope) and reconnects once after a server restart. Installed with `vibeke integration install <claude|codex> --mcp` (06 B7).
 | `image.show` | `{blob|path, pane?: @current, max_cols?, max_rows?}` → `{}` — inline display in the TUI via kitty graphics/iTerm2/sixel passthrough; text fallback shows dimensions + `vibeke open` hint |
 | `image.upload` | `{pane, mime, data_b64 | path_on_client}` → `{path_on_machine, blob}` — client→remote image transfer (paste/drag) |
 
@@ -523,7 +572,8 @@ vibeke policy    list|add|remove|test|trust
 vibeke task      new|list|get|park|resume|finish|archive|setup-log
 vibeke worktree  list|create|open|remove|repo-root
 vibeke preview   list|declare|promote|dismiss|open|url|mirror|unmirror|forget|profile
-vibeke browser   open|navigate|click|type|press|wait|eval|screenshot|console|network|dom|diff|close
+vibeke browser   open|navigate|click|type|press|wait|eval|screenshot|snapshot|console|network|dom|close|list|status|install|take-over|release   (diff: not built)
+vibeke mcp       stdio MCP server (06 B7)
 vibeke image     show|upload
 vibeke notification list|send|read
 vibeke events    tail [--types agent.*] [--after-seq N] [--follow] | read | wait

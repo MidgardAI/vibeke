@@ -9,10 +9,25 @@
 //!   size, DECRQM, SGR-pixels mouse).
 //! - [`local_http`]: loopback-only HTTP server for tests and the bench.
 //! - [`input`]: logical key events (`vk_proto::input::KeyEvent`) → CDP `Input.*` commands.
+//!
+//! The agents' headless browser (spec 06 B5, Goal 03 Stage 3):
+//!
+//! - [`policy`]: destination classes and decisions (resolved-IP checks).
+//! - [`proxy`]: the per-session filtering HTTP/CONNECT proxy (resolve once, pin).
+//! - [`headless`]: headless binary discovery and the network-isolation launch flags.
+//! - [`install`]: `vibeke browser install` (pinned Chrome for Testing, SHA-256 verified).
+//! - [`snapshot`]: accessibility-tree text snapshots.
+//! - [`fake`]: a fake CDP browser for tests.
 
 pub mod cdp;
+pub mod fake;
 pub mod frame;
+pub mod headless;
 pub mod input;
+pub mod install;
 pub mod kitty;
 pub mod local_http;
+pub mod policy;
 pub mod probe;
+pub mod proxy;
+pub mod snapshot;

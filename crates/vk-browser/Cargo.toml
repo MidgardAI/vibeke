@@ -12,6 +12,8 @@ base64.workspace = true
 blake3.workspace = true
 libc.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 

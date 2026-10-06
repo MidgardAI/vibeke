@@ -8,6 +8,8 @@
 //! `doctor` and `capabilities` read the harness manifests (built-ins, the verified remote cache
 //! and `<config dir>/harnesses/*.toml`) and report each installed harness's version against the
 //! manifest's validated range: outside it, runs get `observe` (+ keystrokes) only (04 §12.3).
+//! `--mcp` installs/removes/reports the `vibeke mcp` server entry instead of the hooks (06 B7):
+//! Claude `mcpServers` in `.claude.json`, Codex `[mcp_servers.vibeke]` in `config.toml`.
 
 use serde_json::{Value, json};
 use vk_agents::manifest::{self, Loaded, Sources};
@@ -114,6 +116,10 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     let redirected = Dirs::REDIRECT_VARS
         .iter()
         .any(|k| std::env::var_os(k).is_some());
+    let mcp = args.iter().any(|a| a == "--mcp");
+    if mcp {
+        return run_mcp(verb, hs, &dirs, yes || redirected, dry);
+    }
     match verb {
         "list" | "status" => {
             for h in hs {
@@ -365,6 +371,88 @@ fn update(g: &Global, args: &[String]) -> i32 {
             EXIT_API
         }
     }
+}
+
+/// `--mcp`: the MCP server entry for harnesses with an MCP client config (Claude, Codex).
+fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) -> i32 {
+    let hs: Vec<Harness> = hs
+        .into_iter()
+        .filter(|h| matches!(h, Harness::Claude | Harness::Codex))
+        .collect();
+    let mut code = EXIT_OK;
+    for h in hs {
+        match verb {
+            "list" | "status" => match vk_agents::mcp_status(h, dirs) {
+                Ok(st) => {
+                    let state = if st.installed {
+                        "installed"
+                    } else if st.foreign {
+                        "foreign entry (left alone)"
+                    } else {
+                        "not installed"
+                    };
+                    println!("{:<7} mcp {state:<26} {}", h.id(), st.file.display());
+                }
+                Err(e) => {
+                    eprintln!("{}: {e:#}", h.id());
+                    code = EXIT_API;
+                }
+            },
+            "install" | "uninstall" => {
+                let plan = if verb == "install" {
+                    vk_agents::plan_mcp_install(h, dirs, &stable_bin())
+                } else {
+                    vk_agents::plan_mcp_uninstall(h, dirs)
+                };
+                let plan = match plan {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("{}: {e:#}", h.id());
+                        code = EXIT_API;
+                        continue;
+                    }
+                };
+                if !plan.changed() {
+                    println!(
+                        "{}: mcp already {}",
+                        h.id(),
+                        if verb == "install" {
+                            "installed"
+                        } else {
+                            "removed"
+                        }
+                    );
+                    continue;
+                }
+                for f in plan.files.iter().filter(|f| f.changed()) {
+                    println!("{}", f.diff());
+                }
+                for n in &plan.notes {
+                    println!("note: {n}");
+                }
+                if dry || !write {
+                    println!("{}: dry run — rerun with --yes to write", h.id());
+                    continue;
+                }
+                match vk_agents::apply(&plan) {
+                    Ok(paths) => {
+                        for p in paths {
+                            println!("wrote {}", p.display());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: {e:#}", h.id());
+                        code = EXIT_API;
+                    }
+                }
+            }
+            _ => {
+                eprintln!("vibeke integration install|uninstall|status <claude|codex|all> --mcp");
+                return EXIT_USAGE;
+            }
+        }
+    }
+    code
 }
 
 fn hs_contains_codex(target: Option<&str>) -> bool {

@@ -5,6 +5,7 @@
 pub mod fingerprint;
 pub mod install;
 pub mod manifest;
+pub mod mcp;
 pub mod risk;
 pub(crate) mod shell;
 
@@ -13,4 +14,5 @@ pub use install::{
     Dirs, FileChange, Harness, HookStatus, InstallState, Plan, PlanKind, Status, Trust, apply,
     plan_install, plan_uninstall, status, write_codex_shim,
 };
+pub use mcp::{McpStatus, mcp_config_file, mcp_status, plan_mcp_install, plan_mcp_uninstall};
 pub use risk::{Risk, assess};

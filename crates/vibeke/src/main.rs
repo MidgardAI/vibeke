@@ -22,7 +22,9 @@ usage:
   vibeke <noun> <verb> [args]     API commands (vibeke <noun> for help)
   vibeke notify <title> [body]    notification from a pane or script
   vibeke import herdr [--config] [--session] [--dry-run]
-  vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all>
+  vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
+  vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
+  vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
   vibeke doctor                   diagnose install, sockets, integrations, terminal, remote
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart]
@@ -187,6 +189,21 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("machine") => remote::machine_cmd(&g, &args[1..]),
+        Some("mcp") => mcp(&g).await,
+        Some("browser") if args.get(1).map(String::as_str) == Some("install") => {
+            let params = match vk_cli::build_params(&[], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::noun_help("browser"));
+                    return EXIT_USAGE;
+                }
+            };
+            let gr = &g;
+            with_client(gr, |mut c| async move {
+                vk_cli::browser_install(&mut c, gr, params).await
+            })
+            .await
+        }
         Some("debug") if args.get(1).map(String::as_str) == Some("latency") => {
             debug::latency(&g, &args[2..]).await
         }
@@ -256,6 +273,33 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
 }
 
 pub type AnyStream = Box<dyn vk_remote::mux::Stream>;
+
+/// `vibeke mcp`: MCP over stdio, forwarding to this pane's server (06 B7). Reconnects once if
+/// the server restarts. Nothing but JSON-RPC may go to stdout.
+async fn mcp(g: &Global) -> i32 {
+    let session = g.session.clone();
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let no_spawn = g.no_spawn;
+    let mut backend = vk_cli::mcp::Reconnecting::new(move || {
+        let (session, socket) = (session.clone(), socket.clone());
+        Box::pin(async move {
+            let s = client::connect_or_spawn(&session, &socket, no_spawn).await?;
+            Ok(client::Client::new(s))
+        })
+            as vk_cli::mcp::BoxFuture<
+                'static,
+                anyhow::Result<client::Client<tokio::net::UnixStream>>,
+            >
+    });
+    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    match vk_cli::mcp::serve(stdin, tokio::io::stdout(), &mut backend).await {
+        Ok(()) => EXIT_OK,
+        Err(e) => {
+            eprintln!("vibeke mcp: {e:#}");
+            vk_cli::EXIT_API
+        }
+    }
+}
 
 /// Connect to the session's server (spawning it unless --no-spawn) and run `f`. With
 /// `--machine`, the connection is a channel to that machine's server — never a local fallback
