@@ -197,9 +197,22 @@ pub struct Family {
     pub state: FamilyState,
     #[serde(default)]
     pub picked: Option<String>,
-    /// Check command resolved at creation (repo `[tasks.check]` or the config fallback).
+    /// Check command resolved at creation (request, config fallback or a trusted repo file).
     #[serde(default)]
     pub check_command: Option<String>,
+    /// The latest check outcome per child handle.
+    #[serde(default)]
+    pub checks: BTreeMap<String, StoredCheck>,
+}
+
+/// A check outcome with the revision it ran against (a different head or a changed dirty
+/// state makes it stale).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredCheck {
+    pub outcome: CheckOutcome,
+    pub head: Option<String>,
+    pub dirty: bool,
+    pub at_ms: i64,
 }
 
 impl Family {
@@ -474,8 +487,26 @@ pub struct ChildReport {
     pub state: String,
     pub summary: DiffSummary,
     pub check: Option<CheckOutcome>,
+    /// The check ran against a different revision than the one reported.
+    #[serde(default)]
+    pub check_stale: bool,
     /// Files this child also shares with at least one sibling.
     pub shared_files: u32,
+}
+
+/// Attach the stored check to a report; a check from another revision is kept for display but
+/// flagged stale (and ignored by [`rank`]).
+pub fn attach_check(r: &mut ChildReport, stored: Option<&StoredCheck>) {
+    match stored {
+        Some(c) => {
+            r.check = Some(c.outcome.clone());
+            r.check_stale = c.head != r.summary.head || c.dirty != r.summary.dirty;
+        }
+        None => {
+            r.check = None;
+            r.check_stale = false;
+        }
+    }
 }
 
 /// Collect a child's report. A broken worktree yields a report with an empty summary and the
@@ -496,6 +527,7 @@ pub fn collect_report(input: &ChildInput, check: Option<CheckOutcome>) -> ChildR
         state,
         summary,
         check,
+        check_stale: false,
         shared_files: 0,
     }
 }
@@ -541,7 +573,7 @@ pub fn rank(reports: &[ChildReport]) -> Vec<Ranked> {
         .map(|(i, r)| {
             let mut score: i64 = 0;
             let mut reasons = vec![];
-            match &r.check {
+            match r.check.as_ref().filter(|_| !r.check_stale) {
                 Some(c) if c.ok => {
                     score += 1000;
                     reasons.push("check passed".to_string());
@@ -554,6 +586,7 @@ pub fn rank(reports: &[ChildReport]) -> Vec<Ranked> {
                     score -= 1000;
                     reasons.push("check failed".into());
                 }
+                None if r.check_stale => reasons.push("check is stale".into()),
                 None => reasons.push("no check".into()),
             }
             let size = i64::from(r.summary.additions) + i64::from(r.summary.deletions);
@@ -601,6 +634,13 @@ pub fn render_compare(family: &str, reports: &[ChildReport], ranked: &[Ranked]) 
             .map(|i| (i + 1).to_string())
             .unwrap_or_else(|| "-".into());
         let check = match &r.check {
+            Some(c) if r.check_stale => {
+                if c.ok {
+                    "pass*"
+                } else {
+                    "FAIL*"
+                }
+            }
             Some(c) if c.ok => "pass",
             Some(c) if c.timed_out => "timeout",
             Some(_) => "FAIL",
@@ -653,6 +693,7 @@ pub fn new_family(
         state: FamilyState::Running,
         picked: None,
         check_command: check_command.map(str::to_string),
+        checks: BTreeMap::new(),
     }
 }
 
@@ -872,6 +913,7 @@ mod tests {
                 duration_ms: 1,
                 tail: String::new(),
             }),
+            check_stale: false,
             shared_files: 0,
         }
     }
@@ -896,6 +938,43 @@ mod tests {
         assert!(text.contains("k7.3"));
         assert!(text.contains("FAIL"));
         assert!(text.contains("git diff b/k7.1..b/k7.2"));
+    }
+
+    #[test]
+    fn stale_checks_are_flagged_and_not_ranked() {
+        let mut a = rep("k7.1", 3, 1, None, "idle", &["a"]);
+        a.summary.head = Some("h1".into());
+        let stored = StoredCheck {
+            outcome: CheckOutcome {
+                command: "t".into(),
+                ok: true,
+                exit_code: Some(0),
+                timed_out: false,
+                duration_ms: 1,
+                tail: String::new(),
+            },
+            head: Some("h1".into()),
+            dirty: false,
+            at_ms: 1,
+        };
+        attach_check(&mut a, Some(&stored));
+        assert!(a.check.is_some() && !a.check_stale);
+        // A new commit makes it stale.
+        a.summary.head = Some("h2".into());
+        attach_check(&mut a, Some(&stored));
+        assert!(a.check_stale);
+        let mut b = rep("k7.2", 3, 1, None, "idle", &["b"]);
+        b.summary.head = Some("h1".into());
+        let r = rank(&[a.clone(), b]);
+        assert!(r[0].reasons.iter().chain(r[1].reasons.iter()).any(|x| x == "check is stale"));
+        assert!(render_compare("k7", &[a.clone()], &r).contains("pass*"));
+        // Dirty state changes also stale it.
+        a.summary.head = Some("h1".into());
+        a.summary.dirty = true;
+        attach_check(&mut a, Some(&stored));
+        assert!(a.check_stale);
+        attach_check(&mut a, None);
+        assert!(a.check.is_none() && !a.check_stale);
     }
 
     #[test]

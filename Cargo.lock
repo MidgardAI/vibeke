@@ -3737,6 +3737,7 @@ dependencies = [
  "vk-compat",
  "vk-config",
  "vk-hold",
+ "vk-orchestrate",
  "vk-preview",
  "vk-proto",
  "vk-redact",

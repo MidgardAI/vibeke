@@ -432,6 +432,7 @@ impl PaneScope {
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
+        || crate::orch::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -553,6 +554,10 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    // Batch 4 orchestration (best-of-N, split, learned policy, merge, goals, quota, vm).
+    if let Some(r) = crate::orch::api(server, ctx, method, p).await {
+        return r;
+    }
     // Batch 2A API surface: one hook per module.
     if let Some(r) = crate::config_api::api(server, method, p).await {
         return r;
@@ -672,6 +677,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::task_lifecycle::METHODS)
                     .chain(crate::task_park::METHODS)
                     .chain(crate::security::METHODS)
+                    .chain(crate::orch::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

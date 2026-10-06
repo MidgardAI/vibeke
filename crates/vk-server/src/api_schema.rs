@@ -50,6 +50,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("sync_input", sync_input::METHODS),
         ("tab_renumber", tab_renumber::METHODS),
         ("task_lifecycle", task_lifecycle::METHODS),
+        ("orch", orch::METHODS),
     ]
 }
 
@@ -161,7 +162,7 @@ fn build() -> Result<Registry, Vec<String>> {
         out
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
-    let events = load(&[EVENT_SHAPES], "event", &mut errs);
+    let events = load(&[EVENT_SHAPES, crate::orch_shapes::EVENTS], "event", &mut errs);
     let notifications = load(&[NOTIFICATION_SHAPES], "notification", &mut errs);
     let mut reg = Registry {
         defs,
@@ -467,6 +468,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_2A_SHAPES,
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
+    crate::orch_shapes::SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"

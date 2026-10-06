@@ -21,6 +21,7 @@ vk-browser = { workspace = true }
 vk-remote = { workspace = true }
 vk-sandbox = { workspace = true }
 vk-assist = { workspace = true }
+vk-orchestrate = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

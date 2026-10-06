@@ -634,14 +634,22 @@ pub fn merge_branch(repo: &Path, branch: &str, opts: &MergeOptions) -> Result<Me
     }
 }
 
-/// Merge the next open entry and record the outcome on it. Returns the entry id and outcome,
-/// or `None` for an empty queue.
+/// Merge the next open entry (or the open entry named by `only`) and record the outcome on it.
+/// Returns the entry id and outcome, or `None` when there is nothing to run.
 pub fn run_next(
     queue: &mut MergeQueue,
+    only: Option<&str>,
     check: Option<(String, Duration)>,
     squash: bool,
 ) -> Option<(String, Result<MergeOutcome>)> {
-    let e = queue.next()?.clone();
+    let e = match only {
+        Some(o) => queue
+            .order()
+            .into_iter()
+            .find(|e| e.id == o || e.task == o || e.handle == o)?
+            .clone(),
+        None => queue.next()?.clone(),
+    };
     let opts = MergeOptions {
         target: e.target.clone(),
         squash,
@@ -1098,20 +1106,20 @@ mod tests {
         let mut q = MergeQueue::default();
         q.add(entry(&r, "k1", "t/one", 0, 1)).unwrap();
         q.add(entry(&r, "k2", "t/two", 0, 2)).unwrap();
-        let (id, out) = run_next(&mut q, None, false).unwrap();
+        let (id, out) = run_next(&mut q, None, None, false).unwrap();
         assert_eq!(id, "q-k1");
         assert!(matches!(out.unwrap(), MergeOutcome::Merged { .. }));
         assert_eq!(q.get("k1").unwrap().state, EntryState::Merged);
         assert!(q.get("k1").unwrap().merge_commit.is_some());
         // k2 now conflicts with what k1 landed
-        let (id, out) = run_next(&mut q, None, false).unwrap();
+        let (id, out) = run_next(&mut q, None, None, false).unwrap();
         assert_eq!(id, "q-k2");
         assert!(matches!(out.unwrap(), MergeOutcome::Conflict { .. }));
         let e = q.get("k2").unwrap();
         assert_eq!(e.state, EntryState::Conflict);
         assert_eq!(e.conflict_paths, vec!["a.txt"]);
         assert!(
-            run_next(&mut q, None, false).is_none(),
+            run_next(&mut q, None, None, false).is_none(),
             "nothing left in line"
         );
         // fixing the branch and requeueing lets it land
@@ -1120,7 +1128,7 @@ mod tests {
         sh(&w2, &["commit", "-q", "--amend", "-m", "two fixed"]);
         sh(&w2, &["merge", "-q", "-s", "ours", "main", "-m", "sync"]);
         q.requeue("k2").unwrap();
-        let (_, out) = run_next(&mut q, None, false).unwrap();
+        let (_, out) = run_next(&mut q, None, None, false).unwrap();
         assert!(matches!(out.unwrap(), MergeOutcome::Merged { .. }));
         assert_eq!(q.get("k2").unwrap().state, EntryState::Merged);
     }
