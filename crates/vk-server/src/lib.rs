@@ -13,6 +13,7 @@ pub mod render;
 pub mod review;
 pub mod run;
 pub mod tracking;
+pub mod gateway_api;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
@@ -86,6 +87,7 @@ pub struct Server {
     pub fts_buf: Mutex<Vec<(String, u64, i64, String)>>,
     pub tokens: Mutex<HashMap<String, String>>,
     pub tracking: tracking::State,
+    pub gateway: gateway_api::State,
     pub agents: agents::Agents,
     pub previews: preview::Previews,
     pub shutdown: Notify,
@@ -155,6 +157,7 @@ impl Server {
             fts_buf: Mutex::new(Vec::new()),
             tokens: Mutex::new(tokens),
             tracking: Default::default(),
+            gateway: Default::default(),
             agents: agents::Agents::default(),
             previews: preview::Previews::default(),
             shutdown: Notify::new(),

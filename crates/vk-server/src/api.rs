@@ -371,6 +371,9 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
 
 async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
     authorize(server, ctx, method, p)?;
+    if let Some(r) = crate::gateway_api::api(server, ctx, method, p).await {
+        return r;
+    }
     if let Some(r) = crate::agents::api(server, ctx, method, p).await {
         return r;
     }
