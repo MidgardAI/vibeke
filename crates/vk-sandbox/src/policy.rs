@@ -11,7 +11,12 @@
 //!    common dir, the inbox, the private dir, projected credentials);
 //! 3. write only [`Policy::allow_write`] (checkout, private dir) plus the git paths a commit needs;
 //! 4. never write [`Policy::deny_write`] (`.git` hooks/config/info, the `.git` link file, the
-//!    checkout root itself, projected credential files) — applied last.
+//!    checkout root itself, projected credential files, git-executed files inside the checkout
+//!    ([`crate::gitexec`]), protected host state that would sit inside the checkout) — applied
+//!    last.
+//!
+//! [`check_checkout`] refuses checkouts that would make protected host state writable at all
+//! (`$HOME`, `/`, a directory containing Vibeke's state or the user's credential dirs).
 
 use crate::net::NetworkProfile;
 use serde::{Deserialize, Serialize};
@@ -35,6 +40,10 @@ impl GitLayout {
             .arg("-C")
             .arg(path)
             .args([
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
                 "rev-parse",
                 "--path-format=absolute",
                 "--git-common-dir",
@@ -99,6 +108,10 @@ pub struct SandboxSpec {
     pub network: NetMode,
     /// Allow listening on localhost (dev servers for previews).
     pub allow_bind_localhost: bool,
+    /// Files and dirs inside the checkout that host git executes or reads as config
+    /// ([`crate::gitexec::exec_targets`]): never writable.
+    #[serde(default)]
+    pub protected: Vec<PathBuf>,
 }
 
 /// Home-relative paths readable inside a sandbox by default (13 §5: git config, toolchains,
@@ -331,6 +344,20 @@ impl Policy {
         for f in &spec.read_only_files {
             push_unique(&mut p.deny_write, canon(f));
         }
+        for f in &spec.protected {
+            push_unique(&mut p.deny_write, canon(f));
+        }
+        // Protected host state stays protected even when it sits inside the checkout
+        // ([`check_checkout`] refuses such checkouts; this is the second line).
+        for h in p.hidden.clone() {
+            if h.starts_with(&checkout) && !private.starts_with(&h) {
+                push_unique(&mut p.never_read, h.clone());
+                push_unique(&mut p.deny_write, h);
+            }
+        }
+        for n in p.never_read.clone() {
+            push_unique(&mut p.deny_write, n);
+        }
         for s in &spec.unix_sockets {
             push_unique(&mut p.unix_sockets, canon(s));
         }
@@ -375,6 +402,54 @@ impl Policy {
     }
 }
 
+/// Home-relative paths that a checkout must never contain (13 §5): the user's shell startup
+/// files, tool config and credentials live directly in them.
+pub const PROTECTED_HOME: &[&str] = &[
+    ".config",
+    ".local/state",
+    ".local/share",
+    "Library",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+];
+
+/// Refuse a checkout that would put protected host state inside the sandbox's writable area:
+/// `/`, `$HOME` or any ancestor of it, a directory that contains one of `hidden` (Vibeke's
+/// runtime/state/config), or one that contains the user's credential/config dirs.
+pub fn check_checkout(home: &Path, checkout: &Path, hidden: &[PathBuf]) -> Result<(), String> {
+    let co = canon(checkout);
+    let home = canon(home);
+    let why = |what: &str| {
+        Err(format!(
+            "refusing to isolate {}: {what}; start the agent in a project directory instead",
+            co.display()
+        ))
+    };
+    if co.parent().is_none() {
+        return why("it is the filesystem root");
+    }
+    if home.starts_with(&co) {
+        return why("it is (or contains) your home directory");
+    }
+    for h in hidden {
+        let h = canon(h);
+        if h.starts_with(&co) {
+            return why(&format!("it contains Vibeke's own state ({})", h.display()));
+        }
+    }
+    for rel in PROTECTED_HOME.iter().chain(HOME_NEVER_READ.iter()) {
+        let p = home.join(rel);
+        if p.starts_with(&co) {
+            return why(&format!("it contains {}", p.display()));
+        }
+    }
+    Ok(())
+}
+
 /// Inputs that select a network mode from a profile and a running proxy.
 pub fn net_mode(profile: NetworkProfile, proxy_port: Option<u16>, local_ports: &[u16]) -> NetMode {
     match (profile.uses_proxy(), proxy_port) {
@@ -411,6 +486,7 @@ pub(crate) mod tests {
                 local_ports: vec![20000],
             },
             allow_bind_localhost: true,
+            protected: vec![root.join("home/code/repo-task/.githooks")],
         }
     }
 
@@ -480,6 +556,49 @@ pub(crate) mod tests {
                 .any(|r| r.ends_with("/refs/heads/vk/task(\\.lock)?$"))
         );
         assert!(p.deny_write.iter().any(|x| x.ends_with("auth.json")));
+    }
+
+    #[test]
+    fn protected_targets_and_state_inside_the_checkout_are_never_writable() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let mut s = spec(&root);
+        // Vibeke state that (somehow) sits inside the checkout.
+        s.hidden.push(root.join("home/code/repo-task/.vk-state"));
+        let p = Policy::from_spec(&s);
+        let co = root.join("home/code/repo-task");
+        assert!(p.deny_write.contains(&co.join(".githooks")));
+        assert!(p.deny_write.contains(&co.join(".vk-state")));
+        assert!(p.never_read.contains(&co.join(".vk-state")));
+        assert!(!p.can_read(&co.join(".vk-state/state.db")));
+        assert!(p.can_read(&co.join("src/main.rs")));
+        // Credential dirs are write-denied too, not just unreadable.
+        assert!(p.deny_write.contains(&root.join("home/.ssh")));
+        // A hidden root that is an *ancestor* of the checkout (tests under $TMPDIR) is not.
+        assert!(!p.deny_write.contains(&root.join("state")));
+    }
+
+    #[test]
+    fn checkouts_that_contain_protected_state_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let home = root.join("home");
+        for d in ["home/code/repo", "home/.ssh", "state"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let hidden = vec![root.join("state"), home.join(".config/vibeke")];
+        assert!(check_checkout(&home, &home.join("code/repo"), &hidden).is_ok());
+        for bad in [home.clone(), root.clone(), PathBuf::from("/")] {
+            let e = check_checkout(&home, &bad, &hidden).unwrap_err();
+            assert!(e.contains("refusing"), "{e}");
+        }
+        // A directory that contains Vibeke's state root.
+        let mut h2 = hidden.clone();
+        h2.push(home.join("code/repo/.state"));
+        assert!(check_checkout(&home, &home.join("code/repo"), &h2).is_err());
+        // `~/.config` (shell/tool config) and `~/.ssh` themselves.
+        assert!(check_checkout(&home, &home.join(".config"), &hidden).is_err());
+        assert!(check_checkout(&home, &home.join(".ssh"), &[]).is_err());
     }
 
     #[test]

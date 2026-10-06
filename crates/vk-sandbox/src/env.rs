@@ -79,17 +79,17 @@ pub fn proxy_env(env: &mut Vec<(String, String)>, port: u16) {
 /// Private temp and cache dirs under the pane's private dir, plus a zsh dotdir that marks the
 /// prompt (the user's rc files are not readable inside: they often export secrets).
 pub fn private_dirs(env: &mut Vec<(String, String)>, private: &Path) -> std::io::Result<()> {
-    let tmp = private.join("tmp");
-    let cache = private.join("cache");
-    let zdot = private.join("zdot");
-    for d in [&tmp, &cache, &zdot] {
-        std::fs::create_dir_all(d)?;
-    }
+    // The private dir is writable from inside the box: create and write without following
+    // symlinks the box may have planted there.
+    let tmp = crate::fsafe::ensure_dir_under(private, Path::new("tmp"))?;
+    let cache = crate::fsafe::ensure_dir_under(private, Path::new("cache"))?;
+    let zdot = crate::fsafe::ensure_dir_under(private, Path::new("zdot"))?;
     let zshrc = zdot.join(".zshrc");
-    if !zshrc.exists() {
-        std::fs::write(
+    if !std::fs::symlink_metadata(&zshrc).is_ok_and(|m| m.is_file()) {
+        crate::fsafe::write_nofollow(
             &zshrc,
-            "# Vibeke sandbox shell (spec 13): your ~/.zshrc is not readable in here.\nPROMPT='%F{yellow}[sbx]%f %~ %# '\n",
+            b"# Vibeke sandbox shell (spec 13): your ~/.zshrc is not readable in here.\nPROMPT='%F{yellow}[sbx]%f %~ %# '\n",
+            0o600,
         )?;
     }
     let s = |p: &Path| p.to_string_lossy().into_owned();

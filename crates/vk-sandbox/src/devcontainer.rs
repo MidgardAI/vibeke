@@ -9,7 +9,9 @@
 //! - `runArgs`, `privileged`, `capAdd`, `securityOpt`, `features`, `forwardPorts` and
 //!   `postStartCommand`/`postAttachCommand` are ignored with a warning.
 //! - `${localEnv:…}` expands to an empty string (host env never flows into the box).
-//! - Bind mounts are policed by the caller (only sources inside the checkout, trusted repos).
+//! - `mounts` go through [`police_mounts`]: plain, per-task-namespaced volume names only; binds
+//!   only from inside the checkout of a trusted repo in worktree mode, never sockets, never a
+//!   writable second view of `.git`.
 
 use std::path::{Path, PathBuf};
 
@@ -464,6 +466,100 @@ pub fn parse(text: &str, file: &Path, local_ws: &Path) -> Result<DevContainer, S
     })
 }
 
+/// What a repo's devcontainer `mounts` may become (13 §9). The file is repo-controlled, so:
+/// - `volume` sources must be plain names ([`crate::container::safe_volume_name`]): an
+///   absolute or relative path (or a socket path) is a host bind mount in disguise. Names are
+///   namespaced per task (`<namespace>-<name>`), so a repo can't reach another task's volumes or
+///   the user's own named volumes.
+/// - `bind` sources need repo trust, `worktree` code mode, an absolute existing path inside the
+///   checkout, never a socket; writable binds must not expose the checkout's `.git` or another
+///   protected path (`protected`) under a second path.
+pub struct MountPolicy<'a> {
+    pub checkout: &'a Path,
+    pub trusted: bool,
+    pub worktree: bool,
+    pub namespace: &'a str,
+    pub protected: &'a [PathBuf],
+}
+
+pub fn police_mounts(
+    mounts: &[DevMount],
+    p: &MountPolicy,
+) -> (Vec<crate::container::BoxMount>, Vec<String>) {
+    use crate::container::BoxMount;
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    let co = p
+        .checkout
+        .canonicalize()
+        .unwrap_or_else(|_| p.checkout.to_path_buf());
+    let mut guarded: Vec<PathBuf> = vec![co.join(".git")];
+    guarded.extend(p.protected.iter().cloned());
+    for m in mounts {
+        match m.kind {
+            MountKind::Tmpfs => out.push(BoxMount::Tmpfs {
+                target: m.target.clone(),
+            }),
+            MountKind::Volume => {
+                let name = format!("{}-{}", p.namespace, m.source);
+                if crate::container::safe_volume_name(&m.source)
+                    && crate::container::safe_volume_name(&name)
+                {
+                    out.push(BoxMount::Volume {
+                        name,
+                        target: m.target.clone(),
+                    });
+                } else {
+                    warnings.push(format!(
+                        "devcontainer volume source {:?} → {} ignored (only plain volume names; a path would be a host bind mount)",
+                        m.source, m.target
+                    ));
+                }
+            }
+            MountKind::Bind => {
+                let src = Path::new(&m.source);
+                let real = src.is_absolute().then(|| src.canonicalize().ok()).flatten();
+                let why = match &real {
+                    None => Some("the source must be an existing absolute path"),
+                    Some(_) if !(p.trusted && p.worktree) => {
+                        Some("binds need a trusted repo and worktree code mode")
+                    }
+                    Some(r) if !r.starts_with(&co) => Some("the source is outside the checkout"),
+                    Some(r)
+                        if std::fs::symlink_metadata(r).is_ok_and(|md| {
+                            use std::os::unix::fs::FileTypeExt;
+                            md.file_type().is_socket()
+                        }) || r.to_string_lossy().ends_with(".sock") =>
+                    {
+                        Some("sockets are never mounted")
+                    }
+                    Some(r)
+                        if !m.read_only
+                            && guarded.iter().any(|g| r.starts_with(g) || g.starts_with(r)) =>
+                    {
+                        Some("a writable bind would expose .git or git-executed files")
+                    }
+                    Some(_) => None,
+                };
+                match (why, real) {
+                    (None, Some(r)) => out.push(BoxMount::Bind {
+                        host: r,
+                        target: m.target.clone(),
+                        read_only: m.read_only,
+                    }),
+                    (why, _) => warnings.push(format!(
+                        "devcontainer bind mount {} → {} ignored ({})",
+                        m.source,
+                        m.target,
+                        why.unwrap_or("refused")
+                    )),
+                }
+            }
+        }
+    }
+    (out, warnings)
+}
+
 /// Load `rel` (default `.devcontainer/devcontainer.json`, then `.devcontainer.json`) under
 /// `checkout`. `Ok(None)` when there is none.
 pub fn load(checkout: &Path, rel: Option<&str>) -> Result<Option<DevContainer>, String> {
@@ -629,6 +725,89 @@ mod tests {
         assert!(load(&repo, None).is_err());
         assert_eq!(load(&t.path().join("none"), None).unwrap(), None);
         assert!(load(&repo, Some("missing.json")).is_err());
+    }
+
+    #[test]
+    fn hostile_mounts_are_refused() {
+        use crate::container::BoxMount;
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let co = root.join("repo");
+        std::fs::create_dir_all(co.join(".git")).unwrap();
+        std::fs::create_dir_all(co.join("data")).unwrap();
+        std::fs::create_dir_all(co.join(".githooks")).unwrap();
+        let sock = co.join("x.sock");
+        let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let m = |kind: MountKind, source: &str, ro: bool| DevMount {
+            kind,
+            source: source.into(),
+            target: "/t".into(),
+            read_only: ro,
+        };
+        let home = root.to_string_lossy().into_owned();
+        let mounts = vec![
+            // Absolute paths and sockets disguised as volumes.
+            m(MountKind::Volume, &home, false),
+            m(MountKind::Volume, "/var/run/docker.sock", false),
+            m(MountKind::Volume, "./data", false),
+            m(MountKind::Volume, "~/.ssh", false),
+            // A legitimate named volume: namespaced per task.
+            m(MountKind::Volume, "pnpm-store", false),
+            // Binds: socket, outside, relative, .git writable, the whole checkout writable.
+            m(MountKind::Bind, &sock.to_string_lossy(), false),
+            m(MountKind::Bind, &home, true),
+            m(MountKind::Bind, "data", false),
+            m(MountKind::Bind, &co.join(".git").to_string_lossy(), false),
+            m(MountKind::Bind, &co.to_string_lossy(), false),
+            m(
+                MountKind::Bind,
+                &co.join(".githooks").to_string_lossy(),
+                false,
+            ),
+            // Fine: a data dir inside the checkout, and .git read-only.
+            m(MountKind::Bind, &co.join("data").to_string_lossy(), false),
+            m(MountKind::Bind, &co.join(".git").to_string_lossy(), true),
+            m(MountKind::Tmpfs, "", false),
+        ];
+        let protected = vec![co.join(".githooks")];
+        let pol = MountPolicy {
+            checkout: &co,
+            trusted: true,
+            worktree: true,
+            namespace: "vk-abc12345",
+            protected: &protected,
+        };
+        let (out, warnings) = police_mounts(&mounts, &pol);
+        assert_eq!(
+            out,
+            vec![
+                BoxMount::Volume {
+                    name: "vk-abc12345-pnpm-store".into(),
+                    target: "/t".into()
+                },
+                BoxMount::Bind {
+                    host: co.join("data"),
+                    target: "/t".into(),
+                    read_only: false
+                },
+                BoxMount::Bind {
+                    host: co.join(".git"),
+                    target: "/t".into(),
+                    read_only: true
+                },
+                BoxMount::Tmpfs {
+                    target: "/t".into()
+                },
+            ]
+        );
+        assert_eq!(warnings.len(), 10, "{warnings:?}");
+        // Untrusted or clone mode: no binds at all.
+        let pol = MountPolicy {
+            trusted: false,
+            ..pol
+        };
+        let (out, _) = police_mounts(&mounts, &pol);
+        assert!(!out.iter().any(|m| matches!(m, BoxMount::Bind { .. })));
     }
 
     #[test]

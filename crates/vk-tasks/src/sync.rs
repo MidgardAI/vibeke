@@ -10,14 +10,21 @@
 //!
 //! The git *services* for the box repo (`upload-pack`, `receive-pack`) are a parameter
 //! ([`BoxRemote`]): for a running container they run **inside** the box via `<runtime> exec`,
-//! so repo-controlled config or hooks only ever execute there. [`BoxRemote::local`] runs them on
-//! the host against a local path with hooks, fsmonitor, alternate-ref commands and auto-gc
-//! disabled (used when the box is stopped, and by the tests).
+//! so repo-controlled config or hooks only ever execute there. [`BoxRemote::local`] (a stopped
+//! box, and the tests) never runs `receive-pack` on the host: `receive-pack` honours the box's
+//! `receive.denyCurrentBranch=updateInstead`, `core.worktree` and attributes/filters even with
+//! hooks off. A push to a stopped box writes the side ref **itself** ([`write_box_ref`],
+//! symlink-safe); the objects are already visible to the box through its alternates.
+//! `upload-pack` (pulls) runs hardened and only reads objects and refs.
+//!
+//! [`box_leftovers`] inspects a stopped box's repo from the host (hardened, filters
+//! neutralized) for anything not on the host yet: index/worktree changes, untracked files,
+//! other branches, a detached HEAD, stashes.
 
-use crate::git::{exec, git, git_ok};
+use crate::git::{HOST_HARDEN, exec, git, git_ok};
 use crate::{Error, Result};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// `-c` flags for every host-side git command that touches a task branch from a box (13 §6):
 /// no hooks, no fsmonitor, no alternate-refs command, no auto-gc.
@@ -45,6 +52,9 @@ pub struct BoxRemote {
     pub upload_pack: String,
     /// Shell command git runs as `--receive-pack`.
     pub receive_pack: String,
+    /// Host path of the box repo when the services would run on the host ([`BoxRemote::local`]):
+    /// pushes then write the side ref directly instead of running `receive-pack`.
+    pub local: Option<PathBuf>,
 }
 
 fn q(s: &str) -> String {
@@ -71,8 +81,194 @@ impl BoxRemote {
             url: path.to_string_lossy().into_owned(),
             upload_pack: hardened_service("upload-pack"),
             receive_pack: hardened_service("receive-pack"),
+            local: Some(path.to_path_buf()),
         }
     }
+}
+
+/// `<box>/.git` must be a plain directory (not a symlink to some host repo, not a `gitdir:`
+/// link file) before Vibeke touches a box repo from the host.
+fn box_git_dir(box_dir: &Path) -> Result<PathBuf> {
+    let g = box_dir.join(".git");
+    match std::fs::symlink_metadata(&g) {
+        Ok(m) if m.is_dir() && !m.file_type().is_symlink() => Ok(g),
+        _ => Err(Error::Refused(format!(
+            "{} is not a plain git directory; not touching it from the host",
+            g.display()
+        ))),
+    }
+}
+
+/// Write `full_ref` = `sha` as a loose ref in the box repo at `box_dir`, from the host, without
+/// running git there and without following any symlink the box planted under `.git`.
+pub fn write_box_ref(box_dir: &Path, full_ref: &str, sha: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    if sha.len() < 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::Refused(format!("{sha} is not an object id")));
+    }
+    let rel = Path::new(full_ref);
+    let comps: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(n) => Ok(n),
+            _ => Err(Error::Refused(format!("bad ref name {full_ref}"))),
+        })
+        .collect::<Result<_>>()?;
+    if comps.first().is_none_or(|c| *c != "refs") || comps.len() < 2 {
+        return Err(Error::Refused(format!("bad ref name {full_ref}")));
+    }
+    let mut cur = box_git_dir(box_dir)?;
+    for c in &comps[..comps.len() - 1] {
+        cur.push(c);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(Error::Refused(format!(
+                    "{} is not a plain directory",
+                    cur.display()
+                )));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&cur)?,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let file = cur.join(comps[comps.len() - 1]);
+    if let Ok(m) = std::fs::symlink_metadata(&file) {
+        if m.is_dir() {
+            return Err(Error::Refused(format!("{} is a directory", file.display())));
+        }
+        std::fs::remove_file(&file)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o644)
+        .open(&file)?;
+    f.write_all(format!("{sha}\n").as_bytes())?;
+    Ok(())
+}
+
+/// Hardened git in a box repo seen from the host: explicit `GIT_DIR`/`GIT_WORK_TREE` (the box's
+/// `core.worktree` is ignored), [`HOST_HARDEN`], every filter driver neutralized, no optional
+/// locks, no system config.
+fn box_git(box_dir: &Path, args: &[&str]) -> Result<String> {
+    let gd = box_git_dir(box_dir)?;
+    let base = |c: &mut std::process::Command| {
+        c.env("GIT_DIR", &gd)
+            .env("GIT_WORK_TREE", box_dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .current_dir(box_dir)
+            .stdin(std::process::Stdio::null());
+    };
+    let mut cfg = std::process::Command::new("git");
+    base(&mut cfg);
+    let names = cfg
+        .args([
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\.",
+        ])
+        .output()
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+    let mut filters: Vec<String> = Vec::new();
+    for k in names.split(|&b| b == 0) {
+        let k = String::from_utf8_lossy(k);
+        if let Some((n, _)) = k.strip_prefix("filter.").and_then(|r| r.rsplit_once('.')) {
+            for f in ["clean", "smudge", "process"] {
+                filters.extend(["-c".to_string(), format!("filter.{n}.{f}=")]);
+            }
+        }
+    }
+    let mut c = std::process::Command::new("git");
+    base(&mut c);
+    let out = c.args(HOST_HARDEN).args(&filters).args(args).output()?;
+    if !out.status.success() {
+        return Err(Error::Git {
+            args: args.join(" "),
+            code: out.status.code(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+}
+
+/// What a (stopped) box repo holds that the host's `task_branch` does not (13 §6, task
+/// finish): uncommitted or staged changes, untracked files, a detached HEAD, other branches or
+/// stashes whose commits are not reachable from the host branch. Empty = safe to delete.
+/// Ignored files (build output, dependencies) are not work and not reported.
+pub fn box_leftovers(box_dir: &Path, host_repo: &Path, task_branch: &str) -> Vec<String> {
+    let mut why = Vec::new();
+    if let Err(e) = box_git_dir(box_dir) {
+        return vec![e.to_string()];
+    }
+    match box_git(box_dir, &["status", "--porcelain", "--untracked-files=all"]) {
+        Ok(s) if !s.trim().is_empty() => {
+            let n = s.lines().count();
+            let untracked = s.lines().filter(|l| l.starts_with("??")).count();
+            why.push(format!(
+                "{n} uncommitted change(s) in the box ({untracked} untracked)"
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => why.push(format!("box status failed: {e}")),
+    }
+    let on_host = |sha: &str| {
+        git_ok(
+            host_repo,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                sha,
+                &format!("refs/heads/{task_branch}"),
+            ],
+        )
+    };
+    if box_git(box_dir, &["symbolic-ref", "-q", "HEAD"]).is_err() {
+        match box_git(box_dir, &["rev-parse", "--verify", "-q", "HEAD"]) {
+            Ok(sha) if !on_host(&sha) => {
+                why.push(format!("detached HEAD at {sha} is not on the host"))
+            }
+            _ => {}
+        }
+    }
+    match box_git(
+        box_dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads",
+            "refs/stash",
+            "refs/notes",
+            "refs/tags",
+        ],
+    ) {
+        Ok(list) => {
+            for l in list.lines() {
+                let Some((r, sha)) = l.split_once(' ') else {
+                    continue;
+                };
+                if r == "refs/stash" {
+                    why.push("the box has stashed changes".into());
+                } else if !on_host(sha) {
+                    why.push(format!(
+                        "{r} ({}) is not on the host",
+                        &sha[..sha.len().min(12)]
+                    ));
+                }
+            }
+        }
+        Err(e) => why.push(format!("box refs unreadable: {e}")),
+    }
+    why
 }
 
 /// Script run **inside the box** (as the box user) to create the private repo: `git init`,
@@ -200,6 +396,9 @@ pub fn sync_pull(
     force: bool,
 ) -> Result<SyncOutcome> {
     let mirror = mirror_ref(ns, box_branch);
+    if let Some(dir) = &remote.local {
+        box_git_dir(dir)?;
+    }
     let old = rev(repo, &format!("refs/heads/{task_branch}"));
     hardened(
         repo,
@@ -273,18 +472,27 @@ pub fn sync_push(
     let head = rev(repo, &format!("refs/heads/{task_branch}"))
         .ok_or_else(|| Error::Refused(format!("host branch {task_branch} not found")))?;
     let target = host_ref(box_branch);
-    hardened(
-        repo,
-        &[
-            "push",
-            "--quiet",
-            "--no-verify",
-            "--receive-pack",
-            &remote.receive_pack,
-            &remote.url,
-            &format!("+refs/heads/{task_branch}:{target}"),
-        ],
-    )?;
+    match &remote.local {
+        // Stopped box: no `receive-pack` on the host (it would honour the box's
+        // `receive.denyCurrentBranch=updateInstead`, `core.worktree` and filters). The commits
+        // are in the host object store the box borrows through its alternates; only the side
+        // ref needs writing.
+        Some(dir) => write_box_ref(dir, &target, &head)?,
+        None => {
+            hardened(
+                repo,
+                &[
+                    "push",
+                    "--quiet",
+                    "--no-verify",
+                    "--receive-pack",
+                    &remote.receive_pack,
+                    &remote.url,
+                    &format!("+refs/heads/{task_branch}:{target}"),
+                ],
+            )?;
+        }
+    }
     Ok(SyncOutcome {
         direction: "push",
         status: SyncStatus::Pushed,
@@ -643,6 +851,181 @@ mod tests {
         .unwrap();
         assert_eq!(o.status, SyncStatus::FastForwarded);
         assert_eq!(g(&f.repo, &["rev-parse", "refs/heads/u/task"]), c2);
+    }
+
+    fn evil_script(f: &Fixture, marker: &Path) -> String {
+        let p = f.root.join("evil.sh");
+        std::fs::write(&p, format!("#!/bin/sh\ntouch {}\ncat\n", marker.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    /// Review finding 3: a stopped box's repo is hostile input. Pushing a host commit into it
+    /// must not run updateInstead, filters or a foreign `core.worktree` on the host.
+    #[test]
+    fn stopped_box_push_never_runs_receive_pack_machinery() {
+        let f = fixture();
+        let marker = f.root.join("pwned");
+        let evil = evil_script(&f, &marker);
+        // The agent points HEAD at the side ref, asks receive-pack to update the worktree,
+        // installs a clean/smudge filter for every path and redirects the worktree to a host
+        // directory.
+        let victim = f.root.join("victim-dir");
+        std::fs::create_dir_all(&victim).unwrap();
+        g(&f.boxrepo, &["symbolic-ref", "HEAD", &host_ref("u/task")]);
+        for (k, v) in [
+            ("receive.denyCurrentBranch", "updateInstead"),
+            ("filter.evil.clean", evil.as_str()),
+            ("filter.evil.smudge", evil.as_str()),
+            ("filter.evil.required", "true"),
+            ("core.worktree", victim.to_str().unwrap()),
+        ] {
+            g(&f.boxrepo, &["config", k, v]);
+        }
+        std::fs::create_dir_all(f.boxrepo.join(".git/info")).unwrap();
+        std::fs::write(f.boxrepo.join(".git/info/attributes"), "* filter=evil\n").unwrap();
+        // A host commit to push.
+        std::fs::write(f.wt.join("h.txt"), "host").unwrap();
+        g(&f.wt, &["add", "-A"]);
+        g(&f.wt, &["commit", "-q", "-m", "host fix"]);
+        let head = g(&f.wt, &["rev-parse", "HEAD"]);
+        let o = sync_push(&f.repo, &BoxRemote::local(&f.boxrepo), "u/task", "u/task").unwrap();
+        assert_eq!(o.status, SyncStatus::Pushed);
+        assert!(!marker.exists(), "box-controlled code ran on the host");
+        assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+        assert!(
+            !f.boxrepo.join("h.txt").exists(),
+            "worktree updated on the host"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.boxrepo.join(".git/refs/vibeke/host/u/task"))
+                .unwrap()
+                .trim(),
+            head
+        );
+        // A pull from the same hostile repo is just as inert.
+        let _ = sync_pull(
+            &f.repo,
+            &BoxRemote::local(&f.boxrepo),
+            "u/task",
+            "u/task",
+            "T1",
+            false,
+        );
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn stopped_box_ref_write_never_follows_symlinks() {
+        let f = fixture();
+        let outside = f.root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(f.boxrepo.join(".git/refs")).unwrap();
+        std::os::unix::fs::symlink(&outside, f.boxrepo.join(".git/refs/vibeke")).unwrap();
+        let e = sync_push(&f.repo, &BoxRemote::local(&f.boxrepo), "u/task", "u/task");
+        assert!(e.is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        // The final component as a symlink: replaced, the target is untouched.
+        std::fs::remove_file(f.boxrepo.join(".git/refs/vibeke")).unwrap();
+        std::fs::create_dir_all(f.boxrepo.join(".git/refs/vibeke/host/u")).unwrap();
+        let target = outside.join("file");
+        std::fs::write(&target, "keep").unwrap();
+        std::os::unix::fs::symlink(&target, f.boxrepo.join(".git/refs/vibeke/host/u/task"))
+            .unwrap();
+        sync_push(&f.repo, &BoxRemote::local(&f.boxrepo), "u/task", "u/task").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        // A box whose `.git` is a link to some other repo is refused outright.
+        let other = f.root.join("other");
+        std::fs::rename(f.boxrepo.join(".git"), &other).unwrap();
+        std::os::unix::fs::symlink(&other, f.boxrepo.join(".git")).unwrap();
+        assert!(sync_push(&f.repo, &BoxRemote::local(&f.boxrepo), "u/task", "u/task").is_err());
+        assert!(!box_leftovers(&f.boxrepo, &f.repo, "u/task").is_empty());
+    }
+
+    /// Review finding 13: work that is only in the box (index, worktree, untracked files, other
+    /// branches, a detached HEAD, stashes) is reported, so finish keeps the box.
+    #[test]
+    fn leftovers_report_everything_not_on_the_host() {
+        let f = fixture();
+        let synced = |f: &Fixture| {
+            sync_pull(
+                &f.repo,
+                &BoxRemote::local(&f.boxrepo),
+                "u/task",
+                "u/task",
+                "T1",
+                false,
+            )
+            .unwrap()
+        };
+        box_commit(&f, "b.txt");
+        synced(&f);
+        assert_eq!(
+            box_leftovers(&f.boxrepo, &f.repo, "u/task"),
+            Vec::<String>::new()
+        );
+        // Ignored files are not work.
+        std::fs::write(f.boxrepo.join(".gitignore"), "target/\n").unwrap();
+        g(&f.boxrepo, &["add", ".gitignore"]);
+        g(&f.boxrepo, &["commit", "-q", "-m", "ignore"]);
+        synced(&f);
+        std::fs::create_dir_all(f.boxrepo.join("target")).unwrap();
+        std::fs::write(f.boxrepo.join("target/out"), "bin").unwrap();
+        assert!(box_leftovers(&f.boxrepo, &f.repo, "u/task").is_empty());
+
+        // Unstaged, staged and untracked.
+        std::fs::write(f.boxrepo.join("a.txt"), "edited\n").unwrap();
+        let l = box_leftovers(&f.boxrepo, &f.repo, "u/task");
+        assert!(l.iter().any(|x| x.contains("uncommitted")), "{l:?}");
+        g(&f.boxrepo, &["add", "a.txt"]);
+        assert!(!box_leftovers(&f.boxrepo, &f.repo, "u/task").is_empty());
+        g(&f.boxrepo, &["reset", "-q", "--hard"]);
+        std::fs::write(f.boxrepo.join("new.txt"), "untracked\n").unwrap();
+        let l = box_leftovers(&f.boxrepo, &f.repo, "u/task");
+        assert!(l.iter().any(|x| x.contains("1 untracked")), "{l:?}");
+        std::fs::remove_file(f.boxrepo.join("new.txt")).unwrap();
+        assert!(box_leftovers(&f.boxrepo, &f.repo, "u/task").is_empty());
+
+        // Another branch with its own commit.
+        g(&f.boxrepo, &["checkout", "-q", "-b", "side"]);
+        box_commit(&f, "side.txt");
+        g(&f.boxrepo, &["checkout", "-q", "u/task"]);
+        let l = box_leftovers(&f.boxrepo, &f.repo, "u/task");
+        assert!(l.iter().any(|x| x.contains("refs/heads/side")), "{l:?}");
+        g(&f.boxrepo, &["branch", "-q", "-D", "side"]);
+        assert!(box_leftovers(&f.boxrepo, &f.repo, "u/task").is_empty());
+
+        // A detached HEAD with a new commit.
+        g(&f.boxrepo, &["checkout", "-q", "--detach"]);
+        box_commit(&f, "detached.txt");
+        let l = box_leftovers(&f.boxrepo, &f.repo, "u/task");
+        assert!(l.iter().any(|x| x.contains("detached")), "{l:?}");
+        g(&f.boxrepo, &["checkout", "-q", "u/task"]);
+
+        // A stash.
+        std::fs::write(f.boxrepo.join("a.txt"), "stash me\n").unwrap();
+        g(&f.boxrepo, &["stash", "-q"]);
+        let l = box_leftovers(&f.boxrepo, &f.repo, "u/task");
+        assert!(l.iter().any(|x| x.contains("stash")), "{l:?}");
+    }
+
+    #[test]
+    fn leftovers_check_runs_no_box_code() {
+        let f = fixture();
+        let marker = f.root.join("pwned");
+        let evil = evil_script(&f, &marker);
+        g(&f.boxrepo, &["config", "filter.evil.clean", &evil]);
+        g(&f.boxrepo, &["config", "core.fsmonitor", &evil]);
+        g(
+            &f.boxrepo,
+            &["config", "core.worktree", f.root.to_str().unwrap()],
+        );
+        std::fs::write(f.boxrepo.join(".gitattributes"), "* filter=evil\n").unwrap();
+        std::fs::write(f.boxrepo.join("a.txt"), "dirty\n").unwrap();
+        let l = box_leftovers(&f.boxrepo, &f.repo, "u/task");
+        assert!(!l.is_empty());
+        assert!(!marker.exists(), "box filter/fsmonitor ran on the host");
     }
 
     #[test]

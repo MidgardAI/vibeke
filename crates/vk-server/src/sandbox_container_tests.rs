@@ -195,7 +195,7 @@ async fn container_task_box_clone_sync_and_teardown() {
     );
     let sock =
         container::run_dir(task).join(format!("{}.sock", vk_sandbox::runner::short_id(&pane)));
-    for _ in 0..50 {
+    for _ in 0..250 {
         if sock.exists() {
             break;
         }
@@ -349,6 +349,118 @@ async fn unsynced_box_is_kept_on_finish() {
     assert!(e.all_events_json().contains("unsynced_kept"));
 }
 
+/// Review finding 13: a box whose branch is synced but which still has uncommitted or untracked
+/// work is stopped and kept, never removed.
+#[tokio::test]
+async fn uncommitted_box_work_is_kept_on_finish() {
+    let e = Env::new();
+    let task = "ctask01JABCDEFGHJKMNPQRS8";
+    let wt = worktree(&e, "c8");
+    let boxdir = sbx_root(task).join("workspace");
+    let fake = fake_runtime(&e.root, &boxdir);
+    e.server.sandbox.set_container_runtime(fake.cli.clone());
+    e.task_with_pane(task, container_iso());
+    prepare_box(
+        &e.server,
+        task,
+        Some(task),
+        &wt,
+        container_req(NetworkProfile::None),
+    )
+    .await
+    .unwrap();
+    // The branch tip matches the host (nothing to pull), but the agent left work uncommitted.
+    std::fs::write(boxdir.join("notes.md"), "untracked work").unwrap();
+    std::fs::write(boxdir.join("README"), "edited, not committed\n").unwrap();
+    teardown(&e.server, task);
+    for _ in 0..200 {
+        if e.all_events_json().contains("sandbox.destroyed") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let log = log_of(&fake);
+    assert!(log.contains("stop --time 5"), "{log}");
+    assert!(!log.contains("rm --force"), "{log}");
+    assert!(boxdir.join("notes.md").is_file(), "box clone kept");
+    let ev = e.all_events_json();
+    assert!(ev.contains("unsynced_kept"), "{ev}");
+    assert!(ev.contains("uncommitted change"), "{ev}");
+    for _ in 0..100 {
+        if e.server.sandbox.get(task).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        e.server.sandbox.get(task).is_some(),
+        "kept box stays listed"
+    );
+}
+
+/// Review findings 2 and 9 (container side): worktree mode never gives the box a writable
+/// `.git` (regular or linked checkout) or writable git-executed files, credential files are
+/// read-only mounts, and host git in that checkout runs hardened.
+#[tokio::test]
+async fn worktree_mode_protects_git_metadata_and_credentials() {
+    let e = Env::new();
+    let wt = worktree(&e, "c9");
+    git(&e.checkout, &["config", "core.hooksPath", ".githooks"]);
+    std::fs::create_dir_all(wt.join(".githooks")).unwrap();
+    std::fs::write(wt.join(".githooks/pre-commit"), "#!/bin/sh\n").unwrap();
+    for (task, co) in [
+        ("ctask01JABCDEFGHJKMNPQRS9", wt.clone()),
+        (
+            "ctask01JABCDEFGHJKMNPQRSA",
+            e.checkout.canonicalize().unwrap(),
+        ),
+    ] {
+        let fake = fake_runtime(&e.root.join(task), &sbx_root(task).join("workspace"));
+        e.server.sandbox.set_container_runtime(fake.cli.clone());
+        e.task_with_pane(task, container_iso());
+        let mut r = container_req(NetworkProfile::None);
+        r.code = Some("worktree".into());
+        r.harnesses = vec!["codex".into()];
+        prepare_box(&e.server, task, Some(task), &co, r)
+            .await
+            .unwrap();
+        let run = log_of(&fake)
+            .lines()
+            .find(|l| l.starts_with("run --detach"))
+            .unwrap()
+            .to_string();
+        let d = co.display();
+        assert!(run.contains(&format!("--volume {d}:{d} ")), "{run}");
+        assert!(
+            run.contains(&format!("--volume {d}/.git:{d}/.git:ro")),
+            "{run}"
+        );
+        if co == wt {
+            assert!(
+                run.contains(&format!("--volume {d}/.githooks:{d}/.githooks:ro")),
+                "{run}"
+            );
+        }
+        let auth = sbx_root(task).join("shared/home/codex/auth.json");
+        assert!(
+            run.contains(&format!(
+                "--volume {}:/vibeke/creds/home/codex/auth.json:ro",
+                auth.display()
+            )),
+            "{run}"
+        );
+        assert!(vk_tasks::is_contained(&co));
+        teardown(&e.server, task);
+        for _ in 0..200 {
+            if !vk_tasks::is_contained(&co) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!vk_tasks::is_contained(&co), "released after removal");
+    }
+}
+
 #[tokio::test]
 async fn container_proxy_profile_and_in_box_binary() {
     let e = Env::new();
@@ -426,9 +538,13 @@ async fn devcontainer_configures_the_box_and_waits_for_trust() {
           "containerEnv": {"FOO": "bar"},
           "postCreateCommand": "touch /workspace/.post-created",
           "mounts": ["source=vk-test-cache,target=/cache,type=volume",
-                     "source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind"],
+                     "source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind",
+                     "type=volume,source=HOSTHOME,target=/host",
+                     "type=volume,source=/var/run/docker.sock,target=/var/run/docker.sock",
+                     "type=volume,source=../escape,target=/escape"],
           "runArgs": ["--privileged"],
-        }"#,
+        }"#
+        .replace("HOSTHOME", &e.root.join("home").to_string_lossy()),
     )
     .unwrap();
     git(&e.checkout, &["add", "-A"]);
@@ -450,11 +566,19 @@ async fn devcontainer_configures_the_box_and_waits_for_trust() {
         .to_string();
     assert!(run.contains("--user node"), "{run}");
     assert!(run.contains("--env FOO=bar"));
-    assert!(run.contains("--volume vk-test-cache:/cache"));
+    // Named volumes are namespaced per task (no reaching other tasks' or the user's volumes).
+    assert!(run.contains(&format!(
+        "--volume vk-{}-vk-test-cache:/cache",
+        vk_sandbox::runner::short_id(task)
+    )));
     assert!(
         !run.contains(".ssh"),
         "host bind mounts from a repo file are refused"
     );
+    // Absolute paths, sockets and relative paths disguised as volumes never reach the runtime.
+    assert!(!run.contains(":/host"), "{run}");
+    assert!(!run.contains("docker.sock"), "{run}");
+    assert!(!run.contains("escape"), "{run}");
     assert!(!run.contains("privileged"));
     assert!(run.contains(" alpine:3.20 "));
     let BoxRunner::Container(c) = &b.runner else {

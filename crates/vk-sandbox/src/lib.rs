@@ -12,6 +12,8 @@ pub mod creds;
 pub mod devcontainer;
 pub mod env;
 pub mod exec;
+pub mod fsafe;
+pub mod gitexec;
 pub mod linux;
 pub mod net;
 pub mod policy;
