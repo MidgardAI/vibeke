@@ -1288,7 +1288,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vibeke"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "vk-agents"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "vk-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "vk-compat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "vk-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "notify",
  "regex",
@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "vk-hold"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "hmac",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "vk-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "postcard",
  "serde",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "vk-redact"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "regex",
  "serde_json",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "vk-remote"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -1417,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "vk-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1446,7 +1446,7 @@ dependencies = [
 
 [[package]]
 name = "vk-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "rand",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "vk-tasks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "serde",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "vk-term"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1485,7 +1485,7 @@ dependencies = [
 
 [[package]]
 name = "vk-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",

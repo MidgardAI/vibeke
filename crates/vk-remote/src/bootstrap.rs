@@ -129,7 +129,7 @@ cd {d}
 if command -v sha256sum >/dev/null 2>&1; then echo "{sha}  vibeke.tmp" | sha256sum -c - >/dev/null
 else echo "{sha}  vibeke.tmp" | shasum -a 256 -c - >/dev/null; fi
 chmod 755 vibeke.tmp && mv vibeke.tmp vibeke
-cd ~/.local/share/vibeke && ln -sfn versions/{v} current.tmp && mv -f current.tmp current 2>/dev/null || {{ rm -f current; mv current.tmp current; }}
+cd ~/.local/share/vibeke && rm -f current.tmp && ln -sfn versions/{v} current
 mkdir -p ~/.local/bin && ln -sfn ~/.local/share/vibeke/current/vibeke ~/.local/bin/vibeke
 # keep the last 2 versions
 ls -1t versions | tail -n +3 | while read old; do [ "$old" = "{v}" ] || rm -rf "versions/$old"; done
