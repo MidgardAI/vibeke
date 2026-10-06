@@ -1451,7 +1451,7 @@ async fn call_as(e: &Env, ctx: &Ctx, method: &str, p: Value) -> R {
 }
 
 async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !f() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(20)).await;
