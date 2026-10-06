@@ -48,14 +48,16 @@ See [releases and reproducible builds](reference/releases.md).
 
 The installer writes the binary to `~/.local/share/vibeke/versions/<v>/vibeke`. It creates links at `~/.local/share/vibeke/current` and `~/.local/bin/vibeke`.
 
-The installer does not use `sudo`. It writes only inside `$HOME`. It checks the binary against `SHA256SUMS` before installation.
+The installer does not use `sudo`. It writes only inside `$HOME`. It verifies the minisign signature of `SHA256SUMS` against the embedded release keys, then checks the binary against `SHA256SUMS`, before it installs anything. This needs the `minisign` tool (`brew install minisign`). The release keys and their key ids are listed in [release verification](reference/releases.md).
 
-Release signatures are not available yet. See [release verification](reference/releases.md) for the limits of checksum checks.
+While the release repository is private, set `GITHUB_TOKEN` (or `VIBEKE_GITHUB_TOKEN`) to a token with read access. The installer then downloads through the GitHub API and never prints the token. Public releases need no token.
 
 | Variable | Purpose |
 | --- | --- |
 | `VIBEKE_VERSION` | Select the release version. |
-| `VIBEKE_RELEASE_URL` | Set the base URL for binaries and `SHA256SUMS`. |
+| `VIBEKE_RELEASE_URL` | Set the base URL for binaries, `SHA256SUMS` and `SHA256SUMS.minisig`. |
+| `GITHUB_TOKEN`, `VIBEKE_GITHUB_TOKEN` | Read a private release repository. Not needed for public releases. |
+| `VIBEKE_ALLOW_UNSIGNED` | Set to `1` to accept an unsigned release for development. The checksum must still match. |
 | `VIBEKE_INSTALL_FROM` | Use a local directory for offline installation. |
 
 ## Check the installation

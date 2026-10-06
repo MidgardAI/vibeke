@@ -9,10 +9,11 @@
 //! The loader (`vk_agents::manifest::load`) strips process-spawning fields and unattested
 //! capability rows from remote manifests.
 //!
-//! Signature verification follows `vk-remote::bootstrap::verify_signature`: no Ed25519
-//! implementation is in the workspace and no release key exists yet, so verification always
-//! fails and an update is refused unless the user opts in to unsigned development indexes with
-//! `VIBEKE_ALLOW_UNSIGNED_MANIFESTS=1` (sha256 and serial checks still apply).
+//! The index must carry a minisign signature (`<index>.minisig`) by one of the embedded release
+//! keys (`vk_remote::bootstrap::TRUSTED_KEYS`, current + next: the channel has no key of its
+//! own). An unsigned or wrongly signed index is refused unless the user opts in to unsigned
+//! development indexes with `VIBEKE_ALLOW_UNSIGNED_MANIFESTS=1` (sha256 and serial checks still
+//! apply).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,15 +22,20 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_URL: &str = "https://manifests.vibeke.dev/v1/stable/index.json";
 
-/// Minisign public keys trusted to sign the index (two slots for rotation). None exist yet.
-pub const TRUSTED_KEYS: &[&str] = &[];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelError {
     Disabled,
-    NoTrustedKeys,
-    Rollback { have: u64, got: u64 },
-    Checksum { id: String },
+    /// The index has no `.minisig` next to it.
+    Unsigned,
+    /// The signature is missing a trusted key or does not verify.
+    BadSignature(String),
+    Rollback {
+        have: u64,
+        got: u64,
+    },
+    Checksum {
+        id: String,
+    },
     Fetch(String),
     Invalid(String),
 }
@@ -40,9 +46,15 @@ impl std::fmt::Display for ChannelError {
             ChannelError::Disabled => {
                 write!(f, "manifest channel disabled (VIBEKE_MANIFEST_CHANNEL=0)")
             }
-            ChannelError::NoTrustedKeys => write!(
+            ChannelError::Unsigned => write!(
                 f,
-                "this build embeds no manifest signing keys (none exist yet); refusing the unsigned index \
+                "the manifest index is not signed (no .minisig); expected a signature by {}; refusing \
+                 (VIBEKE_ALLOW_UNSIGNED_MANIFESTS=1 accepts it for development)",
+                vk_remote::bootstrap::expected_keys_hint()
+            ),
+            ChannelError::BadSignature(e) => write!(
+                f,
+                "the manifest index signature is not valid: {e}; refusing \
                  (VIBEKE_ALLOW_UNSIGNED_MANIFESTS=1 accepts it for development)"
             ),
             ChannelError::Rollback { have, got } => {
@@ -119,13 +131,22 @@ pub fn cached_dir() -> Option<(PathBuf, u64)> {
     dir.is_dir().then_some((dir, st.serial))
 }
 
-/// Same contract as `vk-remote::bootstrap::verify_signature`: refuses while no key exists.
-pub fn verify_signature(_index: &[u8], _sig: Option<&[u8]>) -> Result<(), ChannelError> {
-    if TRUSTED_KEYS.is_empty() {
-        return Err(ChannelError::NoTrustedKeys);
-    }
-    // Unreachable until release keys and an Ed25519 verifier land.
-    Err(ChannelError::NoTrustedKeys)
+/// Verify the index signature against `keys` (the embedded release keys in production).
+pub fn verify_signature_with(
+    keys: &[String],
+    index: &[u8],
+    sig: Option<&[u8]>,
+) -> Result<(), ChannelError> {
+    let sig = sig.ok_or(ChannelError::Unsigned)?;
+    let sig = String::from_utf8_lossy(sig);
+    vk_remote::bootstrap::verify_signature_bytes(keys, index, &sig)
+        .map(|_| ())
+        .map_err(|e| ChannelError::BadSignature(e.to_string()))
+}
+
+/// [`verify_signature_with`] against the embedded release keys (current and next).
+pub fn verify_signature(index: &[u8], sig: Option<&[u8]>) -> Result<(), ChannelError> {
+    verify_signature_with(&vk_remote::bootstrap::trusted_keys(), index, sig)
 }
 
 pub fn allow_unsigned_env() -> bool {
@@ -176,13 +197,18 @@ fn version_ok(e: &IndexEntry) -> bool {
 
 /// Fetch, verify and install the remote manifests into `root` (`<state>/manifests` normally).
 pub fn update(url: &str, root: &Path) -> Result<Report, ChannelError> {
+    update_with(url, root, &vk_remote::bootstrap::trusted_keys())
+}
+
+/// [`update`] against explicit trusted `keys` (tests use a throwaway key).
+pub fn update_with(url: &str, root: &Path, keys: &[String]) -> Result<Report, ChannelError> {
     if std::env::var("VIBEKE_MANIFEST_CHANNEL").is_ok_and(|v| v == "0") {
         return Err(ChannelError::Disabled);
     }
     let index_bytes = fetch(url)?;
     let sig = fetch(&format!("{url}.minisig")).ok();
     let mut report = Report::default();
-    match verify_signature(&index_bytes, sig.as_deref()) {
+    match verify_signature_with(keys, &index_bytes, sig.as_deref()) {
         Ok(()) => {}
         Err(_) if allow_unsigned_env() => {
             report.unsigned = true;
@@ -316,10 +342,10 @@ mod tests {
         let url = publish(srv.path(), 3, body, false);
         // SAFETY: test-only env mutation, serialized by ENV.
         unsafe { std::env::remove_var("VIBEKE_ALLOW_UNSIGNED_MANIFESTS") };
-        assert_eq!(
-            update(&url, root.path()).unwrap_err(),
-            ChannelError::NoTrustedKeys
-        );
+        // No signature: refused, and the message names the expected key ids.
+        let e = update(&url, root.path()).unwrap_err();
+        assert_eq!(e, ChannelError::Unsigned);
+        assert!(e.to_string().contains("5F6E09C78F555F34"), "{e}");
         assert!(
             read_state(root.path()).is_none(),
             "nothing cached without a signature"
@@ -354,6 +380,46 @@ mod tests {
         assert!(matches!(
             fetch("http://example.com/x"),
             Err(ChannelError::Fetch(_))
+        ));
+    }
+
+    #[test]
+    fn signed_index_accepted_only_with_a_trusted_key() {
+        use vk_remote::minisign::testing;
+        let _g = ENV.lock().unwrap();
+        // SAFETY: test-only env mutation, serialized by ENV.
+        unsafe { std::env::remove_var("VIBEKE_ALLOW_UNSIGNED_MANIFESTS") };
+        let srv = tempfile::tempdir().unwrap();
+        let body =
+            "id = \"gemini\"\n[[screen.rules]]\nid = \"x\"\nstate = \"working\"\nany = ['busy']\n";
+        let url = publish(srv.path(), 1, body, false);
+        let index = std::fs::read(srv.path().join("index.json")).unwrap();
+        let sig = testing::sign(&index, "timestamp:1 file:index.json");
+        std::fs::write(srv.path().join("index.json.minisig"), &sig).unwrap();
+        let keys = vec![testing::public_key_b64()];
+
+        // The real embedded keys refuse a signature by another key (and name themselves).
+        let root = tempfile::tempdir().unwrap();
+        let e = update(&url, root.path()).unwrap_err();
+        assert!(matches!(e, ChannelError::BadSignature(_)), "{e}");
+        assert!(e.to_string().contains("69536A23D04E2C7C"), "{e}");
+        assert!(read_state(root.path()).is_none());
+
+        // A trusted key accepts it; the state records a verified signature.
+        let r = update_with(&url, root.path(), &keys).unwrap();
+        assert!(!r.unsigned);
+        assert_eq!(read_state(root.path()).unwrap().verified, "signature");
+
+        // A tampered index no longer verifies.
+        let root2 = tempfile::tempdir().unwrap();
+        std::fs::write(
+            srv.path().join("index.json"),
+            String::from_utf8_lossy(&index).replace("\"serial\":1", "\"serial\":9"),
+        )
+        .unwrap();
+        assert!(matches!(
+            update_with(&url, root2.path(), &keys),
+            Err(ChannelError::BadSignature(_))
         ));
     }
 }

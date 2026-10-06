@@ -313,7 +313,7 @@ fn upgrade_stages_verifies_and_switches_only_the_fake_home() {
     );
     assert!(!home.join("versions/9.9.9").exists());
 
-    // Unsigned without the opt-in: refused (no release keys exist yet).
+    // Unsigned without the opt-in: refused (the signature is mandatory; no signed fixture here).
     let good = artifact(&arts, "9.9.9", true);
     let (ok, _, err) = e.run(&[
         "machine",

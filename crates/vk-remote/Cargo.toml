@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Expose `minisign::testing` (a deterministic, public test key) to other crates' tests.
+testing = []
+
 [dependencies]
 vk-proto = { workspace = true }
 tokio.workspace = true
