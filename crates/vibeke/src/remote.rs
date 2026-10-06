@@ -48,8 +48,28 @@ fn target_for(cfg: &vk_config::Config, host: &str) -> Target {
 
 /// Locally available artifact for a remote target (`linux-x86_64`, `linux-aarch64`, …):
 /// `$VIBEKE_ARTIFACT_DIR` or `~/.cache/vibeke/releases/<version>/vibeke-<target>` with a
-/// `.sha256` sidecar; the running binary itself when the remote matches this platform.
+/// `.sha256` sidecar or `SHA256SUMS`. An artifact is returned only if its checksum comes from
+/// such a file and it is signed or `VIBEKE_ALLOW_UNSIGNED=1` is set; the running binary itself
+/// (when the remote matches this platform) is offered only with that opt-in.
 pub fn artifact_for(target: &str) -> Option<Artifact> {
+    artifact_for_with(target, bootstrap::allow_unsigned_env())
+}
+
+/// Session names reach remote shell commands and file names: `[A-Za-z0-9_.-]{1,64}`.
+pub fn valid_session_name(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+}
+
+fn check_session(s: &str) -> anyhow::Result<()> {
+    if !valid_session_name(s) {
+        anyhow::bail!("invalid session name {s:?}: use 1-64 characters from [A-Za-z0-9_.-]");
+    }
+    Ok(())
+}
+
+fn artifact_for_with(target: &str, allow_unsigned: bool) -> Option<Artifact> {
     let version = vk_proto::VERSION.to_string();
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("VIBEKE_ARTIFACT_DIR") {
@@ -63,15 +83,15 @@ pub fn artifact_for(target: &str) -> Option<Artifact> {
     for d in dirs {
         let p = d.join(format!("vibeke-{target}"));
         if p.exists() {
-            let sha = std::fs::read_to_string(p.with_extension("sha256"))
-                .ok()
-                .and_then(|s| s.split_whitespace().next().map(str::to_string))
-                .or_else(|| bootstrap::sha256_file(&p).ok())?;
-            return Some(Artifact {
-                path: p,
-                sha256: sha,
-                version,
-            });
+            // The expected checksum comes from a file next to the artifact, never from the
+            // artifact itself; a candidate that fails the trust check is skipped.
+            match bootstrap::load_artifact(p.clone(), version.clone(), allow_unsigned) {
+                Ok(a) => return Some(a),
+                Err(e) => {
+                    tracing::warn!("ignoring artifact {}: {e:#}", p.display());
+                    continue;
+                }
+            }
         }
     }
     let here = format!(
@@ -83,14 +103,9 @@ pub fn artifact_for(target: &str) -> Option<Artifact> {
         },
         std::env::consts::ARCH
     );
-    if here == target && cfg!(target_env = "musl") {
+    if allow_unsigned && here == target && cfg!(target_env = "musl") {
         let exe = std::env::current_exe().ok()?;
-        let sha = bootstrap::sha256_file(&exe).ok()?;
-        return Some(Artifact {
-            path: exe,
-            sha256: sha,
-            version,
-        });
+        return bootstrap::load_self_artifact(exe, version, true).ok();
     }
     None
 }
@@ -113,6 +128,7 @@ impl Link {
     }
 
     pub async fn open(&self) -> anyhow::Result<tokio::io::DuplexStream> {
+        check_session(&self.session)?;
         let mut g = self.mux.lock().await;
         if g.as_ref().is_none_or(|(m, _)| m.is_closed()) {
             let (m, child) = tokio::time::timeout(
@@ -178,6 +194,10 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         eprintln!("vibeke ssh <host|label> [--upgrade] [--no-local]");
         return EXIT_USAGE;
     };
+    if let Err(e) = check_session(&g.session) {
+        eprintln!("vibeke: {e:#}");
+        return EXIT_USAGE;
+    }
     let upgrade = args.iter().any(|a| a == "--upgrade" || a == "--yes");
     let cfg = crate::commands::load_config();
     let target = target_for(&cfg, host);
@@ -196,6 +216,14 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         }
     };
     let artifact = artifact_for(&probe.target());
+    if let Some(a) = &artifact
+        && a.trust != bootstrap::Trust::Signed
+    {
+        eprintln!(
+            "vibeke: {}",
+            bootstrap::unsigned_warning(&a.path, &a.sha256)
+        );
+    }
     match bootstrap::ensure(&target, &probe, artifact.as_ref(), upgrade || auto_upgrade).await {
         Ok(bootstrap::Outcome::AlreadyCurrent) => {}
         Ok(o) => {
@@ -213,7 +241,7 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
                         &format!(
                             "{} server restart --session {}",
                             vk_remote::ssh::sh_quote(bootstrap::REMOTE_BIN),
-                            g.session
+                            vk_remote::ssh::sh_quote(&g.session)
                         ),
                         None,
                     )
@@ -258,6 +286,7 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
 
 /// Connection for `--machine` CLI forwarding: a channel to the remote server; no local fallback.
 pub async fn machine_stream(g: &Global, machine: &str) -> anyhow::Result<tokio::io::DuplexStream> {
+    check_session(&g.session)?;
     let cfg = crate::commands::load_config();
     let target = target_for(&cfg, machine);
     let link = Link::new(target, &g.session);
@@ -391,6 +420,31 @@ pub fn machine_cmd(_g: &Global, args: &[String]) -> i32 {
         _ => {
             eprintln!("vibeke machine list|add|remove|status");
             EXIT_USAGE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_names_are_validated() {
+        for ok in ["default", "a.b-c_d", "x", &"a".repeat(64)] {
+            assert!(valid_session_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "a b",
+            "a;rm -rf ~",
+            "$(id)",
+            "a'b",
+            "a/b",
+            "a\nb",
+            &"a".repeat(65),
+        ] {
+            assert!(!valid_session_name(bad), "{bad:?}");
+            assert!(check_session(bad).is_err());
         }
     }
 }

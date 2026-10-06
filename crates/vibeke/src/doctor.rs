@@ -1032,28 +1032,11 @@ pub fn switch_current(l: &Layout, v: &str) -> std::io::Result<Option<String>> {
     Ok(prev)
 }
 
+#[cfg(test)]
 fn sidecar(p: &Path) -> PathBuf {
     let mut s = p.as_os_str().to_owned();
     s.push(".sha256");
     PathBuf::from(s)
-}
-
-/// Verify against the `.sha256` sidecar when present. `Ok(true)` = verified.
-fn verify_sidecar(p: &Path) -> Result<bool, String> {
-    let sc = sidecar(p);
-    let Ok(text) = std::fs::read_to_string(&sc) else {
-        return Ok(false);
-    };
-    let want = text.split_whitespace().next().unwrap_or("").to_lowercase();
-    let got = vk_remote::bootstrap::sha256_file(p).map_err(|e| format!("{e:#}"))?;
-    if want == got {
-        Ok(true)
-    } else {
-        Err(format!(
-            "checksum mismatch for {} (sidecar {want}, actual {got})",
-            p.display()
-        ))
-    }
 }
 
 async fn binary_version(p: &Path) -> Option<String> {
@@ -1256,6 +1239,11 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
                 eprintln!("{} is not a file", p.display());
                 return EXIT_USAGE;
             }
+            // Nothing from the candidate is executed until its checksum (and signature or
+            // the explicit opt-in) has been verified.
+            if let Err(code) = verify_candidate(&p) {
+                return code;
+            }
             match binary_version(&p).await {
                 Some(v) => (p, v),
                 None => {
@@ -1267,8 +1255,14 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
                 }
             }
         }
+        // The version of a cached artifact is its directory name; nothing is executed.
         None => match newest_cached(&releases_root(), &target) {
-            Some((v, p)) => (p, v),
+            Some((v, p)) => {
+                if let Err(code) = verify_candidate(&p) {
+                    return code;
+                }
+                (p, v)
+            }
             None => {
                 println!("vibeke {}", vk_proto::VERSION);
                 println!(
@@ -1304,17 +1298,6 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         );
         return EXIT_OK;
     }
-    match verify_sidecar(&cand_path) {
-        Ok(true) => println!("sha256 verified against {}", sidecar(&cand_path).display()),
-        Ok(false) => eprintln!(
-            "warning: no .sha256 sidecar next to {}; installing unverified",
-            cand_path.display()
-        ),
-        Err(e) => {
-            eprintln!("{e}");
-            return EXIT_API;
-        }
-    }
     if let Err(e) = install_version(&layout, &cand_version, &cand_path) {
         eprintln!("install {cand_version}: {e}");
         return EXIT_API;
@@ -1331,6 +1314,25 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         }
     }
     finish_restart(g, &layout).await
+}
+
+/// Check the candidate's checksum and signature/opt-in before anything else touches it.
+fn verify_candidate(p: &Path) -> Result<(), i32> {
+    let allow = vk_remote::bootstrap::allow_unsigned_env();
+    match vk_remote::bootstrap::trust_artifact(p, allow) {
+        Ok((sha, trust)) => {
+            if trust == vk_remote::bootstrap::Trust::Signed {
+                println!("sha256 {sha} verified; SHA256SUMS signature verified");
+            } else {
+                eprintln!("{}", vk_remote::bootstrap::unsigned_warning(p, &sha));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{e:#}");
+            Err(EXIT_API)
+        }
+    }
 }
 
 async fn finish_restart(g: &Global, layout: &Layout) -> i32 {
@@ -1469,15 +1471,18 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_verification() {
+    fn candidate_requires_checksum_and_opt_in() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("vibeke-linux-x86_64");
-        std::fs::write(&f, b"bin").unwrap();
-        assert_eq!(verify_sidecar(&f), Ok(false));
+        std::fs::write(&f, b"#!/bin/sh\ntouch executed\n").unwrap();
+        // No sidecar: refused even with the opt-in (the checksum is never self-derived).
+        assert!(vk_remote::bootstrap::trust_artifact(&f, true).is_err());
         let sha = vk_remote::bootstrap::sha256_file(&f).unwrap();
         std::fs::write(sidecar(&f), format!("{sha}  vibeke-linux-x86_64\n")).unwrap();
-        assert_eq!(verify_sidecar(&f), Ok(true));
+        assert!(vk_remote::bootstrap::trust_artifact(&f, false).is_err());
+        assert!(vk_remote::bootstrap::trust_artifact(&f, true).is_ok());
         std::fs::write(sidecar(&f), "00  x\n").unwrap();
-        assert!(verify_sidecar(&f).is_err());
+        assert!(vk_remote::bootstrap::trust_artifact(&f, true).is_err());
+        assert!(!d.path().join("executed").exists());
     }
 }

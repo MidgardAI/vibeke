@@ -23,16 +23,37 @@ for linking.
 
 ## Integrity today
 
-Checksums only. They catch corruption and a wrong or truncated download; they do not prove who
-built the file, because anyone who can replace the binary can replace `SHA256SUMS` next to it.
-Consumers verify like this:
+No release key exists yet, so nothing is cryptographically signed and this build embeds no trusted
+keys (`vk_remote::bootstrap::TRUSTED_KEYS` is empty; `verify_signature()` returns
+`NoTrustedKeys`). What is verified:
 
+1. **The expected checksum comes from a file next to the artifact, never from the artifact.** For
+   `vibeke-<target>` that is its entry in `SHA256SUMS` in the same directory, else the
+   `vibeke-<target>.sha256` sidecar. No checksum file means the artifact is refused, even with the
+   opt-in below. The artifact's actual sha256 must equal it.
+2. **Signature or explicit opt-in.** An artifact is accepted only if `SHA256SUMS.minisig` verifies
+   against a public key embedded in the binary (not possible until a release key exists), or the
+   user sets `VIBEKE_ALLOW_UNSIGNED=1`. With the opt-in, a loud warning naming the artifact and its
+   sha256 is printed. A sidecar checksum is never covered by a signature, so sidecar-only
+   artifacts always need the opt-in.
+
+Consumers:
+
+- `vibeke ssh` applies both checks to the local artifact (`~/.cache/vibeke/releases/<v>/` or
+  `$VIBEKE_ARTIFACT_DIR`); one that fails is ignored. Pushing the running binary itself (when the
+  remote matches this platform) also requires `VIBEKE_ALLOW_UNSIGNED=1`; since no external checksum
+  exists for it, its hash only protects the transfer. The remote re-checks the sha256 of the
+  uploaded file before switching `current`, and keeps the previous version on mismatch. The switch
+  is `ln -s versions/<v> current.new && mv -Tf current.new current` (atomic rename) where `mv -T`
+  works (GNU coreutils, modern busybox); otherwise it falls back to `ln -sfn`, which is not atomic.
+- `vibeke update` (cached artifact or `--from`) applies both checks before anything else, and
+  never executes the candidate (`--version`) until they pass. A cached artifact's version is its
+  directory name; for `--from` it is read from the verified binary.
 - `scripts/install.sh` verifies the downloaded binary against `SHA256SUMS` before installing.
-- `vibeke ssh` verifies the artifact locally, uploads it, and re-checks the sha256 on the remote
-  before the atomic switch of the `current` symlink.
-- `vibeke update` verifies the `.sha256` sidecar when one exists.
 
-Builds made on your own machine are trusted by their local checksum.
+These checks catch corruption, truncation and a swapped binary next to an untouched checksum file.
+They do not prove who built the file: anyone who can replace both the binary and `SHA256SUMS` in
+the directory can pass the opt-in path, which is why it is opt-in and loud.
 
 ## Signing (release CI, not implemented yet)
 
@@ -57,7 +78,7 @@ Key handling:
 Verifier behavior once signing exists: the installer and `vibeke update` verify
 `SHA256SUMS.minisig` with the embedded public key, then verify the binary against `SHA256SUMS`.
 A missing signature is an error for downloaded releases; locally built artifacts without a
-signature keep working through the sidecar check.
+signature need `VIBEKE_ALLOW_UNSIGNED=1` and a checksum file next to them.
 
 Until the workflow and key exist, nothing in this repository claims releases are signed.
 
