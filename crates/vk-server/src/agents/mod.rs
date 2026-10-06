@@ -77,6 +77,9 @@ struct Gate {
 
 #[derive(Default)]
 struct Inner {
+    /// Screen dialogs first seen while a structured transport is healthy: (fingerprint, when).
+    /// The structured transport gets a grace period to report the same dialog natively.
+    screen_grace: HashMap<String, (String, Instant)>,
     /// harness id → detected version (one `--version` per server lifetime).
     versions: HashMap<String, Option<String>>,
     gates: HashMap<String, Gate>,
@@ -86,6 +89,8 @@ struct Inner {
     policy: Vec<vk_config::PolicyRule>,
     resume_mode: String,
 }
+
+const SCREEN_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct Agents {
@@ -433,6 +438,29 @@ impl Agents {
                 .find(|i| i.pane == pane && i.status == InteractionStatus::Open)
                 .cloned()
         });
+        // §2.5 rule 3: with a healthy structured transport, a screen dialog only becomes an
+        // interaction if the transport hasn't reported one within the grace period.
+        if structured && let (Some(d), None) = (&m.dialog, &open_screen) {
+            let mut i = self.inner.lock().unwrap();
+            let fresh = match i.screen_grace.get(pane) {
+                Some((fp, at)) if *fp == d.fingerprint => at.elapsed() < SCREEN_GRACE,
+                _ => {
+                    i.screen_grace
+                        .insert(pane.to_string(), (d.fingerprint.clone(), Instant::now()));
+                    let (srv, pane2) = (server.clone(), pane.to_string());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(SCREEN_GRACE + Duration::from_millis(150)).await;
+                        srv.agents.on_screen(&srv, &pane2);
+                    });
+                    true
+                }
+            };
+            if fresh {
+                return;
+            }
+        } else if m.dialog.is_none() {
+            self.inner.lock().unwrap().screen_grace.remove(pane);
+        }
         match (&m.dialog, open_screen) {
             (Some(d), None) => {
                 // Provisional interaction from the screen (§2.5 rule 3); raise disagreement if
