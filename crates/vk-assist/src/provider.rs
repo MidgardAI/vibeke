@@ -4,7 +4,10 @@
 //! Transport rules: redirects are never followed (credentials never travel cross-origin),
 //! certificate validation is never disabled, bodies are bounded, provider response bodies
 //! never reach error messages (they could echo content). At most one retry, only for a 429
-//! before any content, honouring `Retry-After` within the deadline.
+//! before any content, honouring `Retry-After` within the deadline; every attempt (the retry
+//! included) first passes the caller's gate ([`generate_gated`]), which is where the
+//! coordinator re-checks consent and admits the attempt against its budget and rate window.
+//! A body that fails after the headers is an error, never a shortened reply.
 
 use crate::config::{Adapter, Resolved};
 use crate::context::Payload;
@@ -204,20 +207,47 @@ fn client() -> Result<reqwest::Client, AssistError> {
         .map_err(|_| err(Category::ProviderUnavailable, "HTTP client unavailable"))
 }
 
-async fn read_bounded(mut resp: reqwest::Response) -> Option<Vec<u8>> {
+async fn read_bounded(mut resp: reqwest::Response) -> Result<Vec<u8>, AssistError> {
     let mut body = Vec::new();
-    while let Ok(Some(chunk)) = resp.chunk().await {
-        body.extend_from_slice(&chunk);
-        if body.len() > MAX_BODY {
-            return None;
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                body.extend_from_slice(&chunk);
+                if body.len() > MAX_BODY {
+                    return Err(err(Category::InvalidOutput, "provider response too large"));
+                }
+            }
+            Ok(None) => return Ok(body),
+            // A body cut off after the headers is a failure, never a shorter reply.
+            Err(e) if e.is_timeout() => {
+                return Err(err(Category::Timeout, "request deadline exceeded"));
+            }
+            Err(_) => {
+                return Err(err(
+                    Category::ProviderUnavailable,
+                    "the provider's response was interrupted",
+                ));
+            }
         }
     }
-    Some(body)
 }
 
 /// Send `p` through the resolved connection. The future can be dropped at any point
 /// (cancellation aborts the connection); `deadline` bounds the whole call.
 pub async fn generate(r: &Resolved, key: Option<&str>, p: &Payload, deadline: Instant) -> Outcome {
+    generate_gated(r, key, p, deadline, |_| Ok(())).await
+}
+
+/// Like [`generate`], but `gate(attempt)` runs before **every** provider attempt (1-based).
+/// The coordinator uses it to re-check enabled state, consent and endpoint and to admit the
+/// attempt against the request budget and rate window; an `Err` stops before sending.
+pub async fn generate_gated(
+    r: &Resolved,
+    key: Option<&str>,
+    p: &Payload,
+    deadline: Instant,
+    mut gate: impl FnMut(u32) -> Result<(), AssistError>,
+) -> Outcome {
     let mut out = Outcome {
         result: Err(err(Category::ProviderUnavailable, "not attempted")),
         usage: Usage::default(),
@@ -238,6 +268,10 @@ pub async fn generate(r: &Resolved, key: Option<&str>, p: &Payload, deadline: In
             out.result = Err(err(Category::Timeout, "request deadline exceeded"));
             return out;
         };
+        if let Err(e) = gate(out.attempts + 1) {
+            out.result = Err(e);
+            return out;
+        }
         out.attempts += 1;
         let mut rb = http
             .post(&url)
@@ -282,9 +316,12 @@ pub async fn generate(r: &Resolved, key: Option<&str>, p: &Payload, deadline: In
             out.result = Err(status_error(status));
             return out;
         }
-        let Some(bytes) = read_bounded(resp).await else {
-            out.result = Err(err(Category::InvalidOutput, "provider response too large"));
-            return out;
+        let bytes = match read_bounded(resp).await {
+            Ok(b) => b,
+            Err(e) => {
+                out.result = Err(e);
+                return out;
+            }
         };
         let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
             out.result = Err(err(
@@ -455,6 +492,64 @@ mod tests {
         .await;
         assert_eq!(o.result.unwrap_err().category, Category::RateLimited);
         assert_eq!(o.attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn every_attempt_passes_the_gate() {
+        let f = FakeServer::start(vec![
+            Reply::status(429, "").with_header("retry-after", "0"),
+            Reply::anthropic("{}", 1, 1),
+        ])
+        .await;
+        let mut seen = vec![];
+        let o = generate_gated(
+            &resolved("anthropic", &f.url()),
+            Some("k"),
+            &payload(),
+            soon(),
+            |n| {
+                seen.push(n);
+                if n > 1 {
+                    Err(err(Category::RateLimited, "no more attempts admitted"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        assert_eq!(seen, vec![1, 2]);
+        assert_eq!(o.attempts, 1);
+        assert_eq!(o.result.unwrap_err().category, Category::RateLimited);
+        assert_eq!(f.count(), 1, "the refused retry is never sent");
+        // A gate refusing the first attempt sends nothing.
+        let o = generate_gated(
+            &resolved("anthropic", &f.url()),
+            Some("k"),
+            &payload(),
+            soon(),
+            |_| Err(err(Category::Disabled, "assistance was disabled")),
+        )
+        .await;
+        assert_eq!(o.attempts, 0);
+        assert_eq!(f.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn body_cut_after_headers_is_a_failure() {
+        let f =
+            FakeServer::start(vec![Reply::anthropic("{\"title\":\"t\"}", 1, 1).cut_off()]).await;
+        let o = generate(
+            &resolved("anthropic", &f.url()),
+            Some("k"),
+            &payload(),
+            soon(),
+        )
+        .await;
+        assert_eq!(
+            o.result.unwrap_err().category,
+            Category::ProviderUnavailable
+        );
+        assert_eq!(o.attempts, 1);
     }
 
     #[tokio::test]

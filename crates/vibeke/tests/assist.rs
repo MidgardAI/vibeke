@@ -131,6 +131,72 @@ model = "claude-haiku-4-5-20251001"
                 .then(|| r["request"].clone())
         })
     }
+    /// A workspace rooted at its own new directory (distinct consent scope).
+    fn workspace_at(&self, name: &str) -> (String, String) {
+        let root = self.dir.path().join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        let v = self.json(&["workspace", "create", "--cwd", &root.to_string_lossy()]);
+        (
+            v["workspace"]["id"]
+                .as_str()
+                .or(v["id"].as_str())
+                .unwrap_or_else(|| v["root_pane"]["workspace"].as_str().unwrap())
+                .to_string(),
+            v["root_pane"]["id"].as_str().unwrap().to_string(),
+        )
+    }
+    /// Start the hook-reporting fake agent in `pane` and send it one request; returns the run
+    /// and the recorded turn number.
+    fn agent(&self, pane: &str, sid: &str, request: &str) -> (String, u64) {
+        let script = self.dir.path().join("fake-claude");
+        if !script.exists() {
+            std::fs::write(&script, FAKE_CLAUDE).unwrap();
+            std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+        }
+        let _ = self
+            .cmd(&[
+                "pane",
+                "wait-idle",
+                pane,
+                "--quiet-ms",
+                "500",
+                "--timeout-ms",
+                "10000",
+            ])
+            .output();
+        self.json(&[
+            "pane",
+            "run",
+            pane,
+            &format!("FAKE_SID={sid} {}", script.to_string_lossy()),
+        ]);
+        let run = self.until("hook-bound run", 15, || {
+            let v = self.api("task.sources", json!({"pane": pane})).ok()?;
+            (v["identity_verified"] == true).then(|| v["run"].as_str().unwrap().to_string())
+        });
+        self.json(&["pane", "run", pane, request]);
+        let n = self.until("recorded turn", 10, || {
+            let v = self.api("task.sources", json!({"run": run})).ok()?;
+            v["turns"].as_array()?.first()?["n"].as_u64()
+        });
+        (run, n)
+    }
+    fn consent_file(&self) -> std::path::PathBuf {
+        self.dir.path().join("state").join("assistant-consent.json")
+    }
+    fn generate(&self, p: Value) -> Value {
+        self.api("assistant.generate", p).unwrap()
+    }
+    fn confirm(&self, g: &Value) -> Result<Value, Value> {
+        self.api(
+            "assistant.confirm",
+            json!({"request": g["request"]["id"], "preview_digest": g["preview"]["digest"]}),
+        )
+    }
+    fn used(&self) -> Value {
+        self.json(&["assist", "status"])["today"]["used"].clone()
+    }
     fn events(&self) -> Vec<Value> {
         self.api("events.read", json!({"after": 0, "limit": 10000}))
             .unwrap()["events"]
@@ -617,6 +683,688 @@ fn suggest_task_details_without_background_runs_or_mutations() {
         .unwrap();
     assert_eq!(b["deduplicated"], true);
     assert_eq!(a["request"]["id"], b["request"]["id"]);
+}
+
+fn suggest_reply(run_turn_source: &str) -> Reply {
+    Reply::anthropic(
+        &json!({
+            "title": "Fix login redirect",
+            "objective": "Return users to the page they came from",
+            "constraints": [{"text": "Draft PR only", "source_refs": [run_turn_source]}],
+            "criteria": [
+                {"text": "Redirect regression test passes", "evaluation": "check", "required": true, "source_refs": [run_turn_source]},
+                {"text": "PR is opened as a draft", "evaluation": "external", "source_refs": []},
+            ],
+            "stop_at": "draft_pr",
+        })
+        .to_string(),
+        40,
+        60,
+    )
+}
+
+/// Finding 11: Suggest → fill the Track form (the TUI's own code) → save → read the intent.
+#[test]
+fn suggested_details_keep_their_semantics_through_track() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, pane) = s.workspace_at("track");
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let (run, n) = s.agent(&pane, "sess-t", "Fix the login redirect. Draft PR only.");
+    let g = s.generate(json!({"operation": "suggest_task_details", "run": run, "turns": [n]}));
+    fake.push(suggest_reply("s1"));
+    s.confirm(&g).unwrap();
+    let done = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    assert_eq!(done["state"], "done", "{done}");
+
+    let mut form = vk_tui::tasks::TrackForm::new(1, 0, &run, &pane, "track-idem".into());
+    form.load_sources(&s.api("task.sources", json!({"run": run})).unwrap());
+    vk_tui::assist::apply_to_track(&mut form, &done["output"], &done["sources"]);
+    let tracked = s.api("task.track", form.params()).unwrap();
+    let task = tracked["task"]["id"]
+        .as_str()
+        .or(tracked["task"].as_str())
+        .unwrap()
+        .to_string();
+    let intent = s.api("task.intent.get", json!({"task": task})).unwrap()["intent"].clone();
+    let crit = intent["criteria"].as_array().unwrap();
+    assert_eq!(crit.len(), 2, "{intent}");
+    // Generated criteria stay optional (the model's `required: true` never counts) and keep
+    // their evaluation kind and the turn they cite.
+    assert_eq!(crit[0]["text"], "Redirect regression test passes");
+    assert_eq!(crit[0]["required"], false, "{intent}");
+    assert_eq!(crit[0]["evaluation"], "check");
+    assert_eq!(crit[0]["source_refs"][0]["turn"], n, "{intent}");
+    assert_eq!(crit[1]["required"], false);
+    assert_eq!(crit[1]["evaluation"], "external");
+    // Constraints stay constraints (never criteria) with their source.
+    let cons = intent["constraints"].as_array().unwrap();
+    assert_eq!(cons.len(), 1, "{intent}");
+    assert_eq!(cons[0]["text"], "Draft PR only");
+    assert_eq!(cons[0]["source_refs"][0]["turn"], n);
+    assert_eq!(intent["stop_at"], "draft_pr");
+}
+
+/// Finding 1: each selected run/pane/task (and a handoff's bound runs) needs the consent of
+/// the workspace it belongs to; a cross-workspace selection never auto-sends.
+#[test]
+fn selections_need_the_consent_of_their_own_workspace() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (wa, pa) = s.workspace_at("ws-a");
+    let (wb, pb) = s.workspace_at("ws-b");
+    s.config(
+        &fake.url(),
+        r#"auto_send = ["pane_title", "handoff", "review_summary"]"#,
+    );
+    s.json(&[
+        "assist",
+        "consent",
+        &wa,
+        "--auto-send",
+        "pane_title,handoff,review_summary",
+    ]);
+    let (run_a, _) = s.agent(&pa, "sess-a", "Work in A");
+    let (run_b, _) = s.agent(&pb, "sess-b", "Secret work in B");
+
+    let refused = |p: Value| {
+        let e = s.api("assistant.generate", p.clone()).unwrap_err();
+        assert_eq!(reason(&e), "consent_required", "{p}: {e}");
+        assert!(e.to_string().contains("belongs to workspace"), "{e}");
+    };
+    // Explicit workspace A with B's pane, B's run.
+    refused(json!({"operation": "pane_title", "workspace": wa, "pane": pb}));
+    refused(json!({"operation": "suggest_task_details", "workspace": wa, "run": run_b}));
+    refused(json!({"operation": "handoff", "workspace": wa, "run": run_b}));
+    // A task tracked in B, summarized "for" A.
+    let tb = s
+        .api(
+            "task.track",
+            json!({"run": run_b, "title": "B task", "idempotency_key": "t-b"}),
+        )
+        .unwrap();
+    let task_b = tb["task"]["id"]
+        .as_str()
+        .or(tb["task"].as_str())
+        .unwrap()
+        .to_string();
+    refused(json!({"operation": "review_summary", "workspace": wa, "task": task_b}));
+    // A task in A with a run from B bound to it: the handoff reads that run too.
+    let t = s
+        .api(
+            "task.track",
+            json!({"run": run_a, "title": "A task", "idempotency_key": "t-a"}),
+        )
+        .unwrap();
+    let task = t["task"]["id"]
+        .as_str()
+        .or(t["task"].as_str())
+        .unwrap()
+        .to_string();
+    let pb2 = s.json(&["pane", "split", &pb])["pane"]["id"]
+        .as_str()
+        .map(str::to_string);
+    let pb2 = pb2.unwrap_or_else(|| panic!("split pane in B"));
+    let (run_b2, _) = s.agent(&pb2, "sess-b2", "More B work");
+    s.api("task.bind", json!({"task": task, "run": run_b2}))
+        .unwrap();
+    refused(json!({"operation": "handoff", "task": task}));
+    assert_eq!(fake.count(), 0);
+
+    // With B's consent too (and auto_send everywhere) it previews, never auto-sends.
+    s.json(&[
+        "assist",
+        "consent",
+        &wb,
+        "--auto-send",
+        "pane_title,handoff,review_summary",
+    ]);
+    let g = s.generate(json!({"operation": "handoff", "task": task}));
+    assert_eq!(g["requires_confirmation"], true, "{g}");
+    assert!(
+        g["request"]["other_workspace_paths"]
+            .as_array()
+            .is_some_and(|a| a.len() == 1),
+        "{g}"
+    );
+    // Same-workspace selection with both auto_send lists does auto-send.
+    fake.push(Reply::anthropic(r#"{"title": "A pane"}"#, 5, 5));
+    let g = s.generate(json!({"operation": "pane_title", "pane": pa}));
+    assert_eq!(g["requires_confirmation"], false, "{g}");
+    // Revoking B cancels the pending cross-workspace request.
+    let r = s.json(&["assist", "revoke", &wb]);
+    assert_eq!(r["cancelled_requests"], 1, "{r}");
+}
+
+/// Additional coverage: the auto_send config × consent matrix.
+#[test]
+fn auto_send_needs_both_config_and_consent() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    fake.set_fallback(briefing_reply("s1"));
+    let (ws, _) = s.workspace_at("auto");
+    for (cfg_on, grant_on) in [(false, false), (true, false), (false, true), (true, true)] {
+        s.config(
+            &fake.url(),
+            if cfg_on {
+                r#"auto_send = ["briefing"]"#
+            } else {
+                ""
+            },
+        );
+        let mut args = vec!["assist", "consent", ws.as_str()];
+        if grant_on {
+            args.extend(["--auto-send", "briefing"]);
+        }
+        s.json(&args);
+        let before = fake.count();
+        let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+        let auto = cfg_on && grant_on;
+        assert_eq!(
+            g["requires_confirmation"], !auto,
+            "config {cfg_on} grant {grant_on}: {g}"
+        );
+        let id = g["request"]["id"].as_str().unwrap();
+        if auto {
+            assert_eq!(s.wait_state(id, &["done", "failed"])["auto_sent"], true);
+            assert_eq!(fake.count(), before + 1);
+        } else {
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(fake.count(), before, "config {cfg_on} grant {grant_on}");
+            s.json(&["assist", "cancel", id]);
+        }
+    }
+}
+
+/// Finding 2: a queued request re-reads enabled state and consent right before dispatch.
+#[test]
+fn queued_requests_never_send_after_disable_or_revocation_elsewhere() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, _) = s.workspace_at("queue");
+    let base = "max_concurrent_requests = 1";
+    s.config(&fake.url(), base);
+    s.json(&["assist", "consent", &ws]);
+
+    // Revocation written by another session (the consent file is shared; nothing tells this
+    // session): the queued request is cancelled at dispatch and never sent.
+    fake.push(briefing_reply("s1").delayed(Duration::from_secs(2)));
+    let a = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&a).unwrap();
+    s.until("first request at the provider", 10, || {
+        (fake.count() == 1).then_some(())
+    });
+    let b = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&b).unwrap();
+    let saved = std::fs::read(s.consent_file()).unwrap();
+    std::fs::write(s.consent_file(), r#"{"version": 1, "grants": []}"#).unwrap();
+    let qb = s.wait_state(
+        b["request"]["id"].as_str().unwrap(),
+        &["cancelled", "done", "failed"],
+    );
+    assert_eq!(qb["state"], "cancelled", "{qb}");
+    assert_eq!(qb["error"]["category"], "permission_denied", "{qb}");
+    s.wait_state(a["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    assert_eq!(
+        fake.count(),
+        1,
+        "the revoked request never reached the provider"
+    );
+
+    // Disable without any assistant call: the queued request is cancelled at dispatch.
+    std::fs::write(s.consent_file(), saved).unwrap();
+    fake.push(briefing_reply("s1").delayed(Duration::from_secs(2)));
+    let a = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&a).unwrap();
+    s.until("request at the provider", 10, || {
+        (fake.count() == 2).then_some(())
+    });
+    let b = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&b).unwrap();
+    let bid = b["request"]["id"].as_str().unwrap().to_string();
+    std::fs::write(
+        s.dir.path().join("config.toml"),
+        std::fs::read_to_string(s.dir.path().join("config.toml"))
+            .unwrap()
+            .replace("enabled = true", "enabled = false"),
+    )
+    .unwrap();
+    // Only non-assistant calls while waiting (they don't run assistant maintenance).
+    let ev = s.until("queued request cancelled at dispatch", 15, || {
+        s.events().into_iter().find(|e| {
+            e["type"] == "assistant.request_finished"
+                && e["subject"]["assistant_request"] == bid.as_str()
+        })
+    });
+    assert_eq!(ev["data"]["state"], "cancelled", "{ev}");
+    assert_eq!(ev["data"]["error_category"], "disabled", "{ev}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(fake.count(), 2, "nothing sent after disable");
+}
+
+/// Finding 3: labels and source metadata go through the same redactor as text.
+#[test]
+fn run_names_with_secrets_are_redacted_everywhere() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, pane) = s.workspace_at("names");
+    s.config(&fake.url(), "");
+    let cfg = std::fs::read_to_string(s.dir.path().join("config.toml")).unwrap();
+    std::fs::write(
+        s.dir.path().join("config.toml"),
+        format!("{cfg}\n[security.redact]\npatterns = [\"ACME-[0-9]{{6}}\"]\n"),
+    )
+    .unwrap();
+    s.json(&["assist", "consent", &ws]);
+    let (run, _) = s.agent(&pane, "sess-n", "hello");
+    let custom = "ACME-424242";
+    s.api(
+        "agent.rename",
+        json!({"target": run, "name": format!("bot-{SECRET}-{custom}")}),
+    )
+    .unwrap();
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    let shown = g.to_string();
+    for secret in [SECRET, custom] {
+        assert!(!shown.contains(secret), "preview leaks {secret}: {shown}");
+    }
+    assert!(
+        g["preview"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["label"].as_str().unwrap().contains("[REDACTED]")),
+        "{g}"
+    );
+    fake.push(briefing_reply("s1"));
+    s.confirm(&g).unwrap();
+    let done = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    let stored = done.to_string();
+    let wire = &fake.requests()[0].body;
+    for secret in [SECRET, custom] {
+        assert!(!wire.contains(secret), "payload leaks {secret}");
+        assert!(!stored.contains(secret), "stored metadata leaks {secret}");
+    }
+}
+
+fn anthropic_usage(text: &str, usage: Value) -> Reply {
+    Reply::json(json!({
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "usage": usage,
+    }))
+}
+
+/// Findings 5 and 7: a retry is admitted like any attempt; partial usage stays conservative.
+#[test]
+fn retries_go_through_admission_and_partial_usage_is_conservative() {
+    let brief = json!({"items": [], "coverage": "x"}).to_string();
+    // 429 → success with one request per day: the retry is refused, never sent.
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![
+        Reply::status(429, "").with_header("retry-after", "0"),
+        Reply::anthropic(&brief, 1, 1),
+    ]);
+    let (ws, _) = s.workspace_at("retry");
+    s.config(&fake.url(), "daily_request_limit = 1");
+    s.json(&["assist", "consent", &ws]);
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&g).unwrap();
+    let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    assert_eq!(r["state"], "failed", "{r}");
+    assert_eq!(r["error"]["category"], "budget_exhausted", "{r}");
+    assert_eq!(
+        fake.count(),
+        1,
+        "the retry exceeded the daily request limit"
+    );
+    assert_eq!(s.used()["requests"], 1);
+    // Same with one request per minute (429 → 429).
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![
+        Reply::status(429, "").with_header("retry-after", "0"),
+        Reply::status(429, "").with_header("retry-after", "0"),
+    ]);
+    let (ws, _) = s.workspace_at("retry2");
+    s.config(&fake.url(), "requests_per_minute = 1");
+    s.json(&["assist", "consent", &ws]);
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&g).unwrap();
+    let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    assert_eq!(r["error"]["category"], "rate_limited", "{r}");
+    assert_eq!(fake.count(), 1);
+    assert_eq!(s.used()["requests"], 1);
+
+    // Room for two: 429 → success counts two attempts.
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![
+        Reply::status(429, "").with_header("retry-after", "0"),
+        Reply::anthropic(&brief, 10, 20),
+    ]);
+    let (ws, _) = s.workspace_at("retry3");
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&g).unwrap();
+    let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    assert_eq!(r["state"], "done", "{r}");
+    assert_eq!(r["attempts"], 2);
+    assert_eq!(fake.count(), 2);
+    assert_eq!(s.used()["requests"], 2);
+    assert_eq!(s.used()["tokens"], 30);
+
+    // Partial usage: the unknown component keeps its reservation.
+    let max_out = 1024;
+    fake.push(anthropic_usage(&brief, json!({"input_tokens": 7})));
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&g).unwrap();
+    s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    assert_eq!(s.used()["tokens"], 30 + 7 + max_out, "{}", s.used());
+    let est = g["request"]["estimated_input_tokens"].as_u64().unwrap();
+    fake.push(anthropic_usage(&brief, json!({"output_tokens": 9})));
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&g).unwrap();
+    s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    let est2 = g["request"]["estimated_input_tokens"].as_u64().unwrap();
+    assert_eq!(
+        s.used()["tokens"],
+        30 + 7 + max_out + est2 + 9,
+        "{} (first estimate {est})",
+        s.used()
+    );
+    // Cost is computed from the conservative components, not zeroed.
+    assert!(s.used()["cost_usd"].as_f64().unwrap() > (max_out as f64 * 5.0) / 1e6);
+}
+
+fn server_pid(s: &Session) -> String {
+    s.api("server.status", json!({})).unwrap()["pid"]
+        .as_u64()
+        .unwrap()
+        .to_string()
+}
+
+/// Finding 6: a dispatched request's reservation survives a crash and is charged.
+#[test]
+fn restart_charges_interrupted_dispatched_requests() {
+    let s = Session::new();
+    let fake =
+        FakeServer::start_in_thread(vec![briefing_reply("s1").delayed(Duration::from_secs(60))]);
+    let (ws, _) = s.workspace_at("crash");
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    let id = g["request"]["id"].as_str().unwrap().to_string();
+    s.confirm(&g).unwrap();
+    s.until("request at the provider", 10, || {
+        (fake.count() == 1).then_some(())
+    });
+    let reserved = s.json(&["assist", "status"])["today"]["reserved"].clone();
+    assert_eq!(reserved["requests"], 1, "{reserved}");
+    let pid = server_pid(&s);
+    let _ = Command::new("kill").args(["-9", &pid]).status();
+    s.until("server gone", 10, || {
+        (!Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success())
+        .then_some(())
+    });
+    // The next call starts the same session again.
+    let st = s.until("server back", 20, || {
+        s.cmd(&["assist", "status"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+    });
+    assert_ne!(server_pid(&s), pid);
+    assert_eq!(st["today"]["used"]["requests"], 1, "{st}");
+    assert_eq!(
+        st["today"]["used"]["tokens"], reserved["tokens"],
+        "the whole reservation is charged: {st}"
+    );
+    let r = s.api("assistant.get", json!({"request": id})).unwrap();
+    assert_eq!(r["request"]["state"], "interrupted");
+    assert_eq!(fake.count(), 1, "never replayed");
+}
+
+/// Finding 8: racing confirmations / cancels / purges: one dispatch, no panic, still usable.
+#[test]
+fn concurrent_confirmations_dispatch_once() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    fake.set_fallback(briefing_reply("s1").delayed(Duration::from_millis(300)));
+    let (ws, _) = s.workspace_at("race");
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    let results: Vec<Result<Value, Value>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..8).map(|_| sc.spawn(|| s.confirm(&g))).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    for e in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert_eq!(reason(e), "not_awaiting_confirmation", "{e}");
+    }
+    s.wait_state(g["request"]["id"].as_str().unwrap(), &["done"]);
+    assert_eq!(fake.count(), 1);
+    // Confirm racing cancel and purge.
+    for _ in 0..3 {
+        let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+        let id = g["request"]["id"].as_str().unwrap().to_string();
+        std::thread::scope(|sc| {
+            sc.spawn(|| s.confirm(&g));
+            sc.spawn(|| s.api("assistant.cancel", json!({"request": id})));
+            sc.spawn(|| s.api("assistant.purge", json!({"request": id})));
+        });
+    }
+    // The coordinator is still healthy (no poisoned lock): a full round trip works.
+    let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    s.confirm(&g).unwrap();
+    assert_eq!(
+        s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"])["state"],
+        "done"
+    );
+    assert!(s.json(&["assist", "status"])["enabled"] == true);
+}
+
+/// Additional coverage: concurrent generation with one idempotency key yields one request.
+#[test]
+fn idempotent_generation_under_concurrency() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, _) = s.workspace_at("idem");
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let ids: Vec<String> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..6)
+            .map(|_| {
+                sc.spawn(|| {
+                    s.generate(json!({"operation": "briefing", "workspace": ws, "idempotency_key": "same"}))
+                        ["request"]["id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
+    let list = s.json(&["assist", "list"])["requests"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(list.len(), 1, "{list:?}");
+}
+
+/// Finding 9: abandoned previews expire on their own and preview admission is bounded.
+#[test]
+fn abandoned_previews_expire_and_are_bounded() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, _) = s.workspace_at("ttl");
+    s.config(
+        &fake.url(),
+        "preview_ttl_seconds = 1\nresult_retention_hours = 0\nmax_concurrent_requests = 1\nmax_queued_requests = 1",
+    );
+    s.json(&["assist", "consent", &ws]);
+    let a = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    let _b = s.generate(json!({"operation": "briefing", "workspace": ws}));
+    // Bounded: a third unconfirmed preview is refused.
+    let e = s
+        .api(
+            "assistant.generate",
+            json!({"operation": "briefing", "workspace": ws}),
+        )
+        .unwrap_err();
+    assert_eq!(category(&e), "queue_full", "{e}");
+    // No assistant call while waiting: the TTL alone expires the preview.
+    let aid = a["request"]["id"].as_str().unwrap().to_string();
+    let ev = s.until("preview expired", 10, || {
+        s.events().into_iter().find(|e| {
+            e["type"] == "assistant.request_finished"
+                && e["subject"]["assistant_request"] == aid.as_str()
+        })
+    });
+    assert_eq!(ev["data"]["state"], "cancelled", "{ev}");
+    // Past retention too: the next maintenance removes the record entirely.
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(s.api("assistant.get", json!({"request": aid})).is_err());
+    let e = s.confirm(&a).unwrap_err();
+    assert!(!e.is_null());
+    // Room again.
+    s.generate(json!({"operation": "briefing", "workspace": ws}));
+    assert_eq!(fake.count(), 0);
+}
+
+/// Finding 10: neither configured values nor provider content reach error messages.
+#[test]
+fn errors_never_echo_config_values_or_provider_content() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, _) = s.workspace_at("errs");
+    let sentinel = "sk-ant-SENTINEL-0123456789";
+    // An inline credential string (wrong type) and an unparsable line holding one.
+    for bad in [
+        format!(
+            "[assistant]\nenabled = true\n[assistant.connections.p]\nadapter = \"anthropic\"\ncredential = \"{sentinel}\"\n"
+        ),
+        format!("[assistant]\nenabled = true\nkey = {sentinel}\n"),
+    ] {
+        std::fs::write(s.dir.path().join("config.toml"), bad).unwrap();
+        let st = s.api("assistant.status", json!({}));
+        let shown = format!("{st:?}");
+        assert!(!shown.contains("SENTINEL"), "{shown}");
+        let e = s
+            .api(
+                "assistant.generate",
+                json!({"operation": "briefing", "workspace": ws}),
+            )
+            .unwrap_err();
+        assert!(!e.to_string().contains("SENTINEL"), "{e}");
+    }
+    // Provider replies with secrets and control characters in invalid enum / reference fields.
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    for body in [
+        json!({"items": [{"text": "x", "kind": format!("{sentinel}\u{1b}[2J"), "source_refs": ["s1"]}]}),
+        json!({"items": [{"text": "x", "targets": [format!("{sentinel}\u{7}")], "source_refs": ["s1"]}]}),
+        json!({"items": [{"text": "x", "source_refs": [format!("{sentinel}\u{1b}]0;t")]}]}),
+    ] {
+        fake.push(Reply::anthropic(&body.to_string(), 1, 1));
+        let g = s.generate(json!({"operation": "briefing", "workspace": ws}));
+        s.confirm(&g).unwrap();
+        let r = s.wait_state(g["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+        assert_eq!(r["state"], "failed", "{r}");
+        let shown = r["error"].to_string();
+        assert!(!shown.contains("SENTINEL"), "{shown}");
+        assert!(
+            !shown.contains("\\u001b") && !shown.contains("\\u0007"),
+            "{shown}"
+        );
+    }
+}
+
+/// Additional coverage: every `assistant.*` method is denied to a pane-scoped caller.
+#[test]
+fn pane_scoped_callers_are_denied_every_assistant_method() {
+    let s = Session::new();
+    let fake = FakeServer::start_in_thread(vec![]);
+    let (ws, pane) = s.workspace_at("scope");
+    s.config(&fake.url(), "");
+    s.json(&["assist", "consent", &ws]);
+    let methods = [
+        "assistant.status",
+        "assistant.providers",
+        "assistant.consent",
+        "assistant.revoke",
+        "assistant.generate",
+        "assistant.confirm",
+        "assistant.get",
+        "assistant.list",
+        "assistant.cancel",
+        "assistant.purge",
+    ];
+    let out = s.dir.path().join("scope-out");
+    let script = s.dir.path().join("scope.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nfor m in {}; do\n  printf '%s ' \"$m\" >> {out}\n  \"$VIBEKE_BIN\" --json api call \"$m\" '{{\"operation\":\"briefing\",\"request\":\"x\",\"preview_digest\":\"x\",\"all\":true}}' >/dev/null 2>> {out}.err\n  tail -n 1 {out}.err | tr -d '\\n' >> {out}\n  echo >> {out}\ndone\necho DONE >> {out}\n",
+            methods.join(" "),
+            out = out.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let _ = s
+        .cmd(&[
+            "pane",
+            "wait-idle",
+            &pane,
+            "--quiet-ms",
+            "500",
+            "--timeout-ms",
+            "10000",
+        ])
+        .output();
+    s.json(&["pane", "run", &pane, &script.to_string_lossy()]);
+    let text = s.until("pane script finished", 30, || {
+        let t = std::fs::read_to_string(&out).ok()?;
+        t.contains("DONE").then_some(t)
+    });
+    for m in methods {
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&format!("{m} ")))
+            .unwrap_or_else(|| panic!("{m} missing in {text}"));
+        assert!(
+            line.contains("pane-scoped") && line.contains("permission_denied"),
+            "{m} not denied: {line}"
+        );
+    }
+    assert_eq!(fake.count(), 0);
+    // Nothing was granted, revoked or created by the pane.
+    assert_eq!(
+        s.json(&["assist", "status"])["consents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        s.json(&["assist", "list"])["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn git(repo: &std::path::Path, args: &[&str]) -> String {

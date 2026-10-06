@@ -192,11 +192,60 @@ pub enum TrackPhase {
 pub enum TrackField {
     Source,
     Title,
+    Constraint(usize),
     Criterion(usize),
     AddCriterion,
     Stop,
     Objective,
     Submit,
+}
+
+/// A Track-form criterion or constraint. A typed one is a required human criterion (sent as a
+/// plain string, as before); one filled from an assistant suggestion keeps its generated
+/// semantics — optional, its evaluation kind and the source turns it cites (14, 15 §2.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackItem {
+    pub text: String,
+    pub required: bool,
+    pub evaluation: Option<String>,
+    pub source_turns: Vec<u32>,
+}
+
+impl TrackItem {
+    pub fn typed(text: &str) -> Self {
+        TrackItem {
+            text: text.into(),
+            required: true,
+            evaluation: None,
+            source_turns: vec![],
+        }
+    }
+
+    fn plain(&self) -> bool {
+        self.required && self.evaluation.is_none() && self.source_turns.is_empty()
+    }
+
+    /// Wire form for `task.track`: a string when nothing but the text is set, else an object.
+    fn criterion_param(&self) -> Value {
+        if self.plain() {
+            return json!(self.text.trim());
+        }
+        let mut v = json!({"text": self.text.trim(), "required": self.required});
+        if let Some(e) = &self.evaluation {
+            v["evaluation"] = json!(e);
+        }
+        if !self.source_turns.is_empty() {
+            v["source_turns"] = json!(self.source_turns);
+        }
+        v
+    }
+
+    fn constraint_param(&self) -> Value {
+        if self.source_turns.is_empty() {
+            return json!(self.text.trim());
+        }
+        json!({"text": self.text.trim(), "source_turns": self.source_turns})
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,7 +261,9 @@ pub struct TrackForm {
     pub sel_turn: usize,
     pub title: String,
     pub title_edited: bool,
-    pub criteria: Vec<String>,
+    pub criteria: Vec<TrackItem>,
+    /// Constraints (filled from a suggestion; editable and removable, never criteria).
+    pub constraints: Vec<TrackItem>,
     pub stop: usize,
     pub objective: String,
     pub field: TrackField,
@@ -251,6 +302,7 @@ impl TrackForm {
             title: String::new(),
             title_edited: false,
             criteria: Vec::new(),
+            constraints: Vec::new(),
             stop: 0,
             objective: String::new(),
             field: TrackField::Source,
@@ -302,6 +354,7 @@ impl TrackForm {
 
     fn fields(&self) -> Vec<TrackField> {
         let mut f = vec![TrackField::Source, TrackField::Title];
+        f.extend((0..self.constraints.len()).map(TrackField::Constraint));
         f.extend((0..self.criteria.len()).map(TrackField::Criterion));
         f.extend([
             TrackField::AddCriterion,
@@ -372,21 +425,34 @@ impl TrackForm {
             (TrackField::Objective, _) => {
                 edit(&mut self.objective, ev);
             }
+            (TrackField::Constraint(_), Key::Named(NamedKey::Enter)) => self.step(true),
+            (TrackField::Constraint(i), _) if ctrl(ev, 'd') => self.remove_constraint(i),
+            (TrackField::Constraint(i), Key::Named(NamedKey::Backspace))
+                if self.constraints[i].text.is_empty() =>
+            {
+                self.remove_constraint(i)
+            }
+            (TrackField::Constraint(i), _) => {
+                edit(&mut self.constraints[i].text, ev);
+            }
             (TrackField::Criterion(i), Key::Named(NamedKey::Enter)) => {
-                self.criteria.insert(i + 1, String::new());
+                self.criteria.insert(i + 1, TrackItem::typed(""));
                 self.field = TrackField::Criterion(i + 1);
+            }
+            (TrackField::Criterion(i), _) if ctrl(ev, 'r') => {
+                self.criteria[i].required = !self.criteria[i].required
             }
             (TrackField::Criterion(i), _) if ctrl(ev, 'd') => self.remove_criterion(i),
             (TrackField::Criterion(i), Key::Named(NamedKey::Backspace))
-                if self.criteria[i].is_empty() =>
+                if self.criteria[i].text.is_empty() =>
             {
                 self.remove_criterion(i)
             }
             (TrackField::Criterion(i), _) => {
-                edit(&mut self.criteria[i], ev);
+                edit(&mut self.criteria[i].text, ev);
             }
             (TrackField::AddCriterion, Key::Named(NamedKey::Enter) | Key::Char(' ')) => {
-                self.criteria.push(String::new());
+                self.criteria.push(TrackItem::typed(""));
                 self.field = TrackField::Criterion(self.criteria.len() - 1);
             }
             (TrackField::Stop, Key::Named(NamedKey::Right) | Key::Char(' ' | 'l')) => {
@@ -401,6 +467,17 @@ impl TrackForm {
             _ => {}
         }
         FormOutcome::Stay
+    }
+
+    fn remove_constraint(&mut self, i: usize) {
+        if i < self.constraints.len() {
+            self.constraints.remove(i);
+        }
+        self.field = if self.constraints.is_empty() {
+            TrackField::Title
+        } else {
+            TrackField::Constraint(i.min(self.constraints.len() - 1))
+        };
     }
 
     fn remove_criterion(&mut self, i: usize) {
@@ -437,14 +514,23 @@ impl TrackForm {
         if let Some(t) = self.turns.get(self.sel_turn) {
             p["turn"] = json!(t.n);
         }
-        let crit: Vec<&str> = self
+        let crit: Vec<Value> = self
             .criteria
             .iter()
-            .map(|c| c.trim())
-            .filter(|c| !c.is_empty())
+            .filter(|c| !c.text.trim().is_empty())
+            .map(TrackItem::criterion_param)
             .collect();
         if !crit.is_empty() {
             p["criteria"] = json!(crit);
+        }
+        let cons: Vec<Value> = self
+            .constraints
+            .iter()
+            .filter(|c| !c.text.trim().is_empty())
+            .map(TrackItem::constraint_param)
+            .collect();
+        if !cons.is_empty() {
+            p["constraints"] = json!(cons);
         }
         if !self.objective.trim().is_empty() {
             p["objective"] = json!(self.objective.trim());
@@ -3046,13 +3132,34 @@ pub fn draw_track(app: &App, g: &mut Grid) {
         &format!("Title      {}", f.title),
         sel(f.field == TrackField::Title),
     );
+    if !f.constraints.is_empty() {
+        b.line("Constraints (ctrl+d removes)", t.dim());
+        for (i, c) in f.constraints.iter().enumerate() {
+            b.line(
+                &format!("  ◦ {}", c.text),
+                sel(f.field == TrackField::Constraint(i)),
+            );
+        }
+    }
     b.line(
-        "Criteria   optional (enter adds another, ctrl+d removes)",
+        "Criteria   optional (enter adds another, ctrl+r required/optional, ctrl+d removes)",
         t.dim(),
     );
     for (i, c) in f.criteria.iter().enumerate() {
+        let mut tags = vec![];
+        if !c.required {
+            tags.push("optional".to_string());
+        }
+        if let Some(e) = c.evaluation.as_deref().filter(|e| *e != "human") {
+            tags.push(e.to_string());
+        }
+        let tags = if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", tags.join(", "))
+        };
         b.line(
-            &format!("  • {c}"),
+            &format!("  • {}{tags}", c.text),
             sel(f.field == TrackField::Criterion(i)),
         );
     }
@@ -3180,7 +3287,7 @@ mod tests {
         f.key(&key(Key::Named(NamedKey::Enter)));
         assert_eq!(f.field, TrackField::Criterion(1));
         f.key(&key(Key::Named(NamedKey::Backspace)));
-        assert_eq!(f.criteria, vec!["Preserve SSO".to_string()]);
+        assert_eq!(f.criteria, vec![TrackItem::typed("Preserve SSO")]);
         assert_eq!(f.field, TrackField::Criterion(0));
         // Stop-at chooser cycles; objective; submit.
         f.key(&key(Key::Named(NamedKey::Tab)));

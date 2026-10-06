@@ -86,7 +86,10 @@ pub enum Phase {
     Preview {
         request: String,
         preview: Value,
-        scroll: u16,
+        /// First shown row of the soft-wrapped payload.
+        scroll: usize,
+        /// The last row of the payload has been on screen: only then can it be confirmed.
+        seen_end: bool,
     },
     Confirming {
         request: String,
@@ -99,6 +102,8 @@ pub enum Phase {
     Done {
         request: String,
         output: Value,
+        /// The request's source metadata (IDs the output's `source_refs` cite).
+        sources: Value,
         ed: TextEditor,
     },
     Failed(String),
@@ -337,9 +342,33 @@ pub fn render_output(op: Op, o: &Value) -> String {
     s.trim_end().to_string()
 }
 
+/// The source turns of the form's run that a suggestion item cites (`source_refs` are the
+/// request's own source IDs; `sources` is the request's source metadata).
+fn cited_turns(item: &Value, sources: &Value, run: &str) -> Vec<u32> {
+    let mut out = vec![];
+    for r in arr(item, "source_refs").iter().filter_map(Value::as_str) {
+        let turn = sources.as_array().and_then(|a| {
+            a.iter()
+                .find(|s| st(s, "id") == r)
+                .filter(|s| st(s, "kind") == "user_request")
+                .map(|s| &s["object"])
+                .filter(|o| st(o, "run") == run)
+                .and_then(|o| o.get("turn").and_then(Value::as_u64))
+        });
+        if let Some(t) = turn
+            && !out.contains(&(t as u32))
+        {
+            out.push(t as u32);
+        }
+    }
+    out
+}
+
 /// Fill the Track form with suggested details. Nothing is saved: the user still edits and
-/// presses Track task.
-pub fn apply_to_track(f: &mut crate::tasks::TrackForm, o: &Value) {
+/// presses Track task. Constraints stay constraints, and criteria keep their generated
+/// semantics (optional unless the user requires them, evaluation kind, cited turns).
+pub fn apply_to_track(f: &mut crate::tasks::TrackForm, o: &Value, sources: &Value) {
+    use crate::tasks::TrackItem;
     let title = st(o, "title").trim();
     if !title.is_empty() {
         f.title = title.to_string();
@@ -349,14 +378,35 @@ pub fn apply_to_track(f: &mut crate::tasks::TrackForm, o: &Value) {
     if !obj.is_empty() {
         f.objective = obj.to_string();
     }
-    let mut crit: Vec<String> = Vec::new();
-    for c in arr(o, "constraints").iter().chain(arr(o, "criteria")) {
+    for c in arr(o, "constraints") {
         let t = text_of(c).trim().to_string();
-        if !t.is_empty() && !crit.contains(&t) && !f.criteria.contains(&t) {
-            crit.push(t);
+        if !t.is_empty() && !f.constraints.iter().any(|x| x.text == t) {
+            f.constraints.push(TrackItem {
+                text: t,
+                required: true,
+                evaluation: None,
+                source_turns: cited_turns(c, sources, &f.run),
+            });
         }
     }
-    f.criteria.extend(crit);
+    for c in arr(o, "criteria") {
+        let t = text_of(c).trim().to_string();
+        if t.is_empty() || f.criteria.iter().any(|x| x.text == t) {
+            continue;
+        }
+        f.criteria.push(TrackItem {
+            text: t,
+            // Suggestions are never silently mandatory (15 §2.2).
+            required: c.get("required").and_then(Value::as_bool).unwrap_or(false),
+            evaluation: c
+                .get("evaluation")
+                .and_then(Value::as_str)
+                .filter(|e| matches!(*e, "check" | "human" | "external"))
+                .map(str::to_string)
+                .or(Some("human".into())),
+            source_turns: cited_turns(c, sources, &f.run),
+        });
+    }
     if let Some(i) = crate::tasks::STOP_AT
         .iter()
         .position(|(k, _)| *k == st(o, "stop_at"))
@@ -385,64 +435,75 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             request,
             preview,
             scroll,
-        } => match ev.key {
-            Key::Char('y' | 'Y') | Key::Named(NamedKey::Enter) => {
-                let digest = st(&preview, "digest").to_string();
-                app.command_on(
-                    f.machine,
-                    "assistant.confirm",
-                    json!({"request": request, "preview_digest": digest}),
-                    Pending::Assist(Reply::Confirm { flow: f.id }),
-                );
-                f.phase = Phase::Confirming { request };
-            }
-            Key::Char('n' | 'N') | Key::Named(NamedKey::Escape) | Key::Char('q') => {
+            seen_end,
+        } => {
+            let lay = preview_layout(app, &preview);
+            let max = lay.max_scroll();
+            let page = lay.body_h.max(1);
+            let scroll = scroll.min(max);
+            let moved = match ev.key {
+                Key::Char('j') | Key::Named(NamedKey::Down) => Some((scroll + 1).min(max)),
+                Key::Char('k') | Key::Named(NamedKey::Up) => Some(scroll.saturating_sub(1)),
+                Key::Named(NamedKey::PageDown) | Key::Char(' ') => Some((scroll + page).min(max)),
+                Key::Named(NamedKey::PageUp) => Some(scroll.saturating_sub(page)),
+                _ => None,
+            };
+            if let Some(scroll) = moved {
                 f.phase = Phase::Preview {
                     request,
                     preview,
                     scroll,
+                    seen_end: seen_end || scroll >= max,
                 };
                 app.assist = Some(f);
-                close(app);
-                app.toast("Nothing was sent");
                 return;
             }
-            Key::Char('j') | Key::Named(NamedKey::Down) => {
-                f.phase = Phase::Preview {
-                    request,
-                    preview,
-                    scroll: scroll.saturating_add(1),
+            match ev.key {
+                Key::Char('y' | 'Y') | Key::Named(NamedKey::Enter) if seen_end || scroll >= max => {
+                    let digest = st(&preview, "digest").to_string();
+                    app.command_on(
+                        f.machine,
+                        "assistant.confirm",
+                        json!({"request": request, "preview_digest": digest}),
+                        Pending::Assist(Reply::Confirm { flow: f.id }),
+                    );
+                    f.phase = Phase::Confirming { request };
+                }
+                Key::Char('y' | 'Y') | Key::Named(NamedKey::Enter) => {
+                    // Confirming sends every character: only after all of it was shown.
+                    f.notice = Some(
+                        "Scroll to the end of the payload first (j / space) — [y] is enabled once all of it has been shown"
+                            .into(),
+                    );
+                    f.phase = Phase::Preview {
+                        request,
+                        preview,
+                        scroll,
+                        seen_end,
+                    };
+                }
+                Key::Char('n' | 'N') | Key::Named(NamedKey::Escape) | Key::Char('q') => {
+                    f.phase = Phase::Preview {
+                        request,
+                        preview,
+                        scroll,
+                        seen_end,
+                    };
+                    app.assist = Some(f);
+                    close(app);
+                    app.toast("Nothing was sent");
+                    return;
+                }
+                _ => {
+                    f.phase = Phase::Preview {
+                        request,
+                        preview,
+                        scroll,
+                        seen_end,
+                    }
                 }
             }
-            Key::Char('k') | Key::Named(NamedKey::Up) => {
-                f.phase = Phase::Preview {
-                    request,
-                    preview,
-                    scroll: scroll.saturating_sub(1),
-                }
-            }
-            Key::Named(NamedKey::PageDown) | Key::Char(' ') => {
-                f.phase = Phase::Preview {
-                    request,
-                    preview,
-                    scroll: scroll.saturating_add(10),
-                }
-            }
-            Key::Named(NamedKey::PageUp) => {
-                f.phase = Phase::Preview {
-                    request,
-                    preview,
-                    scroll: scroll.saturating_sub(10),
-                }
-            }
-            _ => {
-                f.phase = Phase::Preview {
-                    request,
-                    preview,
-                    scroll,
-                }
-            }
-        },
+        }
         Phase::NeedsConsent { reason } => match ev.key {
             Key::Char('g' | 'G') => {
                 let mut p = json!({"operations": [f.op.as_str()]});
@@ -467,6 +528,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         Phase::Done {
             request,
             output,
+            sources,
             mut ed,
         } => {
             if esc {
@@ -477,7 +539,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             match f.op {
                 Op::SuggestTaskDetails if ev.key == Key::Named(NamedKey::Enter) => {
                     if let Some(t) = &mut app.track {
-                        apply_to_track(t, &output);
+                        apply_to_track(t, &output, &sources);
                     }
                     app.assist = Some(f);
                     close(app);
@@ -520,6 +582,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             f.phase = Phase::Done {
                 request,
                 output,
+                sources,
                 ed,
             };
         }
@@ -623,10 +686,13 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
                         let f2 = f.clone();
                         get(app, &f2, &request);
                     } else {
+                        let fits = preview_layout(app, &preview).max_scroll() == 0;
+                        let Some(f) = flow_mut(app, flow) else { return };
                         f.phase = Phase::Preview {
                             request,
                             preview,
                             scroll: 0,
+                            seen_end: fits,
                         };
                     }
                 }
@@ -680,6 +746,7 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
                                 request,
                                 ed: TextEditor::new(&text, multiline),
                                 output,
+                                sources: r.get("sources").cloned().unwrap_or(Value::Null),
                             };
                         }
                         s @ ("failed" | "cancelled" | "interrupted") => {
@@ -807,8 +874,11 @@ pub fn draw(app: &App, g: &mut Grid) {
             a.footer("[g] grant consent   [esc] not now", t.dim());
         }
         Phase::Preview {
-            preview, scroll, ..
-        } => draw_preview(app, &mut a, preview, *scroll),
+            preview,
+            scroll,
+            seen_end,
+            ..
+        } => draw_preview(app, &mut a, preview, *scroll, *seen_end, f.notice.is_some()),
         Phase::Confirming { .. } => a.line("Confirming…", t.dim()),
         Phase::Waiting { auto, .. } => {
             if *auto {
@@ -843,9 +913,80 @@ pub fn draw(app: &App, g: &mut Grid) {
     }
 }
 
-fn draw_preview(app: &App, a: &mut Area, p: &Value, scroll: u16) {
+/// Make every character of payload text visible: C0/C1 controls in caret notation, tabs as
+/// spaces, invisible format characters (bidi controls, zero-width) as `<U+XXXX>`. The
+/// payload itself is unchanged; this is only how the preview shows it.
+pub fn visible(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\t' => out.push_str("    "),
+            '\u{7f}' => out.push_str("^?"),
+            c if (c as u32) < 0x20 => {
+                out.push('^');
+                out.push(char::from_u32(c as u32 + 0x40).unwrap_or('?'));
+            }
+            c if c.is_control() => out.push_str(&format!("<U+{:04X}>", c as u32)),
+            '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}' => out.push_str(&format!("<U+{:04X}>", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Soft-wrap one logical line to `width` display columns (never clipped; an empty line is
+/// one empty row).
+pub fn wrap(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let width = width.max(1);
+    let mut rows = vec![];
+    let mut cur = String::new();
+    let mut used = 0;
+    for g in visible(line).graphemes(true) {
+        let w = UnicodeWidthStr::width(g).min(2);
+        if used + w > width && !cur.is_empty() {
+            rows.push(std::mem::take(&mut cur));
+            used = 0;
+        }
+        cur.push_str(g);
+        used += w;
+    }
+    rows.push(cur);
+    rows
+}
+
+/// The preview's rows at the current terminal size, shared by drawing and key handling so
+/// "the whole payload was shown" means the same in both.
+pub struct PreviewLayout {
+    /// Metadata rows (wrapped), with their styles.
+    pub head: Vec<(String, vk_proto::render::Style)>,
+    /// Payload rows (wrapped); `true` marks a section heading.
+    pub body: Vec<(String, bool)>,
+    /// Rows available for the payload.
+    pub body_h: usize,
+}
+
+impl PreviewLayout {
+    pub fn max_scroll(&self) -> usize {
+        self.body.len().saturating_sub(self.body_h)
+    }
+}
+
+pub fn preview_layout(app: &App, p: &Value) -> PreviewLayout {
     let t = app.theme;
-    a.line(
+    let area = app.pane_area();
+    let width = area.w.saturating_sub(2) as usize;
+    let mut head: Vec<(String, vk_proto::render::Style)> = vec![];
+    let mut add = |s: &str, style| {
+        for r in wrap(s, width) {
+            head.push((r, style));
+        }
+    };
+    add(
         "Preview — exactly this will be sent. Nothing leaves this machine until you confirm.",
         t.bold(t.yellow),
     );
@@ -854,7 +995,7 @@ fn draw_preview(app: &App, a: &mut Area, p: &Value, scroll: u16) {
         .and_then(Value::as_f64)
         .map(|c| format!(" · ≤ ${c:.4}"))
         .unwrap_or_else(|| " · cost unknown".into());
-    a.line(
+    add(
         &format!(
             "{} via {} → {} · runs on {}",
             st(p, "model"),
@@ -864,10 +1005,9 @@ fn draw_preview(app: &App, a: &mut Area, p: &Value, scroll: u16) {
         ),
         t.text(),
     );
-    a.line(
+    add(
         &format!(
-            "{} bytes · ~{} input tokens · max {} output tokens{cost}",
-            p.get("bytes").and_then(Value::as_u64).unwrap_or(0),
+            "~{} input tokens · max {} output tokens{cost}",
             p.get("estimated_input_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
@@ -879,29 +1019,76 @@ fn draw_preview(app: &App, a: &mut Area, p: &Value, scroll: u16) {
     );
     let red = p.get("redactions").and_then(Value::as_u64).unwrap_or(0);
     if red > 0 {
-        a.line(
+        add(
             &format!("{red} redaction(s) · {}", st(p, "notice")),
             t.s(t.yellow),
         );
     }
     let omitted = arr(p, "omitted");
     if !omitted.is_empty() {
-        a.line(
+        add(
             &format!("{} source(s) omitted to fit limits", omitted.len()),
             t.dim(),
         );
     }
     let mut body: Vec<(String, bool)> = vec![("─── system ───".into(), true)];
-    body.extend(st(p, "system").lines().map(|l| (l.to_string(), false)));
-    body.push(("─── user ───".into(), true));
-    body.extend(st(p, "user").lines().map(|l| (l.to_string(), false)));
-    for (l, head) in body.into_iter().skip(scroll as usize) {
-        a.line(&l, if head { t.dim() } else { t.text() });
+    for l in st(p, "system").split('\n') {
+        body.extend(wrap(l, width).into_iter().map(|r| (r, false)));
     }
-    a.footer(
-        "[y] send exactly this   [n] cancel (nothing sent)   j/k scroll",
-        t.bold(t.fg),
+    body.push(("─── user ───".into(), true));
+    for l in st(p, "user").split('\n') {
+        body.extend(wrap(l, width).into_iter().map(|r| (r, false)));
+    }
+    body.push(("─── end of payload ───".into(), true));
+    // Rows: title and footer (2), the notice row (always reserved), the head, the status row.
+    let body_h = (area.h as usize).saturating_sub(2 + 1 + head.len() + 1);
+    PreviewLayout { head, body, body_h }
+}
+
+fn draw_preview(app: &App, a: &mut Area, p: &Value, scroll: usize, seen_end: bool, notice: bool) {
+    let t = app.theme;
+    let lay = preview_layout(app, p);
+    if !notice {
+        // The notice row is reserved so the layout doesn't shift when a notice appears.
+        a.line("", t.text());
+    }
+    for (l, style) in &lay.head {
+        a.line(l, *style);
+    }
+    let max = lay.max_scroll();
+    let scroll = scroll.min(max);
+    let shown = lay.body.iter().skip(scroll).take(lay.body_h);
+    let mut n = 0;
+    for (l, head) in shown {
+        a.line(l, if *head { t.dim() } else { t.text() });
+        n += 1;
+    }
+    for _ in n..lay.body_h {
+        a.line("", t.text());
+    }
+    let can_send = seen_end || scroll >= max;
+    a.line(
+        &format!(
+            "{} payload bytes · rows {}–{} of {}{}",
+            p.get("bytes").and_then(Value::as_u64).unwrap_or(0),
+            (scroll + 1).min(lay.body.len()),
+            scroll + n,
+            lay.body.len(),
+            if scroll >= max { " (end)" } else { "" }
+        ),
+        t.s(t.accent),
     );
+    if can_send {
+        a.footer(
+            "[y] send exactly this   [n] cancel (nothing sent)   j/k/space scroll",
+            t.bold(t.fg),
+        );
+    } else {
+        a.footer(
+            "scroll to the end (j/space) to enable [y] send   [n] cancel (nothing sent)",
+            t.bold(t.fg),
+        );
+    }
 }
 
 #[cfg(test)]

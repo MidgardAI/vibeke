@@ -211,14 +211,40 @@ pub fn fingerprint(adapter: Adapter, endpoint: &str) -> String {
     blake3::hash(format!("{}\n{endpoint}", adapter.as_str()).as_bytes()).to_hex()[..16].to_string()
 }
 
+/// A content-free description of a configuration parse error. Serde messages quote offending
+/// values (`invalid type: string "sk-…"`), so only the unknown-key name — a key the user typed,
+/// never a value — is kept, and only when it looks like an identifier.
+pub fn describe_serde(e: &serde_json::Error) -> String {
+    let m = e.to_string();
+    if let Some(rest) = m.strip_prefix("unknown field `")
+        && let Some((key, _)) = rest.split_once('`')
+        && !key.is_empty()
+        && key.len() <= 64
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return format!("unknown key `{key}`");
+    }
+    if m.starts_with("unknown variant") {
+        return "a value is not one of the allowed choices (for example adapter = \"anthropic\" | \"openai_compatible\" | \"ollama\")".into();
+    }
+    if m.starts_with("missing field") {
+        return "a required key is missing (connection, adapter or model)".into();
+    }
+    "a value has the wrong type or format (credentials must be { env = \"NAME\" } or { file = \"PATH\" }, never the key itself)".into()
+}
+
 fn nc(msg: impl Into<String>) -> AssistError {
     AssistError::new(Category::NotConfigured, msg)
 }
 
 impl AssistConfig {
     /// Parse the `[assistant]` table (as JSON). Unknown keys are errors, not silently ignored.
+    /// The error never echoes a configured value (an inline credential string, say): only an
+    /// unknown key's name or a generic type/format complaint (14 §8, 09 §9.3a).
     pub fn from_json(v: serde_json::Value) -> std::result::Result<Self, String> {
-        serde_json::from_value(v).map_err(|e| format!("[assistant]: {e}"))
+        serde_json::from_value(v).map_err(|e| format!("[assistant]: {}", describe_serde(&e)))
     }
 
     pub fn auto_send_allows(&self, op: &str) -> bool {
@@ -263,7 +289,8 @@ impl AssistConfig {
 
 /// HTTPS is required except for explicitly configured loopback endpoints (14 §10).
 pub fn validate_endpoint(e: &str) -> Result<String> {
-    let u = reqwest::Url::parse(e).map_err(|_| nc(format!("invalid endpoint URL `{e}`")))?;
+    // Messages name the rule, never the configured value (it could carry a token).
+    let u = reqwest::Url::parse(e).map_err(|_| nc("the endpoint is not a valid URL"))?;
     if !u.username().is_empty() || u.password().is_some() {
         return Err(nc("endpoint URLs must not carry credentials"));
     }
@@ -276,7 +303,7 @@ pub fn validate_endpoint(e: &str) -> Result<String> {
                 "plain HTTP is only allowed for loopback endpoints; use HTTPS or an SSH tunnel",
             ));
         }
-        s => return Err(nc(format!("unsupported endpoint scheme `{s}`"))),
+        _ => return Err(nc("unsupported endpoint scheme (use https://)")),
     }
     Ok(u.as_str().trim_end_matches('/').to_string())
 }
@@ -375,7 +402,7 @@ pub fn resolve_credential(c: &Connection) -> Result<Option<String>> {
         if v.is_empty() {
             return Err(AssistError::new(
                 Category::AuthenticationFailed,
-                format!("environment variable {name} is not set on the coordinator"),
+                "the configured credential environment variable is not set on the coordinator",
             ));
         }
         return Ok(Some(v.to_string()));
@@ -393,25 +420,44 @@ pub fn resolve_credential(c: &Connection) -> Result<Option<String>> {
             "refusing to read a harness or cloud CLI credential store; create a dedicated key file",
         ));
     }
-    let meta = std::fs::metadata(&path).map_err(|_| {
+    // Open once (never following a final symlink, never blocking on a FIFO) and validate and
+    // read through that same descriptor, so the file can't be swapped between the check and
+    // the read. Messages never include the configured path.
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&path)
+        .map_err(|e| {
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                AssistError::new(
+                    Category::PermissionDenied,
+                    "the credential file must not be a symbolic link",
+                )
+            } else {
+                AssistError::new(
+                    Category::AuthenticationFailed,
+                    "the configured credential file is not readable",
+                )
+            }
+        })?;
+    let meta = f.metadata().map_err(|_| {
         AssistError::new(
             Category::AuthenticationFailed,
-            format!("credential file {} is not readable", path.display()),
+            "the configured credential file is not readable",
         )
     })?;
-    use std::os::unix::fs::MetadataExt;
     // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     if !meta.is_file() || meta.uid() != uid || meta.mode() & 0o077 != 0 || meta.len() > 4096 {
         return Err(AssistError::new(
             Category::PermissionDenied,
-            format!(
-                "credential file {} must be a small regular file owned by you with mode 0600",
-                path.display()
-            ),
+            "the credential file must be a small regular file owned by you with mode 0600",
         ));
     }
-    let text = std::fs::read_to_string(&path).map_err(|_| {
+    let mut text = String::new();
+    (&mut f).take(4097).read_to_string(&mut text).map_err(|_| {
         AssistError::new(Category::AuthenticationFailed, "credential file unreadable")
     })?;
     let key = text.lines().next().unwrap_or("").trim().to_string();
@@ -536,6 +582,64 @@ mod tests {
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
             resolve_credential(&c).unwrap().as_deref(),
+            Some("sk-test-123")
+        );
+    }
+
+    #[test]
+    fn parse_errors_never_echo_values() {
+        let sentinel = "sk-ant-SENTINEL-inline-0123456789";
+        for v in [
+            json!({"connections": {"p": {"adapter": "anthropic", "credential": sentinel}}}),
+            json!({"connections": {"p": {"adapter": sentinel}}}),
+            json!({"connections": {"p": {"adapter": "anthropic", "endpoint": 7}}, "enabled": sentinel}),
+        ] {
+            let e = AssistConfig::from_json(v).unwrap_err();
+            assert!(!e.contains("SENTINEL"), "{e}");
+        }
+        let e = AssistConfig::from_json(json!({"enabeld": true})).unwrap_err();
+        assert!(e.contains("unknown key `enabeld`"), "{e}");
+        let e = cfg(Some("https://example.com/v1?key=SENTINEL\u{7f}%"))
+            .resolve(None)
+            .err();
+        assert!(e.is_none_or(|e| !e.message.contains("SENTINEL")));
+        let e = cfg(Some("ftp://SENTINEL@host")).resolve(None).unwrap_err();
+        assert!(!e.message.contains("SENTINEL"), "{}", e.message);
+    }
+
+    #[test]
+    fn credential_file_symlinks_refused_and_paths_not_echoed() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real-SENTINEL");
+        std::fs::write(&real, "sk-test-123\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = d.path().join("link-SENTINEL");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let conn = |p: &Path| Connection {
+            adapter: Adapter::OpenaiCompatible,
+            endpoint: None,
+            credential: Some(Credential {
+                file: Some(p.to_string_lossy().into()),
+                ..Default::default()
+            }),
+        };
+        let e = resolve_credential(&conn(&link)).unwrap_err();
+        assert_eq!(e.category, Category::PermissionDenied);
+        assert!(!e.message.contains("SENTINEL"), "{}", e.message);
+        let e = resolve_credential(&conn(&d.path().join("missing-SENTINEL"))).unwrap_err();
+        assert!(!e.message.contains("SENTINEL"), "{}", e.message);
+        // A directory or FIFO at the path is refused without blocking.
+        let fifo = d.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(
+            resolve_credential(&conn(&fifo)).unwrap_err().category,
+            Category::PermissionDenied
+        );
+        assert_eq!(
+            resolve_credential(&conn(&real)).unwrap().as_deref(),
             Some("sk-test-123")
         );
     }

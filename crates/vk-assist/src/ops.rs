@@ -202,9 +202,10 @@ impl V<'_> {
         match v.get(k).and_then(Value::as_str) {
             None => Ok(default.into()),
             Some(s) if allowed.contains(&s) => Ok(s.into()),
-            Some(s) => Err(invalid(format!(
-                "field `{k}` has unknown value `{}`",
-                clip(s, 40).0
+            // Never echo provider-supplied values into a stored error (14 §8).
+            Some(_) => Err(invalid(format!(
+                "field `{k}` has a value outside its schema (allowed: {})",
+                allowed.join(", ")
             ))),
         }
     }
@@ -222,8 +223,7 @@ impl V<'_> {
                 .ok_or_else(|| invalid(format!("field `{k}` has a non-string id")))?;
             if !set.contains(r) {
                 return Err(invalid(format!(
-                    "cited id `{}` is not part of this request",
-                    clip(r, 40).0
+                    "field `{k}` cites an id that is not part of this request"
                 )));
             }
             out.push(r.to_string());
@@ -511,6 +511,29 @@ mod tests {
                 validate(Operation::EffortEstimate, bad, &ids(&["s1"]), &[]).is_err(),
                 "{bad}"
             );
+        }
+    }
+
+    #[test]
+    fn errors_never_echo_provider_content() {
+        let secret = "sk-ant-SENTINEL-0123456789";
+        for reply in [
+            format!(
+                r#"{{"summary":"s","validation":[{{"text":"x","basis":"{secret}\u001b[2J"}}]}}"#
+            ),
+            format!(
+                r#"{{"title":"t","criteria":[{{"text":"a","source_refs":["{secret}\u001b]0;x"]}}]}}"#
+            ),
+        ] {
+            let op = if reply.contains("summary") {
+                Operation::ReviewSummary
+            } else {
+                Operation::SuggestTaskDetails
+            };
+            let e = validate(op, &reply, &ids(&["s1"]), &[]).unwrap_err();
+            assert_eq!(e.category, Category::InvalidOutput);
+            assert!(!e.message.contains("SENTINEL"), "{}", e.message);
+            assert!(!e.message.contains('\u{1b}'), "{}", e.message);
         }
     }
 
