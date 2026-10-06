@@ -1446,6 +1446,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "ulid",
  "vk-agents",
