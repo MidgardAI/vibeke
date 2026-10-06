@@ -3,7 +3,12 @@
 //! - **Reverse proxy** (B4): `preview.open {mode: "proxy"}` registers a per-preview origin on
 //!   the viewing machine's proxy (`vk_preview::proxy`) and hands the user's normal browser a
 //!   one-time tokenized URL. Upstreams are reached directly (this machine's loopback) or over
-//!   this server's bridge link as `tcp:localhost:<port>` channels (remote previews).
+//!   this server's bridge link as `tcp:localhost:<port>` channels (remote previews). Hostnames
+//!   carry this session's persisted random host tag, so two sessions never share an origin
+//!   (or its cookies); the configured proxy port is machine-wide and a second session asking
+//!   for it is refused (no silent fallback to another port). Every forwarded request
+//!   re-checks the preview (local model, or `preview.get` on the remote machine): a forgotten,
+//!   retired or moved preview loses its route and sessions.
 //! - **Mirror** (B4): `preview.mirror` binds `127.0.0.1:<port>` (and `[::1]` when free) on the
 //!   viewing machine and forwards raw TCP to the remote preview's port. Explicit, per preview,
 //!   full scope only, never persisted. It cannot carry a credential; connections are
@@ -18,11 +23,13 @@ use crate::preview::{
     PreviewConfig, commit_previews, find_local, is_local_machine, open_url_of, remote_call,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
-use vk_preview::proxy::{self, Proxy, Route};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
+use vk_preview::proxy::{self, Proxy, Route, RouteCheck};
 use vk_preview::socks::{BoxFuture, Stream};
 use vk_proto::model::*;
 use vk_proto::rpc::{ErrorKind, RpcError};
@@ -31,6 +38,20 @@ use vk_proto::rpc::{ErrorKind, RpcError};
 
 struct ServerUpstream {
     server: Weak<Server>,
+    /// Remote routes confirmed live recently (host → when): a page load's many requests
+    /// cost one `preview.get` round trip, not one each.
+    remote_ok: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+/// How long a remote `preview.get` confirmation is reused.
+const REMOTE_CHECK_TTL: Duration = Duration::from_secs(2);
+
+/// Whether `pv` (as its machine reports it) is still the preview `route` was opened for.
+fn route_matches(route: &Route, pv: &Preview) -> bool {
+    pv.id == route.preview
+        && pv.status != PreviewStatus::Gone
+        && pv.port == route.port
+        && (pv.scheme == "https") == (route.scheme == "https")
 }
 
 impl proxy::Upstream for ServerUpstream {
@@ -40,6 +61,61 @@ impl proxy::Upstream for ServerUpstream {
         Box::pin(async move {
             let server = server.ok_or_else(|| std::io::Error::other("server stopped"))?;
             connect_machine_port(&server, &route.machine, route.port).await
+        })
+    }
+
+    fn check(&self, route: &Route) -> BoxFuture<RouteCheck> {
+        let server = self.server.upgrade();
+        let route = route.clone();
+        // Keyed by the whole route: a host reused for another preview is checked afresh.
+        let key = format!("{}|{}|{}", route.host, route.preview, route.port);
+        let cached = self
+            .remote_ok
+            .lock()
+            .unwrap()
+            .get(&key)
+            .is_some_and(|t| t.elapsed() < REMOTE_CHECK_TTL);
+        let cache = self.remote_ok.clone();
+        Box::pin(async move {
+            let Some(server) = server else {
+                return RouteCheck::Unavailable;
+            };
+            if is_local_machine(&server, &route.machine) {
+                let pv = server.with_core(|c| {
+                    c.model
+                        .previews
+                        .iter()
+                        .find(|p| p.id == route.preview)
+                        .cloned()
+                });
+                return match pv {
+                    Some(pv) if route_matches(&route, &pv) => RouteCheck::Live,
+                    _ => RouteCheck::Gone,
+                };
+            }
+            if cached {
+                return RouteCheck::Live;
+            }
+            match remote_call(
+                &server,
+                &route.machine,
+                "preview.get",
+                json!({"preview": route.preview}),
+            )
+            .await
+            {
+                Ok(v) => match serde_json::from_value::<Preview>(v["preview"].clone()) {
+                    Ok(pv) if route_matches(&route, &pv) => {
+                        let mut c = cache.lock().unwrap();
+                        c.retain(|_, t| t.elapsed() < REMOTE_CHECK_TTL);
+                        c.insert(key, Instant::now());
+                        RouteCheck::Live
+                    }
+                    _ => RouteCheck::Gone,
+                },
+                Err(e) if e.code == ErrorKind::NotFound.code() => RouteCheck::Gone,
+                Err(_) => RouteCheck::Unavailable,
+            }
         })
     }
 }
@@ -69,26 +145,91 @@ pub(crate) async fn connect_machine_port(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, format!("{e:#}")))
 }
 
-/// Start the proxy once: `preview.proxy_port` (default 47800) on 127.0.0.1 (+ `[::1]`), or an
-/// ephemeral port when that one is busy.
-pub(crate) async fn ensure_proxy(server: &Arc<Server>, port: u16) -> std::io::Result<Arc<Proxy>> {
+/// The machine-wide owner record of a proxy port: which session's proxy listens there.
+fn owner_file(port: u16) -> std::path::PathBuf {
+    crate::paths::runtime_root().join(format!("preview-proxy-{port}.owner"))
+}
+
+/// The session holding `port`, if its owner record names a live process.
+fn port_owner(port: u16) -> Option<String> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(owner_file(port)).ok()?).ok()?;
+    let pid = v["pid"].as_u64()? as i32;
+    // SAFETY: signal 0 only checks existence/permission.
+    (pid > 0 && unsafe { libc::kill(pid, 0) } == 0)
+        .then(|| format!("{} (pid {pid})", v["session"].as_str().unwrap_or("?")))
+}
+
+/// This session's random host tag (persisted: hostnames, and the cookies the browser keeps
+/// for them, stay stable across server restarts; another session never gets the same tag).
+pub(crate) fn session_host_tag(server: &Server) -> String {
+    let mut c = server.core.lock().unwrap();
+    if let Some(t) = c
+        .store
+        .kv_get("preview", "proxy_host_tag")
+        .ok()
+        .flatten()
+        .filter(|t| !t.is_empty())
+    {
+        return t;
+    }
+    let t = proxy::session_tag();
+    let mut tx = Tx::new();
+    tx.m.kv("preview", "proxy_host_tag", Some(t.clone()));
+    let _ = c.commit(tx);
+    t
+}
+
+/// Start the proxy once on `preview.proxy_port` (default 47800): 127.0.0.1 and `[::1]`. The
+/// port is machine-wide: when it is busy (another session's proxy, or anything else on either
+/// loopback address) the proxy does not start — there is no silent fallback, the user picks
+/// another `proxy_port` (or 0 = ephemeral) for this session. Hostnames are per-session either
+/// way (the host tag), so two sessions never serve previews under the same host.
+pub(crate) async fn ensure_proxy(server: &Arc<Server>, port: u16) -> Result<Arc<Proxy>, RpcError> {
     let mut g = server.previews.proxy.lock().await;
     if let Some(p) = g.as_ref() {
         return Ok(p.clone());
     }
     let listeners = match Proxy::bind(port).await {
         Ok(l) => l,
-        Err(e) if port != 0 => {
-            tracing::warn!(port, error = %e, "preview proxy: configured port busy; using an ephemeral port");
-            Proxy::bind(0).await?
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let owner = (port != 0).then(|| port_owner(port)).flatten();
+            let who = match &owner {
+                Some(o) => format!("Vibeke session {o}"),
+                None => "another program".to_string(),
+            };
+            return Err(err(
+                ErrorKind::Conflict,
+                format!(
+                    "preview proxy port {port} is in use by {who} on 127.0.0.1 or [::1]; set [preview] proxy_port to another port (or 0) for this session"
+                ),
+            )
+            .details(json!({"port": port, "owner": owner})));
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            return Err(err(
+                ErrorKind::Internal,
+                format!("preview proxy: bind {port}: {e}"),
+            ));
+        }
     };
     let p = Proxy::new(Arc::new(ServerUpstream {
         server: Arc::downgrade(server),
+        remote_ok: Arc::default(),
     }));
     p.serve(listeners);
+    if port != 0 {
+        let f = owner_file(port);
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(
+            &f,
+            json!({"session": server.opts.session, "pid": std::process::id(), "port": p.port()})
+                .to_string(),
+        );
+    }
     tracing::info!(port = p.port(), "preview proxy on 127.0.0.1");
+    *server.previews.proxy_handle.lock().unwrap() = Some(p.clone());
     *g = Some(p.clone());
     Ok(p)
 }
@@ -96,10 +237,11 @@ pub(crate) async fn ensure_proxy(server: &Arc<Server>, port: u16) -> std::io::Re
 pub(crate) fn proxy_port(server: &Server) -> Option<u16> {
     server
         .previews
-        .proxy
-        .try_lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.port()))
+        .proxy_handle
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.port())
 }
 
 pub(crate) async fn proxy_status(server: &Server) -> Value {
@@ -114,9 +256,26 @@ pub(crate) async fn proxy_status(server: &Server) -> Value {
     }
 }
 
-pub(crate) async fn forget_route(server: &Server, machine: &str, preview: &str) {
-    if let Some(p) = server.previews.proxy.lock().await.as_ref() {
+/// Revoke a preview's proxy origin and every session on it (synchronous: callable from any
+/// commit path).
+pub(crate) fn revoke_route(server: &Server, machine: &str, preview: &str) {
+    if let Some(p) = server.previews.proxy_handle.lock().unwrap().as_ref() {
         p.remove_preview(machine, preview);
+    }
+}
+
+pub(crate) async fn forget_route(server: &Server, machine: &str, preview: &str) {
+    revoke_route(server, machine, preview);
+}
+
+/// A remote `preview.forget {preview: <handle|id>}`: this (viewing) server's origins for it go
+/// too, whatever the remote answers.
+pub(crate) fn forget_remote_routes(server: &Server, machine: &str, target: &str) {
+    if let Some(p) = server.previews.proxy_handle.lock().unwrap().as_ref() {
+        let n = p.remove_matching(machine, target);
+        if n > 0 {
+            tracing::info!(%machine, preview = %target, "preview proxy: revoked a remote preview's origin");
+        }
     }
 }
 
@@ -179,6 +338,10 @@ pub(crate) async fn open_proxy(
 ) -> R {
     let label = machine_label(server, machine);
     let local = label == "local";
+    // The ordinary open-URL rules apply to proxy mode too: the path is an absolute-path
+    // reference on the preview's origin (a remote machine's record is not trusted for it).
+    let path = vk_tasks::normalize_preview_path(&pv.path)
+        .map_err(|e| invalid(format!("preview {}: {e}", pv.handle)))?;
     let slug = if local {
         pv.task
             .as_ref()
@@ -191,10 +354,15 @@ pub(crate) async fn open_proxy(
         &pv.handle,
         (!local).then_some(label.as_str()),
         slug.as_deref(),
+        &session_host_tag(server),
     );
-    let proxy = ensure_proxy(server, cfg.proxy_port)
-        .await
-        .map_err(|e| err(ErrorKind::Internal, format!("preview proxy: {e}")))?;
+    let port = server
+        .previews
+        .proxy_port_override
+        .lock()
+        .unwrap()
+        .unwrap_or(cfg.proxy_port);
+    let proxy = ensure_proxy(server, port).await?;
     let route = proxy.register(Route {
         host: wanted,
         machine: label.clone(),
@@ -211,8 +379,8 @@ pub(crate) async fn open_proxy(
     let token = proxy
         .mint_token(&route.host)
         .ok_or_else(|| err(ErrorKind::Internal, "preview proxy: route vanished"))?;
-    let plain = proxy.url(&route.host, &pv.path, None);
-    let open_url = proxy.url(&route.host, &pv.path, Some(&token));
+    let plain = proxy.url(&route.host, &path, None);
+    let open_url = proxy.url(&route.host, &path, Some(&token));
     let full_scope = ctx.pane_scope.is_none();
     // `no_open: true` (API) / `open: false` (CLI `--no-open`): print the link instead.
     let no_open = full_scope && (b(p, "no_open").unwrap_or(false) || b(p, "open") == Some(false));
@@ -646,12 +814,8 @@ pub(crate) fn retire_task_previews(server: &Arc<Server>, task_id: &str) {
     if mine.is_empty() {
         return;
     }
-    if let Ok(g) = server.previews.proxy.try_lock()
-        && let Some(px) = g.as_ref()
-    {
-        for p in &mine {
-            px.remove_preview("local", &p.id);
-        }
+    for p in &mine {
+        revoke_route(server, "local", &p.id);
     }
     let items = mine
         .into_iter()

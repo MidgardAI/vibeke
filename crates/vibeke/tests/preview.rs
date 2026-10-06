@@ -736,7 +736,13 @@ fn proxy_mode_and_mirror_through_bridge() {
     let (st, head, _) = proxy_get(port, &authority, &path, "");
     assert_eq!(st, 303, "{head}");
     let lower = head.to_ascii_lowercase();
-    assert!(lower.contains("location: /dash\r\n"), "{head}");
+    assert!(
+        lower.contains(&format!("location: http://{authority}/dash\r\n")),
+        "{head}"
+    );
+    // One cookie, Secure (no non-Secure copy another local listener could read).
+    assert_eq!(lower.matches("set-cookie:").count(), 1, "{head}");
+    assert!(lower.contains("; secure"), "{head}");
     let cookie = lower
         .lines()
         .find_map(|l| l.strip_prefix("set-cookie: __host-vk_preview="))
@@ -822,6 +828,126 @@ fn proxy_mode_and_mirror_through_bridge() {
         }
         let _ = child.kill();
         let _ = child.wait();
+
+        // A sibling preview framing the authenticated one: Chromium sends A's cookie with
+        // the same-site iframe navigation (`Sec-Fetch-Dest: iframe`); the proxy refuses it,
+        // while A's own top-level navigation got through.
+        let a = s.json(&["preview", "open", &target, "--proxy", "--no-open"]);
+        let a_url = a["open_url"]
+            .as_str()
+            .unwrap()
+            .replace("/dash?", "/chromium-a?");
+        let framer: &'static str = Box::leak(
+            format!(
+                "framer</p><script>setTimeout(function(){{var f=document.createElement('iframe');f.src='http://{authority}/framed';document.body.appendChild(f);}},1500)</script><p>"
+            )
+            .into_boxed_str(),
+        );
+        let b_app = http_server(framer);
+        let d = s.json(&[
+            "--machine",
+            "fakebox",
+            "preview",
+            "declare",
+            &b_app.port.to_string(),
+            "--label",
+            "framer",
+        ]);
+        let b_target = format!("fakebox/{}", d["preview"]["handle"].as_str().unwrap());
+        let b = s.json(&["preview", "open", &b_target, "--proxy", "--no-open"]);
+        let b_url = b["open_url"].as_str().unwrap().to_string();
+        let denied0 = s.json(&["preview", "status"])["proxy"]["stats"]["denied"]
+            .as_u64()
+            .unwrap();
+        // Headless Chromium takes one target on its command line; the second tab is opened
+        // through the DevTools HTTP endpoint (a browser-initiated navigation, like the user
+        // opening the link, so no initiator and no `Sec-Fetch-Site: same-site`).
+        let profile = tempfile::tempdir().unwrap();
+        let devtools = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut child = Command::new(&chromium)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--disable-background-networking",
+                &format!("--remote-debugging-port={devtools}"),
+                &format!("--user-data-dir={}", profile.path().display()),
+                &a_url,
+            ])
+            .spawn()
+            .unwrap();
+        let t0 = Instant::now();
+        while !app
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("GET /chromium-a "))
+            && t0.elapsed() < Duration::from_secs(30)
+        {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let mut opened_b = false;
+        while !opened_b && t0.elapsed() < Duration::from_secs(30) {
+            if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", devtools)) {
+                let _ = write!(
+                    c,
+                    "PUT /json/new?{b_url} HTTP/1.1\r\nHost: 127.0.0.1:{devtools}\r\nConnection: close\r\n\r\n"
+                );
+                let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut out = [0u8; 12];
+                opened_b = c.read_exact(&mut out).is_ok() && out.starts_with(b"HTTP/1.1 200");
+            }
+            if !opened_b {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        let t0 = Instant::now();
+        let mut framed_denied = false;
+        while t0.elapsed() < Duration::from_secs(30) {
+            let a_seen = app
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("GET /chromium-a "));
+            let b_seen = !b_app.seen.lock().unwrap().is_empty();
+            let denied = s.json(&["preview", "status"])["proxy"]["stats"]["denied"]
+                .as_u64()
+                .unwrap();
+            if a_seen && b_seen && denied > denied0 {
+                // Give a forwarded iframe request time to show up if it were allowed.
+                std::thread::sleep(Duration::from_millis(1500));
+                framed_denied = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            framed_denied,
+            "the top-level navigations should pass and the iframe be refused: {:?} a={:?} b={:?}\n{}",
+            s.json(&["preview", "status"])["proxy"],
+            app.seen.lock().unwrap(),
+            b_app.seen.lock().unwrap(),
+            s.log_tail()
+        );
+        assert!(
+            !app.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("GET /framed ")),
+            "a sibling preview's iframe reached the authenticated app"
+        );
     }
 
     // Mirror: the app's port is in use on this machine (the "remote" is this host) → conflict.
