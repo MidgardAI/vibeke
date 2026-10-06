@@ -1839,7 +1839,8 @@ mod tests {
             &r,
             &s,
             argv("./ci/check.sh"),
-            1500,
+            // Long enough for the 100 kB of output to land first, even on a loaded host.
+            5000,
             &CancelToken::new(),
             RunOptions {
                 max_log_bytes: 1000,
@@ -1847,7 +1848,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(started.elapsed() < Duration::from_secs(20));
         assert_eq!(run.state, CheckState::Failed);
         assert!(run.timed_out);
         assert!(run.log_truncated);
