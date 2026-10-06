@@ -1,0 +1,50 @@
+# Built-in screen manifest: Amp (spec 04 §6.7). Best effort from the CLI's public docs and
+# behaviour: NOT exercised against a live binary and no recording exists ([verify M2]). There is
+# no validated range, so every version runs observe + keystrokes (when a dialog rule exists)
+# until a recorded corpus covers it; drift CI is the intended way to firm this up.
+schema = 1
+id = "amp"
+name = "Amp"
+icon = "⚡"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["amp"]
+[[detect.process]]
+interpreter = ["node", "bun", "deno", "python", "python3"]
+script_regex = '(@sourcegraph/amp|/amp$)'
+
+[version]
+command = ["amp", "--version"]
+
+[launch]
+argv = ["amp"]
+session_id_format = "none"
+prompt_arg = "trailing"
+
+[resume]
+argv = ["amp", "threads", "continue", "{resume_id}"]
+
+[integration]
+transports = ["screen", "process"]
+install = ""
+
+[screen]
+rows = 30
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ["(?i)esc to cancel", '(?i)\b(running tools|waiting for response)\b']
+confidence = 0.7
+
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?m)^\s*╰─+╯\s*$']
+confidence = 0.5
+
+[ui]
+interrupt_keys = ["esc"]
+quit_keys = ["ctrl+c", "ctrl+c"]

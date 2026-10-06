@@ -250,6 +250,11 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # shims             = true
 # resume_on_restart = "ask"             # ask | always | never
 # name_from_task    = true
+# fail_closed       = true               # policy deny rules on yolo runs fail closed when the server is unreachable
+
+# [agents.approvals.claude]
+# persist_always      = false           # "allow always" edits Claude's settings (off: session-scoped rule)
+# persist_destination = "localSettings" # localSettings | projectSettings | userSettings
 
 # [agents.harness.claude]
 # enabled     = true

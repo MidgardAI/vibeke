@@ -719,6 +719,13 @@ impl Server {
             self.opts.bin.to_string_lossy().into_owned(),
         );
         set(&mut env, "VIBEKE_PANE_TOKEN", self.token_for(pane_id));
+        // Vibeke-only enforcement fails closed in the pre-tool hook of a yolo run (04 §2.7).
+        if vk_config::Config::load(vk_config::config_path())
+            .map(|(c, _)| c.agents.fail_closed)
+            .unwrap_or(true)
+        {
+            set(&mut env, "VIBEKE_ENFORCE", "1".into());
+        }
         theme::pane_env(self, &mut env);
         // Leased ports of an owned task workspace (`PORT`, `[ports] env` names).
         for (k, v) in task_env {

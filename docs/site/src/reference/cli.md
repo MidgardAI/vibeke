@@ -127,6 +127,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `resume` | `<run>` | `agent.resume` | [--pane p] |
 | `resumable` | - | `agent.resumable` | ended runs that can be resumed |
 | `harnesses` | - | `agent.harnesses` |  |
+| `turn-usage` | `<run>` | `agent.turn_usage` | <run> [--limit 200] — per-turn tokens and cost from the transcript |
+| `limits` | - | `agent.limits` | latest rate-limit observation per harness |
+| `drift` | - | `agent.drift` | disagreement/answer-failure counters per harness version |
 
 ## `vibeke interaction`
 
@@ -240,6 +243,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `list` | - | `policy.list` | [--scope dir] — merged rules: config.toml, added with `policy add`, trusted repositories |
 | `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
 | `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
+| `suggest` | - | `policy.suggest` | [--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml |
 | `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
 
 ## `vibeke worktree`

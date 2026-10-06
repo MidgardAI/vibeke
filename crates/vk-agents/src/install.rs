@@ -202,6 +202,10 @@ const CLAUDE_EVENTS: &[EventSpec] = &[
     ev("PreCompact", None, None),
     ev("PostCompact", None, None),
     ev("SessionEnd", None, None),
+    // An MCP server asks the user for input; synchronous, answered through the hook (04 §6.1).
+    ev("Elicitation", STAR, G),
+    // The session's working directory changed (an agent-run `cd`).
+    ev("CwdChanged", None, None),
 ];
 
 const CODEX_EVENTS: &[EventSpec] = &[
@@ -216,6 +220,8 @@ const CODEX_EVENTS: &[EventSpec] = &[
     ev("SubagentStop", None, None),
     ev("PreCompact", None, None),
     ev("PostCompact", None, None),
+    // The user interrupted a turn (04 §6.2): maps to a settled turn like `Stop`.
+    ev("Interrupt", None, None),
 ];
 
 /// Gemini CLI hooks (04 §6.5) [verify M2]: names and the Claude-like group shape come from the
@@ -1329,7 +1335,15 @@ mod tests {
         assert!(p.changed());
         let v = json_of(&d.claude.join("settings.json"));
         let hooks = v["hooks"].as_object().unwrap();
-        assert_eq!(hooks.len(), 15);
+        assert_eq!(hooks.len(), 17);
+        // Elicitation blocks for the user's answer like PermissionRequest; CwdChanged is a signal.
+        assert_eq!(hooks["Elicitation"][0]["hooks"][0]["timeout"], 1800);
+        assert_eq!(hooks["Elicitation"][0]["matcher"], "*");
+        assert!(hooks["CwdChanged"][0]["hooks"][0].get("timeout").is_none());
+        assert_eq!(
+            hooks["CwdChanged"][0]["hooks"][0]["command"],
+            format!("{BIN} hook claude CwdChanged")
+        );
         let pre = &hooks["PreToolUse"][0];
         assert_eq!(pre["matcher"], "*");
         assert_eq!(pre["hooks"][0]["timeout"], 1800);
@@ -1503,7 +1517,7 @@ mod tests {
               "Stop":[{"hooks":[{"type":"command","command":"old"}],"_vibeke":"vibeke-integration=claude@0.0.1"},
                       {"hooks":[{"type":"command","command":"user"}]},
                       {"hooks":[{"type":"command","command":"old2"}],"_vibeke":"vibeke-integration=claude@0.0.1"}],
-              "CwdChanged":[{"hooks":[{"type":"command","command":"gone"}],"_vibeke":"vibeke-integration=claude@0.0.1"}]}}"#,
+              "ObsoleteEvent":[{"hooks":[{"type":"command","command":"gone"}],"_vibeke":"vibeke-integration=claude@0.0.1"}]}}"#,
         )
         .unwrap();
         install(Harness::Claude, &d);
@@ -1515,7 +1529,7 @@ mod tests {
             format!("vibeke-integration=claude@{VERSION}")
         );
         assert_eq!(stop[1]["hooks"][0]["command"], "user");
-        assert!(v["hooks"].get("CwdChanged").is_none());
+        assert!(v["hooks"].get("ObsoleteEvent").is_none());
     }
 
     #[test]
@@ -1598,7 +1612,7 @@ mod tests {
         let st = status(Harness::Claude, &d);
         assert_eq!(st.state, InstallState::NotInstalled);
         assert!(!st.file_exists);
-        assert_eq!(st.missing_events.len(), 15);
+        assert_eq!(st.missing_events.len(), 17);
         install(Harness::Claude, &d);
         let f = d.claude.join("settings.json");
         let mut v = json_of(&f);
@@ -1607,7 +1621,7 @@ mod tests {
         let st = status(Harness::Claude, &d);
         assert_eq!(st.state, InstallState::Partial);
         assert_eq!(st.missing_events, ["Stop"]);
-        assert_eq!(st.hooks.len(), 14);
+        assert_eq!(st.hooks.len(), 16);
         assert_eq!(st.hooks[0].version.as_deref(), Some(VERSION));
         assert!(st.hooks.iter().all(|h| h.trust.is_none()));
     }
@@ -1692,7 +1706,11 @@ mod tests {
         apply(&p).unwrap();
         let v = json_of(&f);
         let hooks = v["hooks"].as_object().unwrap();
-        assert_eq!(hooks.len(), 11);
+        assert_eq!(hooks.len(), 12);
+        assert_eq!(
+            hooks["Interrupt"][0]["hooks"][0]["command"],
+            format!("{BIN} hook codex Interrupt")
+        );
         assert_eq!(hooks["PreToolUse"].as_array().unwrap().len(), 2);
         assert_eq!(hooks["PreToolUse"][1]["matcher"], "Bash");
         assert_eq!(hooks["PreToolUse"][1]["hooks"][0]["timeout"], 1800);

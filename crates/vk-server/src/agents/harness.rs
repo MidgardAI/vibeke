@@ -561,9 +561,184 @@ fn blank_interaction(
 }
 
 /// Map a gate-capable hook payload to an Interaction (04 §6.1.1, §6.1.2, §6.2).
+/// `native_ref` prefix of an interaction opened from a Claude `Elicitation` hook.
+pub const ELICIT_PREFIX: &str = "elicit:";
+
+pub fn is_elicitation(it: &Interaction) -> bool {
+    it.native_ref
+        .as_deref()
+        .is_some_and(|r| r.starts_with(ELICIT_PREFIX))
+}
+
+/// Claude `Elicitation` (an MCP server asks the user for input; a synchronous hook, 04 §6.1):
+/// payload `{mcp_server_name, message, mode: form|url, url?, elicitation_id?,
+/// requested_schema?: {properties: {<key>: {type, title?, description?, enum?, enumNames?}}}}`
+/// [verify M0]. One question per schema property (enum → options, boolean → true/false, other
+/// types free text); a schema-less or URL elicitation asks accept/decline. The property types
+/// ride in `plan_md` as a JSON map so the answer can be typed again.
+fn elicitation_interaction(p: &Value) -> Interaction {
+    let server = p
+        .get("mcp_server_name")
+        .and_then(Value::as_str)
+        .unwrap_or("MCP server");
+    let message = p
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("needs input");
+    let native_ref = p
+        .get("elicitation_id")
+        .and_then(Value::as_str)
+        .map(|i| format!("{ELICIT_PREFIX}{i}"))
+        .unwrap_or_else(|| {
+            format!(
+                "{ELICIT_PREFIX}{}",
+                &blake3::hash(format!("{server}\n{message}").as_bytes()).to_hex()[..16]
+            )
+        });
+    let mut it = blank_interaction(
+        InteractionKind::Question,
+        format!("{server}: {message}"),
+        Some(native_ref),
+    );
+    let mut body = format!("**{server}** asks: {message}");
+    if let Some(u) = p.get("url").and_then(Value::as_str) {
+        body.push_str(&format!("\n\nOpen: {u}"));
+    }
+    it.body_md = Some(body);
+    let mut types = serde_json::Map::new();
+    let mut qs = vec![];
+    if let Some(props) = p
+        .pointer("/requested_schema/properties")
+        .and_then(Value::as_object)
+    {
+        for (key, def) in props {
+            let ty = def.get("type").and_then(Value::as_str).unwrap_or("string");
+            types.insert(key.clone(), json!(ty));
+            let prompt = def
+                .get("title")
+                .or_else(|| def.get("description"))
+                .and_then(Value::as_str)
+                .unwrap_or(key)
+                .to_string();
+            let names: Vec<String> = def
+                .get("enumNames")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let options: Vec<QuestionOption> = match def.get("enum").and_then(Value::as_array) {
+                Some(vals) => vals
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, v)| {
+                        let id = v
+                            .as_str()
+                            .map(str::to_string)
+                            .or_else(|| Some(v.to_string()))?;
+                        Some(QuestionOption {
+                            label: names.get(i).cloned().unwrap_or_else(|| id.clone()),
+                            id,
+                            description: None,
+                        })
+                    })
+                    .collect(),
+                None if ty == "boolean" => ["true", "false"]
+                    .iter()
+                    .map(|v| QuestionOption {
+                        id: v.to_string(),
+                        label: v.to_string(),
+                        description: None,
+                    })
+                    .collect(),
+                None => vec![],
+            };
+            qs.push(Question {
+                id: key.clone(),
+                prompt,
+                header: None,
+                multi: false,
+                allow_free_text: options.is_empty() || ty != "boolean",
+                options,
+            });
+        }
+    }
+    if qs.is_empty() {
+        qs.push(Question {
+            id: "action".into(),
+            prompt: message.to_string(),
+            header: Some(server.to_string()),
+            multi: false,
+            options: vec![
+                QuestionOption {
+                    id: "accept".into(),
+                    label: "Accept".into(),
+                    description: None,
+                },
+                QuestionOption {
+                    id: "decline".into(),
+                    label: "Decline".into(),
+                    description: None,
+                },
+            ],
+            allow_free_text: false,
+        });
+    }
+    it.questions = qs;
+    it.plan_md = Some(Value::Object(types).to_string());
+    it
+}
+
+/// Hook stdout for an answered elicitation: `action` accept (with typed `content`), decline.
+fn elicitation_json(it: &Interaction, a: &Answer) -> Value {
+    let types: Value = it
+        .plan_md
+        .as_deref()
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or(Value::Null);
+    let schema_less = it.questions.len() == 1 && it.questions[0].id == "action";
+    let declined = matches!(a.decision, Some(Decision::Deny))
+        || (schema_less
+            && a.choices
+                .first()
+                .and_then(|(_, o)| o.first())
+                .is_some_and(|c| c == "decline"));
+    if declined {
+        return json!({"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}});
+    }
+    let mut content = serde_json::Map::new();
+    if !schema_less {
+        for (q, opts) in &a.choices {
+            let raw = opts.first().cloned().unwrap_or_default();
+            let v = match types.get(q).and_then(Value::as_str) {
+                Some("boolean") => json!(raw == "true"),
+                Some("number") | Some("integer") => raw
+                    .parse::<i64>()
+                    .map(Value::from)
+                    .or_else(|_| raw.parse::<f64>().map(Value::from))
+                    .unwrap_or_else(|_| json!(raw)),
+                _ => json!(raw),
+            };
+            content.insert(q.clone(), v);
+        }
+        if content.is_empty()
+            && let (Some(t), Some(q)) = (a.text.as_ref(), it.questions.first())
+        {
+            content.insert(q.id.clone(), json!(t));
+        }
+    }
+    json!({"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "accept", "content": content}})
+}
+
 pub fn interaction_from_hook(h: Harness, event: &str, p: &Value) -> Option<Interaction> {
     if h.is_pi_family() && event == "Dialog" {
         return Some(dialog_interaction(p));
+    }
+    if event == "Elicitation" && h.family() == Family::Claude {
+        return Some(elicitation_interaction(p));
     }
     match h.family() {
         Family::OpenCode if event == "permission.ask" => {
@@ -801,7 +976,68 @@ fn dialog_interaction(p: &Value) -> Interaction {
     }
 }
 
+/// `Answer.text` of an `allow_always` answer the user chose to save to Claude's settings
+/// ("always, save to settings", 04 §6.1.1). Only honoured with `approvals.claude.persist_always`.
+pub const ALWAYS_SAVE: &str = "save_to_settings";
+
+/// Where Claude `allow_always` rules go (04 §6.1.1): `session` unless the user opted in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Persist {
+    pub enabled: bool,
+    /// `localSettings` | `projectSettings` | `userSettings`.
+    pub destination: String,
+}
+
+impl Default for Persist {
+    fn default() -> Self {
+        Persist {
+            enabled: false,
+            destination: "localSettings".into(),
+        }
+    }
+}
+
+impl Persist {
+    pub fn from_config() -> Persist {
+        vk_config::Config::load(vk_config::config_path())
+            .map(|(c, _)| Persist::from(&c))
+            .unwrap_or_default()
+    }
+
+    /// The `destination` of an `addRules` entry for this answer: persistent only when both the
+    /// config allows it and the answer asks for it; anything else stays session-scoped.
+    pub fn destination_for(&self, a: &Answer) -> &str {
+        let valid = ["localSettings", "projectSettings", "userSettings"];
+        if self.enabled
+            && a.text.as_deref() == Some(ALWAYS_SAVE)
+            && valid.contains(&self.destination.as_str())
+        {
+            &self.destination
+        } else {
+            "session"
+        }
+    }
+}
+
+impl From<&vk_config::Config> for Persist {
+    fn from(c: &vk_config::Config) -> Persist {
+        Persist {
+            enabled: c.agents.approvals.claude.persist_always,
+            destination: c.agents.approvals.claude.persist_destination.clone(),
+        }
+    }
+}
+
+/// [`decision_json`] with the user's `[agents.approvals.claude]` settings.
+pub fn decision_json_cfg(h: Harness, it: &Interaction, a: &Answer) -> Value {
+    decision_json_with(h, it, a, &Persist::from_config())
+}
+
 pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
+    decision_json_with(h, it, a, &Persist::default())
+}
+
+pub fn decision_json_with(h: Harness, it: &Interaction, a: &Answer, persist: &Persist) -> Value {
     match h.family() {
         // `permission.ask` hook output (04 §6.4): allow-always has no hook equivalent.
         Family::OpenCode => {
@@ -829,6 +1065,9 @@ pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
         };
         return json!({"value": value});
     }
+    if is_elicitation(it) {
+        return elicitation_json(it, a);
+    }
     let deny_msg = a
         .text
         .clone()
@@ -849,7 +1088,7 @@ pub fn decision_json(h: Harness, it: &Interaction, a: &Answer) -> Value {
                     .command
                     .as_ref()
                     .and_then(|c| c.split_whitespace().next().map(|w| format!("{w}:*")));
-                json!({"behavior": "allow", "updatedPermissions": [{"type": "addRules", "rules": [{"toolName": act.tool, "ruleContent": rule}], "behavior": "allow", "destination": "session"}]})
+                json!({"behavior": "allow", "updatedPermissions": [{"type": "addRules", "rules": [{"toolName": act.tool, "ruleContent": rule}], "behavior": "allow", "destination": persist.destination_for(a)}]})
             }
             _ => json!({"behavior": "allow"}),
         },
@@ -1377,5 +1616,182 @@ mod m2_tests {
         let h = Harness::from_id("hermes").unwrap();
         let m = super::super::screen::evaluate(h, "Run this command?\n  1. Yes\n  2. No\n");
         assert!(m.dialog.is_some());
+    }
+
+    fn always(text: Option<&str>) -> Answer {
+        Answer {
+            decision: Some(Decision::AllowAlways),
+            text: text.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn dest(d: &Value) -> String {
+        d["hookSpecificOutput"]["decision"]["updatedPermissions"][0]["destination"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn allow_always_persists_only_with_consent_and_config() {
+        let it = interaction_from_hook(
+            Harness::Claude,
+            "PermissionRequest",
+            &json!({"tool_name": "Bash", "tool_input": {"command": "pnpm test"}, "tool_use_id": "t1"}),
+        )
+        .unwrap();
+        let off = Persist::default();
+        let on = Persist {
+            enabled: true,
+            destination: "projectSettings".into(),
+        };
+        // Config off: always session-scoped, even when the answer asks to save.
+        assert_eq!(
+            dest(&decision_json_with(
+                Harness::Claude,
+                &it,
+                &always(Some(ALWAYS_SAVE)),
+                &off
+            )),
+            "session"
+        );
+        // Config on but the user did not pick "save to settings": still session.
+        assert_eq!(
+            dest(&decision_json_with(
+                Harness::Claude,
+                &it,
+                &always(None),
+                &on
+            )),
+            "session"
+        );
+        // Both: the configured persistent destination.
+        assert_eq!(
+            dest(&decision_json_with(
+                Harness::Claude,
+                &it,
+                &always(Some(ALWAYS_SAVE)),
+                &on
+            )),
+            "projectSettings"
+        );
+        // A bad destination in config never reaches Claude.
+        let bad = Persist {
+            enabled: true,
+            destination: "../../etc".into(),
+        };
+        assert_eq!(
+            dest(&decision_json_with(
+                Harness::Claude,
+                &it,
+                &always(Some(ALWAYS_SAVE)),
+                &bad
+            )),
+            "session"
+        );
+        // The rule itself is unchanged.
+        let d = decision_json_with(Harness::Claude, &it, &always(Some(ALWAYS_SAVE)), &on);
+        assert_eq!(
+            d["hookSpecificOutput"]["decision"]["updatedPermissions"][0]["rules"][0]["ruleContent"],
+            "pnpm:*"
+        );
+        // From config.
+        let mut cfg = vk_config::Config::default();
+        cfg.agents.approvals.claude.persist_always = true;
+        cfg.agents.approvals.claude.persist_destination = "userSettings".into();
+        assert_eq!(Persist::from(&cfg).destination, "userSettings");
+        assert!(Persist::from(&cfg).enabled);
+        assert!(!Persist::from(&vk_config::Config::default()).enabled);
+    }
+
+    #[test]
+    fn elicitation_hook_becomes_a_typed_question_and_answers_with_content() {
+        let p = json!({
+            "mcp_server_name": "deploy",
+            "message": "Pick a target",
+            "mode": "form",
+            "elicitation_id": "e1",
+            "requested_schema": {"type": "object", "properties": {
+                "env": {"type": "string", "title": "Environment", "enum": ["staging", "prod"], "enumNames": ["Staging", "Production"]},
+                "dry_run": {"type": "boolean"},
+                "replicas": {"type": "integer", "title": "Replicas"}
+            }}
+        });
+        let it = interaction_from_hook(Harness::Claude, "Elicitation", &p).unwrap();
+        assert_eq!(it.kind, InteractionKind::Question);
+        assert!(is_elicitation(&it));
+        assert_eq!(it.native_ref.as_deref(), Some("elicit:e1"));
+        assert_eq!(it.questions.len(), 3);
+        let env = it.questions.iter().find(|q| q.id == "env").unwrap();
+        assert_eq!(env.options[1].label, "Production");
+        assert_eq!(env.options[1].id, "prod");
+        let dry = it.questions.iter().find(|q| q.id == "dry_run").unwrap();
+        assert_eq!(dry.options.len(), 2);
+        let a = Answer {
+            decision: Some(Decision::Allow),
+            choices: vec![
+                ("env".into(), vec!["prod".into()]),
+                ("dry_run".into(), vec!["true".into()]),
+                ("replicas".into(), vec!["3".into()]),
+            ],
+            text: None,
+        };
+        let d = decision_json(Harness::Claude, &it, &a);
+        let o = &d["hookSpecificOutput"];
+        assert_eq!(o["hookEventName"], "Elicitation");
+        assert_eq!(o["action"], "accept");
+        assert_eq!(o["content"]["env"], "prod");
+        assert_eq!(o["content"]["dry_run"], true);
+        assert_eq!(o["content"]["replicas"], 3);
+        let no = decision_json(
+            Harness::Claude,
+            &it,
+            &Answer {
+                decision: Some(Decision::Deny),
+                ..Default::default()
+            },
+        );
+        assert_eq!(no["hookSpecificOutput"]["action"], "decline");
+        // Other harnesses do not map Elicitation.
+        assert!(
+            interaction_from_hook(Harness::Codex, "Elicitation", &p).is_none()
+                || interaction_from_hook(Harness::Codex, "Elicitation", &p)
+                    .is_some_and(|i| !is_elicitation(&i))
+        );
+    }
+
+    #[test]
+    fn schema_less_and_url_elicitations_ask_accept_or_decline() {
+        let p = json!({"mcp_server_name": "oauth", "message": "Sign in", "mode": "url", "url": "https://x.dev/login"});
+        let it = interaction_from_hook(Harness::Claude, "Elicitation", &p).unwrap();
+        assert!(
+            it.body_md
+                .as_deref()
+                .unwrap()
+                .contains("https://x.dev/login")
+        );
+        assert_eq!(it.questions.len(), 1);
+        assert_eq!(it.questions[0].id, "action");
+        let ok = decision_json(
+            Harness::Claude,
+            &it,
+            &Answer {
+                decision: Some(Decision::Allow),
+                choices: vec![("action".into(), vec!["accept".into()])],
+                text: None,
+            },
+        );
+        assert_eq!(ok["hookSpecificOutput"]["action"], "accept");
+        let no = decision_json(
+            Harness::Claude,
+            &it,
+            &Answer {
+                decision: None,
+                choices: vec![("action".into(), vec!["decline".into()])],
+                text: None,
+            },
+        );
+        assert_eq!(no["hookSpecificOutput"]["action"], "decline");
     }
 }

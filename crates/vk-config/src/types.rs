@@ -598,6 +598,12 @@ pub struct Agents {
     pub shims: bool,
     pub resume_on_restart: ResumeOnRestart,
     pub name_from_task: bool,
+    /// Vibeke-only enforcement fails closed (04 §2.7): with the server unreachable, a pre-tool
+    /// hook of a run under a policy deny rule escalates to the harness's own prompt (`ask`)
+    /// instead of letting the tool run. `false` restores fail-open.
+    pub fail_closed: bool,
+    /// `[agents.approvals.<harness>]` (04 §6.1.1).
+    pub approvals: AgentApprovals,
     /// `[agents.harness.<id>]`; defaults for claude, pi and codex are filled in.
     pub harness: BTreeMap<String, Harness>,
 }
@@ -608,7 +614,36 @@ impl Default for Agents {
             shims: true,
             resume_on_restart: ResumeOnRestart::Ask,
             name_from_task: true,
+            fail_closed: true,
+            approvals: AgentApprovals::default(),
             harness: default_harnesses(),
+        }
+    }
+}
+
+/// `[agents.approvals]`.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentApprovals {
+    pub claude: ClaudeApprovals,
+}
+
+/// `[agents.approvals.claude]` (04 §6.1.1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClaudeApprovals {
+    /// "Allow always" writes a permission rule into Claude's own settings
+    /// (`persist_destination`). Off: it becomes a session-scoped rule, and Claude's settings
+    /// files are never edited without consent.
+    pub persist_always: bool,
+    /// `localSettings` | `projectSettings` | `userSettings`.
+    pub persist_destination: String,
+}
+impl Default for ClaudeApprovals {
+    fn default() -> Self {
+        ClaudeApprovals {
+            persist_always: false,
+            persist_destination: s("localSettings"),
         }
     }
 }
@@ -623,6 +658,9 @@ pub struct Harness {
     pub extra_args: Vec<String>,
     pub shim: Option<bool>,
     pub headless_shared: Option<bool>,
+    /// `subscription` | `api` (04 §10): subscription-billed runs show tokens, never dollars;
+    /// unset shows a price-table estimate where the model is known.
+    pub billing: Option<String>,
     /// Arguments added after the binary of a headless run that Vibeke isolates (13 §3): Codex's
     /// own sandbox cannot nest inside Vibeke's, so it is switched off there (04 §6.2).
     pub isolated_args: Option<Vec<String>>,
@@ -635,6 +673,7 @@ impl Default for Harness {
             extra_args: Vec::new(),
             shim: None,
             headless_shared: None,
+            billing: None,
             isolated_args: None,
         }
     }

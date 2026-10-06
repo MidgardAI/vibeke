@@ -92,3 +92,10 @@ allow = ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oa
 [auth]
 env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 files = ["~/.gemini/oauth_creds.json", "~/.gemini/settings.json"]
+
+[identity]
+sources = ["hook:SessionStart"]
+
+[transcript]
+format = "none"
+usage = true
