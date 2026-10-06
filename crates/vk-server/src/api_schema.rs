@@ -107,7 +107,7 @@ fn build() -> Result<Registry, Vec<String>> {
     let mut errs = vec![];
     let mut defs = BTreeMap::new();
     let mut defs_src = BTreeMap::new();
-    for line in DEFS.lines() {
+    for line in DEFS.lines().chain(BATCH_3D_DEFS.lines()) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -158,7 +158,7 @@ fn build() -> Result<Registry, Vec<String>> {
         out
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
-    let events = load(&[EVENT_SHAPES], "event", &mut errs);
+    let events = load(&[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES], "event", &mut errs);
     let notifications = load(&[NOTIFICATION_SHAPES], "notification", &mut errs);
     let mut reg = Registry {
         defs,
@@ -460,6 +460,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     INTERNAL_SHAPES,
     BATCH_2A_SHAPES,
     SECURITY_SHAPES,
+    BATCH_3D_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -478,7 +479,7 @@ api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: strin
 # the JSON Schema bundle of this binary (07 §1.5); with `method`, only that method's params/result
 api.schema :: {method?: string} => {schema: object}
 server.status :: {}
-  => {pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, preview?: object, timers?: object, db_size?: int, rss?: int}
+  => {pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}
 # re-read config.toml (runtime overrides on top); errors leave the applied config in force; full scope only
 server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
 # with kill_panes false the holders keep running and the next server reattaches; full scope only
@@ -1060,6 +1061,60 @@ pub const NOTIFICATION_SHAPES: &str = r##"
 events.event :: {subscription_id: string, event: Event} => {}
 events.overflow :: {subscription_id: string, resume_from: Cursor} => {}
 events.closed :: {subscription_id: string, reason: string} => {}
+"##;
+
+/// Config and store hardening (02; 3D): Machine/Session entities, Turn/Item stream, storage
+/// status, blob store maintenance.
+const BATCH_3D_DEFS: &str = r##"
+MachineKind = local|ssh|quic
+MachineStatus = connected|connecting|degraded|offline
+Machine = {id: string, label: string, kind: MachineKind, address: string|null, os: string, arch: string, vibeke_version: string, status: MachineStatus, last_seen_ms: int}
+SessionInfo = {id: string, name: string, machine_id: string, created_at_ms: int, server_pid: int, server_version: string}
+TurnUsage = {input_tokens: int, output_tokens: int, cache_read: int, cache_write: int, cost_usd: number|null}
+Turn = {id: string, run_id: string, seq: int, started_at_ms: int, ended_at_ms: int|null, input_summary: string, status: running|completed|interrupted|failed, usage: TurnUsage|null, usage_baseline: TurnUsage|null, item_count: int}
+ItemKind = user_message|assistant_message|reasoning|tool_call|tool_result|file_change|command|plan|subagent|error
+FileChange = {path: string, op: create|modify|delete|rename, lines_added: int|null, lines_removed: int|null}
+Item = {id: string, turn_id: string, run_id: string, seq: int, kind: ItemKind, started_at_ms: int, ended_at_ms: int|null, summary: string, payload_ref: string|null, file_change: FileChange|null, native_id: string|null}
+"##;
+
+const BATCH_3D_SHAPES: &str = r##"
+# --- session.info, machine.* (02 §1.1; remote machines are reported by clients) ---
+session.info :: {} => {session: SessionInfo, machine: Machine|null, cursor: Cursor}
+machine.list :: {} => {machines: [Machine], local: string}
+machine.get :: {machine: Target} => {machine: Machine}
+# registers or updates a remote machine (kind ssh|quic) and emits machine.added/connected/disconnected/degraded; this machine is registered by the server; full scope only
+machine.upsert :: {label: string, kind?: ssh|quic = ssh, id?: string, address?: string, os?: string, arch?: string, vibeke_version?: string, status?: connected|connecting|degraded|offline, reason?: string}
+  => {machine: Machine, created: bool, cursor: Cursor}
+machine.remove :: {machine: Target} => {removed: string, cursor: Cursor}
+
+# --- storage.* (retention, backups, degraded mode; full scope only) ---
+storage.status :: {}
+  => {degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}
+# runs the retention sweep now (events past retention and over the row cap, old turns, unreferenced old blobs); refused while degraded
+storage.prune :: {} => {events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, blobs_removed: int, blob_bytes: int}
+
+# --- blob.stats / blob.gc (the unified blob store; full scope only) ---
+blob.stats :: {} => {count: int, bytes: int, by_source: object, path: string}
+# removes unreferenced upload and payload blobs older than older_than_days; screenshots follow their own retention
+blob.gc :: {dry_run?: bool = false, older_than_days?: int = 30}
+  => {dry_run: bool, older_than_days: int, removed: int, bytes: int, kept_referenced: int, kept_young: int, kept_uncollectable: int, hashes: [string]}
+
+# --- agent.turns / agent.items (Turn/Item stream; full scope only) ---
+agent.turns :: {run: Target, after_seq?: int, limit?: int} => {run: string, turns: [Turn], next_after_seq: int|null}
+agent.items :: {turn?: string, run?: Target, kind?: ItemKind, after_seq?: int, limit?: int} => {items: [Item], next_after_seq: int|null}
+"##;
+
+const BATCH_3D_EVENT_SHAPES: &str = r##"
+session.started :: {} => {pid: int, version: string, machine: string, name: string, prev_pid: int|null, fresh: bool}
+session.stopped :: {} => {pid: int, reason: string}
+machine.added :: {machine: string} => {label: string, kind: string, address: string|null}
+machine.connected :: {machine: string} => {label: string}
+machine.disconnected :: {machine: string} => {label: string, reason: string|null}
+machine.degraded :: {machine: string} => {label: string, reason: string|null}
+machine.removed :: {machine: string} => {label: string}
+agent.item :: {run: string, pane: string} => {kind: ItemKind, summary: string, item: string, turn: string, seq: int, payload_ref: string|null}
+agent.subagent_started :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
+agent.subagent_finished :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
 "##;
 
 #[cfg(test)]

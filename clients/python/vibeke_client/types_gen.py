@@ -203,6 +203,13 @@ Facet = TypedDict("Facet", {
     "detail": Optional[str],
 })
 
+FileChange = TypedDict("FileChange", {
+    "path": str,
+    "op": Literal["create", "modify", "delete", "rename"],
+    "lines_added": Optional[int],
+    "lines_removed": Optional[int],
+})
+
 FloatingPane = TypedDict("FloatingPane", {
     "pane": str,
     "x": float,
@@ -261,6 +268,22 @@ Isolation = TypedDict("Isolation", {
 
 IsolationLevel: TypeAlias = Literal["host", "sandbox", "container", "vm"]
 
+Item = TypedDict("Item", {
+    "id": str,
+    "turn_id": str,
+    "run_id": str,
+    "seq": int,
+    "kind": "ItemKind",
+    "started_at_ms": int,
+    "ended_at_ms": Optional[int],
+    "summary": str,
+    "payload_ref": Optional[str],
+    "file_change": Optional["FileChange"],
+    "native_id": Optional[str],
+})
+
+ItemKind: TypeAlias = Literal["user_message", "assistant_message", "reasoning", "tool_call", "tool_result", "file_change", "command", "plan", "subagent", "error"]
+
 LayoutNodeXV0Leaf = TypedDict("LayoutNodeXV0Leaf", {
     "pane": str,
 })
@@ -281,6 +304,22 @@ LayoutNodeXV1 = TypedDict("LayoutNodeXV1", {
 LayoutNode: TypeAlias = Union["LayoutNodeXV0", "LayoutNodeXV1"]
 
 LayoutSpec: TypeAlias = Dict[str, Any]
+
+Machine = TypedDict("Machine", {
+    "id": str,
+    "label": str,
+    "kind": "MachineKind",
+    "address": Optional[str],
+    "os": str,
+    "arch": str,
+    "vibeke_version": str,
+    "status": "MachineStatus",
+    "last_seen_ms": int,
+})
+
+MachineKind: TypeAlias = Literal["local", "ssh", "quic"]
+
+MachineStatus: TypeAlias = Literal["connected", "connecting", "degraded", "offline"]
 
 MaterializedFile = TypedDict("MaterializedFile", {
     "path": str,
@@ -496,6 +535,15 @@ SessionEntry = TypedDict("SessionEntry", {
     "pid": NotRequired[int],
 })
 
+SessionInfo = TypedDict("SessionInfo", {
+    "id": str,
+    "name": str,
+    "machine_id": str,
+    "created_at_ms": int,
+    "server_pid": int,
+    "server_version": str,
+})
+
 Tab = TypedDict("Tab", {
     "id": str,
     "handle": str,
@@ -536,6 +584,27 @@ Task = TypedDict("Task", {
     "isolation": NotRequired["Isolation"],
     "checkout": NotRequired[Optional[str]],
     "rate_limit": NotRequired[Optional["RateLimitInfo"]],
+})
+
+Turn = TypedDict("Turn", {
+    "id": str,
+    "run_id": str,
+    "seq": int,
+    "started_at_ms": int,
+    "ended_at_ms": Optional[int],
+    "input_summary": str,
+    "status": Literal["running", "completed", "interrupted", "failed"],
+    "usage": Optional["TurnUsage"],
+    "usage_baseline": Optional["TurnUsage"],
+    "item_count": int,
+})
+
+TurnUsage = TypedDict("TurnUsage", {
+    "input_tokens": int,
+    "output_tokens": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
 })
 
 Workspace = TypedDict("Workspace", {
@@ -4171,6 +4240,7 @@ ServerStatusResult = TypedDict("ServerStatusResult", {
     "event_seq": int,
     "socket": NotRequired[str],
     "degraded": NotRequired[Any],
+    "ephemeral": NotRequired[int],
     "preview": NotRequired[Dict[str, Any]],
     "timers": NotRequired[Dict[str, Any]],
     "db_size": NotRequired[int],
@@ -5504,6 +5574,20 @@ AgentIdentifiedData = TypedDict("AgentIdentifiedData", {
     "transcript_path": NotRequired[Any],
 })
 
+AgentItemSubject = TypedDict("AgentItemSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentItemData = TypedDict("AgentItemData", {
+    "kind": "ItemKind",
+    "summary": str,
+    "item": str,
+    "turn": str,
+    "seq": int,
+    "payload_ref": Optional[str],
+})
+
 AgentNamedSubject = TypedDict("AgentNamedSubject", {
     "run": str,
 })
@@ -5560,6 +5644,26 @@ AgentStateChangedData = TypedDict("AgentStateChangedData", {
     "to": str,
     "source": NotRequired[str],
     "confidence": NotRequired[float],
+})
+
+AgentSubagentFinishedSubject = TypedDict("AgentSubagentFinishedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentSubagentFinishedData = TypedDict("AgentSubagentFinishedData", {
+    "agent_id": Optional[str],
+    "agent_type": str,
+})
+
+AgentSubagentStartedSubject = TypedDict("AgentSubagentStartedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentSubagentStartedData = TypedDict("AgentSubagentStartedData", {
+    "agent_id": Optional[str],
+    "agent_type": str,
 })
 
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {
@@ -5966,6 +6070,50 @@ LayoutAppliedData = TypedDict("LayoutAppliedData", {
     "tabs": int,
     "panes": int,
     "new_workspace": Any,
+})
+
+MachineAddedSubject = TypedDict("MachineAddedSubject", {
+    "machine": str,
+})
+
+MachineAddedData = TypedDict("MachineAddedData", {
+    "label": str,
+    "kind": str,
+    "address": Optional[str],
+})
+
+MachineConnectedSubject = TypedDict("MachineConnectedSubject", {
+    "machine": str,
+})
+
+MachineConnectedData = TypedDict("MachineConnectedData", {
+    "label": str,
+})
+
+MachineDegradedSubject = TypedDict("MachineDegradedSubject", {
+    "machine": str,
+})
+
+MachineDegradedData = TypedDict("MachineDegradedData", {
+    "label": str,
+    "reason": Optional[str],
+})
+
+MachineDisconnectedSubject = TypedDict("MachineDisconnectedSubject", {
+    "machine": str,
+})
+
+MachineDisconnectedData = TypedDict("MachineDisconnectedData", {
+    "label": str,
+    "reason": Optional[str],
+})
+
+MachineRemovedSubject = TypedDict("MachineRemovedSubject", {
+    "machine": str,
+})
+
+MachineRemovedData = TypedDict("MachineRemovedData", {
+    "label": str,
 })
 
 NotesUpdatedSubject = TypedDict("NotesUpdatedSubject", {
@@ -6519,6 +6667,24 @@ SessionServerRestartedData = TypedDict("SessionServerRestartedData", {
     "prev_pid": NotRequired[int],
 })
 
+SessionStartedSubject: TypeAlias = Dict[str, Any]
+
+SessionStartedData = TypedDict("SessionStartedData", {
+    "pid": int,
+    "version": str,
+    "machine": str,
+    "name": str,
+    "prev_pid": Optional[int],
+    "fresh": bool,
+})
+
+SessionStoppedSubject: TypeAlias = Dict[str, Any]
+
+SessionStoppedData = TypedDict("SessionStoppedData", {
+    "pid": int,
+    "reason": str,
+})
+
 TabClosedSubject = TypedDict("TabClosedSubject", {
     "tab": str,
     "workspace": str,
@@ -6868,12 +7034,15 @@ EVENT_TYPES = (
     "agent.file_changed",
     "agent.harness_version_unvalidated",
     "agent.identified",
+    "agent.item",
     "agent.named",
     "agent.rate_limited",
     "agent.resume_handle",
     "agent.session_ended",
     "agent.started",
     "agent.state_changed",
+    "agent.subagent_finished",
+    "agent.subagent_started",
     "agent.turn_completed",
     "agent.turn_started",
     "agent.usage",
@@ -6919,6 +7088,11 @@ EVENT_TYPES = (
     "interaction.opened",
     "interaction.updated",
     "layout.applied",
+    "machine.added",
+    "machine.connected",
+    "machine.degraded",
+    "machine.disconnected",
+    "machine.removed",
     "notes.updated",
     "notification.created",
     "pane.closed",
@@ -6972,6 +7146,8 @@ EVENT_TYPES = (
     "session.config_rejected",
     "session.config_reloaded",
     "session.server_restarted",
+    "session.started",
+    "session.stopped",
     "tab.closed",
     "tab.created",
     "tab.layout_changed",

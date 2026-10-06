@@ -892,7 +892,7 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
         );
     }
     if let Some(d) = &app.m().model.degraded {
-        right.insert(0, (format!(" ⚠ {} ", truncate(d, 30)), t.bold(t.red)));
+        right.insert(0, (format!(" ⚠ {} ", degraded_label(d)), t.bold(t.red)));
     }
     if !app.m().connected() {
         right.insert(
@@ -1056,6 +1056,17 @@ fn draw_borders(
     }
 }
 
+/// The status-bar text for a degraded server (02 §4a). A storage failure says what it means for
+/// the user: panes and typing keep working, but snapshots and the archive are paused, so a
+/// crash now would recover from the ring only.
+pub fn degraded_label(d: &str) -> String {
+    if d.starts_with("storage unavailable") {
+        "storage degraded · ring only".to_string()
+    } else {
+        truncate(d, 30)
+    }
+}
+
 pub fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
@@ -1063,4 +1074,19 @@ pub fn truncate(s: &str, n: usize) -> String {
     let mut t: String = s.chars().take(n.saturating_sub(1)).collect();
     t.push('…');
     t
+}
+
+#[cfg(test)]
+mod degraded_label_tests {
+    use super::degraded_label;
+
+    #[test]
+    fn storage_failures_say_ring_only_and_other_reasons_are_truncated() {
+        assert_eq!(
+            degraded_label("storage unavailable: database or disk is full"),
+            "storage degraded · ring only"
+        );
+        assert_eq!(degraded_label("store degraded: x"), "store degraded: x");
+        assert!(degraded_label(&"y".repeat(100)).chars().count() <= 30);
+    }
 }

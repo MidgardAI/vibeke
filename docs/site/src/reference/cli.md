@@ -15,6 +15,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 - `vibeke update`: update the binary.
 - `vibeke doctor`: check the installation.
 - `vibeke doctor --rebuild-index`: rebuild the scrollback search index. Stop the server first.
+- `vibeke doctor --list-backups` and `vibeke doctor --restore-backup NAME`: list the pre-migration copies of the state database (the last three) and restore one. Stop the server first. Restoring rotates the event-log epoch and keeps the replaced database as `state.db.pre-restore`.
 - `vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]`: delete archived scrollback through `scrollback.forget`.
 - `vibeke --skill`: print the agent instructions.
 - `vibeke --default-config`: print the configuration template.

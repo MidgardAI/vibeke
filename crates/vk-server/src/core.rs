@@ -27,6 +27,10 @@ pub struct Core {
     pub model: SessionModel,
     pub counters: Counters,
     pub notifications: Vec<Notification>,
+    /// Set by [`Core::commit`] when the store refused an `ephemeral` transaction and it was
+    /// applied in memory only (02 §4a); carries the storage error. [`crate::Server::commit`]
+    /// takes it and enters degraded mode.
+    pub ephemeral_hit: Option<String>,
 }
 
 /// A mutation being prepared against the current model. Entities put here are persisted and
@@ -43,6 +47,10 @@ pub struct Tx {
     pub groups: Vec<Group>,
     pub removed: Vec<(&'static str, String)>,
     pub counters: bool,
+    /// A UI convenience (focus, unread marks): if storage is unavailable it is applied in
+    /// memory only, flagged ephemeral and lost on restart (02 §4a). Never set for anything a
+    /// restart or another client must see (interactions, tasks, layout).
+    pub ephemeral: bool,
 }
 
 impl Tx {
@@ -166,6 +174,7 @@ impl Core {
             model,
             counters,
             notifications: Vec::new(),
+            ephemeral_hit: None,
         })
     }
 
@@ -178,7 +187,15 @@ impl Core {
                 Some(serde_json::to_string(&self.counters)?),
             );
         }
-        let events = self.store.commit(std::mem::take(&mut tx.m))?;
+        let events = match self.store.commit(std::mem::take(&mut tx.m)) {
+            Ok(e) => e,
+            // Pure UI convenience while storage is down: keep it in memory, emit no event.
+            Err(e) if tx.ephemeral => {
+                self.ephemeral_hit = Some(format!("storage unavailable: {e:#}"));
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
         for w in tx.workspaces {
             upsert(&mut self.model.workspaces, w, |a, b| a.id == b.id);
         }
