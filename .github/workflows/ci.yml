@@ -10,8 +10,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Runners have little RAM and disk: ~25 test binaries with full debug info crash the linker
+    # (ld bus error on ubuntu). No debug info and no incremental state keep target/ small.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
+      - if: matrix.os == 'ubuntu-latest'
+        name: Free runner disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
       - run: mise run ci
