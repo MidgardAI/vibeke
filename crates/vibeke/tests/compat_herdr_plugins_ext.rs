@@ -785,3 +785,498 @@ fn restricted_mode_refuses_where_no_sandbox_works() {
         "the plugin must not run on the host instead"
     );
 }
+
+// ---- review fixes (reviews/2026-10-06-codex-leftovers-review.md) ----------------------------
+
+fn sandbox_available() -> bool {
+    if vk_sandbox::plugin::probe().is_err() {
+        eprintln!("skipped: no working sandbox here (nested?)");
+        return false;
+    }
+    true
+}
+
+/// A linked, trusted plugin `id` with the given actions (`(action id, script)`; each script is
+/// written to `bin/<action>.sh` and run with `sh`).
+fn script_plugin(s_: &Session, id: &str, actions: &[(&str, &str)]) -> PathBuf {
+    let dir = s_.path(&format!("src/{id}"));
+    let mut m = format!("id = \"{id}\"\n");
+    for (a, script) in actions {
+        m.push_str(&format!(
+            "[[actions]]\nid = \"{a}\"\ncommand = [\"sh\", \"bin/{a}.sh\"]\n"
+        ));
+        write(&dir.join(format!("bin/{a}.sh")), script);
+    }
+    write(&dir.join("herdr-plugin.toml"), &m);
+    s_.json(&["plugin", "link", dir.to_str().unwrap()]);
+    s_.json(&["plugin", "trust", id, "--legacy"]);
+    std::fs::create_dir_all(s_.path(&format!("state/plugins/state/{id}"))).unwrap();
+    dir
+}
+
+/// Finding 1: a sandboxed plugin's broker refuses host execution (`pane.run`, input) and
+/// invoking another (host-mode) plugin; reading state and its own actions keep working.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sandboxed_plugins_broker_refuses_host_execution_and_other_plugins() {
+    if !sandbox_available() {
+        return;
+    }
+    let s_ = Session::new("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n");
+    script_plugin(
+        &s_,
+        "acme.host",
+        &[("mark", "touch \"$HERDR_PLUGIN_STATE_DIR/host-ran\"\n")],
+    );
+    script_plugin(
+        &s_,
+        "acme.sbx",
+        &[
+            (
+                "attack",
+                r#"out="$HERDR_PLUGIN_STATE_DIR"
+pane=$(cat "$out/pane")
+herdr pane run "$pane" "touch $(cat "$out/target")" > "$out/run.out" 2>&1; echo "run=$?" >> "$out/r"
+herdr pane send-text "$pane" "touch $(cat "$out/target")" > "$out/send.out" 2>&1; echo "send=$?" >> "$out/r"
+herdr pane read "$pane" > "$out/read.out" 2>&1; echo "read=$?" >> "$out/r"
+herdr plugin action invoke acme.host.mark > "$out/other.out" 2>&1; echo "other=$?" >> "$out/r"
+herdr plugin action invoke acme.sbx.own > "$out/own.out" 2>&1; echo "own=$?" >> "$out/r"
+herdr workspace list > "$out/ws.out" 2>&1; echo "list=$?" >> "$out/r"
+"#,
+            ),
+            (
+                "own",
+                "echo \"$VIBEKE_ISOLATION\" > \"$HERDR_PLUGIN_STATE_DIR/own-ran\"\n",
+            ),
+        ],
+    );
+    let ws = s_.herdr(&["workspace", "create", "--cwd", "/tmp"]);
+    let pane = ws["root_pane"]["pane_id"].as_str().unwrap().to_string();
+    let state = s_.path("state/plugins/state/acme.sbx");
+    let target = s_.path("pwned");
+    write(&state.join("pane"), &pane);
+    write(&state.join("target"), target.to_str().unwrap());
+
+    s_.run("acme.sbx", "attack");
+    s_.settle("acme.sbx");
+    let r = read(&state.join("r"));
+    for k in ["run", "send", "read", "other"] {
+        assert_ne!(field(&r, k), "0", "{k} must be refused\n{r}");
+        let out = read(&state.join(format!("{k}.out")));
+        assert!(
+            out.contains("permission_denied") && out.contains("restricted (sandboxed)"),
+            "{k}: {out}"
+        );
+    }
+    assert_eq!(field(&r, "list"), "0", "reading state works\n{r}");
+    assert!(read(&state.join("ws.out")).contains("workspaces"));
+    assert_eq!(field(&r, "own"), "0", "{}", read(&state.join("own.out")));
+    wait_for("its own action", 10000, || state.join("own-ran").exists());
+    assert_eq!(
+        read(&state.join("own-ran")).trim(),
+        "sandbox",
+        "its own action runs restricted too"
+    );
+    // Nothing reached the host: no host plugin run, no command typed into the pane.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!target.exists(), "pane.run/send_text executed on the host");
+    assert!(!s_.path("state/plugins/state/acme.host/host-ran").exists());
+    let shown = s_.herdr(&["pane", "read", &pane]);
+    assert!(!shown.to_string().contains("pwned"), "{shown}");
+    // The refusals are audited with the plugin identity.
+    let calls = s_.events("plugin.api_call");
+    assert!(
+        calls.iter().any(|e| e["data"]["method"] == "pane.run"
+            && e["data"]["ok"] == false
+            && e["actor"]["id"] == "acme.sbx"),
+        "{calls:?}"
+    );
+}
+
+/// Finding 2: with `network = true` a sandboxed plugin still reaches only its own broker:
+/// another live invocation's broker is neither readable from `brokers.json` nor connectable,
+/// and even a host process that knows the path cannot act through it (the server binds the
+/// broker to its invocation; the same check holds on Linux). A daemon that left the
+/// invocation's process tree keeps working with the invocation's token.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_broker_path_is_not_an_identity() {
+    if !sandbox_available() {
+        return;
+    }
+    let s_ = Session::new("[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\nnetwork = true\n");
+    script_plugin(
+        &s_,
+        "acme.victim",
+        &[(
+            "hold",
+            "echo \"$HERDR_SOCKET_PATH\" > \"$HERDR_PLUGIN_STATE_DIR/sock.tmp\"; mv \"$HERDR_PLUGIN_STATE_DIR/sock.tmp\" \"$HERDR_PLUGIN_STATE_DIR/sock\"; sleep 8\n",
+        )],
+    );
+    script_plugin(
+        &s_,
+        "acme.sbx",
+        &[(
+            "steal",
+            r#"out="$HERDR_PLUGIN_STATE_DIR"
+v=$(cat "$out/victim")
+/usr/bin/curl -s -m 3 --unix-socket "$v" http://x/ > /dev/null 2>&1; echo "curl=$?" >> "$out/r"
+HERDR_SOCKET_PATH="$v" VIBEKE_HERDR_BROKER="$v" herdr workspace list > "$out/as-victim.out" 2>&1; echo "as_victim=$?" >> "$out/r"
+cat "$(dirname "$(dirname "$v")")/brokers.json" > /dev/null 2>&1; echo "registry=$?" >> "$out/r"
+ls "$(dirname "$v")" > /dev/null 2>&1; echo "listing=$?" >> "$out/r"
+herdr workspace list > /dev/null 2>&1; echo "own=$?" >> "$out/r"
+"#,
+        )],
+    );
+    script_plugin(
+        &s_,
+        "acme.spoof",
+        &[(
+            "spoof",
+            r#"out="$HERDR_PLUGIN_STATE_DIR"
+v=$(cat "$out/victim")
+HERDR_SOCKET_PATH="$v" VIBEKE_HERDR_BROKER="$v" herdr agent view-clear > "$out/spoof.out" 2>&1; echo "spoof=$?" >> "$out/r"
+"#,
+        )],
+    );
+    script_plugin(
+        &s_,
+        "acme.daemon",
+        &[(
+            "detach",
+            r#"out="$HERDR_PLUGIN_STATE_DIR"
+# A new session, reparented away from this action: no process ancestry, token only.
+( /usr/bin/perl -MPOSIX -e 'POSIX::setsid() or die; exec @ARGV' sh "$HERDR_PLUGIN_ROOT/bin/inner.sh" & )
+sleep 4
+"#,
+        )],
+    );
+    write(
+        &s_.path("src/acme.daemon/bin/inner.sh"),
+        r#"out="$HERDR_PLUGIN_STATE_DIR"
+sleep 0.5
+herdr workspace list > /dev/null 2> "$out/with.err"; echo "with=$?" >> "$out/r"
+VIBEKE_HERDR_TOKEN=wrong herdr workspace list > /dev/null 2> "$out/without.err"; echo "without=$?" >> "$out/r"
+"#,
+    );
+    // The daemon's helper script is referenced by no manifest command: re-trust is not needed.
+
+    s_.run("acme.victim", "hold");
+    let vstate = s_.path("state/plugins/state/acme.victim");
+    wait_for("the victim's broker", 10000, || {
+        vstate.join("sock").exists()
+    });
+    let victim = read(&vstate.join("sock")).trim().to_string();
+    assert!(victim.contains("/herdr-compat/brokers/"), "{victim}");
+    for p in ["acme.sbx", "acme.spoof"] {
+        write(
+            &s_.path(&format!("state/plugins/state/{p}/victim")),
+            &victim,
+        );
+    }
+
+    s_.run("acme.sbx", "steal");
+    s_.settle("acme.sbx");
+    let r = read(&s_.path("state/plugins/state/acme.sbx/r"));
+    assert_eq!(
+        field(&r, "curl"),
+        "7",
+        "another broker is not connectable\n{r}"
+    );
+    assert_ne!(field(&r, "as_victim"), "0", "{r}");
+    assert_ne!(field(&r, "registry"), "0", "brokers.json is hidden\n{r}");
+    assert_ne!(field(&r, "listing"), "0", "the broker dir is hidden\n{r}");
+    assert_eq!(field(&r, "own"), "0", "its own broker still works\n{r}");
+
+    // A host-mode plugin (no OS sandbox in the way) that knows the path is refused by the
+    // server itself: it is not part of the victim's invocation and has the wrong token.
+    s_.run("acme.spoof", "spoof");
+    s_.settle("acme.spoof");
+    let sp = s_.path("state/plugins/state/acme.spoof");
+    assert_ne!(field(&read(&sp.join("r")), "spoof"), "0");
+    let out = read(&sp.join("spoof.out"));
+    assert!(
+        out.contains("belongs to another plugin invocation"),
+        "{out}"
+    );
+
+    // The token: a detached daemon of a live invocation is served with it, not without.
+    s_.run("acme.daemon", "detach");
+    let ds = s_.path("state/plugins/state/acme.daemon");
+    wait_for("the detached daemon", 15000, || {
+        read(&ds.join("r")).contains("without=")
+    });
+    let r = read(&ds.join("r"));
+    assert_eq!(
+        field(&r, "with"),
+        "0",
+        "{r}\n{}",
+        read(&ds.join("with.err"))
+    );
+    assert_ne!(field(&r, "without"), "0", "{r}");
+    assert!(read(&ds.join("without.err")).contains("belongs to another plugin invocation"));
+}
+
+/// Finding 3: a configuration that stops loading (syntax error, unreadable file) or an unknown
+/// `isolate` value never turns a sandboxed plugin into a host process — not even after a
+/// server restart, thanks to the persisted last known-good settings.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_broken_config_never_runs_a_sandboxed_plugin_on_the_host() {
+    if !sandbox_available() {
+        return;
+    }
+    let good = "[plugins.\"acme.sbx\"]\nisolate = \"sandbox\"\n";
+    let s_ = Session::new(good);
+    script_plugin(
+        &s_,
+        "acme.sbx",
+        &[(
+            "mark",
+            "echo \"${VIBEKE_ISOLATION:-host}\" >> \"$HERDR_PLUGIN_STATE_DIR/runs\"\n",
+        )],
+    );
+    let runs = s_.path("state/plugins/state/acme.sbx/runs");
+    let cfg = s_.path("config.toml");
+    s_.run("acme.sbx", "mark");
+    let l = s_.settle("acme.sbx");
+    assert_eq!(l.last().unwrap()["status"], "succeeded", "{l:?}");
+    assert_eq!(
+        read(&runs),
+        "sandbox\n",
+        "a successful restricted run first"
+    );
+
+    let refused = |s_: &Session, what: &str, needle: &str| {
+        let rec = s_.run("acme.sbx", "mark");
+        assert_eq!(rec["status"], "failed", "{what}: {rec}");
+        let err = rec["stderr"].as_str().unwrap();
+        assert!(err.contains(needle), "{what}: {err}");
+        s_.settle("acme.sbx");
+        assert_eq!(read(&runs), "sandbox\n", "{what}: the plugin must not run");
+    };
+    // A syntax error while editing.
+    std::fs::write(&cfg, "[plugins.\"acme.sbx\"\nisolate = \"sandbox\n").unwrap();
+    refused(&s_, "corrupt", "isolate = \"sandbox\"");
+    let p = s_.plugin("acme.sbx");
+    assert!(
+        p["settings_error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be loaded"),
+        "{p}"
+    );
+    // A restarted server still knows the last valid restriction.
+    let _ = s_.cmd(&["server", "stop"]).output();
+    refused(&s_, "corrupt after restart", "isolate = \"sandbox\"");
+    // An unreadable file.
+    std::fs::write(&cfg, good).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o000)).unwrap();
+        refused(&s_, "unreadable", "cannot be loaded");
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    // An unknown isolate value is an error, not host.
+    std::fs::write(&cfg, "[plugins.\"acme.sbx\"]\nisolate = \"vm\"\n").unwrap();
+    refused(&s_, "unknown isolate", "is not \"host\" or \"sandbox\"");
+    // Fixed: it runs restricted again.
+    std::fs::write(&cfg, good).unwrap();
+    s_.run("acme.sbx", "mark");
+    s_.settle("acme.sbx");
+    assert_eq!(read(&runs), "sandbox\nsandbox\n");
+}
+
+/// Finding 4: an update publishes a new immutable checkout together with the revoked grant; a
+/// dependency-only change never runs under the old grant, and a checkout changed in place is
+/// refused at launch (whole-tree digest). Finding 10: escaping symlinks are refused at install.
+#[test]
+fn dependency_only_updates_and_tampered_checkouts_never_run_under_the_old_grant() {
+    let base = tempfile::Builder::new()
+        .prefix("vkgit")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let b = base.path().canonicalize().unwrap();
+    let work = b.join("work");
+    write(
+        &work.join("herdr-plugin.toml"),
+        "id = \"acme.dep\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"sh\", \"bin/main.sh\"]\n",
+    );
+    write(
+        &work.join("bin/main.sh"),
+        ". \"$HERDR_PLUGIN_ROOT/lib/helper.sh\"\n",
+    );
+    write(
+        &work.join("lib/helper.sh"),
+        "echo reviewed >> \"$HERDR_PLUGIN_STATE_DIR/ran\"\n",
+    );
+    git(&work, &["init", "-q", "-b", "main"]);
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "one"]);
+    let bare = b.join("srv/acme/dep");
+    std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+    git(
+        &b,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    let base_url = format!("file://{}", b.join("srv").display());
+    let s_ = Session::with_env(
+        "",
+        &[
+            ("VIBEKE_TEST_HOOKS", "1"),
+            ("VIBEKE_PLUGIN_GIT_BASE", &base_url),
+        ],
+    );
+    let r = s_.json(&["plugin", "install", "acme/dep", "--yes"]);
+    assert_eq!(r["plugin"]["status"], "active", "{r}");
+    let old_root = PathBuf::from(r["plugin"]["root"].as_str().unwrap());
+    assert!(
+        old_root
+            .to_string_lossy()
+            .contains("/state/plugins/checkouts/acme.dep/"),
+        "{}",
+        old_root.display()
+    );
+    s_.run("acme.dep", "go");
+    s_.settle("acme.dep");
+    let ran = s_.path("state/plugins/state/acme.dep/ran");
+    assert_eq!(read(&ran), "reviewed\n");
+
+    // Upstream changes only the helper; the manifest and the entrypoint are identical.
+    write(
+        &work.join("lib/helper.sh"),
+        "echo injected >> \"$HERDR_PLUGIN_STATE_DIR/ran\"\n",
+    );
+    git(&work, &["commit", "-qam", "two"]);
+    git(&work, &["push", "-q", bare.to_str().unwrap(), "main"]);
+    let r = s_.json(&["plugin", "update", "acme.dep"]);
+    let new_root = PathBuf::from(r["plugin"]["root"].as_str().unwrap());
+    assert_ne!(new_root, old_root, "a new immutable checkout");
+    assert_eq!(r["plugin"]["status"], "untrusted", "{r}");
+    assert_eq!(
+        read(&old_root.join("lib/helper.sh")),
+        "echo reviewed >> \"$HERDR_PLUGIN_STATE_DIR/ran\"\n",
+        "the old checkout was never rewritten"
+    );
+    let rec = s_.run_fail("acme.dep", "go");
+    assert!(rec.contains("untrusted"), "{rec}");
+    assert_eq!(read(&ran), "reviewed\n", "the new helper never ran");
+
+    // Reviewed again, it runs; then a dependency edited in place (forcing the read-only
+    // checkout writable) is refused at launch although the manifest and entrypoint match.
+    s_.json(&["plugin", "trust", "acme.dep", "--legacy"]);
+    s_.run("acme.dep", "go");
+    s_.settle("acme.dep");
+    assert_eq!(read(&ran), "reviewed\ninjected\n");
+    let helper = new_root.join("lib/helper.sh");
+    assert!(
+        std::fs::write(&helper, "x").is_err(),
+        "checkouts are read-only"
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    std::fs::write(
+        &helper,
+        "echo tampered >> \"$HERDR_PLUGIN_STATE_DIR/ran\"\n",
+    )
+    .unwrap();
+    assert_eq!(s_.plugin("acme.dep")["status"], "active");
+    let rec = s_.run("acme.dep", "go");
+    assert_eq!(rec["status"], "failed", "{rec}");
+    assert!(
+        rec["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("changed since it was reviewed"),
+        "{rec}"
+    );
+    s_.settle("acme.dep");
+    assert_eq!(read(&ran), "reviewed\ninjected\n");
+
+    // An install whose entrypoint links outside the plugin is refused.
+    let esc = s_.path("src/esc");
+    write(
+        &esc.join("herdr-plugin.toml"),
+        "id = \"acme.esc\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"sh\", \"run.sh\"]\n",
+    );
+    write(&s_.path("outside.sh"), "echo outside\n");
+    std::os::unix::fs::symlink(s_.path("outside.sh"), esc.join("run.sh")).unwrap();
+    let (_, e) = s_.fail(&["plugin", "install", esc.to_str().unwrap()]);
+    assert!(e.contains("points outside the plugin"), "{e}");
+}
+
+/// Finding 11: sustained output is bounded on disk by the invocation's budget, the plugin is
+/// never blocked or killed by it, and the record says what happened.
+#[test]
+fn sustained_output_is_bounded_on_disk() {
+    let s_ = Session::new("[plugins.\"acme.loud\"]\noutput_max_bytes = 65536\n");
+    script_plugin(
+        &s_,
+        "acme.loud",
+        &[(
+            "spam",
+            "i=0; while [ $i -lt 30 ]; do head -c 1000000 /dev/zero | tr '\\0' x; head -c 200000 /dev/zero >&2; sleep 0.05; i=$((i+1)); done; echo done > \"$HERDR_PLUGIN_STATE_DIR/finished\"\n",
+        )],
+    );
+    let rec = s_.run("acme.loud", "spam");
+    let log_id = rec["log_id"].as_str().unwrap().to_string();
+    let out_dir = s_.path("run/default/herdr-compat/out");
+    let mut max = 0u64;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let size = |ext: &str| {
+            std::fs::metadata(out_dir.join(format!("{log_id}.{ext}")))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        };
+        max = max.max(size("out") + size("err"));
+        let l = s_.api("plugin.log.list", json!({"plugin": "acme.loud"}));
+        if l["logs"][0]["status"] != "running" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never finished");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let marker_len = 120;
+    assert!(
+        max <= 65536 + 2 * marker_len,
+        "on-disk output {max} exceeded the 64 KiB budget"
+    );
+    let logs = s_.settle("acme.loud");
+    let last = logs.last().unwrap();
+    assert_eq!(
+        last["status"], "succeeded",
+        "never blocked or killed: {last}"
+    );
+    assert_eq!(
+        read(&s_.path("state/plugins/state/acme.loud/finished")).trim(),
+        "done"
+    );
+    let text = format!("{}{}", last["stdout"], last["stderr"]);
+    assert!(
+        text.contains("output budget of 65536 bytes for this invocation exhausted"),
+        "{last}"
+    );
+    assert_eq!(s_.plugin("acme.loud")["output_max_bytes"], 65536);
+}
+
+impl Session {
+    /// Run an action that is refused before launch; returns the error text.
+    fn run_fail(&self, plugin: &str, action: &str) -> String {
+        self.fail(&[
+            "api",
+            "call",
+            "plugin.action.run",
+            &json!({"plugin": plugin, "action": action}).to_string(),
+        ])
+        .1
+    }
+}

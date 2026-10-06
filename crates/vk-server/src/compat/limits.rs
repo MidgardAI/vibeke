@@ -4,23 +4,123 @@
 use super::*;
 use herdr::settings::{MAX_QUEUED, PluginSettings};
 
-/// Settings of plugin `id`, re-read when `config.toml` changes.
+/// Where the last `[plugins]` section that loaded is kept (outside every plugin-visible path:
+/// the state root is hidden from sandboxed plugins).
+fn last_good_path() -> PathBuf {
+    let dirs = plugin_dirs();
+    dirs.state
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(dirs.state)
+        .join("last-good-settings.json")
+}
+
+/// How `config.toml` looked at the last read.
+#[derive(Clone)]
+enum Loaded {
+    /// It loaded (`None`: no `[plugins]` section).
+    Ok(Option<toml::Value>),
+    /// The file does not exist.
+    Missing,
+    /// It exists but cannot be read or parsed.
+    Failed(String),
+}
+
+/// Settings of plugin `id`, re-read when `config.toml` changes. **Fails closed:** when the
+/// configuration cannot be read or parsed (or has disappeared), the last `[plugins]` section
+/// that loaded (kept in memory and persisted next to the plugin state) decides, and a plugin it
+/// configured with `isolate = "sandbox"` is refused ([`PluginSettings::error`]) rather than run
+/// on the host; with no known-good section at all, a broken file refuses every plugin. An
+/// unknown `isolate` value is refused by [`PluginSettings::from_toml`].
 pub fn settings(id: &str) -> PluginSettings {
-    type Key = (Option<std::time::SystemTime>, u64);
-    type Cached = Option<(Key, Option<toml::Value>)>;
+    // mtime, ctime, size, mode, inode: a chmod or an in-place rewrite changes the key.
+    type Key = Option<(i64, i64, i64, i64, u64, u32, u64)>;
+    type Cached = Option<(Key, Loaded)>;
     static CACHE: LazyLock<Mutex<Cached>> = LazyLock::new(|| Mutex::new(None));
+    static LAST_GOOD: LazyLock<Mutex<Option<Option<toml::Value>>>> =
+        LazyLock::new(|| Mutex::new(None));
     let path = vk_config::config_path();
-    let key: Key = std::fs::metadata(&path)
-        .map(|m| (m.modified().ok(), m.len()))
-        .unwrap_or((None, 0));
-    let mut c = CACHE.lock().unwrap();
-    if c.as_ref().is_none_or(|(k, _)| *k != key) {
-        let v = vk_config::Config::load(&path)
-            .ok()
-            .and_then(|(cfg, _)| cfg.extra.get("plugins").cloned());
-        *c = Some((key, v));
+    let key: Key = std::fs::metadata(&path).ok().map(|m| {
+        use std::os::unix::fs::MetadataExt;
+        (
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec(),
+            m.len(),
+            m.mode(),
+            m.ino(),
+        )
+    });
+    let loaded = {
+        let mut c = CACHE.lock().unwrap();
+        if c.as_ref().is_none_or(|(k, _)| *k != key) {
+            let l = if key.is_none() && !path.exists() {
+                Loaded::Missing
+            } else {
+                match vk_config::Config::load(&path) {
+                    Ok((cfg, _)) => Loaded::Ok(cfg.extra.get("plugins").cloned()),
+                    Err(e) => Loaded::Failed(e.to_string()),
+                }
+            };
+            *c = Some((key, l));
+        }
+        c.as_ref()
+            .map(|(_, l)| l.clone())
+            .unwrap_or(Loaded::Missing)
+    };
+    match loaded {
+        Loaded::Ok(v) => {
+            let mut lg = LAST_GOOD.lock().unwrap();
+            if lg.as_ref() != Some(&v) {
+                let json = serde_json::to_vec(&v).unwrap_or_default();
+                let file = last_good_path();
+                let tmp = file.with_extension("json.tmp");
+                let saved = file
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|_| std::fs::write(&tmp, &json))
+                    .and_then(|_| std::fs::rename(&tmp, &file));
+                if let Err(e) = saved {
+                    tracing::warn!(error = %e, "plugin settings: last known-good copy not saved");
+                }
+                *lg = Some(v.clone());
+            }
+            PluginSettings::from_toml(v.as_ref(), id)
+        }
+        Loaded::Missing | Loaded::Failed(_) => {
+            let why = match &loaded {
+                Loaded::Failed(e) => format!("config.toml cannot be loaded ({e})"),
+                _ => "config.toml has disappeared".to_string(),
+            };
+            let remembered = LAST_GOOD.lock().unwrap().clone().or_else(|| {
+                std::fs::read(last_good_path())
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Option<toml::Value>>(&b).ok())
+            });
+            match remembered {
+                Some(v) => {
+                    let mut s = PluginSettings::from_toml(v.as_ref(), id);
+                    if s.isolate == herdr::settings::Isolate::Sandbox {
+                        s.error = Some(format!(
+                            "{why}; {id} was last configured with isolate = \"sandbox\" and is not run until the configuration loads again"
+                        ));
+                    } else {
+                        s.warnings
+                            .push(format!("{why}; using the last settings that loaded"));
+                    }
+                    s
+                }
+                None if matches!(loaded, Loaded::Missing) => PluginSettings::default(),
+                None => PluginSettings {
+                    error: Some(format!(
+                        "{why}; plugins are not run until it loads (their isolation settings are unknown)"
+                    )),
+                    ..PluginSettings::default()
+                },
+            }
+        }
     }
-    PluginSettings::from_toml(c.as_ref().and_then(|(_, v)| v.as_ref()), id)
 }
 
 /// Ring caps of one invocation's output streams.

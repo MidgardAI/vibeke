@@ -9,8 +9,12 @@
 //! * the system (read-only), the home allowlist of [`crate::policy::DEFAULT_HOME_READ`], and
 //!   nothing else of the user's home, nor Vibeke's runtime, state or config (other plugins'
 //!   state, brokers and the registry stay hidden);
-//! * the network: **off** unless the plugin was granted it;
-//! * Unix sockets: only the invocation's own broker.
+//! * the network: **off** unless the plugin was granted it, and then remote IP endpoints only;
+//! * Unix sockets: only the invocation's own broker (plus the system DNS resolver socket on
+//!   macOS when the network is granted), whatever the network setting. Vibeke's runtime dir,
+//!   including the broker registry and the other brokers, stays hidden; the server also binds
+//!   every broker to its invocation (peer process or per-invocation token), so a socket path
+//!   alone is not an identity.
 //!
 //! The environment is the scrubbed allowlist of [`crate::env`], not the user's. Where no working
 //! sandbox exists [`probe`] fails and the caller refuses to run the plugin: there is no silent
@@ -35,8 +39,8 @@ pub struct PluginBox {
     pub state_dir: PathBuf,
     /// Vibeke's own directories to hide (state root, runtime root, config dir).
     pub hidden: Vec<PathBuf>,
-    /// Read-only extras: the `herdr` launcher directory, the `vibeke` binary, the broker
-    /// registry file the launcher consults.
+    /// Read-only extras: the `herdr` launcher directory and the `vibeke` binary. Never the
+    /// broker registry (`brokers.json`): it names every other invocation's broker.
     pub extra_read: Vec<PathBuf>,
     /// The invocation's own broker socket(s).
     pub sockets: Vec<PathBuf>,
@@ -310,6 +314,38 @@ mod tests {
         assert!(Policy::from_spec(&open.spec()).network_open);
     }
 
+    /// The Linux chain (generated on every platform): Vibeke's runtime dir is an empty tmpfs
+    /// with only the invocation's own broker bound back, also with the network open (no
+    /// `--unshare-net`); the broker registry is never re-exposed.
+    #[test]
+    fn linux_box_hides_the_runtime_dir_except_its_own_broker() {
+        let (t, mut b) = fixture();
+        let r = t.path().canonicalize().unwrap();
+        let run = r.join("run/default/herdr-compat");
+        std::fs::create_dir_all(run.join("brokers")).unwrap();
+        std::fs::write(run.join("brokers.json"), "[]").unwrap();
+        let own = run.join("brokers/own.sock");
+        std::fs::write(&own, "").unwrap();
+        b.hidden.push(r.join("run"));
+        b.sockets = vec![own.clone()];
+        b.network = true;
+        let p = Policy::from_spec(&b.spec());
+        assert!(!p.can_read(&run.join("brokers.json")));
+        assert!(!p.can_read(&run.join("brokers")));
+        let a = crate::linux::bwrap_args(&p, &b.plugin_root, None, None);
+        let pos = |w: &[&str]| {
+            a.windows(w.len())
+                .position(|x| x.iter().zip(w).all(|(x, w)| x == w))
+        };
+        let run_s = r.join("run").to_string_lossy().into_owned();
+        let own_s = own.to_string_lossy().into_owned();
+        let hide = pos(&["--tmpfs", &run_s]).expect("runtime dir hidden");
+        let bind = pos(&["--bind-try", &own_s, &own_s]).expect("own broker bound");
+        assert!(bind > hide, "{a:?}");
+        assert!(!a.iter().any(|x| x.contains("brokers.json")), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--unshare-net"), "network = true");
+    }
+
     #[test]
     fn scrubbed_env_drops_secrets() {
         let host = vec![
@@ -329,6 +365,7 @@ mod tests {
         let mut open = b.clone();
         open.network = true;
         let sb = crate::seatbelt::render(&Policy::from_spec(&open.spec()));
-        assert!(sb.contains("(allow network-outbound)\n"));
+        assert!(!sb.contains("(allow network-outbound)\n"), "{sb}");
+        assert!(sb.contains("(remote ip \"*:*\")"), "{sb}");
     }
 }

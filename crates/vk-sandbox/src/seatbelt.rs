@@ -14,6 +14,9 @@ use std::path::Path;
 
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
+/// The system DNS resolver's socket: the only Unix socket an open-network profile adds.
+pub const MDNS_RESPONDER: &str = "/private/var/run/mDNSResponder";
+
 /// `TIOCSTI` on Darwin: `_IOW('t', 114, char)`.
 pub const TIOCSTI: u64 = 0x8001_7472;
 
@@ -159,10 +162,17 @@ pub fn render(p: &Policy) -> String {
         net.push(format!("(remote unix-socket (path-literal {}))", qp(s)));
     }
     if p.network_open {
-        o.push_str("(allow network-outbound)\n");
-    } else {
-        rule(&mut o, "allow", "network-outbound", &net);
+        // Open network means remote IP endpoints only: a bare `(allow network-outbound)` would
+        // also allow connecting to every Unix socket of the user (other plugins' brokers, agent
+        // sockets, Vibeke's own). The one extra socket is the system resolver, without which
+        // host names do not resolve on macOS.
+        net.push("(remote ip \"*:*\")".into());
+        net.push(format!(
+            "(remote unix-socket (path-literal {}))",
+            q(MDNS_RESPONDER)
+        ));
     }
+    rule(&mut o, "allow", "network-outbound", &net);
     if p.allow_bind_localhost {
         o.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
         o.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
@@ -255,6 +265,36 @@ mod tests {
         s.unix_sockets.clear();
         let sb = render(&Policy::from_spec(&s));
         assert!(!sb.contains("network-outbound"));
+    }
+
+    #[test]
+    fn open_network_keeps_the_unix_socket_allowlist() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        let mut s = spec(&root);
+        s.network = crate::policy::NetMode::Open;
+        let pol = Policy::from_spec(&s);
+        let sb = render(&pol);
+        assert!(
+            !sb.contains("(allow network-outbound)"),
+            "never an unfiltered outbound allow\n{sb}"
+        );
+        let start = sb.find("(allow network-outbound\n").unwrap();
+        let block = &sb[start..start + sb[start..].find("\n)\n").unwrap()];
+        assert!(block.contains("(remote ip \"*:*\")"), "{block}");
+        let unix: Vec<&str> = block
+            .lines()
+            .filter(|l| l.contains("remote unix-socket"))
+            .collect();
+        assert_eq!(
+            unix.len(),
+            pol.unix_sockets.len() + 1,
+            "own sockets plus the resolver only: {unix:?}"
+        );
+        assert!(block.contains(MDNS_RESPONDER));
+        for u in &pol.unix_sockets {
+            assert!(block.contains(&u.display().to_string()));
+        }
     }
 
     #[test]

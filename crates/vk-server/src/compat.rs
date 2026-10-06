@@ -24,14 +24,16 @@
 //!   baseline methods return an explicit `unsupported` error; `method_not_found` is reserved
 //!   for unknown methods.
 //! * **Plugins**: `plugin.action.list/run` (native) and `plugin.action.invoke` (compat) run
-//!   argv actions asynchronously with log records (output tailed from files so it survives a
-//!   server restart, credentials redacted with `vk-redact`); `[[events]]` hooks fire on
+//!   argv actions asynchronously with log records (output written by a [`capture`] helper into
+//!   files bounded per invocation and tailed from them, so it survives a server restart,
+//!   credentials redacted with `vk-redact`); `[[events]]` hooks fire on
 //!   projected Herdr events; `[[startup]]` runs once per server activation. Nothing runs without
 //!   a valid `herdr_legacy` grant (`vibeke plugin trust <id> --legacy`). Invocations and
 //!   mutating broker calls are audited as metadata-only events (`plugin.invocation_started`,
 //!   `plugin.invocation_finished`, `plugin.api_call` with `actor.kind = plugin`).
 
 mod brokers;
+pub mod capture;
 mod ext;
 mod limits;
 mod views;
@@ -216,10 +218,24 @@ pub fn registered_broker(candidate: &Path) -> Result<(PathBuf, String), String> 
     if std::fs::symlink_metadata(&registry).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("broker registry is a symlink".into());
     }
-    let list: Vec<Value> = std::fs::read(&registry)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let bytes = match std::fs::read(&registry) {
+        Ok(b) => b,
+        // Inside a restricted (sandboxed) invocation the runtime dir and its broker registry
+        // are hidden on purpose (the registry names every other invocation's broker). There the
+        // OS sandbox itself allows connecting to the invocation's own broker socket only, so the
+        // structural checks above are what remains to be verified.
+        Err(e)
+            if std::env::var("VIBEKE_ISOLATION").as_deref() == Ok("sandbox")
+                && matches!(
+                    e.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                ) =>
+        {
+            return Ok((cur, session.to_string()));
+        }
+        Err(_) => Vec::new(),
+    };
+    let list: Vec<Value> = serde_json::from_slice(&bytes).unwrap_or_default();
     let registered = list.iter().any(|b| {
         b["path"]
             .as_str()
@@ -372,6 +388,9 @@ async fn accept_public(server: Arc<Server>, l: UnixListener) {
             broker: None,
             grant_id: None,
             cross_session: false,
+            sandboxed: false,
+            peer_bound: false,
+            token: None,
         };
         let s = server.clone();
         tokio::spawn(async move { serve_wire(s, stream, caller).await });
@@ -397,6 +416,13 @@ pub struct Caller {
     pub grant_id: Option<String>,
     /// A plugin invocation of another session, authenticated by a verified ticket.
     pub cross_session: bool,
+    /// A restricted (sandboxed) invocation: only [`sandbox_allows`] methods are served.
+    pub sandboxed: bool,
+    /// Broker connections: the connecting process belongs to the invocation (its process
+    /// tree, process group or pane).
+    pub peer_bound: bool,
+    /// Broker connections: the invocation's secret, accepted instead of `peer_bound`.
+    pub token: Option<String>,
 }
 
 impl Caller {
@@ -410,8 +436,65 @@ impl Caller {
             broker: None,
             grant_id: None,
             cross_session: false,
+            sandboxed: false,
+            peer_bound: false,
+            token: None,
         }
     }
+}
+
+/// What a restricted (sandboxed) plugin may call through its broker (07 §7.7, 09 §6): reading
+/// session state (workspaces, tabs, panes, agents, layout — not terminal contents or host
+/// process details), waiting for events, its own agent views, notifications, closing its own
+/// popup, its own log records and its own actions (which run restricted too). Everything that
+/// executes on the host or types into a pane (`pane.run`, `pane.send_*`, `agent.send`,
+/// `agent.prompt`, `agent.start`, `tab/pane.create`/`split` with commands), changes layout,
+/// workspaces, metadata, the registry or worktrees, runs git on the host, reads pane output, or
+/// acts for another plugin is refused. Host-mode plugins are not affected.
+pub fn sandbox_allows(method: &str) -> bool {
+    matches!(
+        method,
+        "ping"
+            | "api.schema"
+            | "session.snapshot"
+            | "workspace.list"
+            | "workspace.get"
+            | "tab.list"
+            | "pane.list"
+            | "pane.get"
+            | "pane.current"
+            | "agent.list"
+            | "agent.get"
+            | "layout.export"
+            | "events.subscribe"
+            | "events.wait"
+            | "plugin.list"
+            | "plugin.action.list"
+            | "plugin.log.list"
+            | "plugin.action.invoke"
+            | "agent.view.set"
+            | "agent.view.clear"
+            | "notification.show"
+            | "popup.close"
+    )
+}
+
+fn sandbox_denied(method: &str) -> WireError {
+    WireError::new(
+        "permission_denied",
+        format!(
+            "{method} is not available to a plugin in restricted (sandboxed) mode; it may read session state, wait for events, set its own agent views, notify and run its own actions (use isolate = \"host\" for full legacy access)"
+        ),
+    )
+}
+
+/// Constant-time comparison for the broker token.
+fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 /// Herdr methods that only read; every other method a broker calls is audited (09 §6).
@@ -527,7 +610,28 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
             return;
         }
     };
+    // A broker serves its own invocation only: a process of it, or one holding its token.
+    if caller.broker.is_some() && !caller.peer_bound {
+        let ok = matches!(
+            (&caller.token, &req.token),
+            (Some(want), Some(got)) if same_secret(want, got)
+        );
+        if !ok {
+            let e = WireError::new(
+                "permission_denied",
+                "this broker belongs to another plugin invocation; the connecting process is not part of it",
+            );
+            let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
+            return;
+        }
+    }
     if let Err(e) = check_broker(&server, &caller) {
+        let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
+        return;
+    }
+    if caller.sandboxed && !sandbox_allows(&req.method) {
+        let e = sandbox_denied(&req.method);
+        audit_call(&server, &caller, &req.method, Err(e.code.as_str()));
         let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
         return;
     }
@@ -1058,6 +1162,9 @@ pub async fn call(
         caller.ctx.client_id = c;
     }
     let caller = &caller;
+    if caller.sandboxed && !sandbox_allows(method) {
+        return Err(sandbox_denied(method));
+    }
     let sn = snap(server);
     match method {
         "ping" => Ok(typed(
@@ -1602,6 +1709,25 @@ pub async fn call(
                     return Err(WireError::new("invalid_params", "action_id is required"));
                 }
             };
+            if caller.sandboxed {
+                // Only its own actions, and only while they would run restricted as well.
+                let own = caller.plugin.as_ref().map(|(id, _)| id.as_str());
+                if own != Some(plugin.as_str()) {
+                    return Err(WireError::new(
+                        "permission_denied",
+                        "a plugin in restricted (sandboxed) mode can run only its own actions",
+                    ));
+                }
+                let s = limits::settings(&plugin);
+                if s.isolate != herdr::settings::Isolate::Sandbox || s.error.is_some() {
+                    return Err(WireError::new(
+                        "permission_denied",
+                        format!(
+                            "{plugin} is no longer configured isolate = \"sandbox\"; a restricted invocation cannot start it"
+                        ),
+                    ));
+                }
+            }
             let ctx = InvokeContext::from_params(&sn, p, caller);
             let log = invoke_action(
                 server,
@@ -1613,10 +1739,18 @@ pub async fn call(
             )?;
             Ok(typed("plugin_action_started", json!({"log": log})))
         }
-        "plugin.log.list" => Ok(typed(
-            "plugin_log_list",
-            json!({"logs": logs(server, sp(p, "plugin_id"), p.get("limit").and_then(Value::as_u64))}),
-        )),
+        "plugin.log.list" => {
+            // A restricted plugin sees its own records only.
+            let filter = if caller.sandboxed {
+                caller.plugin.as_ref().map(|(id, _)| id.as_str())
+            } else {
+                sp(p, "plugin_id")
+            };
+            Ok(typed(
+                "plugin_log_list",
+                json!({"logs": logs(server, filter, p.get("limit").and_then(Value::as_u64))}),
+            ))
+        }
         "server.stop" => Err(WireError::new(
             "unsupported",
             "server.stop is refused on the Herdr compatibility endpoint; use `vibeke server stop`",
@@ -1696,6 +1830,9 @@ fn invocation_ticket(server: &Server, caller: &Caller) -> Result<Value, WireErro
             "unknown method: vibeke.invocation_ticket",
         ));
     };
+    if caller.sandboxed {
+        return Err(sandbox_denied("vibeke.invocation_ticket"));
+    }
     let bytes: [u8; 32] = rand::random();
     let ticket: String = bytes.iter().map(|x| format!("{x:02x}")).collect();
     let st = state(server);
@@ -1732,6 +1869,7 @@ fn redeem_ticket(server: &Server, ticket: &str) -> Result<Value, String> {
         "grant_id": b.grant_id,
         "log_id": b.log_id,
         "session": server.opts.session,
+        "sandboxed": b.isolation.as_deref() != Some("host"),
     }))
 }
 
@@ -1795,6 +1933,8 @@ fn plugin_list() -> Vec<Value> {
                 "network": sandboxed.then_some(cfg.network),
                 "max_concurrent": cfg.max_concurrent,
                 "settings_warnings": cfg.warnings,
+                "settings_error": cfg.error,
+                "output_max_bytes": cfg.output_max_bytes,
                 "keybindings": keys
                     .iter()
                     .filter(|k| k["plugin_id"] == e.id.as_str())
@@ -2500,22 +2640,49 @@ fn spawn_invocation(
     // A fresh trust check right before anything runs: the caller's view (a hook cache, an
     // earlier registry read) may be stale. The plugin must still be active under the same grant
     // with exactly the manifest this command came from.
+    // Fail closed on configuration: an unknown `isolate` value, or a config that cannot be
+    // loaded while the plugin was last configured sandboxed, refuses the plugin (never host).
+    if let Some(why) = &settings.error {
+        return fail(rec, why.clone());
+    }
     if let Err(why) = fresh_grant(entry, m) {
         return fail(rec, why);
     }
-    // Output goes to files, not pipes: a long-lived invocation keeps writing across a server
-    // restart (a pipe would break and SIGPIPE it).
+    // Output goes through a capture helper into 0600 files, bounded by the invocation's
+    // budget: the helper (not the server) holds the pipes, so a long-running invocation keeps
+    // writing across a server restart, and no invocation can fill the disk.
     let out_dir = compat_root(server).join("out");
     let (out_path, err_path) = (
         out_dir.join(format!("{log_id}.out")),
         out_dir.join(format!("{log_id}.err")),
     );
-    let files =
-        private_dir(&out_dir).and_then(|_| Ok((out_file(&out_path)?, out_file(&err_path)?)));
-    let (out_f, err_f) = match files {
+    let files = private_dir(&out_dir)
+        .and_then(|_| {
+            out_file(&out_path)?;
+            out_file(&err_path)?;
+            Ok(())
+        })
+        .and_then(|_| {
+            capture::spawn(
+                &server.opts.bin,
+                settings.output_max_bytes,
+                &out_path,
+                &err_path,
+            )
+        });
+    let capture::Capture {
+        stdout: out_f,
+        stderr: err_f,
+        done: mut captured,
+    } = match files {
         Ok(f) => f,
-        Err(e) => return fail(rec, format!("output: {e}")),
+        Err(e) => {
+            let _ = std::fs::remove_file(&out_path);
+            let _ = std::fs::remove_file(&err_path);
+            return fail(rec, format!("output: {e}"));
+        }
     };
+    let token = brokers::new_token();
     // Private broker bound to this invocation's grant.
     let broker = match brokers::new_path(server) {
         Ok(p) => p,
@@ -2538,6 +2705,8 @@ fn spawn_invocation(
         created_at_ms: now_ms(),
         stdout: Some(out_path.clone()),
         stderr: Some(err_path.clone()),
+        isolation: Some(if sandboxed { "sandbox" } else { "host" }.into()),
+        token: token.clone(),
     };
     if let Err(e) = brokers::bind(server, binding) {
         return fail(rec, format!("broker: {e}"));
@@ -2558,6 +2727,7 @@ fn spawn_invocation(
         entrypoint_id: sp_.entrypoint.clone(),
         clicked_url: sp_.ctx.clicked_url.clone(),
         link_handler_id: sp_.ctx.link_handler_id.clone(),
+        broker_token: token,
     };
     let argv = launch::resolve_argv(&entry.root, command);
     // Restricted legacy mode: the argv runs under the `sandbox` level with the plugin dir
@@ -2577,13 +2747,13 @@ fn spawn_invocation(
             config_dir: inv.config_dir.clone(),
             state_dir: inv.state_dir.clone(),
             hidden,
+            // Never `brokers.json`: it names every other invocation's broker.
             extra_read: vec![
                 launcher(server)
                     .parent()
                     .map(Path::to_path_buf)
                     .unwrap_or_default(),
                 server.opts.bin.clone(),
-                compat_root(server).join("brokers.json"),
             ],
             sockets: vec![broker.clone()],
             network: settings.network,
@@ -2667,6 +2837,9 @@ fn spawn_invocation(
                         _ = tokio::time::sleep(Duration::from_millis(150)) => tail.poll(&srv, &id),
                     }
                 };
+                // Let the capture helper write what the process printed last (it is done at
+                // once unless a leftover child still holds the pipes).
+                let _ = tokio::time::timeout(Duration::from_millis(500), &mut captured).await;
                 tail.poll(&srv, &id);
                 // A long-running entrypoint's children may still write; keep the files until
                 // the broker (group) closes.
@@ -2686,6 +2859,7 @@ fn spawn_invocation(
                 if long_lived {
                     while brokers::get(&srv, &broker).is_some() {
                         tokio::time::sleep(Duration::from_millis(500)).await;
+                        tail.poll(&srv, &id);
                     }
                     tail.remove();
                 }
@@ -2698,7 +2872,9 @@ fn spawn_invocation(
 /// Re-read the registry: `entry` must still be active under the same grant, with `m` as its
 /// current manifest (checked, with the referenced files, by `entry_status`).
 fn fresh_grant(entry: &Entry, m: &Manifest) -> Result<(), String> {
-    let reg = Registry::load(&plugin_dirs()).map_err(|e| e.to_string())?;
+    // Under the registry's shared lock: a publish (install/update/trust) in progress is
+    // waited for, never observed half-way.
+    let reg = Registry::load_shared(&plugin_dirs()).map_err(|e| e.to_string())?;
     let now = reg
         .get(&entry.id)
         .map_err(|_| format!("plugin {} is no longer registered", entry.id))?;
@@ -2720,7 +2896,8 @@ fn fresh_grant(entry: &Entry, m: &Manifest) -> Result<(), String> {
             entry.id
         ));
     }
-    Ok(())
+    // The whole managed checkout must still be the reviewed (and built) tree.
+    registry::verify_launch(now)
 }
 
 // ---- hooks ------------------------------------------------------------------------------------
@@ -2994,6 +3171,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 caller.plugin = Some((id, digest));
                 caller.grant_id = Some(grant_id);
                 caller.cross_session = true;
+                // Fail closed: an answer without the field is treated as restricted.
+                caller.sandboxed = v["sandboxed"].as_bool() != Some(false);
                 caller.invocation = v["log_id"].as_str().map(|l| format!("{session}/{l}"));
                 caller.ctx.kind = "plugin".into();
             }
@@ -3267,9 +3446,15 @@ mod tests {
             created_at_ms: 0,
             stdout: None,
             stderr: None,
+            isolation: Some("host".into()),
+            token: String::new(),
         };
         let me = std::process::id();
+        let mut legacy = b("legacy", "acme.gone", brokers::Life::Process { pid: me });
+        legacy.isolation = None;
         let list = vec![
+            // Persisted by an older version (no isolation recorded): never re-issued.
+            legacy,
             // Alive, but the plugin is not registered (no grant): dropped.
             b("ungranted", "acme.gone", brokers::Life::Process { pid: me }),
             // Dead process: dropped.
@@ -3289,7 +3474,7 @@ mod tests {
             serde_json::to_vec(&list).unwrap(),
         )
         .unwrap();
-        assert_eq!(brokers::recover(&srv), (0, 3));
+        assert_eq!(brokers::recover(&srv), (0, 4));
         for x in &list {
             assert!(
                 !x.path.exists(),
@@ -3299,6 +3484,107 @@ mod tests {
         }
         assert!(brokers::all(&srv).is_empty());
         assert!(brokers::pid_alive(me as i32));
+    }
+
+    #[tokio::test]
+    async fn a_sandboxed_broker_serves_only_the_restricted_allowlist() {
+        let (srv, _d) = server();
+        let sbx = Caller {
+            sandboxed: true,
+            ..user()
+        };
+        for m in [
+            "pane.run",
+            "pane.send_text",
+            "pane.send_keys",
+            "pane.send_input",
+            "pane.read",
+            "pane.process_info",
+            "agent.send",
+            "agent.prompt",
+            "agent.start",
+            "tab.create",
+            "workspace.create",
+            "pane.split",
+            "pane.report_metadata",
+            "plugin.pane.open",
+            "plugin.enable",
+            "worktree.create",
+            "worktree.repo_root",
+            "vibeke.invocation_ticket",
+        ] {
+            assert!(!sandbox_allows(m), "{m}");
+            let e = call(&srv, &sbx, m, &json!({})).await.unwrap_err();
+            assert_eq!(e.code, "permission_denied", "{m}: {e}");
+            assert!(e.message.contains("restricted (sandboxed)"), "{m}: {e}");
+        }
+        for m in ["workspace.list", "pane.list", "session.snapshot", "ping"] {
+            assert!(sandbox_allows(m), "{m}");
+            assert!(call(&srv, &sbx, m, &json!({})).await.is_ok(), "{m}");
+        }
+        // Another plugin's action is refused before anything is looked up.
+        let sbx_plugin = Caller {
+            plugin: Some(("acme.sbx".into(), "d".into())),
+            ..sbx.clone()
+        };
+        let e = call(
+            &srv,
+            &sbx_plugin,
+            "plugin.action.invoke",
+            &json!({"plugin_id": "acme.host", "action_id": "go"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.message.contains("only its own actions"), "{e}");
+        // Host-mode callers are unaffected by the policy.
+        assert!(!user().sandboxed);
+    }
+
+    #[test]
+    fn broker_tokens_compare_exactly() {
+        let t = brokers::new_token();
+        assert_eq!(t.len(), 64);
+        assert_ne!(t, brokers::new_token());
+        assert!(same_secret(&t, &t.clone()));
+        assert!(!same_secret(&t, &t[..63]));
+        assert!(!same_secret(&t, &brokers::new_token()));
+        assert!(!same_secret("", "x"));
+    }
+
+    #[tokio::test]
+    async fn a_broker_belongs_to_its_process_tree_and_group() {
+        let (srv, _d) = server();
+        let me = std::process::id();
+        let parent = vk_hold::procinfo::info(me).unwrap().ppid;
+        let mine = brokers::Life::Process { pid: me };
+        assert!(brokers::peer_belongs(&srv, &mine, Some(me as i32)));
+        // A child of the invocation belongs; its parent (or anything else) does not.
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        assert!(brokers::peer_belongs(&srv, &mine, Some(child.id() as i32)));
+        assert!(!brokers::peer_belongs(
+            &srv,
+            &brokers::Life::Process { pid: child.id() },
+            Some(me as i32)
+        ));
+        assert!(!brokers::peer_belongs(&srv, &mine, Some(parent as i32)));
+        assert!(!brokers::peer_belongs(&srv, &mine, None));
+        assert!(!brokers::peer_belongs(
+            &srv,
+            &brokers::Life::Pending,
+            Some(me as i32)
+        ));
+        // Long-running entrypoints: any member of the process group.
+        let pgid = vk_hold::procinfo::info(me).unwrap().pgid;
+        let group = brokers::Life::Group {
+            pid: 0x7fff_fff0,
+            pgid,
+        };
+        assert!(brokers::peer_belongs(&srv, &group, Some(me as i32)));
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

@@ -527,7 +527,16 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
 
     // A changed manifest invalidates a re-granted trust.
     s_.json(&["plugin", "trust", "acme.probe", "--legacy"]);
+    // (Managed checkouts are read-only on disk; the edit forces it.)
     let mf = root.join("herdr-plugin.toml");
+    assert!(
+        std::fs::write(&mf, "x").is_err(),
+        "managed files are read-only"
+    );
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mf, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
     let text = read(&mf);
     std::fs::write(&mf, text + "\n# edited\n").unwrap();
     let l = s_.json(&["plugin", "list"]);

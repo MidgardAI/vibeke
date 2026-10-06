@@ -3,8 +3,19 @@
 //! * Registrations are per user and shared by every session on the machine, stored atomically
 //!   in `plugins.json` next to Vibeke's `config.toml` (default `~/.config/vibeke/plugins.json`).
 //!   Installs and links work while no server is running; servers re-read the file.
-//! * `install` copies a local plugin directory into a Vibeke-managed checkout; `link` registers a
-//!   directory in place. Neither runs any plugin code.
+//! * `install` copies a local plugin directory (or a fetched repository) into a fresh, immutable
+//!   managed checkout `<checkouts>/<id>/<commit|local>-<nonce>/`; `link` registers a directory
+//!   in place. Neither runs any plugin code. The new checkout is staged and verified first and
+//!   only then published by saving the registry (new root, commit and the kept or revoked grant
+//!   in one atomic write); until that save the registry still names the old checkout, which is
+//!   never modified, so a crash or a failed save leaves the old reviewed content in use.
+//!   Replaced checkouts are garbage-collected by a later install ([`CHECKOUT_GRACE`]).
+//! * Symlinks: an install refuses any symlink that resolves outside the checkout; an entrypoint
+//!   that resolves outside the plugin root is refused at trust and makes the status `broken`;
+//!   an internal symlink's resolved target contents are pinned by the entry digest.
+//! * Launches re-verify the whole-tree digest of a managed checkout against the grant
+//!   ([`verify_launch`]; cached by a stat fingerprint of the tree), so a dependency changed in
+//!   place after review never runs under the old grant.
 //! * A Herdr plugin is **inactive until trusted**: `trust` records a `herdr_legacy` grant bound to
 //!   the manifest's SHA-256, the root, the source path, a content digest of the whole reviewed
 //!   tree and a digest of every file the manifest's commands reference. Any manifest change, a
@@ -18,7 +29,7 @@
 //!   while another plugin builds stays revoked).
 //! * Herdr's own registry (`~/.config/herdr/plugins.json`) is never read or written here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -93,6 +104,10 @@ pub struct Grant {
     /// commit makes the grant stale: an update is reviewed again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Whole-tree digest a launch must find: the reviewed tree, re-recorded after a successful
+    /// build (which adds its outputs). Checked before every launch of a managed checkout.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub run_tree_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,7 +157,8 @@ pub enum Status {
     Untrusted,
     /// The manifest changed after the grant: nothing runs until re-reviewed.
     StaleTrust,
-    /// The manifest file is missing or no longer parses.
+    /// The manifest file is missing or no longer parses, or an entrypoint resolves outside the
+    /// plugin root.
     Broken,
 }
 
@@ -263,6 +279,129 @@ pub fn tree_digest(root: &Path) -> io::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
+/// A cheap fingerprint of a tree (no file reads): every entry's relative path, kind, mode,
+/// size, inode and modification/change times. Any write, rename, chmod or touch changes it
+/// (`ctime` cannot be set back by the writer).
+fn tree_fingerprint(root: &Path) -> io::Result<String> {
+    fn walk(root: &Path, rel: &Path, h: &mut Sha256) -> io::Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(root.join(rel))?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name();
+            if rel.as_os_str().is_empty() && name == ".git" {
+                continue;
+            }
+            let r = rel.join(&name);
+            let meta = std::fs::symlink_metadata(root.join(&r))?;
+            h.update(r.to_string_lossy().as_bytes());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                h.update(
+                    format!(
+                        "\0{}:{}:{}:{}.{}:{}.{}",
+                        meta.mode(),
+                        meta.len(),
+                        meta.ino(),
+                        meta.mtime(),
+                        meta.mtime_nsec(),
+                        meta.ctime(),
+                        meta.ctime_nsec()
+                    )
+                    .as_bytes(),
+                );
+            }
+            #[cfg(not(unix))]
+            h.update(format!("\0{}:{:?}", meta.len(), meta.modified().ok()).as_bytes());
+            h.update([0]);
+            if meta.file_type().is_dir() {
+                walk(root, &r, h)?;
+            }
+        }
+        Ok(())
+    }
+    let mut h = Sha256::new();
+    walk(root, Path::new(""), &mut h)?;
+    Ok(hex(&h.finalize()))
+}
+
+/// [`tree_digest`], reused while the tree's stat fingerprint is unchanged (launches of event
+/// hooks are frequent; reading every file each time is not needed to notice a change).
+pub fn tree_digest_cached(root: &Path) -> io::Result<String> {
+    type Cache = HashMap<PathBuf, (String, String)>;
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<Cache>> =
+        std::sync::LazyLock::new(Default::default);
+    let before = tree_fingerprint(root)?;
+    if let Some((fp, d)) = CACHE.lock().unwrap().get(root)
+        && *fp == before
+    {
+        return Ok(d.clone());
+    }
+    let digest = tree_digest(root)?;
+    // Only cache a digest whose tree did not change while it was read.
+    if tree_fingerprint(root)? == before {
+        CACHE
+            .lock()
+            .unwrap()
+            .insert(root.to_path_buf(), (before, digest.clone()));
+    }
+    Ok(digest)
+}
+
+/// Normalize `rel` (relative to the plugin root) without touching the filesystem; `None` when
+/// it climbs above the root.
+fn lexical(rel: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in rel.components() {
+        match c {
+            Component::Normal(n) => out.push(n),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The first symlink below `root` (`.git` excluded) that points outside it: an absolute target,
+/// a relative target climbing above the root, or a chain that resolves outside it.
+pub fn escaping_symlink(root: &Path) -> io::Result<Option<String>> {
+    fn walk(root: &Path, canon: &Path, rel: &Path) -> io::Result<Option<String>> {
+        for e in std::fs::read_dir(root.join(rel))? {
+            let e = e?;
+            let name = e.file_name();
+            if rel.as_os_str().is_empty() && name == ".git" {
+                continue;
+            }
+            let r = rel.join(&name);
+            let full = root.join(&r);
+            let ft = std::fs::symlink_metadata(&full)?.file_type();
+            if ft.is_symlink() {
+                let target = std::fs::read_link(&full)?;
+                let parent = r.parent().unwrap_or(Path::new(""));
+                let inside = !target.is_absolute()
+                    && lexical(&parent.join(&target)).is_some()
+                    && std::fs::canonicalize(&full).map_or(true, |c| c.starts_with(canon));
+                if !inside {
+                    return Ok(Some(format!("{} -> {}", r.display(), target.display())));
+                }
+            } else if ft.is_dir()
+                && let Some(x) = walk(root, canon, &r)?
+            {
+                return Ok(Some(x));
+            }
+        }
+        Ok(None)
+    }
+    let canon = std::fs::canonicalize(root)?;
+    walk(root, &canon, Path::new(""))
+}
+
 /// Every command line the manifest declares, on any platform.
 fn all_commands(m: &Manifest) -> Vec<&[String]> {
     let mut v: Vec<&[String]> = Vec::new();
@@ -274,10 +413,10 @@ fn all_commands(m: &Manifest) -> Vec<&[String]> {
     v
 }
 
-/// Digest of the files below `root` that the manifest's commands reference (an argument that
-/// names an existing file inside the plugin root, such as `bin/hook.sh` or `dist/index.js`),
-/// with their executable bits and content. Cheap enough to recompute on every status read.
-pub fn entry_digest(root: &Path, m: &Manifest) -> String {
+/// Plugin-relative paths the manifest's commands reference (an argument that is a plain
+/// relative path, such as `bin/hook.sh` or `dist/index.js`; whether it exists is checked by the
+/// caller).
+fn referenced(m: &Manifest) -> std::collections::BTreeSet<PathBuf> {
     use std::path::Component;
     let mut files = std::collections::BTreeSet::new();
     for cmd in all_commands(m) {
@@ -294,40 +433,102 @@ pub fn entry_digest(root: &Path, m: &Manifest) -> String {
             files.insert(p.to_path_buf());
         }
     }
-    let mut h = Sha256::new();
-    for f in files {
+    files
+}
+
+/// A referenced path that exists but resolves (through a symlink anywhere along it) outside
+/// the plugin root: such an entrypoint would run unreviewed, mutable content.
+pub fn escaping_entrypoint(root: &Path, m: &Manifest) -> Option<String> {
+    let canon = std::fs::canonicalize(root).ok()?;
+    referenced(m).into_iter().find_map(|f| {
         let full = root.join(&f);
-        let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        std::fs::symlink_metadata(&full).ok()?;
+        match std::fs::canonicalize(&full) {
+            Ok(c) if c.starts_with(&canon) => None,
+            Ok(c) => Some(format!("{} resolves to {}", f.display(), c.display())),
+            // A dangling link: its target may appear later, anywhere.
+            Err(_) => std::fs::read_link(&full)
+                .ok()
+                .map(|t| format!("{} -> {} (dangling)", f.display(), t.display())),
+        }
+    })
+}
+
+/// Digest of the files below `root` that the manifest's commands reference, with their
+/// executable bits and content. A symlink (the path itself or a directory along it) is hashed
+/// with its link text **and** the contents of the file it resolves to, so changing an internal
+/// link's target invalidates the grant; a path resolving outside the root is hashed as such (and
+/// refused by [`entry_status`]). Cheap enough to recompute on every status read.
+pub fn entry_digest(root: &Path, m: &Manifest) -> String {
+    let canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut h = Sha256::new();
+    for f in referenced(m) {
+        let full = root.join(&f);
+        let Ok(lmeta) = std::fs::symlink_metadata(&full) else {
             continue;
         };
-        if meta.file_type().is_symlink() {
+        let resolved = std::fs::canonicalize(&full).ok();
+        let via_link = lmeta.file_type().is_symlink()
+            || resolved
+                .as_ref()
+                .is_some_and(|c| c.strip_prefix(&canon).ok() != Some(f.as_path()));
+        if let Some(c) = &resolved
+            && !c.starts_with(&canon)
+        {
             h.update(f.to_string_lossy().as_bytes());
+            h.update(b"\0escape\0");
+            h.update(c.to_string_lossy().as_bytes());
+            h.update([0]);
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&full) else {
+            // Dangling link: pinned by its text.
+            if let Ok(t) = std::fs::read_link(&full) {
+                h.update(f.to_string_lossy().as_bytes());
+                h.update(b"\0l");
+                h.update(t.to_string_lossy().as_bytes());
+                h.update([0]);
+            }
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        h.update(f.to_string_lossy().as_bytes());
+        if via_link {
             h.update(b"\0l");
             if let Ok(t) = std::fs::read_link(&full) {
                 h.update(t.to_string_lossy().as_bytes());
             }
-        } else if meta.is_file() {
-            h.update(f.to_string_lossy().as_bytes());
-            h.update(format!("\0f{:o}", exec_bits(&meta)).as_bytes());
-            match std::fs::read(&full) {
-                Ok(b) => h.update(Sha256::digest(b)),
-                Err(_) => h.update(b"unreadable"),
+            h.update(b"\0");
+            if let Some(c) = &resolved
+                && let Ok(rel) = c.strip_prefix(&canon)
+            {
+                h.update(rel.to_string_lossy().as_bytes());
             }
-        } else {
-            continue;
+        }
+        h.update(format!("\0f{:o}", exec_bits(&meta)).as_bytes());
+        match std::fs::read(&full) {
+            Ok(b) => h.update(Sha256::digest(b)),
+            Err(_) => h.update(b"unreadable"),
         }
         h.update([0]);
     }
     hex(&h.finalize())
 }
 
-/// An exclusive advisory lock on `plugins.json.lock`, held while the guard lives.
+/// An advisory lock on `plugins.json.lock` (exclusive for changes, shared for launches),
+/// held while the guard lives.
 struct RegistryLock {
     _file: std::fs::File,
 }
 
 impl RegistryLock {
     fn acquire(dirs: &PluginDirs) -> io::Result<Self> {
+        Self::acquire_mode(dirs, true)
+    }
+
+    fn acquire_mode(dirs: &PluginDirs, exclusive: bool) -> io::Result<Self> {
         if let Some(d) = dirs.registry.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -342,8 +543,13 @@ impl RegistryLock {
         {
             use std::os::unix::io::AsRawFd;
             loop {
-                // SAFETY: flock on a descriptor we own; blocks until the lock is free.
-                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                // SAFETY: flock on a descriptor we own; blocks until the lock is available.
+                let op = if exclusive {
+                    libc::LOCK_EX
+                } else {
+                    libc::LOCK_SH
+                };
+                if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
                     break;
                 }
                 let e = io::Error::last_os_error();
@@ -412,7 +618,276 @@ fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// How long a replaced (unreferenced) managed checkout is kept before a later install removes
+/// it: invocations started just before an update keep their files.
+pub const CHECKOUT_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Toggle the owner write bit on every directory and file below `root` (symlinks untouched).
+/// Managed checkouts are read-only between builds, so nothing a plugin runs (a Python bytecode
+/// cache, a log file) changes the reviewed tree by accident.
+pub fn set_tree_writable(root: &Path, writable: bool) -> io::Result<()> {
+    #[cfg(unix)]
+    fn set(p: &Path, meta: &std::fs::Metadata, writable: bool) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o7777;
+        let new = if writable {
+            mode | 0o200
+        } else {
+            mode & !0o222
+        };
+        if new != mode {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(new))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    fn set(_: &Path, _: &std::fs::Metadata, _: bool) -> io::Result<()> {
+        Ok(())
+    }
+    let meta = std::fs::symlink_metadata(root)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    // Directories are made writable before descending and read-only after.
+    if meta.is_dir() {
+        if writable {
+            set(root, &meta, true)?;
+        }
+        for e in std::fs::read_dir(root)? {
+            set_tree_writable(&e?.path(), writable)?;
+        }
+        if !writable {
+            set(root, &meta, false)?;
+        }
+        Ok(())
+    } else {
+        set(root, &meta, writable)
+    }
+}
+
+/// Remove a managed checkout (read-only on disk) completely.
+fn remove_checkout(p: &Path) -> io::Result<()> {
+    if std::fs::symlink_metadata(p).is_err() {
+        return Ok(());
+    }
+    let _ = set_tree_writable(p, true);
+    std::fs::remove_dir_all(p)
+}
+
+/// A unique token for checkout directory names (time, pid, counter, and kernel randomness when
+/// available).
+fn nonce() -> String {
+    use std::io::Read;
+    let mut b = [0u8; 8];
+    let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
+    let d = sha256_hex(format!("{}{}", new_grant_id(), hex(&b)).as_bytes());
+    d[..12].to_string()
+}
+
+/// A plugin copied into the staging area and verified, not registered yet (see
+/// [`Registry::install_staged`]).
+#[derive(Debug)]
+pub struct Staged {
+    /// `<checkouts>/.staging/<label>-<nonce>`: moved into `<checkouts>/<id>/` when published.
+    pub dir: PathBuf,
+    pub manifest: Manifest,
+    pub tree_sha256: String,
+    pub origin: Origin,
+}
+
+impl Staged {
+    /// Throw the staged copy away (the registration failed).
+    pub fn discard(self) {
+        let _ = remove_checkout(&self.dir);
+    }
+}
+
+/// Copy `root` into the staging area: the copy must carry the validated manifest and contain no
+/// symlink pointing outside it. No registry change, no lock needed.
+pub fn stage(dirs: &PluginDirs, root: &Path, origin: Origin) -> Result<Staged, RegistryError> {
+    let (m, _) = read_manifest(root)?;
+    let id_dir = dirs.checkouts.join(&m.id);
+    if id_dir.starts_with(root) || root.starts_with(&id_dir) || root.starts_with(&dirs.checkouts) {
+        return Err(RegistryError::Conflict(
+            "source and managed checkout overlap".into(),
+        ));
+    }
+    if let Some(link) = escaping_symlink(root)? {
+        return Err(RegistryError::Conflict(format!(
+            "refusing to install {}: the symlink {link} points outside the plugin",
+            m.id
+        )));
+    }
+    let label = origin
+        .commit
+        .as_deref()
+        .map(|c| c.chars().take(12).collect::<String>())
+        .unwrap_or_else(|| "local".into());
+    let area = dirs.checkouts.join(".staging");
+    std::fs::create_dir_all(&area)?;
+    let dir = area.join(format!("{label}-{}", nonce()));
+    let fail = |e: RegistryError, dir: &Path| {
+        let _ = remove_checkout(dir);
+        Err(e)
+    };
+    if let Err(e) = copy_tree(root, &dir) {
+        return fail(e.into(), &dir);
+    }
+    match read_manifest(&dir) {
+        Ok((m2, _)) if m2 == m => {}
+        Ok(_) => {
+            return fail(
+                RegistryError::Conflict("manifest changed while copying".into()),
+                &dir,
+            );
+        }
+        Err(e) => return fail(e, &dir),
+    }
+    // Re-checked on the copy: the source may have changed while it was read.
+    match escaping_symlink(&dir) {
+        Ok(None) => {}
+        Ok(Some(link)) => {
+            return fail(
+                RegistryError::Conflict(format!(
+                    "refusing to install {}: the symlink {link} points outside the plugin",
+                    m.id
+                )),
+                &dir,
+            );
+        }
+        Err(e) => return fail(e.into(), &dir),
+    }
+    let tree = match tree_digest(&dir) {
+        Ok(t) => t,
+        Err(e) => return fail(e.into(), &dir),
+    };
+    Ok(Staged {
+        dir,
+        manifest: m,
+        tree_sha256: tree,
+        origin,
+    })
+}
+
+/// Stage a local plugin directory (or its manifest path).
+pub fn stage_local(
+    dirs: &PluginDirs,
+    src: &Path,
+    requested_ref: Option<&str>,
+) -> Result<Staged, RegistryError> {
+    let root = plugin_root(src)?;
+    let origin = Origin {
+        kind: "local".into(),
+        path: root.clone(),
+        requested_ref: requested_ref.map(str::to_string),
+        repo: None,
+        commit: None,
+    };
+    stage(dirs, &root, origin)
+}
+
+/// Stage a fetched `owner/repo` checkout ([`super::source::fetch`]): the source is the
+/// repository URL, the pinned value the resolved commit.
+pub fn stage_git(
+    dirs: &PluginDirs,
+    fetched: &super::source::Fetched,
+    src: &super::source::GitSource,
+) -> Result<Staged, RegistryError> {
+    let root = plugin_root(&fetched.plugin_dir)?;
+    let mut path = PathBuf::from(&fetched.url);
+    if let Some(s) = &src.subdir {
+        path = path.join(s);
+    }
+    let origin = Origin {
+        kind: "git".into(),
+        path,
+        requested_ref: src.git_ref.clone(),
+        repo: Some(src.spec()),
+        commit: Some(fetched.commit.clone()),
+    };
+    stage(dirs, &root, origin)
+}
+
+/// Remove `<checkouts>/<id>/*` checkouts (and leftovers of the old flat layout) that no entry
+/// references and that are older than [`CHECKOUT_GRACE`]; `keep` is never removed.
+fn gc_checkouts(dirs: &PluginDirs, id: &str, keep: &[&Path]) {
+    let old = |p: &Path| {
+        std::fs::symlink_metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > CHECKOUT_GRACE)
+    };
+    let kept = |p: &Path| keep.contains(&p);
+    let id_dir = dirs.checkouts.join(id);
+    if let Ok(rd) = std::fs::read_dir(&id_dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !kept(&p) && old(&p) {
+                let _ = remove_checkout(&p);
+            }
+        }
+    }
+    let legacy = format!(".{id}.legacy-");
+    for area in [dirs.checkouts.clone(), dirs.checkouts.join(".staging")] {
+        if let Ok(rd) = std::fs::read_dir(&area) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let name = e.file_name().to_string_lossy().into_owned();
+                let ours = name.starts_with(&legacy) || area.ends_with(".staging");
+                if ours && !kept(&p) && old(&p) {
+                    let _ = remove_checkout(&p);
+                }
+            }
+        }
+    }
+}
+
+/// Before a launch of a managed checkout: the whole tree must still be the one the grant
+/// recorded (the reviewed tree, or the tree after the recorded build). Cached by a stat
+/// fingerprint ([`tree_digest_cached`]). Linked development directories are reviewed in place
+/// and pinned by the manifest and referenced-file digests only.
+pub fn verify_launch(e: &Entry) -> Result<(), String> {
+    if !e.managed {
+        return Ok(());
+    }
+    let Some(g) = &e.trust else {
+        return Err(format!("{} is not trusted", e.id));
+    };
+    let expected = if !g.run_tree_sha256.is_empty() {
+        g.run_tree_sha256.as_str()
+    } else if !e.built {
+        g.tree_sha256.as_str()
+    } else {
+        ""
+    };
+    if expected.is_empty() {
+        return Err(format!(
+            "{}'s grant records no tree digest to verify; review it again with `vibeke plugin trust {} --legacy`",
+            e.id, e.id
+        ));
+    }
+    let actual =
+        tree_digest_cached(&e.root).map_err(|err| format!("{}: {err}", e.root.display()))?;
+    if actual != expected {
+        return Err(format!(
+            "{}'s checkout {} changed since it was reviewed (whole-tree digest); not started. Reinstall or review it with `vibeke plugin trust {} --legacy`",
+            e.id,
+            e.root.display(),
+            e.id
+        ));
+    }
+    Ok(())
+}
+
 impl Registry {
+    /// [`Registry::load`] under the shared registry lock: never observes a half-made change and
+    /// waits for a running publish (install, update, trust) to finish. Launchers use it.
+    pub fn load_shared(dirs: &PluginDirs) -> Result<Registry, RegistryError> {
+        let _lock = RegistryLock::acquire_mode(dirs, false)?;
+        Registry::load(dirs)
+    }
+
     pub fn load(dirs: &PluginDirs) -> Result<Registry, RegistryError> {
         match std::fs::read_to_string(&dirs.registry) {
             Ok(s) => serde_json::from_str(&s).map_err(|e| RegistryError::Corrupt(e.to_string())),
@@ -456,101 +931,105 @@ impl Registry {
     }
 
     /// Copy a local plugin directory into a managed checkout and register it (untrusted).
-    /// Reinstalling a managed plugin replaces its checkout; a link is never replaced silently.
+    /// Reinstalling a managed plugin publishes a new checkout; a link is never replaced
+    /// silently. (CLI installs stage outside the registry lock: [`stage_local`] and
+    /// [`Registry::install_staged`].)
     pub fn install(
         &mut self,
         dirs: &PluginDirs,
         src: &Path,
         requested_ref: Option<&str>,
     ) -> Result<(Entry, Manifest), RegistryError> {
-        let root = plugin_root(src)?;
-        let origin = Origin {
-            kind: "local".into(),
-            path: root.clone(),
-            requested_ref: requested_ref.map(str::to_string),
-            repo: None,
-            commit: None,
-        };
-        self.install_checkout(dirs, &root, origin)
+        let staged = stage_local(dirs, src, requested_ref)?;
+        self.install_staged(dirs, staged)
     }
 
-    /// Register a fetched `owner/repo` checkout ([`super::source::fetch`]) as a managed
-    /// install: the source is the repository URL, the pinned value the resolved commit.
+    /// Register a fetched `owner/repo` checkout as a managed install ([`stage_git`]).
     pub fn install_git(
         &mut self,
         dirs: &PluginDirs,
         fetched: &super::source::Fetched,
         src: &super::source::GitSource,
     ) -> Result<(Entry, Manifest), RegistryError> {
-        let root = plugin_root(&fetched.plugin_dir)?;
-        let mut path = PathBuf::from(&fetched.url);
-        if let Some(s) = &src.subdir {
-            path = path.join(s);
-        }
-        let origin = Origin {
-            kind: "git".into(),
-            path,
-            requested_ref: src.git_ref.clone(),
-            repo: Some(src.spec()),
-            commit: Some(fetched.commit.clone()),
-        };
-        self.install_checkout(dirs, &root, origin)
+        let staged = stage_git(dirs, fetched, src)?;
+        self.install_staged(dirs, staged)
     }
 
-    fn install_checkout(
+    /// Publish a staged checkout: move it to its immutable path `<checkouts>/<id>/<dir>` and
+    /// point the entry (root, origin, kept or dropped grant) at it. Nothing on disk that the
+    /// current registry references is touched, so until the caller saves the registry (the end
+    /// of [`Registry::update`]) the old checkout stays in use; a failed save or a crash leaves
+    /// an unreferenced directory that a later install removes. The staged copy is discarded on
+    /// error.
+    pub fn install_staged(
         &mut self,
         dirs: &PluginDirs,
-        root: &Path,
-        origin: Origin,
+        staged: Staged,
     ) -> Result<(Entry, Manifest), RegistryError> {
-        let root = root.to_path_buf();
-        let (m, _) = read_manifest(&root)?;
+        let m = staged.manifest.clone();
         if let Some(old) = self.plugins.get(&m.id)
             && !old.managed
         {
-            return Err(RegistryError::Conflict(format!(
+            let msg = format!(
                 "{} is linked from {}; unlink it before installing",
                 m.id,
                 old.root.display()
-            )));
+            );
+            staged.discard();
+            return Err(RegistryError::Conflict(msg));
         }
-        let dest = dirs.checkouts.join(&m.id);
-        if dest.starts_with(&root) || root.starts_with(&dest) {
-            return Err(RegistryError::Conflict(
-                "source and managed checkout overlap".into(),
-            ));
-        }
-        let staging = dirs.checkouts.join(format!(".{}.staging", m.id));
-        let _ = std::fs::remove_dir_all(&staging);
-        copy_tree(&root, &staging)?;
-        // The copy must carry the manifest we validated.
-        let (m2, _) = read_manifest(&staging)?;
-        if m2 != m {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(RegistryError::Conflict(
-                "manifest changed while copying".into(),
-            ));
-        }
-        let tree = match tree_digest(&staging) {
-            Ok(t) => t,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
+        let id_dir = dirs.checkouts.join(&m.id);
+        let name = staged
+            .dir
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        let dest = id_dir.join(&name);
+        let prev = self.plugins.get(&m.id).cloned();
+        // The old flat layout (`<checkouts>/<id>` holding the files) is moved aside first: new
+        // checkouts live below `<checkouts>/<id>/`. If this is the registered root, a crash
+        // before the save leaves it `broken` (never stale content running).
+        if manifest_file(&id_dir).is_file() {
+            let aside = dirs.checkouts.join(format!(".{}.legacy-{}", m.id, nonce()));
+            if let Err(e) = std::fs::rename(&id_dir, &aside) {
+                staged.discard();
                 return Err(e.into());
             }
-        };
-        let _ = std::fs::remove_dir_all(&dest);
-        std::fs::rename(&staging, &dest)?;
-        let prev = self.plugins.get(&m.id).cloned();
+        }
+        // Read-only once in place (moving a directory needs it writable).
+        let moved = std::fs::create_dir_all(&id_dir)
+            .and_then(|_| std::fs::rename(&staged.dir, &dest))
+            .and_then(|_| set_tree_writable(&dest, false));
+        if let Err(e) = moved {
+            let _ = remove_checkout(&dest);
+            staged.discard();
+            return Err(e.into());
+        }
+        let tree = staged.tree_sha256;
+        let origin = staged.origin;
         // The grant survives a reinstall only for the exact reviewed content from the same
         // source, and only when there is nothing to rebuild (the fresh checkout is unbuilt).
         let needs_build = !m.build_on(super::current_platform()).is_empty();
-        let trust = prev.as_ref().and_then(|p| p.trust.clone()).filter(|g| {
-            !needs_build
-                && g.source == origin.path
-                && g.commit == origin.commit
-                && !g.tree_sha256.is_empty()
-                && g.tree_sha256 == tree
-        });
+        let trust = prev
+            .as_ref()
+            .and_then(|p| p.trust.clone())
+            .filter(|g| {
+                !needs_build
+                    && g.source == origin.path
+                    && g.commit == origin.commit
+                    && !g.tree_sha256.is_empty()
+                    && g.tree_sha256 == tree
+            })
+            .map(|mut g| {
+                g.root = dest.clone();
+                g.run_tree_sha256 = tree.clone();
+                g
+            });
+        let mut keep: Vec<&Path> = vec![dest.as_path()];
+        if let Some(p) = &prev {
+            keep.push(p.root.as_path());
+        }
+        gc_checkouts(dirs, &m.id, &keep);
         let entry = Entry {
             id: m.id.clone(),
             kind: "herdr".into(),
@@ -628,7 +1107,12 @@ impl Registry {
             )));
         }
         if e.root.starts_with(&dirs.checkouts) {
-            let _ = std::fs::remove_dir_all(&e.root);
+            let _ = remove_checkout(&e.root);
+            // Every other checkout of the plugin (replaced ones, the old flat layout).
+            let id_dir = dirs.checkouts.join(id);
+            if e.root.starts_with(&id_dir) {
+                let _ = remove_checkout(&id_dir);
+            }
         }
         self.plugins.remove(id);
         Ok(e)
@@ -656,6 +1140,11 @@ impl Registry {
                 m.id
             )));
         }
+        if let Some(why) = escaping_entrypoint(&e.root, &m) {
+            return Err(RegistryError::Conflict(format!(
+                "{id}: entrypoint {why}, outside the plugin root; it cannot be reviewed"
+            )));
+        }
         let tree = tree_digest(&e.root)?;
         let g = Grant {
             mode: "herdr_legacy".into(),
@@ -666,9 +1155,10 @@ impl Registry {
             baseline: BASELINE_VERSION.into(),
             grant_id: new_grant_id(),
             source: e.origin.path.clone(),
-            tree_sha256: tree,
+            tree_sha256: tree.clone(),
             entry_sha256: entry_digest(&e.root, &m),
             commit: e.origin.commit.clone(),
+            run_tree_sha256: tree.clone(),
         };
         // A new review of a managed checkout requires a new build.
         if e.managed {
@@ -697,7 +1187,15 @@ impl Registry {
                 "{id}'s manifest changed during the build"
             )));
         }
+        if let Some(why) = escaping_entrypoint(&e.root, &m) {
+            return Err(RegistryError::Conflict(format!(
+                "{id}: the build left entrypoint {why}, outside the plugin root"
+            )));
+        }
         g.entry_sha256 = entry_digest(&e.root, &m);
+        if e.managed {
+            g.run_tree_sha256 = tree_digest(&e.root)?;
+        }
         e.built = true;
         Ok(())
     }
@@ -734,6 +1232,9 @@ pub fn entry_status(e: &Entry) -> (Status, Option<Manifest>) {
     let Ok((m, digest)) = read_manifest(&e.root) else {
         return (Status::Broken, None);
     };
+    if escaping_entrypoint(&e.root, &m).is_some() {
+        return (Status::Broken, Some(m));
+    }
     let unbuilt = e.managed && !e.built && !m.build_on(super::current_platform()).is_empty();
     let status = match &e.trust {
         None => Status::Untrusted,
@@ -864,6 +1365,25 @@ pub fn trust_terms(e: &Entry, m: &Manifest, digest: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A temp dir that can be removed although managed checkouts in it are read-only.
+    struct Tmp(tempfile::TempDir);
+
+    impl Tmp {
+        fn path(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = set_tree_writable(self.0.path(), true);
+        }
+    }
+
+    fn tmp() -> Tmp {
+        Tmp(tempfile::tempdir().unwrap())
+    }
+
     fn dirs(t: &Path) -> PluginDirs {
         PluginDirs {
             registry: t.join("cfg/plugins.json"),
@@ -890,7 +1410,7 @@ mod tests {
 
     #[test]
     fn install_is_untrusted_until_granted_and_digest_bound() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         let src = plugin(t.path(), "acme.one", "");
         let mut r = Registry::load(&d).unwrap();
@@ -914,7 +1434,12 @@ mod tests {
         assert_eq!(r.status("acme.one").unwrap().0, Status::Disabled);
         r.set_enabled("acme.one", true).unwrap();
 
-        // Editing the managed manifest invalidates the grant.
+        // The managed checkout is read-only on disk.
+        let root = r.get("acme.one").unwrap().root.clone();
+        assert!(std::fs::write(root.join("bin/go"), "x").is_err());
+        assert!(std::fs::write(root.join("new"), "x").is_err());
+        // Editing the managed manifest (after forcing it writable) invalidates the grant.
+        set_tree_writable(&root, true).unwrap();
         let mf = r.get("acme.one").unwrap().root.join(MANIFEST_FILE);
         let text = std::fs::read_to_string(&mf).unwrap();
         std::fs::write(
@@ -940,7 +1465,7 @@ mod tests {
 
     #[test]
     fn links_and_conflicts() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         let src = plugin(t.path(), "acme.two", "");
         let mut r = Registry::default();
@@ -967,7 +1492,7 @@ mod tests {
 
     #[test]
     fn broken_and_invalid_manifests() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         let src = plugin(t.path(), "acme.three", "");
         let mut r = Registry::default();
@@ -991,7 +1516,7 @@ mod tests {
 
     #[test]
     fn reinstalling_changed_content_with_the_same_manifest_needs_review() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         let src = plugin(t.path(), "acme.five", "");
         let mut r = Registry::default();
@@ -1017,13 +1542,14 @@ mod tests {
         // Editing a referenced file in place makes the grant stale.
         r.trust("acme.five").unwrap();
         let root = r.get("acme.five").unwrap().root.clone();
+        set_tree_writable(&root, true).unwrap();
         std::fs::write(root.join("bin/go"), "#!/bin/sh\necho changed\n").unwrap();
         assert_eq!(r.status("acme.five").unwrap().0, Status::StaleTrust);
     }
 
     #[test]
     fn plugins_with_a_build_need_a_build_for_each_grant() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         let src = plugin(
             t.path(),
@@ -1056,7 +1582,7 @@ mod tests {
 
     #[test]
     fn concurrent_updates_never_lose_a_revocation() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         let a = plugin(t.path(), "acme.a", "");
         let b = plugin(t.path(), "acme.b", "");
@@ -1086,9 +1612,252 @@ mod tests {
         assert!(!r.get("acme.b").unwrap().enabled, "other change kept");
     }
 
+    /// A plugin whose unchanged entrypoint `bin/main.sh` runs `lib/helper.sh`.
+    fn dep_plugin(dir: &Path, helper: &str) -> PathBuf {
+        let p = dir.join("acme.dep");
+        std::fs::create_dir_all(p.join("bin")).unwrap();
+        std::fs::create_dir_all(p.join("lib")).unwrap();
+        std::fs::write(
+            p.join(MANIFEST_FILE),
+            "id = \"acme.dep\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"sh\", \"bin/main.sh\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("bin/main.sh"),
+            ". \"$(dirname \"$0\")/../lib/helper.sh\"\n",
+        )
+        .unwrap();
+        std::fs::write(p.join("lib/helper.sh"), helper).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_dependency_only_update_is_published_atomically_with_the_revoked_grant() {
+        let t = tmp();
+        let d = dirs(t.path());
+        let src = dep_plugin(t.path(), "echo reviewed\n");
+        Registry::update(&d, |r| {
+            r.install(&d, &src, None)?;
+            r.trust("acme.dep")?;
+            Ok(())
+        })
+        .unwrap();
+        let before = Registry::load(&d).unwrap().get("acme.dep").unwrap().clone();
+        assert_eq!(entry_status(&before).0, Status::Active);
+        assert!(verify_launch(&before).is_ok());
+        let id_dir = d.checkouts.join("acme.dep");
+        assert!(before.root.starts_with(&id_dir) && before.root != id_dir);
+
+        // Only the helper changes upstream: the manifest and the entrypoint are identical.
+        std::fs::write(src.join("lib/helper.sh"), "echo injected\n").unwrap();
+
+        // Failure immediately before the registry save (a crash, a full disk): the registry
+        // still names the old checkout, which still holds the reviewed helper.
+        let r = Registry::update(&d, |r| {
+            r.install(&d, &src, None)?;
+            Err::<(), _>(RegistryError::Conflict(
+                "simulated crash before save".into(),
+            ))
+        });
+        assert!(r.is_err());
+        let now = Registry::load(&d).unwrap().get("acme.dep").unwrap().clone();
+        assert_eq!(now, before, "nothing was published");
+        assert_eq!(entry_status(&now).0, Status::Active);
+        assert!(verify_launch(&now).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(now.root.join("lib/helper.sh")).unwrap(),
+            "echo reviewed\n",
+            "the old checkout is never modified"
+        );
+
+        // A real update. A launcher that resolved the entry before the switch keeps running the
+        // old, unmodified checkout; a launcher reading under the shared lock waits for the save
+        // and sees the new root with the grant revoked in the same write.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (d2, src2) = (d.clone(), src.clone());
+        let writer = std::thread::spawn(move || {
+            Registry::update(&d2, |r| {
+                r.install(&d2, &src2, None)?;
+                tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(())
+            })
+            .unwrap();
+        });
+        rx.recv().unwrap();
+        let seen = Registry::load_shared(&d).unwrap();
+        writer.join().unwrap();
+        let after = seen.get("acme.dep").unwrap();
+        assert_ne!(after.root, before.root, "published at a new immutable path");
+        assert!(
+            after.trust.is_none(),
+            "the changed tree is not covered by the grant"
+        );
+        assert_eq!(entry_status(after).0, Status::Untrusted);
+        assert_eq!(
+            std::fs::read_to_string(after.root.join("lib/helper.sh")).unwrap(),
+            "echo injected\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(before.root.join("lib/helper.sh")).unwrap(),
+            "echo reviewed\n",
+            "a stale launcher still finds exactly the reviewed content"
+        );
+        assert!(verify_launch(&before).is_ok());
+        // Both checkouts exist until a later install collects the old one after the grace.
+        let n = std::fs::read_dir(&id_dir).unwrap().count();
+        assert!(n >= 2, "{n}");
+        // Uninstall removes every checkout of the plugin.
+        Registry::update(&d, |r| r.uninstall(&d, "acme.dep")).unwrap();
+        assert!(!id_dir.exists());
+    }
+
+    #[test]
+    fn a_launch_verifies_the_whole_tree() {
+        let t = tmp();
+        let d = dirs(t.path());
+        let src = dep_plugin(t.path(), "echo reviewed\n");
+        let mut r = Registry::default();
+        r.install(&d, &src, None).unwrap();
+        r.trust("acme.dep").unwrap();
+        let e = r.get("acme.dep").unwrap().clone();
+        assert!(verify_launch(&e).is_ok());
+        assert!(verify_launch(&e).is_ok(), "cached");
+        // A dependency edited in place (forcing the read-only checkout writable): the manifest
+        // and the referenced entrypoint are unchanged, so the status stays active, but no
+        // launch happens.
+        set_tree_writable(&e.root, true).unwrap();
+        std::fs::write(e.root.join("lib/helper.sh"), "echo injected\n").unwrap();
+        assert_eq!(entry_status(&e).0, Status::Active);
+        let err = verify_launch(&e).unwrap_err();
+        assert!(err.contains("changed since it was reviewed"), "{err}");
+        // A new file is a change too; restoring the content makes it launchable again.
+        std::fs::write(e.root.join("lib/helper.sh"), "echo reviewed\n").unwrap();
+        assert!(verify_launch(&e).is_ok());
+        std::fs::write(e.root.join("lib/extra.sh"), "x").unwrap();
+        assert!(verify_launch(&e).is_err());
+        std::fs::remove_file(e.root.join("lib/extra.sh")).unwrap();
+        assert!(verify_launch(&e).is_ok());
+        // A build re-records the tree it leaves behind.
+        let src_b = plugin(
+            t.path(),
+            "acme.built",
+            "[[build]]\ncommand = [\"sh\", \"-c\", \"true\"]\n",
+        );
+        r.install(&d, &src_b, None).unwrap();
+        let g = r.trust("acme.built").unwrap();
+        let root = r.get("acme.built").unwrap().root.clone();
+        set_tree_writable(&root, true).unwrap();
+        std::fs::write(root.join("dist.js"), "built").unwrap();
+        set_tree_writable(&root, false).unwrap();
+        r.finish_build("acme.built", &g.grant_id).unwrap();
+        assert!(verify_launch(r.get("acme.built").unwrap()).is_ok());
+        // Linked development directories are reviewed in place: not tree-verified.
+        let l = plugin(t.path(), "acme.linked", "");
+        r.link(&l).unwrap();
+        r.trust("acme.linked").unwrap();
+        std::fs::write(l.join("notes.txt"), "edit").unwrap();
+        assert!(verify_launch(r.get("acme.linked").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn symlinks_are_pinned_by_their_targets_and_escapes_are_refused() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let t = tmp();
+            let d = dirs(t.path());
+            let outside = t.path().join("outside.sh");
+            std::fs::write(&outside, "echo outside\n").unwrap();
+
+            // An internal link entrypoint: the target's contents are pinned.
+            let p = t.path().join("acme.lnk");
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(
+                p.join(MANIFEST_FILE),
+                "id = \"acme.lnk\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"sh\", \"run.sh\"]\n",
+            )
+            .unwrap();
+            std::fs::write(p.join("impl.sh"), "echo reviewed\n").unwrap();
+            symlink("impl.sh", p.join("run.sh")).unwrap();
+            let mut r = Registry::default();
+            r.install(&d, &p, None).unwrap();
+            r.trust("acme.lnk").unwrap();
+            assert_eq!(r.status("acme.lnk").unwrap().0, Status::Active);
+            let root = r.get("acme.lnk").unwrap().root.clone();
+            set_tree_writable(&root, true).unwrap();
+            std::fs::write(root.join("impl.sh"), "echo changed\n").unwrap();
+            assert_eq!(
+                r.status("acme.lnk").unwrap().0,
+                Status::StaleTrust,
+                "changing the link target invalidates the grant"
+            );
+
+            // An install with an entrypoint linking outside the checkout is refused, and so is
+            // any other escaping symlink (absolute or climbing out).
+            for (name, target) in [
+                ("run.sh", outside.to_string_lossy().into_owned()),
+                ("data", "/etc".to_string()),
+                ("up", "../../outside.sh".to_string()),
+            ] {
+                let q = t.path().join(format!("esc-{name}"));
+                std::fs::create_dir_all(&q).unwrap();
+                std::fs::write(
+                    q.join(MANIFEST_FILE),
+                    "id = \"acme.esc\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"sh\", \"run.sh\"]\n",
+                )
+                .unwrap();
+                if name != "run.sh" {
+                    std::fs::write(q.join("run.sh"), "true\n").unwrap();
+                }
+                symlink(&target, q.join(name)).unwrap();
+                let err = r.install(&d, &q, None).unwrap_err();
+                assert!(
+                    err.to_string().contains("points outside the plugin"),
+                    "{name}: {err}"
+                );
+                assert!(r.get("acme.esc").is_err());
+            }
+            let staging = d.checkouts.join(".staging");
+            assert_eq!(
+                std::fs::read_dir(&staging).map(|r| r.count()).unwrap_or(0),
+                0,
+                "refused copies are removed"
+            );
+
+            // A linked directory is not copied, so its escaping entrypoint (a link, or a
+            // directory link along the path) cannot be trusted and does not run.
+            let l = t.path().join("acme.lk");
+            std::fs::create_dir_all(&l).unwrap();
+            std::fs::write(
+                l.join(MANIFEST_FILE),
+                "id = \"acme.lk\"\n[[actions]]\nid = \"go\"\ntitle = \"Go\"\ncommand = [\"sh\", \"bin/run.sh\"]\n",
+            )
+            .unwrap();
+            let ob = t.path().join("outside-bin");
+            std::fs::create_dir_all(&ob).unwrap();
+            std::fs::write(ob.join("run.sh"), "echo outside\n").unwrap();
+            symlink(&ob, l.join("bin")).unwrap();
+            r.link(&l).unwrap();
+            let err = r.trust("acme.lk").unwrap_err();
+            assert!(err.to_string().contains("outside the plugin root"), "{err}");
+            assert_eq!(r.status("acme.lk").unwrap().0, Status::Broken);
+            // Granted before the link was swapped in: broken from then on.
+            std::fs::remove_file(l.join("bin")).unwrap();
+            std::fs::create_dir_all(l.join("bin")).unwrap();
+            std::fs::write(l.join("bin/run.sh"), "true\n").unwrap();
+            r.trust("acme.lk").unwrap();
+            assert_eq!(r.status("acme.lk").unwrap().0, Status::Active);
+            std::fs::remove_file(l.join("bin/run.sh")).unwrap();
+            symlink(&outside, l.join("bin/run.sh")).unwrap();
+            assert_eq!(r.status("acme.lk").unwrap().0, Status::Broken);
+            assert!(r.active().is_empty());
+        }
+    }
+
     #[test]
     fn trust_terms_list_entrypoints() {
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let src = plugin(
             t.path(),
             "acme.four",
@@ -1130,7 +1899,7 @@ mod tests {
     #[test]
     fn repository_installs_pin_the_commit_and_updates_need_review() {
         use super::super::source;
-        let t = tempfile::tempdir().unwrap();
+        let t = tmp();
         let d = dirs(t.path());
         // A repository `<srv>/acme/tool` whose plugin id is acme.tool.
         let work = t.path().join("w");

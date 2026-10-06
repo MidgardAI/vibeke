@@ -23,6 +23,7 @@ fn stale(k: &str) -> bool {
                 | "VIBEKE_PANE_HANDLE"
                 | "VIBEKE_PLUGIN_TOKEN"
                 | "VIBEKE_HERDR_BROKER"
+                | "VIBEKE_HERDR_TOKEN"
         )
 }
 
@@ -48,6 +49,8 @@ pub struct Invocation {
     pub entrypoint_id: Option<String>,
     pub clicked_url: Option<String>,
     pub link_handler_id: Option<String>,
+    /// The broker's per-invocation secret (`VIBEKE_HERDR_TOKEN`; empty: not exported).
+    pub broker_token: String,
 }
 
 /// The environment for a runtime invocation.
@@ -97,6 +100,9 @@ pub fn runtime_env(
     if let Some((name, data)) = &inv.event {
         set.push(("HERDR_PLUGIN_EVENT", name.clone()));
         set.push(("HERDR_PLUGIN_EVENT_JSON", data.to_string()));
+    }
+    if !inv.broker_token.is_empty() {
+        set.push(("VIBEKE_HERDR_TOKEN", inv.broker_token.clone()));
     }
     env.extend(set.into_iter().map(|(k, v)| (k.to_string(), v)));
     env
@@ -164,7 +170,21 @@ mod tests {
                 "/home/u/.config/herdr/herdr.sock".to_string(),
             ),
             ("VIBEKE_PANE_TOKEN".to_string(), "secret".to_string()),
+            (
+                "VIBEKE_HERDR_TOKEN".to_string(),
+                "someone-elses".to_string(),
+            ),
         ];
+        let env = runtime_env(&inv, inherited.clone());
+        assert_eq!(get(&env, "VIBEKE_HERDR_TOKEN"), None, "stale token dropped");
+        let env = runtime_env(
+            &Invocation {
+                broker_token: "t0k".into(),
+                ..inv.clone()
+            },
+            inherited.clone(),
+        );
+        assert_eq!(get(&env, "VIBEKE_HERDR_TOKEN"), Some("t0k"));
         let env = runtime_env(&inv, inherited);
         assert_eq!(get(&env, "PATH"), Some("/run/bin:/usr/bin"));
         assert_eq!(get(&env, "HOME"), Some("/home/u"));
