@@ -207,6 +207,25 @@ export interface AppEvent {
   data: Record<string, unknown>;
 }
 
+/** A dev-server preview the host detected or an agent declared (vk-proto `Preview`). */
+export interface Preview {
+  id: string;
+  handle: string;
+  machine?: string;
+  pane: string | null;
+  task?: string | null;
+  port: number;
+  path: string;
+  label: string | null;
+  url: string;
+  scheme?: string;
+  /** `suggested` | `declared` | `up` | `down` | `gone`. */
+  status: string;
+  source?: string;
+  first_seen_ms?: number;
+  last_seen_ms?: number;
+}
+
 export interface Dashboard {
   /** Snapshot barrier: subscribe with `after = at`. */
   at: number;
@@ -218,6 +237,8 @@ export interface Dashboard {
   runs: AgentRun[];
   interactions: Interaction[];
   tasks: Task[];
+  /** Full-scope devices only (shares never see previews in the snapshot). */
+  previews?: Preview[];
   notifications_unread: number;
 }
 
@@ -271,6 +292,8 @@ export interface TranscriptItem {
   id?: string | null;
   /** `tool_result`: the tool failed. */
   error?: boolean | null;
+  /** Epoch ms of the transcript line (null when the line has none; older servers omit it). */
+  ts?: number | null;
 }
 
 /** One transcript turn (`agent.transcript`): a user prompt and everything up to the next one. */
@@ -279,6 +302,12 @@ export interface TranscriptTurn {
   n: number;
   ts?: string | number | null;
   items: TranscriptItem[];
+  /** Last item ts − turn start; null when unknown (older servers omit it). */
+  duration_ms?: number | null;
+  /** Tool calls in the turn. */
+  tool_count?: number | null;
+  /** Tool calls that start a subagent (Task/Agent…). */
+  subagent_count?: number | null;
 }
 
 export interface TranscriptPage {
@@ -442,6 +471,10 @@ export interface AppApi {
   };
   'agent.harnesses': { params: Record<string, never>; result: { harnesses: HarnessInfo[] } };
   'tab.create': { params: { workspace: string; cwd?: string; title?: string }; result: { tab: Tab; root_pane: Pane } };
+  'tab.rename': { params: { tab: string; title: string | null }; result: unknown };
+  'tab.close': { params: { tab: string }; result: unknown };
+  'tab.focus': { params: { tab: string }; result: unknown };
+  'preview.open': { params: { preview?: string; url?: string; pane?: string; focus?: boolean }; result: unknown };
   'interaction.list': { params: Record<string, unknown>; result: { interactions: Interaction[] } };
   'interaction.get': { params: { interaction: string }; result: { interaction: Interaction } };
   'interaction.answer': {
@@ -522,6 +555,10 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'agent.interrupt',
   'agent.start',
   'tab.create',
+  'tab.rename',
+  'tab.close',
+  'tab.focus',
+  'preview.open',
   'interaction.answer',
   'interaction.answer_batch',
   'notification.read',
@@ -579,6 +616,7 @@ export function normalizeDashboard(raw: unknown): Dashboard {
     tabs: d.tabs ?? [],
     panes: d.panes ?? [],
     tasks: d.tasks ?? [],
+    ...(Array.isArray(d.previews) ? { previews: d.previews.map((p) => ({ ...p, status: snakeOr<string>(p.status) })) } : {}),
     notifications_unread: d.notifications_unread ?? 0,
   };
 }
