@@ -128,19 +128,6 @@ impl Store {
     }
 }
 
-impl Store {
-    /// Every `(key, value)` of a kv scope.
-    pub fn kv_scan(&self, scope: &str) -> Result<Vec<(String, String)>> {
-        let mut st = self
-            .conn
-            .prepare("SELECT key, value FROM kv WHERE scope = ?1 ORDER BY key")?;
-        let v = st
-            .query_map([scope], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(v)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

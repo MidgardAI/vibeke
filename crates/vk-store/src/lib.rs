@@ -7,6 +7,8 @@
 //! migrations additive while the model is young.
 
 pub mod archive;
+pub mod backup;
+pub mod blobs;
 pub mod conv;
 pub mod crypt;
 pub mod keychain;
@@ -79,6 +81,35 @@ const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL, created_by TEXT);
     "#,
 ];
+
+/// Event-log retention (02 §2.3): `events.sync_retention`, `events.history_retention` and the
+/// row cap (`events.max_rows`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    pub sync_days: i64,
+    pub history_days: i64,
+    /// Hard cap on the number of event rows; `0` disables it.
+    pub max_rows: i64,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Retention {
+            sync_days: 7,
+            history_days: 365,
+            max_rows: 2_000_000,
+        }
+    }
+}
+
+/// What one [`Store::prune_with`] pass removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PruneReport {
+    /// Rows removed for age.
+    pub aged: usize,
+    /// Rows removed to get under the row cap.
+    pub capped: usize,
+}
 
 /// One row of `policy_rules` (migration 5).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -364,6 +395,10 @@ impl Mutation {
                     | "check.unknown"
                     // 15 T4: dependency changes are history (§10.3).
                     | "task.dependency_changed"
+                    // 02 §2.1: the history tier also holds sandbox boundary actions and
+                    // plugin installs.
+                    | "sandbox.boundary_action"
+                    | "plugin.installed"
             ) {
             "history"
         } else {
@@ -414,7 +449,7 @@ impl Store {
             std::fs::create_dir_all(d)?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        let s = Self::init(conn, path.parent())?;
+        let s = Self::init(conn, path.parent(), Some(path))?;
         // 09 §3.1: state.db and its WAL files are 0600 whatever the umask was when they were
         // created (older versions created them with the default umask).
         restrict_file(path);
@@ -427,10 +462,10 @@ impl Store {
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?, None)
+        Self::init(Connection::open_in_memory()?, None, None)
     }
 
-    fn init(conn: Connection, dir: Option<&Path>) -> Result<Self> {
+    fn init(conn: Connection, dir: Option<&Path>, db: Option<&Path>) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "OFF")?;
@@ -441,6 +476,16 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
+        // A forward-only migration is never run without a way back (02 §3): an existing
+        // database that is about to change schema is copied first, and a failed copy stops the
+        // migration instead of running it unprotected.
+        if let Some(db) = db
+            && have > 0
+            && (have as usize) < MIGRATIONS.len()
+        {
+            backup::make_backup(&conn, db, have)
+                .context("pre-migration backup of state.db failed; not migrating")?;
+        }
         for (i, m) in MIGRATIONS.iter().enumerate().skip(have as usize) {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(m)?;
@@ -747,6 +792,22 @@ impl Store {
             .optional()?)
     }
 
+    /// Every `(key, value)` of a kv scope, ordered by key.
+    pub fn kv_scope(&self, scope: &str) -> Result<Vec<(String, String)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT key, value FROM kv WHERE scope=?1 ORDER BY key")?;
+        let rows = st.query_map([scope], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Database file size in bytes (`page_count * page_size`).
+    pub fn db_bytes(&self) -> Result<u64> {
+        let pages: i64 = self.conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let size: i64 = self.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        Ok((pages.max(0) * size.max(0)) as u64)
+    }
+
     /// API-added policy rules in order (`policy.list`, 07 §2.9).
     pub fn policy_rules(&self) -> Result<Vec<PolicyRuleRow>> {
         let mut st = self.conn.prepare(
@@ -838,15 +899,61 @@ impl Store {
 
     /// Retention (02 §2.3): prune `sync` events older than `sync_days`, `history` older than `history_days`.
     pub fn prune(&self, sync_days: i64, history_days: i64) -> Result<usize> {
+        let r = self.prune_with(&Retention {
+            sync_days,
+            history_days,
+            max_rows: 0,
+        })?;
+        Ok(r.aged)
+    }
+
+    /// Retention with the row cap (02 §2.3): events past their tier's age go first, then, if the
+    /// log is still over `max_rows` (0 = no cap), the oldest `sync` rows, and only then the oldest
+    /// `history` rows. The newest row is never removed, so `seq` can't restart below its past.
+    pub fn prune_with(&self, r: &Retention) -> Result<PruneReport> {
         let now = now_ms();
-        let n = self.conn.execute(
-            "DELETE FROM events WHERE (tier='sync' AND ts < ?1) OR (tier='history' AND ts < ?2)",
+        let aged = self.conn.execute(
+            "DELETE FROM events WHERE ((tier='sync' AND ts < ?1) OR (tier='history' AND ts < ?2))
+               AND seq < (SELECT MAX(seq) FROM events)",
             params![
-                now - sync_days * 86_400_000,
-                now - history_days * 86_400_000
+                now - r.sync_days.saturating_mul(86_400_000),
+                now - r.history_days.saturating_mul(86_400_000)
             ],
         )?;
-        Ok(n)
+        let mut capped = 0;
+        if r.max_rows > 0 {
+            for tier in ["sync", "history"] {
+                let count: i64 = self
+                    .conn
+                    .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+                let excess = count - r.max_rows;
+                if excess <= 0 {
+                    break;
+                }
+                capped += self.conn.execute(
+                    "DELETE FROM events WHERE seq IN (
+                       SELECT seq FROM events WHERE tier=?1 AND seq < (SELECT MAX(seq) FROM events)
+                       ORDER BY seq LIMIT ?2)",
+                    params![tier, excess],
+                )?;
+            }
+        }
+        Ok(PruneReport { aged, capped })
+    }
+
+    /// Number of rows in the event log.
+    pub fn event_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
+    }
+
+    /// Make every write fail with SQLite's read-only error (`PRAGMA query_only`), as a full or
+    /// failing disk would. A diagnostic and test hook for degraded mode (02 §4a); the server
+    /// never calls it.
+    pub fn set_query_only(&self, on: bool) -> Result<()> {
+        self.conn.pragma_update(None, "query_only", on)?;
+        Ok(())
     }
 
     /// Cheap write probe used to leave degraded mode (02 §4a).
@@ -1353,3 +1460,6 @@ mod tests {
         assert_eq!(s.archive_pane("w2:p2").unwrap().unwrap().1, "w2");
     }
 }
+
+#[cfg(test)]
+mod retention_tests;

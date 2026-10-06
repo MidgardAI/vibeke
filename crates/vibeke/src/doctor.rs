@@ -1352,17 +1352,23 @@ fn test_pause_rebuild() {
 /// `scrollback_fts` and `archive_panes` from the zstd segments on disk. Works offline on the
 /// session's state dir and refuses while the session's server is running (it would be writing
 /// the same tables); segment files are never modified.
-async fn rebuild_index(g: &Global) -> i32 {
+/// Whether the session's server is running (its socket answers or its pidfile's process lives).
+pub(crate) async fn session_running(g: &Global) -> bool {
     let p = Paths::new(&g.session);
     let socket = client::socket_path(&g.session, g.socket.as_deref());
     let pid_alive = std::fs::read_to_string(p.pidfile())
         .ok()
         .and_then(|s| s.trim().parse::<i32>().ok())
         .is_some_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0);
-    let running = !matches!(
+    !matches!(
         probe_server(&socket).await,
         ServerProbe::NoSocket | ServerProbe::Stale(_)
-    ) || pid_alive;
+    ) || pid_alive
+}
+
+async fn rebuild_index(g: &Global) -> i32 {
+    let p = Paths::new(&g.session);
+    let running = session_running(g).await;
     if running {
         eprintln!(
             "refusing to rebuild the index of session `{}` while its server is running (it writes the same tables); run `vibeke server stop` first (panes survive), then retry",
@@ -1449,6 +1455,8 @@ async fn rebuild_index(g: &Global) -> i32 {
     EXIT_OK
 }
 
+mod assist_checks;
+
 const AUDIT: &str = "audit";
 
 /// The session's audit log hash chain (09 §11): intact, cut or edited. `all` lists every
@@ -1508,6 +1516,12 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     if args.first().map(String::as_str) == Some("terminal") {
         return doctor_terminal(g, &args[1..]);
     }
+    if args
+        .iter()
+        .any(|a| a == "--list-backups" || a == "--restore-backup")
+    {
+        return crate::state_backup::run(g, args).await;
+    }
     if args.iter().any(|a| a == "--rebuild-index") {
         if let Some(bad) = args.iter().find(|a| a.as_str() != "--rebuild-index") {
             eprintln!("vibeke doctor --rebuild-index takes no other flag  (unexpected `{bad}`)");
@@ -1520,7 +1534,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         .find(|a| !matches!(a.as_str(), "--no-remote" | "--audit"))
     {
         eprintln!(
-            "vibeke doctor [--json] [--no-remote] [--audit] | --rebuild-index | terminal  (unexpected `{bad}`)"
+            "vibeke doctor [--json] [--no-remote] [--audit] | --rebuild-index | --list-backups | --restore-backup NAME | terminal  (unexpected `{bad}`)"
         );
         return EXIT_USAGE;
     }
@@ -1553,6 +1567,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     check_topology(&mut r);
     check_isolation(&mut r);
     check_tasks(&mut r);
+    assist_checks::check(&mut r);
     if g.json == Some(true) {
         println!(
             "{}",

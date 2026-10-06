@@ -433,6 +433,11 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
         || crate::privacy::PANE_FORBIDDEN.contains(&method)
+        || crate::blob_store::PANE_FORBIDDEN.contains(&method)
+        || crate::hardening::PANE_FORBIDDEN.contains(&method)
+        || crate::machines::PANE_FORBIDDEN.contains(&method)
+        || crate::items::PANE_FORBIDDEN.contains(&method)
+        || crate::review::ext::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -568,6 +573,18 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::blob_api::api(server, ctx, method, p) {
         return r;
     }
+    if let Some(r) = crate::blob_store::api(server, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::hardening::api(server, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::machines::api(server, ctx, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::items::api(server, method, p) {
+        return r;
+    }
     if let Some(r) = crate::pane_api::api(server, ctx, method, p) {
         return r;
     }
@@ -671,6 +688,10 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::session_api::METHODS)
                     .chain(crate::config_api::METHODS)
                     .chain(crate::blob_api::METHODS)
+                    .chain(crate::blob_store::METHODS)
+                    .chain(crate::hardening::METHODS)
+                    .chain(crate::machines::METHODS)
+                    .chain(crate::items::METHODS)
                     .chain(crate::pane_api::METHODS)
                     .chain(crate::sync_input::METHODS)
                     .chain(crate::tab_renumber::METHODS)
@@ -707,6 +728,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 "event_seq": seq,
                 "socket": server.paths.socket(),
                 "degraded": *server.degraded.lock().unwrap(),
+                "ephemeral": server.hardening.ephemeral(),
                 "preview": crate::preview::status_json(server),
                 "timers": crate::timers::status_json(server),
             }))
@@ -733,6 +755,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 srv.housekeeping();
+                crate::machines::stopped(&srv, "api");
                 srv.shutdown.notify_waiters();
                 let _ = srv
                     .ui
@@ -1386,6 +1409,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             if let Some(h) = v["hash"].as_str() {
                 crate::blob_api::record_owner(server, ctx, h);
             }
+            crate::blob_store::ingest_result(server, ctx, p, v);
         }),
         "blob.begin" => blob_begin(server, ctx, p),
         "blob.append" => blob_append(ctx, p),
@@ -1393,6 +1417,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             if let Some(h) = v["hash"].as_str() {
                 crate::blob_api::record_owner(server, ctx, h);
             }
+            crate::blob_store::ingest_result(server, ctx, p, v);
         }),
         "blob.abort" => blob_abort(ctx, p),
         "paste.translated" => crate::inbox::paste_translated(server, ctx, p),

@@ -2161,30 +2161,15 @@ pub(crate) fn png_size(png: &[u8]) -> (u32, u32) {
     (0, 0)
 }
 
-/// Content-addressed blob under `<state>/blobs/<h2>/<blake3>.<ext>` (+ `.json` metadata).
+/// Content-addressed blob under `<state>/blobs/<h2>/<blake3>.<ext>` (+ `.json` metadata): the
+/// unified store (`blob_store`, `vk_store::blobs`). The metadata replaces an earlier sidecar.
 pub fn store_blob(
     server: &Server,
     data: &[u8],
     ext: &str,
     meta: &Value,
 ) -> std::io::Result<(String, PathBuf)> {
-    use std::os::unix::fs::PermissionsExt;
-    let hash = blake3::hash(data).to_hex().to_string();
-    let root = server.paths.blobs();
-    let dir = root.join(&hash[..2]);
-    std::fs::create_dir_all(&dir)?;
-    for d in [&root, &dir] {
-        let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
-    }
-    let path = dir.join(format!("{hash}.{ext}"));
-    if !path.exists() {
-        // Sealed while `security.encrypt_state` is active (09 §9.1); atomic, 0600.
-        crate::privacy::write_blob(server, &path, data)?;
-    }
-    let mpath = dir.join(format!("{hash}.json"));
-    std::fs::write(&mpath, serde_json::to_vec_pretty(meta).unwrap_or_default())?;
-    let _ = std::fs::set_permissions(&mpath, std::fs::Permissions::from_mode(0o600));
-    Ok((hash, path))
+    crate::blob_store::store(server).put(data, ext, meta, vk_store::blobs::MetaMode::Replace)
 }
 
 async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Value) -> R {

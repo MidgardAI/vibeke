@@ -3,24 +3,27 @@
 //!
 //! Order: the scrollback archive first (`scrollback.forget`, which resolves the scope, checks a
 //! confirmed `plan` and refuses before anything is deleted), then screenshots and other session
-//! blobs, pane inbox uploads, drafts and workspace notes, assistant requests, the session desk
+//! blobs, pane inbox uploads, drafts and workspace notes, the session desk
 //! index, VT snapshots of panes that are no longer live, and last the event log (events in scope
-//! become tombstones so `seq` stays gapless). One `state.forgotten` event records the scope and
+//! become tombstones so `seq` stays gapless). Spec-15 derived objects (lane 2C,
+//! `review::purge`) and assistant records (lane 2D, `assist::forget_scope`) are purged inside
+//! `scrollback.forget` itself and reported under `review` / `also.assistant`, not repeated here;
+//! the Turn/Item stream and the unified blob store (lane 3D) are purged here. One `state.forgotten` event records the scope and
 //! counts, never content.
 //!
 //! What each scope reaches:
 //! - `pane`: everything tied to the pane id (blob/screenshot `pane`, inbox uploads made from
 //!   that pane, the desk sessions of runs in the pane, its snapshot when closed, events whose
-//!   subject names the pane). Drafts, notes and assistant requests are per workspace, so a pane
-//!   scope leaves them (reported in `not_covered`).
+//!   subject names the pane). Drafts and notes are per workspace, so a pane scope leaves them
+//!   (reported in `not_covered`).
 //! - `workspace`: the above for every pane of the workspace plus objects recorded with the
-//!   workspace (drafts, notes, assistant requests, desk rows, events naming it).
+//!   workspace (drafts, notes, desk rows, events naming it).
 //! - `before`: objects created (events recorded) before the time; drafts and notes by last
-//!   update; assistant requests are left to their 24 h retention.
+//!   update.
 //! - `all`: everything above.
 //!
 //! Not covered: the live screen and in-memory scrollback of running panes, the snapshot a live
-//! pane recovers from, task/review records and their derived objects (15 §11, lane 2C), the
+//! pane recovers from, task and review records themselves (their derived content is purged by lane 2C), the
 //! audit log (append-only by design), native harness transcripts (owned by the harness).
 
 use crate::Server;
@@ -116,16 +119,15 @@ pub async fn forget(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         Scope::from_plan(&out).ok_or_else(|| internal("scrollback.forget returned no scope"))?;
     let user = crate::drafts::user_ctx();
     let mut also = serde_json::Map::new();
+    // Turn/Item stream first (3D): payload blobs that remaining items still reference stay.
+    also.insert("items".into(), json!(forget_items(server, &scope, dry)));
     also.insert("blobs".into(), json!(forget_blobs(server, &scope, dry)));
     also.insert("uploads".into(), json!(forget_uploads(server, &scope, dry)));
     also.insert(
         "drafts".into(),
         json!(forget_drafts(server, &user, &scope, dry).await),
     );
-    also.insert(
-        "assistant".into(),
-        forget_assistant(server, &user, &scope, dry).await,
-    );
+    also.insert("assistant".into(), assistant_report(&out, dry));
     also.insert("desk".into(), forget_desk(server, &user, &scope, dry).await);
     let live: Vec<String> = server.panes.lock().unwrap().keys().cloned().collect();
     let (snapshots, events) = server.with_core(|c| {
@@ -154,15 +156,12 @@ pub async fn forget(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let mut not_covered = vec![
         "live screens and in-memory scrollback of running panes",
         "VT snapshots of live panes",
-        "task and review records",
+        "task and review records (their spec-15 derived content is purged; see `review`)",
         "the audit log",
         "native harness transcripts",
     ];
     if matches!(scope, Scope::Panes(_)) {
-        not_covered.push("drafts, workspace notes and assistant requests (per workspace)");
-    }
-    if matches!(scope, Scope::Before(_)) {
-        not_covered.push("assistant requests (deleted 24 h after finishing)");
+        not_covered.push("drafts and workspace notes (per workspace)");
     }
     out["also"] = also;
     out["not_covered"] = json!(not_covered);
@@ -192,6 +191,37 @@ fn time_of(v: &Value) -> Option<i64> {
         .find_map(|k| v.get(*k).and_then(Value::as_i64))
 }
 
+/// Turns and items (02 §1.1 Turn/Item stream, 3D) of runs in scope, or started before the cutoff.
+fn forget_items(server: &Server, scope: &Scope, dry: bool) -> usize {
+    let runs: HashSet<String> = match scope {
+        Scope::All | Scope::Before(_) => HashSet::new(),
+        s => runs_of(server, s.panes()).into_iter().collect(),
+    };
+    let covers = |run: &str, at: i64| match scope {
+        Scope::All => true,
+        Scope::Before(t) => at < *t,
+        _ => runs.contains(run),
+    };
+    crate::items::forget(server, &covers, dry)
+}
+
+/// Ids of runs (live and recently closed) in these panes.
+fn runs_of(server: &Server, panes: &[String]) -> Vec<String> {
+    use vk_proto::model::AgentRun;
+    server.with_core(|c| {
+        let mut runs: Vec<AgentRun> = c.model.runs.clone();
+        runs.extend(
+            c.store
+                .load_closed::<AgentRun>("run", 2000)
+                .unwrap_or_default(),
+        );
+        runs.into_iter()
+            .filter(|r| panes.contains(&r.pane))
+            .map(|r| r.id)
+            .collect()
+    })
+}
+
 /// Screenshot records and session blob-store files in scope.
 fn forget_blobs(server: &Server, scope: &Scope, dry: bool) -> Value {
     use crate::screenshots::{ScreenshotMeta, load_all, remove_records};
@@ -208,12 +238,13 @@ fn forget_blobs(server: &Server, scope: &Scope, dry: bool) -> Value {
         .cloned()
         .collect();
     let gone_ids: HashSet<&str> = gone.iter().map(|m| m.id.as_str()).collect();
-    // Blobs a remaining record still points at stay.
-    let kept_blobs: HashSet<String> = records
+    // Blobs a remaining record or Turn/Item payload still points at stay.
+    let mut kept_blobs: HashSet<String> = records
         .iter()
         .filter(|m| !gone_ids.contains(m.id.as_str()))
         .map(|m| m.blob.clone())
         .collect();
+    kept_blobs.extend(crate::items::payload_refs(server));
     let screenshots = gone.len();
     let mut removed = if dry {
         gone.iter()
@@ -226,7 +257,9 @@ fn forget_blobs(server: &Server, scope: &Scope, dry: bool) -> Value {
         remove_records(server, &gone, "forgotten")
     };
     let gone_blobs: HashSet<String> = gone.iter().map(|m| m.blob.clone()).collect();
-    // Other blobs (pane screenshots, diffs, uploads stored here) by their sidecar metadata.
+    // Other blobs of the unified store (pane screenshots, diffs, item payloads) by their sidecar
+    // metadata. Ingested uploads (`source: inbox`) go with their upload in `forget_uploads`,
+    // which knows every recorded owner.
     let root = server.paths.blobs();
     for d in std::fs::read_dir(&root).into_iter().flatten().flatten() {
         for e in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
@@ -244,6 +277,9 @@ fn forget_blobs(server: &Server, scope: &Scope, dry: bool) -> Value {
                 continue;
             };
             let Ok(meta) = meta else { continue };
+            if str_of(&meta, "source") == Some("inbox") {
+                continue;
+            }
             let at = time_of(&meta).or_else(|| mtime_ms(&p));
             if !scope.covers(str_of(&meta, "pane"), str_of(&meta, "workspace"), at) {
                 continue;
@@ -280,7 +316,7 @@ fn mtime_ms(p: &Path) -> Option<i64> {
 /// The inbox is shared by the installation's sessions, so a file another owner still claims
 /// stays.
 fn forget_uploads(server: &Server, scope: &Scope, dry: bool) -> Value {
-    let rows = server.with_core(|c| c.store.kv_scan("blob_owner").unwrap_or_default());
+    let rows = server.with_core(|c| c.store.kv_scope("blob_owner").unwrap_or_default());
     let inbox = crate::paths::Paths::inbox();
     let (mut removed, mut kept) = (0u64, 0u64);
     let mut drop_keys: Vec<String> = vec![];
@@ -321,6 +357,8 @@ fn forget_uploads(server: &Server, scope: &Scope, dry: bool) -> Value {
             }
         }
         let _ = std::fs::remove_dir(&dir);
+        // Its copy in the unified blob store (3D) goes too.
+        crate::blob_store::store(server).remove(&hash);
     }
     if !dry && !drop_keys.is_empty() {
         let mut c = server.core.lock().unwrap();
@@ -379,28 +417,13 @@ async fn forget_drafts(server: &Arc<Server>, user: &Ctx, scope: &Scope, dry: boo
     json!({"drafts": deleted, "notes": notes.len(), "failed": failed})
 }
 
-async fn forget_assistant(server: &Arc<Server>, user: &Ctx, scope: &Scope, dry: bool) -> Value {
-    let params = match scope {
-        Scope::All => json!({"all": true}),
-        Scope::Workspace { id, .. } => json!({"workspace": id}),
-        _ => return json!({"purged": 0}),
-    };
+/// Assistant records are purged by `scrollback.forget` itself (lane 2D, `assist::forget_scope`,
+/// every scope); this only reports its count (`assistant_purged`), never purges again.
+fn assistant_report(out: &Value, dry: bool) -> Value {
     if dry {
-        let reqs: Vec<Value> =
-            server.with_core(|c| c.store.load::<Value>("assist_request").unwrap_or_default());
-        let n = reqs
-            .iter()
-            .filter(|r| match scope {
-                Scope::Workspace { id, .. } => str_of(r, "workspace") == Some(id.as_str()),
-                _ => true,
-            })
-            .count();
-        return json!({"purged": n});
-    }
-    match crate::assist::api(server, user, "assistant.purge", &params).await {
-        Some(Ok(v)) => json!({"purged": v["purged"]}),
-        Some(Err(e)) => json!({"purged": 0, "error": e.message}),
-        None => json!({"purged": 0}),
+        json!({"purged": Value::Null, "by": "scrollback.forget"})
+    } else {
+        json!({"purged": out["assistant_purged"].as_u64().unwrap_or(0), "by": "scrollback.forget"})
     }
 }
 

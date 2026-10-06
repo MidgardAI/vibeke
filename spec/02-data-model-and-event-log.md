@@ -18,6 +18,8 @@ Machine 1─* Session 1─* Group? 1─* Workspace 1─* Tab 1─* Pane ─? Age
 
 **Session** — `{ id, name, machine_id, created_at, server_pid, server_version }`
 
+*Implemented (3D) in `vk-proto::entities` and `vk-server::machines`:* `Machine`/`Session` are stored as `machine` / `session_info` entities (`SessionInfo` uses `created_at_ms`); the server registers its own machine and session at every start and emits `session.started`; remotes are reported by clients with `machine.upsert` (federation stays client-owned, so the registry holds what clients report). `session.info`, `machine.list|get|upsert|remove` in 07 §2.3; `machine.added|connected|disconnected|degraded|removed` and `session.started|stopped` are emitted. The Workspace `repo {vcs, remote_url, default_branch}` and the five stored AgentRun facets remain as listed in the audit.
+
 **Group** — optional hierarchy for workspaces. `{ id, name, parent_group_id?, collapsed, order }`. *Implemented (M4) as `{id, handle "g1", name, parent?, collapsed, order, workspaces: [workspace_id]}`: membership is the group's ordered list rather than `Workspace.group_id` (the `Workspace` struct is unchanged); events `group.created/renamed/moved/collapsed/closed`, `workspace.moved {group}`.*
 
 **Workspace** — `{ id, handle "w3", name?, root_path, repo: {vcs: git|none, remote_url?, default_branch?}?, group_id?, task_id?, order, created_at }`. Name defaults to repo/folder name; identity is `root_path`.
@@ -93,6 +95,8 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 ```
 `file_change` items carry `{path, op: create|modify|delete|rename, lines_added?, lines_removed?}` — used by the collision tracker (05) and Phase 2 evidence bundles.
 
+*Implemented (3D):* entities `Turn`/`Item`/`FileChange` in `vk-proto::entities`, stored as `stream_turn`/`stream_item` (the tracking `turn`/`tool_item` records of 15 are separate and unchanged), recorded by `vk-server::items` from the hook vocabulary every harness family ends in, with `agent.item`, `agent.subagent_started/finished`, per-turn usage as a delta of session totals, payloads in the blob store and `agent.turns`/`agent.items` to read them (07 §2.7a). The `reasoning` and `plan` kinds exist in the model but no current transport reports them. `file_change` items are recorded; the collision tracker (05 §10) does not read them yet (3A).
+
 **Task** — a unit of work, typically one task workspace.
 
   *Tracking additions (spec 15 T1, implemented):* `ownership: owned | attached` (attached = tracking work in an existing pane; lifecycle actions never stop processes, close the workspace, release ports or delete files — `task.finish` only changes the record and labels it `finished_without_review` unless accepted), `owner_machine`, `intent_revision`, `priority`, `effort` (`quick|minutes|deep|unknown`), `review_label` (independent of lifecycle `status`), `rev` (expected-revision checks). Stored alongside as their own entity kinds: **TaskIntent** (`task_intent`, immutable per revision, user-confirmed only; carries a bounded verbatim source excerpt ≤ 8 KiB), **TaskRunBinding** (`task_binding`: task, run, native conversation id, half-open turn range, `active|suspended|closed`, origin edge), **Turn** records (`turn`: run, n, native conversation id, exact prompt ≤ 8 KiB, start/end) and **tool items** (`tool_item`: command, cwd, exit code, start/end — the observed-command source), **TaskMessage** (`task_message`, §9 delivery states), mutation **receipts** (`op_receipt`, keyed by idempotency key, kept 30 days), communication coverage (`task_comm`) and the observation baseline (`task_baseline`). `AgentRun.task` stays a compatibility projection; the binding history is authoritative.
@@ -114,6 +118,8 @@ Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) 
 **Notification** — `{ id, kind: agent_state|interaction|bell|osc9|osc777|plugin|system, subject_ref, title, body, urgency: low|normal|high, created_at, delivered: [{channel, at}], read_at? }`
 
 **Blob** — content-addressed store (`blake3`) under `state/blobs/` for screenshots, large diffs, tool outputs, uploaded images. Events reference blobs by hash.
+
+*Implemented (3D, `vk-store::blobs`, `vk-server::blob_store`):* one store `<state>/blobs/<h2>/<hash>.<ext>` + `<hash>.json` sidecar with `source: screenshot|inbox|payload`; uploads are ingested next to the inbox file the agent keeps its path to; tool outputs and long messages of the Turn/Item stream are `payload` blobs; `blob.stats`/`blob.gc` maintain it (07 §2.15). The diffs of review snapshots keep their own storage (the repository's object store, 15 T4), not blobs.
 
 ## 2. Event log
 
@@ -164,6 +170,8 @@ High-frequency signals (pane output, cursor moves, every streamed token) are **n
 - Delivery is ordered and at-least-once per connection; clients dedupe by `seq`.
 - When the cursor is older than retention, or its `log_epoch`/`session_uuid` doesn't match → `events.truncated { current: cursor }` and the client must take a snapshot. This is normal and cheap; it is the only recovery path clients need.
 - Retention: `sync` tier pruned after 7 days (configurable, also capped at 2 M rows); `history` tier kept 1 year (configurable). `agent.item` events are `sync` tier; per-turn summaries are written to the `turns` table, which is state, not log.
+
+  *As built (3D, `vk-config::events`, `vk-store::Store::prune_with`, `vk-server::hardening`):* `[events] sync_retention = "7d"`, `history_retention = "365d"`, `blob_retention = "30d"` (a duration or a bare number of days, at least 1) and `max_rows = 2000000` (`0` = no cap); a bad value is a located warning that keeps that key's default. The hourly sweep (`hardening::sweep`, also `storage.prune`) removes events past their tier's age, then, if the log is still over `max_rows`, the oldest `sync` rows, and `history` rows only when no `sync` row is left; it never removes the newest row, so `seq` cannot restart below its past. The same sweep removes turns (and their items) that ended before `history_retention` and collects unreferenced old blobs; it does nothing while degraded. `storage.status` reports the effective values. `sandbox.boundary_action` and `plugin.installed` are `history` tier like the other audit-grade events. Tests: `vk-store` `retention_tests`, `vk-config/tests/events.rs`, `vk-server` `hardening_tests`.
 - Remote machines: the local server proxies subscriptions; each remote session keeps its own cursor (`{machine_uuid, session_uuid, log_epoch, seq}`), so a client resumes per machine independently.
 
 ## 3. SQLite schema (abbreviated)
@@ -214,6 +222,8 @@ CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER)
 
 Migrations are forward-only, embedded in the binary, run at server start inside a transaction; a pre-migration backup copy of `state.db` is kept (last 3). Restoring a backup always rotates `log_epoch`.
 
+*As built (3D, `vk-store::backup`):* when `Store::open` finds a database whose schema is behind the binary's (an existing database, schema version ≥ 1, pending migrations), it first writes a consistent copy with `VACUUM INTO` to `<state>/backups/state-v<schema>-<ms>.db` (0600, dir 0700) and keeps the newest three; if the copy fails the migration does not run and the server does not start (an unprotected migration is never attempted). A brand-new database takes no backup. `vibeke doctor --list-backups` lists them; `vibeke doctor --restore-backup NAME` (offline: refuses while the server runs, holds the state lock) integrity-checks the copy, keeps the replaced database as `state.db.pre-restore`, installs the backup and rotates `log_epoch` (random u64), leaving `session_uuid` and the machine uuid; the next start migrates it forward again. `storage.status` lists the backups. Tests: `vk-store::backup` unit tests, `crates/vibeke/tests/state_backup.rs`.
+
 ### Plugin state ownership [M5]
 
 The per-user `~/.config/vibeke/plugins.json` registry is authoritative for installation source/revision, manifest location/digest, enabled state and approved native capabilities or Herdr legacy trust (07 §7.7, 09 §6). It is available without a running session and updated with a machine-wide lock and atomic replacement. Include a monotonically increasing generation; running sessions reconcile committed generations before dispatching plugin commands and recheck grants before callbacks. Session snapshots must never overwrite or resurrect revoked global grants. Offline changes are picked up at next activation; session event logs record registry observations, not a fictitious cross-session atomic commit.
@@ -232,6 +242,8 @@ Honest behavior when the DB can't be written:
 - Interactions can still be answered **only** if the answer can be persisted; otherwise the answer is refused and the user answers in the agent's own UI. We never deliver a decision we couldn't record.
 - VT snapshots and scrollback archive writes pause; the recovery guarantee degrades to "ring only" and the UI says so.
 - Recovery from degraded is automatic once a probe write succeeds (every 5 s); nothing is replayed from memory.
+
+*As built (3D, `vk-server::{core,hardening,lib}`):* a failed `Server::commit` returns `storage_unavailable` (the mutation did not happen, no event, projections untouched) and sets `model.degraded = "storage unavailable: <error>"`, which the TUI status bar renders as `⚠ storage degraded · ring only`. A `Tx` marked `ephemeral` (focus changes and unread marks on output and focus) is instead applied to the in-memory model without an event, counted (`server.status.ephemeral`, `storage.status.ephemeral`) and lost on restart; it never covers interactions, tasks, layout or anything else a restart or another client must see. `interaction.answer` while degraded is refused up front with `storage_unavailable` ("answer in the agent's own UI", `details.fallback`) before anything is recorded or delivered, and a record failure that slips through maps to the same error rather than `conflict`. `store_snapshot` returns without touching the database and `archive_rows` drops rows (counted in `archive_rows_skipped`) while degraded; `storage.prune` and the sweep refuse. Recovery: housekeeping probes with a write every 5 s (`PROBE_EVERY_MS`), and any successful commit also ends the mode; the ephemeral count resets and nothing is replayed. Test hook: `Store::set_query_only` makes every write fail like a full disk. Tests: `hardening_tests` (failed commit, ephemeral focus/unread, paused snapshots and archive, probe cadence, refused answer, `storage.*`).
 
 ## 4. Policy rules (Phase 1 engine, Phase 2 learning)
 

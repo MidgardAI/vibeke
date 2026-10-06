@@ -1404,6 +1404,9 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
         json!({"rows": rows, "sessions": tombstoned.len()}),
     );
     server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    // Derived assistant results and cached excerpts for this scope go too (14 §8).
+    crate::assist::forget_scope(server, &scope);
     Ok(json!({"rows_deleted": rows, "sessions_forgotten": tombstoned}))
 }
 

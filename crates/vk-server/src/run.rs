@@ -62,8 +62,9 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
                 }
                 _ = tokio::time::sleep_until(prune_at) => {
                     hk.housekeeping();
-                    let _ = hk.with_core(|c| c.store.prune(7, 365));
+                    crate::hardening::sweep(&hk);
                     hk.archive_retention();
+                    crate::assist::sweep(&hk);
                     prune_at += hour;
                 }
             }
@@ -80,6 +81,14 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::config_api::start(&server);
     crate::security::start(&server);
     crate::privacy::start(&server);
+    crate::machines::start(&server);
+    // Uploads made before the blob stores were unified are ingested off the async threads.
+    let adopt = server.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::blob_store::adopt_legacy(&adopt);
+    });
+    crate::items::start(&server);
+    crate::assist::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -93,6 +102,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
         sd.housekeeping();
+        crate::machines::stopped(&sd, "signal");
         let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
         tokio::time::sleep(Duration::from_millis(100)).await;
         std::process::exit(0);
@@ -398,7 +408,7 @@ where
                             let _ = out_tx.send(serde_json::to_string(&r)?);
                             continue;
                         }
-                        if let Some((sid, h)) = subscribe(&server, &ctx, &req, out_tx.clone())? {
+                        if let Some((sid, h)) = subscribe(&server, &ctx, &req, out_tx.clone(), ctx.pane_scope.is_some())? {
                             let mut subs = guard.subs.lock().unwrap();
                             subs.retain(|_, h| !h.is_finished());
                             subs.insert(sid, h);
@@ -564,6 +574,7 @@ fn subscribe(
     ctx: &Ctx,
     req: &Request,
     out: mpsc::UnboundedSender<String>,
+    pane_scoped: bool,
 ) -> Result<Option<(String, tokio::task::AbortHandle)>> {
     let id = req.id.clone().unwrap_or(Value::Null);
     let p = req.params.clone();
@@ -654,10 +665,19 @@ fn subscribe(
             };
             match ev {
                 Ok(e) => {
-                    if e.seq <= last {
-                        continue;
+                    if e.seq == 0 {
+                        // A transient notification (`assistant.delta`): not outbox history, so
+                        // it never moves the cursor, and generated text goes to full-scope
+                        // subscribers only (14 §9).
+                        if pane_scoped && e.kind.starts_with("assistant.") {
+                            continue;
+                        }
+                    } else {
+                        if e.seq <= last {
+                            continue;
+                        }
+                        last = e.seq;
                     }
-                    last = e.seq;
                     if !types.is_empty() && !types.iter().any(|g| vk_store::glob_match(g, &e.kind))
                     {
                         continue;

@@ -2,6 +2,7 @@
 //!
 //! - `security.encrypt_state`: seal scrollback segments and session blobs with a key from the
 //!   OS keychain (`[security] keychain = "os" | "file:<path>"`, vk-store `crypt`/`keychain`).
+//!   Blob writes are sealed inside the unified store (`blob_store::store`, `vk_store::blobs`).
 //!   Existing files keep their mode; `security.encryption.migrate` rewrites them. A sealed blob
 //!   handed to an agent by path is decrypted into the runtime dir (`<runtime>/plain/`, 0700,
 //!   pruned hourly and on restart) so tools can open it.
@@ -304,11 +305,6 @@ pub fn prune_plain_views(server: &Server, ttl: Duration) -> usize {
         }
     }
     n
-}
-
-/// Write a new blob file (`store_blob`): sealed while encryption is active, 0600 either way.
-pub fn write_blob(server: &Server, path: &Path, data: &[u8]) -> std::io::Result<()> {
-    crypt::write_file(path, data, cipher(server).as_deref())
 }
 
 /// Read a blob file, decrypting a sealed one.

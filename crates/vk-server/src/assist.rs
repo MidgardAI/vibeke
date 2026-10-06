@@ -12,25 +12,58 @@
 //! validated draft and never interpreted as an action. Nothing here is triggered by turn
 //! events, agent launches or timers — every provider call starts from an explicit request.
 //! Events carry metadata only (operation, provider, model, token counts, cost, state).
+//!
+//! The 2D extensions live in child modules: `data` (capability records, model-list cache,
+//! result cache, cursors), `ext` (`assistant.models`, `assistant.test`), `gather_ext`
+//! (navigation, decision cards, stall notices, task titles, remote sources), `stale`
+//! (staleness and live revalidation), `forget` (the `forget` integration) and `background`
+//! (the opt-in sweeper).
 
 use crate::Server;
 use crate::api::{Ctx, R, b, err, invalid, not_found, req, s, u};
 use crate::core::Tx;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
-use tokio::sync::Semaphore;
 use vk_assist::budget::{Amount, Ledger, RateWindow, Reservation};
-use vk_assist::config::{AssistConfig, Resolved};
+use vk_assist::capability::{Feature, Support};
+use vk_assist::config::{AssistConfig, Purpose, Resolved};
 use vk_assist::context::{Limits, Package, Payload, Source, SourceInput};
 use vk_assist::ops::{self, Operation};
-use vk_assist::provider::Usage;
+use vk_assist::pipeline;
+use vk_assist::provider::{Mode, Usage};
+use vk_assist::sched::Priority;
 use vk_assist::{AssistError, Category, clip};
 use vk_proto::model::*;
 use vk_proto::rpc::{ErrorKind, RpcError};
+
+mod background;
+mod data;
+mod ext;
+mod forget;
+mod gather_ext;
+#[cfg(test)]
+mod process_tests;
+mod stale;
+
+pub use forget::forget_scope;
+
+/// Called once when the server starts: unfinished requests of the previous process become
+/// `interrupted` now (never replayed), their reservations are charged, and the opt-in
+/// background sweeper starts if it is configured.
+pub fn start(server: &Arc<Server>) {
+    maintain(server);
+    background::start(server);
+}
+
+/// Hourly housekeeping: retention purge of finished records and expired cached results.
+pub fn sweep(server: &Server) {
+    maintain(server);
+    data::cache_sweep(server);
+}
 
 pub const METHODS: &[(&str, bool)] = &[
     ("assistant.status", false),
@@ -43,6 +76,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("assistant.list", false),
     ("assistant.cancel", true),
     ("assistant.purge", true),
+    ("assistant.models", false),
+    ("assistant.test", true),
+    ("assistant.background", true),
 ];
 
 /// Vibeke methods an operation may call while gathering context. Everything else — in
@@ -134,6 +170,38 @@ pub struct AssistRequest {
     pub queued_at_ms: Option<i64>,
     pub started_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
+    /// `interactive` or `background` (scheduling class and profile family; 14 §8).
+    #[serde(default = "interactive")]
+    pub priority: String,
+    /// Background requests with the same key share one request (14 §8).
+    #[serde(default)]
+    pub coalesce_key: Option<String>,
+    /// Clients attached to a coalesced request; only the creator can cancel it.
+    #[serde(default)]
+    pub consumers: Vec<String>,
+    /// Served from the result cache: no provider call, no usage.
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub cache_origin: Option<String>,
+    /// `native` (provider schema mode) or `json_text` (validated locally).
+    #[serde(default)]
+    pub structured: Option<String>,
+    #[serde(default)]
+    pub streamed: bool,
+    /// The one bounded repair attempt was made.
+    #[serde(default)]
+    pub repaired: bool,
+    /// Fingerprints of the live objects the result is about, for staleness marking.
+    #[serde(default)]
+    pub live: BTreeMap<String, String>,
+    /// Coverage notes for remote sources (offline, stale, gaps).
+    #[serde(default)]
+    pub coverage_notes: Vec<String>,
+}
+
+fn interactive() -> String {
+    "interactive".into()
 }
 
 impl AssistRequest {
@@ -153,6 +221,13 @@ struct Prepared {
     classes: Vec<&'static str>,
     /// Canonical paths of every workspace a source came from (primary first).
     workspaces: Vec<String>,
+    priority: Priority,
+    /// Vibeke's own kind for each valid target id (navigation results are annotated with it).
+    target_kinds: HashMap<String, String>,
+    /// The caller asked for streaming explicitly.
+    stream_requested: bool,
+    /// Result-cache key and the grants digest it was built with (when caching is on).
+    cache_key: Option<String>,
 }
 
 #[derive(Default)]
@@ -168,7 +243,12 @@ pub struct State {
     ledger: Mutex<()>,
     /// Serializes `generate` calls that carry an idempotency key.
     idem: tokio::sync::Mutex<()>,
-    sem: OnceLock<Arc<Semaphore>>,
+    /// Concurrency gate: interactive before background, background never takes every slot,
+    /// capacity changes apply immediately (14 §8).
+    gate: vk_assist::sched::PriorityGate,
+    /// Serializes read-modify-write of the derived key-value data (`data`).
+    kv: Mutex<()>,
+    bg: background::Runtime,
     recovered: OnceLock<()>,
 }
 
@@ -245,10 +325,18 @@ pub fn load_config() -> Result<(AssistConfig, Vec<String>), String> {
         .get("assistant")
         .or_else(|| cfg.extra.get("assist"))
         .and_then(|t| serde_json::to_value(t).ok());
-    let a = match table {
+    let mut a = match table {
         Some(v) => AssistConfig::from_json(v)?,
         None => AssistConfig::default(),
     };
+    // One keychain for the assistant and state encryption (09 §9.1): an empty
+    // `[assistant] keychain_backend` inherits `[security] keychain`.
+    if a.keychain_backend.trim().is_empty() {
+        a.keychain_backend = match crate::privacy::Settings::from_config(&cfg).keychain {
+            Ok(k) => k.setting(),
+            Err(_) => "invalid".into(),
+        };
+    }
     let patterns: Vec<String> = cfg
         .extra
         .get("security")
@@ -298,6 +386,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         .details(json!({"scope": "pane", "category": "permission_denied"}))));
     }
     maintain(server);
+    background::ensure(server);
     Some(match method {
         "assistant.status" => status(server),
         "assistant.providers" => providers(),
@@ -307,8 +396,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "assistant.confirm" => confirm(server, p),
         "assistant.get" => get(server, p),
         "assistant.list" => list(server, p),
-        "assistant.cancel" => cancel(server, p),
+        "assistant.cancel" => cancel(server, ctx, p),
         "assistant.purge" => purge(server, p),
+        "assistant.models" => ext::models(server, p).await,
+        "assistant.test" => ext::test(server, p).await,
+        "assistant.background" => background::api(server, p).await,
         _ => Err(err(
             ErrorKind::MethodNotFound,
             format!("unknown method {method}"),
@@ -361,6 +453,11 @@ fn meta(r: &AssistRequest) -> Value {
         "estimated_cost_usd": r.estimated_cost_usd,
         "error_category": r.error.as_ref().map(|e| e.category),
         "auto_sent": r.auto_sent,
+        "priority": r.priority,
+        "cached": r.cached,
+        "streamed": r.streamed,
+        "structured": r.structured,
+        "repaired": r.repaired,
     })
 }
 
@@ -387,6 +484,13 @@ fn view(r: &AssistRequest, with_output: bool) -> Value {
         if !with_output {
             o.remove("output");
         }
+        // Other clients' ids are not shown; the count of attached clients is.
+        if let Some(c) = o.remove("consumers") {
+            o.insert(
+                "consumer_count".into(),
+                json!(c.as_array().map(Vec::len).unwrap_or(0)),
+            );
+        }
         o.insert(
             "label".into(),
             json!(
@@ -401,7 +505,7 @@ fn view(r: &AssistRequest, with_output: bool) -> Value {
 
 // ---- maintenance: restart recovery, preview expiry, retention, disable ------------------------
 
-fn maintain(server: &Arc<Server>) {
+fn maintain(server: &Server) {
     let st = state(server);
     let _t = lk(&st.transitions);
     let first = st.recovered.set(()).is_ok();
@@ -716,8 +820,24 @@ fn status(server: &Server) -> R {
             "running": count(ReqState::Running),
             "stored": reqs.len(),
         },
-        "operations": ops::ALL.iter().map(|o| json!({"name": o.as_str(), "classes": o.classes(), "label": o.label()})).collect::<Vec<_>>(),
-        "background": false,
+        "operations": ops::ALL.iter().map(|o| json!({"name": o.as_str(), "classes": o.classes(), "label": o.label(), "background_only": o.background_only()})).collect::<Vec<_>>(),
+        "background": cfg.background_active(),
+        "background_detail": {
+            "background_enabled": cfg.background_enabled,
+            "summaries": cfg.background_summaries,
+            "stall_notices": cfg.stall_notices,
+            "interval_seconds": cfg.background_interval_seconds,
+            "sweeper_running": state(server).bg.running_now(),
+        },
+        "scheduler": {
+            "capacity": cfg.max_concurrent_requests.max(1),
+            "running": state(server).gate.stats().0,
+            "waiting": state(server).gate.stats().1,
+        },
+        "capabilities": resolved.as_ref().ok().map(|r| data::capabilities(server, r)),
+        "cache": {"enabled": cfg.result_cache, "entries": data::cache_len(server)},
+        "remote_sources": cfg.remote_sources,
+        "keychain_backend": cfg.keychain_backend,
     }))
 }
 
@@ -746,7 +866,41 @@ fn providers() -> R {
         .iter()
         .map(|(id, p)| json!({"id": id, "connection": p.connection, "model": p.model}))
         .collect();
-    Ok(json!({"connections": conns, "profiles": profiles, "default_profile": cfg.default_profile}))
+    Ok(json!({
+        "connections": conns,
+        "profiles": profiles,
+        "default_profile": cfg.default_profile,
+        "coordinator_note": "requests run on the coordinator machine: credentials and localhost endpoints refer to it",
+        "targets": [
+            {"name": "anthropic", "adapter": "anthropic", "endpoint": vk_assist::config::ANTHROPIC_ENDPOINT},
+            {"name": "openai", "adapter": "openai_compatible", "endpoint": vk_assist::config::OPENAI_ENDPOINT},
+            {"name": "gemini", "adapter": "gemini", "endpoint": vk_assist::config::GEMINI_ENDPOINT},
+            {"name": "openrouter", "adapter": "openai_compatible", "endpoint": vk_assist::config::OPENROUTER_ENDPOINT},
+            {"name": "ollama", "adapter": "ollama", "endpoint": vk_assist::config::OLLAMA_ENDPOINT},
+            {"name": "custom", "adapter": "openai_compatible", "endpoint": "(your endpoint; https, or http on loopback)"},
+        ],
+    }))
+}
+
+/// `remote_workspace: "machine:/abs/path"` for consent over a remote machine's workspace.
+fn remote_workspace_param(p: &Value) -> Result<Option<String>, RpcError> {
+    let Some(rw) = s(p, "remote_workspace") else {
+        return Ok(None);
+    };
+    match rw.split_once(':') {
+        Some((m, path))
+            if !m.is_empty()
+                && m.len() <= 64
+                && m.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+                && path.starts_with('/')
+                && path.len() <= 1024
+                && !path.contains('\0') =>
+        {
+            Ok(Some(rw.to_string()))
+        }
+        _ => Err(invalid("remote_workspace is machine:/absolute/path")),
+    }
 }
 
 fn list_param(p: &Value, k: &str) -> Option<Vec<String>> {
@@ -771,7 +925,11 @@ fn list_param(p: &Value, k: &str) -> Option<Vec<String>> {
 
 fn consent(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let (cfg, _) = config()?;
-    let ws = crate::api::resolve_ws(server, ctx, s(p, "workspace"))?;
+    let remote_ws = remote_workspace_param(p)?;
+    let ws = match &remote_ws {
+        Some(_) => None,
+        None => Some(crate::api::resolve_ws(server, ctx, s(p, "workspace"))?),
+    };
     let resolved = match s(p, "connection") {
         Some(c) => {
             // Resolve through any profile on this connection to validate the endpoint.
@@ -807,8 +965,13 @@ fn consent(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             return Err(invalid(format!("unknown operation `{o}`")));
         }
     }
+    let (grant_path, subject) = match (&remote_ws, &ws) {
+        (Some(rw), _) => (rw.clone(), json!({"remote_workspace": rw})),
+        (None, Some(w)) => (canonical(&w.root_path), json!({"workspace": w.id})),
+        (None, None) => return Err(invalid("a workspace is required")),
+    };
     let g = vk_assist::consent::Grant {
-        workspace: canonical(&ws.root_path),
+        workspace: grant_path,
         connection: resolved.connection_id.clone(),
         fingerprint: resolved.fingerprint.clone(),
         adapter: resolved.connection.adapter.as_str().into(),
@@ -824,7 +987,7 @@ fn consent(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let mut tx = Tx::new();
     tx.event_by(
         "assistant.consent_granted",
-        json!({"workspace": ws.id}),
+        subject,
         json!({"kind": "user", "client": ctx.client_id}),
         json!({"connection": g.connection, "adapter": g.adapter, "endpoint_host": g.endpoint_host,
                "classes": g.classes, "operations": g.operations, "auto_send": g.auto_send}),
@@ -837,8 +1000,13 @@ fn consent(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 }
 
 fn revoke(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    let ws = crate::api::resolve_ws(server, ctx, s(p, "workspace"))?;
-    let path = canonical(&ws.root_path);
+    let (path, subject) = match remote_workspace_param(p)? {
+        Some(rw) => (rw.clone(), json!({"remote_workspace": rw})),
+        None => {
+            let ws = crate::api::resolve_ws(server, ctx, s(p, "workspace"))?;
+            (canonical(&ws.root_path), json!({"workspace": ws.id}))
+        }
+    };
     let gone = vk_assist::consent::revoke(&consent_path(), &path, s(p, "connection"))
         .map_err(crate::api::internal)?;
     // Revocation cancels this session's unfinished requests that depend on this workspace.
@@ -857,7 +1025,7 @@ fn revoke(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let mut tx = Tx::new();
     tx.event_by(
         "assistant.consent_revoked",
-        json!({"workspace": ws.id}),
+        subject,
         json!({"kind": "user", "client": ctx.client_id}),
         json!({"grants": gone.len(), "cancelled": cancelled}),
     );
@@ -908,6 +1076,10 @@ struct Target {
     pane: Option<Pane>,
     turns: Vec<u32>,
     include_screen: bool,
+    /// Navigation: the user's free-text query.
+    query: Option<String>,
+    /// Decision card: the open interaction it is about.
+    interaction: Option<Interaction>,
 }
 
 fn input<'a>(p: &'a Value, k: &str) -> Option<&'a Value> {
@@ -956,6 +1128,31 @@ fn resolve_target(
     let pane = match input_s(p, "pane") {
         Some(t) => Some(crate::api::resolve_pane(server, ctx, Some(t))?),
         None => None,
+    };
+    let query = input_s(p, "query")
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty());
+    // A decision card is about one open interaction; its run and pane follow from it.
+    let interaction = if op == Operation::DecisionCard {
+        let id = input_s(p, "interaction")
+            .ok_or_else(|| invalid("decision_card needs --interaction"))?;
+        let found = server.with_core(|c| {
+            c.model
+                .interactions
+                .iter()
+                .find(|i| i.id == id || i.handle == id)
+                .cloned()
+        });
+        Some(found.ok_or_else(|| not_found("interaction", id))?)
+    } else {
+        None
+    };
+    let (run, pane) = match &interaction {
+        Some(i) => (
+            run.or_else(|| server.with_core(|c| c.run(&i.run).cloned())),
+            pane.or_else(|| server.with_core(|c| c.pane(&i.pane).cloned())),
+        ),
+        None => (run, pane),
     };
     let (run, pane) = match (run, pane) {
         (None, Some(pn)) => (
@@ -1055,6 +1252,11 @@ fn resolve_target(
         Operation::Handoff if task.is_none() && run.is_none() => {
             return Err(need("--task or --run"));
         }
+        Operation::Navigate if query.is_none() => return Err(need("--query")),
+        Operation::StallNotice if run.is_none() => return Err(need("--run or --pane")),
+        Operation::TaskTitle if task.is_none() && run.is_none() => {
+            return Err(need("--task or --run"));
+        }
         _ => {}
     }
     Ok(Target {
@@ -1067,6 +1269,8 @@ fn resolve_target(
         pane,
         turns,
         include_screen,
+        query,
+        interaction,
     })
 }
 
@@ -1190,9 +1394,18 @@ async fn gather(
     ctx: &Ctx,
     op: Operation,
     t: &Target,
-) -> Result<(Vec<SourceInput>, Vec<String>, Value), RpcError> {
+) -> Result<
+    (
+        Vec<SourceInput>,
+        Vec<String>,
+        Value,
+        HashMap<String, String>,
+    ),
+    RpcError,
+> {
     let mut sources = vec![];
     let mut targets = vec![];
+    let mut kinds: HashMap<String, String> = HashMap::new();
     let scope = json!({
         "workspace": t.ws.id,
         "other_workspaces": t.others.iter().map(|(w, _)| &w.id).collect::<Vec<_>>(),
@@ -1203,6 +1416,8 @@ async fn gather(
         "pane": t.pane.as_ref().map(|x| &x.id),
         "turns": t.turns,
         "include_screen": t.include_screen,
+        "interaction": t.interaction.as_ref().map(|i| &i.id),
+        "query_chars": t.query.as_ref().map(|q| q.chars().count()),
     });
     match op {
         Operation::SuggestTaskDetails => {
@@ -1266,7 +1481,13 @@ async fn gather(
                 ));
             }
         }
-        Operation::Briefing => {
+        Operation::Navigate
+        | Operation::DecisionCard
+        | Operation::StallNotice
+        | Operation::TaskTitle => {
+            kinds = gather_ext::gather(server, ctx, op, t, &mut sources, &mut targets).await?;
+        }
+        Operation::Briefing | Operation::BackgroundSummary => {
             let (runs, inters, tasks) = server.with_core(|c| {
                 let panes: Vec<String> = c
                     .model
@@ -1386,7 +1607,7 @@ async fn gather(
             }
         }
     }
-    Ok((sources, targets, scope))
+    Ok((sources, targets, scope, kinds))
 }
 
 // ---- generate / confirm -------------------------------------------------------------------------
@@ -1404,7 +1625,50 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         ))
     })?;
     let (cfg, patterns) = enabled_config()?;
-    let resolved = cfg.resolve(s(p, "profile")).map_err(rpc)?;
+    // Scheduling class and profile family (14 §5.3, §8). The background-only operations are
+    // opt-in features: they need the master background switch and their own.
+    let class = s(p, "priority").unwrap_or("interactive");
+    if !matches!(class, "interactive" | "background") {
+        return Err(invalid("priority is interactive | background"));
+    }
+    if op.background_only() {
+        let own = match op {
+            Operation::BackgroundSummary => cfg.background_summaries,
+            Operation::StallNotice => cfg.stall_notices,
+            _ => false,
+        };
+        if !cfg.background_active() || !own {
+            return Err(ae(
+                Category::Disabled,
+                format!(
+                    "background_disabled: {} is an opt-in background feature; set [assistant] background_enabled and its own switch (background_summaries | stall_notices)",
+                    op.as_str()
+                ),
+            ));
+        }
+    }
+    let background = class == "background" || op.background_only();
+    let prio = if background {
+        Priority::Background
+    } else {
+        Priority::Interactive
+    };
+    let purpose = if background {
+        Purpose::Background
+    } else {
+        op.purpose()
+    };
+    let resolved = cfg.resolve_for(purpose, s(p, "profile")).map_err(rpc)?;
+    // Streaming on request is refused up front when the model is recorded as not streaming.
+    let stream_requested = b(p, "stream") == Some(true);
+    if stream_requested
+        && data::capabilities(server, &resolved).streaming.support == Support::Unsupported
+    {
+        return Err(ae(
+            Category::UnsupportedCapability,
+            "streaming_unsupported: this model is recorded as not supporting streaming (assistant.models shows the record)",
+        ));
+    }
     let st = state(server);
     // Concurrent calls carrying one idempotency key create one request: keyed calls are
     // serialized, so the second sees the first's record.
@@ -1456,6 +1720,47 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         )?;
         other_paths.push(path);
     }
+    // Sources collected from other machines: each included remote workspace needs its own
+    // consent (`machine:path`), and the coverage of offline/stale/gapped sources is reported.
+    let remote = gather_ext::remote_prepare(server, &cfg, p, &resolved, op, &classes, &grants)?;
+    if let Some(r) = &remote {
+        other_paths.extend(r.identities.iter().cloned());
+    }
+    // Background requests are coalesced per scope: attach to the open one instead of queueing
+    // another (14 §8). Only the creator can cancel it.
+    let coalesce_key = background.then(|| {
+        format!(
+            "{}:{}:{}:{}:{}",
+            op.as_str(),
+            target.ws.id,
+            target.run.as_ref().map(|r| r.id.as_str()).unwrap_or(""),
+            target.task.as_ref().map(|t| t.id.as_str()).unwrap_or(""),
+            target
+                .interaction
+                .as_ref()
+                .map(|i| i.id.as_str())
+                .unwrap_or("")
+        )
+    });
+    if let Some(key) = &coalesce_key {
+        let _t = lk(&st.transitions);
+        if let Some(mut prev) = all_requests(server)
+            .into_iter()
+            .find(|r| r.state.open() && r.coalesce_key.as_deref() == Some(key.as_str()))
+        {
+            if prev.created_by != ctx.client_id && !prev.consumers.contains(&ctx.client_id) {
+                prev.consumers.push(ctx.client_id.clone());
+                save(server, &prev, None)?;
+            }
+            let awaiting = prev.state == ReqState::AwaitingConfirmation;
+            return Ok(json!({
+                "request": view(&prev, false),
+                "coalesced": true,
+                "requires_confirmation": awaiting,
+                "confirm_with": awaiting.then(|| json!({"method": "assistant.confirm", "params": {"request": prev.id, "preview_digest": prev.preview_digest}})),
+            }));
+        }
+    }
     // Unconfirmed previews hold assembled content in memory: bounded.
     {
         let cap = (cfg.max_queued_requests + cfg.max_concurrent_requests).max(1);
@@ -1472,16 +1777,25 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             ));
         }
     }
-    let (inputs, targets, scope) = gather(server, ctx, op, &target).await?;
+    let (mut inputs, targets, scope, kinds) = gather(server, ctx, op, &target).await?;
+    if let Some(r) = &remote {
+        inputs.extend(r.inputs.iter().cloned());
+    }
     let system = op.system();
-    let instructions = op.instructions(&targets);
+    let mut instructions = op.instructions(&targets);
+    if let Some(r) = &remote {
+        instructions.push_str(&format!(
+            "Coverage notes (state your coverage; never describe missing history as complete):\n- {}\n",
+            r.notes.join("\n- ")
+        ));
+    }
     let redactor = vk_redact::Redactor::new(&patterns).map_err(|_| {
         ae(
             Category::NotConfigured,
             "[security.redact] patterns: a pattern is not a valid regular expression",
         )
     })?;
-    let pkg = Package::build(
+    let mut pkg = Package::build(
         inputs,
         Limits {
             max_input_bytes: resolved.profile.max_input_bytes,
@@ -1491,6 +1805,10 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         &redactor,
     )
     .map_err(rpc)?;
+    if let Some(r) = &remote {
+        pkg.omitted.extend(r.notes.iter().cloned());
+        data::store_cursors(server, &r.cursors);
+    }
     let payload = Payload {
         adapter: resolved.connection.adapter.as_str().into(),
         model: resolved.profile.model.clone(),
@@ -1504,6 +1822,33 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let auto = cfg.auto_send_allows(op.as_str())
         && grant.auto_send.iter().any(|o| o == op.as_str())
         && other_paths.is_empty();
+    // Result-cache key: requester scope, grants in force, source digests, versions, profile.
+    let cache_key = cfg.result_cache.then(|| {
+        let all: Vec<String> = std::iter::once(ws_path.clone())
+            .chain(other_paths.iter().cloned())
+            .collect();
+        let stamp = vk_assist::cache::grants_stamp(&grants, &all, &resolved.connection_id);
+        let digests: Vec<String> = pkg.sources.iter().map(|x| x.digest.clone()).collect();
+        let profile = format!(
+            "{}|{}|{}|{}|{}|{}",
+            resolved.connection_id,
+            resolved.fingerprint,
+            resolved.profile.model,
+            resolved.profile.max_input_tokens,
+            resolved.profile.max_input_bytes,
+            resolved.profile.max_output_tokens
+        );
+        let schema_v = blake3::hash(op.schema().as_bytes()).to_hex()[..8].to_string();
+        vk_assist::cache::key(&vk_assist::cache::KeyParts {
+            access_scope: "full",
+            grants_stamp: &stamp,
+            source_digests: &digests,
+            feature: op.as_str(),
+            prompt_version: ops::PROMPT_VERSION,
+            schema_version: &schema_v,
+            profile: &profile,
+        })
+    });
     let t = now();
     let rec = AssistRequest {
         id: format!("as_{}", crate::core::ulid().to_lowercase()),
@@ -1513,7 +1858,7 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         workspace: target.ws.id.clone(),
         workspace_path: ws_path.clone(),
         other_workspace_paths: other_paths.clone(),
-        inputs: scope,
+        inputs: scope.clone(),
         profile: resolved.profile_id.clone(),
         connection: resolved.connection_id.clone(),
         adapter: resolved.connection.adapter.as_str().into(),
@@ -1545,6 +1890,21 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         queued_at_ms: None,
         started_at_ms: None,
         finished_at_ms: None,
+        priority: if background {
+            "background"
+        } else {
+            "interactive"
+        }
+        .to_string(),
+        coalesce_key,
+        consumers: vec![],
+        cached: false,
+        cache_origin: None,
+        structured: None,
+        streamed: false,
+        repaired: false,
+        live: stale::capture(server, op, &scope),
+        coverage_notes: remote.as_ref().map(|r| r.notes.clone()).unwrap_or_default(),
     };
     let preview = json!({
         "digest": digest,
@@ -1562,7 +1922,31 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "omitted": pkg.omitted,
         "redactions": pkg.redactions,
         "notice": vk_assist::context::REDACTION_NOTICE,
+        "priority": rec.priority,
+        "coverage_notes": rec.coverage_notes,
     });
+    // A result cached under the same scope, grants, sources, versions and profile answers
+    // without a provider call (and without usage).
+    if let Some(key) = &cache_key
+        && let Some(entry) = data::cache_get(server, key)
+    {
+        let mut hit = rec.clone();
+        hit.state = ReqState::Done;
+        hit.cached = true;
+        hit.cache_origin = entry.data["origin"].as_str().map(str::to_string);
+        hit.output = Some(entry.data["output"].clone());
+        hit.finish_reason = Some("cache".into());
+        hit.finished_at_ms = Some(now());
+        save(server, &hit, Some("assistant.request_created"))?;
+        save(server, &hit, Some("assistant.request_finished"))?;
+        return Ok(json!({
+            "request": view(&hit, true),
+            "preview": preview,
+            "requires_confirmation": false,
+            "cached": true,
+            "note": "served from the result cache: nothing was sent to the provider",
+        }));
+    }
     let ttl = Duration::from_secs(cfg.preview_ttl_seconds.max(1));
     let workspaces: Vec<String> = std::iter::once(ws_path).chain(other_paths).collect();
     {
@@ -1580,6 +1964,10 @@ async fn generate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 op,
                 classes,
                 workspaces,
+                priority: prio,
+                target_kinds: kinds,
+                stream_requested,
+                cache_key,
             },
         );
         if let Err(e) = save(server, &rec, Some("assistant.request_created")) {
@@ -1730,27 +2118,76 @@ fn start_locked(
         return Err(e);
     }
     let deadline = Instant::now() + Duration::from_secs(cfg.request_timeout_seconds.max(1));
-    let sem = st
-        .sem
-        .get_or_init(|| Arc::new(Semaphore::new(cfg.max_concurrent_requests.max(1))))
-        .clone();
+    // The concurrency limit applies immediately, without a restart.
+    st.gate.set_capacity(cfg.max_concurrent_requests);
     let mut running = lk(&st.running);
     let srv = server.clone();
     let rid = id.clone();
-    let h = tokio::spawn(async move { run(srv, rid, prep, sem, deadline).await });
+    let h = tokio::spawn(async move { run(srv, rid, prep, deadline).await });
     running.insert(id, h.abort_handle());
     Ok(r)
 }
 
-async fn run(
-    server: Arc<Server>,
-    id: String,
-    prep: Prepared,
-    sem: Arc<Semaphore>,
-    deadline: Instant,
-) {
-    let permit = tokio::time::timeout_at(deadline.into(), sem.acquire_owned()).await;
-    let Ok(Ok(_permit)) = permit else {
+/// How long the in-flight watcher sleeps between checks of enabled state and consent.
+const WATCH: Duration = Duration::from_millis(750);
+
+/// Resolves when a running request must stop: assistance disabled or its consent revoked by
+/// any session (14 §10), the request no longer running, or the configuration unreadable.
+async fn watch(server: &Arc<Server>, id: &str, prep: &Prepared) -> AssistError {
+    loop {
+        tokio::time::sleep(WATCH).await;
+        let cfg = match load_config() {
+            Ok((c, _)) => c,
+            Err(_) => {
+                return AssistError::new(
+                    Category::NotConfigured,
+                    "the configuration can no longer be loaded",
+                );
+            }
+        };
+        let r = match find(server, id) {
+            Ok(r) => r,
+            Err(_) => {
+                return AssistError::new(Category::Cancelled, "the request no longer exists");
+            }
+        };
+        if r.state != ReqState::Running {
+            return AssistError::new(Category::Cancelled, "the request is no longer running");
+        }
+        if let Err(e) = dispatch_check(&cfg, &r, prep) {
+            return e;
+        }
+    }
+}
+
+/// Observations of how a request went, stored with it.
+#[derive(Default, Clone, Copy)]
+struct Info {
+    streamed: bool,
+    native: bool,
+    repaired: bool,
+}
+
+/// Transient `assistant.delta` notification (14 §9): carries the request id and a sequence,
+/// is not outbox history, never survives a restart, and goes only to full-scope subscribers.
+fn emit_delta(server: &Server, id: &str, seq: u64, text: &str) {
+    let ev = vk_store::Event {
+        seq: 0,
+        ts: now(),
+        v: 1,
+        tier: "transient".into(),
+        kind: "assistant.delta".into(),
+        subject: json!({"assistant_request": id}),
+        actor: json!({"kind": "system"}),
+        data: json!({"request": id, "seq": seq, "text": vk_assist::sanitize(text)}),
+    };
+    let _ = server.events.send(Arc::new(ev));
+}
+
+async fn run(server: Arc<Server>, id: String, prep: Prepared, deadline: Instant) {
+    let st = state(&server);
+    let permit = tokio::time::timeout_at(deadline.into(), st.gate.acquire(prep.priority)).await;
+    let Ok(_permit) = permit else {
         finish(
             &server,
             &id,
@@ -1762,10 +2199,10 @@ async fn run(
             0,
             None,
             &prep,
+            Info::default(),
         );
         return;
     };
-    let st = state(&server);
     {
         let _t = lk(&st.transitions);
         let Ok(mut r) = find(&server, &id) else {
@@ -1796,36 +2233,114 @@ async fn run(
         let _ = save(&server, &r, Some("assistant.request_started"));
         mark_dispatched(&server, &id);
     }
-    // Keychain references use the backend `[security] keychain` selects (09 §9.1).
+    // The effective keychain backend: `[security] keychain` unless `[assistant]
+    // keychain_backend` overrides it (filled in by `load_config`, 09 §9.1).
     let key = match vk_assist::config::resolve_credential_with(
         &prep.resolved.connection,
-        &crate::privacy::keychain(&server),
+        &prep.resolved.keychain_backend,
     ) {
         Ok(k) => k,
         Err(e) => {
-            finish(&server, &id, Err(e), Usage::default(), 0, None, &prep);
+            finish(
+                &server,
+                &id,
+                Err(e),
+                Usage::default(),
+                0,
+                None,
+                &prep,
+                Info::default(),
+            );
             return;
         }
     };
-    let out = vk_assist::provider::generate_gated(
-        &prep.resolved,
-        key.as_deref(),
-        &prep.payload,
+    // Native structured output and streaming are used only for capabilities recorded
+    // `supported` (or streaming asked for explicitly): the portable path is JSON text
+    // validated locally in one non-streamed response.
+    let caps = data::capabilities(&server, &prep.resolved);
+    let stream = prep.stream_requested || caps.usable(Feature::Streaming);
+    let native = caps
+        .usable(Feature::JsonSchema)
+        .then(|| prep.op.json_schema());
+    let job = pipeline::Job {
+        resolved: &prep.resolved,
+        key: key.as_deref(),
+        payload: &prep.payload,
         deadline,
-        |n| {
-            if n == 1 {
+        op: prep.op,
+        sources: &prep.source_ids,
+        targets: &prep.targets,
+        mode: Mode {
+            native_schema: native.clone(),
+            stream,
+            no_retry: false,
+        },
+        repair: true,
+    };
+    let mut seq = 0u64;
+    let mut sink = |t: &str| {
+        seq += 1;
+        emit_delta(&server, &id, seq, t);
+    };
+    let sink_ref: Option<&mut (dyn FnMut(&str) + Send)> =
+        if stream { Some(&mut sink) } else { None };
+    let pipe = pipeline::run(
+        job,
+        |a| {
+            if a.n == 1 {
                 // Admitted and checked above.
                 Ok(())
             } else {
-                retry_gate(&server, &id, &prep)
+                retry_gate(&server, &id, &prep, a.repair)
             }
         },
-    )
-    .await;
+        sink_ref,
+    );
+    let out = tokio::select! {
+        out = pipe => out,
+        stop = watch(&server, &id, &prep) => {
+            // Disabled or revoked while in flight: abort the request (the connection drops
+            // with the future) and charge its whole reservation, it may have been billed.
+            drop(key);
+            if let Ok(r) = find(&server, &id) {
+                let _ = cancel_one(&server, r, stop.category, &stop.message);
+            }
+            return;
+        }
+    };
     drop(key);
-    let result = out
-        .result
-        .and_then(|text| ops::validate(prep.op, &text, &prep.source_ids, &prep.targets));
+    // What was observed about this connection and model (14 §5.2).
+    if out.streamed {
+        data::observe(
+            &server,
+            &prep.resolved,
+            Feature::Streaming,
+            Support::Supported,
+            "a stream finished",
+        );
+    }
+    if out.native_ok {
+        data::observe(
+            &server,
+            &prep.resolved,
+            Feature::JsonSchema,
+            Support::Supported,
+            "a native-schema reply validated",
+        );
+    }
+    if out.native_rejected {
+        data::observe(
+            &server,
+            &prep.resolved,
+            Feature::JsonSchema,
+            Support::Unsupported,
+            "the provider rejected native structured output",
+        );
+    }
+    let result = out.result.map(|mut v| {
+        ops::annotate_targets(prep.op, &mut v, &prep.target_kinds);
+        v
+    });
     finish(
         &server,
         &id,
@@ -1834,12 +2349,23 @@ async fn run(
         out.attempts,
         out.finish_reason,
         &prep,
+        Info {
+            streamed: out.streamed,
+            native: native.is_some(),
+            repaired: out.repaired,
+        },
     );
 }
 
-/// An automatic retry is a new provider attempt: it passes the same dispatch checks and is
-/// admitted (reserved, rate-counted) like the first one.
-fn retry_gate(server: &Arc<Server>, id: &str, prep: &Prepared) -> Result<(), AssistError> {
+/// An automatic retry or the repair attempt is a new provider attempt: it passes the same
+/// dispatch checks and is admitted (reserved, rate-counted) like the first one. The repair
+/// resends the request plus the rejected reply, so it reserves for that larger input.
+fn retry_gate(
+    server: &Arc<Server>,
+    id: &str,
+    prep: &Prepared,
+    repair: bool,
+) -> Result<(), AssistError> {
     let st = state(server);
     let _t = lk(&st.transitions);
     let r = find(server, id)
@@ -1857,16 +2383,15 @@ fn retry_gate(server: &Arc<Server>, id: &str, prep: &Prepared) -> Result<(), Ass
         )
     })?;
     dispatch_check(&cfg, &r, prep)?;
-    admit_attempt(
-        server,
-        &cfg,
-        id,
-        &prep.resolved,
-        r.estimated_input_tokens,
-        r.max_output_tokens,
-    )
+    let input = if repair {
+        r.estimated_input_tokens + r.max_output_tokens
+    } else {
+        r.estimated_input_tokens
+    };
+    admit_attempt(server, &cfg, id, &prep.resolved, input, r.max_output_tokens)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish(
     server: &Arc<Server>,
     id: &str,
@@ -1875,9 +2400,88 @@ fn finish(
     attempts: u32,
     finish_reason: Option<String>,
     prep: &Prepared,
+    info: Info,
 ) {
     let st = state(server);
-    let _t = lk(&st.transitions);
+    let done = {
+        let _t = lk(&st.transitions);
+        finish_locked(
+            server,
+            id,
+            result,
+            usage,
+            attempts,
+            finish_reason,
+            prep,
+            info,
+        )
+    };
+    if let Some(r) = done {
+        after_done(server, &r, prep);
+    }
+}
+
+/// Everything that follows a successful result and must not run under the transitions lock:
+/// the result cache and passive notices.
+fn after_done(server: &Arc<Server>, r: &AssistRequest, prep: &Prepared) {
+    let Some(out) = &r.output else {
+        return;
+    };
+    if let Some(key) = &prep.cache_key {
+        let ttl = load_config()
+            .map(|(c, _)| c.result_retention_hours)
+            .unwrap_or(24) as i64
+            * 3_600_000;
+        data::cache_put(
+            server,
+            vk_assist::cache::Entry {
+                key: key.clone(),
+                operation: r.operation.clone(),
+                workspaces: prep.workspaces.clone(),
+                created_ms: now(),
+                expires_ms: now() + ttl,
+                data: json!({"output": out, "origin": r.id}),
+            },
+        );
+    }
+    // A possible-stall notice is passive: a notification (never focus, never over a pane).
+    if prep.op == Operation::StallNotice && out["stalled"] == true && r.priority == "background" {
+        let pane = r.inputs["pane"].as_str().map(str::to_string).or_else(|| {
+            r.inputs["run"]
+                .as_str()
+                .and_then(|run| server.with_core(|c| c.run(run).map(|x| x.pane.clone())))
+        });
+        let summary = out["summary"].as_str().unwrap_or("");
+        server.notify(
+            "assistant",
+            pane.as_deref(),
+            "Possible stall (generated)",
+            &format!("{summary} — generated interpretation; inspect the run before acting"),
+            "normal",
+        );
+        let mut c = lk(&server.core);
+        let mut tx = Tx::new();
+        tx.event(
+            "assistant.stall_notice",
+            json!({"assistant_request": r.id, "run": r.inputs["run"]}),
+            json!({"request": r.id}),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_locked(
+    server: &Arc<Server>,
+    id: &str,
+    result: Result<Value, AssistError>,
+    usage: Usage,
+    attempts: u32,
+    finish_reason: Option<String>,
+    prep: &Prepared,
+    info: Info,
+) -> Option<AssistRequest> {
+    let st = state(server);
     lk(&st.running).remove(id);
     let charge = Charge::Settle {
         attempts,
@@ -1887,11 +2491,11 @@ fn finish(
     let Ok(mut r) = find(server, id) else {
         // Purged meanwhile: the attempts still count.
         release(server, id, charge);
-        return;
+        return None;
     };
     if !r.state.open() {
         // Cancelled meanwhile: the cancellation already charged the reservation.
-        return;
+        return None;
     }
     let cost = match (usage.input_tokens, usage.output_tokens) {
         (Some(i), Some(o)) => prep.resolved.cost(i, o),
@@ -1903,24 +2507,63 @@ fn finish(
     r.estimated_cost_usd = cost;
     r.finish_reason = finish_reason;
     r.finished_at_ms = Some(now());
-    match result {
+    r.streamed = info.streamed;
+    r.repaired = info.repaired;
+    r.structured =
+        (attempts > 0).then(|| if info.native { "native" } else { "json_text" }.to_string());
+    let done = match result {
         Ok(v) => {
             r.state = ReqState::Done;
             r.output = Some(v);
+            true
         }
         Err(e) => {
             r.state = ReqState::Failed;
             r.error = Some(e);
+            false
         }
-    }
+    };
     let _ = save(server, &r, Some("assistant.request_finished"));
+    done.then_some(r)
 }
 
 // ---- get / list / cancel / purge ----------------------------------------------------------------
 
+/// Does every workspace the request drew from still have a current grant for its connection?
+/// A stored result is re-authorized whenever it is read (14 §7.1): revoked or invalidated
+/// consent withholds the output.
+fn access_ok(r: &AssistRequest) -> bool {
+    let grants = vk_assist::consent::load(&consent_path());
+    let fingerprint = load_config()
+        .ok()
+        .and_then(|(c, _)| c.resolve(Some(&r.profile)).ok())
+        .map(|x| x.fingerprint);
+    r.workspace_paths().all(|w| {
+        grants.iter().any(|g| {
+            g.workspace == *w
+                && g.connection == r.connection
+                && fingerprint.as_ref().is_none_or(|f| *f == g.fingerprint)
+        })
+    })
+}
+
 fn get(server: &Server, p: &Value) -> R {
     let r = find(server, req(p, "request")?)?;
-    Ok(json!({"request": view(&r, true)}))
+    let mut v = view(&r, true);
+    if r.state == ReqState::Done && r.output.is_some() && !access_ok(&r) {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("output");
+            o.insert("output_withheld".into(), json!(true));
+            o.insert("access".into(), json!("revoked"));
+            o.insert(
+                "access_note".into(),
+                json!("consent for this workspace was revoked or invalidated after the result was generated; grant it again to read it"),
+            );
+        }
+    } else {
+        stale::decorate(server, &r, &mut v);
+    }
+    Ok(json!({"request": v}))
 }
 
 fn list(server: &Server, p: &Value) -> R {
@@ -1993,10 +2636,22 @@ fn cancel_locked(
     Ok(r)
 }
 
-fn cancel(server: &Server, p: &Value) -> R {
+fn cancel(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let r = find(server, req(p, "request")?)?;
     if !r.state.open() {
         return Err(already_finished(&r));
+    }
+    // A client attached to a coalesced request can only detach itself: it cannot cancel
+    // another client's request (14 §8).
+    if r.coalesce_key.is_some() && r.created_by != ctx.client_id {
+        let st = state(server);
+        let _t = lk(&st.transitions);
+        let mut fresh = find(server, &r.id)?;
+        fresh.consumers.retain(|c| *c != ctx.client_id);
+        save(server, &fresh, None)?;
+        return Ok(
+            json!({"request": view(&fresh, false), "detached": true, "note": "this request belongs to another client; you were detached, it keeps running"}),
+        );
     }
     let r = cancel_one(server, r, Category::Cancelled, "cancelled by the user")?;
     Ok(json!({"request": view(&r, false)}))
@@ -2021,6 +2676,18 @@ fn purge(server: &Server, p: &Value) -> R {
     for r in &victims {
         if r.state.open() {
             let _ = cancel_one(server, r.clone(), Category::Cancelled, "purged");
+        }
+    }
+    // Derived cached results go with the records (14 §8).
+    if all {
+        data::cache_purge(server, data::CacheScope::All);
+    }
+    for r in &victims {
+        data::cache_purge(server, data::CacheScope::Origin(&r.id));
+        for w in r.workspace_paths() {
+            if all || ws.is_some() {
+                data::cache_purge(server, data::CacheScope::Workspace(w));
+            }
         }
     }
     let mut c = lk(&server.core);

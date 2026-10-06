@@ -6,7 +6,7 @@
 //! default_profile = "interactive"
 //!
 //! [assistant.connections.primary]
-//! adapter = "anthropic"                     # anthropic | openai_compatible | ollama
+//! adapter = "anthropic"                     # anthropic | openai_compatible | ollama | gemini
 //! credential = { env = "VIBEKE_ASSISTANT_API_KEY" }   # or { file = "~/.config/vibeke/assistant.key" }
 //!
 //! [assistant.profiles.interactive]
@@ -23,6 +23,14 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-4-5-20251001";
 pub const ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com";
 pub const OPENAI_ENDPOINT: &str = "https://api.openai.com";
 pub const OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434";
+pub const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com";
+/// OpenRouter speaks the OpenAI-compatible protocol: `adapter = "openai_compatible"` with this
+/// endpoint (the adapter appends `/v1/chat/completions`).
+pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api";
+
+/// Profile names with feature-specific meaning (14 §5.3).
+pub const BACKGROUND_PROFILE: &str = "background";
+pub const REVIEW_PROFILE: &str = "review";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -47,6 +55,30 @@ pub struct AssistConfig {
     /// Operations that skip the per-request preview confirmation. Workspace consent must also
     /// list the operation in its own `auto_send`.
     pub auto_send: Vec<String>,
+    /// Background features (14 §10, A3) need this separate opt-in; off by default. While off,
+    /// nothing is generated without an explicit request, whatever the other settings say.
+    pub background_enabled: bool,
+    /// Coalesced background summaries (A3): a second opt-in on top of `background_enabled`.
+    pub background_summaries: bool,
+    /// Possible-stall notices (A3): a second opt-in on top of `background_enabled`.
+    pub stall_notices: bool,
+    /// Seconds between background sweeps while `background_enabled`.
+    pub background_interval_seconds: u64,
+    /// Identical failing commands in a row before a stall is considered.
+    pub stall_repeat_threshold: u32,
+    /// Cache completed results under scope-bound keys (14 §8). Off by default: with it off
+    /// every request reaches the provider.
+    pub result_cache: bool,
+    /// Deprecated override of `[security] keychain` for assistant credentials: empty (default:
+    /// inherit `[security] keychain`), `os`, `file:<path>`, `off` (keychain references are
+    /// reported unsupported) or `fake` (tests; the JSON file named by
+    /// `VIBEKE_ASSISTANT_FAKE_KEYCHAIN`).
+    pub keychain_backend: String,
+    /// Accept source data a client collected from other machines (`remote_sources` on
+    /// `assistant.generate`). Off by default.
+    pub remote_sources: bool,
+    /// A remote source observed longer ago than this is marked stale.
+    pub remote_stale_seconds: u64,
     pub connections: BTreeMap<String, Connection>,
     pub profiles: BTreeMap<String, Profile>,
 }
@@ -66,6 +98,15 @@ impl Default for AssistConfig {
             result_retention_hours: 24,
             preview_ttl_seconds: 600,
             auto_send: vec![],
+            background_enabled: false,
+            background_summaries: false,
+            stall_notices: false,
+            background_interval_seconds: 300,
+            stall_repeat_threshold: 3,
+            result_cache: false,
+            keychain_backend: String::new(),
+            remote_sources: false,
+            remote_stale_seconds: 300,
             connections: BTreeMap::new(),
             profiles: BTreeMap::new(),
         }
@@ -79,6 +120,9 @@ pub enum Adapter {
     #[serde(alias = "openai")]
     OpenaiCompatible,
     Ollama,
+    /// Google's Gemini `generateContent` API (native; 14 §5.1).
+    #[serde(alias = "google")]
+    Gemini,
 }
 
 impl Adapter {
@@ -87,6 +131,7 @@ impl Adapter {
             Adapter::Anthropic => "anthropic",
             Adapter::OpenaiCompatible => "openai_compatible",
             Adapter::Ollama => "ollama",
+            Adapter::Gemini => "gemini",
         }
     }
     pub fn default_endpoint(self) -> &'static str {
@@ -94,6 +139,7 @@ impl Adapter {
             Adapter::Anthropic => ANTHROPIC_ENDPOINT,
             Adapter::OpenaiCompatible => OPENAI_ENDPOINT,
             Adapter::Ollama => OLLAMA_ENDPOINT,
+            Adapter::Gemini => GEMINI_ENDPOINT,
         }
     }
     pub fn needs_credential(self) -> bool {
@@ -119,8 +165,9 @@ pub struct Credential {
     pub env: Option<String>,
     /// A key file the user created for Vibeke (0600, owned by the user).
     pub file: Option<String>,
-    /// OS keychain item: `account` (service `vibeke`) or `service/account`, read through the
-    /// backend `[security] keychain` selects (09 §9.1).
+    /// OS keychain item (a keychain service name such as `vibeke/assistant/primary`), read through
+    /// the backend `[security] keychain` selects (09 §9.1); `[assistant] keychain_backend`
+    /// overrides it (deprecated).
     pub keychain: Option<String>,
 }
 
@@ -135,6 +182,10 @@ pub struct Profile {
     /// Price overrides (USD per million tokens) for models without built-in pricing.
     pub input_usd_per_mtok: Option<f64>,
     pub output_usd_per_mtok: Option<f64>,
+    /// Declared capabilities (`streaming`, `json_schema`, `tools`, `images`, `text`) as
+    /// `supported | unsupported | unknown`. Native structured output and streaming are used
+    /// only when declared or observed `supported` (14 §5.2).
+    pub capabilities: BTreeMap<String, crate::capability::Support>,
 }
 
 impl Default for Profile {
@@ -147,6 +198,7 @@ impl Default for Profile {
             max_output_tokens: 1024,
             input_usd_per_mtok: None,
             output_usd_per_mtok: None,
+            capabilities: BTreeMap::new(),
         }
     }
 }
@@ -161,6 +213,8 @@ pub struct Resolved {
     pub endpoint: String,
     /// Digest of adapter + endpoint: consent grants are bound to it (14 §6).
     pub fingerprint: String,
+    /// `[assistant] keychain_backend` at resolution time.
+    pub keychain_backend: String,
 }
 
 impl Resolved {
@@ -284,8 +338,85 @@ impl AssistConfig {
             connection: c.clone(),
             fingerprint: fingerprint(c.adapter, &endpoint),
             endpoint,
+            keychain_backend: self.keychain_backend.clone(),
         })
     }
+
+    /// Resolve the profile for a purpose (14 §5.3). An explicit profile always wins. The
+    /// `background` and `review` profiles are used when they exist (and fail visibly when
+    /// misconfigured: no fallback). Without one, the default profile serves the purpose
+    /// **only if it meets the purpose's requirements**.
+    pub fn resolve_for(&self, purpose: Purpose, explicit: Option<&str>) -> Result<Resolved> {
+        if explicit.is_some() {
+            return self.resolve(explicit);
+        }
+        let (name, min_in, min_out) = match purpose {
+            Purpose::Interactive => return self.resolve(None),
+            Purpose::Background => {
+                if !self.background_enabled {
+                    return Err(AssistError::new(
+                        Category::Disabled,
+                        "background assistance is off; set [assistant] background_enabled = true to opt in",
+                    ));
+                }
+                (BACKGROUND_PROFILE, 2_000, 256)
+            }
+            Purpose::Review => (REVIEW_PROFILE, 8_000, 1_024),
+        };
+        if self.profiles.contains_key(name) {
+            return self.resolve(Some(name));
+        }
+        let r = self.resolve(None)?;
+        if r.profile.max_input_tokens < min_in || r.profile.max_output_tokens < min_out {
+            return Err(nc(format!(
+                "the default profile does not meet the {name} feature's requirements (at least {min_in} input and {min_out} output tokens); add [assistant.profiles.{name}]"
+            )));
+        }
+        Ok(r)
+    }
+
+    /// Resolve a connection by ID for operations that need no model (the model picker): through
+    /// a profile on it when one exists, otherwise with an empty model. The endpoint rules apply
+    /// either way.
+    pub fn resolve_connection(&self, id: &str) -> Result<Resolved> {
+        let c = self
+            .connections
+            .get(id)
+            .ok_or_else(|| nc(format!("no connection `{id}` in [assistant.connections]")))?;
+        if let Some((pid, _)) = self.profiles.iter().find(|(_, p)| p.connection == id) {
+            return self.resolve(Some(pid));
+        }
+        let endpoint = validate_endpoint(
+            c.endpoint
+                .as_deref()
+                .unwrap_or_else(|| c.adapter.default_endpoint()),
+        )?;
+        Ok(Resolved {
+            profile_id: String::new(),
+            profile: Profile {
+                connection: id.to_string(),
+                ..Profile::default()
+            },
+            connection_id: id.to_string(),
+            connection: c.clone(),
+            fingerprint: fingerprint(c.adapter, &endpoint),
+            endpoint,
+            keychain_backend: self.keychain_backend.clone(),
+        })
+    }
+
+    /// Are the optional background features opted into (both switches)?
+    pub fn background_active(&self) -> bool {
+        self.enabled && self.background_enabled
+    }
+}
+
+/// What a request is for, when choosing its profile (14 §5.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    Interactive,
+    Background,
+    Review,
 }
 
 /// HTTPS is required except for explicitly configured loopback endpoints (14 §10).
@@ -372,40 +503,14 @@ fn forbidden(path: &Path) -> bool {
     })
 }
 
-/// Resolve the API key for a connection with the OS keychain backend. `Ok(None)` only for
+/// Resolve the API key for a connection with the OS keychain backend (no override). `Ok(None)` only for
 /// adapters without credentials (local Ollama) and no credential configured.
 pub fn resolve_credential(c: &Connection) -> Result<Option<String>> {
-    resolve_credential_with(c, &vk_store::keychain::Keychain::Os)
+    resolve_credential_with(c, "")
 }
 
-/// Read a keychain credential reference. Messages never include the reference or the value.
-fn keychain_credential(r: &str, keychain: &vk_store::keychain::Keychain) -> Result<String> {
-    use vk_store::keychain::{KeychainError, parse_ref};
-    let (service, account) = parse_ref(r).map_err(|_| {
-        nc("keychain credential: use `account` or `service/account` (letters, digits, -_.:@)")
-    })?;
-    match keychain.get(&service, &account) {
-        Ok(Some(v)) if !v.trim().is_empty() => Ok(v.trim().to_string()),
-        Ok(_) => Err(AssistError::new(
-            Category::AuthenticationFailed,
-            "the configured keychain item does not exist or is empty",
-        )),
-        Err(KeychainError::Unsupported(_)) => Err(AssistError::new(
-            Category::UnsupportedCapability,
-            "no OS keychain is available on this machine; use env or file, or [security] keychain = \"file:<path>\"",
-        )),
-        Err(_) => Err(AssistError::new(
-            Category::AuthenticationFailed,
-            "the keychain refused to return the credential (locked or access denied)",
-        )),
-    }
-}
-
-/// [`resolve_credential`] with an explicit keychain backend (`[security] keychain`).
-pub fn resolve_credential_with(
-    c: &Connection,
-    keychain: &vk_store::keychain::Keychain,
-) -> Result<Option<String>> {
+/// Like [`resolve_credential`], with the configured `keychain_backend`.
+pub fn resolve_credential_with(c: &Connection, keychain_backend: &str) -> Result<Option<String>> {
     let Some(cred) = &c.credential else {
         if c.adapter.needs_credential() {
             return Err(nc(format!(
@@ -439,8 +544,8 @@ pub fn resolve_credential_with(
         }
         return Ok(Some(v.to_string()));
     }
-    if let Some(r) = &cred.keychain {
-        return keychain_credential(r, keychain).map(Some);
+    if let Some(item) = &cred.keychain {
+        return crate::keychain::lookup(keychain_backend, item).map(Some);
     }
     let path = expand(cred.file.as_deref().unwrap_or_default());
     if forbidden(&path) {
@@ -677,7 +782,9 @@ mod tests {
     fn keychain_credentials_resolve_through_the_configured_backend() {
         use vk_store::keychain::Keychain;
         let d = tempfile::tempdir().unwrap();
-        let kc = Keychain::File(d.path().join("kc.json"));
+        let path = d.path().join("kc.json");
+        let kc = Keychain::File(path.clone());
+        let backend = kc.setting();
         let c = |r: &str| Connection {
             adapter: Adapter::Anthropic,
             endpoint: None,
@@ -687,26 +794,23 @@ mod tests {
             }),
         };
         // Missing item: an authentication failure that names neither the item nor a value.
-        let e = resolve_credential_with(&c("anthropic-SENTINEL"), &kc).unwrap_err();
+        let e = resolve_credential_with(&c("anthropic-SENTINEL"), &backend).unwrap_err();
         assert_eq!(e.category, Category::AuthenticationFailed);
         assert!(!e.message.contains("SENTINEL"));
-        kc.set("vibeke", "anthropic", "sk-ant-test-123").unwrap();
+        kc.set_item("vibeke/assistant/primary", "sk-ant-test-123")
+            .unwrap();
         assert_eq!(
-            resolve_credential_with(&c("anthropic"), &kc)
+            resolve_credential_with(&c("vibeke/assistant/primary"), &backend)
                 .unwrap()
                 .as_deref(),
             Some("sk-ant-test-123")
         );
-        kc.set("team", "key", "k2").unwrap();
-        assert_eq!(
-            resolve_credential_with(&c("team/key"), &kc)
-                .unwrap()
-                .as_deref(),
-            Some("k2")
-        );
-        let e = resolve_credential_with(&c("bad name"), &kc).unwrap_err();
+        let e = resolve_credential_with(&c("bad name"), &backend).unwrap_err();
         assert_eq!(e.category, Category::NotConfigured);
-        assert_eq!(credential_source(&c("team/key")), "keychain:team/key");
+        assert_eq!(
+            credential_source(&c("vibeke/assistant/primary")),
+            "keychain:vibeke/assistant/primary"
+        );
     }
 
     #[test]
@@ -733,6 +837,178 @@ mod tests {
         assert_eq!(
             resolve_credential(&codex).unwrap_err().category,
             Category::PermissionDenied
+        );
+    }
+
+    fn two_profiles(extra: serde_json::Value) -> AssistConfig {
+        let mut v = json!({
+            "enabled": true,
+            "connections": {
+                "cloud": {"adapter": "anthropic", "credential": {"env": "X"}},
+                "local": {"adapter": "ollama", "endpoint": "http://127.0.0.1:11434"},
+            },
+            "profiles": {
+                "interactive": {"connection": "cloud", "model": "claude-haiku-4-5-20251001"},
+            },
+        });
+        for (k, val) in extra.as_object().unwrap() {
+            v[k] = val.clone();
+        }
+        AssistConfig::from_json(v).unwrap()
+    }
+
+    #[test]
+    fn feature_profiles_fall_back_only_when_the_default_meets_the_requirements() {
+        let c = two_profiles(json!({"background_enabled": true}));
+        // The default (12000 in / 1024 out) meets background and review requirements.
+        assert_eq!(
+            c.resolve_for(Purpose::Background, None).unwrap().profile_id,
+            "interactive"
+        );
+        assert_eq!(
+            c.resolve_for(Purpose::Review, None).unwrap().profile_id,
+            "interactive"
+        );
+        // A small default does not.
+        let mut small = c.clone();
+        small
+            .profiles
+            .get_mut("interactive")
+            .unwrap()
+            .max_input_tokens = 1000;
+        let e = small.resolve_for(Purpose::Background, None).unwrap_err();
+        assert_eq!(e.category, Category::NotConfigured);
+        assert!(e.message.contains("requirements"), "{}", e.message);
+        let mut short = c.clone();
+        short
+            .profiles
+            .get_mut("interactive")
+            .unwrap()
+            .max_output_tokens = 100;
+        assert!(short.resolve_for(Purpose::Review, None).is_err());
+        // Interactive never needs more than a resolvable default.
+        assert!(small.resolve_for(Purpose::Interactive, None).is_ok());
+    }
+
+    #[test]
+    fn feature_profiles_are_used_when_present_and_fail_visibly_when_broken() {
+        let mut c = two_profiles(json!({"background_enabled": true}));
+        c.profiles.insert(
+            "background".into(),
+            Profile {
+                connection: "local".into(),
+                model: "llama3".into(),
+                ..Profile::default()
+            },
+        );
+        let r = c.resolve_for(Purpose::Background, None).unwrap();
+        assert_eq!(r.profile_id, "background");
+        assert_eq!(r.connection_id, "local");
+        // The review purpose has no profile of its own: the default serves it.
+        assert_eq!(
+            c.resolve_for(Purpose::Review, None).unwrap().profile_id,
+            "interactive"
+        );
+        // An explicit profile always wins.
+        assert_eq!(
+            c.resolve_for(Purpose::Background, Some("interactive"))
+                .unwrap()
+                .profile_id,
+            "interactive"
+        );
+        // A broken feature profile never falls back to the default.
+        c.profiles.get_mut("background").unwrap().connection = "ghost".into();
+        let e = c.resolve_for(Purpose::Background, None).unwrap_err();
+        assert!(e.message.contains("unknown connection"), "{}", e.message);
+    }
+
+    #[test]
+    fn background_purpose_needs_the_opt_in() {
+        let c = two_profiles(json!({}));
+        let e = c.resolve_for(Purpose::Background, None).unwrap_err();
+        assert_eq!(e.category, Category::Disabled);
+        assert!(!c.background_active());
+        let on = two_profiles(json!({"background_enabled": true}));
+        assert!(on.background_active());
+        let mut off = on.clone();
+        off.enabled = false;
+        assert!(!off.background_active());
+    }
+
+    #[test]
+    fn gemini_and_openrouter_connections() {
+        let c = AssistConfig::from_json(json!({
+            "connections": {
+                "g": {"adapter": "gemini", "credential": {"env": "X"}},
+                "g2": {"adapter": "google", "credential": {"env": "X"}},
+                "or": {"adapter": "openai_compatible", "endpoint": OPENROUTER_ENDPOINT, "credential": {"env": "X"}},
+            },
+            "profiles": {
+                "interactive": {"connection": "g", "model": "gemini-x"},
+                "alias": {"connection": "g2", "model": "gemini-x"},
+                "router": {"connection": "or", "model": "vendor/model"},
+            },
+        }))
+        .unwrap();
+        let g = c.resolve(None).unwrap();
+        assert_eq!(g.connection.adapter, Adapter::Gemini);
+        assert_eq!(g.endpoint, "https://generativelanguage.googleapis.com");
+        assert_eq!(
+            c.resolve(Some("alias")).unwrap().connection.adapter,
+            Adapter::Gemini
+        );
+        assert_eq!(
+            g.prices(),
+            None,
+            "no built-in pricing for non-Anthropic models"
+        );
+        let r = c.resolve(Some("router")).unwrap();
+        assert_eq!(r.endpoint, "https://openrouter.ai/api");
+        assert_eq!(Adapter::Gemini.as_str(), "gemini");
+    }
+
+    #[test]
+    fn connections_resolve_without_a_model_for_the_picker() {
+        let c = two_profiles(json!({}));
+        let r = c.resolve_connection("local").unwrap();
+        assert_eq!(r.connection_id, "local");
+        assert!(r.profile.model.is_empty());
+        // A connection with a profile resolves through it.
+        assert_eq!(
+            c.resolve_connection("cloud").unwrap().profile.model,
+            "claude-haiku-4-5-20251001"
+        );
+        assert!(c.resolve_connection("nope").is_err());
+        let mut bad = c.clone();
+        bad.connections.get_mut("local").unwrap().endpoint = Some("http://example.com".into());
+        assert!(
+            bad.resolve_connection("local").is_err(),
+            "endpoint rules apply to listing too"
+        );
+    }
+
+    #[test]
+    fn new_settings_default_to_off_and_unknown_values_are_rejected() {
+        let d = AssistConfig::default();
+        assert!(!d.background_enabled && !d.background_summaries && !d.stall_notices);
+        assert!(!d.result_cache && !d.remote_sources);
+        assert_eq!(d.keychain_backend, "");
+        assert_eq!(d.background_interval_seconds, 300);
+        assert_eq!(d.stall_repeat_threshold, 3);
+        assert!(AssistConfig::from_json(json!({"background_enabled": "yes"})).is_err());
+        let p: Profile = serde_json::from_value(
+            json!({"connection": "c", "model": "m", "capabilities": {"streaming": "supported"}}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.capabilities["streaming"],
+            crate::capability::Support::Supported
+        );
+        assert!(
+            serde_json::from_value::<Profile>(
+                json!({"connection": "c", "model": "m", "capabilities": {"streaming": "maybe"}})
+            )
+            .is_err()
         );
     }
 }

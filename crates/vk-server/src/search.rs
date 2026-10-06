@@ -605,6 +605,12 @@ pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
         }
         r
     };
+    // Derived assistant results and cached excerpts for this scope go too (14 §8).
+    let assistant_purged = if dry_run {
+        0
+    } else {
+        crate::assist::forget_scope(server, &scope)
+    };
     Ok(json!({
         "scope": scope,
         "pane_ids": pane_ids,
@@ -615,6 +621,9 @@ pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
         "bytes_deleted": report.bytes,
         "fts_rows_deleted": report.fts_rows,
         "archive_panes_dropped": report.panes_dropped,
+        "assistant_purged": assistant_purged,
+        // Spec 15 derived objects in the same scope (lane 2C).
+        "review": crate::review::purge::on_scrollback_forget(server, &scope, pane_ids.as_deref(), dry_run),
     }))
 }
 
