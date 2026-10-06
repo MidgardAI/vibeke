@@ -341,6 +341,41 @@ fn expected_sha256(artifact: &std::path::Path) -> Result<(String, SumSource)> {
 /// (a) the expected checksum must come from a file next to it, and match; and
 /// (b) `SHA256SUMS.minisig` must verify, or `allow_unsigned` must be set.
 pub fn trust_artifact(artifact: &std::path::Path, allow_unsigned: bool) -> Result<(String, Trust)> {
+    trust_artifact_signed(artifact, allow_unsigned).map(|(sha, trust, _)| (sha, trust))
+}
+
+/// Whether a verified trusted comment names `version`: `vibeke v<version>` (what
+/// `scripts/release-sign.sh` writes for `SHA256SUMS`, optionally followed by more words) or a
+/// `version:<version>` word (the manifest's form).
+pub fn comment_names_version(comment: &str, version: &str) -> bool {
+    let words: Vec<&str> = comment.split_whitespace().collect();
+    let tagged = format!("v{version}");
+    let keyed = format!("version:{version}");
+    (words.len() >= 2 && words[0] == "vibeke" && words[1] == tagged)
+        || words.iter().any(|w| *w == keyed)
+}
+
+/// A signed artifact must be signed *for* `version` (09 §10): an older release's valid
+/// `SHA256SUMS` signature can't be replayed under a newer version. Unsigned opt-in artifacts
+/// have no signed version to compare (their version is checked by the caller).
+pub fn require_signed_version(trust: Trust, comment: Option<&str>, version: &str) -> Result<()> {
+    if trust != Trust::Signed {
+        return Ok(());
+    }
+    let c = comment.unwrap_or_default();
+    if !comment_names_version(c, version) {
+        bail!(
+            "SHA256SUMS is signed for {c:?}, not vibeke v{version} (an older or different release served as {version}?); refusing"
+        );
+    }
+    Ok(())
+}
+
+/// [`trust_artifact`], also returning the verified trusted comment of a signed artifact.
+pub fn trust_artifact_signed(
+    artifact: &std::path::Path,
+    allow_unsigned: bool,
+) -> Result<(String, Trust, Option<String>)> {
     let (expected, source) = expected_sha256(artifact)?;
     let actual = sha256_file(artifact)?;
     if actual != expected {
@@ -352,9 +387,15 @@ pub fn trust_artifact(artifact: &std::path::Path, allow_unsigned: bool) -> Resul
     let dir = artifact.parent().unwrap_or(std::path::Path::new("."));
     let sig = dir.join("SHA256SUMS.minisig");
     let sig_err = if source == SumSource::Sums && sig.is_file() {
-        match verify_signature(&dir.join("SHA256SUMS"), &sig) {
-            Ok(()) => return Ok((actual, Trust::Signed)),
-            Err(e) => e.to_string(),
+        let verified = std::fs::read(dir.join("SHA256SUMS"))
+            .map_err(|e| e.to_string())
+            .and_then(|data| {
+                let text = std::fs::read_to_string(&sig).map_err(|e| e.to_string())?;
+                verify_signature_bytes(&trusted_keys(), &data, &text).map_err(|e| e.to_string())
+            });
+        match verified {
+            Ok(comment) => return Ok((actual, Trust::Signed, Some(comment))),
+            Err(e) => e,
         }
     } else if source == SumSource::Sums {
         format!(
@@ -368,7 +409,7 @@ pub fn trust_artifact(artifact: &std::path::Path, allow_unsigned: bool) -> Resul
         )
     };
     if allow_unsigned {
-        return Ok((actual, Trust::UnsignedOptIn));
+        return Ok((actual, Trust::UnsignedOptIn, None));
     }
     bail!(
         "{} is not signed ({sig_err}); refusing. Set VIBEKE_ALLOW_UNSIGNED=1 only for development builds you made yourself",
@@ -376,9 +417,11 @@ pub fn trust_artifact(artifact: &std::path::Path, allow_unsigned: bool) -> Resul
     )
 }
 
-/// Build an [`Artifact`] from a path after [`trust_artifact`].
+/// Build an [`Artifact`] from a path after [`trust_artifact`]; a signed one must be signed for
+/// `version` ([`require_signed_version`]).
 pub fn load_artifact(path: PathBuf, version: String, allow_unsigned: bool) -> Result<Artifact> {
-    let (sha256, trust) = trust_artifact(&path, allow_unsigned)?;
+    let (sha256, trust, comment) = trust_artifact_signed(&path, allow_unsigned)?;
+    require_signed_version(trust, comment.as_deref(), &version)?;
     Ok(Artifact {
         path,
         sha256,
@@ -417,8 +460,12 @@ pub async fn ensure(
     p: &Probe,
     artifact: Option<&Artifact>,
     upgrade_ok: bool,
+    allow_downgrade: bool,
 ) -> Result<Outcome> {
     let want = artifact.map(|a| a.version.clone());
+    if let Some(w) = &want {
+        downgrade_check(&t.label, p.version.as_deref(), w, allow_downgrade)?;
+    }
     match (&p.version, &want) {
         (Some(have), Some(w)) if have == w => return Ok(Outcome::AlreadyCurrent),
         (Some(_), None) => return Ok(Outcome::AlreadyCurrent),
@@ -454,10 +501,12 @@ pub async fn ensure_download(
     m: &ReleaseManifest,
     token: Option<&crate::download::Secret>,
     upgrade_ok: bool,
+    allow_downgrade: bool,
 ) -> Result<Outcome> {
     let entry = m
         .artifact(&p.target())
         .with_context(|| format!("the release manifest has no {} artifact", p.target()))?;
+    downgrade_check(&t.label, p.version.as_deref(), &m.version, allow_downgrade)?;
     match &p.version {
         Some(have) if *have == m.version => return Ok(Outcome::AlreadyCurrent),
         Some(have) if !upgrade_ok => bail!(
@@ -470,14 +519,14 @@ pub async fn ensure_download(
     if !valid_version(&m.version) || !valid_sha(&entry.sha256) {
         bail!("invalid version or sha256 in the release manifest");
     }
-    let (url, octet) =
-        crate::download::resolve_download(&entry.url, token, &crate::download::github_api_base())?;
+    let api_base = crate::download::github_api_base();
+    let (url, octet) = crate::download::resolve_download(&entry.url, token, &api_base)?;
     let dir = format!("~/.local/share/vibeke/versions/{}", m.version);
     let script = crate::download::remote_download_script(
         &sh_quote(&dir),
         &url,
         octet,
-        token.filter(|_| octet),
+        crate::download::token_for(&url, token.filter(|_| octet), &api_base),
         &entry.sha256,
     )?;
     let out = t
@@ -503,6 +552,49 @@ fn check_artifact(a: &Artifact) -> Result<()> {
         bail!("invalid artifact version {:?}", a.version);
     }
     verify(a)
+}
+
+/// `a` is an older version than `b` (numeric dotted parts; a pre-release sorts before its
+/// release; build metadata is ignored).
+pub fn version_older(a: &str, b: &str) -> bool {
+    fn split(v: &str) -> (Vec<u64>, Option<&str>) {
+        let v = v.split('+').next().unwrap_or(v);
+        let (core, pre) = match v.split_once('-') {
+            Some((c, p)) => (c, Some(p)),
+            None => (v, None),
+        };
+        (
+            core.split('.').map(|x| x.parse().unwrap_or(0)).collect(),
+            pre,
+        )
+    }
+    let ((mut x, xp), (mut y, yp)) = (split(a), split(b));
+    let n = x.len().max(y.len());
+    x.resize(n, 0);
+    y.resize(n, 0);
+    match x.cmp(&y) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => match (xp, yp) {
+            (Some(_), None) => true,
+            (Some(p), Some(q)) => p < q,
+            _ => false,
+        },
+    }
+}
+
+/// Refuse to replace `have` on `label` with the older `want` unless explicitly allowed
+/// (`--allow-downgrade`): a replayed old release must not roll a machine back silently.
+pub fn downgrade_check(label: &str, have: Option<&str>, want: &str, allow: bool) -> Result<()> {
+    if let Some(have) = have
+        && version_older(want, have)
+        && !allow
+    {
+        bail!(
+            "{label} runs vibeke {have}, newer than {want}; refusing to downgrade (pass --allow-downgrade to do it on purpose)"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn valid_version(v: &str) -> bool {
@@ -712,6 +804,57 @@ mod tests {
             !prod.contains(&crate::minisign::testing::public_key_b64()),
             "the test key must never be a release key"
         );
+    }
+
+    /// Review batch 2, finding 10: a correctly signed N−1 release served for N is refused (the
+    /// verified trusted comment must name the requested version), and an older version never
+    /// replaces a newer one without `--allow-downgrade`.
+    #[test]
+    fn signed_artifacts_are_bound_to_their_version_and_downgrades_refused() {
+        let (d, f) = dist(false, true, true);
+        let sums = d.path().join("SHA256SUMS");
+        let sign = |comment: &str| {
+            let sig = crate::minisign::testing::sign(&std::fs::read(&sums).unwrap(), comment);
+            std::fs::write(d.path().join("SHA256SUMS.minisig"), sig).unwrap();
+        };
+        sign("vibeke v0.8.0");
+        let e = load_artifact(f.clone(), "0.9.0".into(), false).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("signed for \"vibeke v0.8.0\""),
+            "{e:#}"
+        );
+        // The opt-in does not waive a valid signature for another version.
+        assert!(load_artifact(f.clone(), "0.9.0".into(), true).is_err());
+        assert_eq!(
+            load_artifact(f.clone(), "0.8.0".into(), false)
+                .unwrap()
+                .trust,
+            Trust::Signed
+        );
+        sign("vibeke v0.9.0");
+        assert!(load_artifact(f.clone(), "0.9.0".into(), false).is_ok());
+        // A longer version that merely starts with the requested one is not it.
+        sign("vibeke v0.9.0.1");
+        assert!(load_artifact(f.clone(), "0.9.0".into(), false).is_err());
+        assert!(comment_names_version(
+            "vibeke v1.2.3 version:1.2.3",
+            "1.2.3"
+        ));
+        assert!(comment_names_version("timestamp:1 version:1.2.3", "1.2.3"));
+        assert!(!comment_names_version("vibeke v1.2.30", "1.2.3"));
+        assert!(!comment_names_version("not vibeke v1.2.3", "1.2.3"));
+
+        assert!(version_older("0.8.0", "0.9.0"));
+        assert!(version_older("0.9.0", "0.10.0"));
+        assert!(version_older("1.0.0-rc.1", "1.0.0"));
+        assert!(!version_older("1.0.0", "1.0.0"));
+        assert!(!version_older("1.0.0+build", "1.0.0"));
+        assert!(!version_older("0.10.0", "0.9.0"));
+        let e = downgrade_check("box", Some("0.9.0"), "0.8.0", false).unwrap_err();
+        assert!(format!("{e:#}").contains("refusing to downgrade"), "{e:#}");
+        assert!(downgrade_check("box", Some("0.9.0"), "0.8.0", true).is_ok());
+        assert!(downgrade_check("box", Some("0.8.0"), "0.9.0", false).is_ok());
+        assert!(downgrade_check("box", None, "0.8.0", false).is_ok());
     }
 
     #[test]

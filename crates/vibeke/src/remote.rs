@@ -183,11 +183,13 @@ pub fn specs(cfg: &vk_config::Config, g: &Global) -> Vec<vk_tui::app::MachineSpe
         .collect()
 }
 
-/// `vibeke ssh <host> [--upgrade] [--yes] [--remote-session s]`: probe, install/upgrade the
-/// remote binary (no sudo), then attach the TUI to the remote server over the bridge.
+/// `vibeke ssh <host> [--upgrade] [--yes] [--allow-downgrade] [--remote-session s]`: probe,
+/// install/upgrade the remote binary (no sudo), then attach the TUI to the remote server over
+/// the bridge. A remote newer than this release is never downgraded without
+/// `--allow-downgrade`.
 pub async fn ssh(g: &Global, args: &[String]) -> i32 {
     let Some(host) = args.iter().find(|a| !a.starts_with("--")) else {
-        eprintln!("vibeke ssh <host|label> [--upgrade] [--no-local]");
+        eprintln!("vibeke ssh <host|label> [--upgrade] [--allow-downgrade] [--no-local]");
         return EXIT_USAGE;
     };
     if let Err(e) = check_session(&g.session) {
@@ -195,6 +197,7 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let upgrade = args.iter().any(|a| a == "--upgrade" || a == "--yes");
+    let allow_downgrade = args.iter().any(|a| a == "--allow-downgrade");
     let cfg = crate::commands::load_config();
     let target = target_for(&cfg, host);
     let auto_upgrade = cfg
@@ -231,9 +234,16 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
         );
     }
     let ensured = if remote_download {
-        ensure_via_download(&target, &probe, upgrade || auto_upgrade).await
+        ensure_via_download(&target, &probe, upgrade || auto_upgrade, allow_downgrade).await
     } else {
-        bootstrap::ensure(&target, &probe, artifact.as_ref(), upgrade || auto_upgrade).await
+        bootstrap::ensure(
+            &target,
+            &probe,
+            artifact.as_ref(),
+            upgrade || auto_upgrade,
+            allow_downgrade,
+        )
+        .await
     };
     match ensured {
         Ok(bootstrap::Outcome::AlreadyCurrent) => {}
@@ -597,6 +607,7 @@ async fn ensure_via_download(
     target: &Target,
     probe: &bootstrap::Probe,
     upgrade_ok: bool,
+    allow_downgrade: bool,
 ) -> anyhow::Result<bootstrap::Outcome> {
     use vk_remote::download;
     let base = download::release_base_url(vk_proto::VERSION);
@@ -624,7 +635,15 @@ async fn ensure_via_download(
             vk_proto::VERSION
         );
     }
-    bootstrap::ensure_download(target, probe, &m, token.as_ref(), upgrade_ok).await
+    bootstrap::ensure_download(
+        target,
+        probe,
+        &m,
+        token.as_ref(),
+        upgrade_ok,
+        allow_downgrade,
+    )
+    .await
 }
 
 /// `vibeke machine upgrade <m> [--from <artifact> [--version v]] [--stage-only] [--force]`:

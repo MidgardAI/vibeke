@@ -1511,6 +1511,7 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
     let mut check = false;
     let mut rollback = false;
     let mut force = false;
+    let mut allow_downgrade = false;
     let mut from: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -1518,6 +1519,7 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             "--check" => check = true,
             "--rollback" => rollback = true,
             "--force" => force = true,
+            "--allow-downgrade" => allow_downgrade = true,
             "--from" => {
                 i += 1;
                 match args.get(i) {
@@ -1530,7 +1532,7 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             }
             other => {
                 eprintln!(
-                    "vibeke update [--check] [--from <path>] [--rollback] [--force]  (unexpected `{other}`)"
+                    "vibeke update [--check] [--from <path>] [--rollback] [--force] [--allow-downgrade]  (unexpected `{other}`)"
                 );
                 return EXIT_USAGE;
             }
@@ -1564,7 +1566,7 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
 
     // Pick the candidate: --from, else the newest cached artifact for this platform.
     let target = platform_target();
-    let (cand_path, cand_version) = match &from {
+    let (cand_path, cand_version, signed) = match &from {
         Some(p) => {
             let p = resolve_from(p);
             if !p.is_file() {
@@ -1573,11 +1575,12 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             }
             // Nothing from the candidate is executed until its checksum (and signature or
             // the explicit opt-in) has been verified.
-            if let Err(code) = verify_candidate(&p) {
-                return code;
-            }
+            let signed = match verify_candidate(&p) {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
             match binary_version(&p).await {
-                Some(v) => (p, v),
+                Some(v) => (p, v, signed),
                 None => {
                     eprintln!(
                         "{} does not look like a vibeke binary (`--version` failed)",
@@ -1590,10 +1593,11 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         // The version of a cached artifact is its directory name; nothing is executed.
         None => match newest_cached(&releases_root(), &target) {
             Some((v, p)) => {
-                if let Err(code) = verify_candidate(&p) {
-                    return code;
-                }
-                (p, v)
+                let signed = match verify_candidate(&p) {
+                    Ok(s) => s,
+                    Err(code) => return code,
+                };
+                (p, v, signed)
             }
             None => {
                 println!("vibeke {}", vk_proto::VERSION);
@@ -1605,6 +1609,14 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
             }
         },
     };
+    // A signed candidate must be signed for the version it is (09 §10): an older release's
+    // valid signature can't be replayed as a newer one.
+    if let Err(e) =
+        vk_remote::bootstrap::require_signed_version(signed.0, signed.1.as_deref(), &cand_version)
+    {
+        eprintln!("{e:#}");
+        return EXIT_API;
+    }
     let ord = cmp_semver(&cand_version, vk_proto::VERSION);
     if check {
         println!("current: vibeke {}", vk_proto::VERSION);
@@ -1630,6 +1642,10 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
         );
         return EXIT_OK;
     }
+    if let Err(msg) = downgrade_allowed(&cand_version, vk_proto::VERSION, allow_downgrade) {
+        eprintln!("{msg}");
+        return EXIT_API;
+    }
     if let Err(e) = install_version(&layout, &cand_version, &cand_path) {
         eprintln!("install {cand_version}: {e}");
         return EXIT_API;
@@ -1648,17 +1664,29 @@ pub async fn update(g: &Global, args: &[String]) -> i32 {
     finish_restart(g, &layout).await
 }
 
+/// `vibeke update` never installs an older version than the running one unless asked
+/// (`--allow-downgrade`; `--rollback` is the explicit way back to the previous version).
+fn downgrade_allowed(candidate: &str, current: &str, allow: bool) -> Result<(), String> {
+    if cmp_semver(candidate, current) == Ordering::Less && !allow {
+        return Err(format!(
+            "refusing to downgrade from {current} to {candidate}; pass --allow-downgrade to do it on purpose (or `vibeke update --rollback`)"
+        ));
+    }
+    Ok(())
+}
+
 /// Check the candidate's checksum and signature/opt-in before anything else touches it.
-fn verify_candidate(p: &Path) -> Result<(), i32> {
+/// Returns how it is trusted and, when signed, the verified trusted comment.
+fn verify_candidate(p: &Path) -> Result<(vk_remote::bootstrap::Trust, Option<String>), i32> {
     let allow = vk_remote::bootstrap::allow_unsigned_env();
-    match vk_remote::bootstrap::trust_artifact(p, allow) {
-        Ok((sha, trust)) => {
+    match vk_remote::bootstrap::trust_artifact_signed(p, allow) {
+        Ok((sha, trust, comment)) => {
             if trust == vk_remote::bootstrap::Trust::Signed {
                 println!("sha256 {sha} verified; SHA256SUMS signature verified");
             } else {
                 eprintln!("{}", vk_remote::bootstrap::unsigned_warning(p, &sha));
             }
-            Ok(())
+            Ok((trust, comment))
         }
         Err(e) => {
             eprintln!("{e:#}");
@@ -1833,6 +1861,39 @@ mod tests {
         // Reinstalling the same version keeps the previous pointer.
         switch_current(&l, "0.2.0").unwrap();
         assert_eq!(l.previous_version().as_deref(), Some("0.3.0"));
+    }
+
+    /// Review batch 2, finding 10: `vibeke update` refuses an older candidate unless
+    /// `--allow-downgrade`, and a signed candidate must be signed for its own version.
+    #[test]
+    fn update_refuses_downgrades_and_version_mismatched_signatures() {
+        assert!(
+            downgrade_allowed("0.9.0", "0.9.0", false).is_ok(),
+            "reinstall"
+        );
+        assert!(
+            downgrade_allowed("0.10.0", "0.9.0", false).is_ok(),
+            "upgrade"
+        );
+        let e = downgrade_allowed("0.8.0", "0.9.0", false).unwrap_err();
+        assert!(
+            e.contains("refusing to downgrade from 0.9.0 to 0.8.0"),
+            "{e}"
+        );
+        assert!(downgrade_allowed("0.9.0-rc.1", "0.9.0", false).is_err());
+        assert!(downgrade_allowed("0.8.0", "0.9.0", true).is_ok());
+        use vk_remote::bootstrap::{Trust, require_signed_version};
+        assert!(require_signed_version(Trust::Signed, Some("vibeke v0.9.0"), "0.9.0").is_ok());
+        let e = require_signed_version(Trust::Signed, Some("vibeke v0.8.0"), "0.9.0").unwrap_err();
+        assert!(
+            format!("{e:#}").contains("signed for \"vibeke v0.8.0\""),
+            "{e:#}"
+        );
+        assert!(require_signed_version(Trust::Signed, None, "0.9.0").is_err());
+        assert!(
+            require_signed_version(Trust::UnsignedOptIn, None, "0.9.0").is_ok(),
+            "unsigned opt-in has no signed version"
+        );
     }
 
     #[test]
