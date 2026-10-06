@@ -613,7 +613,10 @@ async fn mirrored_input_never_reaches_a_live_agent_pane_unless_included() {
         asyncio::write_frame(&mut wr, &f).await.unwrap();
     }
     let ack = frame_until(&mut rd, |f| match f {
-        ServerFrame::InputAck { input_id, status } if input_id == 101 => Some(status),
+        ServerFrame::InputAck {
+            input_id: 101,
+            status,
+        } => Some(status),
         _ => None,
     })
     .await;

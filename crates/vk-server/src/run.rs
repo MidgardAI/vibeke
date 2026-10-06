@@ -159,6 +159,11 @@ pub fn inside_any_pane(pid: Option<i32>, runtime_root: &std::path::Path) -> bool
             .any(|r| std::path::Path::new(spec).starts_with(r))
     };
     for _ in 0..64 {
+        // A helper this server spawned outside any pane (reached before any holder): ours,
+        // even when this server itself was started from inside a pane.
+        if pid == std::process::id() {
+            return false;
+        }
         let Some(info) = vk_hold::procinfo::info(pid) else {
             return false;
         };
@@ -232,6 +237,18 @@ pub fn foreign_pane(server: &Server, pid: Option<i32>) -> bool {
         }
     }
 }
+
+/// A pane's identity variables. A server spawned from inside a pane (the CLI's auto-start,
+/// `session.create`) must not inherit them: they would make the new server and its helpers look
+/// like that pane to everyone (09 §3.2).
+pub const PANE_IDENTITY_ENV: &[&str] = &[
+    "VIBEKE_PANE_TOKEN",
+    "VIBEKE_ELEVATED_TOKEN",
+    "VIBEKE_PANE_ID",
+    "VIBEKE_PANE_ULID",
+    "VIBEKE_WORKSPACE_ID",
+    "VIBEKE_TAB_ID",
+];
 
 /// Refusal for a connection from a pane of another session that presented no token of ours.
 fn foreign_refusal(method: &str) -> vk_proto::rpc::RpcError {

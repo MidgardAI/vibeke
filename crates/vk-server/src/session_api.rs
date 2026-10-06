@@ -130,6 +130,10 @@ async fn session_create(server: &Server, p: &Value) -> R {
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().map_err(internal)?)
         .stderr(log);
+    // Created from inside a pane: the new server is not that pane (09 §3.2).
+    for k in crate::run::PANE_IDENTITY_ENV {
+        cmd.env_remove(k);
+    }
     use std::os::unix::process::CommandExt;
     // SAFETY: setsid between fork and exec is async-signal-safe.
     unsafe {

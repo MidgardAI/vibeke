@@ -1416,6 +1416,9 @@ fn spawn_server_with(bin: &Path, session: &str) -> anyhow::Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
+    for k in vk_server::run::PANE_IDENTITY_ENV {
+        cmd.env_remove(k);
+    }
     // SAFETY: setsid between fork and exec is async-signal-safe.
     unsafe {
         cmd.pre_exec(|| {
