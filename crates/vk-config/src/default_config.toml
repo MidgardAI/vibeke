@@ -322,6 +322,17 @@ enabled = false
 # blob_retention    = "30d"         # unreferenced uploads and tool-output payloads in the blob store
 # max_rows          = 2000000       # hard cap on event rows; oldest `sync` rows go first; 0 = no cap
 
+# Review evidence (15 §6.3, §6.4). Read by the running server.
+# [review.pr]                       # `vibeke api call task.pr.observe`: an explicit lookup through your `gh` login
+# provider     = "gh"               # gh | off
+# max_age_secs = 900                # an observation older than this is unknown (0 = never stale)
+# [review.interval]                 # binds an observed agent command to the subject only when it provably ran on a stable checkout
+# enabled       = true
+# watcher       = "os"              # os | none (none binds nothing)
+# settle_ms     = 400               # late file events still count this long after a command ends
+# arm_delay_ms  = 500               # a freshly started watcher counts as armed after this delay
+# harnesses     = ["claude"]        # only harnesses whose pre-tool hook runs before the tool
+
 [update]
 channel        = "stable"             # stable | preview
 version_check  = true

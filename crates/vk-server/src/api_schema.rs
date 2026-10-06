@@ -50,6 +50,8 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("sync_input", sync_input::METHODS),
         ("tab_renumber", tab_renumber::METHODS),
         ("task_lifecycle", task_lifecycle::METHODS),
+        ("review::pr", review::pr::METHODS),
+        ("review::interval", review::interval::METHODS),
     ]
 }
 
@@ -110,7 +112,11 @@ fn build() -> Result<Registry, Vec<String>> {
     let mut errs = vec![];
     let mut defs = BTreeMap::new();
     let mut defs_src = BTreeMap::new();
-    for line in DEFS.lines().chain(BATCH_3D_DEFS.lines()) {
+    for line in DEFS
+        .lines()
+        .chain(BATCH_3D_DEFS.lines())
+        .chain(BATCH_3F_DEFS.lines())
+    {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -161,7 +167,11 @@ fn build() -> Result<Registry, Vec<String>> {
         out
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
-    let events = load(&[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES], "event", &mut errs);
+    let events = load(
+        &[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES, BATCH_3F_EVENT_SHAPES],
+        "event",
+        &mut errs,
+    );
     let notifications = load(&[NOTIFICATION_SHAPES], "notification", &mut errs);
     let mut reg = Registry {
         defs,
@@ -468,6 +478,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
     BATCH_3D_SHAPES,
+    BATCH_3F_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -1208,6 +1219,37 @@ machine.removed :: {machine: string} => {label: string}
 agent.item :: {run: string, pane: string} => {kind: ItemKind, summary: string, item: string, turn: string, seq: int, payload_ref: string|null}
 agent.subagent_started :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
 agent.subagent_finished :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
+"##;
+
+/// Evidence and PR integration (15 §6.3, §6.4; 3F).
+const BATCH_3F_DEFS: &str = r##"
+PrObservation = {id: string, task: string, requested?: string, lookup: object, observed_at_ms: int, authorization_scope: string, provider: string, observed_by: object, criterion_ids: [string], current?: bool, assessment?: object}
+PrClaim = {id: string, task: string, url: string, identity?: object, source: pasted_url|agent_statement, claimed_by: object, claimed_at_ms: int, text?: string, label?: string, confirmed?: bool}
+"##;
+
+const BATCH_3F_SHAPES: &str = r##"
+# --- task.pr.* (PR evidence; 15 §6.4) ---
+# an explicit lookup through the user's authenticated gh CLI; a failed or offline lookup is recorded as such (outcome unknown); not allowed from a pane scope
+task.pr.observe :: {task: Target, pr?: string, criteria?: [string], idempotency_key?: string}
+  => {observation: PrObservation, label: string, note: string}
+# a pasted URL or an agent statement: shown with the review, never confirmation
+task.pr.claim :: {task: Target, url: string, text?: string, idempotency_key?: string}
+  => {claim: PrClaim, label: string, note: string}
+# with subject, each observation also carries its assessment for that subject (binding, outcome, summary)
+task.pr.list :: {task: Target, subject?: string}
+  => {task: string, observations: [PrObservation], claims: [PrClaim], provider: string, max_age_secs: int}
+
+# --- execution-interval binding of observed commands (15 §6.3) ---
+task.review.intervals :: {task: Target, limit?: int}
+  => {task: string, intervals: [object]}
+task.review.interval_status :: {}
+  => {enabled: bool, watcher: string, settle_ms: int, arm_delay_ms: int, harnesses: [string], checkouts: [object], note: string}
+"##;
+
+const BATCH_3F_EVENT_SHAPES: &str = r##"
+review.pr_observed :: {task: string} => {observation: string, lookup: observed|no_pr|failed, pr: string|null, head: string|null, state: open|closed|merged|null, draft: bool|null, checks: none|pending|passing|failing|null, reason: string|null}
+review.pr_head_changed :: {task: string} => {pr: string|null, from: string|null, to: string|null, observation: string}
+review.pr_claimed :: {task: string} => {claim: string, url: string, pr: string|null, source: pasted_url|agent_statement}
 "##;
 
 #[cfg(test)]

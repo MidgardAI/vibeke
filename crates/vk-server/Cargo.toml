@@ -38,6 +38,7 @@ libc.workspace = true
 regex.workspace = true
 futures.workspace = true
 url.workspace = true
+notify.workspace = true
 # PNG pane screenshots (07 §2.6): `image` (PNG only) is already in the graph through vk-browser;
 # font8x8 is a dependency-free 8x8 bitmap font (MIT).
 image = { version = "0.25", default-features = false, features = ["png"] }

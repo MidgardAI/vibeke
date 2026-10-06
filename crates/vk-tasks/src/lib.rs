@@ -87,7 +87,8 @@ pub use files::{
 };
 pub use finish::{DiffStat, archive_worktree, diff_stat, is_merged, merged_branches};
 pub use ghpr::{
-    ChecksState, PR_CACHE_TTL, PrCache, PrLookup, PrStatus, fetch_pr, gh_binary, gh_ready, parse_pr,
+    ChecksState, PR_CACHE_TTL, PR_EVIDENCE_FIELDS, PrCache, PrJson, PrLookup, PrStatus, fetch_pr,
+    fetch_pr_evidence_json, gh_binary, gh_ready, parse_pr, valid_pr_ref,
 };
 pub use git::set_child_umask;
 pub use git::{

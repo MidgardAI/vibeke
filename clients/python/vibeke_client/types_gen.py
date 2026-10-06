@@ -431,6 +431,19 @@ PolicyScopeXV1 = TypedDict("PolicyScopeXV1", {
 
 PolicyScope: TypeAlias = Union[str, "PolicyScopeXV1"]
 
+PrClaim = TypedDict("PrClaim", {
+    "id": str,
+    "task": str,
+    "url": str,
+    "identity": NotRequired[Dict[str, Any]],
+    "source": Literal["pasted_url", "agent_statement"],
+    "claimed_by": Dict[str, Any],
+    "claimed_at_ms": int,
+    "text": NotRequired[str],
+    "label": NotRequired[str],
+    "confirmed": NotRequired[bool],
+})
+
 PrLookupPr = TypedDict("PrLookupPr", {
     "number": int,
     "state": str,
@@ -445,6 +458,20 @@ PrLookup = TypedDict("PrLookup", {
     "kind": Literal["pr", "no_pr", "unavailable"],
     "pr": NotRequired["PrLookupPr"],
     "reason": NotRequired[str],
+})
+
+PrObservation = TypedDict("PrObservation", {
+    "id": str,
+    "task": str,
+    "requested": NotRequired[str],
+    "lookup": Dict[str, Any],
+    "observed_at_ms": int,
+    "authorization_scope": str,
+    "provider": str,
+    "observed_by": Dict[str, Any],
+    "criterion_ids": List[str],
+    "current": NotRequired[bool],
+    "assessment": NotRequired[Dict[str, Any]],
 })
 
 Preview = TypedDict("Preview", {
@@ -5163,6 +5190,47 @@ TaskPrResult = TypedDict("TaskPrResult", {
     "pr": "PrLookup",
 })
 
+TaskPrClaimParams = TypedDict("TaskPrClaimParams", {
+    "task": "Target",
+    "url": str,
+    "text": NotRequired[str],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskPrClaimResult = TypedDict("TaskPrClaimResult", {
+    "claim": "PrClaim",
+    "label": str,
+    "note": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskPrListParams = TypedDict("TaskPrListParams", {
+    "task": "Target",
+    "subject": NotRequired[str],
+})
+
+TaskPrListResult = TypedDict("TaskPrListResult", {
+    "task": str,
+    "observations": List["PrObservation"],
+    "claims": List["PrClaim"],
+    "provider": str,
+    "max_age_secs": int,
+})
+
+TaskPrObserveParams = TypedDict("TaskPrObserveParams", {
+    "task": "Target",
+    "pr": NotRequired[str],
+    "criteria": NotRequired[List[str]],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskPrObserveResult = TypedDict("TaskPrObserveResult", {
+    "observation": "PrObservation",
+    "label": str,
+    "note": str,
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskReconcileParams = TypedDict("TaskReconcileParams", {
     "repo": NotRequired[str],
 })
@@ -5359,6 +5427,28 @@ TaskReviewGetResult = TypedDict("TaskReviewGetResult", {
     "effort": "TaskReviewGetResultEffort",
     "snapshot": "TaskReviewGetResultSnapshot",
     "actions": "TaskReviewGetResultActions",
+})
+
+TaskReviewIntervalStatusParams: TypeAlias = Dict[str, Any]
+
+TaskReviewIntervalStatusResult = TypedDict("TaskReviewIntervalStatusResult", {
+    "enabled": bool,
+    "watcher": str,
+    "settle_ms": int,
+    "arm_delay_ms": int,
+    "harnesses": List[str],
+    "checkouts": List[Dict[str, Any]],
+    "note": str,
+})
+
+TaskReviewIntervalsParams = TypedDict("TaskReviewIntervalsParams", {
+    "task": "Target",
+    "limit": NotRequired[int],
+})
+
+TaskReviewIntervalsResult = TypedDict("TaskReviewIntervalsResult", {
+    "task": str,
+    "intervals": List[Dict[str, Any]],
 })
 
 TaskReviewNoteClassifyParams = TypedDict("TaskReviewNoteClassifyParams", {
@@ -5963,6 +6053,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.ports.re_lease": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.pr.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.pr.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.pr.observe": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "task.recreate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -5970,6 +6063,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.review.interval_status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.review.intervals": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.note.classify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.notes": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.request_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -7099,6 +7194,43 @@ ReviewNotesRecordedData = TypedDict("ReviewNotesRecordedData", {
     "open_concerns": Any,
 })
 
+ReviewPrClaimedSubject = TypedDict("ReviewPrClaimedSubject", {
+    "task": str,
+})
+
+ReviewPrClaimedData = TypedDict("ReviewPrClaimedData", {
+    "claim": str,
+    "url": str,
+    "pr": Optional[str],
+    "source": Literal["pasted_url", "agent_statement"],
+})
+
+ReviewPrHeadChangedSubject = TypedDict("ReviewPrHeadChangedSubject", {
+    "task": str,
+})
+
+ReviewPrHeadChangedData = TypedDict("ReviewPrHeadChangedData", {
+    "pr": Optional[str],
+    "from": Optional[str],
+    "to": Optional[str],
+    "observation": str,
+})
+
+ReviewPrObservedSubject = TypedDict("ReviewPrObservedSubject", {
+    "task": str,
+})
+
+ReviewPrObservedData = TypedDict("ReviewPrObservedData", {
+    "observation": str,
+    "lookup": Literal["observed", "no_pr", "failed"],
+    "pr": Optional[str],
+    "head": Optional[str],
+    "state": Optional[Union[Literal["open"], Literal["closed"], Literal["merged"]]],
+    "draft": Optional[bool],
+    "checks": Optional[Union[Literal["none"], Literal["pending"], Literal["passing"], Literal["failing"]]],
+    "reason": Optional[str],
+})
+
 ReviewReviewerRequestedSubject = TypedDict("ReviewReviewerRequestedSubject", {
     "task": str,
     "request": str,
@@ -7921,6 +8053,9 @@ EVENT_TYPES = (
     "review.label_changed",
     "review.note_classified",
     "review.notes_recorded",
+    "review.pr_claimed",
+    "review.pr_head_changed",
+    "review.pr_observed",
     "review.reviewer_requested",
     "review.reviewer_started",
     "review.reviewer_unknown",

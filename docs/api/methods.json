@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 294,
+  "method_count": 299,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -3718,6 +3718,48 @@
       "result": "{task: string, pr: PrLookup}"
     },
     {
+      "name": "task.pr.claim",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "review::pr"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, url: string, text?: string, idempotency_key?: string}",
+      "result": "{claim: PrClaim, label: string, note: string}"
+    },
+    {
+      "name": "task.pr.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::pr"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, subject?: string}",
+      "result": "{task: string, observations: [PrObservation], claims: [PrClaim], provider: string, max_age_secs: int}"
+    },
+    {
+      "name": "task.pr.observe",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "review::pr"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, pr?: string, criteria?: [string], idempotency_key?: string}",
+      "result": "{observation: PrObservation, label: string, note: string}"
+    },
+    {
       "name": "task.reconcile",
       "mutating": true,
       "scope": "pane",
@@ -3814,6 +3856,34 @@
       "spec": null,
       "params": "{task: Target, subject?: string}",
       "result": "{task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}}"
+    },
+    {
+      "name": "task.review.interval_status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::interval"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{enabled: bool, watcher: string, settle_ms: int, arm_delay_ms: int, harnesses: [string], checkouts: [object], note: string}"
+    },
+    {
+      "name": "task.review.intervals",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::interval"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, limit?: int}",
+      "result": "{task: string, intervals: [object]}"
     },
     {
       "name": "task.review.note.classify",

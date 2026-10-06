@@ -22,6 +22,8 @@
 //! Reads are authorized before retrieval (15 §11): pane-token callers only see tasks, checks
 //! and attention items of their pane's workspace.
 
+pub mod interval;
+pub mod pr;
 pub mod receipts;
 pub mod t4;
 
@@ -1147,6 +1149,8 @@ fn state_token(c: &Core, task_id: &str) -> Option<u64> {
     accs.sort();
     h.update(format!("acceptances {accs:?}\n").as_bytes());
     h.update(t4::token_part(c, task_id).as_bytes());
+    h.update(pr::token_part(c, task_id).as_bytes());
+    h.update(interval::token_part(c, task_id).as_bytes());
     let snap = live_snap(c);
     let (_, live) = live_from(&snap, task_id, &bs, checkout_of(&task).as_deref());
     h.update(format!("live {live}\n").as_bytes());
@@ -1610,13 +1614,20 @@ pub fn build_package(
         .map(|r| Evidence::from_check_run(&r.run))
         .collect();
     // Reviewer (role `review`) runs contribute notes, never evidence (T4).
-    let (observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
+    let (mut observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
+    // Execution-interval binding (3F): a command is bound to the selected subject only when its
+    // interval was proven stable for exactly that subject.
+    let intervals = interval::apply(server, &mut observed, selected.as_ref());
     for cmd in &observed {
-        let mapped = entries
+        let hit = entries
             .iter()
-            .find(|e| norm(&command_text(&e.def.command)) == norm(&cmd.command))
-            .map(|e| (e.def.id.as_str(), e.def.definition_digest.as_str()));
-        evidence.push(Evidence::from_observed(cmd, mapped));
+            .find(|e| norm(&command_text(&e.def.command)) == norm(&cmd.command));
+        let mapped = hit.map(|e| (e.def.id.as_str(), e.def.definition_digest.as_str()));
+        let mut ev = Evidence::from_observed(cmd, mapped);
+        if let Some(e) = hit {
+            ev.environment_digest = interval::environment_for(&intervals, cmd, &e.def.command);
+        }
+        evidence.push(ev);
     }
     for cl in &claims {
         evidence.push(Evidence::from_observed(cl, None));
@@ -1631,6 +1642,10 @@ pub fn build_package(
         intent.as_ref(),
     );
     evidence.extend(shot_evidence);
+    // PR observations and claims (3F, §6.4): external evidence bound to the exact PR head.
+    let (pr_evidence, pr_section) =
+        pr::review_evidence(server, &task.id, selected.as_ref(), intent.as_ref());
+    evidence.extend(pr_evidence);
 
     let snap = server.with_core(|c| live_snap(c));
     let (mut live, live_token) = live_from(&snap, &task.id, &bs, cands.checkout.as_deref());
@@ -1930,7 +1945,7 @@ pub fn build_package(
         })
     });
 
-    let json = json!({
+    let mut json = json!({
         "task": task.id,
         "task_title": task.title,
         "package_revision": pkg_rev,
@@ -1983,6 +1998,9 @@ pub fn build_package(
             }
         },
     });
+
+    interval::annotate(&mut json, &intervals);
+    json["pr"] = pr_section;
 
     let projection = (want_subject.is_none() || subject_is_current).then(|| {
         let mut failed: Vec<FailedCheck> = Vec::new();
@@ -2441,8 +2459,19 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "task.check.run" => check_run(server, ctx, p).await,
         "task.check.cancel" => check_cancel(server, ctx, p),
         "task.check.get" => check_get(server, ctx, p),
-        m => return t4::api(server, ctx, m, p).await,
+        m => return outcome_api(server, ctx, m, p).await,
     })
+}
+
+/// The methods of the later review stages: T4, then PR evidence and execution intervals (3F).
+async fn outcome_api(server: &Arc<Server>, ctx: &Ctx, m: &str, p: &Value) -> Option<R> {
+    if let Some(r) = t4::api(server, ctx, m, p).await {
+        return Some(r);
+    }
+    if let Some(r) = pr::api(server, ctx, m, p).await {
+        return Some(r);
+    }
+    interval::api(server, ctx, m, p)
 }
 
 async fn package(server: &Arc<Server>, task: &str, subject: Option<&str>) -> Result<Pkg, RpcError> {

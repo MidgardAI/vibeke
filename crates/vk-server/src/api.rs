@@ -436,6 +436,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
         || crate::machines::PANE_FORBIDDEN.contains(&method)
         || crate::items::PANE_FORBIDDEN.contains(&method)
+        || crate::review::pr::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -692,6 +693,8 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::task_lifecycle::METHODS)
                     .chain(crate::task_park::METHODS)
                     .chain(crate::security::METHODS)
+                    .chain(crate::review::pr::METHODS)
+                    .chain(crate::review::interval::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

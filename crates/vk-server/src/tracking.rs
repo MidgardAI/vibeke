@@ -267,6 +267,7 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     if settled {
         crate::review::on_turn_settled(server, &run.id);
     }
+    crate::review::interval::on_tool_signal(server, run, event, p);
     if matches!(event, "SessionStart" | "UserPromptSubmit") {
         sync_run_tasks(server);
     }
@@ -297,7 +298,7 @@ pub fn sync_run_tasks(server: &Server) {
     }
 }
 
-fn shell_command(tool: &str, input: &Value) -> Option<String> {
+pub(crate) fn shell_command(tool: &str, input: &Value) -> Option<String> {
     let shellish = matches!(
         tool,
         "Bash" | "bash" | "shell" | "Shell" | "exec_command" | "local_shell" | "unified_exec"

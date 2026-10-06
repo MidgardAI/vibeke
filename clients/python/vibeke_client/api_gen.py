@@ -806,6 +806,15 @@ class Api:
     async def task_pr(self, params: "t.TaskPrParams") -> "t.TaskPrResult":
         return await self.call("task.pr", params)  # type: ignore[arg-type, return-value]
 
+    async def task_pr_claim(self, params: "t.TaskPrClaimParams") -> "t.TaskPrClaimResult":
+        return await self.call("task.pr.claim", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_list(self, params: "t.TaskPrListParams") -> "t.TaskPrListResult":
+        return await self.call("task.pr.list", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_observe(self, params: "t.TaskPrObserveParams") -> "t.TaskPrObserveResult":
+        return await self.call("task.pr.observe", params)  # type: ignore[arg-type, return-value]
+
     async def task_reconcile(self, params: "Optional[t.TaskReconcileParams]" = None) -> "t.TaskReconcileResult":
         return await self.call("task.reconcile", params or {})  # type: ignore[arg-type, return-value]
 
@@ -826,6 +835,12 @@ class Api:
 
     async def task_review_get(self, params: "t.TaskReviewGetParams") -> "t.TaskReviewGetResult":
         return await self.call("task.review.get", params)  # type: ignore[arg-type, return-value]
+
+    async def task_review_interval_status(self, params: "Optional[t.TaskReviewIntervalStatusParams]" = None) -> "t.TaskReviewIntervalStatusResult":
+        return await self.call("task.review.interval_status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_review_intervals(self, params: "t.TaskReviewIntervalsParams") -> "t.TaskReviewIntervalsResult":
+        return await self.call("task.review.intervals", params)  # type: ignore[arg-type, return-value]
 
     async def task_review_note_classify(self, params: "t.TaskReviewNoteClassifyParams") -> "t.TaskReviewNoteClassifyResult":
         return await self.call("task.review.note.classify", params)  # type: ignore[arg-type, return-value]

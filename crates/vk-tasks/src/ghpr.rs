@@ -246,6 +246,68 @@ pub fn fetch_pr(worktree: &Path) -> PrLookup {
     }
 }
 
+/// JSON fields requested for PR evidence (15 §6.4): identity, target branch, head revision,
+/// draft state, review decision and the checks rollup.
+pub const PR_EVIDENCE_FIELDS: &str =
+    "number,url,state,isDraft,baseRefName,headRefName,headRefOid,reviewDecision,statusCheckRollup";
+
+/// Outcome of [`fetch_pr_evidence_json`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrJson {
+    /// Raw `gh pr view --json PR_EVIDENCE_FIELDS` output.
+    Found(String),
+    /// `gh` answered: no pull request for that reference.
+    NoPr,
+    /// No answer (not installed, not authenticated, timed out, sandboxed checkout, bad
+    /// reference ...). The caller records an unknown observation, never a pass or a failure.
+    Unavailable(String),
+}
+
+/// A PR reference `gh pr view` may take: a number, a URL or a branch name. Anything that could
+/// be read as an option is refused.
+pub fn valid_pr_ref(r: &str) -> bool {
+    !r.is_empty()
+        && r.len() <= 512
+        && !r.starts_with('-')
+        && !r.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// Fetch the PR identity and head facts for `pr` (or, when `None`, the PR of the branch checked
+/// out in `worktree`), uncached. Same safety rules as [`fetch_pr`].
+pub fn fetch_pr_evidence_json(worktree: &Path, pr: Option<&str>) -> PrJson {
+    if let Some(r) = pr
+        && !valid_pr_ref(r)
+    {
+        return PrJson::Unavailable("invalid pull request reference".into());
+    }
+    if crate::is_contained(worktree) {
+        return PrJson::Unavailable("sandboxed checkout".into());
+    }
+    if let Err(reason) = gh_ready(worktree) {
+        return PrJson::Unavailable(reason);
+    }
+    let mut args = vec!["pr", "view"];
+    if let Some(r) = pr {
+        args.push(r);
+    }
+    args.extend(["--json", PR_EVIDENCE_FIELDS]);
+    let r = match run_gh(worktree, &args) {
+        Ok(r) => r,
+        Err(reason) => return PrJson::Unavailable(reason),
+    };
+    if r.code == Some(0) {
+        return PrJson::Found(r.stdout);
+    }
+    if r.stderr
+        .to_ascii_lowercase()
+        .contains("no pull requests found")
+    {
+        PrJson::NoPr
+    } else {
+        PrJson::Unavailable(r.stderr.lines().next().unwrap_or("gh failed").to_string())
+    }
+}
+
 /// 60 s cache of PR lookups, keyed by worktree path.
 #[derive(Default)]
 pub struct PrCache {

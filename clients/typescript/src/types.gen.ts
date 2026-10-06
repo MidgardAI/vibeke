@@ -406,6 +406,19 @@ export type PolicyScope = string | {
   run?: Target;
 };
 
+export type PrClaim = {
+  id: string;
+  task: string;
+  url: string;
+  identity?: Record<string, unknown>;
+  source: "pasted_url" | "agent_statement";
+  claimed_by: Record<string, unknown>;
+  claimed_at_ms: number;
+  text?: string;
+  label?: string;
+  confirmed?: boolean;
+};
+
 export type PrLookup = {
   kind: "pr" | "no_pr" | "unavailable";
   pr?: {
@@ -418,6 +431,20 @@ export type PrLookup = {
     label: string;
   };
   reason?: string;
+};
+
+export type PrObservation = {
+  id: string;
+  task: string;
+  requested?: string;
+  lookup: Record<string, unknown>;
+  observed_at_ms: number;
+  authorization_scope: string;
+  provider: string;
+  observed_by: Record<string, unknown>;
+  criterion_ids: string[];
+  current?: boolean;
+  assessment?: Record<string, unknown>;
 };
 
 export type Preview = {
@@ -4790,6 +4817,47 @@ export type TaskPrResult = {
   pr: PrLookup;
 };
 
+export type TaskPrClaimParams = {
+  task: Target;
+  url: string;
+  text?: string;
+  idempotency_key?: string;
+};
+
+export type TaskPrClaimResult = {
+  claim: PrClaim;
+  label: string;
+  note: string;
+  cursor?: Cursor;
+};
+
+export type TaskPrListParams = {
+  task: Target;
+  subject?: string;
+};
+
+export type TaskPrListResult = {
+  task: string;
+  observations: PrObservation[];
+  claims: PrClaim[];
+  provider: string;
+  max_age_secs: number;
+};
+
+export type TaskPrObserveParams = {
+  task: Target;
+  pr?: string;
+  criteria?: string[];
+  idempotency_key?: string;
+};
+
+export type TaskPrObserveResult = {
+  observation: PrObservation;
+  label: string;
+  note: string;
+  cursor?: Cursor;
+};
+
 export type TaskReconcileParams = {
   repo?: string;
 };
@@ -4964,6 +5032,28 @@ export type TaskReviewGetResult = {
       requires_exceptions: unknown;
     };
   };
+};
+
+export type TaskReviewIntervalStatusParams = Record<string, unknown>;
+
+export type TaskReviewIntervalStatusResult = {
+  enabled: boolean;
+  watcher: string;
+  settle_ms: number;
+  arm_delay_ms: number;
+  harnesses: string[];
+  checkouts: Record<string, unknown>[];
+  note: string;
+};
+
+export type TaskReviewIntervalsParams = {
+  task: Target;
+  limit?: number;
+};
+
+export type TaskReviewIntervalsResult = {
+  task: string;
+  intervals: Record<string, unknown>[];
 };
 
 export type TaskReviewNoteClassifyParams = {
@@ -5550,6 +5640,9 @@ export interface Methods {
   "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
   "task.ports.re_lease": { params: TaskPortsReLeaseParams; result: TaskPortsReLeaseResult };
   "task.pr": { params: TaskPrParams; result: TaskPrResult };
+  "task.pr.claim": { params: TaskPrClaimParams; result: TaskPrClaimResult };
+  "task.pr.list": { params: TaskPrListParams; result: TaskPrListResult };
+  "task.pr.observe": { params: TaskPrObserveParams; result: TaskPrObserveResult };
   "task.reconcile": { params: TaskReconcileParams; result: TaskReconcileResult };
   "task.recreate": { params: TaskRecreateParams; result: TaskRecreateResult };
   "task.resume": { params: TaskResumeParams; result: TaskResumeResult };
@@ -5557,6 +5650,8 @@ export interface Methods {
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
   "task.review.diff": { params: TaskReviewDiffParams; result: TaskReviewDiffResult };
   "task.review.get": { params: TaskReviewGetParams; result: TaskReviewGetResult };
+  "task.review.interval_status": { params: TaskReviewIntervalStatusParams; result: TaskReviewIntervalStatusResult };
+  "task.review.intervals": { params: TaskReviewIntervalsParams; result: TaskReviewIntervalsResult };
   "task.review.note.classify": { params: TaskReviewNoteClassifyParams; result: TaskReviewNoteClassifyResult };
   "task.review.notes": { params: TaskReviewNotesParams; result: TaskReviewNotesResult };
   "task.review.request_reviewer": { params: TaskReviewRequestReviewerParams; result: TaskReviewRequestReviewerResult };
@@ -5850,6 +5945,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
   "task.ports.re_lease": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr.claim": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.pr.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr.observe": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
   "task.recreate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -5857,6 +5955,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.interval_status": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.intervals": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.notes": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.request_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -6982,6 +7082,43 @@ export type ReviewNotesRecordedData = {
   open_concerns: unknown;
 };
 
+export type ReviewPrClaimedSubject = {
+  task: string;
+};
+
+export type ReviewPrClaimedData = {
+  claim: string;
+  url: string;
+  pr: string | null;
+  source: "pasted_url" | "agent_statement";
+};
+
+export type ReviewPrHeadChangedSubject = {
+  task: string;
+};
+
+export type ReviewPrHeadChangedData = {
+  pr: string | null;
+  from: string | null;
+  to: string | null;
+  observation: string;
+};
+
+export type ReviewPrObservedSubject = {
+  task: string;
+};
+
+export type ReviewPrObservedData = {
+  observation: string;
+  lookup: "observed" | "no_pr" | "failed";
+  pr: string | null;
+  head: string | null;
+  state: "open" | "closed" | "merged" | null;
+  draft: boolean | null;
+  checks: "none" | "pending" | "passing" | "failing" | null;
+  reason: string | null;
+};
+
 export type ReviewReviewerRequestedSubject = {
   task: string;
   request: string;
@@ -7798,6 +7935,9 @@ export interface EventMap {
   "review.label_changed": { subject: ReviewLabelChangedSubject; data: ReviewLabelChangedData };
   "review.note_classified": { subject: ReviewNoteClassifiedSubject; data: ReviewNoteClassifiedData };
   "review.notes_recorded": { subject: ReviewNotesRecordedSubject; data: ReviewNotesRecordedData };
+  "review.pr_claimed": { subject: ReviewPrClaimedSubject; data: ReviewPrClaimedData };
+  "review.pr_head_changed": { subject: ReviewPrHeadChangedSubject; data: ReviewPrHeadChangedData };
+  "review.pr_observed": { subject: ReviewPrObservedSubject; data: ReviewPrObservedData };
   "review.reviewer_requested": { subject: ReviewReviewerRequestedSubject; data: ReviewReviewerRequestedData };
   "review.reviewer_started": { subject: ReviewReviewerStartedSubject; data: ReviewReviewerStartedData };
   "review.reviewer_unknown": { subject: ReviewReviewerUnknownSubject; data: ReviewReviewerUnknownData };
