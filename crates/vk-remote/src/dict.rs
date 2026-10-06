@@ -94,6 +94,8 @@ fn row(text: &str, style: Style, pad_to: u16) -> Row {
     Row {
         spans,
         wrapped: false,
+        mark: 0,
+        links: vec![],
     }
 }
 
