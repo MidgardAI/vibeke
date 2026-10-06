@@ -210,6 +210,8 @@ pub struct Config {
     pub push_subject: String,
     pub push_allowed_hosts: Vec<String>,
     pub stt: Option<Stt>,
+    /// Serve the channel on `<state dir>/gateway.sock` for desktop apps on this machine.
+    pub local_socket: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +235,7 @@ impl Default for Config {
                 .map(|s| s.to_string())
                 .collect(),
             stt: None,
+            local_socket: true,
         }
     }
 }

@@ -6,6 +6,7 @@ pub mod api;
 pub mod cli;
 pub mod events;
 pub mod handoff;
+pub mod local;
 pub mod notify;
 pub mod pair;
 pub mod push;
@@ -332,6 +333,11 @@ struct Throttle {
     cooldown_until: Option<Instant>,
 }
 
+/// This machine's name (used when no `host_name` is configured).
+pub fn default_host_name() -> String {
+    hostname()
+}
+
 fn hostname() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: buf is valid for its length; gethostname NUL-terminates on success.
@@ -346,9 +352,12 @@ fn hostname() -> String {
 
 /// Run the gateway until the process is stopped.
 pub async fn run(gw: Arc<Gateway>) -> Result<()> {
-    let relay = gw.cfg.relay.clone().ok_or_else(|| {
-        anyhow::anyhow!("no relay configured: pass --relay or set relay in gateway.toml")
-    })?;
+    let relay = gw.cfg.relay.clone();
+    if relay.is_none() && !gw.cfg.local_socket {
+        anyhow::bail!(
+            "no relay configured: pass --relay (or enable local_socket for a desktop app on this machine)"
+        );
+    }
     // The server must grant full scope; wait for it if it isn't running yet (later restarts are
     // fine too: calls reconnect lazily and the event stream resubscribes).
     let mut warned = false;
@@ -381,5 +390,17 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
             }
         }
     });
-    relay_client::run(gw, &relay).await
+    if gw.cfg.local_socket {
+        let g = gw.clone();
+        tokio::spawn(async move {
+            if let Err(e) = local::run(g).await {
+                tracing::warn!("local transport: {e:#}");
+            }
+        });
+    }
+    match relay {
+        Some(relay) => relay_client::run(gw, &relay).await,
+        // Local-only (desktop on this machine): nothing else to do.
+        None => std::future::pending().await,
+    }
 }

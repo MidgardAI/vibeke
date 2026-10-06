@@ -384,3 +384,107 @@ async fn reqwest_status(addr: SocketAddr, host: &str) -> bool {
     s.read_to_string(&mut buf).await.unwrap();
     buf.contains("\"online\":true")
 }
+
+/// Local transport: the same Noise channel over the gateway's Unix socket (desktop on this machine).
+#[tokio::test(flavor = "multi_thread")]
+async fn local_socket_pairs_and_serves() {
+    use tokio_tungstenite::client_async;
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("vibeke.sock");
+    fake_server(sock.clone());
+    let state = StateDir::open(tmp.path().join("gw")).unwrap();
+    let mut cfg = state.config().unwrap();
+    cfg.host_name = Some("mac".into()); // no relay: local only
+    state.save_config(&cfg).unwrap();
+    let (_, link) = pair::create(
+        &state,
+        "local",
+        "mac",
+        Scope::Full,
+        true,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let gw = Gateway::new(
+        StateDir::open(tmp.path().join("gw")).unwrap(),
+        server::Server::new(sock),
+    )
+    .unwrap();
+    tokio::spawn(vk_gateway::run(gw.clone()));
+    let path = vk_gateway::local::socket_path(&gw.state.dir);
+    for _ in 0..100 {
+        if path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    async fn open_local(
+        path: &std::path::Path,
+        hello: Hello,
+        dev: &DeviceKey,
+        hk: &[u8; 32],
+        psk: Option<&[u8; 32]>,
+    ) -> Client2 {
+        let stream = tokio::net::UnixStream::connect(path).await.unwrap();
+        let (mut ws, _) = client_async("ws://localhost/", stream).await.unwrap();
+        let hb = hello.to_bytes();
+        ws.send(Message::Text(String::from_utf8(hb.clone()).unwrap().into()))
+            .await
+            .unwrap();
+        let mut i = Initiator::new(&hb, &dev.private, hk, psk).unwrap();
+        ws.send(Message::Binary(i.write_first(b"").unwrap().into()))
+            .await
+            .unwrap();
+        let Some(Ok(Message::Binary(m2))) = ws.next().await else {
+            panic!("no msg2")
+        };
+        let (_, session) = i.read_second(&m2).unwrap();
+        Client2 { ws, session }
+    }
+    struct Client2 {
+        ws: WebSocketStream<tokio::net::UnixStream>,
+        session: Session,
+    }
+    impl Client2 {
+        async fn call(&mut self, id: u64, method: &str, params: Value) -> Value {
+            let m = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+            for f in self.session.encrypt(m.to_string().as_bytes()).unwrap() {
+                self.ws.send(Message::Binary(f.into())).await.unwrap();
+            }
+            loop {
+                let Some(Ok(Message::Binary(b))) = self.ws.next().await else {
+                    panic!("closed")
+                };
+                if let Some(m) = self.session.decrypt(&b).unwrap() {
+                    let v: Value = serde_json::from_slice(&m).unwrap();
+                    if v["id"] == id || v.get("method").is_some_and(|m| m == "pair.done") {
+                        return v;
+                    }
+                }
+            }
+        }
+    }
+
+    let dev = DeviceKey::generate();
+    let hk = link.host_key().unwrap();
+    let mut c = open_local(
+        &path,
+        Hello::pair(&link.pid),
+        &dev,
+        &hk,
+        Some(&link.psk_bytes().unwrap()),
+    )
+    .await;
+    let r = c
+        .call(
+            1,
+            "pair.claim",
+            json!({"name": "desktop", "platform": "macos"}),
+        )
+        .await;
+    assert_eq!(r["result"]["status"], "pending");
+    let mut c = open_local(&path, Hello::device(), &dev, &hk, None).await;
+    let d = c.call(2, "dashboard.get", json!({})).await;
+    assert_eq!(d["result"]["at"], 7);
+}

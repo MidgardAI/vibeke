@@ -57,6 +57,10 @@ enum Cmd {
         /// Print the link only (no QR).
         #[arg(long)]
         no_qr: bool,
+        /// For an app on this machine (the desktop app): a link to the local socket, printed as
+        /// JSON; no confirmation (same user as this command).
+        #[arg(long)]
+        local: bool,
     },
     /// Share a pane or workspace with someone: an expiring, scoped invitation link (spec 16 §15.1).
     /// With --handoff, an invitation that lets a teammate hand work to this host instead.
@@ -158,8 +162,28 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
             no_confirm,
             ttl,
             no_qr,
+            local,
         } => {
             let cfg = state.config()?;
+            if local {
+                let host_name = cfg
+                    .host_name
+                    .clone()
+                    .unwrap_or_else(crate::default_host_name);
+                let sock = crate::local::socket_path(&state.dir);
+                let (p, mut link) = pair::create(
+                    &state,
+                    "local",
+                    &host_name,
+                    scope,
+                    true,
+                    Duration::from_secs(ttl * 60),
+                )?;
+                link.relay = format!("local:{}", sock.display());
+                let out = serde_json::json!({"link": link, "d": vk_e2e::b64::encode(serde_json::to_vec(&link)?), "pid": p.pid, "socket": sock});
+                println!("{out}");
+                return Ok(());
+            }
             let Some(relay) = cfg.relay.clone() else {
                 bail!("run `vibeke-gateway run --relay <url>` once first")
             };
