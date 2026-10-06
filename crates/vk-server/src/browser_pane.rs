@@ -1641,7 +1641,17 @@ pub(crate) async fn screenshot(
             session: None,
             taken_by: Requester {
                 kind: "user".into(),
-                pane: server.with_core(|c| c.pane(&t.pane).map(|p| p.id.clone())),
+                // Attribute to the source pane (the agent's pane: its task and workspace) when the
+                // browser pane was opened from one; else the browser pane itself.
+                pane: server.with_core(|c| {
+                    c.pane(&t.pane).map(|p| {
+                        p.browser
+                            .as_ref()
+                            .and_then(|b| b.source_pane.clone())
+                            .filter(|sp| c.pane(sp).is_some())
+                            .unwrap_or_else(|| p.id.clone())
+                    })
+                }),
                 run: None,
                 client: None,
             },
