@@ -1,0 +1,12 @@
+[book]
+title = "Vibeke"
+authors = ["Vibeke contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/MidgardAI/vibeke"

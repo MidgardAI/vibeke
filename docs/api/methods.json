@@ -1,0 +1,2754 @@
+{
+  "api": "vibeke/1",
+  "generated_from": "vk-server METHODS tables; signatures from spec/07 §2",
+  "render_protocol": 2,
+  "holder_protocol": {
+    "proto": 1,
+    "min": 1
+  },
+  "method_count": 227,
+  "methods": [
+    {
+      "name": "adapter.delivery_ack",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "adapter.gate",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "adapter.report_self",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "adapter.signal",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "agent.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target}` → `{run, pane, open_interactions[], last_turn?}`"
+    },
+    {
+      "name": "agent.harnesses",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{harnesses: [{id, display, version_detected?, integration_installed, capabilities: {native_approval, native_question, steer, transcript, resume, headless}}]}`"
+    },
+    {
+      "name": "agent.interrupt",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target}` → `{run}` — native abort where available (`abort` RPC, Esc for TUIs)"
+    },
+    {
+      "name": "agent.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace?, state?: [AgentState], harness?}` → `{runs: [AgentRun + {pane, open_interactions: n}]}`"
+    },
+    {
+      "name": "agent.manifests",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "agent.manifests_reload",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "agent.prompt",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target, text, images?: [blob|path], mode?: send|steer|follow_up = send, wait?: bool, until?: [AgentState], timeout_ms?}` → `{run, turn?}` — submits text + Enter atomically via the best channel (RPC `prompt`/`steer` for headless and extension-capable harnesses, bracketed paste + Enter otherwise). If the run is not working and no lifecycle change occurs within 5 s → `stalled`"
+    },
+    {
+      "name": "agent.read",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target, source?: visible|recent|transcript, lines?, format?}` → as `pane.read`, plus `transcript` returns the last N turns from the structured log"
+    },
+    {
+      "name": "agent.release",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target}` → `{}` — stop tracking (the process keeps running as an untracked pane occupant)"
+    },
+    {
+      "name": "agent.rename",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target, name: string|null}` → `{run}`"
+    },
+    {
+      "name": "agent.report",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "agent.resumable",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "agent.resume",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane?, run: ended_run_id, mode?}` → `{run}` — re-launches via the harness resume argv in the same or a new pane"
+    },
+    {
+      "name": "agent.send_keys",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target, keys}` → `{}`"
+    },
+    {
+      "name": "agent.spawn",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — convenience: split/tab + start + optional first prompt"
+    },
+    {
+      "name": "agent.start",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise); returns once the adapter (or detector) reports `idle`"
+    },
+    {
+      "name": "agent.wait",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{target, until?: [WaitCondition] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` — `WaitCondition` = an execution state (04 §2.4) or a derived condition: `needs_approval`/`needs_answer` = an open interaction of that kind, `done` = idle with a turn completed after the wait started (never read state)"
+    },
+    {
+      "name": "api.methods",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{methods: [{name, milestone, capability, mutating}]}`"
+    },
+    {
+      "name": "assistant.cancel",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{request}` → `{request}`; aborts the provider call; a cancelled running request still counts its reservation against the day's budget"
+    },
+    {
+      "name": "assistant.confirm",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{request, preview_digest}` → `{request}` (state `queued`); rechecks consent, endpoint, queue, rate and daily budget; sends exactly the previewed payload"
+    },
+    {
+      "name": "assistant.consent",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{workspace?, connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`; default classes exclude `screen`; the grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint"
+    },
+    {
+      "name": "assistant.generate",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate, profile?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved; nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`"
+    },
+    {
+      "name": "assistant.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{request}` → `{request: {id, operation, state: awaiting_confirmation\\|queued\\|running\\|done\\|failed\\|cancelled\\|interrupted, workspace, inputs (IDs only), profile, connection, adapter, model, endpoint_host, machine, prompt_version, sources (metadata + digests), omitted, redactions, context_digest, preview_digest, payload_bytes, estimated_input_tokens, max_output_tokens, usage: {input_tokens?, output_tokens?}, attempts, estimated_cost_usd?, finish_reason?, error?: {category, message}, output?: {generated: true, label, ...operation fields}, timestamps}}`"
+    },
+    {
+      "name": "assistant.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{workspace?, state?, limit?}` → `{requests}` (without outputs)"
+    },
+    {
+      "name": "assistant.providers",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{}` → `{connections: [{id, adapter, endpoint, endpoint_error?, credential, verified}], profiles, default_profile}`"
+    },
+    {
+      "name": "assistant.purge",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{request}\\|{workspace}\\|{all: true}` → `{purged}`; deletes records and generated outputs (cancels unfinished ones first)"
+    },
+    {
+      "name": "assistant.revoke",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{workspace?, connection?}` → `{revoked, cancelled_requests}`; cancels that workspace's unfinished requests"
+    },
+    {
+      "name": "assistant.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "assist"
+      ],
+      "milestone": "14; as built 2026-10-06",
+      "spec": "`{}` → `{enabled, configured, config_problem?, coordinator: {machine, session}, profile?: {id, connection, adapter, model, endpoint_host, credential: \"env:NAME\"\\|\"file:PATH\"\\|..., limits, pricing_usd_per_mtok?}, limits, today: {utc_day, used, reserved, remaining}, auto_send, consents, requests: {awaiting_confirmation, queued, running, stored}, operations, background: false}` — no secrets, no provider contact"
+    },
+    {
+      "name": "attention.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "attention.update",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "blob.abort",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "blob.append",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "blob.begin",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "blob.commit",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "blob.put",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{mime, data_b64}` (≤ 16 MiB) or `{mime, path}` (server reads local file) → `{hash, size}`"
+    },
+    {
+      "name": "browser.attach_screencast",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`."
+    },
+    {
+      "name": "browser.click",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`"
+    },
+    {
+      "name": "browser.close",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "browser.command",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{pane, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?, hard?, text?}` → `{pane}` (`window` → the `preview.open` window result; `pane` → `{pane, profile}`) — for panes rendered by this server. Not from a pane."
+    },
+    {
+      "name": "browser.console",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session|preview, since_ms?, level?: error|warn|all}` → `{entries: [{ts, level, text, source}]}`"
+    },
+    {
+      "name": "browser.detach_screencast",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`."
+    },
+    {
+      "name": "browser.diff",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "screenshots"
+      ],
+      "milestone": "M3",
+      "spec": "`{a: blob, b: blob, threshold?}` → `{blob, changed_ratio, regions}` — refuses different `environment.kind` unless `force`"
+    },
+    {
+      "name": "browser.dom",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session|preview, selector?, format?: text|html|a11y}` → `{content}`"
+    },
+    {
+      "name": "browser.eval",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session, expression}` → `{value}` — gated by capability `browser.script`"
+    },
+    {
+      "name": "browser.install",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`; with `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only."
+    },
+    {
+      "name": "browser.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{}` → `{sessions: [...], browser: <status>, machine}` — only sessions the caller may see."
+    },
+    {
+      "name": "browser.navigate",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5)"
+    },
+    {
+      "name": "browser.network",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session|preview, failed_only?, since_ms?}` → `{entries: [{ts, method, url, status?, error?, blocked_by_policy?}]}`"
+    },
+    {
+      "name": "browser.open",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "browser.pane.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{pane?, preview? | url?, split?, machine?, focus?: true, focus_client?}` → `{opened_in: \"pane\", pane, pane_handle, tab, url, machine, source_pane}` — on the owning server; `pane` defaults to the preview's pane, then the caller's pane / focused pane. URLs: `http(s)` (`localhost:5173/x` gets `http://`); from a pane only loopback, only next to the caller's own panes, never moving focus. Events `pane.created {kind: \"browser\"}`, `tab.layout_changed`."
+    },
+    {
+      "name": "browser.pane.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{}` → `{panes: [{pane, handle, tab, browser}]}`"
+    },
+    {
+      "name": "browser.pane.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "browser.pane.update",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{pane, url?, title?, history?, history_index?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. Not from a pane."
+    },
+    {
+      "name": "browser.press",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`"
+    },
+    {
+      "name": "browser.release",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`."
+    },
+    {
+      "name": "browser.screencast_frame",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`."
+    },
+    {
+      "name": "browser.screenshot",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6; file also written to `$TMPDIR/vibeke-shots/<hash>.png`"
+    },
+    {
+      "name": "browser.session_close",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session}` → `{}`"
+    },
+    {
+      "name": "browser.session_open",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run"
+    },
+    {
+      "name": "browser.snapshot",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "browser.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{}` → `{browsers: [{profile, dpr, pid, targets, up_ms}], targets: [{pane, owner, url, title, profile, machine, route, running, screencast, viewers, frames, fps, decode_ms, css, frame, history, error}], windowed, tiles_sent, media_bytes}` — the media host's view."
+    },
+    {
+      "name": "browser.take_over",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`."
+    },
+    {
+      "name": "browser.type",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`"
+    },
+    {
+      "name": "browser.wait",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agent_browser"
+      ],
+      "milestone": "M3",
+      "spec": "`{browser_session, for: load|networkidle|{selector}|{ms}}` → `{}`"
+    },
+    {
+      "name": "browser.watch",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane"
+      ],
+      "milestone": "M3",
+      "spec": "`{session \\| agent_pane, pane?, split?: right\\|down\\|left\\|up\\|tab, focus?: true, focus_client?}` → `{opened_in: \"watch\", session, read_only: true, pane, pane_handle, tab, url, machine, source_pane}` — full scope only (`permission_denied` from a pane). `agent_pane` picks that pane's newest open session (`not_found` \"… has no open browser session\"). Creates a browser pane with `watch = <session>` in this server's layout next to `pane` (default: the session's owner pane). The pane is read-only until `BrowserCmd::TakeOver(true)` (render stream), which sets human control held by `pane:<id>` (events `browser.taken_over {by, via: \"watch_pane\"}`); `TakeOver(false)` or closing the pane releases it (`browser.released`). CLI: `vibeke browser watch <session> [--pane p] [--split …] [--machine m]`."
+    },
+    {
+      "name": "client.appearance",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity",
+        "theme"
+      ],
+      "milestone": "M1",
+      "spec": "`{dark: bool, source?: osc11\\|csi996}` → `{appearance, colorfgbg}` — host terminal light/dark report (theme propagation, 08 §11) [M4]"
+    },
+    {
+      "name": "client.focus",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity",
+        "notify"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane \\| url: \"vibeke://focus?session=…&pane=…\", raise?: true}` → `{pane, client, focused, raised, host}` — focus in the most recently active attached client and raise its host terminal (08 §7.1 click-to-focus); full scope only [M4]"
+    },
+    {
+      "name": "client.hello",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{client, version, api, kind: tui|cli|plugin|gateway|agent, token?}` → `{server_version, api, session, machine, capabilities[], features[]}`"
+    },
+    {
+      "name": "client.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{clients: [{id, kind, client, version, attached_at, peer: {uid, pid?, machine?}, focused_pane?}]}`"
+    },
+    {
+      "name": "compat.herdr.call",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "compat.invocation.verify",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "compat.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "compat.ui.state",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "desk.context",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{session, turns?: [n]\\|\"3-5,7\", path?, objective?}` → `{package: {objective, decisions, remaining_work, selected_turns: [{turn, user, assistant, tool_calls}], repository: {repo, cwd, revision: {revision, branch, uncommitted_files}}}, text}` — deterministic (no model call): the objective defaults to the first prompt, decisions/remaining work are labelled line extracts for the user to edit, default turns are the last three"
+    },
+    {
+      "name": "desk.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{session}\\|{repo}\\|{workspace}\\|{before}` → `{rows_deleted, sessions_forgotten}` — deletes index rows; sessions are tombstoned so the indexer never re-adds them; `before` deletes older rows. Event `desk.forgotten {scope} {rows, sessions}` (no text)"
+    },
+    {
+      "name": "desk.index",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{budget?}` → `{pass: {registered, bytes, rows, purged, reset, pending, errors}}`"
+    },
+    {
+      "name": "desk.open",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{session, turn?, path?, focus?: false}` → `{status, action: focus_live_pane\\|resume_native_session\\|start_new_agent_with_context, turn_items, focused, actions: [{id: focus, label: \"Focus live pane\"}, {id: resume_native, label: \"Resume native session\", command}, {id: new_agent, label: \"Start new agent with context\"}]}`. Focuses the live run's pane **only** with `focus: true` (an explicit user action); never resumes"
+    },
+    {
+      "name": "desk.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{session, mode?: native, pane?, workspace?}` → **Resume native session**: `conflict:session_live` while it runs (focus it instead); `unsupported` without a resume handle; else types the resume argv into the given free pane (`conflict:pane_busy` if it has an agent) or a new tab in the session's workspace at its cwd (a stored run without `pane` keeps `agent.resume`'s behaviour) → `{mode, label, command, run}`. `{session, mode: new_agent, workspace?, start?: false, harness?, pane?, turns?, objective?}` → **Start new agent with context**: builds the `desk.context` package and saves it as a workspace draft; with `start` also starts the harness (no prompt) in a free pane → `{draft, package, sent: false, run?, pane?}`. Nothing is ever sent: the user edits and sends the draft (`draft.send`)"
+    },
+    {
+      "name": "desk.search",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{text, repo?, harness?, since?, until?, session?, limit?: 20, sort?: relevance\\|recent, fresh?: true}` → `{hits: [{session, path, harness, machine, repo, cwd, turn, role, kind, ts, offset, snippet, status: live\\|resumable\\|none, live: {run, pane}, resume: {argv, command, run}}], index: {sources, rows, forgotten_sessions}}`. `repo` is a directory (matched as main repository root or cwd prefix); `since`/`until` take epoch ms, `7d`/`12h`/`30m` or `YYYY-MM-DD`. **live** = a current run is in that native session; **resumable** = a resume argv is known (a stored run's, else the harness's own)"
+    },
+    {
+      "name": "desk.sessions",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{repo?, harness?, limit?: 50}` → `{sessions: [{session, harness, machine, repo, cwd, workspace, run, first_ts, last_ts, turns, rows, paths, status, live, resume}]}`, most recent first"
+    },
+    {
+      "name": "desk.status",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "desk"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{}` → `{db, selection: {runs, roots}, exclude, retention_days, counts, sources: [{path, harness, session, origin: run\\|root, repo, rows, offset, size, pending_bytes, excluded}], last_pass}` — makes source selection, exclusions and retention visible"
+    },
+    {
+      "name": "draft.check",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{target_run, draft?}` → `{run, pane, harness, native_conversation_id, send_path: prompt_input\\|open_pane_only, unsafe?, follow_up: prompt_input, steer: false, hidden_attachments}`"
+    },
+    {
+      "name": "draft.combine",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{ids: [two or more of one scope], title?, separator?: \"\\n\\n\", delete_sources?: false}` → new `{draft}` with joined text, de-duplicated attachments and `combined_from`"
+    },
+    {
+      "name": "draft.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{scope?: workspace\\|task, id?, text, title?, attachments?: [{kind: file\\|screenshot, path\\|blob\\|data_b64, name?, label?}], idempotency_key?}` → `{draft}`. `id` defaults to the caller's workspace. `path` must be an existing absolute path on this server's machine; `blob` is a `blob.put` hash; `data_b64` is stored now in the pane inbox (06 A11.4) — remote clients use `blob`/`data_b64`"
+    },
+    {
+      "name": "draft.delete",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{draft}` → `{deleted}`"
+    },
+    {
+      "name": "draft.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`"
+    },
+    {
+      "name": "draft.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`"
+    },
+    {
+      "name": "draft.reconcile",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{draft}` → `{send, receipt: {known, …}, may_retry, note}` — a late matching turn upgrades the attempt to `delivered`; a still-uncertain attempt is marked reconciled, which is what allows a warned retry"
+    },
+    {
+      "name": "draft.reorder",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{order: [draft ids]}` → listed drafts first in that order, the rest after"
+    },
+    {
+      "name": "draft.send",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{draft, target_run, idempotency_key, include_notes?: false, keep?: false, retry_despite_unknown?}` → `{draft, send, send_path}`. Uses task messages' guarded prompt-input path (15 §9) without a tracked task: the run and its native conversation are fixed when the send starts; it requires a known native conversation, an idle run, no open interaction, no attached TUI focused on the pane, a provably empty input box and every attachment visible to the pane (`sandbox::can_see`); otherwise `conflict:send_unsafe {fallback: open_pane_to_send, draft_kept: true}` with **zero bytes written** and no attempt recorded. Delivery holds the pane input lock, rechecks, submits and is `delivered` only when a turn at or after the baseline starts in that conversation with the text; otherwise `delivery_unknown` (or `failed`). The sent text is the draft, then `Attached files:` with one path per attachment, then `Notes:` only with `include_notes`. A delivered draft is archived unless `keep`. Receipts are owner-aware (`review::receipts`); the same key replays the current outcome. After `delivery_unknown`: `conflict:reconcile_first` until `draft.reconcile`, then `retry_despite_unknown`"
+    },
+    {
+      "name": "draft.update",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{draft, text?, title?, attachments?, add_attachment?, remove_attachment?: index, expected_rev?}` → `{draft}` (`conflict:draft_changed`, `conflict:send_in_progress`)"
+    },
+    {
+      "name": "events.read",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{after?: Cursor, before?: Cursor, types?, subjects?, limit?: 500}` → `{events, next: Cursor}` — paginated history (within retention)"
+    },
+    {
+      "name": "events.subscribe",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{after?: Cursor, types?: [glob], subjects?: {workspace?, tab?, pane?, run?, task?}, include_snapshot?: false, machine?: label|\"*\"}` → `{subscription_id, at: Cursor}` then notifications"
+    },
+    {
+      "name": "events.wait",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{types, subjects?, after?: Cursor, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly)"
+    },
+    {
+      "name": "git.diff",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB"
+    },
+    {
+      "name": "git.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository"
+    },
+    {
+      "name": "group.add",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`"
+    },
+    {
+      "name": "group.collapse",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{group, …}` → `{group}`"
+    },
+    {
+      "name": "group.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{name, parent?}` → `{group}`"
+    },
+    {
+      "name": "group.delete",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{group, …}` → `{group}`"
+    },
+    {
+      "name": "group.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`"
+    },
+    {
+      "name": "group.move",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{group, …}` → `{group}`"
+    },
+    {
+      "name": "group.remove",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`"
+    },
+    {
+      "name": "group.rename",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{group, …}` → `{group}`"
+    },
+    {
+      "name": "image.upload",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M3",
+      "spec": "`{pane, mime, data_b64 | path_on_client}` → `{path_on_machine, blob}` — client→remote image transfer (paste/drag)"
+    },
+    {
+      "name": "interaction.answer",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again; a different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7); the key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1)"
+    },
+    {
+      "name": "interaction.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{interaction}` → `{interaction}` (user dismisses; adapter delivers deny/escape)"
+    },
+    {
+      "name": "interaction.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{interaction}` → `{interaction}`"
+    },
+    {
+      "name": "interaction.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": "M1",
+      "spec": "`{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1; Phase 2 adds ranking"
+    },
+    {
+      "name": "layout.apply",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity",
+        "layouts"
+      ],
+      "milestone": "M1",
+      "spec": "`{layout, workspace?, new_workspace?: {cwd, name}}` → `{workspace, tabs, panes}`"
+    },
+    {
+      "name": "layout.export",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api",
+        "layouts"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab|workspace}` → `{layout: LayoutSpec}` (TOML/JSON-serializable, includes commands and cwds)"
+    },
+    {
+      "name": "layout.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "parity",
+        "layouts"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]"
+    },
+    {
+      "name": "layout.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "parity",
+        "layouts"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]"
+    },
+    {
+      "name": "notes.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`"
+    },
+    {
+      "name": "notes.set",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "drafts"
+      ],
+      "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
+      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`"
+    },
+    {
+      "name": "notification.config",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "parity",
+        "notify"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{channels: [os, terminal_bell, osc9, sound, plugin:<id>], rules}` — *M4:* `{channels: [toast, native, osc, …], native: {backend, unavailable_reason}, rules: {on, suppress_when_focused, coalesce_ms, quiet_hours}, hosts}`"
+    },
+    {
+      "name": "notification.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{unread_only?: true, limit?}` → `{notifications}`"
+    },
+    {
+      "name": "notification.read",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{notification|all: true}` → `{}`"
+    },
+    {
+      "name": "notification.send",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{title, body?, urgency?: normal, subject?: pane|run|task, sound?: bool}` → `{notification}` — for scripts/plugins"
+    },
+    {
+      "name": "pane.can_see_paths",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "pane.close",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, force?}` → `{}`"
+    },
+    {
+      "name": "pane.current",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{pane}` (requires pane token / `@current`)"
+    },
+    {
+      "name": "pane.embed",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, target?, direction?: right, ratio?}` → `{pane, tab}` — a floating pane back into the tiling, split next to `target` (default the focused tiled pane) [M4]"
+    },
+    {
+      "name": "pane.equalize",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "pane.float",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centred); with `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout`"
+    },
+    {
+      "name": "pane.focus",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, client?}` → `{pane}`"
+    },
+    {
+      "name": "pane.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane}` → `{pane, run?, open_interactions[]}`"
+    },
+    {
+      "name": "pane.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace?, tab?, has_agent?}` → `{panes}`"
+    },
+    {
+      "name": "pane.mark_seen",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane}` → `{pane}`"
+    },
+    {
+      "name": "pane.mark_unread",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane}` → `{pane}`"
+    },
+    {
+      "name": "pane.pin",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, pinned: bool}` → `{pane}`"
+    },
+    {
+      "name": "pane.read",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, source: visible|recent|recent_unwrapped|scrollback|detection, lines?: 200, from_line?, format?: text|ansi|cells, include_cursor?}` → `{text|cells, rows, revision, truncated, scroll}`"
+    },
+    {
+      "name": "pane.rename",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, title: string|null}` → `{pane}` (emits `pane.title_changed`)"
+    },
+    {
+      "name": "pane.report_agent",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "pane.report_agent_session",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "pane.resize",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, direction, cells?|percent?}` → `{layout}`"
+    },
+    {
+      "name": "pane.run",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, command: string, wait?: bool, timeout_ms?}` → `{}` or (with wait) `{exit_code?, output_tail}` — sends text + Enter; with `wait`, uses OSC 133 prompt marks when the shell integration is active, else falls back to \"foreground process returns to shell\""
+    },
+    {
+      "name": "pane.send_bytes",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "pane.send_keys",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, keys: [string]}` → `{}` — key grammar §2.6.1; all keys validated before any byte is written"
+    },
+    {
+      "name": "pane.send_text",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, text, paste?: auto|bracketed|raw = auto}` → `{bytes}` — `auto` honors the pane's live bracketed-paste mode *(notify ok)*"
+    },
+    {
+      "name": "pane.split",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, direction: right|down|left|up, ratio?: 0.5, cwd?, command?: argv, env?: {k:v}, focus?: false, title?}` → `{pane}`"
+    },
+    {
+      "name": "pane.wait_idle",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, quiet_ms: 2000, timeout_ms?}` → `{revision}`"
+    },
+    {
+      "name": "pane.wait_output",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, match?: string, regex?: string, source?, timeout_ms?, since_revision?}` → `{matched: string, line, revision}`"
+    },
+    {
+      "name": "pane.zoom",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane, zoomed?: toggle}` → `{tab}`"
+    },
+    {
+      "name": "plugin.action.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "plugin.action.run",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "plugin.link.open",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "plugin.link_handler.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "plugin.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": "M5",
+      "spec": "`{}` → `{plugins: [{id, version, enabled, kind: actions|process, capabilities, status}]}`"
+    },
+    {
+      "name": "plugin.log.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "plugin.surface.close",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "compat"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "preview.declare",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{port, host?: 127.0.0.1, scheme?: http, path?, label?, pane?, task?}` → `{preview}`"
+    },
+    {
+      "name": "preview.dismiss",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion"
+    },
+    {
+      "name": "preview.forget",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview}` → `{}`"
+    },
+    {
+      "name": "preview.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview}` → `{preview}`"
+    },
+    {
+      "name": "preview.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{machine?, task?, pane?, status?: suggested|up|down|all}` → `{previews}` — suggestions only with `status: suggested|all`"
+    },
+    {
+      "name": "preview.open",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`; proxy mode returns a tokenized `*.vibeke.localhost` URL"
+    },
+    {
+      "name": "preview.profile",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "preview.profile.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "preview"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "preview.profile.reset",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "preview.promote",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion"
+    },
+    {
+      "name": "preview.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`."
+    },
+    {
+      "name": "preview.url",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "preview"
+      ],
+      "milestone": "M3",
+      "spec": "`{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human)"
+    },
+    {
+      "name": "sandbox.allow",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "sandbox.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "sandbox.remove",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "sandbox.start",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "sandbox.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "sandbox.stop",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "screenshot.delete",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "screenshots"
+      ],
+      "milestone": "M3",
+      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes); a screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`."
+    },
+    {
+      "name": "screenshot.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "screenshots"
+      ],
+      "milestone": "M3",
+      "spec": "`{id}` (id or `sN`) → `ScreenshotMeta + {path_on_machine, exists, data_b64? (inline)}` — other workspaces' screenshots are `not_found` for panes."
+    },
+    {
+      "name": "screenshot.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "screenshots"
+      ],
+      "milestone": "M3",
+      "spec": "`{task?, preview?, run?, since?: ms \\| \"1h\", since_ms?, limit?: 50}` → `{screenshots: [ScreenshotMeta + {path_on_machine, exists}], count, total}` — newest first. Pane scope: only screenshots whose `workspace` is the pane's workspace."
+    },
+    {
+      "name": "screenshot.open",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "screenshots"
+      ],
+      "milestone": "M3",
+      "spec": "`{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`; `VIBEKE_NO_OPEN=1` only reports the path)."
+    },
+    {
+      "name": "search.query",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts"
+    },
+    {
+      "name": "server.reload_config",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{changed: [keys], errors: []}`"
+    },
+    {
+      "name": "server.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{pid, version, uptime_ms, session, panes, holders: {live, orphaned}, clients, event_seq, db_size, rss}`"
+    },
+    {
+      "name": "server.stop",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{kill_panes: bool = false}` → `{}` — with `kill_panes:false`, holders keep running and the next server reattaches"
+    },
+    {
+      "name": "session.snapshot",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{include?: [workspaces, tabs, panes, runs, interactions, tasks, previews, layouts, machines]}` → `{at_seq, workspaces[], groups[], tabs[], panes[], runs[], interactions[], tasks[], previews[], layouts[], focused: {client_id → {workspace, tab, pane}}}`"
+    },
+    {
+      "name": "status.segments",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane?, client?}` → `{segments: {machine, session, workspace, task, branch, ports, attention, agents_summary, cpu, clock, sync_input}, focus, appearance, client_side: [mode, prefix_indicator]}` — data for the built-in status-bar segments (08 §4) from that client's focus [M4]"
+    },
+    {
+      "name": "tab.close",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab, force?}` → `{}`"
+    },
+    {
+      "name": "tab.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace, cwd?, title?, focus?: false, command?: argv, layout?: LayoutSpec}` → `{tab, root_pane}`"
+    },
+    {
+      "name": "tab.floats",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab?, visible?}` → `{tab}` — show/hide all floats (`Tab.floats_hidden`; toggles without `visible`) [M4]"
+    },
+    {
+      "name": "tab.focus",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab, client?}` → `{tab}`"
+    },
+    {
+      "name": "tab.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace?}` → `{tabs}`"
+    },
+    {
+      "name": "tab.move",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab, index, workspace?}` → `{tabs}` (numbers are stable; order changes)"
+    },
+    {
+      "name": "tab.rename",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{tab, title: string|null}` → `{tab}`"
+    },
+    {
+      "name": "task.check.authorize",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.check.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.check.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.check.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.check.run",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|jj_workspace|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — *M4:* `isolation` also accepts `auto` (default from `tasks.checkout`/`tasks.vcs`: jj workspace when the repo has `.jj` and `jj` is installed, else worktree); the choice is recorded as `Task.checkout`; `task.get` of a jj task returns `branch_status {vcs: jj, branch, bookmark_exists, bookmarks, change_id, commit_id, dirty, conflict}` and `jj {workspace, colocated}`; `task.finish {remove_worktree}` runs `jj workspace forget` and deletes the directory (never for `none`)"
+    },
+    {
+      "name": "task.dependency.add",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.dependency.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.dependency.remove",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.effort.estimate",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.finish",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{task, remove_worktree?: ask|true|false, delete_branch?: false}` → `{task}`"
+    },
+    {
+      "name": "task.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{task}` → `{task, workspace, runs, previews, collisions[]}`"
+    },
+    {
+      "name": "task.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{status?, repo?}` → `{tasks}`"
+    },
+    {
+      "name": "task.review.accept",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.candidates",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.diff",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.note.classify",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.notes",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.request_reviewer",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.snapshot",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.review.start_reviewer",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "task.sync",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "sandbox"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
+      "name": "theme.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "parity",
+        "theme"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]"
+    },
+    {
+      "name": "theme.set_mode",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "parity",
+        "theme"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` / `{mode: auto\\|light\\|dark\\|null}` → `{appearance, colorfgbg, reports?}` — `set_mode` is a runtime override, not persisted [M4]"
+    },
+    {
+      "name": "workspace.close",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace, force?: false}` → `{}` — refuses with `conflict:pane_busy` if a non-shell foreground process runs, unless `force`"
+    },
+    {
+      "name": "workspace.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{cwd, name?, group?, focus?: false, layout?: LayoutSpec, command?: argv}` → `{workspace, tab, root_pane}`"
+    },
+    {
+      "name": "workspace.focus",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace, client?}` → `{workspace}`"
+    },
+    {
+      "name": "workspace.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace}` → `{workspace}`"
+    },
+    {
+      "name": "workspace.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{group?}` → `{workspaces: [Workspace + {agent_summary: {working, needs_input, done, idle}, tab_count, pane_count}]}`"
+    },
+    {
+      "name": "workspace.move",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace, group?, index}` → `{workspaces}`"
+    },
+    {
+      "name": "workspace.rename",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{workspace, name: string|null}` → `{workspace}` (null clears to auto-name)"
+    },
+    {
+      "name": "worktree.create",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{repo|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}`"
+    },
+    {
+      "name": "worktree.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}`"
+    },
+    {
+      "name": "worktree.open",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{path, focus?: false}` → `{workspace}`"
+    },
+    {
+      "name": "worktree.remove",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event"
+    },
+    {
+      "name": "worktree.repo_root",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "spec": "`{cwd}` → `{repo_root, vcs}`"
+    }
+  ]
+}

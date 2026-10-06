@@ -260,6 +260,85 @@ pub const METHODS: &[(&str, bool)] = &[
     ("worktree.open", true),
 ];
 
+/// Methods a pane-scoped caller may never call (09 §5.2). Also the source of the API
+/// catalog's scope column (`docs/api/methods.json`).
+pub const PANE_FORBIDDEN: &[&str] = &[
+    "interaction.answer",
+    "interaction.cancel",
+    "server.stop",
+    "server.reload_config",
+    "workspace.close",
+    "workspace.rename",
+    "workspace.move",
+    "workspace.focus",
+    "tab.close",
+    "tab.rename",
+    "tab.move",
+    "tab.focus",
+    "pane.focus",
+    "task.finish",
+    "worktree.remove",
+    "render.attach",
+    "policy.trust",
+    // 15 §11: agents can report observations but not confirm intent, bind, send, accept,
+    // authorize verification or change priorities.
+    "task.track",
+    "task.intent.update",
+    "task.bind",
+    "task.unbind",
+    "task.set",
+    "task.message.prepare",
+    "task.message.send",
+    "task.message.cancel",
+    "task.review.accept",
+    "task.check.authorize",
+    "task.check.run",
+    "task.check.cancel",
+    // 15 T4: snapshots, reviewer runs, finding classification and dependency links are
+    // human decisions.
+    "task.review.snapshot",
+    "task.review.request_reviewer",
+    "task.review.start_reviewer",
+    "task.review.note.classify",
+    "task.dependency.add",
+    "task.dependency.remove",
+    "attention.update",
+    "integration.install",
+    "integration.uninstall",
+    // Research R2/R3: agents can keep drafts/notes in their own workspace and search its
+    // desk, but sending, resuming, focusing and purging are user actions.
+    "draft.send",
+    "draft.reconcile",
+    "desk.open",
+    "desk.resume",
+    "desk.forget",
+    "desk.index",
+    "desk.status",
+];
+
+/// `pane.*` methods that act on a pane (a pane-scoped caller may only target its own panes).
+pub fn is_pane_targeted(method: &str) -> bool {
+    method.starts_with("pane.")
+        && !matches!(
+            method,
+            "pane.list"
+                | "pane.get"
+                | "pane.current"
+                | "pane.read"
+                | "pane.wait_output"
+                | "pane.wait_idle"
+                | "pane.can_see_paths"
+        )
+}
+
+/// `agent.*` methods whose `target` must be the caller's own run or a pane it created.
+pub fn is_run_targeted(method: &str) -> bool {
+    matches!(
+        method,
+        "agent.prompt" | "agent.interrupt" | "agent.send_keys" | "agent.rename" | "agent.release"
+    )
+}
+
 /// Capability check for pane-scoped callers (09 §5.2): reads are open; writes are limited to
 /// the caller's own pane and panes it created; authorizing actions (answering interactions),
 /// server control and other workspaces' layout are forbidden.
@@ -274,60 +353,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         )
         .details(json!({"scope": "pane"})))
     };
-    const FORBIDDEN: &[&str] = &[
-        "interaction.answer",
-        "interaction.cancel",
-        "server.stop",
-        "server.reload_config",
-        "workspace.close",
-        "workspace.rename",
-        "workspace.move",
-        "workspace.focus",
-        "tab.close",
-        "tab.rename",
-        "tab.move",
-        "tab.focus",
-        "pane.focus",
-        "task.finish",
-        "worktree.remove",
-        "render.attach",
-        "policy.trust",
-        // 15 §11: agents can report observations but not confirm intent, bind, send, accept,
-        // authorize verification or change priorities.
-        "task.track",
-        "task.intent.update",
-        "task.bind",
-        "task.unbind",
-        "task.set",
-        "task.message.prepare",
-        "task.message.send",
-        "task.message.cancel",
-        "task.review.accept",
-        "task.check.authorize",
-        "task.check.run",
-        "task.check.cancel",
-        // 15 T4: snapshots, reviewer runs, finding classification and dependency links are
-        // human decisions.
-        "task.review.snapshot",
-        "task.review.request_reviewer",
-        "task.review.start_reviewer",
-        "task.review.note.classify",
-        "task.dependency.add",
-        "task.dependency.remove",
-        "attention.update",
-        "integration.install",
-        "integration.uninstall",
-        // Research R2/R3: agents can keep drafts/notes in their own workspace and search its
-        // desk, but sending, resuming, focusing and purging are user actions.
-        "draft.send",
-        "draft.reconcile",
-        "desk.open",
-        "desk.resume",
-        "desk.forget",
-        "desk.index",
-        "desk.status",
-    ];
-    if FORBIDDEN.contains(&method) {
+    if PANE_FORBIDDEN.contains(&method) {
         if method == "interaction.answer" {
             return Err(err(
                 ErrorKind::PermissionDenied,
@@ -339,17 +365,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
     }
     crate::preview::authorize_pane_machine(server, ctx, method, p)?;
     let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
-    let pane_targeted = method.starts_with("pane.")
-        && !matches!(
-            method,
-            "pane.list"
-                | "pane.get"
-                | "pane.current"
-                | "pane.read"
-                | "pane.wait_output"
-                | "pane.wait_idle"
-                | "pane.can_see_paths"
-        );
+    let pane_targeted = is_pane_targeted(method);
     if pane_targeted {
         let target = s(p, "pane").unwrap_or("@current");
         let pane = resolve_pane(server, ctx, Some(target))?;
@@ -379,10 +395,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
             .details(json!({"scope": "pane"})));
         }
     }
-    let run_targeted = matches!(
-        method,
-        "agent.prompt" | "agent.interrupt" | "agent.send_keys" | "agent.rename" | "agent.release"
-    );
+    let run_targeted = is_run_targeted(method);
     if run_targeted {
         let t = s(p, "target").unwrap_or("@current");
         let pane = server

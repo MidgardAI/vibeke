@@ -105,6 +105,12 @@ Tasks:
 - Windows host (ConPTY, named pipes, holder equivalent), Windows Terminal in the keyboard matrix; the full Herdr plugin/automation suite including Windows argv/PATHEXT and paths.
 - External security review; reproducible Linux builds; OSS-Fuzz; docs site; migration guide from Herdr; 1.0 API freeze (`vibeke/1`).
 
+**Status (2026-10-06): groundwork only; M6 is not done.**
+- *Docs site:* source in `docs/site/` (mdBook layout, `mise run docs` builds it when `mdbook` is installed). The CLI, config and API chapters are generated from `vk_cli::COMMANDS`, `vk-config`'s default config and the server's `METHODS` tables, and a test (`crates/vibeke/tests/api_docs.rs`) fails when they are stale; regenerate with `VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs`. The Herdr migration guide is `docs/migrating-from-herdr.md`. Not yet published or hosted.
+- *API catalog and freeze:* `docs/api/methods.json` and `docs/api/README.md` list every method with its mutating flag, pane/full scope (from `api::PANE_FORBIDDEN` and the pane-target rules in `authorize`), signature from 07 §2 where tabulated, and the render/holder protocol versions. `docs/api/vibeke-1.frozen.json` is the `vibeke/1` snapshot: a test fails if a frozen method disappears or its mutating or scope flag changes (additions are allowed). **The freeze is a draft until 1.0**: nothing is committed to external clients yet, and the snapshot is regenerated deliberately (`VIBEKE_UPDATE_API_FREEZE=1`). The JSON-Schema generation from `vk-proto` (07 §1.5) and the TypeScript/Python clients are not built.
+- *Reproducible builds:* `scripts/repro-check.sh` (`mise run repro-check`); results and caveats in `docs/hardening.md`. CI does not run it yet.
+- *Not started:* Windows host, external security review, OSS-Fuzz onboarding, the 1.0 freeze itself.
+
 ## Deferred beyond 1.0 (unless real demand appears)
 
 QUIC roaming transport + predictive echo (mosh-style) · plugin marketplace · policy learning (rule suggestions) · best-of-N comparison UI · automatic shared-cwd "split into task" migration · synchronized input · multiple graphics fallbacks beyond kitty graphics. Herdr's private TUI/binary transport is outside the public compatibility contract; the full public plugin/automation API is required in M5.

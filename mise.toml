@@ -47,3 +47,11 @@ run = "cargo test --release -p vk-fuzz --test random"
 [tasks.perf-budgets]
 description = "Report-only: run the latency/throughput/bandwidth measurements and compare with spec 10 §1 budgets"
 run = "sh scripts/perf-budgets.sh"
+
+[tasks.docs]
+description = "Build the docs site (docs/site) with mdBook if installed; otherwise print how to get it. Reference chapters are regenerated with VIBEKE_UPDATE_DOCS=1 cargo test -p vibeke --test api_docs"
+run = "if command -v mdbook >/dev/null 2>&1; then mdbook build docs/site; else echo 'mdbook not found: install it (cargo install mdbook, or mise use -g mdbook) and re-run; the source is docs/site/src'; fi"
+
+[tasks.repro-check]
+description = "Build the Linux musl release twice (SOURCE_DATE_EPOCH, --remap-path-prefix, --locked) and compare sha256 (spec 09 §10)"
+run = "sh scripts/repro-check.sh"

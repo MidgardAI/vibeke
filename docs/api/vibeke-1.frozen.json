@@ -1,0 +1,920 @@
+{
+  "api": "vibeke/1",
+  "status": "draft until 1.0",
+  "rule": "frozen methods may not be removed and their mutating/scope flags may not change; additions are allowed",
+  "render_protocol": 2,
+  "holder_protocol": {
+    "proto": 1,
+    "min": 1
+  },
+  "methods": {
+    "adapter.delivery_ack": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "adapter.gate": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "adapter.report_self": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "adapter.signal": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "agent.harnesses": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "agent.interrupt": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "agent.manifests": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "agent.manifests_reload": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.prompt": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.read": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "agent.release": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.rename": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.report": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.resumable": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "agent.resume": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.send_keys": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.spawn": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.start": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "agent.wait": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "api.methods": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "assistant.cancel": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "assistant.confirm": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "assistant.consent": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "assistant.generate": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "assistant.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "assistant.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "assistant.providers": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "assistant.purge": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "assistant.revoke": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "assistant.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "attention.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "attention.update": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "blob.abort": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "blob.append": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "blob.begin": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "blob.commit": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "blob.put": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.attach_screencast": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.click": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.close": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.command": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.console": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.detach_screencast": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.diff": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.dom": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.eval": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.install": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.navigate": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.network": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.open": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.pane.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.pane.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.pane.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.pane.update": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.press": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.release": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.screencast_frame": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.screenshot": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.session_close": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.session_open": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.snapshot": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.take_over": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.type": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "browser.wait": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "browser.watch": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "client.appearance": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "client.focus": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "client.hello": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "client.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "compat.herdr.call": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "compat.invocation.verify": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "compat.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "compat.ui.state": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "desk.context": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "desk.forget": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "desk.index": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "desk.open": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "desk.resume": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "desk.search": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "desk.sessions": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "desk.status": {
+      "mutating": false,
+      "scope": "full"
+    },
+    "draft.check": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "draft.combine": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "draft.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "draft.delete": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "draft.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "draft.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "draft.reconcile": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "draft.reorder": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "draft.send": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "draft.update": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "events.read": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "events.subscribe": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "events.wait": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "git.diff": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "git.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "group.add": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "group.collapse": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "group.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "group.delete": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "group.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "group.move": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "group.remove": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "group.rename": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "image.upload": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "interaction.answer": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "interaction.cancel": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "interaction.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "interaction.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "layout.apply": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "layout.export": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "layout.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "layout.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "notes.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "notes.set": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "notification.config": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "notification.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "notification.read": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "notification.send": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.can_see_paths": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.close": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.current": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.embed": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.equalize": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.float": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.focus": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "pane.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.mark_seen": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.mark_unread": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.pin": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.read": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.rename": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.report_agent": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.report_agent_session": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.resize": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.run": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.send_bytes": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.send_keys": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.send_text": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.split": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "pane.wait_idle": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.wait_output": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "pane.zoom": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "plugin.action.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "plugin.action.run": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "plugin.link.open": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "plugin.link_handler.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "plugin.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "plugin.log.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "plugin.surface.close": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.declare": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.dismiss": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.forget": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "preview.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "preview.open": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.profile": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.profile.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "preview.profile.reset": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.promote": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "preview.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "preview.url": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "sandbox.allow": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "sandbox.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "sandbox.remove": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "sandbox.start": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "sandbox.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "sandbox.stop": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "screenshot.delete": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "screenshot.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "screenshot.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "screenshot.open": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "search.query": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "server.reload_config": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "server.status": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "server.stop": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "session.snapshot": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "status.segments": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "tab.close": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "tab.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "tab.floats": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "tab.focus": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "tab.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "tab.move": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "tab.rename": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.check.authorize": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.check.cancel": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.check.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.check.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.check.run": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "task.dependency.add": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.dependency.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.dependency.remove": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.effort.estimate": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.finish": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.review.accept": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.review.candidates": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.review.diff": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.review.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.review.note.classify": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.review.notes": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "task.review.request_reviewer": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.review.snapshot": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.review.start_reviewer": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "task.sync": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "theme.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "theme.set_mode": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "workspace.close": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "workspace.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "workspace.focus": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "workspace.get": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "workspace.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "workspace.move": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "workspace.rename": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "worktree.create": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "worktree.list": {
+      "mutating": false,
+      "scope": "pane"
+    },
+    "worktree.open": {
+      "mutating": true,
+      "scope": "pane"
+    },
+    "worktree.remove": {
+      "mutating": true,
+      "scope": "full"
+    },
+    "worktree.repo_root": {
+      "mutating": false,
+      "scope": "pane"
+    }
+  }
+}
