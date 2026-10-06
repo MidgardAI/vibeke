@@ -2,12 +2,16 @@
 
 pub mod app;
 pub mod appearance;
+pub mod assist;
 pub mod browser;
 pub mod caps;
 pub mod clipboard;
 pub mod copy;
+pub mod desk;
+pub mod drafts;
 pub mod draw;
 pub mod floats;
+pub mod gallery;
 pub mod gateway;
 pub mod groups;
 pub mod inbox;

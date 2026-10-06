@@ -26,6 +26,9 @@ pub const TYPES: &[&str] = &[
     "browser.taken_over",
     "browser.released",
     "screenshot.*",
+    "draft.*",
+    "notes.updated",
+    "assistant.*",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -109,6 +112,13 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
                     .trim_end()
                     .to_string(),
             );
+            crate::gallery::on_captured(app, i, &v);
+        } else if k == "screenshot.deleted" {
+            crate::gallery::on_deleted(app, i);
+        } else if k.starts_with("draft.") || k == "notes.updated" {
+            crate::drafts::on_event(app, i, k, &v);
+        } else if k.starts_with("assistant.") {
+            crate::assist::on_event(app, i, k);
         }
     }
     if !confirms.is_empty() {

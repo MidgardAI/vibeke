@@ -555,6 +555,22 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "theme_detect",
         "Re-detect the terminal's light/dark appearance",
     ),
+    ("screenshots", "Screenshot gallery (diff, open, delete)"),
+    (
+        "screenshot_pane",
+        "Screenshot pane: the latest screenshot, following new ones",
+    ),
+    (
+        "desk",
+        "Session desk: find and reopen previous conversations",
+    ),
+    ("drafts", "Drafts composer for this workspace"),
+    ("notes", "Workspace notes (never sent unless included)"),
+    ("assist_briefing", "Briefing for this workspace (assistant)"),
+    (
+        "assist_pane_title",
+        "Suggest a title for this pane (assistant)",
+    ),
 ];
 
 /// Actions only reachable from the palette (no keymap entry).
@@ -576,6 +592,13 @@ const EXTRA_ACTIONS: &[&str] = &[
     "layout_apply",
     "status_bar_toggle",
     "theme_detect",
+    "screenshots",
+    "screenshot_pane",
+    "desk",
+    "drafts",
+    "notes",
+    "assist_briefing",
+    "assist_pane_title",
 ];
 
 pub fn describe(action: &str) -> String {
