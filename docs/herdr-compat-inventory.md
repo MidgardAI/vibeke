@@ -6,14 +6,14 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 
 | Area | Implemented | Partial | Missing | Total |
 |---|---|---|---|---|
-| Socket wire protocol and endpoints | 12 | 4 | 0 | 16 |
-| Socket methods | 28 | 42 | 4 | 74 |
+| Socket wire protocol and endpoints | 12 | 5 | 0 | 17 |
+| Socket methods | 26 | 44 | 4 | 74 |
 | Events (subscriptions and `[[events]]` hooks) | 15 | 8 | 2 | 25 |
 | CLI commands | 7 | 19 | 5 | 31 |
 | Plugin manifest fields | 9 | 5 | 0 | 14 |
 | Plugin invocation environment | 8 | 5 | 2 | 15 |
 | Plugin lifecycle, registry and trust | 12 | 5 | 4 | 21 |
-| **All** | **91** | **88** | **17** | **196** |
+| **All** | **89** | **91** | **17** | **197** |
 
 ## Socket wire protocol and endpoints
 
@@ -30,10 +30,11 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | socket path `<herdr_root>/herdr.sock` | implemented | spec | `<herdr_root>` = `$RUNTIME/herdr-compat` (shared by sessions): default session `herdr.sock`, named sessions `sessions/<name>/herdr.sock`; never under ~/.config/herdr; `compat.herdr_socket_path` not built |
 | socket removed on clean stop | implemented | spec | on SIGTERM/SIGINT and `server.stop`; a stale socket after a crash is replaced at the next start |
 | caller identity from peer credentials (pane scope) | implemented | spec | same ancestry rule as the native socket |
-| private broker endpoint per plugin invocation | implemented | spec | 0600 socket in a 0700 dir, bound server-side to plugin id + grant digest |
-| broker re-checks the grant on every request | implemented | spec | revoked/disabled/stale grants get `permission_denied` |
+| private broker endpoint per plugin invocation | implemented | spec | 0600 socket in a 0700 dir, bound server-side to plugin id, grant digest and grant id |
+| broker re-checks the grant on every request | implemented | spec | every request re-checks the exact grant (digest + grant id, so revoke then re-grant does not revive it) and that the broker is open and its invocation alive; `events.wait` re-checks after waking; otherwise `permission_denied` |
 | broker bindings survive server recovery | implemented | spec | persisted in `brokers.json`, re-issued at the same path for live invocations whose grant still matches; output is tailed from files so it survives; pid reuse is not detected; exit status after a restart is unknown |
-| broker authority for long-lived children after the action exits | implemented | spec | only for long-running entrypoints: `[[startup]]` brokers follow the process group, plugin-pane brokers the pane; action and hook brokers close when their process exits |
+| broker authority for long-lived children after the action exits | implemented | spec | only for long-running entrypoints: `[[startup]]` brokers follow the process group, plugin-pane brokers the pane; action and hook brokers close when their process exits, and closing a broker drops every connection it accepted (requests in flight, subscriptions, waits) |
+| plugin identity across sessions (`herdr --session`) | partial | spec | single-use ticket from the invocation's own broker, verified with the issuing session (broker open, invocation alive, same grant), grant re-checked on the destination; no identity from environment values; `events.subscribe`/`events.wait` across sessions are refused for plugins |
 | Herdr-style ids from a persisted mapping table | partial | spec | Vibeke handles (`w<n>`, `w<n>:t<n>`, `w<n>:p<n>`) are persisted and use the same grammar; baseline allocation/move semantics unverified |
 
 ## Socket methods
@@ -63,7 +64,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `pane.focus` | implemented | spec |  |
 | `pane.rename` | implemented | spec | null clears |
 | `pane.close` | implemented | spec |  |
-| `pane.split` | partial | spec | direction/cwd/focus; size params ignored |
+| `pane.split` | partial | spec | splits `target_pane_id` (baseline), else `pane_id`, the invocation's pane or the focused pane; direction/cwd/focus; size params ignored |
 | `pane.wait_for_output` | partial | spec | `match`/`regex`, `timeout_ms`; emits `pane.output_matched` |
 | `pane.report_agent` | implemented | spec | Herdr self-report path (selfreport.rs) |
 | `pane.report_agent_session` | implemented | spec |  |
@@ -86,15 +87,15 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `plugin.enable` | implemented | spec | refused from panes |
 | `plugin.disable` | implemented | spec | refused from panes; cuts live brokers |
 | `plugin.action.list` | implemented | spec |  |
-| `plugin.action.invoke` | implemented | spec | returns the running log record immediately |
-| `plugin.log.list` | implemented | spec | status, timestamps, exit code, separate stdout/stderr |
+| `plugin.action.invoke` | partial | spec | qualified `action_id` (`<plugin>.<action>`) with optional `plugin_id`; returns the running log record immediately; request shape per the pinned schema as reviewed, full response shape unverified |
+| `plugin.log.list` | partial | spec | records carry `command` (argv), `started_unix_ms`/`finished_unix_ms`, status `running`/`succeeded`/`failed`, exit code and separate stdout/stderr; remaining baseline fields unverified |
 | `plugin.pane.open` | partial | spec | `split`, `tab`, `zoomed`, `overlay` (a zoomed pane that restores focus when it ends, not a real overlay); `popup` needs the TUI; width/height ignored; one broker per pane |
 | `plugin.pane.focus` | partial | spec | by `plugin_id` + entrypoint or `pane_id` |
 | `plugin.pane.close` | partial | spec | by `plugin_id` + entrypoint or `pane_id` |
 | `popup.close` | missing | spec | needs the TUI popup layer |
 | `layout.export` | partial | spec | binary split tree (`split_id`, `direction`, `ratio`, `first`, `second` / `pane_id`); PaneLayoutSnapshot shape unverified |
-| `layout.apply` | partial | spec | rearranges the tab's own panes from a snapshot; every pane exactly once |
-| `layout.set_split_ratio` | partial | spec | `split_id` (from the snapshot) or `pane_id`; ratio of the first side |
+| `layout.apply` | partial | spec | baseline `root` (with `tab_id`), or a whole snapshot under `layout`; rearranges the tab's own panes, every pane exactly once; node shape unverified |
+| `layout.set_split_ratio` | partial | spec | baseline `path` (booleans from the root, `true` = second side; inferred), `split_id` (from the snapshot) or `pane_id`; ratio of the first side |
 | `pane.process_info` | partial | spec | pid, foreground argv/command, cwd; field names unverified |
 | `pane.move` | partial | spec | to `tab_id`, or next to `target_pane_id` in `direction`, within a workspace; cross-workspace refused; emits `pane.moved` |
 | `pane.swap` | partial | spec | within a workspace; emits `pane.moved` for both panes |
@@ -224,13 +225,13 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 
 | Entry | Status | Source | Notes |
 |---|---|---|---|
-| per-user registry shared across sessions (`plugins.json`, atomic) | implemented | spec | works with no server running |
+| per-user registry shared across sessions (`plugins.json`, atomic) | implemented | spec | works with no server running; every change is a read-modify-write under an exclusive lock, so concurrent revocations are never lost |
 | explicit `herdr_legacy` trust grant, shown with entrypoints | implemented | spec | `vibeke plugin trust <id> --legacy` |
 | nothing runs before trust | implemented | spec | actions, hooks, startup, build |
-| grant bound to manifest digest + root; change requires re-review | implemented | spec |  |
-| disable/unlink/uninstall/revoke stop future execution and brokers | implemented | spec |  |
-| no escalation from pane scope | implemented | spec | pane-scoped callers cannot run, trust or install legacy plugins |
-| build runs for installs only, after trust | partial | spec | abort-on-manifest-mutation during build missing |
+| grant bound to the reviewed content and source; change requires re-review | partial | spec | manifest digest, root, source path, whole-tree digest (checked on reinstall: changed content or source drops the grant; a plugin with [[build]] always needs review + build) and a digest of the files the commands reference (checked on every status read and launch); edits to other files of an installed tree are only caught on reinstall |
+| disable/unlink/uninstall/revoke stop future execution and brokers | implemented | spec | brokers close within 1 s and drop their connections; every request checks the exact grant; each launch (actions, hooks, startup) re-verifies trust from disk, so the hook cache cannot run changed code |
+| no escalation from pane scope | implemented | spec | pane-scoped callers cannot run, trust or install legacy plugins; a process inside a pane of any session (by ancestry, with or without its token) cannot switch sessions |
+| build runs for installs only, after trust | implemented | spec | the manifest digest is re-checked before every step and after the last; a change aborts the build and the registration; a build is recorded only for the grant it ran for |
 | link never builds | implemented | spec |  |
 | async action invocation with log records | implemented | spec | 100 records/session, 64 KiB per stream |
 | [[startup]] once per server activation | partial | spec | runs at server start for active plugins, in its own process group (its broker follows the group); takeover semantics unverified |
@@ -239,10 +240,10 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | plugin panes and popups (all placements) | partial | spec | server side: split/tab/zoomed/overlay as Vibeke panes with their own broker and `HERDR_*` env; popups and real overlays need the TUI |
 | link handlers | missing | spec |  |
 | `[[keys.command]] type = plugin_action` bindings | missing | spec |  |
-| migration of Herdr plugin registry/config/state (copy, conflict report, rollback) | partial | spec | `vibeke plugin migrate --from <dir>`: copy only, conflicts left alone, `--rollback`; registry entries reported, linked with `--link`; Herdr's per-plugin dir layout unverified |
+| migration of Herdr plugin registry/config/state (copy, conflict report, rollback) | partial | spec | `vibeke plugin migrate --from <dir>`: copy only, conflicts left alone, `--rollback`; canonical paths, never writes or deletes through a symlink, source registry dirs confined to `--from`; created paths journaled so a failed migration rolls back and a retry resumes it; registry entries reported, linked with `--link`; Herdr's per-plugin dir layout unverified |
 | `herdr` launcher symlink installed only on request into a Vibeke bin dir | implemented | spec | `vibeke compat install-shim` |
-| compat CLI never reaches a live Herdr server | implemented | spec | HERDR_SOCKET_PATH honored only for Vibeke brokers |
+| compat CLI never reaches a live Herdr server | implemented | spec | HERDR_SOCKET_PATH is used only when it resolves (plain components, no symlinks) to a socket listed in its session's broker registry; `server.*` lifecycle methods are never forwarded |
 | audit events for plugin invocations and mutating callbacks | implemented | spec | metadata only: `plugin.invocation_started/finished`, `plugin.api_call` (method, outcome) and `plugin.pane_opened` with `actor.kind = plugin` |
 | credentials redacted in plugin logs | implemented | spec | stdout/stderr tails pass through `vk-redact`; the transient output files are removed once read |
-| differential suite against pinned Herdr 0.9.3 | missing | spec | harness gated behind VIBEKE_HERDR_DIFF=1 + VIBEKE_HERDR_BIN; not run |
+| differential suite against pinned Herdr 0.9.3 | missing | spec | harness gated behind VIBEKE_HERDR_DIFF=1 + VIBEKE_HERDR_BIN; compares normalized values (id bijection, error codes, statuses, array length/order; malformed output fails), comparator self-tested; event streams and unmodified plugins not compared yet; not run |
 

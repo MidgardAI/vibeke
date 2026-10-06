@@ -595,7 +595,7 @@ fn brokers_survive_a_restart_only_for_live_long_running_invocations() {
         .into_iter()
         .find(|l| l["source"] == "startup")
         .unwrap();
-    assert_eq!(startup_log["status"], "completed", "{startup_log}");
+    assert_eq!(startup_log["status"], "succeeded", "{startup_log}");
     assert!(s(&startup_log["stdout"]).contains("started"));
     let status = s_.json(&["compat", "status"]);
     assert_eq!(status["brokers"], 1, "the group keeps its broker: {status}");
@@ -680,7 +680,7 @@ fn plugin_panes_audit_events_and_redacted_logs() {
             .into_iter()
             .find(|l| l["log_id"] == id.as_str())
             .unwrap_or(Value::Null);
-        log["status"] == "completed"
+        log["status"] == "succeeded"
     });
     let out = s(&log["stdout"]) + &s(&log["stderr"]);
     assert!(out.contains("token"), "{log}");

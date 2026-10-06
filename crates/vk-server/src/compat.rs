@@ -9,9 +9,15 @@
 //! * **Plugin brokers** ([`brokers`]): every plugin invocation and plugin pane gets a private
 //!   0600 socket bound server-side to the plugin id and its legacy-grant digest, exported as
 //!   `HERDR_SOCKET_PATH`. Brokers work whether or not the public listener is enabled,
-//!   re-check the grant on every request, are re-issued after a server restart for live
-//!   invocations, and outlive the invocation's process only for the manifest's long-running
-//!   entrypoints (`[[startup]]` process groups, `[[panes]]`).
+//!   re-check the exact grant and the invocation's liveness on every request (and after an
+//!   `events.wait` wakes), drop their accepted connections when they close, are re-issued after
+//!   a server restart for live invocations, and outlive the invocation's process only for the
+//!   manifest's long-running entrypoints (`[[startup]]` process groups, `[[panes]]`).
+//! * **Cross-session calls** from a plugin (`herdr --session other …`): the shim obtains a
+//!   single-use ticket from its own broker (`vibeke.invocation_ticket`) and the destination
+//!   verifies it with the issuing session (`compat.invocation.verify`: broker open, invocation
+//!   alive, same grant) before re-checking the grant itself. Environment values never carry
+//!   plugin identity. Processes inside any Vibeke pane (any session) cannot switch sessions.
 //! * **Method mapping**: Herdr methods are translated onto the native API (`api::dispatch`, so
 //!   native authorization and events apply) and results are projected to Herdr shapes with
 //!   Herdr-style ids (Vibeke handles); slice-2 methods live in [`ext`]. Known-but-unimplemented
@@ -52,6 +58,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("plugin.action.run", true),
     ("plugin.log.list", false),
     ("compat.herdr.call", true),
+    ("compat.invocation.verify", true),
     ("compat.status", false),
 ];
 
@@ -70,6 +77,8 @@ struct State {
     /// Reported metadata (`pane.report_metadata`, `workspace.report_metadata`) by Vibeke id,
     /// and the plugin-set window title (`client.window_title.set`).
     meta: Mutex<ext::Meta>,
+    /// Single-use cross-session tickets: ticket → (issuing broker, expiry).
+    tickets: Mutex<HashMap<String, (PathBuf, std::time::Instant)>>,
 }
 
 static STATES: LazyLock<Mutex<HashMap<String, Arc<State>>>> =
@@ -136,6 +145,78 @@ pub fn is_herdr_owned(path: &Path) -> bool {
     path.starts_with(&herdr)
         || std::env::var_os("XDG_CONFIG_HOME")
             .is_some_and(|x| path.starts_with(PathBuf::from(x).join("herdr")))
+}
+
+/// Resolve `candidate` (an invocation's `HERDR_SOCKET_PATH`) to a broker socket this
+/// installation registered, or refuse. The path must be exactly
+/// `<runtime root>/<session>/herdr-compat/brokers/<name>.sock` with plain components (no `..`),
+/// no component below the runtime root may be a symlink, the leaf must be a socket owned by
+/// this user, and the session's broker registry (`brokers.json`) must list that very socket.
+/// Returns the canonical socket path and its session. This is what keeps the shim from ever
+/// talking to a live Herdr (or any other) socket.
+pub fn registered_broker(candidate: &Path) -> Result<(PathBuf, String), String> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::path::Component;
+    let root = crate::paths::runtime_root();
+    let root_c = root
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", root.display()))?;
+    let rel = candidate
+        .strip_prefix(&root)
+        .or_else(|_| candidate.strip_prefix(&root_c))
+        .map_err(|_| "not under Vibeke's runtime directory".to_string())?;
+    let parts: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(s) => Ok(s),
+            _ => Err("unexpected path component".to_string()),
+        })
+        .collect::<Result<_, _>>()?;
+    let [session, compat, dir, name] = parts.as_slice() else {
+        return Err("not a broker socket path".into());
+    };
+    let session = session.to_str().unwrap_or_default();
+    if !herdr::valid_session_name(session)
+        || *compat != "herdr-compat"
+        || *dir != "brokers"
+        || !name.to_str().is_some_and(|n| n.ends_with(".sock"))
+    {
+        return Err("not a broker socket path".into());
+    }
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let mut cur = root_c.clone();
+    for (i, part) in parts.iter().enumerate() {
+        cur.push(part);
+        let m = std::fs::symlink_metadata(&cur).map_err(|e| format!("{}: {e}", cur.display()))?;
+        let ft = m.file_type();
+        let ok = if i + 1 == parts.len() {
+            ft.is_socket()
+        } else {
+            ft.is_dir()
+        };
+        if ft.is_symlink() || !ok || m.uid() != uid {
+            return Err(format!("{} is not a Vibeke broker", cur.display()));
+        }
+    }
+    let registry = root_c.join(session).join("herdr-compat/brokers.json");
+    if std::fs::symlink_metadata(&registry).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("broker registry is a symlink".into());
+    }
+    let list: Vec<Value> = std::fs::read(&registry)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let registered = list.iter().any(|b| {
+        b["path"]
+            .as_str()
+            .and_then(|p| Path::new(p).canonicalize().ok())
+            .is_some_and(|p| p == cur)
+    });
+    if !registered {
+        return Err("not a registered Vibeke broker".into());
+    }
+    Ok((cur, session.to_string()))
 }
 
 /// The private `herdr` launcher for plugin invocations: `<compat>/bin/herdr` → Vibeke binary.
@@ -275,6 +356,9 @@ async fn accept_public(server: Arc<Server>, l: UnixListener) {
             plugin: None,
             default_pane: None,
             invocation: None,
+            broker: None,
+            grant_id: None,
+            cross_session: false,
         };
         let s = server.clone();
         tokio::spawn(async move { serve_wire(s, stream, caller).await });
@@ -293,6 +377,13 @@ pub struct Caller {
     pub default_pane: Option<String>,
     /// The invocation's log id (audit correlation), for broker connections.
     pub invocation: Option<String>,
+    /// The broker this connection came through: its binding must stay open and its invocation
+    /// alive for every request.
+    pub broker: Option<PathBuf>,
+    /// The exact grant the invocation runs under.
+    pub grant_id: Option<String>,
+    /// A plugin invocation of another session, authenticated by a verified ticket.
+    pub cross_session: bool,
 }
 
 impl Caller {
@@ -303,6 +394,9 @@ impl Caller {
             plugin: None,
             default_pane: None,
             invocation: None,
+            broker: None,
+            grant_id: None,
+            cross_session: false,
         }
     }
 }
@@ -366,27 +460,35 @@ fn audit_call(server: &Server, caller: &Caller, method: &str, outcome: Result<()
     );
 }
 
-/// The broker's grant must still be valid: registered, trusted with the same digest, enabled.
-fn check_broker(caller: &Caller) -> Result<(), WireError> {
+/// A plugin caller's authority must still hold: registered, enabled and trusted under the very
+/// grant (digest and grant id) the invocation started with, and — for broker connections — the
+/// broker still open and its invocation alive.
+fn check_broker(server: &Server, caller: &Caller) -> Result<(), WireError> {
     let Some((id, digest)) = &caller.plugin else {
         return Ok(());
     };
-    let reg = Registry::load(&plugin_dirs())
-        .map_err(|e| WireError::new("internal_error", e.to_string()))?;
-    let ok = reg.get(id).ok().is_some_and(|e| {
-        matches!(registry::entry_status(e), (Status::Active, _))
-            && e.trust
-                .as_ref()
-                .is_some_and(|g| &g.manifest_sha256 == digest)
-    });
-    if ok {
-        Ok(())
-    } else {
-        Err(WireError::new(
+    let grant_id = caller.grant_id.as_deref().unwrap_or_default();
+    if !brokers::grant_ok(id, digest, grant_id) {
+        return Err(WireError::new(
             "permission_denied",
             format!("plugin {id} is no longer trusted or enabled"),
-        ))
+        ));
     }
+    if let Some(b) = &caller.broker
+        && brokers::live(server, b).is_none_or(|x| x.grant_id != grant_id)
+    {
+        return Err(WireError::new(
+            "permission_denied",
+            "this plugin invocation has ended; its broker is closed",
+        ));
+    }
+    if caller.broker.is_none() && !caller.cross_session {
+        return Err(WireError::new(
+            "permission_denied",
+            "plugin identity without an invocation",
+        ));
+    }
+    Ok(())
 }
 
 async fn write_line(w: &mut (impl AsyncWriteExt + Unpin), line: &str) -> std::io::Result<()> {
@@ -412,7 +514,7 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
             return;
         }
     };
-    if let Err(e) = check_broker(&caller) {
+    if let Err(e) = check_broker(&server, &caller) {
         let _ = write_line(&mut wr, &wire::err_line(&req.id, &e)).await;
         return;
     }
@@ -447,7 +549,7 @@ pub async fn serve_wire(server: Arc<Server>, stream: UnixStream, caller: Caller)
                 if !subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
                     continue;
                 }
-                if check_broker(&caller).is_err() {
+                if check_broker(&server, &caller).is_err() {
                     return;
                 }
                 if write_line(&mut wr, &wire::event_line(name, data))
@@ -1241,7 +1343,13 @@ pub async fn call(
             Ok(ok())
         }
         "pane.split" => {
-            let id = pane_target(caller, &sn, p)?;
+            // Baseline requests name the pane to split `target_pane_id`.
+            let id = match sp(p, "target_pane_id") {
+                Some(t) => sn.pane(t).map(|x| x.id.clone()).ok_or_else(|| {
+                    WireError::new("pane_not_found", format!("pane not found: {t}"))
+                })?,
+                None => pane_target(caller, &sn, p)?,
+            };
             let mut np = json!({"pane": id, "direction": sp(p, "direction").unwrap_or("right"), "focus": p.get("focus").and_then(Value::as_bool).unwrap_or(false)});
             if let Some(c) = sp(p, "cwd") {
                 np["cwd"] = json!(c);
@@ -1388,7 +1496,8 @@ pub async fn call(
             Ok(ok())
         }
         "server.reload_config" => Ok(ok()),
-        "events.wait" => events_wait(server, p).await,
+        "events.wait" => events_wait(server, caller, p).await,
+        "vibeke.invocation_ticket" => invocation_ticket(server, caller),
         "events.subscribe" => Err(WireError::new(
             "invalid_request",
             "events.subscribe streams on its own socket connection",
@@ -1400,14 +1509,18 @@ pub async fn call(
             json!({"actions": action_list(sp(p, "plugin_id"))?}),
         )),
         "plugin.action.invoke" => {
+            // Baseline: `action_id` is the qualified `<plugin>.<action>` id (as listed in
+            // `qualified_id`); `plugin_id` is optional. Vibeke also accepts `plugin_id` with an
+            // unqualified `action_id`, and the older `action`.
             let (plugin, action) = match (sp(p, "plugin_id"), sp(p, "action_id"), sp(p, "action")) {
-                (Some(pl), Some(a), _) => (pl.to_string(), a.to_string()),
-                (_, _, Some(q)) => split_qualified(q)?,
+                (Some(pl), Some(a), _) => (
+                    pl.to_string(),
+                    a.strip_prefix(&format!("{pl}.")).unwrap_or(a).to_string(),
+                ),
+                (None, Some(q), _) | (None, None, Some(q)) => split_qualified(q)?,
+                (Some(pl), None, Some(a)) => (pl.to_string(), a.to_string()),
                 _ => {
-                    return Err(WireError::new(
-                        "invalid_params",
-                        "plugin_id and action_id (or action) are required",
-                    ));
+                    return Err(WireError::new("invalid_params", "action_id is required"));
                 }
             };
             let ctx = InvokeContext::from_params(&sn, p, caller);
@@ -1454,7 +1567,13 @@ fn keys(p: &Value) -> Result<Value, WireError> {
     }
 }
 
-async fn events_wait(server: &Arc<Server>, p: &Value) -> Result<Value, WireError> {
+async fn events_wait(server: &Arc<Server>, caller: &Caller, p: &Value) -> Result<Value, WireError> {
+    if caller.cross_session {
+        return Err(WireError::new(
+            "unsupported",
+            "events.wait is not available to plugins across sessions",
+        ));
+    }
     let subs = hev::parse_subscriptions(p).map_err(|(c, m)| WireError::new(c, m))?;
     let timeout = Duration::from_millis(
         p.get("timeout_ms")
@@ -1471,6 +1590,8 @@ async fn events_wait(server: &Arc<Server>, p: &Value) -> Result<Value, WireError
             Ok(Err(_)) => return Err(WireError::new("internal_error", "event stream closed")),
             Err(_) => return Err(WireError::new("timeout", "no matching event")),
         };
+        // The wait may have outlived the invocation or its grant.
+        check_broker(server, caller)?;
         for (name, pane, data) in project_event(server, &mut proj, &ev) {
             if subs.iter().any(|s| hev::matches(s, name, pane.as_deref())) {
                 return Ok(typed(
@@ -1479,6 +1600,92 @@ async fn events_wait(server: &Arc<Server>, p: &Value) -> Result<Value, WireError
                 ));
             }
         }
+    }
+}
+
+// ---- cross-session plugin identity ------------------------------------------------------------
+
+/// How long a cross-session ticket stays valid (it is used immediately by the shim).
+const TICKET_TTL: Duration = Duration::from_secs(30);
+
+/// `vibeke.invocation_ticket` (broker connections only): a single-use ticket that lets another
+/// session verify this invocation's identity with this server.
+fn invocation_ticket(server: &Server, caller: &Caller) -> Result<Value, WireError> {
+    let Some(b) = &caller.broker else {
+        return Err(WireError::new(
+            "method_not_found",
+            "unknown method: vibeke.invocation_ticket",
+        ));
+    };
+    let bytes: [u8; 32] = rand::random();
+    let ticket: String = bytes.iter().map(|x| format!("{x:02x}")).collect();
+    let st = state(server);
+    let mut t = st.tickets.lock().unwrap();
+    let now = std::time::Instant::now();
+    t.retain(|_, (_, exp)| *exp > now);
+    t.insert(ticket.clone(), (b.clone(), now + TICKET_TTL));
+    Ok(typed(
+        "invocation_ticket",
+        json!({"ticket": ticket, "session": server.opts.session}),
+    ))
+}
+
+/// Redeem a ticket issued by this server: the issuing broker must still be open, its
+/// invocation alive and its grant unchanged. Single use.
+fn redeem_ticket(server: &Server, ticket: &str) -> Result<Value, String> {
+    let entry = state(server).tickets.lock().unwrap().remove(ticket);
+    let Some((path, exp)) = entry else {
+        return Err("unknown or already used ticket".into());
+    };
+    if exp <= std::time::Instant::now() {
+        return Err("ticket expired".into());
+    }
+    let b = brokers::live(server, &path).ok_or("the issuing invocation has ended")?;
+    if !brokers::grant_ok(&b.plugin_id, &b.digest, &b.grant_id) {
+        return Err(format!(
+            "plugin {} is no longer trusted or enabled",
+            b.plugin_id
+        ));
+    }
+    Ok(json!({
+        "plugin_id": b.plugin_id,
+        "digest": b.digest,
+        "grant_id": b.grant_id,
+        "log_id": b.log_id,
+        "session": server.opts.session,
+    }))
+}
+
+/// Verify a ticket with the session that issued it (over its native socket; in process when
+/// that is this session).
+async fn verify_ticket(server: &Server, session: &str, ticket: &str) -> Result<Value, String> {
+    if !herdr::valid_session_name(session) {
+        return Err(format!("invalid session name {session:?}"));
+    }
+    if session == server.opts.session {
+        return redeem_ticket(server, ticket);
+    }
+    let sock = crate::paths::Paths::new(session).socket();
+    let io = async {
+        let s = UnixStream::connect(&sock).await?;
+        let (rd, mut wr) = s.into_split();
+        let req = json!({"jsonrpc": "2.0", "id": 1, "method": "compat.invocation.verify", "params": {"ticket": ticket}});
+        wr.write_all(format!("{req}\n").as_bytes()).await?;
+        let mut line = String::new();
+        BufReader::new(rd).read_line(&mut line).await?;
+        Ok::<_, std::io::Error>(line)
+    };
+    let line = tokio::time::timeout(Duration::from_secs(5), io)
+        .await
+        .map_err(|_| format!("session {session} did not answer"))?
+        .map_err(|e| format!("session {session}: {e}"))?;
+    let v: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+    match v.get("result") {
+        Some(r) if r.is_object() => Ok(r.clone()),
+        _ => Err(v["error"]["message"]
+            .as_str()
+            .unwrap_or("ticket rejected")
+            .to_string()),
     }
 }
 
@@ -1757,8 +1964,16 @@ fn load_logs(server: &Server) {
                 l["error"] = json!("the server restarted; exit status unknown");
                 if l["finished_at"].is_null() {
                     l["finished_at"] = json!(now_ms());
+                    l["finished_unix_ms"] = l["finished_at"].clone();
                 }
             }
+        }
+        // Records written before the baseline log fields.
+        if l["status"] == "completed" {
+            l["status"] = json!("succeeded");
+        }
+        if l.get("started_unix_ms").is_none() {
+            l["started_unix_ms"] = l["started_at"].clone();
         }
         logs.push_back(l);
     }
@@ -1876,12 +2091,14 @@ impl Tail {
 fn finish_log(server: &Server, log_id: &str, ok: bool, code: Option<i32>, note: Option<&str>) {
     let mut meta = (String::new(), Value::Null, Value::Null);
     update_log(server, log_id, |l| {
+        let now = now_ms();
         l.insert(
             "status".into(),
-            json!(if ok { "completed" } else { "failed" }),
+            json!(if ok { "succeeded" } else { "failed" }),
         );
         l.insert("exit_code".into(), json!(code));
-        l.insert("finished_at".into(), json!(now_ms()));
+        l.insert("finished_at".into(), json!(now));
+        l.insert("finished_unix_ms".into(), json!(now));
         if let Some(n) = note {
             l.insert("error".into(), json!(n));
         }
@@ -1904,7 +2121,7 @@ fn finish_log(server: &Server, log_id: &str, ok: bool, code: Option<i32>, note: 
         json!({
             "log_id": log_id,
             "source": source,
-            "status": if ok { "completed" } else { "failed" },
+            "status": if ok { "succeeded" } else { "failed" },
             "exit_code": code,
             "duration_ms": started.as_i64().map(|s| now_ms() - s),
         }),
@@ -1988,6 +2205,7 @@ fn spawn_invocation(
         "pane_id": sp_.ctx.pane,
         "plugin_version": m.version,
     });
+    let started = now_ms();
     let mut rec = json!({
         "log_id": log_id,
         "plugin_id": entry.id,
@@ -1995,8 +2213,11 @@ fn spawn_invocation(
         "event": sp_.event.as_ref().map(|e| e.0.clone()),
         "entrypoint_id": sp_.entrypoint,
         "source": sp_.source,
+        "command": command,
         "status": "running",
-        "started_at": now_ms(),
+        "started_unix_ms": started,
+        "finished_unix_ms": null,
+        "started_at": started,
         "finished_at": null,
         "exit_code": null,
         "stdout": "",
@@ -2010,6 +2231,12 @@ fn spawn_invocation(
         push_log(server, rec.clone());
         rec
     };
+    // A fresh trust check right before anything runs: the caller's view (a hook cache, an
+    // earlier registry read) may be stale. The plugin must still be active under the same grant
+    // with exactly the manifest this command came from.
+    if let Err(why) = fresh_grant(entry, m) {
+        return fail(rec, why);
+    }
     // Output goes to files, not pipes: a long-lived invocation keeps writing across a server
     // restart (a pipe would break and SIGPIPE it).
     let out_dir = compat_root(server).join("out");
@@ -2036,6 +2263,11 @@ fn spawn_invocation(
         entrypoint: sp_.entrypoint.clone(),
         source: sp_.source.to_string(),
         log_id: Some(log_id.clone()),
+        grant_id: entry
+            .trust
+            .as_ref()
+            .map(|g| g.grant_id.clone())
+            .unwrap_or_default(),
         life: brokers::Life::Pending,
         created_at_ms: now_ms(),
         stdout: Some(out_path.clone()),
@@ -2142,6 +2374,34 @@ fn spawn_invocation(
     }
 }
 
+/// Re-read the registry: `entry` must still be active under the same grant, with `m` as its
+/// current manifest (checked, with the referenced files, by `entry_status`).
+fn fresh_grant(entry: &Entry, m: &Manifest) -> Result<(), String> {
+    let reg = Registry::load(&plugin_dirs()).map_err(|e| e.to_string())?;
+    let now = reg
+        .get(&entry.id)
+        .map_err(|_| format!("plugin {} is no longer registered", entry.id))?;
+    let (st, fm) = registry::entry_status(now);
+    let grant = |e: &Entry| {
+        e.trust
+            .as_ref()
+            .map(|g| (g.grant_id.clone(), g.manifest_sha256.clone()))
+    };
+    if st != Status::Active
+        || fm.as_ref() != Some(m)
+        || grant(now) != grant(entry)
+        || now.root != entry.root
+    {
+        return Err(format!(
+            "plugin {} changed since it was loaded ({}); not started. Review it with `vibeke plugin trust {} --legacy`",
+            entry.id,
+            st.as_str(),
+            entry.id
+        ));
+    }
+    Ok(())
+}
+
 // ---- hooks ------------------------------------------------------------------------------------
 
 fn run_startup_hooks(server: &Arc<Server>) {
@@ -2170,7 +2430,8 @@ fn run_startup_hooks(server: &Arc<Server>) {
 }
 
 /// Active plugins, re-read when `plugins.json` changes and at most every 2 s otherwise (so a
-/// manifest edit takes effect quickly without parsing manifests on every event).
+/// manifest edit takes effect quickly without parsing manifests on every event). The cache only
+/// selects candidates: every launch re-verifies trust from disk first (`fresh_grant`).
 struct ActiveCache {
     at: Option<std::time::Instant>,
     mtime: Option<std::time::SystemTime>,
@@ -2320,26 +2581,41 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 json!({})
             };
             // A plugin invocation that selected this session (`herdr --session`) keeps its
-            // plugin identity: the grant is re-checked here, on the destination (09 §6).
+            // plugin identity, proven by a single-use ticket from its own broker and verified
+            // with the issuing session; the grant is then re-checked here (09 §6). A bare plugin
+            // id is never accepted.
             let mut caller = Caller::user(ctx.clone());
-            if let Some(id) = s("as_plugin") {
-                if ctx.pane_scope.is_some() {
-                    return Some(Err(err(
-                        ErrorKind::PermissionDenied,
-                        "a pane cannot act as a plugin",
-                    )));
-                }
-                let digest = Registry::load(&plugin_dirs())
-                    .ok()
-                    .and_then(|r| r.get(id).ok().cloned())
-                    .filter(|e| matches!(registry::entry_status(e), (Status::Active, _)))
-                    .and_then(|e| e.trust.map(|g| g.manifest_sha256));
-                let Some(digest) = digest else {
-                    return Some(Ok(
-                        json!({"error": {"code": "permission_denied", "message": format!("plugin {id} is not trusted and enabled")}}),
-                    ));
+            if let Some(ap) = p.get("as_plugin") {
+                let denied = |msg: String| {
+                    Some(Ok(
+                        json!({"error": {"code": "permission_denied", "message": msg}}),
+                    ))
                 };
-                caller.plugin = Some((id.to_string(), digest));
+                if ctx.pane_scope.is_some() {
+                    return denied("a pane cannot act as a plugin".into());
+                }
+                let (Some(session), Some(ticket)) = (
+                    ap.get("session").and_then(Value::as_str),
+                    ap.get("ticket").and_then(Value::as_str),
+                ) else {
+                    return denied(
+                        "plugin identity needs a ticket from the invocation's broker".into(),
+                    );
+                };
+                let v = match verify_ticket(server, session, ticket).await {
+                    Ok(v) => v,
+                    Err(e) => return denied(format!("plugin identity not verified: {e}")),
+                };
+                let id = v["plugin_id"].as_str().unwrap_or_default().to_string();
+                let digest = v["digest"].as_str().unwrap_or_default().to_string();
+                let grant_id = v["grant_id"].as_str().unwrap_or_default().to_string();
+                if !brokers::grant_ok(&id, &digest, &grant_id) {
+                    return denied(format!("plugin {id} is not trusted and enabled"));
+                }
+                caller.plugin = Some((id, digest));
+                caller.grant_id = Some(grant_id);
+                caller.cross_session = true;
+                caller.invocation = v["log_id"].as_str().map(|l| format!("{session}/{l}"));
                 caller.ctx.kind = "plugin".into();
             }
             let r = call(server, &caller, m, &params).await;
@@ -2353,6 +2629,18 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Ok(v) => json!({"result": v}),
                 Err(e) => json!({"error": {"code": e.code, "message": e.message}}),
             })
+        }
+        "compat.invocation.verify" => {
+            if ctx.pane_scope.is_some() {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "not available from a pane",
+                )));
+            }
+            let Some(t) = s("ticket") else {
+                return Some(Err(invalid("ticket is required")));
+            };
+            redeem_ticket(server, t).map_err(|m| err(ErrorKind::PermissionDenied, m))
         }
         "compat.status" => {
             let (i, pa, mi) = inventory::counts(None);
@@ -2562,8 +2850,11 @@ mod tests {
             plugin: Some(("acme.ghost".into(), "00".into())),
             ..user()
         };
-        assert_eq!(check_broker(&ghost).unwrap_err().code, "permission_denied");
-        assert!(check_broker(&user()).is_ok());
+        assert_eq!(
+            check_broker(&srv, &ghost).unwrap_err().code,
+            "permission_denied"
+        );
+        assert!(check_broker(&srv, &user()).is_ok());
     }
 
     #[tokio::test]
@@ -2592,6 +2883,7 @@ mod tests {
             entrypoint: None,
             source: "startup".into(),
             log_id: None,
+            grant_id: String::new(),
             life,
             created_at_ms: 0,
             stdout: None,
