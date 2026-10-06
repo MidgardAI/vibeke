@@ -573,7 +573,7 @@ async fn recreate_session(c: &mut Client<crate::AnyStream>, plan: vk_compat::Ses
 
 // ---- config / keys ------------------------------------------------------------------------------
 
-pub fn config(_g: &Global, args: &[String]) -> i32 {
+pub fn config(g: &Global, args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("path") => {
             println!("{}", vk_config::config_path().display());
@@ -596,8 +596,10 @@ pub fn config(_g: &Global, args: &[String]) -> i32 {
             print!("{}", vk_config::default_config_toml());
             EXIT_OK
         }
+        Some("edit") => crate::config_cmd::edit(g, &args[1..]),
+        Some("reset-keys") => crate::config_cmd::reset_keys(g, &args[1..]),
         _ => {
-            eprintln!("vibeke config path|validate|default");
+            eprintln!("vibeke config path|validate|default|edit|reset-keys");
             EXIT_USAGE
         }
     }

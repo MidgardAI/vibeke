@@ -4,6 +4,7 @@
 mod binding;
 pub mod edit;
 mod keys;
+pub mod layers;
 mod load;
 #[macro_use]
 mod types;

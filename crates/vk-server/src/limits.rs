@@ -188,6 +188,7 @@ fn refuse(server: &Server, pane: &str, method: &str, limit: &str, e: RpcError) -
         due
     };
     if notify {
+        crate::audit::rate_limited(server, pane, &handle, method, limit);
         let what = if limit == "requests" {
             "is calling the API rapidly"
         } else {

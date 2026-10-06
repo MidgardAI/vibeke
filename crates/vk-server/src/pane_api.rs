@@ -8,7 +8,8 @@
 //!   (`pane.scroll_requested`, delivered like every event); scrolling is client-side, so the
 //!   result is the requested offset, not a confirmation. `pane.read` never scrolls.
 //! - `pane.screenshot` captures the pane grid as text, ANSI (SGR colors and attributes) or a
-//!   standalone HTML page into the blob store (`blob.get`). PNG/SVG rendering is not built.
+//!   standalone HTML page into the blob store (`blob.get`), or rendered as SVG or PNG
+//!   ([`crate::pane_render`]).
 
 use crate::Server;
 use crate::api::{Ctx, R, b, err, internal, invalid, not_found, resolve_pane, s, u};
@@ -470,20 +471,15 @@ pub fn rows_html(rows: &[Row], title: &str) -> String {
 fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let pane = resolve_pane(server, ctx, s(p, "pane"))?;
     let format = s(p, "format").unwrap_or("ansi");
-    if matches!(format, "png" | "svg") {
-        return Err(err(
-            ErrorKind::Unsupported,
-            format!("pane.screenshot format {format} is not built"),
-        )
-        .details(json!({"fallback": "ansi|text|html"})));
-    }
     let (ext, mime) = match format {
         "text" => ("txt", "text/plain"),
         "ansi" => ("ans", "text/x-ansi"),
         "html" => ("html", "text/html"),
+        "svg" => ("svg", "image/svg+xml"),
+        "png" => ("png", "image/png"),
         other => {
             return Err(invalid(format!(
-                "format must be text|ansi|html, not {other}"
+                "format must be text|ansi|html|svg|png, not {other}"
             )));
         }
     };
@@ -517,10 +513,32 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         (rows, e.cols(), e.rows(), e.cursor())
     };
     let title = format!("{} — {}", pane.handle, pane.display_title());
-    let data = match format {
-        "text" => rows_text(&rows),
-        "ansi" => rows_ansi(&rows),
-        _ => rows_html(&rows, &title),
+    let data: Vec<u8> = match format {
+        "text" => rows_text(&rows).into_bytes(),
+        "ansi" => rows_ansi(&rows).into_bytes(),
+        "html" => rows_html(&rows, &title).into_bytes(),
+        _ => {
+            let dark = {
+                let a = server.theme.current();
+                !a.known || a.dark
+            };
+            let colors =
+                crate::pane_render::Colors::from_palette(&crate::theme::query_palette(dark));
+            // The cursor cell, when asked for and on screen (visible rows come last).
+            let first_visible = rows.len().saturating_sub(nrows as usize);
+            let grid = crate::pane_render::Grid {
+                rows: &rows,
+                cols,
+                cursor: (b(p, "include_cursor") == Some(true) && cursor.visible)
+                    .then_some((first_visible + cursor.row as usize, cursor.col)),
+            };
+            if format == "svg" {
+                crate::pane_render::svg(&grid, &colors, &title).into_bytes()
+            } else {
+                crate::pane_render::png(&grid, &colors)
+                    .map_err(|e| invalid(e).details(json!({"reason": "too_large"})))?
+            }
+        }
     };
     let meta = json!({
         "mime": mime,
@@ -533,7 +551,7 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         "created_at_ms": vk_store::now_ms(),
     });
     let (hash, path) =
-        crate::agent_browser::store_blob(server, data.as_bytes(), ext, &meta).map_err(internal)?;
+        crate::agent_browser::store_blob(server, &data, ext, &meta).map_err(internal)?;
     let rev = rt.rev();
     let mut out = json!({
         "blob": {"hash": hash, "size": data.len(), "mime": mime, "path": path},
@@ -548,7 +566,21 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         out["cursor"] = json!({"row": cursor.row, "col": cursor.col, "visible": cursor.visible});
     }
     if b(p, "inline") == Some(true) {
-        out["data"] = json!(data);
+        if format == "png" {
+            use base64::Engine as _;
+            out["data_b64"] = json!(base64::engine::general_purpose::STANDARD.encode(&data));
+        } else {
+            out["data"] = json!(String::from_utf8_lossy(&data));
+        }
+    }
+    if matches!(format, "png" | "svg") {
+        let (w, h) = crate::pane_render::size(&crate::pane_render::Grid {
+            rows: &rows,
+            cols,
+            cursor: None,
+        });
+        out["width"] = json!(w);
+        out["height"] = json!(h);
     }
     Ok(out)
 }

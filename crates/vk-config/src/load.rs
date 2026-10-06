@@ -234,7 +234,7 @@ impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<(Config, Vec<Warning>), ConfigError> {
         let path = path.as_ref();
         // `config.set {persist: false}` overrides apply to the user's config file only.
-        let overridden = !crate::edit::runtime_overrides().is_empty() && path == config_path();
+        let overridden = crate::layers::has_overrides() && path == config_path();
         match std::fs::read_to_string(path) {
             Ok(src) if overridden => {
                 Config::parse(&crate::edit::apply_runtime_overrides(&src), path)

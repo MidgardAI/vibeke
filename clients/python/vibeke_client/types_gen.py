@@ -162,6 +162,15 @@ ConfigDiagnostic = TypedDict("ConfigDiagnostic", {
     "message": str,
 })
 
+ConfigLayer = TypedDict("ConfigLayer", {
+    "source": Literal["default", "user", "repo", "runtime", "cli"],
+    "path": NotRequired[Optional[str]],
+    "exists": NotRequired[bool],
+    "trusted": NotRequired[bool],
+    "applied": NotRequired[bool],
+    "keys": NotRequired[List[str]],
+})
+
 ConfigWarning = TypedDict("ConfigWarning", {
     "key": str,
     "line": Optional[int],
@@ -496,6 +505,21 @@ SessionEntry = TypedDict("SessionEntry", {
     "pid": NotRequired[int],
 })
 
+SyncGroupMembersItem = TypedDict("SyncGroupMembersItem", {
+    "pane": str,
+    "handle": Optional[str],
+    "agent": bool,
+})
+
+SyncGroup = TypedDict("SyncGroup", {
+    "id": str,
+    "panes": List[str],
+    "members": List["SyncGroupMembersItem"],
+    "tab": Optional[str],
+    "agents": List[str],
+    "created_at_ms": int,
+})
+
 Tab = TypedDict("Tab", {
     "id": str,
     "handle": str,
@@ -536,6 +560,19 @@ Task = TypedDict("Task", {
     "isolation": NotRequired["Isolation"],
     "checkout": NotRequired[Optional[str]],
     "rate_limit": NotRequired[Optional["RateLimitInfo"]],
+})
+
+TaskPortsLeaseV0 = TypedDict("TaskPortsLeaseV0", {
+    "start": int,
+    "end": int,
+    "count": int,
+})
+
+TaskPorts = TypedDict("TaskPorts", {
+    "task": str,
+    "handle": str,
+    "lease": Optional["TaskPortsLeaseV0"],
+    "env": Dict[str, Any],
 })
 
 Workspace = TypedDict("Workspace", {
@@ -1136,6 +1173,7 @@ AuditVerifyResult = TypedDict("AuditVerifyResult", {
     "discontinuities": List[int],
     "head_seq": Optional[int],
     "path": str,
+    "segments": List[str],
 })
 
 AuthElevateParams = TypedDict("AuthElevateParams", {
@@ -2228,14 +2266,29 @@ CompatUiStateResult = TypedDict("CompatUiStateResult", {
 
 ConfigGetParams = TypedDict("ConfigGetParams", {
     "key": NotRequired[str],
+    "repo": NotRequired[str],
+    "cwd": NotRequired[str],
+    "pane": NotRequired["Target"],
+})
+
+ConfigGetResultRepoV0 = TypedDict("ConfigGetResultRepoV0", {
+    "root": str,
+    "file": Optional[str],
+    "trusted": bool,
+    "applied": bool,
+    "warnings": NotRequired[List[str]],
+    "error": NotRequired[str],
 })
 
 ConfigGetResult = TypedDict("ConfigGetResult", {
     "key": NotRequired[str],
     "value": Any,
-    "source": Literal["default", "user", "runtime"],
+    "source": Literal["default", "user", "repo", "runtime", "cli"],
     "path": str,
     "overrides": List[str],
+    "cli_overrides": List[str],
+    "layers": List["ConfigLayer"],
+    "repo": Optional["ConfigGetResultRepoV0"],
     "errors": List["ConfigDiagnostic"],
 })
 
@@ -3242,7 +3295,7 @@ PaneRunResult = TypedDict("PaneRunResult", {
 
 PaneScreenshotParams = TypedDict("PaneScreenshotParams", {
     "pane": NotRequired["Target"],
-    "format": NotRequired[Literal["text", "ansi", "html", "png", "svg"]],
+    "format": NotRequired[Literal["text", "ansi", "html", "svg", "png"]],
     "source": NotRequired[Literal["visible", "recent"]],
     "lines": NotRequired[int],
     "include_cursor": NotRequired[bool],
@@ -3270,8 +3323,11 @@ PaneScreenshotResult = TypedDict("PaneScreenshotResult", {
     "rows": int,
     "lines": int,
     "revision": int,
+    "width": NotRequired[int],
+    "height": NotRequired[int],
     "cursor": NotRequired["PaneScreenshotResultCursor"],
     "data": NotRequired[str],
+    "data_b64": NotRequired[str],
 })
 
 PaneScrollParams = TypedDict("PaneScrollParams", {
@@ -3335,6 +3391,32 @@ PaneSplitParams = TypedDict("PaneSplitParams", {
 
 PaneSplitResult = TypedDict("PaneSplitResult", {
     "pane": "Pane",
+    "cursor": NotRequired["Cursor"],
+})
+
+PaneSyncInputParams = TypedDict("PaneSyncInputParams", {
+    "action": NotRequired[Literal["start", "stop", "status", "on", "off"]],
+    "enabled": NotRequired[bool],
+    "panes": NotRequired[Union[List["Target"], str]],
+    "tab": NotRequired["Target"],
+    "pane": NotRequired["Target"],
+    "group": NotRequired[str],
+    "all": NotRequired[bool],
+    "include_agents": NotRequired[bool],
+})
+
+PaneSyncInputResultExcludedItem = TypedDict("PaneSyncInputResultExcludedItem", {
+    "pane": str,
+    "handle": str,
+    "reason": str,
+})
+
+PaneSyncInputResult = TypedDict("PaneSyncInputResult", {
+    "group_id": Optional[str],
+    "group": NotRequired["SyncGroup"],
+    "excluded": NotRequired[List["PaneSyncInputResultExcludedItem"]],
+    "stopped": NotRequired[List[str]],
+    "groups": List["SyncGroup"],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4331,6 +4413,48 @@ TabRenameResult = TypedDict("TabRenameResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TabRenumberParams = TypedDict("TabRenumberParams", {
+    "workspace": NotRequired["Target"],
+})
+
+TabRenumberResult = TypedDict("TabRenumberResult", {
+    "workspace": str,
+    "tabs": List["Tab"],
+    "changed": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskAdoptParams = TypedDict("TaskAdoptParams", {
+    "path": NotRequired[str],
+    "pane": NotRequired["Target"],
+    "title": NotRequired[str],
+    "slug": NotRequired[str],
+    "focus": NotRequired[bool],
+})
+
+TaskAdoptResult = TypedDict("TaskAdoptResult", {
+    "task": "Task",
+    "workspace": "Workspace",
+    "created_workspace": bool,
+    "warnings": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskArchiveParams = TypedDict("TaskArchiveParams", {
+    "task": "Target",
+    "force": NotRequired[bool],
+})
+
+TaskArchiveResult = TypedDict("TaskArchiveResult", {
+    "task": "Task",
+    "job": NotRequired[Any],
+    "stopped": NotRequired[List[Any]],
+    "branch_kept": NotRequired[Optional[str]],
+    "worktree_removed": NotRequired[bool],
+    "archived": NotRequired[bool],
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskCheckAuthorizeParams = TypedDict("TaskCheckAuthorizeParams", {
     "task": "Target",
     "check": str,
@@ -4589,6 +4713,17 @@ TaskFinishResult = TypedDict("TaskFinishResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TaskForgetParams = TypedDict("TaskForgetParams", {
+    "task": "Target",
+    "force": NotRequired[bool],
+})
+
+TaskForgetResult = TypedDict("TaskForgetResult", {
+    "task": "Task",
+    "files_touched": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskGetParams = TypedDict("TaskGetParams", {
     "task": "Target",
 })
@@ -4638,6 +4773,37 @@ TaskParkResult = TypedDict("TaskParkResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TaskPortsParams = TypedDict("TaskPortsParams", {
+    "task": "Target",
+})
+
+TaskPortsResult: TypeAlias = "TaskPorts"
+
+TaskPortsReLeaseParams = TypedDict("TaskPortsReLeaseParams", {
+    "task": "Target",
+})
+
+TaskPortsReLeaseResultLeaseV0 = TypedDict("TaskPortsReLeaseResultLeaseV0", {
+    "start": int,
+    "end": int,
+    "count": int,
+})
+
+TaskPortsReLeaseResultOldLeaseV0 = TypedDict("TaskPortsReLeaseResultOldLeaseV0", {
+    "start": int,
+    "end": int,
+})
+
+TaskPortsReLeaseResult = TypedDict("TaskPortsReLeaseResult", {
+    "task": str,
+    "handle": str,
+    "lease": Optional["TaskPortsReLeaseResultLeaseV0"],
+    "env": Dict[str, Any],
+    "old_lease": Optional["TaskPortsReLeaseResultOldLeaseV0"],
+    "note": str,
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskPrParams = TypedDict("TaskPrParams", {
     "task": "Target",
     "refresh": NotRequired[bool],
@@ -4680,6 +4846,18 @@ TaskReconcileResultReportsItem = TypedDict("TaskReconcileResultReportsItem", {
 
 TaskReconcileResult = TypedDict("TaskReconcileResult", {
     "reports": List["TaskReconcileResultReportsItem"],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskRecreateParams = TypedDict("TaskRecreateParams", {
+    "task": "Target",
+})
+
+TaskRecreateResult = TypedDict("TaskRecreateResult", {
+    "task": "Task",
+    "path": str,
+    "branch": str,
+    "new_workspace": bool,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4962,6 +5140,21 @@ TaskSetupResult = TypedDict("TaskSetupResult", {
     "commands": List["TaskSetupResultCommandsItem"],
     "needs_trust": bool,
     "cursor": NotRequired["Cursor"],
+})
+
+TaskSetupLogParams = TypedDict("TaskSetupLogParams", {
+    "task": "Target",
+    "max_bytes": NotRequired[int],
+})
+
+TaskSetupLogResult = TypedDict("TaskSetupLogResult", {
+    "task": str,
+    "path": str,
+    "exists": bool,
+    "text": str,
+    "size": int,
+    "truncated": bool,
+    "setup_status": Optional[str],
 })
 
 TaskSyncParams = TypedDict("TaskSyncParams", {
@@ -5326,6 +5519,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.send_text": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.split": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "pane.sync_input": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "pane.wait_idle": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
@@ -5386,6 +5580,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "tab.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "tab.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "tab.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "tab.renumber": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.adopt": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.archive": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.check.authorize": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.check.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.check.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -5397,11 +5594,15 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.dependency.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.effort.estimate": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.finish": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.park": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.ports.re_lease": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.recreate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -5414,6 +5615,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.review.snapshot.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.start_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.setup": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.setup_log": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.sync": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "theme.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "theme.set_mode": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -6155,6 +6357,17 @@ PaneSeenSubject = TypedDict("PaneSeenSubject", {
 
 PaneSeenData: TypeAlias = Dict[str, Any]
 
+PaneSyncInputChangedSubject = TypedDict("PaneSyncInputChangedSubject", {
+    "group": str,
+})
+
+PaneSyncInputChangedData = TypedDict("PaneSyncInputChangedData", {
+    "enabled": bool,
+    "panes": List[str],
+    "tab": Optional[str],
+    "reason": Literal["started", "stopped", "superseded"],
+})
+
 PaneTitleChangedSubject = TypedDict("PaneTitleChangedSubject", {
     "pane": str,
     "tab": NotRequired[str],
@@ -6561,6 +6774,33 @@ TabRenamedData = TypedDict("TabRenamedData", {
     "title": Optional[str],
 })
 
+TabRenumberedSubject = TypedDict("TabRenumberedSubject", {
+    "workspace": str,
+})
+
+TabRenumberedDataTabsItem = TypedDict("TabRenumberedDataTabsItem", {
+    "tab": str,
+    "from": int,
+    "to": int,
+})
+
+TabRenumberedData = TypedDict("TabRenumberedData", {
+    "tabs": List["TabRenumberedDataTabsItem"],
+})
+
+TaskAdoptedSubject = TypedDict("TaskAdoptedSubject", {
+    "task": str,
+    "workspace": str,
+})
+
+TaskAdoptedData = TypedDict("TaskAdoptedData", {
+    "path": str,
+    "branch": Optional[str],
+    "via": Literal["path", "pane"],
+    "main_worktree": bool,
+    "created_workspace": bool,
+})
+
 TaskAgentsWithheldSubject = TypedDict("TaskAgentsWithheldSubject", {
     "task": str,
 })
@@ -6568,6 +6808,17 @@ TaskAgentsWithheldSubject = TypedDict("TaskAgentsWithheldSubject", {
 TaskAgentsWithheldData = TypedDict("TaskAgentsWithheldData", {
     "reason": str,
     "hint": str,
+})
+
+TaskArchivedSubject = TypedDict("TaskArchivedSubject", {
+    "task": str,
+})
+
+TaskArchivedData = TypedDict("TaskArchivedData", {
+    "path": Optional[str],
+    "branch": Optional[str],
+    "job": Any,
+    "runs": int,
 })
 
 TaskBindingChangedSubject = TypedDict("TaskBindingChangedSubject", {
@@ -6590,6 +6841,17 @@ TaskBranchChangedData = TypedDict("TaskBranchChangedData", {
     "path": str,
     "expected": Optional[str],
     "actual": Optional[str],
+})
+
+TaskCleanupSuggestedSubject = TypedDict("TaskCleanupSuggestedSubject", {
+    "task": str,
+})
+
+TaskCleanupSuggestedData = TypedDict("TaskCleanupSuggestedData", {
+    "reason": Literal["pr_merged"],
+    "pr": int,
+    "url": str,
+    "hint": str,
 })
 
 TaskCreatedSubject = TypedDict("TaskCreatedSubject", {
@@ -6631,6 +6893,16 @@ TaskFinishedData = TypedDict("TaskFinishedData", {
     "status": str,
     "attached": bool,
     "reviewed": Any,
+})
+
+TaskForgottenSubject = TypedDict("TaskForgottenSubject", {
+    "task": str,
+})
+
+TaskForgottenData = TypedDict("TaskForgottenData", {
+    "path": Optional[str],
+    "branch": Optional[str],
+    "previous_status": str,
 })
 
 TaskIntentUpdatedSubject = TypedDict("TaskIntentUpdatedSubject", {
@@ -6686,12 +6958,31 @@ TaskParkedData = TypedDict("TaskParkedData", {
     "attached": NotRequired[bool],
 })
 
+TaskPortsChangedSubject = TypedDict("TaskPortsChangedSubject", {
+    "task": str,
+})
+
+TaskPortsChangedData = TypedDict("TaskPortsChangedData", {
+    "old": Optional[List[int]],
+    "new": List[int],
+})
+
 TaskRecoveredSubject = TypedDict("TaskRecoveredSubject", {
     "task": str,
 })
 
 TaskRecoveredData = TypedDict("TaskRecoveredData", {
     "path": Optional[str],
+})
+
+TaskRecreatedSubject = TypedDict("TaskRecreatedSubject", {
+    "task": str,
+})
+
+TaskRecreatedData = TypedDict("TaskRecreatedData", {
+    "path": str,
+    "branch": str,
+    "new_workspace": bool,
 })
 
 TaskResumedSubject = TypedDict("TaskResumedSubject", {
@@ -6937,6 +7228,7 @@ EVENT_TYPES = (
     "pane.scroll_changed",
     "pane.scroll_requested",
     "pane.seen",
+    "pane.sync_input_changed",
     "pane.title_changed",
     "paste.translated",
     "policy.repo_trusted",
@@ -6977,20 +7269,27 @@ EVENT_TYPES = (
     "tab.layout_changed",
     "tab.moved",
     "tab.renamed",
+    "tab.renumbered",
+    "task.adopted",
     "task.agents_withheld",
+    "task.archived",
     "task.binding_changed",
     "task.branch_changed",
+    "task.cleanup_suggested",
     "task.created",
     "task.dependency_changed",
     "task.files_materialized",
     "task.finished",
+    "task.forgotten",
     "task.intent_updated",
     "task.message_delivery_unknown",
     "task.message_prepared",
     "task.message_sending",
     "task.missing",
     "task.parked",
+    "task.ports_changed",
     "task.recovered",
+    "task.recreated",
     "task.resumed",
     "task.setup_failed",
     "task.setup_finished",

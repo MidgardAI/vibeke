@@ -409,10 +409,12 @@ fn pane_screenshot_scroll_and_move() {
         out.to_str().unwrap(),
     ]);
     assert!(std::fs::read_to_string(&out).unwrap().contains("300"));
+    // PNG and SVG renderings of the grid (v1_remainder.rs checks their content).
     let png = r
         .call("pane.screenshot", json!({"pane": pane, "format": "png"}))
-        .unwrap_err();
-    assert_eq!(kind(&png), "unsupported");
+        .unwrap();
+    assert_eq!(png["blob"]["mime"], "image/png");
+    assert!(png["width"].as_u64().unwrap() > 0);
 
     // Scroll requests: offsets clamp to the scrollback and are published as events.
     let top = r

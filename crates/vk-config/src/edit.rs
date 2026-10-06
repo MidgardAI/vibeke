@@ -32,7 +32,7 @@ pub fn runtime_overrides() -> BTreeMap<String, Option<toml::Value>> {
 /// are none or when the text does not parse (the parse error is then reported as usual).
 pub(crate) fn apply_runtime_overrides(src: &str) -> String {
     let o = runtime_overrides();
-    if o.is_empty() {
+    if !crate::layers::has_overrides() {
         return src.to_string();
     }
     let Ok(mut doc) = src.parse::<toml_edit::DocumentMut>() else {
@@ -41,6 +41,8 @@ pub(crate) fn apply_runtime_overrides(src: &str) -> String {
     for (k, v) in &o {
         let _ = set_in_doc(&mut doc, k, v.as_ref());
     }
+    // The CLI layer (`--config-override`, `VIBEKE_CONFIG_OVERRIDE`) sits above runtime.
+    crate::layers::apply_cli(&mut doc);
     doc.to_string()
 }
 

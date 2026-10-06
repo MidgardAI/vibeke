@@ -286,6 +286,15 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "config.reload",
     "task.park",
     "task.resume",
+    // Synchronized input and task lifecycle (adopt/archive/recreate/forget, port re-lease)
+    // are user actions.
+    "pane.sync_input",
+    "tab.renumber",
+    "task.archive",
+    "task.adopt",
+    "task.recreate",
+    "task.forget",
+    "task.ports.re_lease",
     "workspace.close",
     "workspace.rename",
     "workspace.move",
@@ -547,6 +556,15 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::pane_api::api(server, ctx, method, p) {
         return r;
     }
+    if let Some(r) = crate::sync_input::api(server, ctx, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::tab_renumber::api(server, ctx, method, p) {
+        return r;
+    }
+    if let Some(r) = Box::pin(crate::task_lifecycle::api(server, ctx, method, p)).await {
+        return r;
+    }
     if let Some(r) = Box::pin(crate::task_park::api(server, ctx, method, p)).await {
         return r;
     }
@@ -639,6 +657,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::config_api::METHODS)
                     .chain(crate::blob_api::METHODS)
                     .chain(crate::pane_api::METHODS)
+                    .chain(crate::sync_input::METHODS)
+                    .chain(crate::tab_renumber::METHODS)
+                    .chain(crate::task_lifecycle::METHODS)
                     .chain(crate::task_park::METHODS)
                     .chain(crate::security::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
@@ -1410,7 +1431,9 @@ async fn send(server: &Server, ctx: &Ctx, pane: &str, bytes: Vec<u8>) -> Result<
     if let Some(reason) = server.agents.input_blocked(pane) {
         return Err(err(ErrorKind::Conflict, reason));
     }
-    let _ = ctx;
+    if ctx.pane_scope.is_none() {
+        crate::sync_input::mirror(server, pane, &bytes);
+    }
     let id = server.next_internal_input_id();
     match render::write_and_ack(server, pane, id, bytes).await {
         vk_proto::holder::InputStatus::ChildExited => {

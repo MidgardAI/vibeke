@@ -53,6 +53,12 @@ pub mod integrity;
 pub mod policy_api;
 pub mod security;
 pub mod user_popup;
+// v1 server/API/CLI remainder: one module per item, hooked with one line each.
+pub mod audit_retention;
+pub mod pane_render;
+pub mod sync_input;
+pub mod tab_renumber;
+pub mod task_lifecycle;
 
 #[cfg(test)]
 mod scope_catalog_tests;

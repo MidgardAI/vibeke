@@ -521,6 +521,9 @@ class Api:
     async def pane_split(self, params: "Optional[t.PaneSplitParams]" = None) -> "t.PaneSplitResult":
         return await self.call("pane.split", params or {})  # type: ignore[arg-type, return-value]
 
+    async def pane_sync_input(self, params: "Optional[t.PaneSyncInputParams]" = None) -> "t.PaneSyncInputResult":
+        return await self.call("pane.sync_input", params or {})  # type: ignore[arg-type, return-value]
+
     async def pane_wait_idle(self, params: "Optional[t.PaneWaitIdleParams]" = None) -> "t.PaneWaitIdleResult":
         return await self.call("pane.wait_idle", params or {})  # type: ignore[arg-type, return-value]
 
@@ -701,6 +704,15 @@ class Api:
     async def tab_rename(self, params: "t.TabRenameParams") -> "t.TabRenameResult":
         return await self.call("tab.rename", params)  # type: ignore[arg-type, return-value]
 
+    async def tab_renumber(self, params: "Optional[t.TabRenumberParams]" = None) -> "t.TabRenumberResult":
+        return await self.call("tab.renumber", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_adopt(self, params: "Optional[t.TaskAdoptParams]" = None) -> "t.TaskAdoptResult":
+        return await self.call("task.adopt", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_archive(self, params: "t.TaskArchiveParams") -> "t.TaskArchiveResult":
+        return await self.call("task.archive", params)  # type: ignore[arg-type, return-value]
+
     async def task_check_authorize(self, params: "t.TaskCheckAuthorizeParams") -> "t.TaskCheckAuthorizeResult":
         return await self.call("task.check.authorize", params)  # type: ignore[arg-type, return-value]
 
@@ -734,6 +746,9 @@ class Api:
     async def task_finish(self, params: "t.TaskFinishParams") -> "t.TaskFinishResult":
         return await self.call("task.finish", params)  # type: ignore[arg-type, return-value]
 
+    async def task_forget(self, params: "t.TaskForgetParams") -> "t.TaskForgetResult":
+        return await self.call("task.forget", params)  # type: ignore[arg-type, return-value]
+
     async def task_get(self, params: "t.TaskGetParams") -> "t.TaskGetResult":
         return await self.call("task.get", params)  # type: ignore[arg-type, return-value]
 
@@ -743,11 +758,20 @@ class Api:
     async def task_park(self, params: "t.TaskParkParams") -> "t.TaskParkResult":
         return await self.call("task.park", params)  # type: ignore[arg-type, return-value]
 
+    async def task_ports(self, params: "t.TaskPortsParams") -> "t.TaskPortsResult":
+        return await self.call("task.ports", params)  # type: ignore[arg-type, return-value]
+
+    async def task_ports_re_lease(self, params: "t.TaskPortsReLeaseParams") -> "t.TaskPortsReLeaseResult":
+        return await self.call("task.ports.re_lease", params)  # type: ignore[arg-type, return-value]
+
     async def task_pr(self, params: "t.TaskPrParams") -> "t.TaskPrResult":
         return await self.call("task.pr", params)  # type: ignore[arg-type, return-value]
 
     async def task_reconcile(self, params: "Optional[t.TaskReconcileParams]" = None) -> "t.TaskReconcileResult":
         return await self.call("task.reconcile", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_recreate(self, params: "t.TaskRecreateParams") -> "t.TaskRecreateResult":
+        return await self.call("task.recreate", params)  # type: ignore[arg-type, return-value]
 
     async def task_resume(self, params: "t.TaskResumeParams") -> "t.TaskResumeResult":
         return await self.call("task.resume", params)  # type: ignore[arg-type, return-value]
@@ -784,6 +808,9 @@ class Api:
 
     async def task_setup(self, params: "t.TaskSetupParams") -> "t.TaskSetupResult":
         return await self.call("task.setup", params)  # type: ignore[arg-type, return-value]
+
+    async def task_setup_log(self, params: "t.TaskSetupLogParams") -> "t.TaskSetupLogResult":
+        return await self.call("task.setup_log", params)  # type: ignore[arg-type, return-value]
 
     async def task_sync(self, params: "t.TaskSyncParams") -> "t.TaskSyncResult":
         return await self.call("task.sync", params)  # type: ignore[arg-type, return-value]

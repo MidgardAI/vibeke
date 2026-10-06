@@ -6,6 +6,7 @@ use vk_cli::client;
 use vk_cli::{EXIT_NO_SERVER, EXIT_OK, EXIT_USAGE, Global};
 
 mod commands;
+mod config_cmd;
 mod debug;
 mod doctor;
 mod idle;
@@ -40,7 +41,8 @@ usage:
   vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart [--binary PATH]|reload-config]
-  vibeke config path|get|set|validate|reload|default
+  vibeke config path|get|set|validate|reload|default|edit|reset-keys
+  vibeke shell-integration zsh|bash|fish   OSC 133/7 prompt marks: eval \"$(vibeke shell-integration zsh)\"
   vibeke events tail [--types t] [--after-seq N] [--follow]
   vibeke completion bash|zsh|fish|nu|powershell
   vibeke gateway run|pair|share|devices|revoke|status   reach this host from phone/desktop apps (E2E via a relay)
@@ -49,6 +51,7 @@ usage:
   vibeke --skill | --default-config | --version
 
 global flags: --session NAME  --machine LABEL  --socket PATH  --json  --pretty  --quiet  --no-spawn  --timeout MS
+              --config-override KEY=VALUE (repeatable; also VIBEKE_CONFIG_OVERRIDE=\"k=v;k=v\")
 nouns: ";
 
 fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
@@ -74,6 +77,16 @@ fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
             "--machine" => g.machine = Some(take(args, i)?),
             "--socket" => g.socket = Some(PathBuf::from(take(args, i)?)),
             "--timeout" => g.timeout_ms = take(args, i)?.parse().ok(),
+            // Per-invocation config layer (08 §11, `vk_config::layers`).
+            "--config-override" => {
+                let (k, v) = vk_config::layers::parse_override(&take(args, i)?)?;
+                vk_config::layers::add_cli_override(&k, v);
+            }
+            a if a.starts_with("--config-override=") => {
+                let (k, v) = vk_config::layers::parse_override(&a["--config-override=".len()..])?;
+                vk_config::layers::add_cli_override(&k, v);
+                args.remove(i);
+            }
             "--json" => {
                 g.json = Some(true);
                 args.remove(i);
@@ -200,6 +213,10 @@ fn main() {
             std::process::exit(EXIT_USAGE);
         }
     };
+    if let Err(e) = export_config_overrides() {
+        eprintln!("{e}");
+        std::process::exit(EXIT_USAGE);
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(4)
@@ -208,6 +225,25 @@ fn main() {
     let code = rt.block_on(dispatch(g, args));
     rt.shutdown_timeout(std::time::Duration::from_millis(100));
     std::process::exit(code);
+}
+
+/// Validate the CLI config layer and hand it to child processes (a server this command starts
+/// inherits it). Runs before any thread exists.
+fn export_config_overrides() -> Result<(), String> {
+    if vk_config::layers::cli_overrides().is_empty() {
+        return Ok(());
+    }
+    if let Err(e) = vk_config::Config::load(vk_config::config_path()) {
+        return Err(format!("config override rejected: {e}"));
+    }
+    // SAFETY: called from `main` before the runtime or any other thread is started.
+    unsafe {
+        std::env::set_var(
+            vk_config::layers::CONFIG_OVERRIDE_ENV,
+            vk_config::layers::cli_overrides_env(),
+        )
+    };
+    Ok(())
 }
 
 async fn dispatch(g: Global, args: Vec<String>) -> i32 {
@@ -287,6 +323,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             commands::config(&g, &args[1..])
         }
         Some("completion") => vk_cli::verbs::completion(&args[1..]),
+        Some("shell-integration") => vk_cli::shell_integration::run(&args[1..]),
         Some("events") if args.get(1).map(String::as_str) == Some("tail") => {
             let gr = &g;
             let rest = &args[2..];

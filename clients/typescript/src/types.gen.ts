@@ -151,6 +151,15 @@ export type ConfigDiagnostic = {
   message: string;
 };
 
+export type ConfigLayer = {
+  source: "default" | "user" | "repo" | "runtime" | "cli";
+  path?: string | null;
+  exists?: boolean;
+  trusted?: boolean;
+  applied?: boolean;
+  keys?: string[];
+};
+
 export type ConfigWarning = {
   key: string;
   line: number | null;
@@ -469,6 +478,19 @@ export type SessionEntry = {
   pid?: number;
 };
 
+export type SyncGroup = {
+  id: string;
+  panes: string[];
+  members: {
+    pane: string;
+    handle: string | null;
+    agent: boolean;
+  }[];
+  tab: string | null;
+  agents: string[];
+  created_at_ms: number;
+};
+
 export type Tab = {
   id: string;
   handle: string;
@@ -509,6 +531,17 @@ export type Task = {
   isolation?: Isolation;
   checkout?: string | null;
   rate_limit?: RateLimitInfo | null;
+};
+
+export type TaskPorts = {
+  task: string;
+  handle: string;
+  lease: {
+    start: number;
+    end: number;
+    count: number;
+  } | null;
+  env: Record<string, unknown>;
 };
 
 export type Workspace = {
@@ -1071,6 +1104,7 @@ export type AuditVerifyResult = {
   discontinuities: number[];
   head_seq: number | null;
   path: string;
+  segments: string[];
 };
 
 export type AuthElevateParams = {
@@ -2055,14 +2089,27 @@ export type CompatUiStateResult = {
 
 export type ConfigGetParams = {
   key?: string;
+  repo?: string;
+  cwd?: string;
+  pane?: Target;
 };
 
 export type ConfigGetResult = {
   key?: string;
   value: unknown;
-  source: "default" | "user" | "runtime";
+  source: "default" | "user" | "repo" | "runtime" | "cli";
   path: string;
   overrides: string[];
+  cli_overrides: string[];
+  layers: ConfigLayer[];
+  repo: {
+    root: string;
+    file: string | null;
+    trusted: boolean;
+    applied: boolean;
+    warnings?: string[];
+    error?: string;
+  } | null;
   errors: ConfigDiagnostic[];
 };
 
@@ -3027,7 +3074,7 @@ export type PaneRunResult = {
 
 export type PaneScreenshotParams = {
   pane?: Target;
-  format?: "text" | "ansi" | "html" | "png" | "svg";
+  format?: "text" | "ansi" | "html" | "svg" | "png";
   source?: "visible" | "recent";
   lines?: number;
   include_cursor?: boolean;
@@ -3047,12 +3094,15 @@ export type PaneScreenshotResult = {
   rows: number;
   lines: number;
   revision: number;
+  width?: number;
+  height?: number;
   cursor?: {
     row: number;
     col: number;
     visible: boolean;
   };
   data?: string;
+  data_b64?: string;
 };
 
 export type PaneScrollParams = {
@@ -3114,6 +3164,30 @@ export type PaneSplitParams = {
 
 export type PaneSplitResult = {
   pane: Pane;
+  cursor?: Cursor;
+};
+
+export type PaneSyncInputParams = {
+  action?: "start" | "stop" | "status" | "on" | "off";
+  enabled?: boolean;
+  panes?: Target[] | string;
+  tab?: Target;
+  pane?: Target;
+  group?: string;
+  all?: boolean;
+  include_agents?: boolean;
+};
+
+export type PaneSyncInputResult = {
+  group_id: string | null;
+  group?: SyncGroup;
+  excluded?: {
+    pane: string;
+    handle: string;
+    reason: string;
+  }[];
+  stopped?: string[];
+  groups: SyncGroup[];
   cursor?: Cursor;
 };
 
@@ -4038,6 +4112,48 @@ export type TabRenameResult = {
   cursor?: Cursor;
 };
 
+export type TabRenumberParams = {
+  workspace?: Target;
+};
+
+export type TabRenumberResult = {
+  workspace: string;
+  tabs: Tab[];
+  changed: number;
+  cursor?: Cursor;
+};
+
+export type TaskAdoptParams = {
+  path?: string;
+  pane?: Target;
+  title?: string;
+  slug?: string;
+  focus?: boolean;
+};
+
+export type TaskAdoptResult = {
+  task: Task;
+  workspace: Workspace;
+  created_workspace: boolean;
+  warnings: string[];
+  cursor?: Cursor;
+};
+
+export type TaskArchiveParams = {
+  task: Target;
+  force?: boolean;
+};
+
+export type TaskArchiveResult = {
+  task: Task;
+  job?: unknown;
+  stopped?: unknown[];
+  branch_kept?: string | null;
+  worktree_removed?: boolean;
+  archived?: boolean;
+  cursor?: Cursor;
+};
+
 export type TaskCheckAuthorizeParams = {
   task: Target;
   check: string;
@@ -4258,6 +4374,17 @@ export type TaskFinishResult = {
   cursor?: Cursor;
 };
 
+export type TaskForgetParams = {
+  task: Target;
+  force?: boolean;
+};
+
+export type TaskForgetResult = {
+  task: Task;
+  files_touched: boolean;
+  cursor?: Cursor;
+};
+
 export type TaskGetParams = {
   task: Target;
 };
@@ -4303,6 +4430,33 @@ export type TaskParkResult = {
   cursor?: Cursor;
 };
 
+export type TaskPortsParams = {
+  task: Target;
+};
+
+export type TaskPortsResult = TaskPorts;
+
+export type TaskPortsReLeaseParams = {
+  task: Target;
+};
+
+export type TaskPortsReLeaseResult = {
+  task: string;
+  handle: string;
+  lease: {
+    start: number;
+    end: number;
+    count: number;
+  } | null;
+  env: Record<string, unknown>;
+  old_lease: {
+    start: number;
+    end: number;
+  } | null;
+  note: string;
+  cursor?: Cursor;
+};
+
 export type TaskPrParams = {
   task: Target;
   refresh?: boolean;
@@ -4337,6 +4491,18 @@ export type TaskReconcileResult = {
       branch: string | null;
     }[];
   }[];
+  cursor?: Cursor;
+};
+
+export type TaskRecreateParams = {
+  task: Target;
+};
+
+export type TaskRecreateResult = {
+  task: Task;
+  path: string;
+  branch: string;
+  new_workspace: boolean;
   cursor?: Cursor;
 };
 
@@ -4595,6 +4761,21 @@ export type TaskSetupResult = {
   }[];
   needs_trust: boolean;
   cursor?: Cursor;
+};
+
+export type TaskSetupLogParams = {
+  task: Target;
+  max_bytes?: number;
+};
+
+export type TaskSetupLogResult = {
+  task: string;
+  path: string;
+  exists: boolean;
+  text: string;
+  size: number;
+  truncated: boolean;
+  setup_status: string | null;
 };
 
 export type TaskSyncParams = {
@@ -4951,6 +5132,7 @@ export interface Methods {
   "pane.send_keys": { params: PaneSendKeysParams; result: PaneSendKeysResult };
   "pane.send_text": { params: PaneSendTextParams; result: PaneSendTextResult };
   "pane.split": { params: PaneSplitParams; result: PaneSplitResult };
+  "pane.sync_input": { params: PaneSyncInputParams; result: PaneSyncInputResult };
   "pane.wait_idle": { params: PaneWaitIdleParams; result: PaneWaitIdleResult };
   "pane.wait_output": { params: PaneWaitOutputParams; result: PaneWaitOutputResult };
   "pane.zoom": { params: PaneZoomParams; result: PaneZoomResult };
@@ -5011,6 +5193,9 @@ export interface Methods {
   "tab.list": { params: TabListParams; result: TabListResult };
   "tab.move": { params: TabMoveParams; result: TabMoveResult };
   "tab.rename": { params: TabRenameParams; result: TabRenameResult };
+  "tab.renumber": { params: TabRenumberParams; result: TabRenumberResult };
+  "task.adopt": { params: TaskAdoptParams; result: TaskAdoptResult };
+  "task.archive": { params: TaskArchiveParams; result: TaskArchiveResult };
   "task.check.authorize": { params: TaskCheckAuthorizeParams; result: TaskCheckAuthorizeResult };
   "task.check.cancel": { params: TaskCheckCancelParams; result: TaskCheckCancelResult };
   "task.check.get": { params: TaskCheckGetParams; result: TaskCheckGetResult };
@@ -5022,11 +5207,15 @@ export interface Methods {
   "task.dependency.remove": { params: TaskDependencyRemoveParams; result: TaskDependencyRemoveResult };
   "task.effort.estimate": { params: TaskEffortEstimateParams; result: TaskEffortEstimateResult };
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
+  "task.forget": { params: TaskForgetParams; result: TaskForgetResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
   "task.park": { params: TaskParkParams; result: TaskParkResult };
+  "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
+  "task.ports.re_lease": { params: TaskPortsReLeaseParams; result: TaskPortsReLeaseResult };
   "task.pr": { params: TaskPrParams; result: TaskPrResult };
   "task.reconcile": { params: TaskReconcileParams; result: TaskReconcileResult };
+  "task.recreate": { params: TaskRecreateParams; result: TaskRecreateResult };
   "task.resume": { params: TaskResumeParams; result: TaskResumeResult };
   "task.review.accept": { params: TaskReviewAcceptParams; result: TaskReviewAcceptResult };
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
@@ -5039,6 +5228,7 @@ export interface Methods {
   "task.review.snapshot.gc": { params: TaskReviewSnapshotGcParams; result: TaskReviewSnapshotGcResult };
   "task.review.start_reviewer": { params: TaskReviewStartReviewerParams; result: TaskReviewStartReviewerResult };
   "task.setup": { params: TaskSetupParams; result: TaskSetupResult };
+  "task.setup_log": { params: TaskSetupLogParams; result: TaskSetupLogResult };
   "task.sync": { params: TaskSyncParams; result: TaskSyncResult };
   "theme.get": { params: ThemeGetParams; result: ThemeGetResult };
   "theme.set_mode": { params: ThemeSetModeParams; result: ThemeSetModeResult };
@@ -5229,6 +5419,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "pane.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.send_text": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.split": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "pane.sync_input": { mutating: true, scope: "full", paneScope: "forbidden" },
   "pane.wait_idle": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.wait_output": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.zoom": { mutating: true, scope: "pane", paneScope: "own_target" },
@@ -5289,6 +5480,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "tab.list": { mutating: false, scope: "pane", paneScope: "open" },
   "tab.move": { mutating: true, scope: "full", paneScope: "forbidden" },
   "tab.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "tab.renumber": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.adopt": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.archive": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.check.authorize": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.check.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.check.get": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5300,11 +5494,15 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.dependency.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.effort.estimate": { mutating: false, scope: "pane", paneScope: "open" },
   "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.get": { mutating: false, scope: "pane", paneScope: "open" },
   "task.list": { mutating: false, scope: "pane", paneScope: "open" },
   "task.park": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.ports.re_lease": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
   "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.recreate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5317,6 +5515,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.snapshot.gc": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.start_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.setup": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.setup_log": { mutating: false, scope: "pane", paneScope: "open" },
   "task.sync": { mutating: true, scope: "full", paneScope: "forbidden" },
   "theme.get": { mutating: false, scope: "pane", paneScope: "open" },
   "theme.set_mode": { mutating: true, scope: "pane", paneScope: "open" },
@@ -6056,6 +6255,17 @@ export type PaneSeenSubject = {
 
 export type PaneSeenData = Record<string, unknown>;
 
+export type PaneSyncInputChangedSubject = {
+  group: string;
+};
+
+export type PaneSyncInputChangedData = {
+  enabled: boolean;
+  panes: string[];
+  tab: string | null;
+  reason: "started" | "stopped" | "superseded";
+};
+
 export type PaneTitleChangedSubject = {
   pane: string;
   tab?: string;
@@ -6460,6 +6670,31 @@ export type TabRenamedData = {
   title: string | null;
 };
 
+export type TabRenumberedSubject = {
+  workspace: string;
+};
+
+export type TabRenumberedData = {
+  tabs: {
+    tab: string;
+    from: number;
+    to: number;
+  }[];
+};
+
+export type TaskAdoptedSubject = {
+  task: string;
+  workspace: string;
+};
+
+export type TaskAdoptedData = {
+  path: string;
+  branch: string | null;
+  via: "path" | "pane";
+  main_worktree: boolean;
+  created_workspace: boolean;
+};
+
 export type TaskAgentsWithheldSubject = {
   task: string;
 };
@@ -6467,6 +6702,17 @@ export type TaskAgentsWithheldSubject = {
 export type TaskAgentsWithheldData = {
   reason: string;
   hint: string;
+};
+
+export type TaskArchivedSubject = {
+  task: string;
+};
+
+export type TaskArchivedData = {
+  path: string | null;
+  branch: string | null;
+  job: unknown;
+  runs: number;
 };
 
 export type TaskBindingChangedSubject = {
@@ -6489,6 +6735,17 @@ export type TaskBranchChangedData = {
   path: string;
   expected: string | null;
   actual: string | null;
+};
+
+export type TaskCleanupSuggestedSubject = {
+  task: string;
+};
+
+export type TaskCleanupSuggestedData = {
+  reason: "pr_merged";
+  pr: number;
+  url: string;
+  hint: string;
 };
 
 export type TaskCreatedSubject = {
@@ -6530,6 +6787,16 @@ export type TaskFinishedData = {
   status: string;
   attached: boolean;
   reviewed: unknown;
+};
+
+export type TaskForgottenSubject = {
+  task: string;
+};
+
+export type TaskForgottenData = {
+  path: string | null;
+  branch: string | null;
+  previous_status: string;
 };
 
 export type TaskIntentUpdatedSubject = {
@@ -6585,12 +6852,31 @@ export type TaskParkedData = {
   attached?: boolean;
 };
 
+export type TaskPortsChangedSubject = {
+  task: string;
+};
+
+export type TaskPortsChangedData = {
+  old: number[] | null;
+  new: number[];
+};
+
 export type TaskRecoveredSubject = {
   task: string;
 };
 
 export type TaskRecoveredData = {
   path: string | null;
+};
+
+export type TaskRecreatedSubject = {
+  task: string;
+};
+
+export type TaskRecreatedData = {
+  path: string;
+  branch: string;
+  new_workspace: boolean;
 };
 
 export type TaskResumedSubject = {
@@ -6832,6 +7118,7 @@ export interface EventMap {
   "pane.scroll_changed": { subject: PaneScrollChangedSubject; data: PaneScrollChangedData };
   "pane.scroll_requested": { subject: PaneScrollRequestedSubject; data: PaneScrollRequestedData };
   "pane.seen": { subject: PaneSeenSubject; data: PaneSeenData };
+  "pane.sync_input_changed": { subject: PaneSyncInputChangedSubject; data: PaneSyncInputChangedData };
   "pane.title_changed": { subject: PaneTitleChangedSubject; data: PaneTitleChangedData };
   "paste.translated": { subject: PasteTranslatedSubject; data: PasteTranslatedData };
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
@@ -6872,20 +7159,27 @@ export interface EventMap {
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };
   "tab.moved": { subject: TabMovedSubject; data: TabMovedData };
   "tab.renamed": { subject: TabRenamedSubject; data: TabRenamedData };
+  "tab.renumbered": { subject: TabRenumberedSubject; data: TabRenumberedData };
+  "task.adopted": { subject: TaskAdoptedSubject; data: TaskAdoptedData };
   "task.agents_withheld": { subject: TaskAgentsWithheldSubject; data: TaskAgentsWithheldData };
+  "task.archived": { subject: TaskArchivedSubject; data: TaskArchivedData };
   "task.binding_changed": { subject: TaskBindingChangedSubject; data: TaskBindingChangedData };
   "task.branch_changed": { subject: TaskBranchChangedSubject; data: TaskBranchChangedData };
+  "task.cleanup_suggested": { subject: TaskCleanupSuggestedSubject; data: TaskCleanupSuggestedData };
   "task.created": { subject: TaskCreatedSubject; data: TaskCreatedData };
   "task.dependency_changed": { subject: TaskDependencyChangedSubject; data: TaskDependencyChangedData };
   "task.files_materialized": { subject: TaskFilesMaterializedSubject; data: TaskFilesMaterializedData };
   "task.finished": { subject: TaskFinishedSubject; data: TaskFinishedData };
+  "task.forgotten": { subject: TaskForgottenSubject; data: TaskForgottenData };
   "task.intent_updated": { subject: TaskIntentUpdatedSubject; data: TaskIntentUpdatedData };
   "task.message_delivery_unknown": { subject: TaskMessageDeliveryUnknownSubject; data: TaskMessageDeliveryUnknownData };
   "task.message_prepared": { subject: TaskMessagePreparedSubject; data: TaskMessagePreparedData };
   "task.message_sending": { subject: TaskMessageSendingSubject; data: TaskMessageSendingData };
   "task.missing": { subject: TaskMissingSubject; data: TaskMissingData };
   "task.parked": { subject: TaskParkedSubject; data: TaskParkedData };
+  "task.ports_changed": { subject: TaskPortsChangedSubject; data: TaskPortsChangedData };
   "task.recovered": { subject: TaskRecoveredSubject; data: TaskRecoveredData };
+  "task.recreated": { subject: TaskRecreatedSubject; data: TaskRecreatedData };
   "task.resumed": { subject: TaskResumedSubject; data: TaskResumedData };
   "task.setup_failed": { subject: TaskSetupFailedSubject; data: TaskSetupFailedData };
   "task.setup_finished": { subject: TaskSetupFinishedSubject; data: TaskSetupFinishedData };

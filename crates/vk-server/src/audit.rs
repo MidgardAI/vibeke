@@ -12,6 +12,12 @@
 //! Best-effort: same-UID code can rewrite the whole chain (T9 is out of scope).
 //!
 //! Free text is redacted with `vk-redact` before it is written; tokens are never passed in.
+//!
+//! Appends take an exclusive `flock` on `audit.lock` and continue from the file's last entry,
+//! so the server and CLI commands that record without a server ([`record_offline`]: plugin
+//! and integration installs, remote machine adds) share one chain. Rotation and retention
+//! (`crate::audit_retention`) run under the same lock and carry the head hash into the next
+//! file.
 
 use crate::Server;
 use crate::api::{Ctx, R, invalid, s, u};
@@ -35,8 +41,6 @@ pub struct State {
 
 #[derive(Default)]
 struct Inner {
-    /// `(seq, hash)` of the last entry, once loaded from the file.
-    head: Option<(u64, String)>,
     /// `audit.recorded` events not yet committed to the event log: (subject, data).
     pending: Vec<(Value, Value)>,
 }
@@ -63,17 +67,71 @@ pub fn actor_of(ctx: &Ctx) -> Value {
     a
 }
 
-/// The last complete line of the log: `(seq, hash)`.
+/// The last complete line of the log: `(seq, hash)`. Reads the last 64 KiB, then up to 1 MiB.
 fn read_tail(log: &Path) -> Option<(u64, String)> {
     let mut f = std::fs::File::open(log).ok()?;
     let len = f.metadata().ok()?.len();
-    let start = len.saturating_sub(1 << 20);
-    f.seek(SeekFrom::Start(start)).ok()?;
-    let mut buf = String::new();
-    f.read_to_string(&mut buf).ok()?;
-    let line = buf.lines().rev().find(|l| !l.trim().is_empty())?;
-    let v: Value = serde_json::from_str(line).ok()?;
-    Some((v["seq"].as_u64()?, v["hash"].as_str()?.to_string()))
+    for window in [64u64 << 10, 1 << 20] {
+        let start = len.saturating_sub(window);
+        f.seek(SeekFrom::Start(start)).ok()?;
+        let mut buf = String::new();
+        f.read_to_string(&mut buf).ok()?;
+        let mut lines: Vec<&str> = buf.lines().collect();
+        if start > 0 && !lines.is_empty() {
+            // The first line of a window may be cut.
+            lines.remove(0);
+        }
+        if let Some(line) = lines.iter().rev().find(|l| !l.trim().is_empty())
+            && let Ok(v) = serde_json::from_str::<Value>(line)
+        {
+            return Some((v["seq"].as_u64()?, v["hash"].as_str()?.to_string()));
+        }
+        if start == 0 {
+            return None;
+        }
+    }
+    None
+}
+
+/// The last entry of the active log (`(seq, hash)`), if any.
+pub(crate) fn tail_of(log: &Path) -> Option<(u64, String)> {
+    read_tail(log)
+}
+
+/// Exclusive lock on a log's appends (`audit.lock` next to it), released on drop.
+pub(crate) struct LogLock(std::fs::File);
+
+impl Drop for LogLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // SAFETY: unlocking our own descriptor.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+pub(crate) fn lock_log(log: &Path) -> Option<LogLock> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(d) = log.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(log.with_extension("lock"))
+        .ok()?;
+    loop {
+        // SAFETY: flock on a descriptor we own.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Some(LogLock(f));
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return None;
+        }
+    }
 }
 
 fn read_head(log: &Path) -> Option<(u64, String)> {
@@ -81,7 +139,7 @@ fn read_head(log: &Path) -> Option<(u64, String)> {
     Some((v["seq"].as_u64()?, v["hash"].as_str()?.to_string()))
 }
 
-fn write_head(log: &Path, seq: u64, hash: &str) -> std::io::Result<()> {
+pub(crate) fn write_head(log: &Path, seq: u64, hash: &str) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let head = head_path(log);
     let tmp = log.with_extension("head.tmp");
@@ -97,7 +155,7 @@ fn write_head(log: &Path, seq: u64, hash: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, head)
 }
 
-fn append_line(log: &Path, line: &str) -> std::io::Result<()> {
+pub(crate) fn append_line(log: &Path, line: &str) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
         .append(true)
@@ -111,7 +169,7 @@ fn append_line(log: &Path, line: &str) -> std::io::Result<()> {
 }
 
 /// Build one chained entry after `(prev_seq, prev_hash)`; returns the line and its hash.
-fn entry(
+pub(crate) fn entry(
     prev: &(u64, String),
     kind: &str,
     actor: Value,
@@ -133,6 +191,50 @@ fn entry(
     (Value::Object(e).to_string(), hash, seq)
 }
 
+/// Append one entry to `log` under its lock: continue from the file's last entry (recording an
+/// `audit.discontinuity` first when the head file says the tail was cut), rotate and prune per
+/// `policy`, write the entry and the head. `subject` and `data` must already be redacted.
+/// Returns the entry's `(seq, hash)`.
+pub(crate) fn append_entry(
+    log: &Path,
+    kind: &str,
+    actor: Value,
+    subject: Value,
+    data: Value,
+    policy: &crate::audit_retention::Policy,
+) -> Option<(u64, String)> {
+    let _lock = lock_log(log)?;
+    let tail = read_tail(log);
+    let mut prev = tail.clone().unwrap_or((0, GENESIS.to_string()));
+    // The recorded head is ahead of (or differs from) the file: the tail was cut or rewritten.
+    // Continue the chain from what is there and say so.
+    if let Some(h) = read_head(log)
+        && Some(&h) != tail.as_ref()
+        && h.0 >= prev.0
+    {
+        let (line, hash, seq) = entry(
+            &prev,
+            "audit.discontinuity",
+            json!({"kind": "system"}),
+            Value::Null,
+            json!({"expected_seq": h.0, "expected_hash": h.1, "found_seq": prev.0, "found_hash": prev.1}),
+        );
+        if append_line(log, &line).is_ok() {
+            tracing::warn!(expected = h.0, found = prev.0, "audit log head mismatch");
+            let _ = write_head(log, seq, &hash);
+            prev = (seq, hash);
+        }
+    }
+    prev = crate::audit_retention::maintain(log, prev, policy);
+    let (line, hash, seq) = entry(&prev, kind, actor, subject, data);
+    if let Err(e) = append_line(log, &line) {
+        tracing::error!(error = %e, log = %log.display(), "audit log append failed");
+        return None;
+    }
+    let _ = write_head(log, seq, &hash);
+    Some((seq, hash))
+}
+
 /// Append one record to the session's audit log and queue its `audit.recorded` event.
 /// Never takes the core lock while the caller might hold it (the event is committed now if
 /// the core is free, else by the flusher), so it is safe to call from anywhere. `data` and
@@ -149,41 +251,10 @@ pub fn record(
     let mut subject = subject;
     vk_redact::redact_json(&mut data);
     vk_redact::redact_json(&mut subject);
+    let policy = crate::audit_retention::Policy::current();
     let seq = {
         let mut g = server.security.audit.inner.lock().unwrap();
-        if g.head.is_none() {
-            let tail = read_tail(&log);
-            let head = read_head(&log);
-            let start = tail.clone().unwrap_or((0, GENESIS.to_string()));
-            g.head = Some(start.clone());
-            // The recorded head is ahead of (or differs from) the file: the tail was cut or
-            // rewritten while no server ran. Continue the chain from what is there and say so.
-            if let Some(h) = head
-                && Some(&h) != tail.as_ref()
-                && h.0 >= start.0
-            {
-                let (line, hash, seq) = entry(
-                    &start,
-                    "audit.discontinuity",
-                    json!({"kind": "system"}),
-                    Value::Null,
-                    json!({"expected_seq": h.0, "expected_hash": h.1, "found_seq": start.0, "found_hash": start.1}),
-                );
-                if append_line(&log, &line).is_ok() {
-                    tracing::warn!(expected = h.0, found = start.0, "audit log head mismatch");
-                    let _ = write_head(&log, seq, &hash);
-                    g.head = Some((seq, hash));
-                }
-            }
-        }
-        let prev = g.head.clone().unwrap_or((0, GENESIS.to_string()));
-        let (line, hash, seq) = entry(&prev, kind, actor, subject.clone(), data);
-        if let Err(e) = append_line(&log, &line) {
-            tracing::error!(error = %e, log = %log.display(), "audit log append failed");
-            return None;
-        }
-        let _ = write_head(&log, seq, &hash);
-        g.head = Some((seq, hash.clone()));
+        let (seq, hash) = append_entry(&log, kind, actor, subject.clone(), data, &policy)?;
         g.pending.push((
             if subject.is_object() {
                 subject
@@ -196,6 +267,27 @@ pub fn record(
     };
     flush(server, false);
     Some(seq)
+}
+
+/// Record without a server (CLI commands that change security-relevant state on their own:
+/// plugin and integration installs, remote machine adds) into `session`'s audit log. No
+/// `audit.recorded` event is emitted; the entry joins the same chain. Best effort: failures
+/// are logged, never fatal to the command.
+pub fn record_offline(session: &str, kind: &str, subject: Value, data: Value) -> Option<u64> {
+    let paths = crate::paths::Paths::new(session);
+    if std::fs::create_dir_all(&paths.state).is_err() {
+        return None;
+    }
+    let log = paths.audit_log();
+    let mut data = data;
+    let mut subject = subject;
+    vk_redact::redact_json(&mut data);
+    vk_redact::redact_json(&mut subject);
+    let policy = vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| crate::audit_retention::Policy::from_config(&c))
+        .unwrap_or_default();
+    let actor = json!({"kind": "user", "client_kind": "cli", "pid": std::process::id()});
+    append_entry(&log, kind, actor, subject, data, &policy).map(|(seq, _)| seq)
 }
 
 /// Commit queued `audit.recorded` events. With `block`, wait for the core lock; otherwise
@@ -231,6 +323,7 @@ pub fn flush(server: &Server, block: bool) {
 
 /// The flusher: commits events whose record found the core busy.
 pub fn start(server: &std::sync::Arc<Server>) {
+    crate::audit_retention::start(server);
     let srv = server.clone();
     tokio::spawn(async move {
         loop {
@@ -240,6 +333,37 @@ pub fn start(server: &std::sync::Arc<Server>) {
             let _ = tokio::task::spawn_blocking(move || flush(&s, true)).await;
         }
     });
+}
+
+/// Audit a rate-limit trip (09 §5.1 rule 7). Called at most once a minute per pane (with the
+/// notification), so a runaway caller cannot flood the log.
+pub fn rate_limited(server: &Server, pane: &str, handle: &str, method: &str, limit: &str) {
+    record(
+        server,
+        "security.rate_limited",
+        json!({"kind": "agent", "pane": pane}),
+        json!({"pane": pane, "pane_handle": handle}),
+        json!({"method": method, "limit": limit}),
+    );
+}
+
+/// Audit an OSC 52 clipboard read decision (09 §11 "clipboard decisions"): which pane asked,
+/// which client answered, granted or denied, and the size (never the content).
+pub fn clipboard_decision(
+    server: &Server,
+    client: &str,
+    pane: &str,
+    granted: bool,
+    bytes: usize,
+    primary: bool,
+) {
+    record(
+        server,
+        "clipboard.read_decided",
+        json!({"kind": "user", "client": client}),
+        json!({"pane": pane}),
+        json!({"decision": if granted { "granted" } else { "denied" }, "bytes": bytes, "selection": if primary { "primary" } else { "clipboard" }}),
+    );
 }
 
 /// Result of [`verify_file`].
@@ -305,6 +429,21 @@ pub fn verify_file(log: &Path) -> Verify {
     };
     v.exists = true;
     let mut hashes: Vec<String> = Vec::new();
+    // A rotated or pruned log starts with `audit.rotated`, which carries the previous file's
+    // last entry (`prev_hash`, seq - 1): the chain continues from there.
+    let mut first_seq = 1u64;
+    if let Some(first) = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .and_then(|l| serde_json::from_str::<Value>(l).ok())
+        && first["type"] == "audit.rotated"
+        && let (Some(seq), Some(prev)) = (first["seq"].as_u64(), first["prev_hash"].as_str())
+        && seq > 1
+    {
+        v.last_seq = seq - 1;
+        v.last_hash = prev.to_string();
+        first_seq = seq;
+    }
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -359,7 +498,11 @@ pub fn verify_file(log: &Path) -> Verify {
                 "truncated: the head records entry {hs}, the log ends at {}",
                 v.last_seq
             ));
-        } else if hs >= 1 && hashes.get((hs - 1) as usize).is_some_and(|h| *h != hh) {
+        } else if hs >= first_seq
+            && hashes
+                .get((hs - first_seq) as usize)
+                .is_some_and(|h| *h != hh)
+        {
             v.problems.push(format!(
                 "entry {hs} differs from the recorded head (rewritten)"
             ));
@@ -377,9 +520,7 @@ pub fn read_entries(
     since_ms: Option<i64>,
     limit: usize,
 ) -> Vec<Value> {
-    let Ok(all) = std::fs::read_to_string(log) else {
-        return vec![];
-    };
+    let all = crate::audit_retention::all_text(log);
     let text = text.map(str::to_lowercase);
     let mut out: Vec<Value> = all
         .lines()
@@ -433,8 +574,9 @@ pub fn api(server: &Server, _ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
             )
         }
         "audit.verify" => {
-            let mut r = verify_file(&log).to_json();
+            let mut r = crate::audit_retention::verify_chain(&log).to_json();
             r["path"] = json!(log);
+            r["segments"] = json!(crate::audit_retention::segments(&log));
             Ok(r)
         }
         _ => return None,

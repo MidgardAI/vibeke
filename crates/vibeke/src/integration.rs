@@ -225,6 +225,13 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                 }
                 match vk_agents::apply(&plan) {
                     Ok(paths) => {
+                        // 09 §11: integration installs are audited (no server needed).
+                        vk_server::audit::record_offline(
+                            &g.session,
+                            &format!("integration.{verb}ed"),
+                            json!({"harness": h.id()}),
+                            json!({"files": paths}),
+                        );
                         for p in paths {
                             println!("wrote {}", p.display());
                         }

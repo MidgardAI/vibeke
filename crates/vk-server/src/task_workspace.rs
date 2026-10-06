@@ -553,6 +553,7 @@ pub(crate) async fn task_pr(server: &Arc<Server>, p: &Value) -> R {
     let lookup = tokio::task::spawn_blocking(move || pr_cache().get(&wt, refresh))
         .await
         .map_err(internal)?;
+    crate::task_lifecycle::note_pr(server, &task, &lookup);
     Ok(json!({"task": task.id, "pr": lookup}))
 }
 
@@ -719,6 +720,7 @@ pub fn start(server: &Arc<Server>) {
                 let s2 = srv.clone();
                 state = tokio::task::spawn_blocking(move || {
                     reconcile_once(&s2, &mut state, None);
+                    crate::task_lifecycle::pr_sweep(&s2);
                     state
                 })
                 .await

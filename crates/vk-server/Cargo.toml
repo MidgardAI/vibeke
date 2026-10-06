@@ -38,10 +38,14 @@ libc.workspace = true
 regex.workspace = true
 futures.workspace = true
 url.workspace = true
+# PNG pane screenshots (07 §2.6): `image` (PNG only) is already in the graph through vk-browser;
+# font8x8 is a dependency-free 8x8 bitmap font (MIT).
+image = { version = "0.25", default-features = false, features = ["png"] }
+font8x8 = "0.3"
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tempfile.workspace = true
 vk-remote = { workspace = true, features = ["testing"] }
-image = { version = "0.25", default-features = false, features = ["png"] }

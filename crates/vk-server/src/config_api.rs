@@ -2,7 +2,9 @@
 //! (a runtime override, or persisted to `config.toml` with comments kept and an atomic write),
 //! validate a file, and reload, from the API or from the config file watcher. Every applied
 //! change emits `session.config_reloaded {changed_keys}`; a file that fails to parse or validate
-//! never replaces the applied config (`session.config_rejected`).
+//! never replaces the applied config (`session.config_rejected`). `config.get` reports each
+//! key's layer (`default < user < repo < runtime < cli`, `vk_config::layers`); with `repo`,
+//! `cwd` or `pane` it layers that repository's trusted `.vibeke/config.toml` in.
 
 use crate::Server;
 use crate::api::{R, b, err, internal, invalid, req, s};
@@ -175,19 +177,87 @@ fn from_json(v: &Value) -> Result<Option<toml::Value>, String> {
     }))
 }
 
-/// Where a key's effective value comes from.
-fn source_of(key: &str, file: Option<&toml::Value>) -> &'static str {
-    let overrides = vk_config::edit::runtime_overrides();
+/// Where a key's effective value comes from, highest layer first (08 §11): `cli`, `runtime`,
+/// `repo` (a trusted repository's `.vibeke/config.toml`), `user`, `default`.
+fn source_of(
+    key: &str,
+    file: Option<&toml::Value>,
+    repo: Option<&vk_config::RepoConfig>,
+) -> &'static str {
     let covered = |k: &str| {
         key == k || key.starts_with(&format!("{k}.")) || k.starts_with(&format!("{key}."))
     };
-    if overrides.keys().any(|k| covered(k)) {
+    if vk_config::layers::cli_overrides()
+        .keys()
+        .any(|k| covered(k))
+    {
+        return "cli";
+    }
+    if vk_config::edit::runtime_overrides()
+        .keys()
+        .any(|k| covered(k))
+    {
         return "runtime";
+    }
+    if let Some(r) = repo {
+        let policy = !r.policy_rules.is_empty() && covered("policy.rule");
+        let commands = !r.commands.is_empty() && covered("keys.command");
+        if policy
+            || commands
+            || vk_config::layers::repo_keys(r)
+                .iter()
+                .any(|(k, _)| covered(k))
+        {
+            return "repo";
+        }
     }
     if file.is_some_and(|f| vk_config::edit::lookup(f, key).is_some()) {
         return "user";
     }
     "default"
+}
+
+/// The repo layer for `config.get {repo | cwd | pane}`: the repository's `.vibeke/config.toml`,
+/// applied only while its `.vibeke/` tree is trusted (09 §4).
+fn repo_layer(server: &Server, p: &Value) -> (Option<vk_config::RepoConfig>, Value) {
+    let dir = s(p, "repo")
+        .or_else(|| s(p, "cwd"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let t = s(p, "pane")?;
+            let id = server.with_core(|c| {
+                c.pane(t)
+                    .or_else(|| c.model.panes.iter().find(|x| x.handle == t))
+                    .map(|x| x.id.clone())
+            })?;
+            server.pane_cwd(&id).map(std::path::PathBuf::from)
+        });
+    let Some(dir) = dir else {
+        return (None, Value::Null);
+    };
+    let root = vk_tasks::repo_root(&dir)
+        .map(|i| i.root)
+        .or_else(|| vk_config::repo::find(&dir));
+    let Some(root) = root else {
+        return (None, Value::Null);
+    };
+    let root = root.canonicalize().unwrap_or(root);
+    let file = root.join(vk_config::REPO_CONFIG);
+    let (_, trusted) = crate::repo_config::trusted(server, &root);
+    match vk_config::repo::load(&root) {
+        None => (
+            None,
+            json!({"root": root, "file": Value::Null, "trusted": trusted, "applied": false}),
+        ),
+        Some(Err(e)) => (
+            None,
+            json!({"root": root, "file": file, "trusted": trusted, "applied": false, "error": e}),
+        ),
+        Some(Ok(rc)) => {
+            let info = json!({"root": root, "file": file, "trusted": trusted, "applied": trusted, "warnings": rc.warnings});
+            (trusted.then_some(rc), info)
+        }
+    }
 }
 
 fn file_text() -> Result<Option<String>, String> {
@@ -199,9 +269,10 @@ fn file_text() -> Result<Option<String>, String> {
     }
 }
 
-fn config_get(p: &Value) -> R {
+fn config_get(server: &Server, p: &Value) -> R {
     let path = vk_config::config_path();
-    let (cfg, errors) = match Config::load(&path) {
+    let (repo, repo_info) = repo_layer(server, p);
+    let (cfg, errors) = match Config::load_layered(&path, repo.as_ref()) {
         Ok((c, _)) => (c, vec![]),
         Err(e) => (current(), diagnostics(&e)),
     };
@@ -211,6 +282,16 @@ fn config_get(p: &Value) -> R {
         .flatten()
         .and_then(|t| toml::from_str(&t).ok());
     let overrides: Vec<String> = vk_config::edit::runtime_overrides().into_keys().collect();
+    let cli: Vec<String> = vk_config::layers::cli_overrides().into_keys().collect();
+    let mut layers = vec![
+        json!({"source": "default"}),
+        json!({"source": "user", "path": path, "exists": file.is_some()}),
+    ];
+    if !repo_info.is_null() {
+        layers.push(json!({"source": "repo", "path": repo_info["file"], "trusted": repo_info["trusted"], "applied": repo_info["applied"]}));
+    }
+    layers.push(json!({"source": "runtime", "keys": overrides}));
+    layers.push(json!({"source": "cli", "keys": cli}));
     match s(p, "key").filter(|k| !k.is_empty()) {
         Some(key) => {
             vk_config::edit::split_key(key).map_err(invalid)?;
@@ -219,11 +300,11 @@ fn config_get(p: &Value) -> R {
                     .details(json!({"object": "config_key", "target": key})));
             };
             Ok(
-                json!({"key": key, "value": to_json(v), "source": source_of(key, file.as_ref()), "path": path, "overrides": overrides, "errors": errors}),
+                json!({"key": key, "value": to_json(v), "source": source_of(key, file.as_ref(), repo.as_ref()), "path": path, "overrides": overrides, "cli_overrides": cli, "layers": layers, "repo": repo_info, "errors": errors}),
             )
         }
         None => Ok(
-            json!({"value": to_json(&root), "source": if file.is_some() { "user" } else { "default" }, "path": path, "overrides": overrides, "errors": errors}),
+            json!({"value": to_json(&root), "source": if file.is_some() { "user" } else { "default" }, "path": path, "overrides": overrides, "cli_overrides": cli, "layers": layers, "repo": repo_info, "errors": errors}),
         ),
     }
 }
@@ -301,7 +382,7 @@ fn config_validate(p: &Value) -> R {
 /// Dispatch hook for `config.*` and `server.reload_config`.
 pub async fn api(server: &Arc<Server>, method: &str, p: &Value) -> Option<R> {
     Some(match method {
-        "config.get" => config_get(p),
+        "config.get" => config_get(server, p),
         "config.set" => config_set(server, p).await,
         "config.validate" => config_validate(p),
         "config.reload" | "server.reload_config" => reload(server, "api"),
