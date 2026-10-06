@@ -1,0 +1,20 @@
+[package]
+name = "vk-preview"
+description = "Preview fabric primitives: listener discovery, output URL scanning, SOCKS5, browser launch (06 Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vk-proto = { workspace = true }
+vk-hold = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+libc.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

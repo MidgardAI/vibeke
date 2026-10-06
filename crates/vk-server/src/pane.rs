@@ -598,13 +598,14 @@ impl PaneLoop {
         let mut archive = Vec::new();
         let rev;
         let effects;
+        let skip;
         {
             let mut sc = self.rt.screen.lock().unwrap();
             let end = offset + bytes.len() as u64;
             if end <= sc.fed_offset && sc.fed_offset != 0 {
                 return Ok(()); // already applied (snapshot covers it)
             }
-            let skip = sc.fed_offset.saturating_sub(offset) as usize;
+            skip = sc.fed_offset.saturating_sub(offset) as usize;
             let data = &bytes[skip.min(bytes.len())..];
             self.effects.clear();
             sc.engine.feed(data, &mut self.effects);
@@ -652,6 +653,10 @@ impl PaneLoop {
             .await?;
         }
         if !replaying {
+            // Preview URL/banner detection (06 B2): line split only; parsing is off this path.
+            self.server
+                .previews
+                .on_output(&self.rt.id, &bytes[skip.min(bytes.len())..]);
             self.rt.rev_tx.send_replace(rev);
             self.server.screen_dirty.notify_waiters();
             self.server.pane_output(&self.rt.id);

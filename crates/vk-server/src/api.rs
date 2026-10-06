@@ -366,6 +366,9 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
     if let Some(r) = crate::run::tasks_api(server, ctx, method, p).await {
         return r;
     }
+    if let Some(r) = crate::preview::api(server, ctx, method, p).await {
+        return r;
+    }
     match method {
         "client.hello" => Ok(json!({
             "server_version": vk_proto::VERSION,
@@ -390,6 +393,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             v.extend(
                 crate::agents::METHODS
                     .iter()
+                    .chain(crate::preview::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
@@ -409,6 +413,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 "event_seq": seq,
                 "socket": server.paths.socket(),
                 "degraded": *server.degraded.lock().unwrap(),
+                "preview": crate::preview::status_json(server),
             }))
         }
         "server.stop" => {

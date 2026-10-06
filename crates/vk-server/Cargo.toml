@@ -15,6 +15,8 @@ vk-review = { workspace = true }
 vk-redact = { workspace = true }
 vk-config = { workspace = true }
 vk-agents = { workspace = true }
+vk-preview = { workspace = true }
+vk-remote = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -2,25 +2,29 @@
 //! saved machines (`vibeke machine …`), and `--machine` forwarding (never falls back to local).
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 use vk_remote::bootstrap::{self, Artifact};
-use vk_remote::{Mux, Target};
+use vk_remote::{Link, Target};
 
 /// Remote side of the link: stdio mux → this machine's server socket.
 pub async fn bridge(g: &Global, _args: &[String]) -> i32 {
     let socket = vk_cli::client::socket_path(&g.session, None);
     let session = g.session.clone();
-    let r = vk_remote::run_bridge(socket.clone(), move || {
-        let session = session.clone();
-        let socket = socket.clone();
-        async move {
-            vk_cli::client::connect_or_spawn(&session, &socket, false).await?;
-            Ok(())
-        }
-    })
+    let opts = vk_remote::BridgeOpts {
+        allow_egress: allow_remote_egress(&crate::commands::load_config()),
+    };
+    let r = vk_remote::run_bridge(
+        socket.clone(),
+        move || {
+            let session = session.clone();
+            let socket = socket.clone();
+            async move {
+                vk_cli::client::connect_or_spawn(&session, &socket, false).await?;
+                Ok(())
+            }
+        },
+        opts,
+    )
     .await;
     match r {
         Ok(()) => EXIT_OK,
@@ -31,7 +35,16 @@ pub async fn bridge(g: &Global, _args: &[String]) -> i32 {
     }
 }
 
-fn target_for(cfg: &vk_config::Config, host: &str) -> Target {
+/// `[preview] allow_remote_egress` on this (remote) machine; default true (06 B3.4).
+fn allow_remote_egress(cfg: &vk_config::Config) -> bool {
+    cfg.extra
+        .get("preview")
+        .and_then(|p| p.get("allow_remote_egress"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+pub fn target_for(cfg: &vk_config::Config, host: &str) -> Target {
     match cfg.remote.machine.iter().find(|m| m.label == host) {
         Some(m) => Target::parse(&m.label, &m.address),
         None => {
@@ -55,19 +68,7 @@ pub fn artifact_for(target: &str) -> Option<Artifact> {
     artifact_for_with(target, bootstrap::allow_unsigned_env())
 }
 
-/// Session names reach remote shell commands and file names: `[A-Za-z0-9_.-]{1,64}`.
-pub fn valid_session_name(s: &str) -> bool {
-    (1..=64).contains(&s.len())
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
-}
-
-fn check_session(s: &str) -> anyhow::Result<()> {
-    if !valid_session_name(s) {
-        anyhow::bail!("invalid session name {s:?}: use 1-64 characters from [A-Za-z0-9_.-]");
-    }
-    Ok(())
-}
+pub use vk_remote::link::check_session;
 
 fn artifact_for_with(target: &str, allow_unsigned: bool) -> Option<Artifact> {
     let version = vk_proto::VERSION.to_string();
@@ -110,60 +111,8 @@ fn artifact_for_with(target: &str, allow_unsigned: bool) -> Option<Artifact> {
     None
 }
 
-/// A machine connection shared by every channel the TUI/CLI opens; reconnects on demand.
-#[derive(Clone)]
-pub struct Link {
-    target: Target,
-    session: String,
-    mux: Arc<Mutex<Option<(Mux, tokio::process::Child)>>>,
-}
-
-impl Link {
-    pub fn new(target: Target, session: &str) -> Self {
-        Link {
-            target,
-            session: session.to_string(),
-            mux: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub async fn open(&self) -> anyhow::Result<tokio::io::DuplexStream> {
-        check_session(&self.session)?;
-        let mut g = self.mux.lock().await;
-        if g.as_ref().is_none_or(|(m, _)| m.is_closed()) {
-            let (m, child) = tokio::time::timeout(
-                Duration::from_secs(15),
-                self.target.bridge(bootstrap::REMOTE_BIN, &self.session),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("ssh {} timed out", self.target.address))??;
-            *g = Some((m, child));
-        }
-        let m = g.as_ref().map(|(m, _)| m.clone()).unwrap();
-        drop(g);
-        match tokio::time::timeout(Duration::from_secs(10), m.open("socket")).await {
-            Ok(Ok(s)) => Ok(s),
-            Ok(Err(e)) => {
-                *self.mux.lock().await = None;
-                Err(e)
-            }
-            Err(_) => {
-                *self.mux.lock().await = None;
-                anyhow::bail!("machine {} did not answer (offline?)", self.target.label)
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub async fn rtt_ms(&self) -> Option<u64> {
-        let g = self.mux.lock().await;
-        g.as_ref()
-            .map(|(m, _)| m.stats().rtt_us.load(std::sync::atomic::Ordering::Relaxed) / 1000)
-    }
-}
-
 fn spec_for(link: Link) -> vk_tui::app::MachineSpec {
-    let label = link.target.label.clone();
+    let label = link.label().to_string();
     vk_tui::app::MachineSpec {
         label,
         local: false,
@@ -427,6 +376,7 @@ pub fn machine_cmd(_g: &Global, args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vk_remote::link::valid_session_name;
 
     #[test]
     fn session_names_are_validated() {

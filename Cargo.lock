@@ -1383,6 +1383,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vk-preview"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vk-hold",
+ "vk-proto",
+]
+
+[[package]]
 name = "vk-proto"
 version = "0.1.0"
 dependencies = [
@@ -1451,8 +1467,10 @@ dependencies = [
  "vk-agents",
  "vk-config",
  "vk-hold",
+ "vk-preview",
  "vk-proto",
  "vk-redact",
+ "vk-remote",
  "vk-review",
  "vk-store",
  "vk-tasks",

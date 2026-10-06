@@ -447,6 +447,51 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "",
     ),
     ("machine", "status", "machine.status", &["machine"], ""),
+    (
+        "preview",
+        "declare",
+        "preview.declare",
+        &["port"],
+        "--port N [--path /p] [--label l] [--pane p] [--task k]",
+    ),
+    (
+        "preview",
+        "list",
+        "preview.list",
+        &[],
+        "[--machine m] [--task k] [--pane p] [--all] (suggestions with --all)",
+    ),
+    ("preview", "get", "preview.get", &["preview"], ""),
+    (
+        "preview",
+        "open",
+        "preview.open",
+        &["preview"],
+        "<v4|devbox/v4|url> --window [--machine m]",
+    ),
+    ("preview", "url", "preview.url", &["preview"], ""),
+    (
+        "preview",
+        "promote",
+        "preview.promote",
+        &["preview"],
+        "accept a suggestion",
+    ),
+    ("preview", "forget", "preview.forget", &["preview"], ""),
+    (
+        "preview",
+        "profile",
+        "preview.profile",
+        &["action", "profile"],
+        "list | reset <profile>",
+    ),
+    (
+        "preview",
+        "status",
+        "preview.status",
+        &[],
+        "SOCKS port, managed browsers, links",
+    ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
 ];
@@ -830,6 +875,16 @@ where
 }
 
 /// Look up `(method, positional)` for `noun verb`.
+/// Methods that act on the *viewing* machine (they launch a local browser or manage local
+/// profiles) even when `--machine m` is given: the CLI sends them to the local server with
+/// `machine: m` instead of forwarding them to `m` (06 B3).
+pub fn runs_on_viewing_machine(method: &str) -> bool {
+    matches!(
+        method,
+        "preview.open" | "preview.profile" | "preview.status" | "preview.url"
+    )
+}
+
 pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'static str])> {
     COMMANDS
         .iter()
