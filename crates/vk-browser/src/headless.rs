@@ -178,19 +178,28 @@ pub fn discover(configured: Option<&str>, install_root: &Path) -> Option<Headles
         })
 }
 
+/// WebRTC may not use UDP that bypasses the proxy (06 B5, 09). The headless shell reads the
+/// policy from the **value** of `--force-webrtc-ip-handling-policy` (a bare switch means the
+/// default: UDP to any address, i.e. STUN/data channels to IP literals around the filtering
+/// proxy), while full Chromium/Chrome reads `--webrtc-ip-handling-policy` and treats the force
+/// switch as a flag. Both are passed; the gated `tests/webrtc_containment.rs` checks each
+/// binary with a UDP sentinel.
+pub const WEBRTC_UDP_POLICY: [&str; 2] = [
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+];
+
 /// Address of the default context's proxy: nothing listens on port 1, so a page in the default
 /// context gets `ERR_PROXY_CONNECTION_FAILED` for every request.
 pub const DEAD_PROXY: &str = "http://127.0.0.1:1";
 
 /// Flags for the agents' headless browser on top of [`crate::cdp::LaunchOptions::args`].
 pub fn isolation_args() -> Vec<String> {
-    vec![
+    let mut a = vec![
         format!("--proxy-server={DEAD_PROXY}"),
         "--proxy-bypass-list=<-loopback>".into(),
         "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1".into(),
         "--disable-quic".into(),
-        "--force-webrtc-ip-handling-policy".into(),
-        "--webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
         "--dns-prefetch-disable".into(),
         "--no-pings".into(),
         "--disable-breakpad".into(),
@@ -198,7 +207,9 @@ pub fn isolation_args() -> Vec<String> {
         "--disable-client-side-phishing-detection".into(),
         "--deny-permission-prompts".into(),
         "--hide-scrollbars".into(),
-    ]
+    ];
+    a.extend(WEBRTC_UDP_POLICY.iter().map(|s| s.to_string()));
+    a
 }
 
 /// Launch options for the agents' browser.
@@ -235,6 +246,14 @@ mod tests {
                 .any(|x| x.starts_with("--host-resolver-rules=MAP * ~NOTFOUND"))
         );
         assert!(a.contains(&"--disable-quic".to_string()));
+        assert!(
+            a.contains(&"--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string())
+        );
+        assert!(a.contains(&"--webrtc-ip-handling-policy=disable_non_proxied_udp".to_string()));
+        assert!(
+            !a.iter().any(|x| x == "--force-webrtc-ip-handling-policy"),
+            "the headless shell reads the force switch's value: {a:?}"
+        );
         assert!(
             !a.contains(&"--headless=new".to_string()),
             "shell is headless already"

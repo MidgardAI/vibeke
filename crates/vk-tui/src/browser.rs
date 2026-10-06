@@ -112,6 +112,11 @@ pub struct BrowserUi {
     pub bytes_out: u64,
     /// Last "read-only" hint for a watch pane (rate limit).
     ro_hint: Option<Instant>,
+    /// Panes each machine was asked to render on this connection (media frames for other
+    /// panes are dropped without touching any shm name they carry).
+    requested: HashMap<usize, std::collections::HashSet<String>>,
+    /// Media frames dropped as malformed (bad geometry or payload sizes).
+    pub rejected_frames: u64,
 }
 
 impl BrowserUi {
@@ -122,16 +127,65 @@ impl BrowserUi {
     }
 }
 
+/// What the TUI knows about where its host terminal is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostEnv {
+    pub term_program: String,
+    /// `LC_TERMINAL` (iTerm2 sets it and ssh forwards `LC_*`, unlike `TERM_PROGRAM`).
+    pub lc_terminal: String,
+    /// `XTVERSION` reply (`iTerm2 3.5.4`, `ghostty 1.2.0`, …).
+    pub xtversion: Option<String>,
+    /// Running inside an SSH session (`SSH_CONNECTION`/`SSH_TTY`/`SSH_CLIENT`): the host
+    /// terminal is on another machine.
+    pub ssh: bool,
+}
+
+impl HostEnv {
+    pub fn from_env(xtversion: Option<&str>) -> HostEnv {
+        let var = |k: &str| std::env::var(k).unwrap_or_default();
+        HostEnv {
+            term_program: var("TERM_PROGRAM"),
+            lc_terminal: var("LC_TERMINAL"),
+            xtversion: xtversion.map(str::to_string),
+            ssh: ["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"]
+                .iter()
+                .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
+        }
+    }
+
+    pub fn is_iterm2(&self) -> bool {
+        self.term_program == "iTerm.app"
+            || self.lc_terminal == "iTerm2"
+            || self
+                .xtversion
+                .as_deref()
+                .is_some_and(|x| x.to_ascii_lowercase().starts_with("iterm2"))
+    }
+}
+
+/// The graphics decision table: (kitty placeholders, kitty shm, iTerm2 whole-frame images).
+/// iTerm2 accepts kitty transmissions but not unicode-placeholder placement, so it always gets
+/// the OSC 1337 whole-frame path. A host terminal behind SSH can't map this machine's shared
+/// memory (or read its temp files): direct transmission only, whatever the probe answered.
+pub fn decide_gfx(g: &vk_browser::probe::GraphicsCaps, env: &HostEnv) -> (bool, bool, bool) {
+    let iterm = env.is_iterm2();
+    let kitty = g.kitty_graphics && !iterm;
+    let shm = kitty && g.kitty_shm == Some(true) && !env.ssh;
+    (kitty, shm, iterm)
+}
+
 /// Fold the graphics probe into host capabilities.
-pub fn host_caps(g: &vk_browser::probe::GraphicsCaps) -> HostCaps {
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+pub fn host_caps(g: &vk_browser::probe::GraphicsCaps, xtversion: Option<&str>) -> HostCaps {
+    let env = HostEnv::from_env(xtversion);
+    let (kitty_graphics, kitty_shm, iterm2_images) = decide_gfx(g, &env);
     let (cw, ch) = crate::term::cell_px()
         .or_else(|| g.cell_px.map(|(w, h)| (w as u16, h as u16)))
         .unwrap_or((0, 0));
     HostCaps {
-        kitty_graphics: g.kitty_graphics,
-        kitty_shm: g.kitty_graphics && g.kitty_shm == Some(true),
-        iterm2_images: !g.kitty_graphics && term_program == "iTerm.app",
+        kitty_graphics,
+        kitty_shm,
+        iterm2_images,
+        host_remote: env.ssh,
         cell_w: cw,
         cell_h: ch,
         dpr_x100: dpr_x100(ch),
@@ -301,6 +355,13 @@ pub fn update_views(app: &mut App) {
             shm,
             key_releases: app.kitty,
         });
+        if sent {
+            app.browser
+                .requested
+                .entry(h)
+                .or_default()
+                .extend(want.iter().map(|p| p.pane.clone()));
+        }
         if want.is_empty() {
             app.browser.last_view.remove(&h);
         } else if sent {
@@ -347,6 +408,7 @@ pub fn on_resize(app: &mut App) {
 /// After a reconnect the machine's server knows nothing of our views.
 pub fn on_connected(app: &mut App, mi: usize) {
     app.browser.last_view.remove(&mi);
+    app.browser.requested.remove(&mi);
     app.browser.panes.retain(|_, p| p.host != mi);
 }
 
@@ -365,14 +427,110 @@ fn zlib_ok() -> bool {
         && std::env::var("TERM_PROGRAM").map_or(true, |v| v != "vibeke")
 }
 
+/// Upper bounds for a media frame (device px), whatever the pane size.
+const MAX_FRAME_PX: u32 = 16384;
+const MAX_CELL_PX: u16 = 512;
+const MAX_TILE_CELLS: u16 = 64;
+
+/// Check a media frame against the pane it claims to draw into (content `cols`×`rows` cells):
+/// bounded geometry, tiles inside the frame and the pane, ids inside the pane's range,
+/// payload sizes matching the declared pixels. Shm names are checked by the caller.
+pub(crate) fn validate_frame(m: &MediaFrame, cols: u16, rows: u16) -> Result<(), String> {
+    let (cw, ch) = (m.cell_w as u64, m.cell_h as u64);
+    if !(1..=MAX_CELL_PX).contains(&m.cell_w) || !(1..=MAX_CELL_PX).contains(&m.cell_h) {
+        return Err(format!("cell size {}x{}", m.cell_w, m.cell_h));
+    }
+    if !(1..=MAX_TILE_CELLS).contains(&m.tile_cols) || !(1..=MAX_TILE_CELLS).contains(&m.tile_rows)
+    {
+        return Err(format!("tile size {}x{}", m.tile_cols, m.tile_rows));
+    }
+    if m.width == 0 || m.height == 0 || m.width > MAX_FRAME_PX || m.height > MAX_FRAME_PX {
+        return Err(format!("frame {}x{}", m.width, m.height));
+    }
+    // One cell of slack: CSS rounding at fractional DPR can add a device pixel or two.
+    if m.width as u64 > (cols as u64 + 1) * cw || m.height as u64 > (rows as u64 + 1) * ch {
+        return Err(format!(
+            "frame {}x{} larger than the pane ({cols}x{rows} cells)",
+            m.width, m.height
+        ));
+    }
+    let grid = m.grid_cols as u64 * m.grid_rows as u64;
+    if grid == 0 || grid > IDS_PER_PANE as u64 || m.tiles.len() as u64 > grid {
+        return Err(format!("grid {}x{}", m.grid_cols, m.grid_rows));
+    }
+    for t in &m.tiles {
+        let (w, h) = (t.w as u64, t.h as u64);
+        let ok = (t.index as u64) < grid
+            && t.cols >= 1
+            && t.rows >= 1
+            && t.cols <= m.tile_cols
+            && t.rows <= m.tile_rows
+            && t.col as u64 + t.cols as u64 <= cols as u64 + 1
+            && t.row as u64 + t.rows as u64 <= rows as u64 + 1
+            && w >= 1
+            && h >= 1
+            && w <= t.cols as u64 * cw
+            && h <= t.rows as u64 * ch
+            && t.col as u64 * cw + w <= m.width as u64
+            && t.row as u64 * ch + h <= m.height as u64;
+        if !ok {
+            return Err(format!("tile {} out of bounds", t.index));
+        }
+        let px = w * h * 4;
+        let data_ok = match &t.data {
+            TileData::Rgba(p) => p.len() as u64 == px,
+            TileData::Shm { len, .. } => *len as u64 == px,
+            // Incompressible data grows a little under zlib.
+            TileData::ZlibRgba(z) => (z.len() as u64) <= px + px / 64 + 1024,
+        };
+        if !data_ok {
+            return Err(format!(
+                "tile {} payload does not match {}x{}",
+                t.index, t.w, t.h
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn on_media(app: &mut App, mi: usize, m: MediaFrame) {
-    let visible = app.pane_rects().iter().any(|(p, _)| *p == m.pane)
-        && browser_of(app, app.cur, &m.pane).is_some();
+    // Shm names are honoured only from the local machine's server, for panes this client
+    // asked that server to render, and only names carrying Vibeke's prefix and that pane's
+    // tag. Anything else is never opened, forwarded or unlinked.
+    let local = app.machines.get(mi).is_some_and(|x| x.local);
+    let requested = app
+        .browser
+        .requested
+        .get(&mi)
+        .is_some_and(|s| s.contains(&m.pane));
+    let name_ok = |name: &str| local && requested && kitty::shm::is_tile_name_for(name, &m.pane);
+    let names_ok = m.tiles.iter().all(|t| match &t.data {
+        TileData::Shm { name, .. } => name_ok(name),
+        _ => true,
+    });
+    let in_view = app
+        .browser
+        .last_view
+        .get(&mi)
+        .is_some_and(|v| v.iter().any(|p| p.pane == m.pane));
+    let rect = app
+        .pane_rects()
+        .into_iter()
+        .find(|(p, _)| *p == m.pane)
+        .map(|(_, r)| r);
+    let visible = in_view && rect.is_some() && browser_of(app, app.cur, &m.pane).is_some();
     let mode = gfx(app);
-    if !visible || mode == Gfx::None {
-        // Not ours to show (any more): drop it, freeing its shm objects.
+    let invalid = rect.and_then(|r| validate_frame(&m, r.w, r.h.saturating_sub(1)).err());
+    if invalid.is_some() {
+        app.browser.rejected_frames += 1;
+    }
+    if !visible || mode == Gfx::None || !names_ok || invalid.is_some() {
+        // Not ours to show (any more), or not acceptable: drop it, freeing only the shm
+        // objects that are verifiably this pane's.
         for t in &m.tiles {
-            if let TileData::Shm { name, .. } = &t.data {
+            if let TileData::Shm { name, .. } = &t.data
+                && name_ok(name)
+            {
                 kitty::shm::unlink(name);
             }
         }
@@ -429,29 +587,41 @@ pub fn on_media(app: &mut App, mi: usize, m: MediaFrame) {
                 h.virtual_cells = Some((t.cols.max(1), t.rows.max(1)));
                 h.placement = Some(1);
                 h.quiet = 2;
+                let px_len = t.w as usize * t.h as usize * 4;
                 match &t.data {
+                    // The host maps exactly `len` bytes: only forward an object that holds them.
                     TileData::Shm { name, len } if shm_ok => {
-                        kitty::transmit_shm(&mut ui.out, &h, name, *len as usize);
+                        if kitty::shm::object_size(name).is_ok_and(|s| s >= *len as u64) {
+                            kitty::transmit_shm(&mut ui.out, &h, name, *len as usize);
+                        } else {
+                            kitty::shm::unlink(name);
+                        }
                     }
                     TileData::Shm { name, len } => {
                         let px = kitty::shm::read(name, *len as usize).unwrap_or_default();
                         kitty::shm::unlink(name);
-                        kitty::transmit_direct(&mut ui.out, &h, &px);
+                        if px.len() == px_len {
+                            kitty::transmit_direct(&mut ui.out, &h, &px);
+                        }
                     }
                     TileData::ZlibRgba(z) if zlib => {
                         h.zlib = true;
                         kitty::write_chunked(&mut ui.out, &h.control('d', None), z, h.quiet);
                     }
                     TileData::ZlibRgba(z) => {
-                        let px = kitty::unzlib(z).unwrap_or_default();
-                        kitty::transmit_direct(&mut ui.out, &h, &px);
+                        if let Ok(px) = kitty::unzlib_limited(z, px_len)
+                            && px.len() == px_len
+                        {
+                            kitty::transmit_direct(&mut ui.out, &h, &px);
+                        }
                     }
                     TileData::Rgba(px) => kitty::transmit_direct(&mut ui.out, &h, px),
                 }
             }
             Gfx::Iterm => {
+                let px_len = t.w as usize * t.h as usize * 4;
                 let px = match &t.data {
-                    TileData::ZlibRgba(z) => kitty::unzlib(z).unwrap_or_default(),
+                    TileData::ZlibRgba(z) => kitty::unzlib_limited(z, px_len).unwrap_or_default(),
                     TileData::Rgba(p) => p.clone(),
                     TileData::Shm { name, len } => {
                         let p = kitty::shm::read(name, *len as usize).unwrap_or_default();
@@ -474,7 +644,7 @@ pub fn on_media(app: &mut App, mi: usize, m: MediaFrame) {
 #[allow(clippy::too_many_arguments)]
 fn blit(c: &mut Rgba, col: u16, row: u16, cw: u16, ch: u16, w: u32, h: u32, px: &[u8]) {
     let (x0, y0) = (col as u32 * cw as u32, row as u32 * ch as u32);
-    if px.len() < (w * h * 4) as usize {
+    if (px.len() as u64) < w as u64 * h as u64 * 4 || x0 >= c.width {
         return;
     }
     for y in 0..h {
@@ -537,11 +707,13 @@ pub fn after_write(app: &mut App, out: &mut Vec<u8>) {
             let Some(pm) = app.browser.panes.get_mut(&pid) else {
                 continue;
             };
-            if !pm.canvas_dirty
-                || pm
-                    .last_inline
-                    .is_some_and(|t| t.elapsed() < INLINE_INTERVAL)
-            {
+            // A host terminal behind SSH gets half the rate (each frame is a whole PNG).
+            let interval = if app.caps.host_remote {
+                INLINE_INTERVAL * 2
+            } else {
+                INLINE_INTERVAL
+            };
+            if !pm.canvas_dirty || pm.last_inline.is_some_and(|t| t.elapsed() < interval) {
                 continue;
             }
             let Some(c) = &pm.canvas else { continue };
@@ -2002,3 +2174,6 @@ mod tests {
 #[cfg(test)]
 #[path = "browser_watch_tests.rs"]
 mod watch_tests;
+#[cfg(test)]
+#[path = "browser_media_tests.rs"]
+mod media_tests;

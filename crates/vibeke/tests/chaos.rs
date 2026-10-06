@@ -112,7 +112,7 @@ impl RenderClient {
     fn attach(socket: &std::path::Path, client_id: &str) -> Self {
         let mut s = UnixStream::connect(socket).expect("connect render");
         let req = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"render.attach",
-            "params":{"client_id": client_id, "caps": {"max_fps": 30}}});
+            "params":{"client_id": client_id, "protocol": vk_proto::render::PROTOCOL, "caps": {"max_fps": 30}}});
         s.write_all(format!("{req}\n").as_bytes()).unwrap();
         // Read the JSON reply byte by byte so no binary frame is buffered away.
         let mut line = Vec::new();

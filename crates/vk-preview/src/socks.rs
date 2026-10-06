@@ -59,7 +59,8 @@ impl Dest {
                 let d = d.trim_end_matches('.').to_ascii_lowercase();
                 d == "localhost"
                     || d.ends_with(".localhost")
-                    || d.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+                    || d.parse::<IpAddr>()
+                        .is_ok_and(|ip| ip.to_canonical().is_loopback())
             }
         }
     }
@@ -465,6 +466,8 @@ mod tests {
         assert!(d("LOCALHOST.").is_loopback());
         assert!(d("app.localhost").is_loopback());
         assert!(d("127.0.0.1").is_loopback());
+        assert!(d("::ffff:127.0.0.1").is_loopback());
+        assert!(!d("::ffff:10.0.0.1").is_loopback());
         assert!(!d("localhost.example.com").is_loopback());
         assert!(!d("example.com").is_loopback());
         assert!(

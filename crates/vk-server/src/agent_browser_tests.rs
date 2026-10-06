@@ -768,8 +768,9 @@ async fn sessions_close_explicitly_and_with_their_pane() {
     // Closing the owner pane closes its sessions (idle loop, every 2 s).
     e.server
         .with_core(|c| c.model.panes.retain(|p| p.id != "pane-a"));
+    // The event is committed after the session leaves the map: wait for the event.
     until("owner gone → closed", || {
-        e.server.agent_browser.session("b2").is_none()
+        e.events("browser.session_closed").len() == 2
     })
     .await;
     // The session leaves the table before its close event is committed.
@@ -833,4 +834,66 @@ async fn screencast_attach_delivers_latest_frames() {
     assert!(r["data_b64"].is_null());
     drop(sub);
     until("stop", || !f.calls_of("Page.stopScreencast").is_empty()).await;
+}
+
+/// Codex review finding 11: a client that attached a screencast and then went away without
+/// detaching must not keep the session alive. The connection's end drops its subscriptions;
+/// the idle collector then closes the session. (A take-over outlives the CLI call that made
+/// it, so it is released explicitly here.)
+#[tokio::test(flavor = "multi_thread")]
+async fn disconnected_screencast_client_releases_the_session() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let e = Env::new();
+    e.call(&ctx_pane("pane-a"), "browser.open", json!({}))
+        .await
+        .unwrap();
+    let (client, server_end) = tokio::io::duplex(64 * 1024);
+    let conn = tokio::spawn(crate::run::connection(e.server.clone(), server_end, None));
+    let (rd, mut wr) = tokio::io::split(client);
+    let mut rd = tokio::io::BufReader::new(rd);
+    let mut line = String::new();
+    for (id, method, params) in [
+        (
+            1,
+            "client.hello",
+            json!({"client_id": "c-crashy", "kind": "cli"}),
+        ),
+        (2, "browser.attach_screencast", json!({"session": "b1"})),
+    ] {
+        let req = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        wr.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        loop {
+            line.clear();
+            rd.read_line(&mut line).await.unwrap();
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if v["id"] == id {
+                assert!(v.get("error").is_none(), "{method}: {v}");
+                break;
+            }
+        }
+    }
+    let sess = e.server.agent_browser.session("b1").unwrap();
+    assert_eq!(sess.screencast_subs.load(Ordering::SeqCst), 1);
+    // Long unused: only the subscription keeps it open.
+    *sess.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(24 * 3600);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(e.server.agent_browser.session("b1").is_some());
+    // The client crashes (connection drops without detach/release).
+    drop(wr);
+    drop(rd);
+    tokio::time::timeout(Duration::from_secs(5), conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(sess.screencast_subs.load(Ordering::SeqCst), 0);
+    assert!(!e.fake().calls_of("Page.stopScreencast").is_empty());
+    *sess.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(24 * 3600);
+    until("idle collector closes the session", || {
+        !e.events("browser.session_closed").is_empty()
+    })
+    .await;
+    assert!(e.server.agent_browser.session("b1").is_none());
+    let closed = e.events("browser.session_closed");
+    assert_eq!(closed.last().unwrap().data["reason"], "idle");
 }

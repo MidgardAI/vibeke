@@ -32,6 +32,8 @@ struct Page {
     /// Bumped on input/navigation; the frame colour derives from it.
     generation: u32,
     frame_seq: u64,
+    /// Bumped on every navigation/reload (the document's `performance.timeOrigin`).
+    nav_seq: u32,
 }
 
 /// Shared state of one fake browser, inspectable by tests.
@@ -43,6 +45,10 @@ pub struct State {
     pub frames_sent: u64,
     pub closed: bool,
     next: u32,
+    /// The fake's end of the transport, to simulate a crash ([`State::crash`]).
+    kill: Option<std::os::unix::net::UnixStream>,
+    /// Frames are pixel noise (incompressible tiles: large media frames).
+    pub noise: bool,
 }
 
 impl State {
@@ -70,6 +76,14 @@ impl State {
     pub fn viewports(&self) -> Vec<(u32, u32)> {
         self.pages.values().map(|p| p.css).collect()
     }
+    /// Simulate Chromium dying: the transport closes under the client (its event stream
+    /// ends, like a crashed process's pipe).
+    pub fn crash(&mut self) {
+        if let Some(s) = self.kill.take() {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+        self.closed = true;
+    }
 }
 
 /// The colour a page shows at `generation` (distinct for consecutive generations).
@@ -86,11 +100,21 @@ pub fn color_for(generation: u32) -> [u8; 3] {
     PALETTE[g % PALETTE.len()]
 }
 
-fn frame_jpeg(p: &Page) -> Vec<u8> {
+fn frame_jpeg(p: &Page, noise: bool) -> Vec<u8> {
     let w = ((p.css.0 as f64 * p.dpr).round() as u32).max(1);
     let h = ((p.css.1 as f64 * p.dpr).round() as u32).max(1);
     let c = color_for(p.generation);
     let mut img = image::RgbImage::from_pixel(w, h, image::Rgb(c));
+    if noise {
+        let mut x: u32 = 0x9e37_79b9 ^ p.generation;
+        for px in img.pixels_mut() {
+            // xorshift32
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *px = image::Rgb([x as u8, (x >> 8) as u8, (x >> 16) as u8]);
+        }
+    }
     // A dark band in the top-left whose width encodes the generation (visible in tiles).
     let band = ((p.generation % 8) + 1) * (w / 16).max(1);
     for y in 0..(h / 10).max(1) {
@@ -180,11 +204,13 @@ pub fn serve(
                 loop {
                     std::thread::sleep(Duration::from_millis(15));
                     let mut todo = Vec::new();
+                    let noise;
                     {
                         let mut st = state.lock().unwrap();
                         if st.closed {
                             return;
                         }
+                        noise = st.noise;
                         let mut sent = 0;
                         for (sess, p) in st.pages.iter_mut() {
                             if p.screencast && p.dirty && !p.awaiting_ack {
@@ -198,7 +224,8 @@ pub fn serve(
                         st.frames_sent += sent;
                     }
                     for (sess, p) in todo {
-                        let data = base64::engine::general_purpose::STANDARD.encode(frame_jpeg(&p));
+                        let data =
+                            base64::engine::general_purpose::STANDARD.encode(frame_jpeg(&p, noise));
                         out.event(
                             "Page.screencastFrame",
                             json!({"data": data, "sessionId": p.frame_seq,
@@ -276,6 +303,7 @@ fn handle<W: Write>(
                     dirty: true,
                     generation: 0,
                     frame_seq: 0,
+                    nav_seq: 0,
                 },
             );
             json!({"targetId": format!("T{n}")})
@@ -344,6 +372,7 @@ fn handle<W: Write>(
                 p.index = p.history.len() - 1;
                 p.url = url.clone();
                 p.generation += 1;
+                p.nav_seq += 1;
                 p.dirty = true;
             }
             drop(st);
@@ -368,6 +397,7 @@ fn handle<W: Write>(
                 p.index = i;
                 p.url = p.history[i].clone();
                 p.generation += 1;
+                p.nav_seq += 1;
                 p.dirty = true;
                 url = Some(p.url.clone());
             }
@@ -381,6 +411,7 @@ fn handle<W: Write>(
             let mut url = None;
             if let Some(p) = st.pages.get_mut(&sess) {
                 p.generation += 1;
+                p.nav_seq += 1;
                 p.dirty = true;
                 url = Some(p.url.clone());
             }
@@ -416,6 +447,14 @@ fn handle<W: Write>(
             let v = match (expr, st.pages.get(&sess)) {
                 ("location.href", Some(p)) => json!(p.url),
                 ("document.readyState", _) => json!("complete"),
+                // The screenshot's document-identity read (vk-server screenshots).
+                (e, Some(p)) if e.contains("__VIBEKE_BUILD__") => {
+                    let origin = url::Url::parse(&p.url)
+                        .map(|u| u.origin().ascii_serialization())
+                        .unwrap_or_default();
+                    json!({"href": p.url, "origin": origin, "title": format!("page {}", p.index),
+                           "time_origin_ms": 1_700_000_000_000.0 + p.nav_seq as f64, "build": null})
+                }
                 _ => Value::Null,
             };
             json!({"result": {"type": "string", "value": v}})
@@ -429,6 +468,7 @@ fn handle<W: Write>(
 pub fn spawn_pair(dpr: f64) -> (Arc<Cdp>, Receiver<Event>, Arc<Mutex<State>>) {
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
     let state = Arc::new(Mutex::new(State::default()));
+    state.lock().unwrap().kill = theirs.try_clone().ok();
     let st = state.clone();
     let w = theirs.try_clone().expect("clone socket");
     std::thread::Builder::new()

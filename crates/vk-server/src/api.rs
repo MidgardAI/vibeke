@@ -317,6 +317,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         }
         return deny("forbidden for pane scope");
     }
+    crate::preview::authorize_pane_machine(server, ctx, method, p)?;
     let owns = |pane: &Pane| &pane.id == scope || pane.created_by == format!("agent:{scope}");
     let pane_targeted = method.starts_with("pane.")
         && !matches!(

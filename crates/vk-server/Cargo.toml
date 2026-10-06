@@ -36,6 +36,7 @@ base64.workspace = true
 libc.workspace = true
 regex.workspace = true
 futures.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

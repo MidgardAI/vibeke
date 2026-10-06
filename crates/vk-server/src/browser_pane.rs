@@ -62,6 +62,14 @@ const MAX_HISTORY: usize = 50;
 /// Unacked media frames per pane per client (local / remote client).
 const WINDOW_LOCAL: u32 = 2;
 const WINDOW_REMOTE: u32 = 1;
+/// A media frame goes out in parts of about this many payload bytes (same `seq`; only the
+/// first carries `reset`; the client acks each part).
+const MEDIA_PART_BYTES: u64 = 32 * 1024;
+/// Media written per pass of the render loop before cells and input get their turn again
+/// (byte and time budget; the loop comes straight back for the rest).
+const MEDIA_BUDGET_LOCAL: u64 = 1 << 20;
+const MEDIA_BUDGET_REMOTE: u64 = 64 * 1024;
+const MEDIA_BUDGET_TIME: Duration = Duration::from_millis(8);
 
 // ---- launching --------------------------------------------------------------------------------
 
@@ -106,6 +114,32 @@ pub fn find_pane_browser(configured: Option<&str>) -> Option<PathBuf> {
         .or_else(|| vk_preview::browser::find_browser(None).map(|b| b.path))
 }
 
+/// Chromium flags for a pane browser.
+fn pane_launch_options(bin: &std::path::Path, req: &LaunchReq) -> vk_browser::cdp::LaunchOptions {
+    let mut o = vk_browser::cdp::LaunchOptions::new(bin, &req.profile_dir);
+    let name = bin
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    o.headless_new = !name.contains("headless");
+    o.device_scale_factor = Some(req.dpr);
+    o.stderr_log = req.log.clone();
+    // Wheel deltas from the host are already pixel-smooth (Stage 0: cut the scroll p95).
+    o.extra_args.push("--disable-smooth-scrolling".into());
+    if let Some(p) = req.socks_port {
+        o.extra_args
+            .push(format!("--proxy-server=socks5://127.0.0.1:{p}"));
+        o.extra_args.push("--proxy-bypass-list=<-loopback>".into());
+        // WebRTC UDP would otherwise leave this machine directly, around the route.
+        o.extra_args.extend(
+            vk_browser::headless::WEBRTC_UDP_POLICY
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    }
+    o
+}
+
 impl Launcher for ChromiumLauncher {
     fn launch(&self, req: &LaunchReq) -> Result<Launched> {
         let bin = self
@@ -114,21 +148,7 @@ impl Launcher for ChromiumLauncher {
             .or_else(|| find_pane_browser(None))
             .ok_or_else(|| anyhow!("no Chromium found for the browser pane (install Playwright's chromium-headless-shell or set VIBEKE_CHROMIUM)"))?;
         tracing::info!(bin = %bin.display(), profile = %req.profile, "browser pane: launching");
-        let mut o = vk_browser::cdp::LaunchOptions::new(&bin, &req.profile_dir);
-        let name = bin
-            .file_name()
-            .map(|n| n.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        o.headless_new = !name.contains("headless");
-        o.device_scale_factor = Some(req.dpr);
-        o.stderr_log = req.log.clone();
-        // Wheel deltas from the host are already pixel-smooth (Stage 0: cut the scroll p95).
-        o.extra_args.push("--disable-smooth-scrolling".into());
-        if let Some(p) = req.socks_port {
-            o.extra_args
-                .push(format!("--proxy-server=socks5://127.0.0.1:{p}"));
-            o.extra_args.push("--proxy-bypass-list=<-loopback>".into());
-        }
+        let o = pane_launch_options(&bin, req);
         let mut b = vk_browser::cdp::Browser::launch(&o)?;
         let events = b.take_events();
         Ok(Launched {
@@ -144,17 +164,30 @@ impl Launcher for ChromiumLauncher {
 #[derive(Default)]
 pub struct FakeLauncher {
     pub launched: Mutex<Vec<(LaunchReq, Arc<Mutex<vk_browser::fake_chromium::State>>)>>,
+    /// Launch fakes whose frames are pixel noise (large media frames).
+    pub noise: AtomicBool,
 }
 
 impl Launcher for FakeLauncher {
     fn launch(&self, req: &LaunchReq) -> Result<Launched> {
         let (cdp, events, state) = vk_browser::fake_chromium::spawn_pair(req.dpr);
-        self.launched.lock().unwrap().push((req.clone(), state));
+        state.lock().unwrap().noise = self.noise.load(Ordering::Relaxed);
+        self.launched
+            .lock()
+            .unwrap()
+            .push((req.clone(), state.clone()));
+        // Dropping the guard closes the fake, as dropping a real `Browser` closes Chromium.
+        struct CloseOnDrop(Arc<Mutex<vk_browser::fake_chromium::State>>);
+        impl Drop for CloseOnDrop {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().crash();
+            }
+        }
         Ok(Launched {
             cdp,
             events,
             pid: None,
-            guard: Box::new(()),
+            guard: Box::new(CloseOnDrop(state)),
         })
     }
 }
@@ -527,19 +560,25 @@ pub fn normalize_url(raw: &str) -> Option<String> {
         }
         format!("http://{t}")
     };
-    preview::url_host(&u).map(|_| u)
+    // The canonical (WHATWG) form is what gets checked, stored and sent to Chromium.
+    preview::canonical_open_url(&u).map(|(c, _)| c)
 }
 
 /// Initial URL check: http(s) or about:blank; for panes owned by another machine, only that
 /// machine's loopback (a remote server can't point the laptop browser at the internet).
-fn initial_url_ok(url: &str, remote_owner: bool) -> bool {
+/// Returns the canonical URL to load.
+fn initial_url(url: &str, remote_owner: bool) -> Option<String> {
     if url == "about:blank" {
-        return true;
+        return Some(url.to_string());
     }
-    match preview::url_host(url) {
-        Some(h) => !remote_owner || vk_remote::is_loopback_host(&h) || h == "0.0.0.0",
-        None => false,
-    }
+    let (c, loopback) = preview::canonical_open_url(url)?;
+    let unspecified = preview::url_host(&c).as_deref() == Some("0.0.0.0");
+    (!remote_owner || loopback || unspecified).then_some(c)
+}
+
+#[cfg(test)]
+fn initial_url_ok(url: &str, remote_owner: bool) -> bool {
+    initial_url(url, remote_owner).is_some()
 }
 
 // ---- views (subscriptions) ----------------------------------------------------------------------
@@ -591,16 +630,17 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                 let remote_owner = !mp.owner.is_empty();
                 // A remote owner's record may only start the page on that machine's loopback
                 // (fall back to the latest loopback URL in its history).
-                let (url, error) = if initial_url_ok(&mp.spec.url, remote_owner) {
-                    (mp.spec.url.clone(), None)
+                let (url, error) = if let Some(u) = initial_url(&mp.spec.url, remote_owner) {
+                    (u, None)
                 } else if let Some(u) = mp
                     .spec
                     .history
                     .iter()
                     .rev()
-                    .find(|u| *u != "about:blank" && initial_url_ok(u, remote_owner))
+                    .filter(|u| *u != "about:blank")
+                    .find_map(|u| initial_url(u, remote_owner))
                 {
-                    (u.clone(), None)
+                    (u, None)
                 } else {
                     (
                         "about:blank".to_string(),
@@ -764,7 +804,22 @@ fn apply_viewport(server: &Arc<Server>, t: &Arc<Target>) {
         && (proc.dpr - geom.dpr as f64).abs() > 0.01
     {
         tracing::info!(profile = %proc.profile, from = proc.dpr, to = geom.dpr, "browser pane: DPR changed, relaunching");
-        close_proc(server, proc, "dpr changed");
+        // Wait for the old process (a profile can be open in only one Chromium), then
+        // re-create the viewed targets at the new DPR (the pump's exit path would only do so
+        // after the crash backoff).
+        close_proc_inner(server, proc, "dpr changed", true);
+        let targets: Vec<Arc<Target>> = server
+            .browser
+            .inner
+            .lock()
+            .unwrap()
+            .targets
+            .values()
+            .cloned()
+            .collect();
+        for t in targets {
+            kick(server, &t);
+        }
         return;
     }
     match page.set_viewport_for_cells(
@@ -807,13 +862,21 @@ fn kick(server: &Arc<Server>, t: &Arc<Target>) {
     let t = t.clone();
     tokio::spawn(async move {
         let res = ensure(&server, &t).await;
-        let mut st = t.st.lock().unwrap();
-        st.creating = false;
-        if let Err(e) = res {
-            tracing::warn!(pane = %t.pane, error = %format!("{e:#}"), "browser pane: could not start");
-            st.error = Some(format!("{e:#}"));
-            st.loading = false;
-            Target::mark_state(&mut st);
+        let again = {
+            let mut st = t.st.lock().unwrap();
+            st.creating = false;
+            if let Err(e) = &res {
+                tracing::warn!(pane = %t.pane, error = %format!("{e:#}"), "browser pane: could not start");
+                st.error = Some(format!("{e:#}"));
+                st.loading = false;
+                Target::mark_state(&mut st);
+            }
+            // The browser was replaced while this page was being created (a DPR relaunch
+            // from `apply_viewport`): create it again on the new one.
+            res.is_ok() && st.page.is_none() && !st.subs.is_empty() && !st.closed
+        };
+        if again {
+            kick(&server, &t);
         }
     });
 }
@@ -974,9 +1037,12 @@ fn proc_for(
     let weak_server = Arc::downgrade(server);
     let p2 = proc.clone();
     let events = l.events;
+    // The pump is a plain OS thread: it needs the runtime handle captured here (callers run
+    // on the runtime or in `spawn_blocking`) to schedule the crash relaunch.
+    let rt = tokio::runtime::Handle::try_current().ok();
     std::thread::Builder::new()
         .name(format!("browser-pane-{}", route.profile))
-        .spawn(move || pump(weak_server, p2, events))?;
+        .spawn(move || pump(weak_server, p2, events, rt))?;
     host.inner
         .lock()
         .unwrap()
@@ -987,6 +1053,11 @@ fn proc_for(
 
 /// Close a profile's browser; its targets lose their pages (re-created when viewed again).
 fn close_proc(server: &Arc<Server>, proc: &Arc<Proc>, why: &str) {
+    close_proc_inner(server, proc, why, false)
+}
+
+/// `wait`: drop the browser on this thread (waits for the process to exit; blocking callers).
+fn close_proc_inner(server: &Arc<Server>, proc: &Arc<Proc>, why: &str, wait: bool) {
     {
         let mut inner = server.browser.inner.lock().unwrap();
         if inner
@@ -1006,9 +1077,13 @@ fn close_proc(server: &Arc<Server>, proc: &Arc<Proc>, why: &str) {
     tracing::info!(profile = %proc.profile, why, "browser pane: closing headless Chromium");
     if let Some(g) = guard {
         // Dropping a real `Browser` sends Browser.close and waits for the process.
-        let _ = std::thread::Builder::new()
-            .name("browser-pane-close".into())
-            .spawn(move || drop(g));
+        if wait {
+            drop(g);
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("browser-pane-close".into())
+                .spawn(move || drop(g));
+        }
     }
 }
 
@@ -1032,7 +1107,12 @@ fn detach_targets(proc: &Arc<Proc>) {
 
 // ---- CDP events ---------------------------------------------------------------------------------
 
-fn pump(server: Weak<Server>, proc: Arc<Proc>, events: Receiver<Event>) {
+fn pump(
+    server: Weak<Server>,
+    proc: Arc<Proc>,
+    events: Receiver<Event>,
+    rt: Option<tokio::runtime::Handle>,
+) {
     while let Ok(ev) = events.recv() {
         if proc.dead.load(Ordering::Relaxed) {
             break;
@@ -1073,7 +1153,7 @@ fn pump(server: Weak<Server>, proc: Arc<Proc>, events: Receiver<Event>) {
         // Re-create viewed targets (after the crash-loop backoff), unless we closed it on
         // purpose for a window handover.
         let server2 = server.clone();
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        if let Some(rt) = rt.or_else(|| tokio::runtime::Handle::try_current().ok()) {
             rt.spawn(async move {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 for t in targets {
@@ -1442,10 +1522,18 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
         }
         BrowserCmd::Screenshot => {
             let server = server.clone();
-            tokio::task::spawn_blocking(move || {
-                let msg = match screenshot(&server, &t) {
-                    Ok(p) => format!("screenshot saved: {}", p.display()),
-                    Err(e) => format!("screenshot failed: {e:#}"),
+            tokio::spawn(async move {
+                let msg = match screenshot(&server, &t).await {
+                    Ok(m) => format!(
+                        "screenshot {} saved ({}: {})",
+                        m.handle,
+                        match m.binding {
+                            crate::screenshots::ScreenshotBinding::Bound => "bound",
+                            _ => "illustrative",
+                        },
+                        m.label
+                    ),
+                    Err(e) => format!("screenshot failed: {}", e.message),
                 };
                 let mut st = t.st.lock().unwrap();
                 st.notice = Some(msg);
@@ -1471,19 +1559,101 @@ fn history_step(page: &Page, back: bool) {
     }
 }
 
-/// Pane screenshot (B6 groundwork; `environment = LocalPane`). Metadata/evidence is Stage 4.
-fn screenshot(server: &Arc<Server>, t: &Arc<Target>) -> Result<PathBuf> {
-    let page = t.page().ok_or_else(|| anyhow!("the page is not running"))?;
-    let png = page.capture_screenshot(true, 100)?;
-    let dir = server.paths.state.join("screenshots");
-    std::fs::create_dir_all(&dir)?;
-    let ts = vk_store::now_ms();
-    let path = dir.join(format!(
-        "pane-{}-{ts}.png",
-        &t.pane[t.pane.len().saturating_sub(6)..]
-    ));
-    std::fs::write(&path, png)?;
-    Ok(path)
+/// Pane screenshot (06 B6): a `screenshot` record with `environment.kind = local_pane`,
+/// the profile and `taken_by.kind = user`, through [`crate::screenshots::record_screenshot`]
+/// (content-addressed blob, code state, binding, screenshot APIs, review evidence, retention).
+pub(crate) async fn screenshot(
+    server: &Arc<Server>,
+    t: &Arc<Target>,
+) -> Result<crate::screenshots::ScreenshotMeta, vk_proto::rpc::RpcError> {
+    use crate::screenshots::{
+        DOCUMENT_IDENTITY_JS, DocumentCapture, EnvKind, Environment, Requester, ShotInputs,
+        Viewport, record_screenshot,
+    };
+    let page = t
+        .page()
+        .ok_or_else(|| err(ErrorKind::Conflict, "the page is not running"))?;
+    let (route, url, css, dpr) = {
+        let st = t.st.lock().unwrap();
+        (
+            st.route.clone(),
+            st.url.clone(),
+            st.css,
+            st.applied.map(|g| g.dpr as f64).unwrap_or(1.0),
+        )
+    };
+    // The document's identity right before and right after the pixels.
+    let (png, before, after) = tokio::task::spawn_blocking(move || {
+        let before = page.eval(DOCUMENT_IDENTITY_JS).ok();
+        let png = page.capture_screenshot(true, 100);
+        let after = page.eval(DOCUMENT_IDENTITY_JS).ok();
+        (png, before, after)
+    })
+    .await
+    .map_err(crate::api::internal)?;
+    let png = png.map_err(|e| err(ErrorKind::Internal, format!("capture: {e:#}")))?;
+    let document = DocumentCapture::from_reads(before.as_ref(), after.as_ref());
+    let (final_url, title) = match document.as_ref().and_then(|d| d.identity()) {
+        Some(d) => (Some(d.href.clone()), d.title.clone()),
+        None => (None, None),
+    };
+    // The pane's record (local owner): its preview and source pane's checkout.
+    let (preview, checkout) = server.with_core(|c| {
+        let spec = c.pane(&t.pane).and_then(|p| p.browser.clone());
+        let checkout = spec
+            .as_ref()
+            .and_then(|b| b.source_pane.as_deref())
+            .and_then(|sp| c.pane(sp))
+            .and_then(|p| p.cwd.clone())
+            .map(PathBuf::from);
+        (spec.and_then(|b| b.preview), checkout)
+    });
+    let machine = if route.local() {
+        server.opts.machine.clone()
+    } else {
+        route.machine.clone()
+    };
+    let environment = Environment {
+        kind: EnvKind::LocalPane,
+        machine,
+        runner: "host".into(),
+        browser: "Chromium".into(),
+        browser_version: None,
+        viewport: Viewport {
+            width: css.0,
+            height: css.1,
+        },
+        dpr,
+        color_scheme: None,
+        device: None,
+        fresh_context: false,
+        profile: Some(route.profile.clone()),
+    };
+    record_screenshot(
+        server,
+        &png,
+        ShotInputs {
+            environment,
+            url,
+            final_url,
+            title,
+            preview,
+            session: None,
+            taken_by: Requester {
+                kind: "user".into(),
+                pane: server.with_core(|c| c.pane(&t.pane).map(|p| p.id.clone())),
+                run: None,
+                client: None,
+            },
+            full_page: false,
+            selector: None,
+            checkout,
+            runtime: None,
+            probe_runtime: true,
+            document,
+        },
+    )
+    .await
 }
 
 fn internal_ctx() -> Ctx {
@@ -1702,11 +1872,86 @@ pub struct MediaSession {
     pub id: u64,
     pub notify: Arc<Notify>,
     panes: Vec<String>,
+    /// Parts written and not yet acknowledged, per pane: (seq, shm names in that part).
     unacked: HashMap<String, Vec<(u64, Vec<String>)>>,
+    /// Encoded parts not written yet (sent across later passes, after cells).
+    pending: std::collections::VecDeque<MediaPart>,
     shm: bool,
     remote: bool,
     key_releases: bool,
     active: bool,
+}
+
+/// One wire message of a media frame.
+struct MediaPart {
+    frame: MediaFrame,
+    names: Vec<String>,
+    bytes: u64,
+}
+
+fn tile_cost(t: &MediaTile) -> u64 {
+    match &t.data {
+        TileData::Shm { .. } => 32,
+        TileData::ZlibRgba(b) | TileData::Rgba(b) => b.len() as u64,
+    }
+}
+
+/// Split an encoded frame into parts of about `max` payload bytes (at least one tile each).
+fn split_frame(frame: MediaFrame, max: u64) -> Vec<MediaPart> {
+    let names_of = |tiles: &[MediaTile]| -> Vec<String> {
+        tiles
+            .iter()
+            .filter_map(|t| match &t.data {
+                TileData::Shm { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut parts = Vec::new();
+    let tiles = &frame.tiles;
+    let mut groups: Vec<Vec<MediaTile>> = vec![Vec::new()];
+    let mut acc = 0u64;
+    for t in tiles {
+        let c = tile_cost(t);
+        if acc > 0 && acc + c > max {
+            groups.push(Vec::new());
+            acc = 0;
+        }
+        acc += c;
+        groups.last_mut().expect("one group").push(t.clone());
+    }
+    for (i, g) in groups.into_iter().enumerate() {
+        let bytes = g.iter().map(tile_cost).sum();
+        let names = names_of(&g);
+        parts.push(MediaPart {
+            frame: MediaFrame {
+                tiles: g,
+                reset: frame.reset && i == 0,
+                ..frame_header(&frame)
+            },
+            names,
+            bytes,
+        });
+    }
+    parts
+}
+
+/// A frame's header (no tiles), for its parts.
+fn frame_header(f: &MediaFrame) -> MediaFrame {
+    MediaFrame {
+        pane: f.pane.clone(),
+        seq: f.seq,
+        width: f.width,
+        height: f.height,
+        cell_w: f.cell_w,
+        cell_h: f.cell_h,
+        tile_cols: f.tile_cols,
+        tile_rows: f.tile_rows,
+        grid_cols: f.grid_cols,
+        grid_rows: f.grid_rows,
+        reset: f.reset,
+        tiles: Vec::new(),
+    }
 }
 
 impl MediaSession {
@@ -1716,6 +1961,7 @@ impl MediaSession {
             notify: Arc::new(Notify::new()),
             panes: Vec::new(),
             unacked: HashMap::new(),
+            pending: std::collections::VecDeque::new(),
             shm: false,
             remote,
             key_releases: false,
@@ -1728,23 +1974,66 @@ impl MediaSession {
         self.key_releases = keys;
         self.active = true;
         self.panes = panes.iter().map(|p| p.pane.clone()).collect();
-        self.unacked
-            .retain(|k, _| panes.iter().any(|p| &p.pane == k));
+        // Frames already sent for panes now hidden stay tracked (with their shm names) until
+        // the client acks them or goes away: dropping them here leaked the names when the
+        // client disconnected before consuming the queued frames. Parts never sent are
+        // dropped (and their objects removed).
+        let shown = &self.panes;
+        self.pending.retain(|p| {
+            let keep = shown.contains(&p.frame.pane);
+            if !keep {
+                for n in &p.names {
+                    vk_browser::kitty::shm::unlink(n);
+                }
+            }
+            keep
+        });
         view(server, self.id, &self.notify, &panes);
     }
 
     pub fn on_ack(&mut self, pane: &str, seq: u64) {
         if let Some(v) = self.unacked.get_mut(pane) {
-            v.retain(|(s, _)| *s > seq);
+            // Older frames are done; one part of this frame is (parts are acked one by one).
+            v.retain(|(s, _)| *s >= seq);
+            if let Some(i) = v.iter().position(|(s, _)| *s == seq) {
+                v.remove(i);
+            }
+            if v.is_empty() {
+                self.unacked.remove(pane);
+            }
         }
         self.notify.notify_one();
+    }
+
+    /// Shm names created for this client and not yet acknowledged or written (tests,
+    /// diagnostics).
+    pub fn outstanding_shm(&self) -> Vec<String> {
+        self.unacked
+            .values()
+            .flat_map(|v| v.iter().flat_map(|(_, n)| n.iter().cloned()))
+            .chain(self.pending.iter().flat_map(|p| p.names.iter().cloned()))
+            .collect()
+    }
+
+    /// Frames (distinct seqs) of `pane` written and not fully acknowledged.
+    fn frames_in_flight(&self, pane: &str) -> u32 {
+        let mut seqs: Vec<u64> = self
+            .unacked
+            .get(pane)
+            .map(|v| v.iter().map(|(s, _)| *s).collect())
+            .unwrap_or_default();
+        seqs.dedup();
+        seqs.len() as u32
     }
 
     pub fn on_cmd(&self, server: &Arc<Server>, pane: &str, cmd: BrowserCmd) {
         command(server, pane, cmd, self.key_releases);
     }
 
-    /// Write pending chrome state and media frames (call after cell frames: lower priority).
+    /// Write pending chrome state and media (call after cell frames: lower priority). Media
+    /// goes out in parts within a byte and time budget per call; when parts remain, the
+    /// session is woken to come back after it has written cells and handled input, so a large
+    /// frame on a slow link never holds terminal updates for longer than one part.
     pub async fn flush<W: AsyncWrite + Unpin>(
         &mut self,
         server: &Arc<Server>,
@@ -1757,6 +2046,11 @@ impl MediaSession {
             WINDOW_REMOTE
         } else {
             WINDOW_LOCAL
+        };
+        let budget = if self.remote {
+            MEDIA_BUDGET_REMOTE
+        } else {
+            MEDIA_BUDGET_LOCAL
         };
         for pane in self.panes.clone() {
             let Some(t) = server.browser.target(&pane) else {
@@ -1774,32 +2068,50 @@ impl MediaSession {
                 )
                 .await?;
             }
-            if self.unacked.get(&pane).map_or(0, Vec::len) as u32 >= window {
-                continue;
+        }
+        let started = Instant::now();
+        let mut written = 0u64;
+        loop {
+            if self.pending.is_empty() {
+                for pane in self.panes.clone() {
+                    if self.frames_in_flight(&pane) >= window {
+                        continue;
+                    }
+                    let Some(t) = server.browser.target(&pane) else {
+                        continue;
+                    };
+                    let Some(tf) = t.take(self.id) else { continue };
+                    let (frame, _names) = encode_frame(&pane, &tf, self.shm);
+                    let bytes = frame.tiles.iter().map(tile_cost).sum::<u64>();
+                    server
+                        .browser
+                        .tiles_sent
+                        .fetch_add(frame.tiles.len() as u64, Ordering::Relaxed);
+                    server
+                        .browser
+                        .media_bytes
+                        .fetch_add(bytes, Ordering::Relaxed);
+                    self.pending.extend(split_frame(frame, MEDIA_PART_BYTES));
+                }
+                if self.pending.is_empty() {
+                    break;
+                }
             }
-            let Some(tf) = t.take(self.id) else { continue };
-            let (frame, names) = encode_frame(&pane, &tf, self.shm);
-            let bytes = frame
-                .tiles
-                .iter()
-                .map(|t| match &t.data {
-                    TileData::Shm { .. } => 32,
-                    TileData::ZlibRgba(b) | TileData::Rgba(b) => b.len() as u64,
-                })
-                .sum::<u64>();
-            server
-                .browser
-                .tiles_sent
-                .fetch_add(frame.tiles.len() as u64, Ordering::Relaxed);
-            server
-                .browser
-                .media_bytes
-                .fetch_add(bytes, Ordering::Relaxed);
+            let next = self.pending.front().map_or(0, |p| p.bytes);
+            if written > 0 && (written + next > budget || started.elapsed() >= MEDIA_BUDGET_TIME) {
+                // Cells and input first; then the rest.
+                self.notify.notify_one();
+                break;
+            }
+            let Some(part) = self.pending.pop_front() else {
+                break;
+            };
             self.unacked
-                .entry(pane.clone())
+                .entry(part.frame.pane.clone())
                 .or_default()
-                .push((frame.seq, names));
-            asyncio::write_frame(wr, &ServerFrame::Media(Box::new(frame))).await?;
+                .push((part.frame.seq, part.names));
+            asyncio::write_frame(wr, &ServerFrame::Media(Box::new(part.frame))).await?;
+            written += part.bytes.max(1);
         }
         Ok(())
     }
@@ -1807,6 +2119,11 @@ impl MediaSession {
     /// The client went away: unsubscribe and remove shm objects it never handed to its host.
     pub fn close(&mut self, server: &Arc<Server>) {
         unsubscribe(server, self.id);
+        for p in self.pending.drain(..) {
+            for n in p.names {
+                vk_browser::kitty::shm::unlink(&n);
+            }
+        }
         for (_, v) in self.unacked.drain() {
             for (_, names) in v {
                 for n in names {
@@ -1827,7 +2144,7 @@ fn encode_frame(pane: &str, tf: &TakenFrame, shm: bool) -> (MediaFrame, Vec<Stri
     for r in &tf.tiles {
         let px = tf.frame.extract(r);
         let data = if shm {
-            let name = vk_browser::kitty::shm::new_name();
+            let name = vk_browser::kitty::shm::new_name_for(pane);
             match vk_browser::kitty::shm::write(&name, &px) {
                 Ok(()) => {
                     names.push(name.clone());
@@ -1930,8 +2247,8 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
     };
     if let Some(scope) = &ctx.pane_scope {
-        let host = preview::url_host(&url).unwrap_or_default();
-        if !vk_remote::is_loopback_host(&host) {
+        // `url` is canonical here (normalize_url / open_url_of), the same string Chromium gets.
+        if !preview::canonical_open_url(&url).is_some_and(|(_, lb)| lb) {
             return Err(err(
                 ErrorKind::PermissionDenied,
                 "from a pane, only loopback URLs can be opened",
@@ -2175,17 +2492,20 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 Some(x) => x,
                 None => return Some(Err(invalid("missing param `pane`"))),
             };
-            let url = s(p, "url").unwrap_or("");
-            if !url.is_empty() && normalize_url(url).is_none() {
-                return Some(Err(invalid("only http(s) URLs")));
-            }
+            let url = match s(p, "url").filter(|u| !u.is_empty()) {
+                Some(u) => match normalize_url(u) {
+                    Some(c) => c,
+                    None => return Some(Err(invalid("only http(s) URLs"))),
+                },
+                None => String::new(),
+            };
+            let url = url.as_str();
             let history: Option<Vec<String>> = p.get("history").and_then(|h| {
                 h.as_array().map(|a| {
                     a.iter()
                         .filter_map(|x| x.as_str())
-                        .filter(|x| normalize_url(x).is_some())
+                        .filter_map(normalize_url)
                         .take(MAX_HISTORY)
-                        .map(str::to_owned)
                         .collect()
                 })
             });
@@ -2654,3 +2974,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "browser_pane_followup_tests.rs"]
+mod followup_tests;

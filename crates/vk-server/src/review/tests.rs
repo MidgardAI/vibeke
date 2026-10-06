@@ -2299,6 +2299,7 @@ fn shot_inputs(
         checkout: None,
         runtime,
         probe_runtime: false,
+        document: None,
     }
 }
 

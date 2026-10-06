@@ -172,6 +172,14 @@ pub struct LaunchSpec {
     pub extra_args: Vec<String>,
 }
 
+/// WebRTC may not send UDP around the SOCKS route. The headless shell reads the force switch's
+/// value, full Chromium/Chrome the plain switch; both are passed (same as
+/// `vk_browser::headless::WEBRTC_UDP_POLICY`).
+pub const WEBRTC_UDP_POLICY: [&str; 2] = [
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+];
+
 /// Command-line arguments (06 B3.4). `<-loopback>` removes Chromium's implicit loopback bypass
 /// so `localhost` goes through the proxy; with `socks5://` hostnames resolve proxy-side.
 pub fn args(spec: &LaunchSpec) -> Vec<String> {
@@ -186,6 +194,7 @@ pub fn args(spec: &LaunchSpec) -> Vec<String> {
     if let Some(p) = spec.socks_port {
         a.push(format!("--proxy-server=socks5://127.0.0.1:{p}"));
         a.push("--proxy-bypass-list=<-loopback>".into());
+        a.extend(WEBRTC_UDP_POLICY.iter().map(|s| s.to_string()));
     }
     if spec.headless {
         a.push("--headless=new".into());
@@ -255,6 +264,10 @@ mod tests {
         assert_eq!(a[0], "--user-data-dir=/state/browser-profiles/devbox");
         assert!(a.contains(&"--proxy-server=socks5://127.0.0.1:41234".to_string()));
         assert!(a.contains(&"--proxy-bypass-list=<-loopback>".to_string()));
+        assert!(
+            a.contains(&"--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string())
+        );
+        assert!(a.contains(&"--webrtc-ip-handling-policy=disable_non_proxied_udp".to_string()));
         assert!(a.contains(&"--no-first-run".to_string()));
         assert!(a.contains(&"--no-default-browser-check".to_string()));
         assert_eq!(a.last().unwrap(), "http://localhost:5173/");
@@ -263,6 +276,7 @@ mod tests {
             ..spec
         };
         assert!(!args(&local).iter().any(|x| x.starts_with("--proxy")));
+        assert!(!args(&local).iter().any(|x| x.contains("webrtc")));
     }
 
     #[test]

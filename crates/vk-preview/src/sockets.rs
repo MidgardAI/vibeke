@@ -4,7 +4,7 @@
 //! Linux: `/proc/<pid>/fd` socket inodes joined with `/proc/net/tcp{,6}`.
 //! Both only look at the pids they are given, so the cost is bounded by the process tree.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// A TCP socket in LISTEN state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,10 +28,36 @@ pub fn listeners(pids: &[u32]) -> Vec<Listener> {
     v
 }
 
-/// Which of `pids` owns the client end of a loopback TCP connection whose local port is
-/// `client_port` and remote port is `server_port` (the SOCKS peer check, 06 B3.4).
-pub fn owner_of_connection(pids: &[u32], client_port: u16, server_port: u16) -> Option<u32> {
-    imp::owner_of_connection(pids, client_port, server_port)
+/// Which of `pids` owns the client end of an accepted loopback TCP connection (the SOCKS and
+/// agent-proxy peer check, 06 B3.4/B5). `peer` is the accepted socket's remote address (the
+/// client's local end) and `listener` its local address (the client's remote end). The
+/// **complete 4-tuple** must match — matching ports alone lets another process bind the same
+/// client port on a different loopback address (`127.0.0.2:P` / `[::1]:P`) and borrow the
+/// browser's authority — and both the socket and its owning process must belong to this
+/// process's effective uid.
+pub fn owner_of_connection(pids: &[u32], peer: SocketAddr, listener: SocketAddr) -> Option<u32> {
+    let want = Tuple {
+        local: (peer.ip().to_canonical(), peer.port()),
+        remote: (listener.ip().to_canonical(), listener.port()),
+    };
+    if !want.local.0.is_loopback() || !want.remote.0.is_loopback() {
+        return None;
+    }
+    imp::owner_of_connection(pids, &want)
+}
+
+/// The client socket's (local, remote) endpoints, canonical (IPv4-mapped IPv6 → IPv4).
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Tuple {
+    pub local: (IpAddr, u16),
+    pub remote: (IpAddr, u16),
+}
+
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn my_euid() -> u32 {
+    // SAFETY: geteuid never fails.
+    unsafe { libc::geteuid() }
 }
 
 #[cfg(target_os = "macos")]
@@ -174,6 +200,37 @@ mod imp {
         lport: u16,
         fport: u16,
         laddr: IpAddr,
+        faddr: IpAddr,
+    }
+
+    fn ip_of(words: &[u32; 4], vflag: u8) -> IpAddr {
+        let mut b = [0u8; 16];
+        for (i, w) in words.iter().enumerate() {
+            b[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
+        }
+        if vflag & INI_IPV4 != 0 && vflag & INI_IPV6 == 0 {
+            IpAddr::V4(Ipv4Addr::new(b[12], b[13], b[14], b[15]))
+        } else {
+            IpAddr::V6(Ipv6Addr::from(b)).to_canonical()
+        }
+    }
+
+    /// The process's effective uid (`proc_bsdinfo.pbi_uid`), `None` if it can't be read.
+    fn proc_uid(pid: u32) -> Option<u32> {
+        // SAFETY: plain-old-data out-buffer, zero is a valid bit pattern.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is `size` bytes.
+        let r = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        (r == size).then_some(info.pbi_uid)
     }
 
     fn socket_fds(pid: u32) -> Vec<i32> {
@@ -235,26 +292,12 @@ mod imp {
         // SAFETY: soi_kind == SOCKINFO_TCP selects the tcp member.
         let tcp = unsafe { info.psi.soi_proto.tcp };
         let ini = tcp.tcpsi_ini;
-        let bytes: [u8; 16] = {
-            let mut b = [0u8; 16];
-            for (i, w) in ini.insi_laddr.iter().enumerate() {
-                b[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
-            }
-            b
-        };
-        let laddr = if ini.insi_vflag & INI_IPV4 != 0 && ini.insi_vflag & INI_IPV6 == 0 {
-            IpAddr::V4(Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]))
-        } else {
-            let v6 = Ipv6Addr::from(bytes);
-            v6.to_ipv4_mapped()
-                .map(IpAddr::V4)
-                .unwrap_or(IpAddr::V6(v6))
-        };
         Some(TcpSock {
             state: tcp.tcpsi_state,
             lport: u16::from_be(ini.insi_lport as u16),
             fport: u16::from_be(ini.insi_fport as u16),
-            laddr,
+            laddr: ip_of(&ini.insi_laddr, ini.insi_vflag),
+            faddr: ip_of(&ini.insi_faddr, ini.insi_vflag),
         })
     }
 
@@ -276,14 +319,19 @@ mod imp {
         out
     }
 
-    pub fn owner_of_connection(pids: &[u32], client_port: u16, server_port: u16) -> Option<u32> {
+    /// libproc reports no socket credential (`soi_stat.vst_uid` is 0), so the owner check is
+    /// the owning process's effective uid.
+    pub fn owner_of_connection(pids: &[u32], want: &Tuple) -> Option<u32> {
+        let me = my_euid();
         for &pid in pids {
+            if proc_uid(pid) != Some(me) {
+                continue;
+            }
             for fd in socket_fds(pid) {
                 if let Some(s) = tcp_sock(pid, fd)
                     && s.state != TSI_S_LISTEN
-                    && s.lport == client_port
-                    && s.fport == server_port
-                    && s.laddr.is_loopback()
+                    && (s.laddr, s.lport) == want.local
+                    && (s.faddr, s.fport) == want.remote
                 {
                     return Some(pid);
                 }
@@ -300,6 +348,7 @@ pub(crate) struct TcpRow {
     pub local: (IpAddr, u16),
     pub remote: (IpAddr, u16),
     pub state: u8,
+    pub uid: u32,
     pub inode: u64,
 }
 
@@ -342,6 +391,7 @@ pub(crate) fn parse_proc_net_tcp(text: &str) -> Vec<TcpRow> {
                 local: parse_addr(f.get(1)?)?,
                 remote: parse_addr(f.get(2)?)?,
                 state: u8::from_str_radix(f.get(3)?, 16).ok()?,
+                uid: f.get(7)?.parse().ok()?,
                 inode: f.get(9)?.parse().ok()?,
             })
         })
@@ -402,14 +452,24 @@ mod imp {
             .collect()
     }
 
-    pub fn owner_of_connection(pids: &[u32], client_port: u16, server_port: u16) -> Option<u32> {
+    /// Effective uid from `/proc/<pid>/status` (`Uid: real effective saved fs`).
+    fn proc_uid(pid: u32) -> Option<u32> {
+        let t = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        t.lines()
+            .find_map(|l| l.strip_prefix("Uid:"))
+            .and_then(|r| r.split_whitespace().nth(1))
+            .and_then(|u| u.parse().ok())
+    }
+
+    pub fn owner_of_connection(pids: &[u32], want: &Tuple) -> Option<u32> {
+        let me = my_euid();
         let inodes: HashSet<u64> = rows()
             .into_iter()
             .filter(|r| {
                 r.state != TCP_LISTEN
-                    && r.local.1 == client_port
-                    && r.remote.1 == server_port
-                    && r.local.0.is_loopback()
+                    && r.local == want.local
+                    && r.remote == want.remote
+                    && r.uid == me
             })
             .map(|r| r.inode)
             .filter(|i| *i != 0)
@@ -419,6 +479,7 @@ mod imp {
         }
         pids.iter()
             .copied()
+            .filter(|&p| proc_uid(p) == Some(me))
             .find(|&p| !socket_inodes(p).is_disjoint(&inodes))
     }
 }
@@ -429,7 +490,7 @@ mod imp {
     pub fn listeners(_: &[u32]) -> Vec<Listener> {
         vec![]
     }
-    pub fn owner_of_connection(_: &[u32], _: u16, _: u16) -> Option<u32> {
+    pub fn owner_of_connection(_: &[u32], _: &Tuple) -> Option<u32> {
         None
     }
 }
@@ -481,13 +542,129 @@ mod tests {
             "{found:?}"
         );
         let c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let cport = c.local_addr().unwrap().port();
-        assert_eq!(owner_of_connection(&[me], cport, port), Some(me));
-        assert_eq!(
-            owner_of_connection(&[me], cport, port.wrapping_add(1)),
-            None
-        );
+        let peer = c.local_addr().unwrap();
+        let srv = c.peer_addr().unwrap();
+        assert_eq!(owner_of_connection(&[me], peer, srv), Some(me));
+        let other_port = SocketAddr::new(srv.ip(), port.wrapping_add(1));
+        assert_eq!(owner_of_connection(&[me], peer, other_port), None);
+        // Same ports, different loopback address on either end: not this connection.
+        let p2: SocketAddr = format!("127.0.0.2:{}", peer.port()).parse().unwrap();
+        let s2: SocketAddr = format!("127.0.0.2:{port}").parse().unwrap();
+        assert_eq!(owner_of_connection(&[me], p2, srv), None);
+        assert_eq!(owner_of_connection(&[me], peer, s2), None);
+        let p6: SocketAddr = format!("[::1]:{}", peer.port()).parse().unwrap();
+        assert_eq!(owner_of_connection(&[me], p6, srv), None);
+        // An IPv4-mapped spelling of the same tuple is the same tuple.
+        let pm: SocketAddr = format!("[::ffff:127.0.0.1]:{}", peer.port())
+            .parse()
+            .unwrap();
+        assert_eq!(owner_of_connection(&[me], pm, srv), Some(me));
         // pid 1 (launchd/init) owns no such socket (and is not ours to inspect).
-        assert_eq!(owner_of_connection(&[1], cport, port), None);
+        assert_eq!(owner_of_connection(&[1], peer, srv), None);
+    }
+
+    /// Child-process half of [`identical_ports_other_address_is_not_the_browser`]: connect to
+    /// `$VK_SOCKTEST_TARGET` from an ephemeral 127.0.0.1 port, print it, hold until stdin closes.
+    #[test]
+    fn socktest_child_helper() {
+        let Ok(target) = std::env::var("VK_SOCKTEST_TARGET") else {
+            return;
+        };
+        let c = std::net::TcpStream::connect(target.as_str()).unwrap();
+        println!("PORT {}", c.local_addr().unwrap().port());
+        let mut sink = String::new();
+        let _ = std::io::stdin().read_line(&mut sink);
+        drop(c);
+    }
+
+    /// The 06 B3.4 attack: while the browser (a child process here) holds `127.0.0.1:P →
+    /// 127.0.0.1:S`, another process connects from the same port `P` on a different loopback
+    /// address to the same listener port. Port-only matching would find the browser's
+    /// connection and grant its authority; the complete 4-tuple must not.
+    #[tokio::test]
+    async fn identical_ports_other_address_is_not_the_browser() {
+        use std::io::BufRead;
+        // A port S free on both 127.0.0.1 and ::1 (so the IPv6 variant can mirror the ports).
+        let (l4, l6) = loop {
+            let l4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let s = l4.local_addr().unwrap().port();
+            match tokio::net::TcpListener::bind(("::1", s)).await {
+                Ok(l6) => break (l4, Some(l6)),
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(_) => break (l4, None), // no IPv6 loopback here
+            }
+        };
+        let s = l4.local_addr().unwrap().port();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sockets::tests::socktest_child_helper",
+                "--nocapture",
+            ])
+            .env("VK_SOCKTEST_TARGET", format!("127.0.0.1:{s}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_pid = child.id();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let p: u16 = loop {
+            let mut line = String::new();
+            assert!(out.read_line(&mut line).unwrap() > 0, "child exited");
+            if let Some(n) = line.trim().strip_prefix("PORT ") {
+                break n.parse().unwrap();
+            }
+        };
+        let (_bs, browser_peer) = l4.accept().await.unwrap();
+        let browser_local = SocketAddr::from(([127, 0, 0, 1], s));
+        assert_eq!(browser_peer.port(), p);
+        let me = std::process::id();
+        let tree = [child_pid, me];
+        let owner = || owner_of_connection(&[child_pid], browser_peer, browser_local);
+        assert_eq!(
+            owner(),
+            Some(child_pid),
+            "the browser's own connection is found"
+        );
+        let mut tested = 0;
+
+        // Variant 1 (Linux; macOS has only 127.0.0.1 on lo0 unless aliased): 127.0.0.2:P → 127.0.0.1:S.
+        let sock = tokio::net::TcpSocket::new_v4().unwrap();
+        if sock.bind(SocketAddr::from(([127, 0, 0, 2], p))).is_ok() {
+            let _c = sock.connect(browser_local).await.unwrap();
+            let (_a, peer) = l4.accept().await.unwrap();
+            assert_eq!(peer, SocketAddr::from(([127, 0, 0, 2], p)));
+            assert_eq!(owner_of_connection(&[child_pid], peer, browser_local), None);
+            // Owned by this test process, which is not in the "browser" set.
+            assert_eq!(owner_of_connection(&tree, peer, browser_local), Some(me));
+            tested += 1;
+        } else if cfg!(target_os = "linux") {
+            panic!("127.0.0.2 should be bindable on Linux");
+        }
+
+        // Variant 2 (both platforms): [::1]:P → [::1]:S, the identical port pair over IPv6.
+        if let Some(l6) = l6 {
+            let sock = tokio::net::TcpSocket::new_v6().unwrap();
+            if sock
+                .bind(SocketAddr::from((Ipv6Addr::LOCALHOST, p)))
+                .is_ok()
+            {
+                let local6 = SocketAddr::from((Ipv6Addr::LOCALHOST, s));
+                let _c = sock.connect(local6).await.unwrap();
+                let (_a, peer) = l6.accept().await.unwrap();
+                assert_eq!(peer.port(), p);
+                assert_eq!(owner_of_connection(&[child_pid], peer, local6), None);
+                assert_eq!(owner_of_connection(&[child_pid], peer, browser_local), None);
+                assert_eq!(owner_of_connection(&tree, peer, local6), Some(me));
+                tested += 1;
+            }
+        }
+        drop(child.stdin.take());
+        let _ = child.wait();
+        assert!(
+            tested > 0,
+            "no alternative loopback address available to test"
+        );
     }
 }

@@ -2904,6 +2904,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "url",
  "vk-proto",
  "vk-term",
 ]
@@ -3158,6 +3159,7 @@ dependencies = [
  "toml",
  "tracing",
  "ulid",
+ "url",
  "vk-agents",
  "vk-assist",
  "vk-browser",

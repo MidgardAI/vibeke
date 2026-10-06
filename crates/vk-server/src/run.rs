@@ -123,10 +123,30 @@ pub fn ancestry_pane(server: &Server, pid: Option<i32>) -> Option<String> {
     None
 }
 
+/// Per-connection cleanup that must run however the connection ends (EOF, error, panic
+/// unwinding): client-held agent-browser screencast subscriptions and take-overs.
+struct ConnGuard {
+    server: Arc<Server>,
+    client_ids: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        let ids = std::mem::take(&mut *self.client_ids.lock().unwrap());
+        for id in ids {
+            crate::agent_browser::client_gone(&self.server, &id);
+        }
+    }
+}
+
 pub async fn connection<S>(server: Arc<Server>, stream: S, peer_pid: Option<i32>) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let guard = ConnGuard {
+        server: server.clone(),
+        client_ids: Arc::default(),
+    };
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
     let ancestry = ancestry_pane(&server, peer_pid);
@@ -140,6 +160,7 @@ where
         pane_scope: ancestry.clone(),
         remote: false,
     };
+    guard.client_ids.lock().unwrap().push(ctx.client_id.clone());
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     let mut line = String::new();
     // Handle lines until render.attach (which needs the raw stream) or EOF.
@@ -168,7 +189,10 @@ where
                             }
                         }
                         if let Some(k) = req.params.get("kind").and_then(Value::as_str) { ctx.kind = k.into(); }
-                        if let Some(c) = req.params.get("client_id").and_then(Value::as_str) { ctx.client_id = c.into(); }
+                        if let Some(c) = req.params.get("client_id").and_then(Value::as_str) {
+                            ctx.client_id = c.into();
+                            guard.client_ids.lock().unwrap().push(c.into());
+                        }
                         ctx.remote = req.params.get("remote").and_then(Value::as_bool).unwrap_or(false);
                         crate::notify::record_host(&server, &ctx.client_id, req.params.get("host"));
                         let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
@@ -218,11 +242,40 @@ where
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or(ctx.client_id.clone());
+        guard.client_ids.lock().unwrap().push(client_id.clone());
         let remote = req
             .params
             .get("remote")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // 07 §3: the render stream is positional postcard; a client of another protocol
+        // version would mis-decode every frame. Refuse with an upgrade hint.
+        let client_protocol = req
+            .params
+            .get("protocol")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        if client_protocol != vk_proto::render::PROTOCOL as u64 {
+            let mut e = err(
+                ErrorKind::Unsupported,
+                format!(
+                    "{}: this server speaks render protocol {}, the client {client_protocol}; upgrade the older side (`vibeke machine upgrade <machine>` for a remote, or restart the client from the same vibeke build)",
+                    vk_proto::render::VERSION_MISMATCH,
+                    vk_proto::render::PROTOCOL
+                ),
+            )
+            .details(json!({
+                "server_protocol": vk_proto::render::PROTOCOL,
+                "client_protocol": client_protocol,
+                "server_version": vk_proto::VERSION,
+            }));
+            e.data.kind = vk_proto::render::VERSION_MISMATCH.into();
+            let r = Response::err(req.id.clone().unwrap_or(Value::Null), e);
+            wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
+            wr.write_all(b"\n").await?;
+            wr.flush().await?;
+            return Ok(());
+        }
         let max_fps = req
             .params
             .get("caps")

@@ -248,8 +248,11 @@ pub struct HostCaps {
     pub kitty_graphics: bool,
     /// Kitty shared-memory transmission (`t=s`) works (local host only).
     pub kitty_shm: bool,
-    /// iTerm2 inline images (OSC 1337), the fallback when kitty graphics are missing.
+    /// iTerm2 inline images (OSC 1337): whole-frame browser panes (iTerm2, and the fallback
+    /// when kitty graphics are missing).
     pub iterm2_images: bool,
+    /// The host terminal is on another machine (the TUI runs inside SSH): no shm, lower rates.
+    pub host_remote: bool,
     /// Host cell size in device pixels (`CSI 16 t` or TIOCGWINSZ), 0 = unknown.
     pub cell_w: u16,
     pub cell_h: u16,
@@ -573,6 +576,7 @@ mod tests {
         kitty_graphics: false,
         kitty_shm: false,
         iterm2_images: false,
+        host_remote: false,
         cell_w: 0,
         cell_h: 0,
         dpr_x100: 0,

@@ -427,6 +427,21 @@ pub fn unzlib(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Inflate at most `max` bytes: a stream that would produce more (a decompression bomb, or a
+/// tile larger than its declared size) is an error, and at most `max + 1` bytes are produced.
+pub fn unzlib_limited(data: &[u8], max: usize) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(data)
+        .take(max as u64 + 1)
+        .read_to_end(&mut out)
+        .context("inflate")?;
+    if out.len() > max {
+        bail!("inflated tile exceeds {max} bytes");
+    }
+    Ok(out)
+}
+
 /// Write `ESC _ G <control> ; <base64 payload> ESC \`, split into chunks of at most
 /// [`CHUNK`] base64 bytes. Only the first chunk carries the control keys; every chunk but the
 /// last has `m=1`, the last `m=0`. Follow-up chunks repeat `q=` so replies stay suppressed.
@@ -564,8 +579,71 @@ pub mod shm {
     /// macOS limits shm names to 31 bytes (`PSHMNAMLEN`), including the leading `/`.
     pub const MAX_NAME: usize = 31;
 
+    /// Prefix of every tile object Vibeke creates.
+    pub const PREFIX: &str = "/vkb-";
+
     pub fn new_name() -> String {
-        unique_name("/vkb-")
+        unique_name(PREFIX)
+    }
+
+    /// Six hex digits binding a tile object to its browser pane.
+    pub fn pane_tag(pane: &str) -> String {
+        let h = blake3::hash(pane.as_bytes());
+        h.as_bytes()[..3]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// A tile object name for `pane`: `/vkb-<pane tag>-<pid>-<n>` (at most 29 bytes).
+    pub fn new_name_for(pane: &str) -> String {
+        unique_name(&format!("{PREFIX}{}-", pane_tag(pane)))
+    }
+
+    /// Whether `name` is a tile object a Vibeke server created for `pane`: Vibeke's prefix,
+    /// that pane's tag, hex counters only, within the length limit. A client never opens,
+    /// forwards or unlinks a name that fails this (a confused or hostile sender could
+    /// otherwise make it remove or read another program's shm objects).
+    pub fn is_tile_name_for(name: &str, pane: &str) -> bool {
+        if name.len() > MAX_NAME {
+            return false;
+        }
+        let Some(rest) = name.strip_prefix(PREFIX) else {
+            return false;
+        };
+        let mut parts = rest.split('-');
+        let (Some(tag), Some(pid), Some(n), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        let hex =
+            |s: &str| !s.is_empty() && s.len() <= 8 && s.bytes().all(|b| b.is_ascii_hexdigit());
+        tag == pane_tag(pane) && hex(pid) && hex(n)
+    }
+
+    /// Size of the object `name` (`fstat`), without mapping it.
+    pub fn object_size(name: &str) -> Result<u64> {
+        let c = CString::new(name)?;
+        // SAFETY: valid C string; read-only open.
+        let fd = unsafe { libc::shm_open(c.as_ptr(), libc::O_RDONLY, 0 as libc::c_uint) };
+        if fd < 0 {
+            bail!("shm_open {name}: {}", std::io::Error::last_os_error());
+        }
+        let size = fd_size(fd);
+        // SAFETY: closing our fd.
+        unsafe { libc::close(fd) };
+        size
+    }
+
+    fn fd_size(fd: libc::c_int) -> Result<u64> {
+        // SAFETY: zeroed stat is a valid out-buffer.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fd is open; st is a valid pointer.
+        if unsafe { libc::fstat(fd, &mut st) } != 0 {
+            bail!("fstat: {}", std::io::Error::last_os_error());
+        }
+        Ok(st.st_size.max(0) as u64)
     }
 
     /// Create `name` (exclusive, mode 0600) holding exactly `data`.
@@ -631,9 +709,23 @@ pub mod shm {
         if fd < 0 {
             bail!("shm_open {name}: {}", std::io::Error::last_os_error());
         }
+        // Mapping past the end of a smaller object would SIGBUS on access.
+        match fd_size(fd) {
+            Ok(size) if size >= len as u64 => {}
+            Ok(size) => {
+                // SAFETY: closing our fd.
+                unsafe { libc::close(fd) };
+                bail!("shm {name} holds {size} bytes, {len} declared");
+            }
+            Err(e) => {
+                // SAFETY: closing our fd.
+                unsafe { libc::close(fd) };
+                return Err(e);
+            }
+        }
         let mut out = vec![0u8; len];
         if len > 0 {
-            // SAFETY: mapping len bytes of an object at least that large, read-only.
+            // SAFETY: mapping len bytes of an object at least that large (checked), read-only.
             let p = unsafe {
                 libc::mmap(
                     std::ptr::null_mut(),
@@ -950,6 +1042,48 @@ mod tests {
         assert_eq!(shm::read(&name, data.len()).unwrap(), data);
         shm::unlink(&name);
         assert!(shm::read(&name, 1).is_err());
+    }
+
+    #[test]
+    fn shm_read_refuses_a_short_object() {
+        let name = shm::new_name_for("pane-x");
+        shm::write(&name, &[7u8; 100]).unwrap();
+        assert!(shm::object_size(&name).unwrap() >= 100);
+        // Declaring more than the object holds must not map (SIGBUS) but fail.
+        let big = 1 << 20;
+        if shm::object_size(&name).unwrap() < big as u64 {
+            assert!(shm::read(&name, big).is_err());
+        }
+        assert_eq!(shm::read(&name, 100).unwrap(), vec![7u8; 100]);
+        shm::unlink(&name);
+    }
+
+    #[test]
+    fn tile_names_are_bound_to_their_pane() {
+        let n = shm::new_name_for("01JPANEA");
+        assert!(n.len() <= shm::MAX_NAME, "{n}");
+        assert!(shm::is_tile_name_for(&n, "01JPANEA"), "{n}");
+        assert!(!shm::is_tile_name_for(&n, "01JPANEB"));
+        for bad in [
+            "/other-app",
+            "/vkb-1",
+            "vkb-abcdef-1-2",
+            "/vkb-../x-1-2",
+            "/vkb-abcdef-1-2-3",
+            "/vkb-abcdef-1-zz",
+            &format!("/vkb-{}-123456789-1", shm::pane_tag("01JPANEA")),
+        ] {
+            assert!(!shm::is_tile_name_for(bad, "01JPANEA"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn bounded_inflate() {
+        let raw = vec![0u8; 1 << 20];
+        let z = zlib(&raw, 6);
+        assert!(z.len() < 10_000, "a bomb: tiny input, large output");
+        assert!(unzlib_limited(&z, 64 * 64 * 4).is_err());
+        assert_eq!(unzlib_limited(&z, 1 << 20).unwrap().len(), 1 << 20);
     }
 
     #[test]

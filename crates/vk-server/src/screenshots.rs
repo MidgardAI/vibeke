@@ -11,8 +11,15 @@
 //!   `/__vibeke_build` (JSON, e.g. the output of `vibeke screenshot code-state --json` captured
 //!   by its dev script) or in an `X-Vibeke-Build` header on that endpoint; probed only on ports
 //!   of this machine's previews. Otherwise `unknown` ("Build not verified").
-//! - **Binding**: `bound` only when the running build reports exactly the captured checkout
-//!   state; otherwise `illustrative`. Review packages list screenshots as `browser` evidence;
+//! - **Document identity** ([`DocumentIdentity`]): read from the page right before and right
+//!   after the pixels (`location.href`/`origin`, `performance.timeOrigin`, and the build the
+//!   page itself reports in `window.__VIBEKE_BUILD__` or `<meta name="vibeke-build">`). A
+//!   navigation in between makes the capture `illustrative`. A page-reported build is the
+//!   document's own identity; otherwise the probe asks **exactly the captured origin** (no
+//!   host rewriting, `Host` as captured) and binds only if that build started before the
+//!   document was loaded (else the server may have moved on since: loaded A, serving B).
+//! - **Binding**: `bound` only when the captured document's build reports exactly the
+//!   captured checkout state; any uncertainty is `illustrative`. Review packages list screenshots as `browser` evidence;
 //!   they never satisfy a check criterion, and a bound one supports a human criterion only
 //!   through an explicit human review.
 //!
@@ -243,6 +250,96 @@ pub struct ScreenshotMeta {
     pub runtime: RuntimeIdentity,
     pub binding: Binding,
     pub binding_reason: String,
+    /// What the captured document said about itself at capture time (Codex review follow-up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<DocumentIdentity>,
+}
+
+/// The captured document's identity, read from the page itself.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DocumentIdentity {
+    pub href: String,
+    /// `location.origin` (`scheme://host[:port]`, exactly as the browser connected).
+    pub origin: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `performance.timeOrigin` (ms since the epoch): when this document's navigation began.
+    #[serde(default)]
+    pub time_origin_ms: Option<f64>,
+    /// `window.__VIBEKE_BUILD__` (a build report object or an `X-Vibeke-Build` string) or the
+    /// `<meta name="vibeke-build">` content.
+    #[serde(default)]
+    pub build: Option<Value>,
+}
+
+/// Evaluated in the page right before and right after the pixels are captured.
+pub const DOCUMENT_IDENTITY_JS: &str = r#"(() => {
+  let b = null;
+  try { const w = window.__VIBEKE_BUILD__; if (w !== undefined && w !== null) b = JSON.parse(JSON.stringify(w)); } catch (e) {}
+  if (b === null) { const m = document.querySelector('meta[name="vibeke-build"]'); if (m) b = m.getAttribute('content'); }
+  return {href: location.href, origin: location.origin, title: document.title, time_origin_ms: performance.timeOrigin, build: b};
+})()"#;
+
+impl DocumentIdentity {
+    pub fn from_value(v: &Value) -> Option<Self> {
+        let d: DocumentIdentity = serde_json::from_value(v.clone()).ok()?;
+        (!d.href.is_empty()).then_some(d)
+    }
+
+    /// Same document (no navigation, reload or redirect in between).
+    pub fn same_document(&self, other: &DocumentIdentity) -> bool {
+        self.href == other.href
+            && self.origin == other.origin
+            && self.time_origin_ms == other.time_origin_ms
+    }
+
+    /// The build the page reports about itself, if any.
+    pub fn page_build(&self, now: i64) -> Option<RuntimeIdentity> {
+        let mut r = match self.build.as_ref()? {
+            Value::String(s) => RuntimeIdentity::from_header(s, now).or_else(|| {
+                serde_json::from_str::<Value>(s)
+                    .ok()
+                    .and_then(|v| RuntimeIdentity::from_report(&v, "page", now))
+            })?,
+            v @ Value::Object(_) => RuntimeIdentity::from_report(v, "page", now)?,
+            _ => return None,
+        };
+        r.source = "page".into();
+        Some(r)
+    }
+}
+
+/// The document identity around a capture: `Same` when the reads before and after the pixels
+/// agree, `Changed` (with why) when they don't, `None` when the page couldn't be read.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocumentCapture {
+    Same(DocumentIdentity),
+    Changed(String),
+}
+
+impl DocumentCapture {
+    pub fn from_reads(before: Option<&Value>, after: Option<&Value>) -> Option<Self> {
+        let b = before.and_then(DocumentIdentity::from_value);
+        let a = after.and_then(DocumentIdentity::from_value);
+        match (b, a) {
+            (Some(b), Some(a)) if b.same_document(&a) => Some(DocumentCapture::Same(a)),
+            (Some(b), Some(a)) => Some(DocumentCapture::Changed(format!(
+                "the page navigated during the capture ({} → {})",
+                b.href, a.href
+            ))),
+            (None, None) => None,
+            _ => Some(DocumentCapture::Changed(
+                "the page could not be read on both sides of the capture".into(),
+            )),
+        }
+    }
+
+    pub fn identity(&self) -> Option<&DocumentIdentity> {
+        match self {
+            DocumentCapture::Same(d) => Some(d),
+            DocumentCapture::Changed(_) => None,
+        }
+    }
 }
 
 impl ScreenshotMeta {
@@ -270,6 +367,9 @@ pub struct ShotInputs {
     pub runtime: Option<RuntimeIdentity>,
     /// Probe `/__vibeke_build` when `runtime` is `None` (also gated by config).
     pub probe_runtime: bool,
+    /// The captured document's identity (read around the pixels). Without it, a probed
+    /// identity can't be tied to these pixels and the screenshot is `illustrative`.
+    pub document: Option<DocumentCapture>,
 }
 
 pub fn blob_path(server: &Server, hash: &str) -> PathBuf {
@@ -421,15 +521,46 @@ pub async fn record_screenshot(
         .await
         .unwrap_or((None, Some("code state capture panicked".into())));
     let now = vk_store::now_ms();
-    let runtime = match inputs.runtime.clone() {
-        Some(r) => r,
-        None if inputs.probe_runtime && ScreenshotConfig::load().probe_build => {
+    let probe = inputs.probe_runtime && ScreenshotConfig::load().probe_build;
+    let doc = inputs.document.clone();
+    let runtime = match (inputs.runtime.clone(), &doc) {
+        (Some(r), _) => r,
+        (None, Some(DocumentCapture::Changed(why))) => RuntimeIdentity::unknown(why.clone(), now),
+        (None, Some(DocumentCapture::Same(d))) => match d.page_build(now) {
+            Some(r) => r,
+            // Exactly the origin the captured document came from.
+            None if probe => probe_runtime(&format!("{}/", d.origin), &origin.preview_ports).await,
+            None => RuntimeIdentity::unknown("runtime probe disabled", now),
+        },
+        (None, None) if probe => {
             let target = inputs.final_url.as_deref().unwrap_or(&inputs.url);
             probe_runtime(target, &origin.preview_ports).await
         }
-        None => RuntimeIdentity::unknown("runtime probe disabled", now),
+        (None, None) => RuntimeIdentity::unknown("runtime probe disabled", now),
     };
-    let (binding, binding_reason) = decide_binding(code.as_ref(), &runtime);
+    let (mut binding, mut binding_reason) = decide_binding(code.as_ref(), &runtime);
+    // The identity must be the captured document's (a caller-supplied identity is the
+    // caller's claim). Anything uncertain is illustrative.
+    if binding == Binding::Bound && inputs.runtime.is_none() {
+        let doc_id = doc.as_ref().and_then(DocumentCapture::identity);
+        let ok = match doc_id {
+            Some(_) if runtime.source == "page" => true,
+            Some(d) => runtime
+                .started_at_ms
+                .zip(d.time_origin_ms)
+                .is_some_and(|(started, loaded)| (started as f64) <= loaded),
+            None => false,
+        };
+        if !ok {
+            binding = Binding::Illustrative;
+            binding_reason = if doc_id.is_some() {
+                "Build not verified for this page: the server's build may have changed since the page was loaded (expose window.__VIBEKE_BUILD__ in the page, or report started_at_ms)".into()
+            } else {
+                "Build not verified for this page: the captured document's identity is unknown"
+                    .into()
+            };
+        }
+    }
     let (width, height) = crate::agent_browser::png_size(png);
     let id = ulid();
     let mut meta = ScreenshotMeta {
@@ -463,6 +594,7 @@ pub async fn record_screenshot(
         runtime,
         binding,
         binding_reason,
+        document: doc.as_ref().and_then(|d| d.identity().cloned()),
     };
     // Handle allocation and the entity write under one core lock.
     let srv = server.clone();
@@ -538,18 +670,22 @@ fn dechunk(body: &[u8]) -> Vec<u8> {
 }
 
 /// Probe `<origin>/__vibeke_build` (loopback, a declared preview's port only) for the
-/// running-build identity. Everything that isn't a usable report yields `unknown` with the
-/// reason.
+/// running-build identity. The probe connects to exactly the origin's address (`127.0.0.2`
+/// stays `127.0.0.2`; `localhost` names go to the loopback addresses) and sends the origin's
+/// own `Host` (virtual hosts such as `app.localhost` answer for themselves). Everything that
+/// isn't a usable report yields `unknown` with the reason.
 pub async fn probe_runtime(url: &str, preview_ports: &BTreeSet<u16>) -> RuntimeIdentity {
     let now = vk_store::now_ms();
     let Some(t) = vk_browser::policy::parse_target(url) else {
         return RuntimeIdentity::unknown("not an http(s) page", now);
     };
-    let loopback = t.host == "localhost"
-        || t.host.ends_with(".localhost")
-        || t.host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
+    let literal = t
+        .host
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .map(|ip| ip.to_canonical());
+    let loopback = vk_browser::policy::is_localhost_name(&t.host)
+        || literal.is_some_and(|ip| ip.is_loopback());
     if !loopback || !preview_ports.contains(&t.port) {
         return RuntimeIdentity::unknown(
             "page is not served by a preview on this machine; build not verified",
@@ -559,16 +695,22 @@ pub async fn probe_runtime(url: &str, preview_ports: &BTreeSet<u16>) -> RuntimeI
     if t.scheme != "http" {
         return RuntimeIdentity::unknown("https previews are not probed; build not verified", now);
     }
-    let addr = if t.host.contains(':') {
-        "[::1]".to_string()
+    let addrs: Vec<std::net::SocketAddr> = match literal {
+        Some(ip) => vec![std::net::SocketAddr::new(ip, t.port)],
+        None => vec![
+            std::net::SocketAddr::from(([127, 0, 0, 1], t.port)),
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, t.port)),
+        ],
+    };
+    let host_header = if t.host.contains(':') {
+        format!("[{}]:{}", t.host, t.port)
     } else {
-        "127.0.0.1".to_string()
+        format!("{}:{}", t.host, t.port)
     };
     let fut = async {
-        let mut s = tokio::net::TcpStream::connect(format!("{addr}:{}", t.port)).await?;
+        let mut s = tokio::net::TcpStream::connect(&addrs[..]).await?;
         let req = format!(
-            "GET {BUILD_PATH} HTTP/1.1\r\nHost: localhost:{}\r\nAccept: application/json\r\nUser-Agent: vibeke-build-probe\r\nConnection: close\r\n\r\n",
-            t.port
+            "GET {BUILD_PATH} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nUser-Agent: vibeke-build-probe\r\nConnection: close\r\n\r\n"
         );
         s.write_all(req.as_bytes()).await?;
         let mut buf = Vec::new();

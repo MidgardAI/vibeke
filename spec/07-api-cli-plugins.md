@@ -576,6 +576,8 @@ Operation outputs are validated drafts (unknown fields dropped, cited `source_re
 
 Opened by `render.attach` on a fresh connection, authenticated by the same `client.hello` identity rules as control connections (09 §3.2); after the JSON response the connection switches to binary frames. `postcard`; frame = `u32 LE length | u8 frame_type | postcard payload`.
 
+*Version negotiation (Goal 03 review follow-up):* postcard is positional, so any change to a type reachable from `ServerFrame`/`ClientFrame` (even an appended `#[serde(default)]` field) changes the encoding and bumps the render protocol (`vk_proto::render::PROTOCOL`, now **2**: browser panes and media frames). The client sends `params.protocol`; the server refuses a different or missing one with error kind `version_mismatch` (`details {server_protocol, client_protocol, server_version}`, message with an upgrade hint) and closes the connection; the client refuses a reply whose `result.protocol` differs. There is no compatible downgrade representation: the older side must be upgraded (`vibeke machine upgrade <machine>`).
+
 ```json
 → {"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id":"c7","viewport":{"cols":220,"rows":60,"px_w":3520,"px_h":1920},"caps":{"truecolor":true,"kitty_graphics":true,"sixel":false,"iterm2_images":false,"kitty_keyboard":true,"osc52":true,"hyperlinks":true,"max_fps":120,"sync_output":true}}}
 ← {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"frame_types":[…]}}

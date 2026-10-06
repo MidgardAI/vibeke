@@ -14,6 +14,7 @@ libc.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+url.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 
