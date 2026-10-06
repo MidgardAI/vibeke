@@ -478,6 +478,116 @@ pub fn read_archive(server: &Server, ctx: &Ctx, p: &Value) -> R {
     }))
 }
 
+/// `scrollback.forget {pane | workspace | before | all: true, dry_run?}` (09 §9.3, 02 "Archive
+/// search as implemented"): delete archived scrollback — segment files, `scrollback_fts` rows
+/// and `archive_panes` metadata — for the scope. Full scope only. `dry_run` reports what would
+/// go. Idempotent. It does not touch the live screen, in-memory scrollback, VT snapshots, the
+/// event log, blobs, the desk index, drafts or notes. `before` is segment-granular: a segment
+/// whose last write is older than the time goes; one that straddles it stays whole.
+pub fn forget(server: &Server, ctx: &Ctx, p: &Value) -> R {
+    use vk_store::archive::Select;
+    let all = b(p, "all").unwrap_or(false);
+    let pane = s(p, "pane");
+    let ws = s(p, "workspace");
+    let before = crate::desk::time_param(p, "before")?;
+    let given = [all, pane.is_some(), ws.is_some(), before.is_some()]
+        .iter()
+        .filter(|x| **x)
+        .count();
+    if given != 1 {
+        return Err(invalid(
+            "scrollback.forget needs exactly one of pane, workspace, before or all=true",
+        ));
+    }
+    let dry_run = b(p, "dry_run").unwrap_or(false);
+    let safe_id = |id: &str| !id.is_empty() && !id.contains(['/', '\\']) && id != "." && id != "..";
+    // Resolve the scope to pane ids (None = every pane).
+    let (scope, panes, sel): (Value, Option<Vec<String>>, Select) = if all {
+        (json!({"all": true}), None, Select::All)
+    } else if let Some(t) = pane {
+        let id = match resolve_pane(server, ctx, Some(t)) {
+            Ok(x) => x.id,
+            Err(e) => match server.with_core(|c| c.store.archive_pane(t).ok().flatten()) {
+                Some((id, ..)) => id,
+                // Not a known pane: an archive directory of that exact name may still exist.
+                None if safe_id(t)
+                    && server
+                        .archive
+                        .lock()
+                        .unwrap()
+                        .pane_ids()
+                        .iter()
+                        .any(|i| i == t) =>
+                {
+                    t.to_string()
+                }
+                None => return Err(e),
+            },
+        };
+        (json!({"pane": id}), Some(vec![id]), Select::All)
+    } else if let Some(w) = ws {
+        let w = resolve_ws(server, ctx, Some(w))
+            .map(|w| w.id)
+            .unwrap_or_else(|_| w.to_string());
+        let ids = server.with_core(|c| {
+            let mut v: Vec<String> = c
+                .model
+                .panes
+                .iter()
+                .filter(|p| p.workspace == w)
+                .map(|p| p.id.clone())
+                .collect();
+            v.extend(c.store.archive_panes_in_workspace(&w).unwrap_or_default());
+            v
+        });
+        (json!({"workspace": w}), Some(ids), Select::All)
+    } else {
+        let t = before.unwrap_or_default();
+        (json!({"before": t}), None, Select::OlderThan(t))
+    };
+    if let Some(ids) = &panes
+        && let Some(bad) = ids.iter().find(|i| !safe_id(i))
+    {
+        return Err(invalid(format!("unsafe pane id `{bad}`")));
+    }
+    let report = {
+        let mut a = server.archive.lock().unwrap();
+        let _ = a.flush();
+        let mut c = server.core.lock().unwrap();
+        let r = c
+            .store
+            .purge_archive(&mut a, panes.as_deref(), sel, dry_run)
+            .map_err(internal)?;
+        if !dry_run {
+            // Rows still waiting for the next FTS flush must not resurrect forgotten text.
+            let mut f = server.fts_buf.lock().unwrap();
+            match (&panes, sel) {
+                (None, Select::All) => f.clear(),
+                (Some(ids), _) => f.retain(|row| !ids.contains(&row.0)),
+                _ => {}
+            }
+            // Metadata only: scope and counts, never text.
+            let mut tx = crate::core::Tx::new();
+            tx.event(
+                "scrollback.forgotten",
+                json!({"scope": scope}),
+                json!({"panes": r.panes, "segments": r.segments, "bytes": r.bytes, "fts_rows": r.fts_rows, "panes_dropped": r.panes_dropped}),
+            );
+            server.commit(&mut c, tx).map_err(internal)?;
+        }
+        r
+    };
+    Ok(json!({
+        "scope": scope,
+        "dry_run": dry_run,
+        "panes": report.panes,
+        "segments_deleted": report.segments,
+        "bytes_deleted": report.bytes,
+        "fts_rows_deleted": report.fts_rows,
+        "archive_panes_dropped": report.panes_dropped,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

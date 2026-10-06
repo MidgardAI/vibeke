@@ -315,6 +315,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "desk.open",
     "desk.resume",
     "desk.forget",
+    "scrollback.forget",
     "desk.index",
     "desk.status",
     // Refused by their handlers for every pane-scoped call regardless of params; listed here

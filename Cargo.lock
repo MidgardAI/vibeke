@@ -2858,6 +2858,7 @@ dependencies = [
  "vk-remote",
  "vk-sandbox",
  "vk-server",
+ "vk-store",
  "vk-term",
  "vk-tui",
 ]
