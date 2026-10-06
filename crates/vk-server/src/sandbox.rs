@@ -776,6 +776,7 @@ fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {
     {
         old.abort();
     }
+    ensure_tick(server);
 }
 
 /// One broker connection: pane scope is fixed by the socket, tokens can't change it, and only
@@ -1482,8 +1483,20 @@ fn ensure_tick(server: &Arc<Server>) {
             t.tick().await;
             let Some(srv) = weak.upgrade() else { return };
             tick(&srv);
+            // Nothing left to watch: stop ticking (no idle wakeups, spec 10 §1.3); the next
+            // context or broker restarts it. Checked under the lock they are inserted under.
+            let mut i = srv.sandbox.inner.lock().unwrap();
+            if i.boxes.is_empty() && i.brokers.is_empty() {
+                i.ticking = false;
+                return;
+            }
         }
     });
+}
+
+/// Whether the sandbox housekeeping tick is running (test hook / `server.status`).
+pub fn ticking(server: &Server) -> bool {
+    server.sandbox.inner.lock().unwrap().ticking
 }
 
 /// Drop brokers of closed panes and end run-scoped contexts whose agent is gone.

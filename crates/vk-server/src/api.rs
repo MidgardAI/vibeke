@@ -602,6 +602,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 "socket": server.paths.socket(),
                 "degraded": *server.degraded.lock().unwrap(),
                 "preview": crate::preview::status_json(server),
+                "timers": crate::timers::status_json(server),
             }))
         }
         "server.stop" => {

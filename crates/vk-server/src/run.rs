@@ -45,14 +45,26 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     tracing::info!(recovered, socket = %server.paths.socket().display(), "server ready");
     let hk = server.clone();
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        let mut n = 0u64;
+        // Event-driven (spec 10 §1.3): archived rows or a storage failure wake it, and writes
+        // are still batched at most once a second; an idle server only wakes for the hourly
+        // prune.
+        let hour = Duration::from_secs(3600);
+        let mut prune_at = tokio::time::Instant::now() + hour;
         loop {
-            tick.tick().await;
-            hk.housekeeping();
-            n += 1;
-            if n.is_multiple_of(3600) {
-                let _ = hk.with_core(|c| c.store.prune(7, 365));
+            tokio::select! {
+                _ = hk.housekeeping_wake.notified() => {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    hk.housekeeping();
+                    if hk.degraded.lock().unwrap().is_some() {
+                        // Keep probing storage once a second until it recovers.
+                        hk.housekeeping_wake.notify_one();
+                    }
+                }
+                _ = tokio::time::sleep_until(prune_at) => {
+                    hk.housekeeping();
+                    let _ = hk.with_core(|c| c.store.prune(7, 365));
+                    prune_at += hour;
+                }
             }
         }
     });

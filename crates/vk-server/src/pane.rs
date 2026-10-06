@@ -61,6 +61,9 @@ pub enum PaneCmd {
     /// Close: SIGHUP the child, then acknowledge its exit.
     Close,
     Snapshot,
+    /// The pane's snapshot deadline (armed in the server-wide [`crate::timers::Scheduler`])
+    /// came due: snapshot if the output is idle enough, otherwise re-arm.
+    SnapshotDue,
 }
 
 pub struct PaneRt {
@@ -419,6 +422,7 @@ async fn run_inner(
         closing: false,
         last_snapshot: Instant::now(),
         snapshot_dirty: false,
+        snapshot_armed: false,
         replaying: !conn.fresh,
         method: method.to_string(),
         child_pid,
@@ -427,8 +431,8 @@ async fn run_inner(
     if conn.fresh {
         server.mark_recovered(&rt.id, None);
     }
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // No per-pane timer: snapshot deadlines are armed in the server-wide scheduler only while
+    // output is pending (spec 10 §1.3), so an idle pane costs no wakeups.
     let result: Result<String> = async {
         loop {
             tokio::select! {
@@ -439,9 +443,6 @@ async fn run_inner(
                 c = cmd_rx.recv() => {
                     let Some(c) = c else { return Ok("dropped".to_string()) };
                     p.on_cmd(c).await?;
-                }
-                _ = tick.tick(), if p.snapshot_dirty => {
-                    p.maybe_snapshot(false).await?;
                 }
             }
         }
@@ -481,6 +482,8 @@ struct PaneLoop {
     closing: bool,
     last_snapshot: Instant,
     snapshot_dirty: bool,
+    /// A snapshot deadline is armed in the server scheduler for this pane.
+    snapshot_armed: bool,
     replaying: bool,
     method: String,
     child_pid: u32,
@@ -640,6 +643,7 @@ impl PaneLoop {
             effects = std::mem::take(&mut self.effects);
         }
         self.snapshot_dirty = true;
+        self.arm_snapshot();
         if !archive.is_empty() {
             self.server.archive_rows(&self.rt.id, archive);
         }
@@ -771,8 +775,39 @@ impl PaneLoop {
                 });
             }
             PaneCmd::Snapshot => self.maybe_snapshot(true).await?,
+            PaneCmd::SnapshotDue => {
+                self.snapshot_armed = false;
+                if self.snapshot_dirty {
+                    self.maybe_snapshot(false).await?;
+                    // Still busy (or replaying): come back when it can be due.
+                    if self.snapshot_dirty {
+                        self.arm_snapshot();
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// When the pending output can next be snapshotted: 2 s after the last output, or 30 s
+    /// after the last snapshot while output never pauses; never sooner than 500 ms from now
+    /// (the old poll period) so a pane that cannot snapshot yet (replaying) doesn't spin.
+    fn snapshot_due(&self) -> Instant {
+        let last_output = self.rt.screen.lock().unwrap().last_output;
+        (last_output + SNAPSHOT_IDLE)
+            .min(self.last_snapshot + SNAPSHOT_MAX_INTERVAL)
+            .max(Instant::now() + Duration::from_millis(500))
+    }
+
+    /// Arm this pane's snapshot deadline once per pending batch, not per output chunk (the
+    /// deadline handler re-arms if output continued).
+    fn arm_snapshot(&mut self) {
+        if self.snapshot_armed {
+            return;
+        }
+        let due = tokio::time::Instant::from_std(self.snapshot_due());
+        self.server.timers.arm(&self.rt.id, due, &self.rt.cmd_tx);
+        self.snapshot_armed = true;
     }
 
     /// Snapshot when output has been idle 2 s, at most every 30 s while busy, or when forced
@@ -805,6 +840,10 @@ impl PaneLoop {
         }
         self.last_snapshot = Instant::now();
         self.snapshot_dirty = false;
+        if self.snapshot_armed {
+            self.server.timers.cancel(&self.rt.id);
+            self.snapshot_armed = false;
+        }
         Ok(())
     }
 }

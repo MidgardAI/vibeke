@@ -2180,18 +2180,27 @@ pub fn ensure_watcher(server: &Arc<Server>) {
     }
     w.push(Arc::downgrade(server));
     let weak = Arc::downgrade(server);
+    // Event-driven (spec 10 §1.3 wakeup budget): block on the model revision instead of
+    // polling it; the 50 ms nap after a change only coalesces bursts of commits. The thread
+    // ends when the server (and with it the watch sender) is dropped.
+    let mut rx = server.model_rev.subscribe();
     let _ = std::thread::Builder::new()
         .name("vk-review-live".into())
         .spawn(move || {
             let mut last = u64::MAX;
             loop {
-                std::thread::sleep(Duration::from_millis(50));
-                let Some(srv) = weak.upgrade() else { break };
-                let rev = *srv.model_rev.borrow();
-                if rev != last {
-                    last = rev;
-                    downgrade_stale_ready(&srv);
+                {
+                    let Some(srv) = weak.upgrade() else { break };
+                    let rev = *rx.borrow_and_update();
+                    if rev != last {
+                        last = rev;
+                        downgrade_stale_ready(&srv);
+                    }
                 }
+                if futures::executor::block_on(rx.changed()).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
         });
 }
