@@ -833,7 +833,7 @@ fn get(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             return Err(not_found("collision", id));
         }
     }
-    let claims: Vec<Value> = server
+    let in_root: Vec<vc::Claim> = server
         .collision
         .inner
         .lock()
@@ -841,8 +841,9 @@ fn get(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .claims
         .iter()
         .filter(|c| c.root == rec.root)
-        .map(|c| claim_json(server, c))
+        .cloned()
         .collect();
+    let claims: Vec<Value> = in_root.iter().map(|c| claim_json(server, c)).collect();
     let steer = act::steer_report(server, &rec);
     Ok(json!({
         "collision": collision_json(server, &rec, true),
