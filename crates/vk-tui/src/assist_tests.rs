@@ -201,18 +201,150 @@ fn suggest_task_details_fills_the_form_unsaved() {
     let f = app.track.as_ref().unwrap();
     assert_eq!(f.title, "Fix login redirect");
     assert_eq!(f.objective, "Return users to their page");
+    // Constraints stay constraints; a suggested criterion stays optional (not a required
+    // human criterion) when the form is saved.
+    assert_eq!(
+        f.constraints,
+        vec![crate::tasks::TrackItem::typed("Preserve SSO behavior")]
+    );
     assert_eq!(
         f.criteria,
-        vec![
-            "Preserve SSO behavior".to_string(),
-            "Redirect test passes".to_string()
-        ]
+        vec![crate::tasks::TrackItem {
+            text: "Redirect test passes".into(),
+            required: false,
+            evaluation: Some("human".into()),
+            source_turns: vec![],
+        }]
+    );
+    let p = f.params();
+    assert_eq!(p["constraints"], json!(["Preserve SSO behavior"]));
+    assert_eq!(
+        p["criteria"],
+        json!([{"text": "Redirect test passes", "required": false, "evaluation": "human"}])
     );
     assert_eq!(crate::tasks::STOP_AT[f.stop].0, "draft_pr");
     assert!(f.assisted);
     assert!(screen(&app).contains("Suggested by the assistant"));
     // Nothing tracked until the user presses Track task.
     assert!(commands(&mut rxs[0]).iter().all(|c| c.1 != "task.track"));
+}
+
+#[test]
+fn applied_suggestion_keeps_evaluation_requiredness_and_cited_turns() {
+    let mut f = crate::tasks::TrackForm::new(1, 0, "r1", "p1", "k".into());
+    f.criteria
+        .push(crate::tasks::TrackItem::typed("Typed by the user"));
+    let sources = json!([
+        {"id": "s1", "kind": "user_request", "object": {"run": "r1", "turn": 4}},
+        {"id": "s2", "kind": "user_request", "object": {"run": "other", "turn": 9}},
+        {"id": "s3", "kind": "agent_message", "object": {"run": "r1", "turn": 5}},
+    ]);
+    apply_to_track(
+        &mut f,
+        &json!({"title": "T", "constraints": [{"text": "Draft PR only", "source_refs": ["s1"]}],
+                "criteria": [
+                    {"text": "Redirect regression test", "evaluation": "check", "required": false, "source_refs": ["s1", "s2", "s3"]},
+                    {"text": "PR opened", "evaluation": "external", "required": false, "source_refs": []},
+                    {"text": "Typed by the user", "required": false}]}),
+        &sources,
+    );
+    let p = f.params();
+    assert_eq!(
+        p["constraints"],
+        json!([{"text": "Draft PR only", "source_turns": [4]}])
+    );
+    assert_eq!(
+        p["criteria"],
+        json!([
+            "Typed by the user",
+            {"text": "Redirect regression test", "required": false, "evaluation": "check", "source_turns": [4]},
+            {"text": "PR opened", "required": false, "evaluation": "external"},
+        ])
+    );
+    // The user can still make a suggestion required (ctrl+r on the criterion).
+    f.phase = crate::tasks::TrackPhase::Ready;
+    f.field = crate::tasks::TrackField::Criterion(1);
+    f.key(&ctl('r'));
+    assert!(f.criteria[1].required);
+}
+
+#[test]
+fn preview_wraps_long_lines_and_confirm_needs_the_whole_payload() {
+    let (mut app, mut rxs) = fleet();
+    app.size = (60, 24);
+    app.action("assist_briefing", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "assistant.generate");
+    // One long logical line whose sensitive suffix lies far beyond the terminal width.
+    let long = format!("{}SUFFIX-SECRET-TAIL", "word ".repeat(120));
+    let mut pv = preview_reply();
+    pv["preview"]["user"] = json!(format!("Summarize:\n{long}\n\tend\u{1b}[0m"));
+    reply(&mut app, 0, req, pv);
+    let s = screen(&app);
+    assert!(s.contains("payload bytes"), "{s}");
+    assert!(s.contains("scroll to the end"), "{s}");
+    // [y] is not enabled before the end has been shown.
+    app.on_key(ch('y'));
+    assert!(
+        commands(&mut rxs[0])
+            .iter()
+            .all(|c| c.1 != "assistant.confirm")
+    );
+    assert!(screen(&app).contains("Scroll to the end"));
+    // Soft wrap: no row is wider than the view and the rows together are the whole text.
+    let preview = match &app.assist {
+        Some(Flow {
+            phase: Phase::Preview { preview, .. },
+            ..
+        }) => preview.clone(),
+        _ => panic!("previewing"),
+    };
+    let lay = preview_layout(&app, &preview);
+    let width = app.pane_area().w as usize - 2;
+    assert!(width < 60);
+    for (r, _) in &lay.body {
+        assert!(
+            unicode_width::UnicodeWidthStr::width(r.as_str()) <= width,
+            "{r}"
+        );
+    }
+    let joined: String = lay.body.iter().map(|(r, _)| r.as_str()).collect();
+    assert!(joined.contains(&visible(&long)), "wrapping dropped text");
+    assert!(lay.max_scroll() > 0);
+    // Scrolling down shows every row (and so every transmitted character) at some point.
+    let mut seen = String::new();
+    for _ in 0..200 {
+        seen.push_str(&screen(&app));
+        app.on_key(ch('j'));
+    }
+    seen.push_str(&screen(&app));
+    for (r, _) in &lay.body {
+        assert!(seen.contains(r.trim_end()), "row never shown: {r}");
+    }
+    assert!(
+        seen.contains("^[[0m"),
+        "control characters are shown, not hidden"
+    );
+    assert!(seen.contains("end of payload"));
+    let Some(Flow {
+        phase: Phase::Preview { seen_end, .. },
+        ..
+    }) = &app.assist
+    else {
+        panic!("still previewing");
+    };
+    assert!(*seen_end);
+    app.on_key(ch('y'));
+    let (_, p) = only(&commands(&mut rxs[0]), "assistant.confirm");
+    assert_eq!(p["preview_digest"], "dg-1");
+}
+
+#[test]
+fn wrap_never_clips() {
+    let rows = wrap("abcdefghij", 3);
+    assert_eq!(rows, vec!["abc", "def", "ghi", "j"]);
+    assert_eq!(wrap("", 5), vec![""]);
+    assert_eq!(wrap("a\u{202E}b", 20), vec!["a<U+202E>b"]);
+    assert_eq!(rows.concat(), "abcdefghij");
 }
 
 #[test]

@@ -106,6 +106,73 @@ impl Ledger {
     }
 }
 
+/// What one request has reserved: the per-attempt allowance summed over every admitted
+/// attempt (an automatic retry is admitted, and reserved, separately). Persisted before
+/// dispatch so a restart can charge it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reservation {
+    pub day: i64,
+    pub attempts: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+    /// The request reached `running` (it may have been sent and billed).
+    #[serde(default)]
+    pub dispatched: bool,
+}
+
+impl Reservation {
+    /// One attempt's allowance: estimated input, full output allowance, maximum cost.
+    pub fn attempt(input_tokens: u64, output_tokens: u64, cost_usd: f64) -> Amount {
+        Amount {
+            requests: 1,
+            tokens: input_tokens + output_tokens,
+            cost_usd,
+        }
+    }
+
+    pub fn add_attempt(&mut self, input_tokens: u64, output_tokens: u64, cost_usd: f64) {
+        self.attempts += 1;
+        self.input_tokens += input_tokens;
+        self.output_tokens += output_tokens;
+        self.cost_usd += cost_usd;
+    }
+
+    pub fn amount(&self) -> Amount {
+        Amount {
+            requests: self.attempts as u64,
+            tokens: self.input_tokens + self.output_tokens,
+            cost_usd: self.cost_usd,
+        }
+    }
+
+    /// The amount charged when the request ends after `attempts` provider attempts with the
+    /// reported usage. Each reported component replaces its reservation; an unknown component
+    /// keeps its reservation (conservative), and so does the cost unless it can be computed
+    /// from known pricing.
+    pub fn settle(
+        &self,
+        attempts: u32,
+        input: Option<u64>,
+        output: Option<u64>,
+        prices: Option<(f64, f64)>,
+    ) -> Amount {
+        let i = input.unwrap_or(self.input_tokens);
+        let o = output.unwrap_or(self.output_tokens);
+        let cost = match prices {
+            Some((pi, po)) if input.is_some() || output.is_some() => {
+                (i as f64 * pi + o as f64 * po) / 1_000_000.0
+            }
+            _ => self.cost_usd,
+        };
+        Amount {
+            requests: attempts.max(self.attempts).max(1) as u64,
+            tokens: i + o,
+            cost_usd: cost,
+        }
+    }
+}
+
 /// Sliding one-minute window of provider attempts.
 #[derive(Debug, Default)]
 pub struct RateWindow {
@@ -179,6 +246,30 @@ mod tests {
                 .category,
             Category::BudgetExhausted
         );
+    }
+
+    #[test]
+    fn partial_usage_keeps_unknown_components_reserved() {
+        let mut r = Reservation::default();
+        r.add_attempt(300, 1024, (300.0 + 1024.0 * 5.0) / 1e6);
+        let prices = Some((1.0, 5.0));
+        // Input only: output stays at its full reservation.
+        let a = r.settle(1, Some(120), None, prices);
+        assert_eq!(a.tokens, 120 + 1024);
+        assert!((a.cost_usd - (120.0 + 1024.0 * 5.0) / 1e6).abs() < 1e-12);
+        // Output only: input stays at its estimate.
+        let a = r.settle(1, None, Some(30), prices);
+        assert_eq!(a.tokens, 300 + 30);
+        assert!((a.cost_usd - (300.0 + 150.0) / 1e6).abs() < 1e-12);
+        // Nothing known: the whole reservation, never zero.
+        assert_eq!(r.settle(1, None, None, prices), r.amount());
+        assert_eq!(r.settle(1, None, None, None).cost_usd, r.cost_usd);
+        // Both known.
+        assert_eq!(r.settle(1, Some(1), Some(2), prices).tokens, 3);
+        // Every admitted attempt counts as a request.
+        r.add_attempt(300, 1024, 0.0);
+        assert_eq!(r.settle(2, None, None, None).requests, 2);
+        assert_eq!(r.settle(1, None, None, None).requests, 2);
     }
 
     #[test]
