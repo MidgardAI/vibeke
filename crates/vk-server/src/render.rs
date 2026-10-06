@@ -47,7 +47,8 @@ pub struct Session {
     media: crate::browser_pane::MediaSession,
     /// A `ClientFrame::Subscribe` waiting to be applied by the session loop (event push).
     pending_sub: Option<(Vec<String>, Option<i64>)>,
-    /// Kitty image hashes whose pixels this client already has (03 §9: once per hash).
+    /// Kitty image hashes whose pixels this client already has (03 §9: once per hash). A
+    /// client that evicted pixels sends `Resync` for the pane, which forgets its hashes here.
     images_sent: std::collections::HashSet<String>,
 }
 
@@ -549,7 +550,14 @@ impl Session {
                     .retain(|k, _| self.visible.iter().any(|v| &v.pane == k));
             }
             ClientFrame::Resync { pane } => {
-                self.views.remove(&pane);
+                // A resync is also how a client asks for the pixels of images it evicted
+                // (03 §9): forget that the pane's images were sent, so the keyframe brings
+                // them again.
+                if let Some(v) = self.views.remove(&pane) {
+                    for p in &v.images {
+                        self.images_sent.remove(&p.hash);
+                    }
+                }
             }
             ClientFrame::FetchHistory {
                 req,

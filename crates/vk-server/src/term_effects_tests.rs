@@ -437,6 +437,37 @@ async fn kitty_images_reach_the_client_once_per_hash() {
             _ => {}
         }
     }
+    // The client evicted the pixels and resyncs the pane: the image comes again, before the
+    // placements, on the same connection.
+    asyncio::write_frame(&mut cwr, &ClientFrame::Resync { pane: "P1".into() })
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut cwr).await.unwrap();
+    e.server.screen_dirty.notify_waiters();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut resent = false;
+    loop {
+        assert!(std::time::Instant::now() < deadline, "no resync");
+        let f = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            asyncio::read_frame::<_, ServerFrame>(&mut crd),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        match f {
+            ServerFrame::Image { hash, .. } => {
+                assert_eq!(hash, images[0]);
+                resent = true;
+            }
+            ServerFrame::PaneImages { places, .. } => {
+                assert!(resent, "pixels come before the placements");
+                assert_eq!(places[0].hash, images[0]);
+                break;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[test]
