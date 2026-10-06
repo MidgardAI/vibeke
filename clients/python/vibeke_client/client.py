@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .api_gen import Api
 from .types_gen import API_VERSION
@@ -72,20 +73,85 @@ class Event:
         )
 
 
+def runtime_root() -> str:
+    """``$VIBEKE_RUNTIME_DIR``, ``$XDG_RUNTIME_DIR/vibeke`` or ``$TMPDIR/vibeke-<uid>``."""
+    if os.environ.get("VIBEKE_RUNTIME_DIR"):
+        return os.environ["VIBEKE_RUNTIME_DIR"]
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        return os.path.join(os.environ["XDG_RUNTIME_DIR"], "vibeke")
+    tmp = os.environ.get("TMPDIR") or tempfile.gettempdir() or "/tmp"
+    return os.path.join(tmp, f"vibeke-{os.getuid()}")
+
+
 def default_socket_path(session: Optional[str] = None) -> str:
     """``$VIBEKE_SOCKET``, else ``<runtime root>/<session>/vibeke.sock``."""
     session = session or os.environ.get("VIBEKE_SESSION") or "default"
     explicit = os.environ.get("VIBEKE_SOCKET")
     if explicit and (os.environ.get("VIBEKE_SESSION") or "default") == session:
         return explicit
-    if os.environ.get("VIBEKE_RUNTIME_DIR"):
-        root = os.environ["VIBEKE_RUNTIME_DIR"]
-    elif os.environ.get("XDG_RUNTIME_DIR"):
-        root = os.path.join(os.environ["XDG_RUNTIME_DIR"], "vibeke")
+    return os.path.join(runtime_root(), session, "vibeke.sock")
+
+
+class SocketTrustError(ConnectionError):
+    """:func:`check_socket_trust` refused a socket; nothing was sent to it."""
+
+
+def _lstat(p: str) -> Optional[os.stat_result]:
+    try:
+        return os.lstat(p)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise SocketTrustError(f"cannot inspect {p}: {e}") from e
+
+
+def check_socket_trust(socket: str, *, root: Optional[str] = None, uid: Optional[int] = None) -> None:
+    """Refuse a socket whose directory chain or file could have been planted by another user
+    (an attacker-created ``/tmp/vibeke-<uid>`` symlink or directory, say), as the CLI does.
+
+    Under the runtime root every directory from the socket's up to the root must be a real
+    directory (never followed through a symlink) owned by ``uid`` with mode 0700; for an
+    explicit socket elsewhere its parent must be a real directory owned by ``uid`` and not
+    group- or world-writable. The socket must be a socket owned by ``uid``. Missing pieces pass
+    (the connect then fails by itself). Raises :class:`SocketTrustError`.
+    """
+    uid = os.geteuid() if uid is None else uid
+    sock = os.path.abspath(socket)
+    root = os.path.abspath(root if root is not None else runtime_root())
+    parent = os.path.dirname(sock)
+    if parent == sock:
+        raise SocketTrustError(f"socket path {socket} has no parent directory")
+    under_root = sock != root and os.path.commonpath([root, sock]) == root
+    dirs: List[tuple] = []
+    if under_root:
+        d = parent
+        while True:
+            dirs.append((d, True))
+            if d == root or os.path.dirname(d) == d:
+                break
+            d = os.path.dirname(d)
     else:
-        tmp = os.environ.get("TMPDIR") or tempfile.gettempdir() or "/tmp"
-        root = os.path.join(tmp, f"vibeke-{os.getuid()}")
-    return os.path.join(root, session, "vibeke.sock")
+        dirs.append((parent, False))
+    for d, strict in dirs:
+        st = _lstat(d)
+        if st is None:
+            return
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise SocketTrustError(f"refusing {socket}: {d} is not a plain directory (symlink or other file)")
+        if st.st_uid != uid:
+            raise SocketTrustError(f"refusing {socket}: {d} is owned by uid {st.st_uid}, not {uid}")
+        mode = st.st_mode & 0o7777
+        if (strict and mode != 0o700) or (not strict and mode & 0o022):
+            raise SocketTrustError(
+                f"refusing {socket}: {d} has mode {mode:o}{' (need 700)' if strict else ''}"
+            )
+    st = _lstat(sock)
+    if st is None:
+        return
+    if not stat.S_ISSOCK(st.st_mode):
+        raise SocketTrustError(f"refusing {socket}: not a socket")
+    if st.st_uid != uid:
+        raise SocketTrustError(f"refusing {socket}: socket is owned by uid {st.st_uid}, not {uid}")
 
 
 _END = object()
@@ -112,8 +178,17 @@ class EventStream:
             self._queue.put_nowait(error if error is not None else _END)
 
     async def close(self) -> None:
-        self._client._streams.pop(self.subscription_id, None)
+        """Stop delivering events (queued ones are dropped) and end the server-side subscription
+        (``events.unsubscribe``, best effort, not awaited). Later events for it are discarded."""
+        self._client._unsubscribe(self.subscription_id)
+        while not self._queue.empty():
+            self._queue.get_nowait()
         self._end()
+
+    @property
+    def queued(self) -> int:
+        """Events queued and not yet consumed (internal; tests check retention)."""
+        return sum(1 for x in self._queue._queue if isinstance(x, Event))  # type: ignore[attr-defined]
 
     def __aiter__(self) -> "EventStream":
         return self
@@ -142,8 +217,12 @@ class Client(Api):
         self._writer = writer
         self._next_id = 1
         self._pending: Dict[int, "asyncio.Future[Any]"] = {}
+        # Run synchronously while a response line is handled (before any later line).
+        self._on_result: Dict[int, Callable[[Any], Any]] = {}
+        # Live subscriptions. A stream is registered while its subscribe response line is
+        # handled, so pushes (and an overflow) that follow it in the same chunk find it; pushes
+        # for any other id (a closed stream, a stranger) are dropped, never buffered.
         self._streams: Dict[str, EventStream] = {}
-        self._early: Dict[str, List[Event]] = {}
         self._closed: Optional[BaseException] = None
         self._task: Optional["asyncio.Task[None]"] = None
         self.hello: Optional[Dict[str, Any]] = None
@@ -158,8 +237,13 @@ class Client(Api):
         client: str = "vibeke-client-py",
         kind: str = "plugin",
         hello: bool = True,
+        insecure: bool = False,
     ) -> "Client":
+        """Connect. The socket is checked with :func:`check_socket_trust` first (a planted socket
+        gets neither a connection nor a byte); ``insecure=True`` skips the check."""
         path = socket_path or default_socket_path(session)
+        if not insecure:
+            check_socket_trust(path)
         reader, writer = await asyncio.open_unix_connection(path, limit=MAX_LINE_BYTES)
         c = cls(reader, writer)
         c._task = asyncio.get_running_loop().create_task(c._read_loop())
@@ -181,12 +265,24 @@ class Client(Api):
         self, method: str, params: Optional[Dict[str, Any]] = None, *, timeout: Optional[float] = None
     ) -> Any:
         """Call a method; returns the result or raises :class:`VibekeError`."""
+        return await self._request(method, params, timeout=timeout)
+
+    async def _request(
+        self,
+        method: str,
+        params: Optional[Dict[str, Any]],
+        *,
+        timeout: Optional[float] = None,
+        on_result: Optional[Callable[[Any], Any]] = None,
+    ) -> Any:
         if self._closed is not None:
             raise self._closed
         rid = self._next_id
         self._next_id += 1
         fut: "asyncio.Future[Any]" = asyncio.get_running_loop().create_future()
         self._pending[rid] = fut
+        if on_result is not None:
+            self._on_result[rid] = on_result
         line = json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
         self._writer.write(line.encode("utf-8") + b"\n")
         try:
@@ -194,6 +290,26 @@ class Client(Api):
             return await asyncio.wait_for(fut, timeout) if timeout else await fut
         finally:
             self._pending.pop(rid, None)
+            self._on_result.pop(rid, None)
+
+    def _unsubscribe(self, sid: str) -> None:
+        # Not registered any more (overflowed, or the connection ended): nothing to stop.
+        if self._streams.pop(sid, None) is None or self._closed is not None:
+            return
+        rid = self._next_id
+        self._next_id += 1
+        # Fire and forget: the response finds no pending call and is ignored.
+        line = json.dumps(
+            {"jsonrpc": "2.0", "id": rid, "method": "events.unsubscribe", "params": {"subscription_id": sid}}
+        )
+        try:
+            self._writer.write(line.encode("utf-8") + b"\n")
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+
+    def retained(self) -> Dict[str, int]:
+        """Live streams and the events they hold (internal; tests check retention is bounded)."""
+        return {"streams": len(self._streams), "events": sum(s.queued for s in self._streams.values())}
 
     async def events(
         self,
@@ -209,11 +325,14 @@ class Client(Api):
             params["after"] = after
         if subjects:
             params["subjects"] = subjects
-        r = await self.call("events.subscribe", params)
-        stream = EventStream(r["subscription_id"], r["at"], self)
-        self._streams[stream.subscription_id] = stream
-        for e in self._early.pop(stream.subscription_id, []):
-            stream._push(e)
+
+
+        def register(r: Any) -> EventStream:
+            s = EventStream(r["subscription_id"], r["at"], self)
+            self._streams[s.subscription_id] = s
+            return s
+
+        stream: EventStream = await self._request("events.subscribe", params, on_result=register)
         if self._closed is not None:
             stream._end()
         return stream
@@ -258,21 +377,24 @@ class Client(Api):
             fut = self._pending.get(m["id"])
             if fut is None or fut.done():
                 return
+            hook = self._on_result.pop(m["id"], None)
             if m.get("error"):
                 fut.set_exception(VibekeError(m["error"]))
+            elif hook is not None:
+                try:
+                    fut.set_result(hook(m.get("result")))
+                except Exception as e:  # noqa: BLE001 - surfaced to the caller
+                    fut.set_exception(e)
             else:
                 fut.set_result(m.get("result"))
             return
         method = m.get("method")
         params = m.get("params") or {}
         if method == "events.event":
-            sid = params["subscription_id"]
-            ev = Event.from_json(params["event"])
-            stream = self._streams.get(sid)
+            # Unknown ids (closed streams) are dropped.
+            stream = self._streams.get(params.get("subscription_id"))
             if stream is not None:
-                stream._push(ev)
-            else:
-                self._early.setdefault(sid, []).append(ev)
+                stream._push(Event.from_json(params["event"]))
         elif method == "events.overflow":
             stream = self._streams.pop(params["subscription_id"], None)
             if stream is not None:

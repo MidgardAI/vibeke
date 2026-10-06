@@ -179,10 +179,18 @@ pub fn inside_any_pane(pid: Option<i32>, runtime_root: &std::path::Path) -> bool
 struct ConnGuard {
     server: Arc<Server>,
     client_ids: Arc<std::sync::Mutex<Vec<String>>>,
+    /// `events.subscribe` tasks of this connection, by subscription id (`events.unsubscribe`).
+    subs: Subs,
 }
+
+type Subs = Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>>;
 
 impl Drop for ConnGuard {
     fn drop(&mut self) {
+        // The connection's event subscriptions end with it.
+        for (_, h) in self.subs.lock().unwrap().drain() {
+            h.abort();
+        }
         let ids = std::mem::take(&mut *self.client_ids.lock().unwrap());
         for id in ids {
             crate::agent_browser::client_gone(&self.server, &id);
@@ -197,6 +205,7 @@ where
     let guard = ConnGuard {
         server: server.clone(),
         client_ids: Arc::default(),
+        subs: Arc::default(),
     };
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
@@ -250,7 +259,28 @@ where
                     }
                     "render.attach" => break Some(req),
                     "events.subscribe" => {
-                        subscribe(&server, &req, out_tx.clone())?;
+                        if let Some((sid, h)) = subscribe(&server, &req, out_tx.clone())? {
+                            let mut subs = guard.subs.lock().unwrap();
+                            subs.retain(|_, h| !h.is_finished());
+                            subs.insert(sid, h);
+                        }
+                    }
+                    "events.unsubscribe" => {
+                        let id = req.id.clone().unwrap_or(Value::Null);
+                        let r = match req.params.get("subscription_id").and_then(Value::as_str) {
+                            Some(sid) => {
+                                // Idempotent: unknown, finished or already removed ids answer false.
+                                let h = guard.subs.lock().unwrap().remove(sid);
+                                let live = h.is_some_and(|h| {
+                                    let live = !h.is_finished();
+                                    h.abort();
+                                    live
+                                });
+                                Response::ok(id, json!({"unsubscribed": live}))
+                            }
+                            None => Response::err(id, invalid("missing param `subscription_id`")),
+                        };
+                        let _ = out_tx.send(serde_json::to_string(&r)?);
                     }
                     // The Herdr shim reaches another session through this method. A process
                     // inside a pane of another session is not this session's operator, with or
@@ -361,19 +391,20 @@ where
 }
 
 /// `events.subscribe {after?, types?}`: backlog from the outbox, then live events; never silent
-/// loss (overflow closes the subscription with `events.overflow`).
+/// loss (overflow closes the subscription with `events.overflow`). Returns the subscription id
+/// and its task (aborted by `events.unsubscribe` or when the connection ends).
 fn subscribe(
     server: &Arc<Server>,
     req: &Request,
     out: mpsc::UnboundedSender<String>,
-) -> Result<()> {
+) -> Result<Option<(String, tokio::task::AbortHandle)>> {
     let id = req.id.clone().unwrap_or(Value::Null);
     let p = req.params.clone();
     let after = match api::after_seq(server, &p) {
         Ok(a) => a,
         Err(e) => {
             let _ = out.send(serde_json::to_string(&Response::err(id, e))?);
-            return Ok(());
+            return Ok(None);
         }
     };
     let types: Vec<String> = match p.get("types") {
@@ -387,17 +418,22 @@ fn subscribe(
     let sub_id = format!("s{}", &ulid()[20..]);
     let mut rx = server.events.subscribe();
     let at = api::cursor(server, None);
+    let replay = after > 0 || p.get("after").is_some();
+    // Live-only: the position is fixed now (with the receiver already subscribed), not when the
+    // task first runs — an event committed in between would otherwise be skipped.
+    let live_from = (!replay).then(|| server.with_core(|c| c.store.last_seq().unwrap_or(0)));
     let _ = out.send(serde_json::to_string(&Response::ok(
         id,
         json!({"subscription_id": sub_id, "at": at}),
     ))?);
     let srv = server.clone();
-    tokio::spawn(async move {
+    let ret_id = sub_id.clone();
+    let task = tokio::spawn(async move {
         let notify = |e: &vk_store::Event| {
             serde_json::to_string(&json!({"jsonrpc": "2.0", "method": "events.event", "params": {"subscription_id": sub_id, "event": e}})).unwrap()
         };
         let mut last = after;
-        if after > 0 || p.get("after").is_some() {
+        if replay {
             loop {
                 let batch = srv
                     .with_core(|c| c.store.events_after(last, 500, &types))
@@ -413,7 +449,7 @@ fn subscribe(
                 }
             }
         } else {
-            last = srv.with_core(|c| c.store.last_seq().unwrap_or(0));
+            last = live_from.unwrap_or(0);
         }
         loop {
             match rx.recv().await {
@@ -439,7 +475,7 @@ fn subscribe(
             }
         }
     });
-    Ok(())
+    Ok(Some((ret_id, task.abort_handle())))
 }
 
 // ---- tasks (05) -----------------------------------------------------------------------------
@@ -1243,3 +1279,7 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
     server.commit(&mut c, tx).map_err(internal)?;
     Ok(json!({"task": t2, "job": job}))
 }
+
+#[cfg(test)]
+#[path = "run_tests.rs"]
+mod tests;

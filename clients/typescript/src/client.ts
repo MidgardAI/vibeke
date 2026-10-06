@@ -5,6 +5,7 @@
 // split on "\n" only (U+2028/U+2029 are legal inside JSON strings). The connection is long-lived
 // and multiplexed: requests are pipelined and correlated by id; event subscriptions share it.
 
+import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -58,17 +59,94 @@ export interface ConnectOptions {
   kind?: "tui" | "cli" | "plugin" | "gateway" | "agent";
   /** Skip the handshake (the connection is then `anonymous`, 07 §1.1). */
   hello?: boolean;
+  /**
+   * Skip the socket ownership check (`checkSocketTrust`). Only for sockets you know are safe
+   * despite failing it; the pane token and every request would otherwise go to whoever planted
+   * the socket.
+   */
+  insecure?: boolean;
+}
+
+/** The runtime root: `$VIBEKE_RUNTIME_DIR`, `$XDG_RUNTIME_DIR/vibeke` or `$TMPDIR/vibeke-<uid>`. */
+export function runtimeRoot(): string {
+  if (process.env.VIBEKE_RUNTIME_DIR) return process.env.VIBEKE_RUNTIME_DIR;
+  if (process.env.XDG_RUNTIME_DIR) return path.join(process.env.XDG_RUNTIME_DIR, "vibeke");
+  return path.join(process.env.TMPDIR || "/tmp", `vibeke-${os.userInfo().uid}`);
 }
 
 /** The socket of a session: `$VIBEKE_RUNTIME_DIR/<session>/vibeke.sock` and its fallbacks. */
 export function defaultSocketPath(session = process.env.VIBEKE_SESSION || "default"): string {
   const explicit = process.env.VIBEKE_SOCKET;
   if (explicit && (process.env.VIBEKE_SESSION || "default") === session) return explicit;
-  let root: string;
-  if (process.env.VIBEKE_RUNTIME_DIR) root = process.env.VIBEKE_RUNTIME_DIR;
-  else if (process.env.XDG_RUNTIME_DIR) root = path.join(process.env.XDG_RUNTIME_DIR, "vibeke");
-  else root = path.join(process.env.TMPDIR || "/tmp", `vibeke-${os.userInfo().uid}`);
-  return path.join(root, session, "vibeke.sock");
+  return path.join(runtimeRoot(), session, "vibeke.sock");
+}
+
+/** `checkSocketTrust` refused a socket: nothing was sent to it. */
+export class SocketTrustError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SocketTrustError";
+  }
+}
+
+export interface SocketTrustOptions {
+  /** Runtime root (default `runtimeRoot()`). */
+  root?: string;
+  /** Expected owner (default: the effective uid). */
+  uid?: number;
+}
+
+function lstatOrNull(p: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(p);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new SocketTrustError(`cannot inspect ${p}: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Refuse a socket whose directory chain or file could have been planted by another user (an
+ * attacker-created `/tmp/vibeke-<uid>` symlink or directory, say), as the CLI does
+ * (`check_socket_trust`). Under the runtime root every directory from the socket's up to the
+ * root must be a real directory (never followed through a symlink) owned by `uid` with mode
+ * 0700; for an explicit socket elsewhere its parent must be a real directory owned by `uid`
+ * and not group- or world-writable. The socket must be a socket owned by `uid`. Missing pieces
+ * pass (the connect then fails by itself). Throws `SocketTrustError`.
+ */
+export function checkSocketTrust(socket: string, opts: SocketTrustOptions = {}): void {
+  const uid = opts.uid ?? (process.geteuid ? process.geteuid() : os.userInfo().uid);
+  const sock = path.resolve(socket);
+  const root = path.resolve(opts.root ?? runtimeRoot());
+  const parent = path.dirname(sock);
+  if (parent === sock) throw new SocketTrustError(`socket path ${socket} has no parent directory`);
+  const rel = path.relative(root, sock);
+  const underRoot = rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  const dirs: [string, boolean][] = [];
+  if (underRoot) {
+    for (let d = parent; ; d = path.dirname(d)) {
+      dirs.push([d, true]);
+      if (d === root || path.dirname(d) === d) break;
+    }
+  } else dirs.push([parent, false]);
+  for (const [d, strict] of dirs) {
+    const st = lstatOrNull(d);
+    if (!st) return;
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new SocketTrustError(`refusing ${socket}: ${d} is not a plain directory (symlink or other file)`);
+    }
+    if (st.uid !== uid) throw new SocketTrustError(`refusing ${socket}: ${d} is owned by uid ${st.uid}, not ${uid}`);
+    const mode = st.mode & 0o7777;
+    if ((strict && mode !== 0o700) || (!strict && (mode & 0o022) !== 0)) {
+      throw new SocketTrustError(
+        `refusing ${socket}: ${d} has mode ${mode.toString(8)}${strict ? " (need 700)" : ""}`,
+      );
+    }
+  }
+  const st = lstatOrNull(sock);
+  if (!st) return;
+  if (!st.isSocket()) throw new SocketTrustError(`refusing ${socket}: not a socket`);
+  if (st.uid !== uid) throw new SocketTrustError(`refusing ${socket}: socket is owned by uid ${st.uid}, not ${uid}`);
 }
 
 export interface EventOptions {
@@ -120,7 +198,15 @@ export class EventStream implements AsyncIterable<VibekeEvent> {
     }
   }
 
-  /** Stop delivering events (events already queued are dropped). */
+  /** @internal Events queued and not yet consumed. */
+  get queued(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * Stop delivering events (events already queued are dropped) and end the server-side
+   * subscription (`events.unsubscribe`, best effort). Later events for it are discarded.
+   */
   close(): void {
     this.queue = [];
     this.end();
@@ -157,15 +243,18 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: unknown) => void;
   timer?: NodeJS.Timeout;
+  /** Runs synchronously while the response line is handled (before any later line). */
+  onResult?: (v: unknown) => unknown;
 }
 
 export class VibekeClient {
   private readonly socket: net.Socket;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
+  // Live subscriptions. A stream is registered while its subscribe response line is handled,
+  // so pushes (and an overflow) that follow it in the same chunk find it; pushes for any other
+  // id (a closed stream, a stranger) are dropped, never buffered.
   private readonly streams = new Map<string, EventStream>();
-  // Pushes that arrive before their subscribe response was handled.
-  private readonly early = new Map<string, VibekeEvent[]>();
   private buf: Buffer = Buffer.alloc(0);
   private closed: Error | null = null;
   /** The `client.hello` result, when the handshake ran. */
@@ -181,6 +270,8 @@ export class VibekeClient {
   static async connect(opts: ConnectOptions = {}): Promise<VibekeClient> {
     const session = opts.session ?? (process.env.VIBEKE_SESSION || "default");
     const p = opts.socketPath ?? defaultSocketPath(session);
+    // Before connecting: a planted socket gets neither a connection nor a byte.
+    if (!opts.insecure) checkSocketTrust(p);
     const socket = net.createConnection(p);
     await new Promise<void>((resolve, reject) => {
       socket.once("connect", resolve);
@@ -205,10 +296,19 @@ export class VibekeClient {
     params: Methods[M]["params"],
     opts: { timeoutMs?: number } = {},
   ): Promise<Methods[M]["result"]> {
+    return this.request(method, params, opts) as Promise<Methods[M]["result"]>;
+  }
+
+  private request(
+    method: string,
+    params: unknown,
+    opts: { timeoutMs?: number } = {},
+    onResult?: (v: unknown) => unknown,
+  ): Promise<unknown> {
     if (this.closed) return Promise.reject(this.closed);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const p: Pending = { resolve: resolve as (v: unknown) => void, reject };
+      const p: Pending = { resolve, reject, onResult };
       if (opts.timeoutMs) {
         p.timer = setTimeout(() => {
           this.pending.delete(id);
@@ -231,13 +331,28 @@ export class VibekeClient {
     if (opts.types) params.types = opts.types;
     if (opts.after !== undefined) params.after = opts.after;
     if (opts.subjects) params.subjects = opts.subjects;
-    const r = await this.call("events.subscribe", params);
-    const stream = new EventStream(r.subscription_id, r.at, () => this.streams.delete(r.subscription_id));
-    this.streams.set(r.subscription_id, stream);
-    for (const e of this.early.get(r.subscription_id) ?? []) stream.push(e);
-    this.early.delete(r.subscription_id);
+    const stream = (await this.request("events.subscribe", params, {}, (v) => {
+      const r = v as Methods["events.subscribe"]["result"];
+      const id = r.subscription_id;
+      const s = new EventStream(id, r.at, () => this.unsubscribe(id));
+      this.streams.set(id, s);
+      return s;
+    })) as EventStream;
     if (this.closed) stream.end();
     return stream;
+  }
+
+  private unsubscribe(id: string): void {
+    // Not registered any more (overflowed, or the connection ended): nothing to stop.
+    if (!this.streams.delete(id) || this.closed) return;
+    this.request("events.unsubscribe", { subscription_id: id }, { timeoutMs: 10_000 }).catch(() => {});
+  }
+
+  /** @internal Live streams and the events they hold (tests: retention stays bounded). */
+  retained(): { streams: number; events: number } {
+    let events = 0;
+    for (const s of this.streams.values()) events += s.queued;
+    return { streams: this.streams.size, events };
   }
 
   /** Close the connection; pending calls reject and event streams end. */
@@ -271,18 +386,18 @@ export class VibekeClient {
       this.pending.delete(m.id);
       if (p.timer) clearTimeout(p.timer);
       if (m.error) p.reject(new VibekeError(m.error));
-      else p.resolve(m.result);
+      else if (p.onResult) {
+        try {
+          p.resolve(p.onResult(m.result));
+        } catch (e) {
+          p.reject(e);
+        }
+      } else p.resolve(m.result);
       return;
     }
     if (m.method === "events.event") {
-      const id: string = m.params.subscription_id;
-      const s = this.streams.get(id);
-      if (s) s.push(m.params.event);
-      else {
-        const q = this.early.get(id) ?? [];
-        q.push(m.params.event);
-        this.early.set(id, q);
-      }
+      // Unknown ids (closed streams) are dropped.
+      this.streams.get(m.params?.subscription_id)?.push(m.params.event);
     } else if (m.method === "events.overflow") {
       const s = this.streams.get(m.params.subscription_id);
       if (s) {

@@ -7,8 +7,11 @@ from .client import (
     Event,
     EventOverflow,
     EventStream,
+    SocketTrustError,
     VibekeError,
+    check_socket_trust,
     default_socket_path,
+    runtime_root,
 )
 from .types_gen import API_VERSION, ERROR_KINDS, METHODS
 
@@ -21,6 +24,9 @@ __all__ = [
     "Event",
     "EventOverflow",
     "EventStream",
+    "SocketTrustError",
     "VibekeError",
+    "check_socket_trust",
     "default_socket_path",
+    "runtime_root",
 ]

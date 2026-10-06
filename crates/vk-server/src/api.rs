@@ -217,6 +217,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("notification.send", true),
     ("notification.read", true),
     ("events.subscribe", false),
+    ("events.unsubscribe", false),
     ("events.read", false),
     ("events.wait", false),
     ("search.query", false),
@@ -1293,9 +1294,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 }
             }
         }
-        "events.subscribe" => Err(invalid(
-            "events.subscribe must be called on a control connection",
-        )),
+        "events.subscribe" | "events.unsubscribe" => Err(invalid(format!(
+            "{method} must be called on a control connection"
+        ))),
 
         // ---- blobs (search and layouts: parity.rs) --------------------------------------
         "blob.put" | "image.upload" => blob_put(server, p),

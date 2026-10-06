@@ -23,6 +23,13 @@ asyncio.run(main())
 - Errors raise `VibekeError` (`kind`, `code`, `details`, `retryable`); `c.call(method, params)` is the untyped form.
 - `events.overflow` raises `EventOverflow` from the stream; resubscribe with `after=err.resume_from`.
 - `Client.connect(token=...)` (default `$VIBEKE_PANE_TOKEN`) limits the connection to pane scope.
+- Before connecting, `check_socket_trust` refuses a socket another user could have planted (as
+  the CLI does): under the runtime root every directory up to the root must be a real 0700
+  directory of yours (no symlinks), an explicit socket elsewhere needs a parent of yours that is
+  not group- or world-writable, and the socket must be yours. A refused socket gets no connection
+  and no byte (`SocketTrustError`); `Client.connect(insecure=True)` skips the check.
+- `await stream.close()` sends `events.unsubscribe` and discards later events for it; pushes for
+  unknown subscription ids are dropped, never buffered.
 - Unknown event types and notifications are ignored, never an error (07 §1.5).
 
 Tests: `python3 -m unittest discover -s tests`. Regenerate after a registry change with

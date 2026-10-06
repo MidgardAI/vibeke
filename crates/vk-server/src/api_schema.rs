@@ -460,6 +460,8 @@ session.snapshot :: {include?: [workspaces|tabs|panes|runs|interactions|tasks|pr
 # --- events ---
 events.subscribe :: {after?: Cursor|int, types?: [string] | string, subjects?: {workspace?: Target, tab?: Target, pane?: Target, run?: Target, task?: Target}, include_snapshot?: bool = false, machine?: string}
   => {subscription_id: string, at: Cursor}
+# stops a subscription of this connection; idempotent (unknown or finished ids answer unsubscribed: false)
+events.unsubscribe :: {subscription_id: string} => {unsubscribed: bool}
 events.read :: {after?: Cursor|int, before?: Cursor|int, types?: [string] | string, subjects?: object, limit?: int = 500} => {events: [Event], next: Cursor}
 events.wait :: {types?: [string] | string, subjects?: object, after?: Cursor|int, timeout_ms?: int = 60000} => {event: Event}
 
