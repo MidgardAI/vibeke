@@ -1027,8 +1027,10 @@ fn on_event(
         }
         "Page.frameNavigated" => {
             let f = &p["frame"];
+            // Error pages (`chrome-error://`) keep the last real URL for relative paths.
             if f.get("parentId").is_none()
                 && let Some(u) = f["url"].as_str()
+                && !u.starts_with("chrome-error:")
             {
                 *sess.url.lock().unwrap() = u.to_string();
             }
@@ -1233,16 +1235,13 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         }
         "browser.detach_screencast" => {
             let t = session_param(p).unwrap_or("");
-            let removed = server
+            let prefix = format!("{}:", ctx.client_id);
+            server
                 .agent_browser
                 .rpc_subs
                 .lock()
                 .unwrap()
-                .retain(|k, v| {
-                    !(k.starts_with(&format!("{}:", ctx.client_id))
-                        && (v.session == t || v.sess.id == t))
-                });
-            let _ = removed;
+                .retain(|k, v| !(k.starts_with(&prefix) && (v.session == t || v.sess.id == t)));
             Ok(json!({"session": t, "detached": true}))
         }
         "browser.screencast_frame" => {

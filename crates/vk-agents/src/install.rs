@@ -376,7 +376,7 @@ fn stamp_of(path: &Path, content: &[u8]) -> FileStamp {
     }
 }
 
-fn read_file(path: &Path) -> Result<Option<(String, FileStamp)>> {
+pub(crate) fn read_file(path: &Path) -> Result<Option<(String, FileStamp)>> {
     match fs::read(path) {
         Ok(bytes) => {
             let stamp = stamp_of(path, &bytes);
@@ -389,7 +389,7 @@ fn read_file(path: &Path) -> Result<Option<(String, FileStamp)>> {
     }
 }
 
-fn parse_root(path: &Path, text: Option<&str>) -> Result<Value> {
+pub(crate) fn parse_root(path: &Path, text: Option<&str>) -> Result<Value> {
     match text {
         None => Ok(Value::Object(Map::new())),
         Some(t) if t.trim().is_empty() => Ok(Value::Object(Map::new())),
@@ -424,7 +424,7 @@ fn detect_indent(text: &str) -> Vec<u8> {
     b"  ".to_vec()
 }
 
-fn render(root: &Value, original: Option<&str>) -> String {
+pub(crate) fn render(root: &Value, original: Option<&str>) -> String {
     use serde_json::ser::{PrettyFormatter, Serializer};
     let indent = original
         .map(detect_indent)
@@ -503,7 +503,7 @@ fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
     })
 }
 
-fn resolve_symlink(p: &Path) -> PathBuf {
+pub(crate) fn resolve_symlink(p: &Path) -> PathBuf {
     match fs::symlink_metadata(p) {
         Ok(m) if m.file_type().is_symlink() => {
             fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())

@@ -3,6 +3,9 @@
 //! Writing the user's real `~/.claude` / `~/.codex` needs explicit consent: without `--yes` the
 //! command shows the planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` redirect it (e.g. to
 //! temporary copies).
+//!
+//! `--mcp` installs/removes/reports the `vibeke mcp` server entry instead of the hooks (06 B7):
+//! Claude `mcpServers` in `.claude.json`, Codex `[mcp_servers.vibeke]` in `config.toml`.
 
 use vk_agents::{Dirs, Harness, InstallState};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
@@ -41,8 +44,11 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
         .map(String::as_str);
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let dry = args.iter().any(|a| a == "--dry-run");
+    let mcp = args.iter().any(|a| a == "--mcp");
     let Some(hs) = harnesses(target) else {
-        eprintln!("vibeke integration {verb} <claude|codex|pi|omp|all> [--dry-run] [--yes]");
+        eprintln!(
+            "vibeke integration {verb} <claude|codex|pi|omp|all> [--mcp] [--dry-run] [--yes]"
+        );
         return EXIT_USAGE;
     };
     let dirs = Dirs::from_env();
@@ -55,6 +61,9 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
     ]
     .iter()
     .any(|k| std::env::var_os(k).is_some());
+    if mcp {
+        return run_mcp(verb, hs, &dirs, yes || redirected, dry);
+    }
     match verb {
         "list" | "status" => {
             for h in hs {
@@ -184,6 +193,88 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
             EXIT_USAGE
         }
     }
+}
+
+/// `--mcp`: the MCP server entry for harnesses with an MCP client config (Claude, Codex).
+fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) -> i32 {
+    let hs: Vec<Harness> = hs
+        .into_iter()
+        .filter(|h| matches!(h, Harness::Claude | Harness::Codex))
+        .collect();
+    let mut code = EXIT_OK;
+    for h in hs {
+        match verb {
+            "list" | "status" => match vk_agents::mcp_status(h, dirs) {
+                Ok(st) => {
+                    let state = if st.installed {
+                        "installed"
+                    } else if st.foreign {
+                        "foreign entry (left alone)"
+                    } else {
+                        "not installed"
+                    };
+                    println!("{:<7} mcp {state:<26} {}", h.id(), st.file.display());
+                }
+                Err(e) => {
+                    eprintln!("{}: {e:#}", h.id());
+                    code = EXIT_API;
+                }
+            },
+            "install" | "uninstall" => {
+                let plan = if verb == "install" {
+                    vk_agents::plan_mcp_install(h, dirs, &stable_bin())
+                } else {
+                    vk_agents::plan_mcp_uninstall(h, dirs)
+                };
+                let plan = match plan {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("{}: {e:#}", h.id());
+                        code = EXIT_API;
+                        continue;
+                    }
+                };
+                if !plan.changed() {
+                    println!(
+                        "{}: mcp already {}",
+                        h.id(),
+                        if verb == "install" {
+                            "installed"
+                        } else {
+                            "removed"
+                        }
+                    );
+                    continue;
+                }
+                for f in plan.files.iter().filter(|f| f.changed()) {
+                    println!("{}", f.diff());
+                }
+                for n in &plan.notes {
+                    println!("note: {n}");
+                }
+                if dry || !write {
+                    println!("{}: dry run — rerun with --yes to write", h.id());
+                    continue;
+                }
+                match vk_agents::apply(&plan) {
+                    Ok(paths) => {
+                        for p in paths {
+                            println!("wrote {}", p.display());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: {e:#}", h.id());
+                        code = EXIT_API;
+                    }
+                }
+            }
+            _ => {
+                eprintln!("vibeke integration install|uninstall|status <claude|codex|all> --mcp");
+                return EXIT_USAGE;
+            }
+        }
+    }
+    code
 }
 
 fn hs_contains_codex(target: Option<&str>) -> bool {

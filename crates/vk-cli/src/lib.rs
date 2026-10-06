@@ -4,6 +4,7 @@
 //! positional arguments per verb. `vibeke <noun>` alone prints help and never executes.
 
 pub mod client;
+pub mod mcp;
 
 use anyhow::Result;
 use client::{CallError, Client};
@@ -492,6 +493,114 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &[],
         "SOCKS port, managed browsers, links",
     ),
+    (
+        "browser",
+        "open",
+        "browser.open",
+        &["target"],
+        "<preview|url> [--viewport 390x844] [--dark] — headless session on this machine",
+    ),
+    (
+        "browser",
+        "navigate",
+        "browser.navigate",
+        &["session", "url"],
+        "<session> <url|/path> [--wait load|domcontentloaded|none]",
+    ),
+    (
+        "browser",
+        "click",
+        "browser.click",
+        &["session", "selector"],
+        "<session> <css|text=…> | --x N --y N [--timeout-ms n]",
+    ),
+    (
+        "browser",
+        "type",
+        "browser.type",
+        &["session", "selector", "text"],
+        "<session> [selector] <text> [--submit] [--clear]",
+    ),
+    (
+        "browser",
+        "press",
+        "browser.press",
+        &["session", "key"],
+        "<session> <key> (enter, tab, ctrl+a, ArrowDown)",
+    ),
+    (
+        "browser",
+        "wait",
+        "browser.wait",
+        &["session", "for"],
+        "<session> load|networkidle|selector:<css>|ms:<n>",
+    ),
+    (
+        "browser",
+        "eval",
+        "browser.eval",
+        &["session", "expression"],
+        "<session> <js> (from a pane: needs preview.browser_script)",
+    ),
+    (
+        "browser",
+        "screenshot",
+        "browser.screenshot",
+        &["session"],
+        "<session> [--full-page] [--selector css] [--out f.png]",
+    ),
+    (
+        "browser",
+        "snapshot",
+        "browser.snapshot",
+        &["session"],
+        "<session> [--format a11y|text|html] [--selector css]",
+    ),
+    (
+        "browser",
+        "dom",
+        "browser.dom",
+        &["session"],
+        "alias of snapshot",
+    ),
+    (
+        "browser",
+        "console",
+        "browser.console",
+        &["session"],
+        "<session> [--level error|warn|all] [--since 5m]",
+    ),
+    (
+        "browser",
+        "network",
+        "browser.network",
+        &["session"],
+        "<session> [--failed] [--since 5m]",
+    ),
+    ("browser", "close", "browser.close", &["session"], ""),
+    (
+        "browser",
+        "list",
+        "browser.list",
+        &[],
+        "sessions you can see + browser status",
+    ),
+    ("browser", "status", "browser.status", &[], ""),
+    (
+        "browser",
+        "install",
+        "browser.install",
+        &[],
+        "[--yes] [--sha256 hex] [--url u] — asks before downloading Chrome for Testing",
+    ),
+    (
+        "browser",
+        "take-over",
+        "browser.take_over",
+        &["session"],
+        "agent calls fail with human_control until release",
+    ),
+    ("browser", "release", "browser.release", &["session"], ""),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
 ];
@@ -624,6 +733,10 @@ fn adjust(method: &str, p: &mut Value) {
         "text",
         "machine",
         "label",
+        "session",
+        "key",
+        "selector",
+        "expression",
     ] {
         if let Some(v) = o.get_mut(k)
             && (v.is_number() || v.is_boolean())
@@ -636,6 +749,28 @@ fn adjust(method: &str, p: &mut Value) {
         o.insert("pane".into(), json!("@current"));
     }
     match method {
+        "browser.open" => {
+            if let Some(Value::String(t)) = o.remove("target") {
+                let k = if t.contains("://") { "url" } else { "preview" };
+                o.entry(k).or_insert(json!(t));
+            }
+            if let Some(Value::String(v)) = o.get("viewport").cloned() {
+                o.insert("viewport".into(), json!(v));
+            }
+        }
+        "browser.type" => {
+            // `type <session> <text>`: one positional after the session is the text.
+            if !o.contains_key("text")
+                && let Some(sel) = o.remove("selector")
+            {
+                o.insert("text".into(), sel);
+            }
+        }
+        "browser.network" => {
+            if let Some(f) = o.remove("failed") {
+                o.insert("failed_only".into(), f);
+            }
+        }
         "interaction.answer" => {
             for (flag, d) in [
                 ("allow", "allow"),
@@ -851,12 +986,45 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     adjust(method, &mut params);
+    // `browser screenshot --out f.png`: fetch the image inline and write it here (the server
+    // never writes to caller-chosen paths).
+    let out = (method == "browser.screenshot")
+        .then(|| params.as_object_mut().and_then(|o| o.remove("out")))
+        .flatten()
+        .and_then(|v| v.as_str().map(PathBuf::from));
+    if out.is_some() {
+        params["inline"] = json!(true);
+    }
     if let Err(e) = client.hello("cli").await {
         print_error(&e);
         return exit_code_for(&e);
     }
     match client.call(method, params).await {
-        Ok(v) => {
+        Ok(mut v) => {
+            if let Some(path) = &out {
+                use base64::Engine as _;
+                let data = v
+                    .as_object_mut()
+                    .and_then(|o| o.remove("data_b64"))
+                    .and_then(|d| d.as_str().map(str::to_string))
+                    .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+                match data {
+                    Some(bytes) => {
+                        if let Err(e) = std::fs::write(path, bytes) {
+                            eprintln!("write {}: {e}", path.display());
+                            return EXIT_API;
+                        }
+                        v["out"] = json!(path);
+                    }
+                    None => {
+                        eprintln!(
+                            "the screenshot was not returned inline (too large?); it is at {}",
+                            v["path_on_machine"]
+                        );
+                        return EXIT_API;
+                    }
+                }
+            }
             if !g.quiet {
                 let as_json = g.json.unwrap_or(!std::io::stdout().is_terminal());
                 if as_json {
@@ -864,6 +1032,78 @@ where
                 } else {
                     println!("{}", pretty(method, &v));
                 }
+            }
+            EXIT_OK
+        }
+        Err(e) => {
+            print_error(&e);
+            exit_code_for(&e)
+        }
+    }
+}
+
+/// `vibeke browser install`: show the plan, ask (or require `--yes` without a terminal), then
+/// install with `confirm: true` (06 B5: installing a browser always asks first).
+pub async fn browser_install<S>(client: &mut Client<S>, g: &Global, mut params: Value) -> i32
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let yes = params
+        .as_object_mut()
+        .and_then(|o| o.remove("yes").or_else(|| o.remove("y")))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if let Err(e) = client.hello("cli").await {
+        print_error(&e);
+        return exit_code_for(&e);
+    }
+    let plan = match client.call("browser.install", params.clone()).await {
+        Ok(v) => v["plan"].clone(),
+        Err(e) => {
+            print_error(&e);
+            return exit_code_for(&e);
+        }
+    };
+    if plan["installed"] == true {
+        println!(
+            "already installed: {}",
+            plan["binary"].as_str().unwrap_or("")
+        );
+        return EXIT_OK;
+    }
+    let where_ = g.machine.as_deref().unwrap_or("this machine");
+    eprintln!(
+        "vibeke browser install will download chrome-headless-shell {} ({}) onto {where_}:\n  from {}\n  into {}\n  sha256 {}",
+        plan["version"].as_str().unwrap_or("?"),
+        plan["platform"].as_str().unwrap_or("?"),
+        plan["url"].as_str().unwrap_or("?"),
+        plan["dir"].as_str().unwrap_or("?"),
+        plan["sha256"]
+            .as_str()
+            .unwrap_or("(none recorded: pass --sha256 <hex> after verifying the download)"),
+    );
+    if plan["checksum_known"] != true {
+        return EXIT_USAGE;
+    }
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("not a terminal: rerun with --yes to download");
+            return EXIT_USAGE;
+        }
+        eprint!("Download and install? [y/N] ");
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_err()
+            || !matches!(answer.trim(), "y" | "Y" | "yes")
+        {
+            eprintln!("cancelled");
+            return EXIT_OK;
+        }
+    }
+    params["confirm"] = json!(true);
+    match client.call("browser.install", params).await {
+        Ok(v) => {
+            if !g.quiet {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
             }
             EXIT_OK
         }
@@ -917,6 +1157,40 @@ mod tests {
         adjust("interaction.answer", &mut p);
         assert_eq!(p, json!({"interaction": "i3", "decision": "allow"}));
         assert!(build_params(&[], &["x".into()]).is_err());
+    }
+
+    #[test]
+    fn browser_params() {
+        let (m, pos) = lookup("browser", "open").unwrap();
+        let mut p =
+            build_params(pos, &["v4".into(), "--viewport".into(), "390x844".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"preview": "v4", "viewport": "390x844"}));
+        let mut p = build_params(pos, &["http://localhost:3000/x".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"url": "http://localhost:3000/x"}));
+        let (m, pos) = lookup("browser", "type").unwrap();
+        let mut p = build_params(pos, &["b1".into(), "hello".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"session": "b1", "text": "hello"}));
+        let mut p = build_params(
+            pos,
+            &["b1".into(), "#q".into(), "42".into(), "--submit".into()],
+        )
+        .unwrap();
+        adjust(m, &mut p);
+        assert_eq!(
+            p,
+            json!({"session": "b1", "selector": "#q", "text": "42", "submit": true})
+        );
+        let (m, pos) = lookup("browser", "press").unwrap();
+        let mut p = build_params(pos, &["b1".into(), "1".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["key"], "1");
+        let (m, pos) = lookup("browser", "network").unwrap();
+        let mut p = build_params(pos, &["b1".into(), "--failed".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p, json!({"session": "b1", "failed_only": true}));
     }
 
     #[test]
