@@ -52,6 +52,16 @@ fn fail(kind: &str, msg: impl std::fmt::Display, code: i32) -> i32 {
     code
 }
 
+/// An error from the `herdr` shim itself, in Herdr's shape (`error.code`, exit 1), so plugins
+/// parsing Herdr output handle it like any other server error.
+fn herdr_fail(code: &str, msg: impl std::fmt::Display) -> i32 {
+    eprintln!(
+        "{}",
+        json!({"error": {"code": code, "message": msg.to_string()}})
+    );
+    1
+}
+
 fn reg_fail(e: RegistryError) -> i32 {
     match e {
         RegistryError::NotFound(id) => {
@@ -1016,12 +1026,11 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
         }
         Parsed::Call { method, params } => {
             if lifecycle(&method) {
-                return fail(
+                return herdr_fail(
                     "unsupported",
                     format!(
                         "{method} is not forwarded by the Herdr compatibility shim; use `vibeke server …`"
                     ),
-                    EXIT_API,
                 );
             }
             let broker = broker();
