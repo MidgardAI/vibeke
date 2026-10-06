@@ -307,7 +307,8 @@ CLI: `vibeke preview declare <port> [--path p] [--label l] [--pane p] [--task k]
 | `browser.press` | `{session, key}` → `{session, key}` — Vibeke key grammar (`enter`, `ctrl+a`, `shift+tab`) and Playwright names (`ArrowDown`, `Control+A`); `invalid_key`. |
 | `browser.wait` | `{session, for: load\|networkidle\|"selector:<css>"\|"ms:<n>", timeout_ms?}` → `{session, waited}` |
 | `browser.eval` | `{session, expression}` → `{session, value}` — `returnByValue`, promises awaited; script errors → `invalid_params {exception}`; results over 256 KiB refused. From a pane only with `preview.browser_script = true` (else `permission_denied {capability: "browser.script"}`). |
-| `browser.screenshot` | `{session, full_page?, selector?, inline?}` → `{session, blob, path_on_machine, width, height, bytes, meta, data_b64?, mime?}` — PNG stored content-addressed at `<state>/blobs/<h2>/<blake3>.png` (0600) with a `<blake3>.json` sidecar; `meta = {kind: "screenshot", session, preview, url, taken_at, taken_by: {kind: agent, pane, run} \| {kind: user, client}, environment, code: null (Stage 4), viewport, full_page, selector, width, height, mime}`; `inline` adds base64 up to 8 MiB; full page is clipped at 16 384 CSS px. Event `browser.screenshot {blob, url, width, height}`. The CLI's `--out f.png` fetches inline and writes locally (the server never writes to caller-chosen paths). |
+| `browser.screenshot` | `{session, full_page?, selector?, inline?}` → `{session, id, handle, blob, path_on_machine, width, height, bytes, binding, label, meta: ScreenshotMeta, data_b64?, mime?}` — PNG stored content-addressed at `<state>/blobs/<h2>/<blake3>.png` (0600) with a `<blake3>.json` sidecar, plus a `screenshot` record (`screenshot.*` below, Stage 4) carrying environment, `code` (CodeState) and running-build identity/binding; `inline` adds base64 up to 8 MiB; full page is clipped at 16 384 CSS px. Events `browser.screenshot {blob, url, width, height, screenshot}` and `screenshot.captured`. The CLI's `--out f.png` fetches inline and writes locally (the server never writes to caller-chosen paths). |
+| `browser.diff` (Stage 4) | `{a, b, threshold?: 0.1, force?, inline?}` → `{a: {id, handle, blob, environment, label, binding, head_sha, width, height}, b: …, threshold, channel_threshold, width, height, size_mismatch, a_size, b_size, changed_pixels, total_pixels, changed_ratio, regions: [{x, y, width, height, pixels}] (largest first, ≤ 50), regions_total, forced, blob, path_on_machine, bytes, data_b64?}` — `a`/`b` are screenshot ids or handles (`s3`), or raw blob hashes (full scope only). A pixel changed when any RGBA channel differs by more than `threshold × 255`; different sizes compare on the union canvas (extra area counts as changed). Regions are connected 16 px cells of changes. The diff image (after-image faded grey, changes red) is a blob with a `screenshot_diff` sidecar, expired with `screenshots.keep_days`. Different `environment.kind` → `invalid_params {reason: "environment_mismatch"}` unless `force`. Pane scope: both screenshots must be visible to the pane. |
 | `browser.snapshot` (alias `browser.dom`) | `{session, format?: a11y\|text\|html, selector?, max_bytes?: 102400}` → `{session, url, format, content, truncated}` — `a11y` is the accessibility tree as an indented outline (`role "name" [value] {states}`). |
 | `browser.console` | `{session, level?: error\|warn\|all, since_ms? \| since?: "5m", limit?: 200}` → `{session, entries: [{ts, level, text, source: console\|exception\|network\|dialog\|…, url?, line?}]}` |
 | `browser.network` | `{session, failed_only? (CLI --failed), since_ms? \| since?, limit?}` → `{session, entries: [{ts, method, url, type, status, error, mime?, duration_ms?, blocked_by_policy?, layer?: proxy\|fetch\|api}]}` — `failed_only`: errors, policy blocks and status ≥ 400. |
@@ -318,9 +319,36 @@ CLI: `vibeke preview declare <port> [--path p] [--label l] [--pane p] [--task k]
 | `browser.take_over` / `browser.release` | `{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`. |
 | `browser.attach_screencast` / `browser.detach_screencast` / `browser.screencast_frame` | `{session}` → `{session, delivery: "internal+poll", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: "image/jpeg", width, height, received_ms, data_b64 \| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`. |
 
-Events: `browser.session_opened`, `browser.session_closed`, `browser.request_denied {session, url, reason, layer, resource_type}` (≤ 20 per session per 10 s), `browser.screenshot`, `browser.taken_over`, `browser.released`; subject `{browser_session, session_id, pane, machine}`. Not built: `browser.diff`, `--device`, one-shot screenshots of a preview/URL without a session, `code` in screenshot metadata (Stage 4).
+Events: `browser.session_opened`, `browser.session_closed`, `browser.request_denied {session, url, reason, layer, resource_type}` (≤ 20 per session per 10 s), `browser.screenshot`, `browser.taken_over`, `browser.released`; subject `{browser_session, session_id, pane, machine}`. Not built: `--device`, one-shot screenshots of a preview/URL without a session, `browser.diff --baseline task-start`.
 
-CLI: `vibeke browser open <preview|url> [--viewport WxH] [--dark]`, `navigate <s> <url|/path>`, `click <s> <css|text=…>` (or `--x --y`), `type <s> [selector] <text> [--submit] [--clear]`, `press <s> <key>`, `wait <s> <for>`, `eval <s> <js>`, `screenshot <s> [--full-page] [--selector css] [--out f.png]`, `snapshot|dom <s> [--format a11y|text|html]`, `console <s> [--level error] [--since 5m]`, `network <s> [--failed]`, `close <s>`, `list`, `status`, `install [--yes] [--sha256 hex] [--url u]` (shows the plan and asks; without a terminal needs `--yes`), `take-over <s>`, `release <s>`.
+CLI: `vibeke browser open <preview|url> [--viewport WxH] [--dark]`, `navigate <s> <url|/path>`, `click <s> <css|text=…>` (or `--x --y`), `type <s> [selector] <text> [--submit] [--clear]`, `press <s> <key>`, `wait <s> <for>`, `eval <s> <js>`, `screenshot <s> [--full-page] [--selector css] [--out f.png]`, `snapshot|dom <s> [--format a11y|text|html]`, `console <s> [--level error] [--since 5m]`, `network <s> [--failed]`, `close <s>`, `list`, `status`, `install [--yes] [--sha256 hex] [--url u]` (shows the plan and asks; without a terminal needs `--yes`), `take-over <s>`, `release <s>`, `diff <a> <b> [--threshold 0.1] [--force] [--out diff.png]`.
+
+**`screenshot.*` (as built, Goal 03 Stage 4; 06 B6).** Records of entity kind `screenshot` (`ScreenshotMeta`):
+
+```
+{id, handle: "s<N>", kind: "screenshot", blob, mime, width, height, bytes, created_at_ms, taken_at,
+ environment: {kind: remote_headless|local_pane|window|local_proxy, machine, runner, browser, browser_version,
+               viewport: {width, height}, dpr, color_scheme, device, fresh_context, profile},
+ label,                                   // "devbox · headless · fresh context" | "your browser pane · profile devbox"
+ url, final_url, title, preview, preview_id, session, full_page, selector,
+ taken_by: {kind: agent|user|plugin, pane, run, client}, pane, run, task, workspace,
+ code: {repo, origin_url, head_sha, dirty_digest, dirty_state: clean|dirty|unknown, captured_at_ms, warnings} | null,
+ code_note,                               // why `code` is null
+ runtime: {status: known|unknown, source: probe|header|caller|none, build_id, head_sha, dirty_digest,
+           dirty_state, started_at_ms, fixture, observed_at_ms, detail},
+ binding: bound|illustrative, binding_reason}
+```
+
+| Method | Params → Result |
+|---|---|
+| `screenshot.list` | `{task?, preview?, run?, since?: ms \| "1h", since_ms?, limit?: 50}` → `{screenshots: [ScreenshotMeta + {path_on_machine, exists}], count, total}` — newest first. Pane scope: only screenshots whose `workspace` is the pane's workspace. |
+| `screenshot.get` | `{id}` (id or `sN`) → `ScreenshotMeta + {path_on_machine, exists, data_b64? (inline)}` — other workspaces' screenshots are `not_found` for panes. |
+| `screenshot.open` | `{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`; `VIBEKE_NO_OPEN=1` only reports the path). |
+| `screenshot.delete` | `{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes); a screenshot referenced by a review acceptance needs `force` (`conflict {reason: "referenced_by_acceptance"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\|retention}`. |
+
+Events: `screenshot.captured {id, handle, task, binding, environment, label, blob, preview, head_sha}` (metadata only; subject `{screenshot, handle, pane, task, workspace, machine}`), `screenshot.deleted`. In-process: `vk_server::screenshots::record_screenshot(server, png, ShotInputs) -> ScreenshotMeta` (the browser pane passes `environment.kind = local_pane`, optionally `runtime`/`checkout`).
+
+CLI: `vibeke screenshot list [--task t] [--preview v4] [--run r] [--since 1h]`, `get <sN> [--out f.png]`, `open <sN>`, `diff <a> <b>` (= `browser diff`), `delete <sN> [--force]`, `code-state [dir]` (local, no server: the checkout's `CodeState` JSON — a dev script serves it at `/__vibeke_build` so its screenshots can be `bound`).
 
 #### 2.11.1 `vibeke mcp` (as built, Goal 03 Stage 3)
 
@@ -342,6 +370,7 @@ A stdio MCP server for agent harnesses (06 B7): JSON-RPC 2.0, one message per li
 | `browser_console` | `browser.console` | `{session, level?, since_ms?}` |
 | `browser_network` | `browser.network` | `{session, failed_only?, since_ms?}` |
 | `browser_close` | `browser.close` | `{session}` |
+| `browser_diff` (Stage 4) | `browser.diff` (+`inline`) | `{a, b, threshold?, force?}` → `[{type: image, <diff PNG>}, {type: text, <stats JSON>}]` |
 
 Results are text content with the API result as JSON; API errors are `{isError: true}` results whose text is `<kind>: <message>` plus details. The process connects to the pane's server like the CLI (`VIBEKE_SOCKET`/`VIBEKE_SESSION`, token from `VIBEKE_PANE_TOKEN`; process ancestry also yields pane scope) and reconnects once after a server restart. Installed with `vibeke integration install <claude|codex> --mcp` (06 B7).
 | `image.show` | `{blob|path, pane?: @current, max_cols?, max_rows?}` → `{}` — inline display in the TUI via kitty graphics/iTerm2/sixel passthrough; text fallback shows dimensions + `vibeke open` hint |
