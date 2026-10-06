@@ -171,6 +171,8 @@ fn audit_report(paths: &Paths) -> Value {
 }
 
 fn scrollback_text(paths: &Paths) -> Vec<(String, String)> {
+    // Sealed segments (09 §9.1): offline, the key comes from the keychain the marker names.
+    let _ = vk_store::crypt::unlock_for_reading(&paths.state);
     let mut a = vk_store::archive::Archive::new(&paths.scrollback());
     let mut out = vec![];
     for pane in a.pane_ids() {

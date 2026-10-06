@@ -437,6 +437,7 @@ impl PaneScope {
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
+        || crate::privacy::PANE_FORBIDDEN.contains(&method)
         || crate::blob_store::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
         || crate::machines::PANE_FORBIDDEN.contains(&method)
@@ -564,6 +565,10 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    // Lane 3E: search result redaction, state.forget, encryption status/migrate.
+    if let Some(r) = crate::privacy::api(server, ctx, method, p).await {
+        return r;
+    }
     // Batch 2A API surface: one hook per module.
     if let Some(r) = crate::config_api::api(server, method, p).await {
         return r;

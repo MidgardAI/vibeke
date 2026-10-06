@@ -381,7 +381,7 @@ fn credential(
                 Some(crate::keychain::Backend::Off) => fh(
                     Level::Fail,
                     format!("connection `{id}`: keychain credentials are off"),
-                    "set [assistant] keychain_backend = \"os\", or use an env or file credential",
+                    "remove the [assistant] keychain_backend = \"off\" override to use [security] keychain, or use an env or file credential",
                 ),
                 Some(_) => f(
                     Level::Info,
@@ -391,8 +391,10 @@ fn credential(
                 ),
                 None => fh(
                     Level::Fail,
-                    format!("connection `{id}`: keychain_backend must be off, os or fake"),
-                    "fix [assistant] keychain_backend",
+                    format!(
+                        "connection `{id}`: the keychain backend must be os or file:<path> (or off/fake)"
+                    ),
+                    "fix [security] keychain or [assistant] keychain_backend",
                 ),
             },
         ];
@@ -505,6 +507,11 @@ mod tests {
     fn keychain_references_depend_on_the_backend_and_are_never_queried() {
         let mut c = good();
         c["connections"]["primary"]["credential"] = json!({"keychain": "vibeke/assistant/primary"});
+        // The default inherits [security] keychain: referenced, never queried here.
+        let fs = run(c.clone(), &[], &[]);
+        assert!(has(&fs, Level::Info, "not queried here"));
+        // The deprecated `off` override still turns keychain references off.
+        c["keychain_backend"] = json!("off");
         let fs = run(c.clone(), &[], &[]);
         assert!(has(&fs, Level::Fail, "keychain credentials are off"));
         c["keychain_backend"] = json!("os");

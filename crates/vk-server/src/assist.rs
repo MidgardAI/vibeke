@@ -325,10 +325,18 @@ pub fn load_config() -> Result<(AssistConfig, Vec<String>), String> {
         .get("assistant")
         .or_else(|| cfg.extra.get("assist"))
         .and_then(|t| serde_json::to_value(t).ok());
-    let a = match table {
+    let mut a = match table {
         Some(v) => AssistConfig::from_json(v)?,
         None => AssistConfig::default(),
     };
+    // One keychain for the assistant and state encryption (09 §9.1): an empty
+    // `[assistant] keychain_backend` inherits `[security] keychain`.
+    if a.keychain_backend.trim().is_empty() {
+        a.keychain_backend = match crate::privacy::Settings::from_config(&cfg).keychain {
+            Ok(k) => k.setting(),
+            Err(_) => "invalid".into(),
+        };
+    }
     let patterns: Vec<String> = cfg
         .extra
         .get("security")
@@ -2225,6 +2233,8 @@ async fn run(server: Arc<Server>, id: String, prep: Prepared, deadline: Instant)
         let _ = save(&server, &r, Some("assistant.request_started"));
         mark_dispatched(&server, &id);
     }
+    // The effective keychain backend: `[security] keychain` unless `[assistant]
+    // keychain_backend` overrides it (filled in by `load_config`, 09 §9.1).
     let key = match vk_assist::config::resolve_credential_with(
         &prep.resolved.connection,
         &prep.resolved.keychain_backend,

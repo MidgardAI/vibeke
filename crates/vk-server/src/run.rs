@@ -80,6 +80,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::inbox::start(&server);
     crate::config_api::start(&server);
     crate::security::start(&server);
+    crate::privacy::start(&server);
     crate::machines::start(&server);
     // Uploads made before the blob stores were unified are ingested off the async threads.
     let adopt = server.clone();

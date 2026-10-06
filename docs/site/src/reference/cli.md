@@ -465,3 +465,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `search` | `<query>` | `audit.search` | <text> [--types t] [--since-ms ms] [--limit 200] |
 | `verify` | - | `audit.verify` | recompute the audit log's hash chain (also part of `vibeke doctor`) |
 
+## `vibeke security`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `status` | - | `security.encryption.status` | state encryption (security.encrypt_state): key, keychain, sealed/plain file counts |
+| `migrate` | `<to>` | `security.encryption.migrate` | sealed\|plain [--dry-run] — rewrite existing scrollback segments and blobs |
+

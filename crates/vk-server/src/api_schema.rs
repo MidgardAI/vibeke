@@ -53,6 +53,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("task_lifecycle", task_lifecycle::METHODS),
         ("review::pr", review::pr::METHODS),
         ("review::interval", review::interval::METHODS),
+        ("privacy", privacy::METHODS),
     ]
 }
 
@@ -480,9 +481,23 @@ pub const METHOD_SHAPES: &[&str] = &[
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
     ADAPTER_POLISH_SHAPES,
+    PRIVACY_SHAPES,
     BATCH_3D_SHAPES,
     BATCH_3F_SHAPES,
 ];
+
+/// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.
+pub const PRIVACY_SHAPES: &str = r##"
+# vibeke forget: scrollback.forget's scope, plan and counts, then everything else stored for the scope (full scope only)
+state.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string, scrollback_only?: bool = false}
+  => {scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}
+# security.encrypt_state (09 §9.1): what is sealed, with which key, and how many files are in each mode (full scope only)
+security.encryption.status :: {}
+  => {encrypt_state: bool, active: bool, key_id: string|null, keychain: string|null, readable: bool, error: string|null, files: {sealed: int, plain: int}, covers: [string], not_covered: [string], redact_scrollback_index: bool, note: string}
+# rewrite existing scrollback segments and session blobs sealed or plain (full scope only)
+security.encryption.migrate :: {to?: sealed|plain|encrypted|decrypted = sealed, dry_run?: bool = false}
+  => {to: sealed|plain, dry_run: bool, files: int, changed: int, unchanged: int, failed: [string]}
+"##;
 
 const CORE_SHAPES: &str = r##"
 # --- client.*, api.*, server.*, status, theme ---
@@ -619,9 +634,9 @@ notification.send :: {title: string, body?: string, urgency?: string = normal, s
 notification.config :: {} => {channels: [string], rules: any, native?: object, hosts?: any}
 blob.put :: {mime: string, data_b64?: string, path?: string} => {hash: string, size: int}
 image.upload :: {pane: Target, mime: string, data_b64?: string, path_on_client?: string} => {path_on_machine: string, blob?: string}
-search.query :: {q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false} => {hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}
+search.query :: {q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false} => {hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}], redacted?: bool}
 scrollback.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}
-  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}
+  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, review?: ReviewPurge}
 
 # --- fs, git ---
 fs.list :: {pane?: Target, path?: string = ''} => {path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}
@@ -1157,6 +1172,9 @@ draft.sending :: {draft?: string} => {send: string, run: string, include_notes: 
 draft.delivery_unknown :: {draft?: string} => any
 desk.forgotten :: {scope: any} => {rows: int, sessions: int}
 scrollback.forgotten :: {scope: any} => {panes: int, segments: int, bytes: int, fts_rows: int, panes_dropped: int}
+state.forgotten :: {scope: any} => {counts: object}
+security.encryption_migrated :: {} => {to: sealed|plain, files: int, failed: int}
+tombstone :: {} => {}
 layout.applied :: {workspace: string} => {name: string|null, tabs: int, panes: int, new_workspace: any}
 attention.preference_changed :: {key: {kind: string, id: string}} => {seen: bool, snoozed_until_ms: int|null, pinned: bool}
 assistant.consent_granted :: {workspace?: string} => any

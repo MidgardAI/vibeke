@@ -17871,6 +17871,9 @@
           "archive_panes_dropped": {
             "type": "integer"
           },
+          "assistant_purged": {
+            "type": "integer"
+          },
           "review": {
             "$ref": "#/$defs/ReviewPurge"
           },
@@ -17972,10 +17975,176 @@
                 "text"
               ]
             }
+          },
+          "redacted": {
+            "type": "boolean"
           }
         },
         "required": [
           "hits"
+        ]
+      }
+    },
+    "security.encryption.migrate": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "plain",
+              "encrypted",
+              "decrypted"
+            ],
+            "default": "sealed"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "plain"
+            ]
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "files": {
+            "type": "integer"
+          },
+          "changed": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "to",
+          "dry_run",
+          "files",
+          "changed",
+          "unchanged",
+          "failed"
+        ]
+      }
+    },
+    "security.encryption.status": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "encrypt_state": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "keychain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readable": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "files": {
+            "type": "object",
+            "properties": {
+              "sealed": {
+                "type": "integer"
+              },
+              "plain": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sealed",
+              "plain"
+            ]
+          },
+          "covers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "not_covered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "redact_scrollback_index": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "encrypt_state",
+          "active",
+          "key_id",
+          "keychain",
+          "readable",
+          "error",
+          "files",
+          "covers",
+          "not_covered",
+          "redact_scrollback_index",
+          "note"
         ]
       }
     },
@@ -18432,6 +18601,231 @@
         "required": [
           "session",
           "stopped"
+        ]
+      }
+    },
+    "state.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          },
+          "plan": {
+            "type": "string"
+          },
+          "scrollback_only": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "scope": {},
+          "pane_ids": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan": {},
+          "dry_run": {
+            "type": "boolean"
+          },
+          "panes": {
+            "type": "integer"
+          },
+          "segments_deleted": {
+            "type": "integer"
+          },
+          "bytes_deleted": {
+            "type": "integer"
+          },
+          "fts_rows_deleted": {
+            "type": "integer"
+          },
+          "archive_panes_dropped": {
+            "type": "integer"
+          },
+          "assistant_purged": {
+            "type": "integer"
+          },
+          "scrollback_only": {
+            "type": "boolean"
+          },
+          "review": {
+            "$ref": "#/$defs/ReviewPurge"
+          },
+          "also": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "integer"
+              },
+              "blobs": {
+                "type": "object",
+                "properties": {
+                  "screenshots": {
+                    "type": "integer"
+                  },
+                  "files": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "screenshots",
+                  "files"
+                ]
+              },
+              "uploads": {
+                "type": "object",
+                "properties": {
+                  "removed": {
+                    "type": "integer"
+                  },
+                  "kept_shared": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "removed",
+                  "kept_shared"
+                ]
+              },
+              "drafts": {
+                "type": "object",
+                "properties": {
+                  "drafts": {
+                    "type": "integer"
+                  },
+                  "notes": {
+                    "type": "integer"
+                  },
+                  "failed": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "drafts",
+                  "notes",
+                  "failed"
+                ]
+              },
+              "assistant": {
+                "type": "object",
+                "properties": {
+                  "purged": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "by": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "purged",
+                  "by"
+                ]
+              },
+              "desk": {
+                "type": "object",
+                "properties": {
+                  "calls": {
+                    "type": "integer"
+                  },
+                  "rows": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "errors": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "calls",
+                  "rows"
+                ]
+              },
+              "snapshots": {
+                "type": "integer"
+              },
+              "events_tombstoned": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "items",
+              "blobs",
+              "uploads",
+              "drafts",
+              "assistant",
+              "desk",
+              "snapshots",
+              "events_tombstoned"
+            ]
+          },
+          "not_covered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "scope",
+          "pane_ids",
+          "plan",
+          "dry_run"
         ]
       }
     },
@@ -27718,6 +28112,34 @@
         ]
       }
     },
+    "security.encryption_migrated": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "plain"
+            ]
+          },
+          "files": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "to",
+          "files",
+          "failed"
+        ]
+      }
+    },
     "security.rate_limited": {
       "subject": {
         "type": "object",
@@ -27890,6 +28312,28 @@
         "required": [
           "pid",
           "reason"
+        ]
+      }
+    },
+    "state.forgotten": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "scope": {}
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "counts": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "counts"
         ]
       }
     },
@@ -29097,6 +29541,14 @@
         "type": "object"
       },
       "data": {}
+    },
+    "tombstone": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object"
+      }
     },
     "workspace.closed": {
       "subject": {

@@ -713,6 +713,12 @@ class Api:
     async def search_query(self, params: "t.SearchQueryParams") -> "t.SearchQueryResult":
         return await self.call("search.query", params)  # type: ignore[arg-type, return-value]
 
+    async def security_encryption_migrate(self, params: "Optional[t.SecurityEncryptionMigrateParams]" = None) -> "t.SecurityEncryptionMigrateResult":
+        return await self.call("security.encryption.migrate", params or {})  # type: ignore[arg-type, return-value]
+
+    async def security_encryption_status(self, params: "Optional[t.SecurityEncryptionStatusParams]" = None) -> "t.SecurityEncryptionStatusResult":
+        return await self.call("security.encryption.status", params or {})  # type: ignore[arg-type, return-value]
+
     async def server_reload_config(self, params: "Optional[t.ServerReloadConfigParams]" = None) -> "t.ServerReloadConfigResult":
         return await self.call("server.reload_config", params or {})  # type: ignore[arg-type, return-value]
 
@@ -739,6 +745,9 @@ class Api:
 
     async def session_stop(self, params: "t.SessionStopParams") -> "t.SessionStopResult":
         return await self.call("session.stop", params)  # type: ignore[arg-type, return-value]
+
+    async def state_forget(self, params: "Optional[t.StateForgetParams]" = None) -> "t.StateForgetResult":
+        return await self.call("state.forget", params or {})  # type: ignore[arg-type, return-value]
 
     async def status_segments(self, params: "Optional[t.StatusSegmentsParams]" = None) -> "t.StatusSegmentsResult":
         return await self.call("status.segments", params or {})  # type: ignore[arg-type, return-value]
