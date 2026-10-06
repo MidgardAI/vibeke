@@ -1030,3 +1030,275 @@ async fn remote_forget_and_retirement_revoke_the_route() {
     tokio::time::sleep(REMOTE_CHECK_TTL + Duration::from_millis(100)).await;
     assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 410);
 }
+
+// ---- tls_origin ---------------------------------------------------------------------------------
+
+/// One HTTPS request to the proxy; the client trusts only the preview CA (never the system).
+async fn https(port: u16, host: &str, path: &str, cookie: Option<&str>) -> (u16, String, String) {
+    let ca = crate::preview_ca::load().unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let name = rustls::pki_types::ServerName::try_from(host.to_string()).unwrap();
+    let mut s = tokio_rustls::TlsConnector::from(vk_preview::ca::client_config_trusting(&[ca
+        .cert_der()
+        .clone()]))
+    .connect(name, tcp)
+    .await
+    .expect("TLS handshake with the preview CA as the only root");
+    let ck = cookie
+        .map(|c| format!("Cookie: {}={c}\r\n", vk_preview::proxy::COOKIE))
+        .unwrap_or_default();
+    s.write_all(
+        format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\n{ck}Connection: close\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut out)).await;
+    let t = String::from_utf8_lossy(&out).into_owned();
+    let (head, body) = t.split_once("\r\n\r\n").unwrap_or((&t, ""));
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(0);
+    (status, head.to_string(), body.to_string())
+}
+
+fn split_url(url: &str, scheme: &str) -> (u16, String, String) {
+    let rest = url.strip_prefix(&format!("{scheme}://")).unwrap();
+    let (authority, path) = rest.split_at(rest.find('/').unwrap());
+    let (host, port) = authority.rsplit_once(':').unwrap();
+    (port.parse().unwrap(), host.to_string(), path.to_string())
+}
+
+#[tokio::test]
+async fn tls_origin_opens_an_https_origin_signed_by_the_local_ca() {
+    let e = Env::new();
+    let (port, seen) = app("secure-app").await;
+    let full = ctx_full();
+    let d = e
+        .call(
+            &full,
+            "preview.declare",
+            json!({"port": port, "path": "/dash", "label": "web"}),
+        )
+        .await
+        .unwrap();
+    let handle = d["preview"]["handle"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &full,
+            "preview.open",
+            json!({"preview": handle, "proxy": true, "no_open": true, "tls_origin": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["tls_origin"], true, "{r}");
+    let url = r["url"].as_str().unwrap().to_string();
+    assert!(
+        url.starts_with("https://") && url.ends_with("/dash"),
+        "{url}"
+    );
+    let open_url = r["open_url"].as_str().unwrap().to_string();
+    assert!(open_url.starts_with("https://") && open_url.contains("vk_token="));
+    // The CA is reported (public data only) and lives in a private directory; nothing installed it.
+    let ca_path = std::path::PathBuf::from(r["ca"]["path"].as_str().unwrap());
+    assert!(ca_path.exists());
+    assert_eq!(ca_path.parent().unwrap(), crate::preview_ca::ca_dir());
+    assert!(r["ca"]["sha256"].as_str().unwrap().contains(':'));
+    assert!(!r.to_string().contains("PRIVATE KEY"));
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(ca_path.parent().unwrap()), 0o700);
+    assert_eq!(mode(&ca_path.with_file_name("preview-ca-key.pem")), 0o600);
+
+    // Browser flow over https: token -> Secure cookie -> the app.
+    let (pport, host, path) = split_url(&open_url, "https");
+    let (st, head, _) = https(pport, &host, &path, None).await;
+    assert_eq!(st, 303, "{head}");
+    let lower = head.to_ascii_lowercase();
+    assert!(
+        lower.contains(&format!("location: https://{host}:{pport}/dash")),
+        "{head}"
+    );
+    let cookie_line = lower
+        .lines()
+        .find(|l| l.starts_with("set-cookie: __host-vk_preview="))
+        .unwrap()
+        .to_string();
+    assert!(
+        cookie_line.contains("; secure") && cookie_line.contains("httponly"),
+        "{cookie_line}"
+    );
+    let cookie = head
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("set-cookie: {}=", vk_preview::proxy::COOKIE)))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let (st, _, body) = https(pport, &host, "/dash", Some(&cookie)).await;
+    assert_eq!(st, 200);
+    assert_eq!(body, "<p>secure-app /dash</p>");
+    let up = seen
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(
+        up.contains(&format!("host: localhost:{port}")) && !up.contains("vk_"),
+        "{up}"
+    );
+    // Plain HTTP to the https origin is refused.
+    let (st, _, _) = http(pport, &format!("{host}:{pport}"), "/dash", None).await;
+    assert_eq!(st, 421);
+
+    // preview.url and preview.status show the https origin.
+    let u = e
+        .call(&full, "preview.url", json!({"preview": handle}))
+        .await
+        .unwrap();
+    assert_eq!(u["proxy_url"], url, "{u}");
+    let st = e.call(&full, "preview.status", json!({})).await.unwrap();
+    assert_eq!(st["proxy"]["tls"], true, "{st}");
+    assert_eq!(st["proxy"]["routes"][0]["tls"], true);
+
+    // Re-opening with tls_origin off switches the origin back to http and drops the old session.
+    let r2 = e
+        .call(
+            &full,
+            "preview.open",
+            json!({"preview": handle, "proxy": true, "no_open": true, "tls_origin": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r2["tls_origin"], false);
+    assert!(r2["url"].as_str().unwrap().starts_with("http://"), "{r2}");
+    assert!(r2.get("ca").is_none());
+    // The https origin is gone: no certificate is issued for it any more.
+    let ca = crate::preview_ca::load().unwrap();
+    let tcp = TcpStream::connect(("127.0.0.1", pport)).await.unwrap();
+    let name = rustls::pki_types::ServerName::try_from(host.clone()).unwrap();
+    let hs = tokio_rustls::TlsConnector::from(vk_preview::ca::client_config_trusting(&[ca
+        .cert_der()
+        .clone()]))
+    .connect(name, tcp)
+    .await;
+    assert!(hs.is_err());
+}
+
+#[tokio::test]
+async fn tls_origin_per_preview_and_repo_defaults() {
+    let e = Env::new();
+    let full = ctx_full();
+    // Per preview: declare remembers it; the global default (off) applies to the others.
+    let (p1, _) = app("one").await;
+    let (p2, _) = app("two").await;
+    let h = |d: &Value| d["preview"]["handle"].as_str().unwrap().to_string();
+    let d1 = e
+        .call(
+            &full,
+            "preview.declare",
+            json!({"port": p1, "tls_origin": true}),
+        )
+        .await
+        .unwrap();
+    let d2 = e
+        .call(&full, "preview.declare", json!({"port": p2}))
+        .await
+        .unwrap();
+    let open = |handle: String| {
+        let e = &e;
+        let full = &full;
+        async move {
+            e.call(
+                full,
+                "preview.open",
+                json!({"preview": handle, "proxy": true, "no_open": true}),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let r1 = open(h(&d1)).await;
+    assert_eq!(r1["tls_origin"], true, "{r1}");
+    assert!(r1["url"].as_str().unwrap().starts_with("https://"));
+    let r2 = open(h(&d2)).await;
+    assert_eq!(r2["tls_origin"], false);
+    assert!(r2["url"].as_str().unwrap().starts_with("http://"));
+    // The setting is stored with the session (survives a re-open without the parameter).
+    assert_eq!(
+        tls_origin_of(&e.server, d1["preview"]["id"].as_str().unwrap()),
+        Some(true)
+    );
+    assert_eq!(
+        tls_origin_of(&e.server, d2["preview"]["id"].as_str().unwrap()),
+        None
+    );
+    // The https and the http origin share one proxy port.
+    assert_eq!(r1["proxy_port"], r2["proxy_port"]);
+
+    // Repo `[previews] tls_origin = true` is the default for task previews; an entry overrides.
+    let checkout = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(checkout.path().join(".vibeke")).unwrap();
+    std::fs::write(
+        checkout.path().join(".vibeke/task.toml"),
+        "[ports]\nenv = { PORT = 0, API_PORT = 3 }\n\n[previews]\ntls_origin = true\nweb = { port_env = \"PORT\" }\napi = { port_env = \"API_PORT\", tls_origin = false }\n",
+    )
+    .unwrap();
+    let lease = vk_tasks::Lease {
+        start: 23470,
+        end: 23479,
+        task_id: "task-tls".into(),
+        session: "t".into(),
+        owner_pid: None,
+        created_at: 0,
+    };
+    let task = Task {
+        id: "task-tls".into(),
+        handle: "k9".into(),
+        title: "t".into(),
+        slug: "tls".into(),
+        port_range: Some((23470, 23479)),
+        ..Default::default()
+    };
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.task(task.clone());
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    let v = declare_task_previews(
+        &e.server,
+        &full,
+        &task,
+        "pane-a",
+        checkout.path(),
+        Some(&lease),
+        &json!({}),
+    );
+    let by = |n: &str| {
+        v["previews"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == n)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    assert!(
+        by("web")["port"] == 23470 && by("api")["port"] == 23473,
+        "{v}"
+    );
+    assert!(v["warnings"].as_array().unwrap().is_empty(), "{v}");
+    let web = open(by("web")["handle"].as_str().unwrap().to_string()).await;
+    let api = open(by("api")["handle"].as_str().unwrap().to_string()).await;
+    assert_eq!(web["tls_origin"], true, "{web}");
+    assert!(web["url"].as_str().unwrap().starts_with("https://"));
+    assert_eq!(api["tls_origin"], false, "{api}");
+    assert!(api["url"].as_str().unwrap().starts_with("http://"));
+}

@@ -16,7 +16,11 @@
 //! (`__Host-vk_preview`: HttpOnly, SameSite=Strict, Secure, host-only, `Path=/`). There is no
 //! non-`Secure` copy: a non-`Secure` cookie can be read by any other local listener that
 //! serves the same hostname on another port. Browsers that drop `Secure` cookies on
-//! `http://*.localhost` cannot use proxy mode (use the browser profile instead). Every
+//! `http://*.localhost` cannot use proxy mode (use the browser profile instead). A route with
+//! `tls: true` (`preview.tls_origin`) is served over HTTPS on the same port: [`Proxy::set_tls`]
+//! enables it, a connection starting with a TLS handshake record goes through rustls (a
+//! certificate from the local CA, [`crate::ca`], chosen by SNI for registered `tls` hosts only),
+//! anything else is plain HTTP; the two kinds of route never answer each other's connections. Every
 //! request — including WebSocket upgrades — must carry a session of *that* host. Only SHA-256
 //! digests of tokens and sessions are kept, in memory (a server restart revokes everything).
 //!
@@ -84,6 +88,10 @@ pub struct Route {
     pub port: u16,
     /// `http` | `https` (TLS to the loopback upstream, certificate not verified).
     pub scheme: String,
+    /// `preview.tls_origin`: this origin is served over HTTPS (`https://<host>:<port>`, a leaf
+    /// certificate from the local CA) instead of plain HTTP. Plain-HTTP requests to such a
+    /// host are refused (`421`), and the other way round.
+    pub tls: bool,
 }
 
 /// Whether a route still points at the preview it was opened for.
@@ -143,6 +151,8 @@ pub struct Proxy {
     state: Mutex<State>,
     port: AtomicU16,
     upstream: Arc<dyn Upstream>,
+    /// TLS for `tls_origin` routes on the same port (see [`Proxy::set_tls`]).
+    tls: Mutex<Option<tokio_rustls::TlsAcceptor>>,
     requests: AtomicU64,
     denied: AtomicU64,
     websockets: AtomicU64,
@@ -454,6 +464,7 @@ impl Proxy {
             state: Mutex::default(),
             port: AtomicU16::new(0),
             upstream,
+            tls: Mutex::new(None),
             requests: AtomicU64::new(0),
             denied: AtomicU64::new(0),
             websockets: AtomicU64::new(0),
@@ -473,9 +484,35 @@ impl Proxy {
         }
     }
 
-    /// `http://<host>:<port>`.
+    /// Serve `tls: true` routes over TLS on the same port: each accepted connection whose first
+    /// byte is a TLS handshake record (`0x16`; an HTTP request never starts with it) is handed
+    /// to this config, anything else is plain HTTP as before.
+    pub fn set_tls(&self, config: Arc<rustls::ServerConfig>) {
+        *self.tls.lock().unwrap() = Some(tokio_rustls::TlsAcceptor::from(config));
+    }
+
+    pub fn tls_enabled(&self) -> bool {
+        self.tls.lock().unwrap().is_some()
+    }
+
+    /// Whether `host` is the hostname of a registered `tls` route (the SNI allow-list).
+    pub fn is_tls_host(&self, host: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .by_host
+            .get(host)
+            .is_some_and(|e| e.route.tls)
+    }
+
+    /// `http://<host>:<port>`, or `https://…` for a `tls` route.
     pub fn origin(&self, host: &str) -> String {
-        format!("http://{host}:{}", self.port())
+        let tls = self.is_tls_host(host);
+        format!(
+            "{}://{host}:{}",
+            if tls { "https" } else { "http" },
+            self.port()
+        )
     }
 
     /// Register (or refresh) a preview's origin. `route.host` is the wanted hostname; the
@@ -487,7 +524,10 @@ impl Proxy {
         if let Some(h) = st.by_preview.get(&key).cloned()
             && let Some(e) = st.by_host.get_mut(&h)
         {
-            if e.route.port != route.port || e.route.scheme != route.scheme {
+            if e.route.port != route.port
+                || e.route.scheme != route.scheme
+                || e.route.tls != route.tls
+            {
                 // The preview moved: old sessions don't carry over.
                 e.sessions.clear();
                 e.tokens.clear();
@@ -584,7 +624,7 @@ impl Proxy {
         Some(t)
     }
 
-    /// `http://<host>:<port><path>` (+ `?vk_token=…`).
+    /// `http(s)://<host>:<port><path>` (+ `?vk_token=…`).
     pub fn url(&self, host: &str, path: &str, token: Option<&str>) -> String {
         let path = if path.starts_with('/') {
             path.to_string()
@@ -688,19 +728,45 @@ impl Proxy {
                         continue; // unreachable for a loopback bind; defensive
                     }
                     let _ = s.set_nodelay(true);
-                    tokio::spawn(me.clone().serve_conn(s, peer));
+                    tokio::spawn(me.clone().accept_conn(s, peer));
                 }
             });
         }
     }
 
-    async fn serve_conn(self: Arc<Self>, s: tokio::net::TcpStream, _peer: SocketAddr) {
+    /// Plain HTTP, or TLS when a TLS acceptor is set and the client starts a handshake.
+    async fn accept_conn(self: Arc<Self>, s: tokio::net::TcpStream, peer: SocketAddr) {
+        let acceptor = self.tls.lock().unwrap().clone();
+        let Some(acceptor) = acceptor else {
+            return self.serve_conn(s, peer, false).await;
+        };
+        let mut first = [0u8; 1];
+        let peeked = tokio::time::timeout(Duration::from_secs(30), s.peek(&mut first)).await;
+        if !matches!(peeked, Ok(Ok(1))) {
+            return;
+        }
+        if first[0] != 0x16 {
+            return self.serve_conn(s, peer, false).await;
+        }
+        match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(s)).await {
+            Ok(Ok(t)) => self.serve_conn(t, peer, true).await,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "preview proxy: TLS handshake failed");
+            }
+            Err(_) => {}
+        }
+    }
+
+    async fn serve_conn<S>(self: Arc<Self>, s: S, _peer: SocketAddr, secure: bool)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let slot: Slot = Arc::new(tokio::sync::Mutex::new(None));
         let me = self.clone();
         let svc = hyper::service::service_fn(move |req| {
             let me = me.clone();
             let slot = slot.clone();
-            async move { Ok::<_, std::convert::Infallible>(me.handle(req, slot).await) }
+            async move { Ok::<_, std::convert::Infallible>(me.handle(req, slot, secure).await) }
         });
         let _ = hyper::server::conn::http1::Builder::new()
             .timer(TokioTimer::new())
@@ -715,7 +781,12 @@ impl Proxy {
         page(status, title, text)
     }
 
-    async fn handle(self: Arc<Self>, mut req: Request<Incoming>, slot: Slot) -> Response<Body> {
+    async fn handle(
+        self: Arc<Self>,
+        mut req: Request<Incoming>,
+        slot: Slot,
+        secure: bool,
+    ) -> Response<Body> {
         self.requests.fetch_add(1, Ordering::Relaxed);
         let host_hdr = req
             .headers()
@@ -731,16 +802,24 @@ impl Proxy {
             );
         };
         let route = match self.route(&host) {
-            Some(r) if port == Some(self.port()) => r,
+            Some(r) if port == Some(self.port()) && r.tls == secure => r,
             _ => {
                 return self.deny(
                     StatusCode::MISDIRECTED_REQUEST,
                     "Unknown preview host",
-                    "This host is not a preview origin of this Vibeke proxy.",
+                    if secure {
+                        "This host is not an https preview origin of this Vibeke proxy."
+                    } else {
+                        "This host is not a preview origin of this Vibeke proxy (a tls_origin preview is served over https only)."
+                    },
                 );
             }
         };
-        let own_origin = self.origin(&host);
+        let own_origin = format!(
+            "{}://{host}:{}",
+            if route.tls { "https" } else { "http" },
+            self.port()
+        );
         let how_to = format!(
             "Open it with `vibeke preview open {}{} --proxy`.",
             if route.machine.is_empty() || route.machine == "local" {

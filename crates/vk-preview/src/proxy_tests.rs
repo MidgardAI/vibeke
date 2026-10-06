@@ -155,6 +155,7 @@ async fn fixture() -> Fixture {
         handle: handle.into(),
         port,
         scheme: "http".into(),
+        tls: false,
     };
     let a = proxy.register(route("01A", "v4", 5173, "fix-login"));
     let b = proxy.register(route("01B", "v5", 5174, "fix-login"));
@@ -852,6 +853,7 @@ async fn https_upstream_with_a_self_signed_certificate() {
         handle: "v9".into(),
         port: 8443,
         scheme: "https".into(),
+        tls: false,
     });
     let port = proxy.port();
     let t = proxy.mint_token(&r.host).unwrap();
@@ -879,4 +881,332 @@ async fn https_upstream_with_a_self_signed_certificate() {
     let seen = srv.requests.lock().unwrap().join("\n").to_ascii_lowercase();
     assert!(seen.contains("host: localhost:8443"), "{seen}");
     assert!(!seen.contains("vk_"), "{seen}");
+}
+
+// ---- tls_origin (https://<host>.vibeke.localhost:<port>) --------------------------------------
+
+struct TlsFixture {
+    proxy: Arc<Proxy>,
+    ca: Arc<crate::ca::LocalCa>,
+    route: Route,
+    seen: Seen,
+    plain: Route,
+    _dir: tempfile::TempDir,
+}
+
+async fn tls_fixture() -> TlsFixture {
+    let dir = tempfile::tempdir().unwrap();
+    let ca = crate::ca::LocalCa::load_or_create(&dir.path().join("tls")).unwrap();
+    let up = Arc::new(FakeUpstream {
+        map: StdMutex::new(HashMap::new()),
+        connects: AtomicU64::new(0),
+        gone: StdMutex::new(vec![]),
+        checks: AtomicU64::new(0),
+    });
+    let proxy = Proxy::new(up.clone());
+    let weak = Arc::downgrade(&proxy);
+    let resolver = crate::ca::SniResolver::new(ca.clone(), move |h| {
+        weak.upgrade().is_some_and(|p| p.is_tls_host(h))
+    });
+    proxy.set_tls(crate::ca::server_config(Arc::new(resolver)));
+    proxy.serve(Proxy::bind(0).await.unwrap());
+    let (pa, seen, _) = upstream(5173).await;
+    let (pb, _, _) = upstream(5174).await;
+    up.map.lock().unwrap().insert(5173, pa);
+    up.map.lock().unwrap().insert(5174, pb);
+    let mk = |id: &str, handle: &str, port: u16, tls: bool| Route {
+        host: hostname_for(handle, None, Some("app"), "s0123456789"),
+        machine: "local".into(),
+        preview: id.into(),
+        handle: handle.into(),
+        port,
+        scheme: "http".into(),
+        tls,
+    };
+    let route = proxy.register(mk("01T", "v1", 5173, true));
+    let plain = proxy.register(mk("01P", "v2", 5174, false));
+    TlsFixture {
+        proxy,
+        ca,
+        route,
+        seen,
+        plain,
+        _dir: dir,
+    }
+}
+
+async fn tls_connect(
+    port: u16,
+    trusted: &[rustls::pki_types::CertificateDer<'static>],
+    sni: &str,
+) -> std::io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await?;
+    let name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+    tokio_rustls::TlsConnector::from(crate::ca::tests::client_trusting(trusted))
+        .connect(name, tcp)
+        .await
+}
+
+/// One request over TLS (SNI = `sni`), the client trusting only `trusted`.
+async fn tls_send(
+    port: u16,
+    trusted: &[rustls::pki_types::CertificateDer<'static>],
+    sni: &str,
+    raw: String,
+) -> std::io::Result<Resp> {
+    let mut s = tls_connect(port, trusted, sni).await?;
+    s.write_all(raw.as_bytes()).await?;
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut out)).await;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    Ok(Resp {
+        status,
+        head: head.to_string(),
+        body: body.to_string(),
+    })
+}
+
+#[tokio::test]
+async fn tls_origin_serves_https_with_secure_cookies_and_https_origins() {
+    let f = tls_fixture().await;
+    let port = f.proxy.port();
+    let trusted = [f.ca.cert_der().clone()];
+    let host = f.route.host.clone();
+    let own = format!("https://{host}:{port}");
+    assert_eq!(f.proxy.origin(&host), own);
+    assert!(f.proxy.origin(&f.plain.host).starts_with("http://"));
+    assert_eq!(
+        f.proxy.url(&host, "/a?b=1#c", Some("TOK")),
+        format!("{own}/a?b=1&vk_token=TOK#c")
+    );
+
+    // No credential over https: 401 page (the handshake itself verified against our CA only).
+    let r = tls_send(port, &trusted, &host, get(&host, port, "/", ""))
+        .await
+        .unwrap();
+    assert_eq!(r.status, 401, "{}", r.head);
+
+    // Token exchange: 303 to the https origin, one Secure/HttpOnly/SameSite=Strict host-only
+    // `__Host-` cookie.
+    let t = f.proxy.mint_token(&host).unwrap();
+    let r = tls_send(
+        port,
+        &trusted,
+        &host,
+        get(&host, port, &format!("/p?x=1&{TOKEN_PARAM}={t}"), ""),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 303, "{}", r.head);
+    assert_eq!(r.header("location").unwrap(), format!("{own}/p?x=1"));
+    let cookies = r.header_values("set-cookie");
+    assert_eq!(cookies.len(), 1, "{cookies:?}");
+    let c = &cookies[0];
+    assert!(c.starts_with("__Host-vk_preview="), "{c}");
+    for attr in ["Secure", "HttpOnly", "SameSite=Strict", "Path=/"] {
+        assert!(c.contains(attr), "{attr} missing: {c}");
+    }
+    assert!(!c.to_ascii_lowercase().contains("domain"), "{c}");
+    let sess = c.split(';').next().unwrap().to_string();
+
+    // Authenticated request: forwarded with rewritten Host/Origin/Referer, reserved cookies
+    // stripped; response cookies host-only, Location/ACAO mapped to the https origin.
+    let extra = format!(
+        "Cookie: {sess}; app=1\r\nOrigin: {own}\r\nReferer: {own}/prev\r\nSec-Fetch-Site: same-origin\r\n"
+    );
+    let r = tls_send(port, &trusted, &host, get(&host, port, "/hello", &extra))
+        .await
+        .unwrap();
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert!(r.body.contains("hello /hello"), "{}", r.body);
+    let up = f.seen.last().to_ascii_lowercase();
+    assert!(up.contains("host: localhost:5173"), "{up}");
+    assert!(up.contains("referer: http://localhost:5173/prev"), "{up}");
+    assert!(
+        !up.contains("vk_preview") && !up.contains("__host-"),
+        "{up}"
+    );
+    assert!(up.contains("cookie: app=1"), "{up}");
+    assert!(
+        r.header_values("set-cookie")
+            .iter()
+            .all(|c| !c.to_ascii_lowercase().contains("domain=") && !c.contains("evil")),
+        "{:?}",
+        r.header_values("set-cookie")
+    );
+    assert_eq!(r.header("access-control-allow-origin").unwrap(), own);
+    let r = tls_send(
+        port,
+        &trusted,
+        &host,
+        get(&host, port, "/redirect", &format!("Cookie: {sess}\r\n")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 302);
+    assert_eq!(r.header("location").unwrap(), format!("{own}/next?a=1"));
+
+    // The plain-http spelling of the origin is a foreign Origin for unsafe methods.
+    let r = tls_send(
+        port,
+        &trusted,
+        &host,
+        format!(
+            "POST /post HTTP/1.1\r\nHost: {host}:{port}\r\nCookie: {sess}\r\nOrigin: http://{host}:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 403, "{}", r.head);
+}
+
+#[tokio::test]
+async fn tls_and_plain_origins_do_not_cross() {
+    let f = tls_fixture().await;
+    let port = f.proxy.port();
+    let trusted = [f.ca.cert_der().clone()];
+    // Plain HTTP to a tls_origin host: refused before any credential matters.
+    let t = f.proxy.mint_token(&f.route.host).unwrap();
+    let r = send(
+        port,
+        get(&f.route.host, port, &format!("/?{TOKEN_PARAM}={t}"), ""),
+    )
+    .await;
+    assert_eq!(r.status, 421, "{}", r.head);
+    assert!(r.header_values("set-cookie").is_empty());
+    assert!(r.body.contains("https"), "{}", r.body);
+    // The token was not consumed by the refused plain request.
+    let r = tls_send(
+        port,
+        &trusted,
+        &f.route.host,
+        get(&f.route.host, port, &format!("/?{TOKEN_PARAM}={t}"), ""),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 303);
+    // https to a plain route's host: no certificate (not a tls route), the handshake fails.
+    assert!(
+        tls_send(
+            port,
+            &trusted,
+            &f.plain.host,
+            get(&f.plain.host, port, "/", "")
+        )
+        .await
+        .is_err()
+    );
+    // https with a tls route's SNI but another route's Host header: 421.
+    let r = tls_send(
+        port,
+        &trusted,
+        &f.route.host,
+        get(&f.plain.host, port, "/", ""),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 421, "{}", r.head);
+    // The plain route still works over HTTP, with a Secure cookie as before.
+    let t = f.proxy.mint_token(&f.plain.host).unwrap();
+    let r = send(
+        port,
+        get(&f.plain.host, port, &format!("/?{TOKEN_PARAM}={t}"), ""),
+    )
+    .await;
+    assert_eq!(r.status, 303);
+    assert!(r.header("location").unwrap().starts_with("http://"));
+    assert!(r.header_values("set-cookie")[0].contains("Secure"));
+}
+
+#[tokio::test]
+async fn tls_clients_must_trust_our_ca_and_name_a_registered_host() {
+    let f = tls_fixture().await;
+    let port = f.proxy.port();
+    // A client that trusts a different CA refuses the proxy's certificate.
+    let other = tempfile::tempdir().unwrap();
+    let other_ca = crate::ca::LocalCa::load_or_create(other.path()).unwrap();
+    assert!(
+        tls_connect(port, &[other_ca.cert_der().clone()], &f.route.host)
+            .await
+            .is_err()
+    );
+    let trusted = [f.ca.cert_der().clone()];
+    // An unregistered name inside the constraint gets no certificate (and none is minted).
+    let before = f.ca.cached();
+    assert!(
+        tls_connect(port, &trusted, "unknown.vibeke.localhost")
+            .await
+            .is_err()
+    );
+    assert_eq!(f.ca.cached(), before);
+    // Revoking the route removes its https origin: no certificate any more.
+    f.proxy.remove_preview("local", "01T");
+    assert!(tls_connect(port, &trusted, &f.route.host).await.is_err());
+}
+
+#[tokio::test]
+async fn websocket_over_tls_is_tunnelled() {
+    let f = tls_fixture().await;
+    let port = f.proxy.port();
+    let trusted = [f.ca.cert_der().clone()];
+    let host = f.route.host.clone();
+    let own = format!("https://{host}:{port}");
+    let t = f.proxy.mint_token(&host).unwrap();
+    let r = tls_send(
+        port,
+        &trusted,
+        &host,
+        get(&host, port, &format!("/?{TOKEN_PARAM}={t}"), ""),
+    )
+    .await
+    .unwrap();
+    let sess = r.header_values("set-cookie")[0]
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let upgrade = |origin: &str, path: &str| {
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nCookie: {sess}\r\nOrigin: {origin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        )
+    };
+
+    let mut s = tls_connect(port, &trusted, &host).await.unwrap();
+    s.write_all(upgrade(&own, "/ws?token=hmr").as_bytes())
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match s.read(&mut b).await {
+            Ok(1) => head.push(b[0]),
+            _ => break,
+        }
+    }
+    let head = String::from_utf8_lossy(&head).to_string();
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    // After the 101 the connection is a raw tunnel to the app (it echoes).
+    s.write_all(b"ping over tls").await.unwrap();
+    let mut echo = [0u8; 13];
+    tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut echo))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&echo, b"ping over tls");
+    assert_eq!(f.proxy.stats().websockets, 1);
+
+    // A foreign origin on a WebSocket upgrade over https is refused.
+    let mut s = tls_connect(port, &trusted, &host).await.unwrap();
+    s.write_all(upgrade("https://evil.example", "/ws").as_bytes())
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
+    assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403"));
 }

@@ -705,7 +705,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "declare",
         "preview.declare",
         &["port"],
-        "--port N [--path /p] [--label l] [--pane p] [--task k]",
+        "--port N [--path /p] [--label l] [--pane p] [--task k] [--tls-origin | --no-tls-origin] (proxy mode: serve this preview over https)",
     ),
     (
         "preview",
@@ -720,7 +720,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "open",
         "preview.open",
         &["preview"],
-        "<v4|devbox/v4|url> [--split right|down|tab|float | --window | --proxy [--no-open]] [--pane p] [--machine m] [--viewport WxH | --device iphone-15]",
+        "<v4|devbox/v4|url> [--split right|down|tab|float | --window | --proxy [--no-open] [--tls-origin | --no-tls-origin]] [--pane p] [--machine m] [--viewport WxH | --device iphone-15]",
     ),
     ("preview", "url", "preview.url", &["preview"], ""),
     (
@@ -751,6 +751,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "screenshot.list",
         &["preview"],
         "<v4|devbox/v4> [--no-image] the latest screenshot of a preview, inline (kitty graphics, iTerm2) or path + metadata",
+    ),
+    (
+        "preview",
+        "trust-ca",
+        "preview.trust_ca",
+        &[],
+        "[--install] [--path] print the CA file, fingerprint and per-OS instructions to trust the tls_origin CA (local; never installs without --install and a typed confirmation)",
     ),
     (
         "preview",
@@ -1760,6 +1767,13 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 v["preview"].as_str().unwrap_or(""),
                 v["url"].as_str().unwrap_or("")
             );
+            if v["tls_origin"] == true {
+                out.push_str(&format!(
+                    "\nhttps origin signed by the local preview CA ({}, sha256 {}); the browser must trust it: `vibeke preview trust-ca`",
+                    v["ca"]["path"].as_str().unwrap_or("?"),
+                    v["ca"]["sha256"].as_str().unwrap_or("?"),
+                ));
+            }
             if v["opened"] != true
                 && let Some(u) = v["open_url"].as_str()
             {

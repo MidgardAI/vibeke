@@ -35,6 +35,9 @@ pub struct PreviewSpec {
     pub path: Option<String>,
     pub label: Option<String>,
     pub scheme: Option<String>,
+    /// Serve this preview over https in proxy mode (06 B4 `tls_origin`); `None` = the
+    /// `[previews]` default, then the global `[preview] tls_origin`.
+    pub tls_origin: Option<bool>,
 }
 
 /// A task preview with its port resolved from the lease.
@@ -45,6 +48,8 @@ pub struct ResolvedPreview {
     pub path: String,
     pub label: String,
     pub scheme: String,
+    /// Per-preview `tls_origin` (entry, else the `[previews]` default); `None` = global setting.
+    pub tls_origin: Option<bool>,
     /// How the port was chosen (`PORT`, `offset 5`, `port 3000`).
     pub from: String,
 }
@@ -66,6 +71,10 @@ pub fn parse_previews(table: &Value) -> (Vec<PreviewSpec>, Vec<String>) {
         return (out, warn);
     };
     for (name, v) in t {
+        // `[previews] tls_origin = true`: the table-wide default, not an entry.
+        if name == "tls_origin" && v.is_boolean() {
+            continue;
+        }
         let mut s = PreviewSpec {
             name: name.clone(),
             ..Default::default()
@@ -80,6 +89,7 @@ pub fn parse_previews(table: &Value) -> (Vec<PreviewSpec>, Vec<String>) {
                 s.path = str_of("path");
                 s.label = str_of("label");
                 s.scheme = str_of("scheme");
+                s.tls_origin = o.get("tls_origin").and_then(Value::as_bool);
             }
             _ => {
                 warn.push(format!(
@@ -95,6 +105,11 @@ pub fn parse_previews(table: &Value) -> (Vec<PreviewSpec>, Vec<String>) {
         out.push(s);
     }
     (out, warn)
+}
+
+/// The table-wide `[previews] tls_origin = true|false` default, if set.
+pub fn previews_tls_default(table: &Value) -> Option<bool> {
+    table.get("tls_origin").and_then(Value::as_bool)
 }
 
 /// `[ports] env = { NAME = offset }` → (name, offset). `PORT` defaults to offset 0.
@@ -247,6 +262,7 @@ pub fn resolve_previews(
             path,
             label: s.label.clone().unwrap_or_else(|| s.name.clone()),
             scheme,
+            tls_origin: s.tls_origin,
             from,
         });
     }
@@ -341,6 +357,29 @@ mod tests {
         assert_eq!(by("api").label, "API");
         assert_eq!(by("docs").port, 20015);
         assert_eq!(by("sb").port, 20017);
+    }
+
+    #[test]
+    fn tls_origin_per_entry_and_table_default() {
+        let table = json!({
+            "tls_origin": true,
+            "web": {"port_env": "PORT", "tls_origin": true},
+            "api": {"offset": 1, "tls_origin": false},
+            "plain": {"offset": 2},
+        });
+        assert_eq!(previews_tls_default(&table), Some(true));
+        assert_eq!(previews_tls_default(&json!({"web": "PORT"})), None);
+        // The table-wide key is not an entry (and not a warning).
+        let (specs, w) = parse_previews(&table);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(specs.len(), 3);
+        let (r, w) = resolve_previews(&specs, Some(&lease()), &port_env_offsets(None), false);
+        assert!(w.is_empty(), "{w:?}");
+        let by = |n: &str| r.iter().find(|x| x.name == n).unwrap().tls_origin;
+        assert_eq!(
+            (by("web"), by("api"), by("plain")),
+            (Some(true), Some(false), None)
+        );
     }
 
     #[test]

@@ -303,6 +303,11 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        // `vibeke preview trust-ca [--install]`: local only (no server): prints how to trust the
+        // preview CA; `--install` (macOS) asks for a typed confirmation first.
+        Some("preview") if args.get(1).map(String::as_str) == Some("trust-ca") => {
+            vk_server::preview_ca::run(&args[2..])
+        }
         Some("preview") if args.get(1).map(String::as_str) == Some("show") => {
             let params = match vk_cli::build_params(&["preview"], &args[2..]) {
                 Ok(p) => p,

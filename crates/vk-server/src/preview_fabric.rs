@@ -179,6 +179,64 @@ pub(crate) fn session_host_tag(server: &Server) -> String {
     t
 }
 
+/// Per-preview `tls_origin` (set by `preview.declare {tls_origin}` / a task preview entry),
+/// persisted in the session store; `None` = not set for this preview.
+pub(crate) fn tls_origin_of(server: &Server, preview_id: &str) -> Option<bool> {
+    let c = server.core.lock().unwrap();
+    c.store
+        .kv_get("preview", &format!("tls_origin:{preview_id}"))
+        .ok()
+        .flatten()
+        .map(|v| v == "1")
+}
+
+pub(crate) fn set_tls_origin(server: &Server, preview_id: &str, on: bool) {
+    let mut c = server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.m.kv(
+        "preview",
+        &format!("tls_origin:{preview_id}"),
+        Some(if on { "1" } else { "0" }.to_string()),
+    );
+    let _ = c.commit(tx);
+}
+
+/// Make the proxy serve `tls_origin` routes: load (or, on first use, generate) the per-user
+/// local CA and give the proxy a resolver that issues a short-lived leaf only for the hostname
+/// of a registered `tls` route. Same port as plain HTTP (the proxy tells a TLS handshake from an
+/// HTTP request by the first byte). Never touches a trust store (06 B4; `vibeke preview
+/// trust-ca` is the user's explicit step).
+pub(crate) fn ensure_tls(
+    server: &Server,
+    proxy: &Arc<Proxy>,
+) -> Result<Arc<vk_preview::ca::LocalCa>, RpcError> {
+    let mut g = server.previews.tls_ca.lock().unwrap();
+    if let Some(ca) = g.as_ref()
+        && proxy.tls_enabled()
+    {
+        return Ok(ca.clone());
+    }
+    let ca = crate::preview_ca::load().map_err(|e| {
+        err(
+            ErrorKind::Internal,
+            format!("tls_origin: the local CA is unavailable: {e}"),
+        )
+    })?;
+    let weak = Arc::downgrade(proxy);
+    proxy.set_tls(vk_preview::ca::server_config(Arc::new(
+        vk_preview::ca::SniResolver::new(ca.clone(), move |host| {
+            weak.upgrade().is_some_and(|p| p.is_tls_host(host))
+        }),
+    )));
+    tracing::info!(
+        ca = %ca.ca_path().display(),
+        fingerprint = %ca.fingerprint_sha256(),
+        "preview proxy: tls_origin enabled (the CA is not installed anywhere; `vibeke preview trust-ca`)"
+    );
+    *g = Some(ca.clone());
+    Ok(ca)
+}
+
 /// Start the proxy once on `preview.proxy_port` (default 47800): 127.0.0.1 and `[::1]`. The
 /// port is machine-wide: when it is busy (another session's proxy, or anything else on either
 /// loopback address) the proxy does not start — there is no silent fallback, the user picks
@@ -250,6 +308,7 @@ pub(crate) async fn proxy_status(server: &Server) -> Value {
         None => Value::Null,
         Some(p) => json!({
             "port": p.port(),
+            "tls": p.tls_enabled(),
             "routes": p.routes(),
             "stats": p.stats(),
         }),
@@ -363,6 +422,16 @@ pub(crate) async fn open_proxy(
         .unwrap()
         .unwrap_or(cfg.proxy_port);
     let proxy = ensure_proxy(server, port).await?;
+    // tls_origin: this open's explicit choice, else the preview's own (declare / task
+    // `[previews]`, local previews), else the global `[preview] tls_origin`.
+    let tls = b(p, "tls_origin")
+        .or_else(|| local.then(|| tls_origin_of(server, &pv.id)).flatten())
+        .unwrap_or(cfg.tls_origin);
+    let ca = if tls {
+        Some(ensure_tls(server, &proxy)?)
+    } else {
+        None
+    };
     let route = proxy.register(Route {
         host: wanted,
         machine: label.clone(),
@@ -375,6 +444,7 @@ pub(crate) async fn open_proxy(
             "http"
         }
         .into(),
+        tls,
     });
     let token = proxy
         .mint_token(&route.host)
@@ -415,9 +485,19 @@ pub(crate) async fn open_proxy(
         "preview": pv.handle,
         "opened": opened,
         "token_ttl_s": proxy::TOKEN_TTL.as_secs(),
+        "tls_origin": tls,
         "remote_url": pv.url,
         "caveats": "Proxy mode rewrites Host/Origin; HMR clients with a hard-coded host/clientPort bypass the proxy, cookies for plain localhost don't apply. Prefer the browser profile (pane/window).",
     });
+    if let Some(ca) = &ca {
+        // Public information only (the CA certificate path and fingerprint, never the key).
+        out["ca"] = json!({
+            "path": ca.ca_path(),
+            "sha256": ca.fingerprint_sha256(),
+            "spki_sha256": ca.spki_sha256_base64(),
+            "trust": "run `vibeke preview trust-ca` for instructions; Vibeke never installs it by itself",
+        });
+    }
     if full_scope {
         out["open_url"] = json!(open_url);
     }
@@ -788,11 +868,22 @@ pub(crate) fn declare_task_previews(
     let (repo_specs, mut warnings) = vk_tasks::parse_previews(&repo);
     let (mut resolved, w) = vk_tasks::resolve_previews(&repo_specs, lease, &offsets, false);
     warnings.extend(w);
+    // `[previews] tls_origin = true`: the table-wide default for entries that don't say.
+    if let Some(d) = vk_tasks::previews_tls_default(&repo) {
+        for x in &mut resolved {
+            x.tls_origin = x.tls_origin.or(Some(d));
+        }
+    }
     if let Some(user) = p.get("previews").filter(|v| !v.is_null()) {
         let (specs, w) = vk_tasks::parse_previews(user);
         warnings.extend(w);
-        let (r, w) = vk_tasks::resolve_previews(&specs, lease, &offsets, true);
+        let (mut r, w) = vk_tasks::resolve_previews(&specs, lease, &offsets, true);
         warnings.extend(w);
+        if let Some(d) = vk_tasks::previews_tls_default(user) {
+            for x in &mut r {
+                x.tls_origin = x.tls_origin.or(Some(d));
+            }
+        }
         for x in r {
             // The caller's definition replaces the repo's of the same name.
             resolved.retain(|y| y.name != x.name && y.port != x.port);
@@ -802,7 +893,7 @@ pub(crate) fn declare_task_previews(
     resolved.truncate(vk_tasks::MAX_TASK_PREVIEWS);
     let mut declared = Vec::new();
     for r in resolved {
-        let params = json!({
+        let mut params = json!({
             "port": r.port,
             "path": r.path,
             "label": r.label,
@@ -810,6 +901,9 @@ pub(crate) fn declare_task_previews(
             "task": task.id,
             "pane": pane,
         });
+        if let Some(t) = r.tls_origin {
+            params["tls_origin"] = json!(t);
+        }
         match crate::preview::declare(server, ctx, &params) {
             Ok(v) => {
                 let mut pv = v["preview"].clone();
