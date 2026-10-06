@@ -629,14 +629,6 @@ async fn run_inner(
             events = EventStream::new();
             crate::appearance::on_detect(&mut app, det);
         }
-        // A clipboard image for a browser pane (`prefix+shift+v`): the host terminal answers
-        // OSC 5522 on stdin, so the event reader is stopped while it does.
-        if let Some(pane) = crate::browser_io::take_clip_read(&mut app) {
-            drop(events);
-            let img = crate::browser_io::osc5522_read();
-            events = EventStream::new();
-            crate::browser_io::on_clip_image(&mut app, &pane, img);
-        }
         let redraw_in = if app.dirty {
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
         } else {

@@ -846,6 +846,19 @@ fn watch_agent_session_real_chromium() {
     }
 }
 
+/// A staged drop copy in the session's drop directory (`<state>/browser-drops/<12 hex>/name`),
+/// as `blob.commit {stage: "browser"}` leaves it.
+fn stage_drop(s: &Session, name: &str, body: &[u8]) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let root = s.path().join("state/browser-drops");
+    let dir = root.join("0123456789ab");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, body).unwrap();
+    p
+}
+
 /// Next clipboard frame for `pane` (acking media on the way).
 fn clipboard_frame(r: &mut Render, pane: &str, timeout: Duration) -> Vec<u8> {
     let t0 = Instant::now();
@@ -958,6 +971,11 @@ fn browser_pane_console_clipboard_drops_and_device_with_fake_chromium() {
             .all(|e| e["kind"] == "network")
     );
 
+    // A page logging terminal escapes (OSC 52, a title): the split shows them as text.
+    r.cmd(
+        &bp,
+        BrowserCmd::Text("log:evil \x1b]52;c;aGk=\x07 \x1b]2;pwned\x07 done".into()),
+    );
     // The console split: a pane under the browser pane running the follower.
     let c = s.json(&["browser", "console-split", &bp]);
     let cp = c["pane"].as_str().expect("split pane").to_string();
@@ -982,6 +1000,15 @@ fn browser_pane_console_clipboard_drops_and_device_with_fake_chromium() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    let t0 = Instant::now();
+    while !screen(&s).contains("evil \\x1b]52;c;aGk=\\x07 \\x1b]2;pwned\\x07 done") {
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "follower output: {}",
+            screen(&s)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     r.cmd(&bp, BrowserCmd::Text("log:after the split".into()));
     let t0 = Instant::now();
     while !screen(&s).contains("after the split") {
@@ -996,18 +1023,33 @@ fn browser_pane_console_clipboard_drops_and_device_with_fake_chromium() {
     let c = s.json(&["browser", "console-split", &bp]);
     assert_eq!(c["closed"], json!(cp));
 
-    // Page clipboard → the viewer (after user input to the page, which the Text above was).
+    // Page clipboard → the viewer, after a key press in the page (text alone doesn't count).
+    r.cmd(&bp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('a')));
     r.cmd(&bp, BrowserCmd::Text("copy:hello from the page".into()));
     assert_eq!(
         clipboard_frame(&mut r, &bp, Duration::from_secs(10)),
         b"hello from the page"
     );
 
-    // Files: dropped at the pointer, or into a file chooser the page opened.
-    let file = s.path().join("upload me.txt");
-    std::fs::write(&file, b"hello").unwrap();
-    let canon = file.canonicalize().unwrap().display().to_string();
-    r.cmd(&bp, BrowserCmd::DropFiles(vec![file.display().to_string()]));
+    // Files: only staged copies (what `blob.commit {stage: "browser"}` leaves in the drop
+    // directory) reach the page; a path elsewhere is refused.
+    let elsewhere = s.path().join("upload me.txt");
+    std::fs::write(&elsewhere, b"hello").unwrap();
+    r.cmd(
+        &bp,
+        BrowserCmd::DropFiles(vec![elsewhere.display().to_string()]),
+    );
+    r.state(
+        |st| {
+            st.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("not a staged copy"))
+        },
+        Duration::from_secs(10),
+    );
+    let file = stage_drop(&s, "upload me.txt", b"hello");
+    let canon = file.display().to_string();
+    r.cmd(&bp, BrowserCmd::DropFiles(vec![canon.clone()]));
     s.wait_cdp("drop", |l| {
         l.iter().any(|v| {
             v["method"] == "Input.dispatchDragEvent"
@@ -1150,8 +1192,7 @@ fn browser_pane_io_real_chromium() {
         e["kind"] == "network" && e["error"].is_string()
     });
     // A drop on the page's drop zone (pointer there first; pane coords are letterboxed).
-    let file = s.path().join("dropped.txt");
-    std::fs::write(&file, b"12345").unwrap();
+    let file = stage_drop(&s, "dropped.txt", b"12345");
     r.cmd(
         &bp,
         BrowserCmd::Mouse {
@@ -1165,4 +1206,131 @@ fn browser_pane_io_real_chromium() {
     );
     r.cmd(&bp, BrowserCmd::DropFiles(vec![file.display().to_string()]));
     wait_entry(&s, "drop", &|e| e["text"] == "dropped dropped.txt:5");
+}
+
+/// Real Chromium, a page **without** a meta viewport on a pinned phone: mobile emulation lays it
+/// out 980 px wide at page scale ~0.4, and clicks left and right of the phone's visual middle
+/// hit the DOM elements drawn there (`elementFromPoint` of the dispatched point). Also the
+/// clipboard bridge against real documents: an iframe of another origin and a synthetic `copy`
+/// event can't write; a `writeText` from the top document after a key press can.
+#[test]
+fn browser_pane_page_scale_and_clipboard_isolation_real_chromium() {
+    if std::env::var("VIBEKE_BROWSER_TESTS").as_deref() != Ok("1") {
+        eprintln!("VIBEKE_BROWSER_TESTS != 1; skipping");
+        return;
+    }
+    if vk_browser::cdp::discover_chromium(true).is_none() {
+        eprintln!("no Playwright Chromium on disk; skipping");
+        return;
+    }
+    let s = Session::new(false);
+    let src = root_pane(&s);
+    let frame = r#"<html><body><script>
+        addEventListener('message', () => navigator.clipboard.writeText('from the iframe')
+          .then(() => console.log('iframe write resolved'), (e) => console.log('iframe write refused ' + e.name)));
+        console.log('iframe ready');
+      </script></body></html>"#;
+    let fport = http(vec![("/frame", frame.to_string())]);
+    let page = format!(
+        r#"<html><head></head><body style="margin:0">
+      <div id=left style="position:absolute;left:0;top:0;width:490px;height:2000px;background:#c33"></div>
+      <div id=right style="position:absolute;left:490px;top:0;width:490px;height:2000px;background:#33c"></div>
+      <iframe id=f src="http://127.0.0.1:{fport}/frame" style="position:absolute;left:0;top:1500px;width:200px;height:100px"></iframe>
+      <script>
+        console.log('page ready', innerWidth, visualViewport.scale.toFixed(3));
+        document.addEventListener('mousedown', e => console.log('hit ' + e.target.id + ' ' + Math.round(e.clientX)));
+        document.addEventListener('keydown', e => {{
+          if (e.key === 'i') document.getElementById('f').contentWindow.postMessage('go', '*');
+          if (e.key === 's') {{
+            const dt = new DataTransfer(); dt.setData('text/plain', 'synthetic copy');
+            document.dispatchEvent(new ClipboardEvent('copy', {{clipboardData: dt, bubbles: true}}));
+            console.log('synthetic copy dispatched');
+          }}
+          if (e.key === 'k') navigator.clipboard.writeText('from the top document');
+        }});
+      </script></body></html>"#
+    );
+    let port = http(vec![("/", page)]);
+    let url = format!("http://localhost:{port}/");
+    let o = s.json(&[
+        "preview",
+        "open",
+        &url,
+        "--split",
+        "right",
+        "--pane",
+        &src,
+        "--device",
+        "iphone-15",
+    ]);
+    let bp = o["pane"].as_str().unwrap().to_string();
+    let spec = s.browser_spec(&bp);
+    let mut r = Render::attach(&s.socket(), "bp-scale-real");
+    // 100×40 cells of 16×32 at DPR 2: a 1600×1280 content area; the phone is fitted at
+    // 1280/852 device px per CSS px, centred: 590 px wide from x = 505.
+    r.view(vec![media_pane(&bp, spec, 100, 40)]);
+    let (m, _) = r.media(|m| m.reset, Duration::from_secs(30));
+    release(&m);
+    let wait_entry = |what: &str, f: &dyn Fn(&str) -> bool| -> String {
+        let t0 = Instant::now();
+        loop {
+            let v = s.json(&["browser", "console", "--pane", &bp]);
+            if let Some(t) = v["entries"]
+                .as_array()
+                .and_then(|a| a.iter().filter_map(|e| e["text"].as_str()).find(|t| f(t)))
+            {
+                return t.to_string();
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "{what}: {v}");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let ready = wait_entry("page ready", &|t| t.starts_with("page ready"));
+    eprintln!("REAL CHROMIUM NO-META PAGE: {ready}");
+    assert!(ready.starts_with("page ready 980 0.40"), "{ready}");
+    // Wait until a frame (with its page-scale metadata) arrived after the page laid out.
+    let _ = r.media(|_| true, Duration::from_secs(10));
+    let press = |r: &mut Render, x: f32| {
+        for kind in [
+            vk_proto::input::MouseKind::Press,
+            vk_proto::input::MouseKind::Release,
+        ] {
+            r.cmd(
+                &bp,
+                BrowserCmd::Mouse {
+                    kind,
+                    button: vk_proto::input::MouseButton::Left,
+                    x,
+                    y: 200.0,
+                    mods: vk_proto::input::Mods::empty(),
+                    clicks: 1,
+                },
+            );
+        }
+    };
+    // Pane CSS x 420 → device 840 → 57 % across the phone → layout x ≈ 556 (right half);
+    // x 380 → 43 % → ≈ 424 (left half). Without the page scale both would land left (≤ 223).
+    press(&mut r, 420.0);
+    let hit = wait_entry("right hit", &|t| t.starts_with("hit "));
+    assert!(hit.starts_with("hit right "), "{hit}");
+    let x: f64 = hit.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!((x - 556.0).abs() < 12.0, "{hit}");
+    press(&mut r, 380.0);
+    let hit = wait_entry("left hit", &|t| t.starts_with("hit left"));
+    let x: f64 = hit.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!((x - 424.0).abs() < 12.0, "{hit}");
+
+    // Clipboard: the iframe (another origin, its own context) and a synthetic copy event get
+    // nothing to the viewer; the top document's writeText after a key press does.
+    wait_entry("iframe ready", &|t| t == "iframe ready");
+    r.cmd(&bp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('i')));
+    wait_entry("iframe write settled", &|t| t.starts_with("iframe write"));
+    r.cmd(&bp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('s')));
+    wait_entry("synthetic copy", &|t| t == "synthetic copy dispatched");
+    r.cmd(&bp, BrowserCmd::Key(vk_proto::input::KeyEvent::ch('k')));
+    assert_eq!(
+        clipboard_frame(&mut r, &bp, Duration::from_secs(10)),
+        b"from the top document",
+        "the first clipboard frame is the top document's"
+    );
 }

@@ -128,9 +128,6 @@ pub struct BrowserUi {
     /// Hands a URL to the OS opener; `None` = [`os_open`]. Tests substitute a recorder.
     pub opener: Option<fn(&str) -> std::io::Result<()>>,
     mirrors_polled: Option<Instant>,
-    /// A clipboard-image read requested for this browser pane (`prefix+shift+v`); the main
-    /// loop performs it with the event reader stopped (`browser_io`).
-    pub clip_read: Option<String>,
 }
 
 /// One active mirror (`preview.mirror`): a remote preview's port bound on this machine.
@@ -306,6 +303,15 @@ pub fn media_host(app: &App, owner: usize) -> usize {
         .iter()
         .position(|m| m.local && m.connected())
         .unwrap_or(owner)
+}
+
+/// Was machine `mi` asked to render browser pane `pane` on this connection (is it the pane's
+/// media host)?
+pub fn renders(app: &App, mi: usize, pane: &str) -> bool {
+    app.browser
+        .requested
+        .get(&mi)
+        .is_some_and(|s| s.contains(pane))
 }
 
 pub fn browser_of<'a>(app: &'a App, mi: usize, pane: &str) -> Option<&'a BrowserPane> {

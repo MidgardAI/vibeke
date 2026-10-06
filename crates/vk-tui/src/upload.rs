@@ -36,6 +36,9 @@ pub struct TransferId {
 pub enum Source {
     Path(PathBuf),
     Bytes(Arc<Vec<u8>>),
+    /// An already opened, checked file (a browser drop): read positionally, exactly `size`
+    /// bytes, never reopened by path.
+    File(Arc<std::fs::File>),
 }
 
 /// One file to upload.
@@ -180,6 +183,18 @@ pub fn begin(
     parsed: Option<ParsedPaste>,
     items: Vec<Item>,
 ) -> TransferId {
+    start(app, machine, pane, original, parsed, items, false)
+}
+
+fn start(
+    app: &mut App,
+    machine: usize,
+    pane: &str,
+    original: String,
+    parsed: Option<ParsedPaste>,
+    items: Vec<Item>,
+    browser: bool,
+) -> TransferId {
     let id = TransferId {
         machine,
         pane: pane.to_string(),
@@ -198,7 +213,7 @@ pub fn begin(
             sent: 0,
             total,
             cancel: cancel.clone(),
-            browser: false,
+            browser,
         },
     );
     app.toast(format!(
@@ -209,20 +224,25 @@ pub fn begin(
     if let Some(w) = &app.uploads.worker
         && let Some(conn) = w.connectors.get(machine).cloned()
     {
-        tokio::spawn(run_transfer(conn, w.inc.clone(), id.clone(), items, cancel));
+        let stage = browser.then_some("browser");
+        tokio::spawn(run_transfer(
+            conn,
+            w.inc.clone(),
+            id.clone(),
+            items,
+            cancel,
+            stage,
+        ));
     }
     id
 }
 
-/// Upload files to machine `host`'s inbox for browser pane `pane`'s page (the media host is
-/// another machine, so the page can't open local paths): when done they are dropped into the
-/// page (`BrowserCmd::DropFiles`).
+/// Upload files to media host `host`'s drop directory for browser pane `pane`'s page
+/// (`blob.commit {stage: "browser"}`; also when the media host is this machine, so the page
+/// only ever gets a private copy): when done they are dropped into the page
+/// (`BrowserCmd::DropFiles`).
 pub fn begin_browser(app: &mut App, host: usize, pane: &str, items: Vec<Item>) -> TransferId {
-    let id = begin(app, host, pane, String::new(), None, items);
-    if let Some(t) = app.uploads.transfers.get_mut(&id) {
-        t.browser = true;
-    }
-    id
+    start(app, host, pane, String::new(), None, items, true)
 }
 
 /// Keys inside the paste confirmation popup. Only explicit keys act; typing is ignored.
@@ -505,11 +525,12 @@ async fn run_transfer(
     id: TransferId,
     items: Vec<Item>,
     cancel: Arc<AtomicBool>,
+    stage: Option<&'static str>,
 ) {
     let emit = |e: UploadEvent| {
         let _ = inc.send(Incoming::Upload(e));
     };
-    let r = transfer_items(&conn, &emit, &id, &items, &cancel).await;
+    let r = transfer_items(&conn, &emit, &id, &items, &cancel, stage).await;
     if let Err(message) = r
         && !cancel.load(Ordering::SeqCst)
     {
@@ -523,6 +544,7 @@ async fn transfer_items(
     id: &TransferId,
     items: &[Item],
     cancel: &AtomicBool,
+    stage: Option<&'static str>,
 ) -> Result<(), String> {
     let stream = (conn)().await.map_err(|e| format!("connect: {e}"))?;
     let (rd, mut wr) = tokio::io::split(stream);
@@ -570,7 +592,10 @@ async fn transfer_items(
             &mut wr,
             req,
             "blob.commit",
-            json!({"upload_id": upload_id}),
+            match stage {
+                Some(st) => json!({"upload_id": upload_id, "stage": st}),
+                None => json!({"upload_id": upload_id}),
+            },
         )
         .await?;
         req += 1;
@@ -589,6 +614,31 @@ async fn transfer_items(
         });
     }
     Ok(())
+}
+
+/// The next chunk of an opened file at `offset` (positional, never past `size`); after the
+/// last byte, a file that grew since it was checked is refused (the size read must match).
+pub(crate) fn read_snapshot(
+    f: &std::fs::File,
+    offset: u64,
+    size: u64,
+    buf: &mut [u8],
+) -> Result<usize, String> {
+    use std::os::unix::fs::FileExt;
+    let want = (size.saturating_sub(offset) as usize).min(buf.len());
+    let n = f
+        .read_at(&mut buf[..want], offset)
+        .map_err(|e| e.to_string())?;
+    if n == 0 && want > 0 {
+        return Err("file shrank while uploading".into());
+    }
+    if offset + n as u64 >= size {
+        let mut one = [0u8; 1];
+        if f.read_at(&mut one, size).map_err(|e| e.to_string())? > 0 {
+            return Err("file grew while uploading".into());
+        }
+    }
+    Ok(n)
 }
 
 /// Stream one item in chunks. `Ok(false)` means cancelled.
@@ -614,7 +664,7 @@ where
                 .await
                 .map_err(|e| format!("read {}: {e}", p.display()))?,
         ),
-        Source::Bytes(_) => None,
+        Source::Bytes(_) | Source::File(_) => None,
     };
     let mut offset = 0u64;
     let mut buf = vec![0u8; CHUNK];
@@ -633,6 +683,8 @@ where
                 buf[..end - start].copy_from_slice(&b[start..end]);
                 end - start
             }
+            (None, Source::File(f)) => read_snapshot(f, offset, item.size, &mut buf)
+                .map_err(|e| format!("{}: {e}", item.name))?,
             _ => 0,
         };
         if n == 0 {
@@ -913,7 +965,15 @@ mod worker_tests {
             size: data.len() as u64,
             src: Source::Path(path),
         };
-        run_transfer(conn, tx, id, vec![item], Arc::new(AtomicBool::new(false))).await;
+        run_transfer(
+            conn,
+            tx,
+            id,
+            vec![item],
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
         assert_eq!(srv.await.unwrap(), data);
         let mut done = None;
         let mut last = 0;

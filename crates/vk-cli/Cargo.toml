@@ -21,3 +21,4 @@ base64.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+vk-term = { workspace = true }

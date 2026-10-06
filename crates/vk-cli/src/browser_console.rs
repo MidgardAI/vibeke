@@ -124,6 +124,19 @@ fn colour(e: &Value) -> &'static str {
     }
 }
 
+/// The line the follower prints for an entry: JSON, or [`format_line`] (coloured on a
+/// terminal). Page-controlled text never reaches the terminal raw: `format_line` escapes
+/// control characters, and JSON escapes them as `\u001b`.
+pub fn render(e: &Value, as_json: bool, tty: bool, local_offset_s: i64) -> String {
+    if as_json {
+        serde_json::to_string(e).unwrap_or_default()
+    } else if tty {
+        format!("{}{}\x1b[0m", colour(e), format_line(e, local_offset_s))
+    } else {
+        format_line(e, local_offset_s)
+    }
+}
+
 /// Terminal state for single-key filter changes (restored on drop).
 struct RawStdin(Option<libc::termios>);
 
@@ -187,15 +200,7 @@ where
     let tty = std::io::stdout().is_terminal();
     let as_json = g.json.unwrap_or(!tty);
     let off = local_offset_s();
-    let print = |e: &Value| {
-        if as_json {
-            println!("{}", serde_json::to_string(e).unwrap_or_default());
-        } else if tty {
-            println!("{}{}\x1b[0m", colour(e), format_line(e, off));
-        } else {
-            println!("{}", format_line(e, off));
-        }
-    };
+    let print = |e: &Value| println!("{}", render(e, as_json, tty, off));
     if !follow {
         return match client
             .call(
@@ -326,5 +331,32 @@ mod tests {
             p,
             json!({"pane": "p", "kind": "all", "errors": false, "after": 7, "limit": 50})
         );
+    }
+
+    /// A page logs terminal escapes (OSC 52 clipboard write, title, notification, screen
+    /// clear): what the follower prints, fed to a terminal engine, shows them as visible text
+    /// and has no effect.
+    #[test]
+    fn hostile_console_text_is_inert_in_the_split() {
+        let hostile = "copy \x1b]52;c;YXR0YWNrZXI=\x07 \x1b]2;owned\x07 \x1b]777;notify;a;b\x07 \x1b[2J \u{9b}0m";
+        let entries = [
+            json!({"kind": "console", "ts": 0, "level": "error", "text": hostile, "url": hostile, "line": 0, "seq": 1}),
+            json!({"kind": "network", "ts": 0, "method": hostile, "url": hostile, "status": 500, "type": hostile, "seq": 2}),
+        ];
+        for (as_json, tty) in [(false, true), (false, false), (true, false)] {
+            let mut engine = vk_term::Engine::new(160, 12, 100);
+            let mut fx = Vec::new();
+            for e in &entries {
+                let line = render(e, as_json, tty, 0);
+                engine.feed(format!("{line}\r\n").as_bytes(), &mut fx);
+            }
+            assert!(fx.is_empty(), "effects ({as_json}, {tty}): {fx:?}");
+            assert_eq!(engine.title(), "");
+            let screen = engine.screen_text();
+            assert!(
+                screen.contains("]52;c;YXR0YWNrZXI="),
+                "the attempt stays visible: {screen}"
+            );
+        }
     }
 }

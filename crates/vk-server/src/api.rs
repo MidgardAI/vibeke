@@ -512,6 +512,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
 pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
     authorize(server, ctx, method, p)?;
     crate::search::authorize_read(server, ctx, method, p)?;
+    crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     if let Some(r) = crate::parity::api(server, ctx, method, p).await {
         return r;
     }
@@ -1288,7 +1289,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         "blob.put" | "image.upload" => blob_put(server, p),
         "blob.begin" => blob_begin(server, ctx, p),
         "blob.append" => blob_append(ctx, p),
-        "blob.commit" => blob_commit(ctx, p),
+        "blob.commit" => blob_commit(server, ctx, p),
         "blob.abort" => blob_abort(ctx, p),
         _ => Err(err(
             ErrorKind::MethodNotFound,
@@ -1514,7 +1515,13 @@ fn blob_begin(server: &Server, ctx: &Ctx, p: &Value) -> R {
 fn blob_append(ctx: &Ctx, p: &Value) -> R {
     upload_append(&ctx.client_id, p)
 }
-fn blob_commit(ctx: &Ctx, p: &Value) -> R {
+fn blob_commit(server: &Server, ctx: &Ctx, p: &Value) -> R {
+    // `stage: "browser"`: a copy of a file the user confirmed for a browser pane's page goes
+    // to the private drop directory, the only place pages get files from (06 B3.2).
+    if s(p, "stage") == Some("browser") {
+        let root = crate::browser_pane::page_io::ensure_drops_root(server).map_err(internal)?;
+        return upload_commit(&root, &ctx.client_id, p);
+    }
     upload_commit(&crate::paths::Paths::inbox(), &ctx.client_id, p)
 }
 fn blob_abort(ctx: &Ctx, p: &Value) -> R {

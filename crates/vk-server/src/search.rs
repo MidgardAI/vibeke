@@ -266,7 +266,9 @@ pub fn query(server: &Server, ctx: &Ctx, p: &Value) -> R {
     });
     let live: Vec<_> = live
         .into_iter()
-        .filter(|(id, _, ws, _)| in_scope(id, Some(ws)))
+        .filter(|(id, _, ws, _)| {
+            in_scope(id, Some(ws)) && crate::browser_pane::page_io::may_read_output(server, ctx, id)
+        })
         .collect();
     let mut hits: Vec<Value> = Vec::new();
     let mut first_in_mem: std::collections::HashMap<String, u64> = Default::default();

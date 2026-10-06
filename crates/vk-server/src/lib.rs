@@ -1356,6 +1356,10 @@ impl Server {
     }
 
     pub fn archive_rows(&self, pane: &str, rows: Vec<ArchivedRow>) {
+        // A browser console split is `no_archive` (06 B3.2): nothing on disk, nothing indexed.
+        if crate::browser_pane::page_io::no_archive(self, pane) {
+            return;
+        }
         let ts = now_ms();
         {
             let mut f = self.fts_buf.lock().unwrap();
