@@ -94,7 +94,7 @@ Rules:
 1. **Nothing executable or permission-relevant is used until trusted.** `vibeke policy trust <path>` (or a TUI prompt on first `task new` in that repo) records `(canonical path, blake3 digest of the .vibeke/ tree)`. Any change to the tree invalidates trust → re-prompt showing a diff.
 2. **Repo policy can only tighten.** Repo `policy.toml` may add `deny`/`ask` rules; `allow` rules from repo files are ignored unless the user has explicitly trusted that repo *with* `--allow-policy-grants` (shown in red). Global/user policy always wins over repo policy for `allow`.
 3. **Setup scripts** run only after trust, with the script content displayed at trust time, in the task's worktree, in a pane (visible, interruptible), never silently.
-4. Repo harness manifests may not override built-in harness ids; they get a `repo:` namespace and their `launch`/`resume` argv are shown at trust time.
+4. Repo harness manifests may not override built-in harness ids; they get a `repo:` namespace and their `launch`/`resume` argv are shown at trust time. *Implemented (M2): loaded only while the `.vibeke/` digest is trusted, ids prefixed `repo:`, detection limited to the repo, `policy.trust` returns `harness_manifests` with their argv (04 §5).*
 5. Agents themselves editing `.vibeke/` invalidates trust (digest change) — an agent cannot grant itself permissions by writing policy files.
 6. `.env` templates copied into worktrees are never logged and never put into events (only their path).
 7. Untrusted repos still work as plain terminals and with built-in harness adapters; only the repo-provided automation is disabled.

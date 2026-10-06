@@ -426,7 +426,36 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
     drop(c);
     // Repo harness manifests (04 §5) are re-evaluated on the next detection.
     crate::agents::manifests::forget_repo_trust();
-    Ok(json!({"repo": repo, "digest": digest, "setup_script": script}))
+    Ok(
+        json!({"repo": repo, "digest": digest, "setup_script": script, "harness_manifests": repo_manifest_argv(&repo)}),
+    )
+}
+
+/// Repo harness manifests with the argv they launch/resume (09 §4 rule 4: shown at trust time).
+fn repo_manifest_argv(repo: &Path) -> Vec<Value> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(repo.join(".vibeke/harnesses"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|f| {
+            let text = std::fs::read_to_string(f).ok()?;
+            let t: toml::Table = text.parse().ok()?;
+            let id = t.get("id")?.as_str()?;
+            let argv = |table: &str| {
+                t.get(table)
+                    .and_then(|x| x.get("argv"))
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
+            Some(json!({"id": format!("repo:{id}"), "file": f, "launch": argv("launch"), "resume": argv("resume")}))
+        })
+        .collect()
 }
 
 pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {

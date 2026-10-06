@@ -479,7 +479,11 @@ fn repo_manifests_need_trust_and_are_namespaced() {
     );
     assert!(s.run_of(&pane).is_none());
     let _ = s.cmd(&["pane", "send-keys", &pane, "ctrl+c"]).output();
-    s.api("policy.trust", json!({"path": repo})).unwrap();
+    let tr = s.api("policy.trust", json!({"path": repo})).unwrap();
+    assert_eq!(
+        tr["harness_manifests"][0]["id"], "repo:mytool",
+        "repo manifests are shown at trust time: {tr}"
+    );
     std::thread::sleep(Duration::from_millis(500));
     s.json(&["pane", "run", &pane, "./mytool-agent"]);
     let r = s.until("detected via repo manifest after trust", 20, || {
