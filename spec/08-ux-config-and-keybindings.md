@@ -146,6 +146,15 @@ Learned from Claude Code agent view. In the sidebar (or goto list), `space` on a
   - **Track this work**: agent peek `t` or `:track_work` → form with the selected request verbatim (↑/↓ other turns), editable title, optional criteria, stop-at starting at *Not specified*, objective; `ctrl+s` tracks. Unverified runs show "Link run first". Sidebar agent rows show the review label as a separate small marker (`◆review`) beside `✓ done`.
   - Pending task mutations persist in `<state>/<session>/client-pending.json` before dispatch and are reconciled via `task.operation.get` on reconnect; unknown outcomes are never resubmitted automatically (`:pending_operations`).
 
+### 6.7 Session desk and drafts composer (research R2/R3) — planned, not yet built
+
+The server/CLI side exists (07 §2.14a: `desk.*`, `draft.*`, `notes.*`); these TUI surfaces are **not built**. No new default keybindings: entries live under the palette, goto and agent peek.
+
+- **Session desk** (`:desk`, goto prefix `?` for conversations): a full pane-area view like the inbox. A query line (`desk.search`), filter chips for repository (default: the current workspace's repo), harness and date (`7d`, `30d`, custom), and result rows `harness · repo · session · turn n · age · snippet` with a status marker (`● live`, `↻ resumable`, `· none`). `enter` opens the result detail (`desk.open` with `turn`: the turn's items rendered like the peek body). Actions, labelled exactly: `o` **Focus live pane** (live only; `desk.open focus=true`), `r` **Resume native session** (shows the exact command and asks for a target: a new tab in the session's workspace or a chosen free pane), `c` **Start new agent with context** (opens the `desk.context` package in an editor buffer with selectable turns; saving creates a draft; optional "start harness" toggle; never sends). A sessions tab lists `desk.sessions`. A footer shows coverage from `desk.status` (sources, opted-in roots, exclusions, retention, pending bytes) and `F` forget (confirm, `desk.forget`).
+- **Drafts composer** (`:drafts`, agent peek `d`): a side panel per workspace (and per task in task details) listing drafts in order with attachment counts and the last send state (`sending`, `✓ delivered`, `? unknown`, `✗ failed`). Keys: `n` new, `e` edit (multi-line editor; `ctrl+f` attach a file, `ctrl+s` attach the latest screenshot/clipboard image via `blob.put`), `J/K` reorder (`draft.reorder`), `space` select, `m` combine selected, `x` delete (confirm), `s` send → target picker defaulting to the run in the focused pane, showing `draft.check` (`send_path: prompt_input`, or "Open pane to send" with the reason, plus "steer: not supported") and an "include notes" toggle; refused sends keep the draft and offer `o` open pane. A `? unknown` draft offers `R` reconcile (`draft.reconcile`) before a warned retry. Pending sends persist their idempotency key like task mutations (`client-pending.json`).
+- **Notes** (`:notes`, a tab in the drafts panel): one plain-text document per workspace (`notes.get/set`, `expected_rev` conflict prompt), labelled "Never sent unless you include it".
+- The agent peek reply box (§6.4) gains "Save as draft" (`ctrl+d`) so a half-written follow-up never has to live in the harness's own input.
+
 ## 7. Notifications
 
 ### 7.1 Pipeline
@@ -492,6 +501,14 @@ max_unacked = 2                       # in-flight diffs per pane before the serv
 
 [security]                            # see 09
 encrypt_state = false                 # encrypt blobs + scrollback segments at rest with a key in the OS keychain (protects backups, not same-UID processes)
+
+[desk]                                # session desk conversation index (07 §2.14a)
+index          = true                 # index transcripts of runs Vibeke has seen
+roots          = {}                   # opt-in extra transcript dirs: { claude = ["~/.claude/projects"], codex = ["~/.codex/sessions"] }
+exclude        = []                   # paths / cwds / repos never indexed ("/dir" = dir and below, "prefix*")
+retention_days = 90
+interval_s     = 15
+pass_bytes     = 8388608              # bytes read per indexing pass
 
 [plugins]                             # see 07
 enabled = ["acme.example"]

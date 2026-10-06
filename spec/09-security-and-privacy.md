@@ -133,6 +133,7 @@ Agents run as the user and can type anything into their own shell, including `vi
 | `interaction.list/get` | ✔ (workspace) | answering ✘ (§5.1) |
 | `preview.*`, `browser.open/navigate/click/type/press/wait/screenshot/snapshot/console/network/dom/close/list` | ✔ (own machine's previews; own sessions only) | `browser.eval` ✘ unless `browser.script` granted (as built: `preview.browser_script = true`); `browser.install`, `take_over/release`, screencast ✘ |
 | `image.show`, `notification.send` | ✔ | notifications from agents are labelled with the agent name, rate-limited 6/min |
+| `desk.search/sessions/context`, `draft.create/update/get/list/reorder/delete/combine/check`, `notes.get/set` | ✔ (own workspace only) | desk results only for sessions whose run was in the caller's workspace; opted-in transcript roots are invisible to panes; `draft.send/reconcile`, `desk.open/resume/forget/index/status` ✘ |
 | `events.subscribe` | ✔ (workspace subjects) | |
 | `policy.*`, `plugin.*`, `integration.*`, `machine.*`, `server.*`, `config.set --persist` | ✘ | |
 
@@ -210,6 +211,7 @@ Vibeke cannot promise secrets are "never stored": the terminal itself shows what
 | Class | Examples | Where | Rule |
 |---|---|---|---|
 | **Operational data** | live screen, VT snapshots, scrollback archive, transcripts, tool outputs and diffs (blobs), Bash commands in Interactions, screenshots | local state dir (0700/0600), on the machine where the pane runs | Stored **as-is** (secrets printed by tools included), local only, subject to retention (§9.3) and `vibeke forget`. Optional encryption at rest: `security.encrypt_state = true` encrypts blobs and scrollback segments with a key in the OS keychain (macOS Keychain, libsecret) — protects backups/disk images, not against same-UID processes. |
+| **Derived conversation index, drafts, notes** (research R2/R3) | `desk.db` (FTS5 of transcript text from runs Vibeke saw, plus opted-in roots), `draft` / `workspace_notes` entities incl. the exact text of each send attempt | local state dir (0600), on the server's machine | Operational data. Never copied into events (metadata only). Transcripts outside Vibeke's own runs are read only after `[desk] roots` opts in; `[desk] exclude` keeps paths/cwds/repos out and purges existing rows; model reasoning is not indexed. |
 | **Telemetry, logs, debug bundles, notifications, search snippets sent to remote/Phase 2 clients, OTel exports** | `server.log`, `audit.jsonl` free-text, crash reports, bundle | may leave the machine or be shared | **Always redacted** (§9.2). Never contain env values, credential file contents or tokens. |
 
 Hard rules regardless of class:
@@ -236,8 +238,12 @@ A shared `vk-redact` module scrubs strings before they enter logs, events, debug
 | Screenshots/blobs | 7 days unless referenced by a live object | `retention.blobs` |
 | Audit log | 90 days | `retention.audit` |
 | Logs | 7 days, 100 MiB | `logging.*` |
+| Conversation index (`desk.db`) | 90 days per row (pruned hourly); sources removed from the selection or excluded are purged on the next pass | `desk.retention_days`, `desk.roots`, `desk.exclude` |
+| Drafts and workspace notes | until deleted; delivered drafts are archived and removed 30 days later; each draft keeps its last 10 send attempts (exact sent text) | — |
 
 `vibeke forget --pane p | --workspace w | --before date` purges archives, events and blobs for scope (events replaced by tombstones to keep `seq` gapless).
+
+As built for the session desk: `desk.forget {session | repo | workspace | before}` (`vibeke desk forget`) deletes conversation-index rows; forgotten sessions are tombstoned so the indexer never re-adds them, while source cursors stay put so already-read bytes are not read again. It does not delete the native transcript files (the harness owns them) or drafts (`draft.delete`). The general `vibeke forget` command is not built yet; when it is, it must also call `desk.forget` and delete scoped drafts/notes (15 §11).
 
 ### 9.4 Telemetry
 
