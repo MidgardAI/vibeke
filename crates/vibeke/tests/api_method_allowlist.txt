@@ -1,0 +1,48 @@
+# Methods with no integration test yet (spec 10 4.3). Baseline from lane 1D: each line is a gap to close,
+# not a decision. Add a test that calls the method (CLI or JSON-RPC) and delete its line; the coverage
+# test fails when a listed method becomes covered. Format: `method  # reason`; a bare name takes the
+# preceding comment as its reason.
+
+# no integration test yet (baseline); success and error paths both still to write
+adapter.delivery_ack
+adapter.gate
+adapter.report_self
+adapter.signal
+agent.interrupt
+agent.manifests_reload
+agent.read
+agent.release
+agent.resume
+agent.send_keys
+agent.spawn
+blob.abort
+blob.put
+browser.detach_screencast
+browser.dom
+browser.session_close
+browser.session_open
+browser.status
+browser.wait
+compat.invocation.verify
+desk.index
+group.remove
+group.rename
+image.upload
+interaction.cancel
+layout.get
+notification.read
+pane.equalize
+pane.resize
+pane.send_bytes
+plugin.registry.notify
+plugin.surface.close
+preview.dismiss
+preview.profile.list
+preview.promote
+sandbox.remove
+tab.close
+tab.focus
+tab.move
+worktree.create
+worktree.open
+worktree.remove

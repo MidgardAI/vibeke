@@ -1,0 +1,1 @@
+{"id":"3","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.output_matched","pane_id":"p_1"},{"type":"pane.agent_status_changed","pane_id":"p_1"}]}}

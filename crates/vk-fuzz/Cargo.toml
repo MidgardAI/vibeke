@@ -18,3 +18,8 @@ vk-server = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Property tests (spec 10 §3); tests/props.rs.
+proptest = { version = "1", default-features = false, features = ["std"] }
+vk-redact = { workspace = true }

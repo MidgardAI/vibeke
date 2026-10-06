@@ -10,5 +10,6 @@
 pub mod rng;
 pub mod seeds;
 pub mod targets;
+mod targets_extra;
 
 pub use targets::{TARGETS, Target};

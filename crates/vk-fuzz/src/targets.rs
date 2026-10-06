@@ -1,6 +1,7 @@
 //! The targets. Oracles are "no panic" plus the cheap invariants noted per target.
 
 use crate::rng::Rng;
+pub use crate::targets_extra::{compat_socket, osc_image, transcript_parse, vt_resize_interleave};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -57,6 +58,22 @@ pub const TARGETS: &[Target] = &[
     Target {
         name: "manifest_toml",
         run: manifest_toml,
+    },
+    Target {
+        name: "vt_resize_interleave",
+        run: vt_resize_interleave,
+    },
+    Target {
+        name: "compat_socket",
+        run: compat_socket,
+    },
+    Target {
+        name: "transcript_parse",
+        run: transcript_parse,
+    },
+    Target {
+        name: "osc_image",
+        run: osc_image,
     },
 ];
 

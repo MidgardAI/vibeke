@@ -14,7 +14,10 @@ fn env_u64(k: &str, d: u64) -> u64 {
 fn run_target(name: &str) {
     let t = TARGETS.iter().find(|t| t.name == name).expect("target");
     let mut cases = env_u64("VK_FUZZ_CASES", 300) as usize;
-    if matches!(name, "vt_parse" | "mux_frame_decode") {
+    if matches!(
+        name,
+        "vt_parse" | "mux_frame_decode" | "vt_resize_interleave" | "osc_image"
+    ) {
         cases = (cases / 10).max(10);
     }
     let pool = seeds::seeds(name);
@@ -48,12 +51,16 @@ target_tests!(
     policy_match,
     kitty_probe,
     compat_import,
-    manifest_toml
+    manifest_toml,
+    vt_resize_interleave,
+    compat_socket,
+    transcript_parse,
+    osc_image
 );
 
 #[test]
 fn every_target_has_a_test_and_seeds() {
-    assert_eq!(TARGETS.len(), 12);
+    assert_eq!(TARGETS.len(), 16);
     for t in TARGETS {
         assert!(!seeds::seeds(t.name).is_empty(), "{} has no seeds", t.name);
     }

@@ -1,0 +1,1 @@
+{"id":"2","method":"pane.send_text","params":{"pane_id":"p_1","text":"ls"}}

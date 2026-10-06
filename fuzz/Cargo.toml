@@ -99,3 +99,31 @@ path = "fuzz_targets/manifest_toml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "vt_resize_interleave"
+path = "fuzz_targets/vt_resize_interleave.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compat_socket"
+path = "fuzz_targets/compat_socket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transcript_parse"
+path = "fuzz_targets/transcript_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osc_image"
+path = "fuzz_targets/osc_image.rs"
+test = false
+doc = false
+bench = false
