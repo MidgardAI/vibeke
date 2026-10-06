@@ -3,10 +3,12 @@
 // agent or a terminal (`tab.create`); ⋯ renames, closes or focuses the host tab behind the
 // selected one (hidden for hosts without `tab.*` and for devices without full scope).
 
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Bot, Crosshair, Globe, MoreHorizontal, Pencil, Plus, SquareTerminal, Trash2 } from 'lucide-react';
 import type { Preview } from '@vibeke/core';
 import { HarnessIcon, StatusDot, cx, type Status } from '../../components/ui';
 import { t } from '../../i18n';
+import { TAB_PANEL_ID, rovingTab, tabDomId, tabKeyTarget } from '../../lib/tabs-nav';
 import type { PaneRow } from '../../lib/tree';
 import type { WorkspaceRow } from '../../lib/workspaces';
 import { MenuButton, type MenuItem } from './menu';
@@ -94,9 +96,51 @@ export function TabStrip({
   const add: MenuItem[] = [];
   if (onNewAgent) add.push({ label: t.tabs2.newAgent, icon: <Bot />, onSelect: onNewAgent });
   if (onNewTerminal) add.push({ label: t.tabs2.newTerminal, icon: <SquareTerminal />, onSelect: onNewTerminal });
+
+  // Roving focus (WAI-ARIA tabs, manual activation): arrows move focus, Enter/Space select.
+  const listRef = useRef<HTMLDivElement>(null);
+  const [focused, setFocused] = useState<string | null>(null);
+  const ids = tabs.map((x) => x.id);
+  const roving = rovingTab(ids, current, focused);
+  const focusTab = (id: string) => {
+    setFocused(id);
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-tab="${CSS.escape(id)}"]`);
+    el?.focus();
+    el?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    const from = (e.target as HTMLElement).closest<HTMLElement>('[data-tab]')?.dataset.tab ?? null;
+    const to = tabKeyTarget(ids, from, e.key);
+    if (!to || e.altKey || e.metaKey || e.ctrlKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    focusTab(to);
+  };
+  // Focus recovery: the focused tab went away (closed, its agent exited) and focus fell to the
+  // page — put it back on the selected tab (or the first) instead of losing the user's place.
+  useEffect(() => {
+    if (!focused || ids.includes(focused)) return;
+    setFocused(null);
+    const active = document.activeElement;
+    if (active && active !== document.body && !listRef.current?.contains(active)) return;
+    const next = rovingTab(ids, current, null);
+    if (next) focusTab(next);
+  }, [ids.join('\u0000'), current]);
+
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border pl-2 pr-1.5">
-      <div role="tablist" aria-label={t.workspace.tabs} className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto">
+      <div
+        ref={listRef}
+        role="tablist"
+        aria-label={t.workspace.tabs}
+        aria-orientation="horizontal"
+        onKeyDown={onKeyDown}
+        onBlur={(e) => {
+          // Focus moved elsewhere on purpose: forget the strip's focus (removal blurs to nothing).
+          if (e.relatedTarget && !listRef.current?.contains(e.relatedTarget as Node)) setFocused(null);
+        }}
+        className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto"
+      >
         {tabs.map((tab) => {
           const on = tab.id === current;
           return (
@@ -104,9 +148,13 @@ export function TabStrip({
               key={tab.id}
               type="button"
               role="tab"
+              id={tabDomId(tab.id)}
               aria-selected={on}
+              aria-controls={on ? TAB_PANEL_ID : undefined}
+              tabIndex={tab.id === roving ? 0 : -1}
               title={tab.title}
               data-tab={tab.id}
+              onFocus={() => setFocused(tab.id)}
               onClick={() => onSelect(tab)}
               className={cx(
                 'vk-focus inline-flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] pointer-coarse:h-8',

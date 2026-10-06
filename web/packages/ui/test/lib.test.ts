@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAnsi, stripAnsi } from '../src/lib/ansi';
-import { destructiveReason, isNoEchoPrompt } from '../src/lib/guards';
+import { composerShowsStop, destructiveReason, isNoEchoPrompt } from '../src/lib/guards';
 import { NO_MODS, chord, cycleMod, isValidKey, keyLabel, press, queueAdd, queueRemoveAt } from '../src/lib/keys';
 import { MAX_DEPTH, parseInline, parseMarkdown, safeHref, type Block } from '../src/lib/markdown';
 import { parseDiff, tokenize, langOf } from '../src/lib/highlight';
@@ -30,6 +30,23 @@ describe('destructive guard', () => {
   for (const s of bad) test(`flags: ${s}`, () => expect(destructiveReason(s)).not.toBeNull());
   for (const s of good) test(`allows: ${s}`, () => expect(destructiveReason(s)).toBeNull());
   test('first matching reason wins', () => expect(destructiveReason('sudo rm -rf /')).toBe('rm -r (recursive delete)'));
+});
+
+describe('composer send / stop', () => {
+  const run = (value: string) => ({ id: 'r1', execution: { value } });
+  test('Stop only while working with nothing waiting on the user', () => {
+    expect(composerShowsStop(run('working'), [], '')).toBe(true);
+    expect(composerShowsStop(run('working'), null, '  ')).toBe(true);
+    // Text in the box is a message to send.
+    expect(composerShowsStop(run('working'), [], 'hi')).toBe(false);
+    for (const v of ['idle', 'exited', 'unknown', 'error', 'rate_limited', 'starting']) expect(composerShowsStop(run(v), [], '')).toBe(false);
+    expect(composerShowsStop(null, [], '')).toBe(false);
+  });
+  test('an open interaction on the run (waiting for approval) shows the send button', () => {
+    expect(composerShowsStop(run('working'), [{ run: 'r1', status: 'open' }], '')).toBe(false);
+    // Answered ones, or open ones on other runs, do not count.
+    expect(composerShowsStop(run('working'), [{ run: 'r1', status: 'answered' }, { run: 'r2', status: 'open' }], '')).toBe(true);
+  });
 });
 
 describe('no-echo detection', () => {

@@ -6,7 +6,7 @@
 // 390×844.
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { TestHost, built, hasDisplay, hookEvent, launchApp, settled, shoot, vibekeBin, type LaunchedApp } from './helpers';
@@ -38,6 +38,8 @@ function repoWorkspace(name: string): { pane: string; cwd: string } {
   git('add', '.');
   git('commit', '-q', '-m', 'init');
   writeFileSync(join(cwd, 'src/hero.tsx'), 'export function Hero() {\n  return <h1>Agents, in one place</h1>;\n}\nexport const tagline = "Ship faster";\n');
+  // A new, untracked file: the Changes tree counts its lines too.
+  writeFileSync(join(cwd, 'src/hero-copy.ts'), ['export const copy = {', '  title: "Agents, in one place",', '  tagline: "Ship faster",', '  cta: "Get started",', '};', ''].join('\n'));
   const r = JSON.parse(host.cli(['workspace', 'create', '--cwd', cwd, '--name', name]));
   return { pane: r.root_pane.handle as string, cwd };
 }
@@ -154,9 +156,63 @@ test('conversation: transcript turns, tool rows, footer, composer, terminal tab,
   // Collapse the details again for the capture.
   await lastBash.getByRole('button').first().click();
   await folded.click();
+  // The panel's Changes tree lists the untracked file with its line count.
+  const changed = page.getByRole('complementary', { name: 'Workspace panel' }).getByRole('tree', { name: 'Changed files' });
+  if (await changed.count()) await expect(changed.getByRole('treeitem', { name: /^hero-copy\.ts/ })).toContainText('+5', { timeout: 15_000 });
   await page.mouse.move(5, 450);
   await settled(page);
   await shoot(app, page, 'conversation');
+
+  // Live: a new turn written to the transcript shows up without a reload — the user's prompt and
+  // a tool call while the agent works (turn_started / file_changed events), then the answer when
+  // the turn completes. Events reach this window through main's forwarded host events.
+  const append = (...lines: unknown[]) => appendFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  const ts = (sec: number) => new Date(Date.UTC(2026, 9, 6, 12, 40, sec)).toISOString();
+  // The CLI prints execution states as `Working` / `Idle`.
+  const runState = () =>
+    (JSON.parse(host.cli(['agent', 'list'])).runs as { transcript_path: string | null; execution: { value: string } }[]).find((r) => r.transcript_path === transcript)?.execution.value.toLowerCase();
+  append({ type: 'user', timestamp: ts(0), message: { role: 'user', content: 'Now add a dark-mode variant of the hero.' } });
+  hookEvent(host, hero.pane, 'UserPromptSubmit', hero.cwd, { prompt: 'Now add a dark-mode variant' });
+  await host.until(() => runState() === 'working', 15_000, 'prompt hook not processed');
+  await expect(log.locator('[data-role="user"]').filter({ hasText: 'dark-mode variant' })).toBeVisible({ timeout: 2_500 });
+  // Working with nothing waiting on the user: the composer offers Stop.
+  await expect(page.getByRole('button', { name: 'Interrupt' })).toBeVisible({ timeout: 2_500 });
+  // Mid-turn: a tool call appears as it happens.
+  append(
+    { type: 'assistant', timestamp: ts(5), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_live1', name: 'Edit', input: { file_path: `${hero.cwd}/src/hero-dark.tsx`, old_string: 'a', new_string: 'b' } }] } },
+    { type: 'user', timestamp: ts(6), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_live1', content: 'ok' }] } },
+  );
+  hookEvent(host, hero.pane, 'PostToolUse', hero.cwd, { tool_name: 'Edit', tool_use_id: 'toolu_live1', tool_input: { file_path: `${hero.cwd}/src/hero-dark.tsx` } });
+  await expect(log.locator('[data-tool="Edit"]').filter({ hasText: 'hero-dark.tsx' })).toBeVisible({ timeout: 3_000 });
+  append({ type: 'assistant', timestamp: ts(20), message: { role: 'assistant', content: [{ type: 'text', text: 'Added `HeroDark`, live without a reload.' }] } });
+  hookEvent(host, hero.pane, 'Stop', hero.cwd);
+  await host.until(() => runState() === 'idle', 15_000, 'stop hook not processed');
+  await expect(log.getByText('live without a reload')).toBeVisible({ timeout: 2_500 });
+  await expect(page.getByRole('button', { name: 'Interrupt' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible();
+
+  // Tabs keyboard: one tab stop, ←/→ move focus, Enter selects, Home/End jump; tab ↔ panel linked.
+  const strip = page.getByRole('tablist', { name: 'Tabs' });
+  const agentTab = strip.getByRole('tab', { selected: true });
+  await expect(agentTab).toHaveAttribute('tabindex', '0');
+  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('tabindex', '-1');
+  const panelId = await agentTab.getAttribute('aria-controls');
+  await expect(page.locator(`#${panelId}`)).toHaveAttribute('role', 'tabpanel');
+  await expect(page.locator(`#${panelId}`)).toHaveAttribute('aria-labelledby', (await agentTab.getAttribute('id'))!);
+  await agentTab.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(strip.getByRole('tab', { name: 'Terminal' })).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(agentTab).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(strip.getByRole('tab', { name: 'Terminal' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/show=term/);
+  await expect(strip.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('Enter');
+  await expect(page).not.toHaveURL(/show=term/);
+  await expect(log).toBeVisible();
 
   // Keys and quick replies live behind ⋯ in the composer.
   await page.getByRole('button', { name: 'Keys and quick replies' }).click();
@@ -192,6 +248,7 @@ test('conversation: transcript turns, tool rows, footer, composer, terminal tab,
   await expect(sidebar).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Open sidebar/ }).first()).toBeVisible();
   await expect(log.getByText('Ready for review.')).toBeVisible();
+  await page.mouse.move(2, 400); // no hover highlight on a row in the capture
   await settled(page);
   await shoot(app, page, 'conversation-mobile');
   await resize(page, 1440, 900);

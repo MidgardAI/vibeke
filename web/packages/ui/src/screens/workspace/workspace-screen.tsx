@@ -19,6 +19,8 @@ import { NewSheet } from '../../components/new-sheet';
 import { Button, Empty, IconButton, Notice, Sheet, Spinner, TextField, cx } from '../../components/ui';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
+import { composerShowsStop } from '../../lib/guards';
+import { TAB_PANEL_ID, tabDomId } from '../../lib/tabs-nav';
 import { keyLabel } from '../../lib/shortcuts';
 import { noteUnsupported, supported } from '../../lib/supports';
 import type { PaneRow } from '../../lib/tree';
@@ -226,29 +228,31 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
         tabMenu={tabMenu}
         locked={locked}
       />
-      {!locked && showsCentreDiff(route) ? (
-        <Suspense
-          fallback={
-            <div className="flex flex-1 items-center justify-center">
-              <Spinner />
-            </div>
-          }
-        >
-          <LazyCentreDiff route={route} />
-        </Suspense>
-      ) : tab?.kind === 'preview' || tabId.startsWith('p:') ? (
-        <PreviewTab hostId={row.host} preview={tab?.preview ?? null} />
-      ) : (
-        <PaneBody
-          key={`${row.host}/${current.pane.id}`}
-          hostId={row.host}
-          row={current}
-          mode={tab?.kind === 'agent' ? 'agent' : 'term'}
-          findOpen={findOpen}
-          setFindOpen={setFindOpen}
-          onOpenTerminal={openTerminal}
-        />
-      )}
+      <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={tab && tabs.some((x) => x.id === tab.id) ? tabDomId(tab.id) : undefined} className="flex min-h-0 flex-1 flex-col">
+        {!locked && showsCentreDiff(route) ? (
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center">
+                <Spinner />
+              </div>
+            }
+          >
+            <LazyCentreDiff route={route} />
+          </Suspense>
+        ) : tab?.kind === 'preview' || tabId.startsWith('p:') ? (
+          <PreviewTab hostId={row.host} preview={tab?.preview ?? null} />
+        ) : (
+          <PaneBody
+            key={`${row.host}/${current.pane.id}`}
+            hostId={row.host}
+            row={current}
+            mode={tab?.kind === 'agent' ? 'agent' : 'term'}
+            findOpen={findOpen}
+            setFindOpen={setFindOpen}
+            onOpenTerminal={openTerminal}
+          />
+        )}
+      </div>
 
       <NewSheet open={sheet === 'new'} onClose={() => setSheet(null)} hostId={row.host} workspaceId={row.workspace.id} />
       <ShareSheet row={current} open={sheet === 'share'} onClose={() => setSheet(null)} />
@@ -355,7 +359,7 @@ function PaneBody({
           {online && scope === 'approve' && (
             <Notice
               action={
-                run && working ? (
+                composerShowsStop(run, host?.dashboard?.interactions, '') ? (
                   <Button size="sm" variant="outline" icon={<OctagonX />} onClick={() => void actions.interrupt()}>
                     {t.pane.interrupt}
                   </Button>
@@ -375,7 +379,7 @@ function PaneBody({
             isAgent={!!run && mode === 'agent'}
             sttAvailable={host?.info?.features.includes('stt') ?? false}
             run={run}
-            working={working}
+            interactions={host?.dashboard?.interactions}
             more={
               <ActionBelt
                 tab={belt ?? 'keys'}

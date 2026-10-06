@@ -44,3 +44,19 @@ export function isNoEchoPrompt(screen: string): boolean {
   }
   return false;
 }
+
+/**
+ * The composer offers Stop (interrupt) instead of Send only while the agent is actually working
+ * and nothing is waiting on the user: with an open approval/question the agent is blocked on
+ * them, so the composer keeps its normal send button. Idle, exited, errored or unknown runs
+ * never offer Stop; neither does a composer holding text (that is a message to send).
+ */
+export function composerShowsStop(
+  run: { id: string; execution: { value: string } } | null | undefined,
+  interactions: readonly { run: string; status: string }[] | null | undefined,
+  text: string,
+): boolean {
+  if (!run || text.trim()) return false;
+  if (run.execution.value !== 'working') return false;
+  return !(interactions ?? []).some((i) => i.run === run.id && i.status === 'open');
+}

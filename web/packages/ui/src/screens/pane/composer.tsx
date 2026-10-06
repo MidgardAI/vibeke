@@ -14,7 +14,7 @@ import { useMediaQuery } from '../../app/shell';
 import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { base64Std } from '../../lib/format';
-import { destructiveReason } from '../../lib/guards';
+import { composerShowsStop, destructiveReason } from '../../lib/guards';
 import { harnessLabel } from '../../lib/harness';
 import type { PaneActions } from './actions';
 
@@ -35,7 +35,7 @@ export function Composer({
   isAgent,
   sttAvailable,
   run = null,
-  working = false,
+  interactions = null,
   more,
   onSent,
 }: {
@@ -47,8 +47,8 @@ export function Composer({
   sttAvailable: boolean;
   /** The agent (read-only `harness · model` and permission mode labels). */
   run?: AgentRun | null;
-  /** The agent is working: an empty composer offers Stop (interrupt). */
-  working?: boolean;
+  /** The host's interactions (an open one on the run means it waits on the user, not working). */
+  interactions?: readonly { run: string; status: string }[] | null;
   /** Content of the ⋯ popover (keys, quick replies, slash commands). */
   more?: ReactNode;
   onSent?: () => void;
@@ -197,7 +197,7 @@ export function Composer({
 
   const modeLabel = run?.permission_mode ? permissionLabel(run.permission_mode) : run?.yolo ? permissionLabel('bypassPermissions') : null;
   const open = run?.yolo || run?.permission_mode === 'bypassPermissions';
-  const canStop = working && !text.trim() && !!run;
+  const canStop = composerShowsStop(run, interactions, text);
 
   return (
     <div className="px-3 pb-3 pt-1 sm:px-4">
