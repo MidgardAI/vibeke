@@ -6,19 +6,20 @@ import { Empty, Spinner, cx } from '../components/ui';
 import { t } from '../i18n';
 import { useStore } from '../lib/store';
 import type { UiPlatform } from '../platform';
-import { formatRoute, hashFromUrl, navigate, useRoute, type Route, type Tab } from '../router';
-import { ChangesScreen } from '../screens/changes';
+import { mostUrgent } from '../lib/workspaces';
+import { formatRoute, hashFromUrl, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { InboxScreen } from '../screens/inbox';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
-import { FocusScreen, PanesScreen } from '../screens/panes';
 import { PaneScreen } from '../screens/pane/pane-screen';
 import { SettingsScreen } from '../screens/settings';
 import { QuickScreen } from '../screens/quick';
 import { AppContext, useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { KeyboardLayer, type Surface } from './keyboard';
 import { AppModel } from './model';
-import { BusyBar, ConnectionBanner, Sidebar, TabBar, Toasts, TopBar, WideContext, useMediaQuery, useThemeEffect, useWide } from './shell';
+import { Layout, WorkspaceScreen } from './layout';
+import { lastWorkspace, rememberTab, resolveLegacy, useWorkspaceRows } from './selection';
+import { BusyBar, ConnectionBanner, Toasts, TopBar, useThemeEffect } from './shell';
 import { SurfaceContext } from './surface';
 
 /**
@@ -99,51 +100,69 @@ function PaneWindow() {
   );
 }
 
-const TAB_TITLES: Record<Tab, string> = { inbox: t.tabs.inbox, panes: t.tabs.panes, focus: t.tabs.focus, changes: t.tabs.changes };
-
 function Main() {
   const app = useApp();
   const prefs = usePrefs();
   const route = useRoute();
   const hosts = useHosts();
   const items = useInboxItems();
-  const wide = useMediaQuery('(min-width: 960px)');
+  const rows = useWorkspaceRows();
   useThemeEffect(prefs.theme, prefs.termFont);
   useIdleLock();
 
   // Notification taps routed into the running app.
   useEffect(() => app.platform.notifications?.onOpen((url) => navigate(hashFromUrl(url))), [app]);
 
-  // `#/` → Inbox when anything is open, else Panes; no hosts → pairing.
+  // Hosts known well enough to pick a destination: a dashboard, or every host settled offline.
+  const ready = hosts.some((h) => h.dashboard) || (hosts.length > 0 && hosts.every((h) => h.status !== 'connecting' && h.status !== 'idle'));
+
+  // `#/` → Inbox when anything is open, else the most urgent workspace; no hosts → pairing.
   const decided = useRef(false);
   useEffect(() => {
     if (route.name !== 'home') return;
     if (hosts.length === 0) return navigate({ name: 'pair', d: null }, { replace: true });
-    const ready = hosts.some((h) => h.dashboard) || hosts.every((h) => h.status !== 'connecting' && h.status !== 'idle');
     if (!ready && !decided.current) return;
     decided.current = true;
-    navigate({ name: items.length ? 'inbox' : 'panes' }, { replace: true });
-  }, [route.name, hosts, items.length]);
+    const top = mostUrgent(rows);
+    navigate(items.length || !top ? { name: 'inbox' } : workspaceRoute(top.host, top.workspace.id), { replace: true });
+  }, [route.name, hosts.length, ready, items.length, rows]);
+
+  // Old routes (Panes, Focus, Changes tabs; pane links) → their workspace.
+  const routeKey = formatRoute(route);
+  useEffect(() => {
+    if (!ready) return;
+    const to = resolveLegacy(route, rows, lastWorkspace());
+    if (to) navigate(to, { replace: true });
+  }, [routeKey, ready, rows]);
+
+  // Remember the workspace this window looked at last (⌘⇧E, the old Changes tab).
+  useEffect(() => {
+    if (route.name === 'workspace' && route.pane) rememberTab(route.host, route.workspace, route.pane);
+  }, [routeKey]);
 
   return (
-    <WideContext.Provider value={wide}>
-      <div className="flex h-full">
-        {wide && <Sidebar route={route} />}
-        <div className="app-content flex h-full min-w-0 flex-1 flex-col">
+    <>
+      <Layout route={route}>
+        <ConnectionBanner />
+        <BusyBar />
+        <div className="flex min-h-0 flex-1 flex-col">
           <Screen route={route} />
         </div>
-        <Toasts />
-        <IdleLockOverlay />
-        {hosts.length > 0 && ['inbox', 'panes', 'focus', 'changes'].includes(route.name) && <Tour />}
-        <KeyboardLayer surface="full" />
-      </div>
-    </WideContext.Provider>
+      </Layout>
+      <Toasts />
+      <IdleLockOverlay />
+      {hosts.length > 0 && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
+      <KeyboardLayer surface="full" />
+    </>
   );
 }
 
 function Screen({ route }: { route: Route }) {
   switch (route.name) {
+    case 'workspace':
+      return <WorkspaceScreen route={route} />;
     case 'pane':
+      // Not (yet) resolvable to a workspace: the pane on its own.
       return <PaneScreen host={route.host} pane={route.pane} view={route.view} />;
     case 'interaction':
       return <InteractionRoute host={route.host} id={route.id} preselect={route.preselect} />;
@@ -151,34 +170,31 @@ function Screen({ route }: { route: Route }) {
       return <RunRoute host={route.host} run={route.run} />;
     case 'pair':
       return (
-        <Framed title={t.pair.title} route={route}>
+        <Framed title={t.pair.title}>
           <PairScreen d={route.d} />
         </Framed>
       );
     case 'settings':
       return (
-        <Framed title={t.settings.title} route={route} width="narrow">
+        <Framed title={t.settings.title} width="narrow">
           <SettingsScreen />
         </Framed>
       );
     case 'crew':
       return (
-        <Framed title={t.crew.title} route={route} width="narrow">
+        <Framed title={t.crew.title} width="narrow">
           <CrewScreen />
         </Framed>
       );
     case 'inbox':
+      return (
+        <Framed title={t.tabs.inbox} sub={<InboxSub />} width="narrow">
+          <InboxScreen />
+        </Framed>
+      );
     case 'panes':
     case 'focus':
     case 'changes':
-      return (
-        <Framed title={TAB_TITLES[route.name]} route={route} tab={route.name} scroll={route.name !== 'changes'} width={route.name === 'inbox' ? 'narrow' : route.name === 'changes' ? 'wide' : 'medium'}>
-          {route.name === 'inbox' && <InboxScreen />}
-          {route.name === 'panes' && <PanesScreen />}
-          {route.name === 'focus' && <FocusScreen />}
-          {route.name === 'changes' && <ChangesScreen />}
-        </Framed>
-      );
     case 'home':
       return (
         <div className="flex h-full items-center justify-center">
@@ -187,32 +203,32 @@ function Screen({ route }: { route: Route }) {
       );
     case 'not_found':
       return (
-        <Framed title={t.appName} route={route}>
+        <Framed title={t.appName}>
           <Empty title="404" hint={route.path} />
         </Framed>
       );
   }
 }
 
+function InboxSub() {
+  const items = useInboxItems();
+  return <>{t.quick.needYou(items.length)}</>;
+}
+
 /**
  * Comfortable reading widths on big windows (like native Mac apps): cards and settings stay a
- * column, lists a little wider, diffs wider still. The title aligns with the column.
+ * column, lists a little wider. The header spans the centre.
  */
-const WIDTHS = { narrow: 'max-w-[760px]', medium: 'max-w-[880px]', wide: 'max-w-[1280px]' } as const;
+const WIDTHS = { narrow: 'max-w-[720px]', medium: 'max-w-[880px]', wide: 'max-w-[1280px]' } as const;
 export type FrameWidth = keyof typeof WIDTHS;
 
-function Framed({ title, route, tab, children, scroll = true, width = 'medium' }: { title: string; route: Route; tab?: Tab; children: ReactNode; scroll?: boolean; width?: FrameWidth }) {
-  const wide = useWide();
-  const column = cx('mx-auto w-full', WIDTHS[width]);
+function Framed({ title, sub, children, width = 'medium' }: { title: string; sub?: ReactNode; children: ReactNode; width?: FrameWidth }) {
   return (
-    <div className="flex h-full flex-col pt-safe px-safe">
-      <TopBar title={title} route={route} column={column} />
-      <ConnectionBanner />
-      <BusyBar />
-      <main className={scroll ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1 flex-col'}>
-        <div className={cx(column, !scroll && 'flex min-h-0 flex-1 flex-col')}>{children}</div>
+    <div className="flex h-full min-h-0 flex-col pt-safe px-safe">
+      <TopBar title={title} sub={sub} />
+      <main className="vk-scroll min-h-0 flex-1 overflow-y-auto">
+        <div className={cx('mx-auto w-full pt-2', WIDTHS[width])}>{children}</div>
       </main>
-      {!wide && <TabBar active={tab} />}
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   Maximize2,
   Minimize2,
   PictureInPicture2,
+  MoreHorizontal,
   MoreVertical,
   OctagonX,
   Search,
@@ -46,8 +47,24 @@ import { useMirror } from './use-mirror';
 import { useSurface } from '../../app/surface';
 import { useWide } from '../../app/shell';
 
-export function PaneScreen({ host, pane, view }: { host: string; pane: string; view: PaneView }) {
-  return <PaneInner key={`${host}/${pane}`} hostId={host} paneId={pane} view={view} />;
+/**
+ * Inside the workspace shell the pane drops its own back/prev/next chrome: the shell supplies the
+ * title (the workspace), a leading menu button on narrow windows, trailing actions (panel
+ * toggle) and the tab strip; the view (terminal / history) is the shell's state.
+ */
+export interface PaneEmbed {
+  title: string;
+  sub: string;
+  onView(v: PaneView): void;
+  /** "Changes" from the menu: open the workspace panel instead of a sub-view. */
+  onChanges(): void;
+  leading?: ReactNode;
+  trailing?: ReactNode;
+  tabs?: ReactNode;
+}
+
+export function PaneScreen({ host, pane, view, embed }: { host: string; pane: string; view: PaneView; embed?: PaneEmbed }) {
+  return <PaneInner key={`${host}/${pane}`} hostId={host} paneId={pane} view={view} embed={embed} />;
 }
 
 function useLandscape(): boolean {
@@ -62,7 +79,7 @@ function useLandscape(): boolean {
   return v;
 }
 
-function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; view: PaneView }) {
+function PaneInner({ hostId, paneId, view, embed }: { hostId: string; paneId: string; view: PaneView; embed?: PaneEmbed }) {
   const app = useApp();
   const prefs = usePrefs();
   const host = useHost(hostId);
@@ -118,11 +135,66 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
     .filter(Boolean)
     .join(' · ');
 
-  const setView = (v: PaneView) => navigate({ name: 'pane', host: hostId, pane: paneId, view: v }, { replace: true });
+  const setView = (v: PaneView) => {
+    if (embed) return v === 'changes' ? embed.onChanges() : embed.onView(v);
+    navigate({ name: 'pane', host: hostId, pane: paneId, view: v }, { replace: true });
+  };
+  const findButton = (
+    <IconButton
+      label={t.pane.find}
+      data-find
+      aria-keyshortcuts="/"
+      onClick={() => {
+        if (view !== 'term') setView('term');
+        setFindOpen(true);
+      }}
+    >
+      <Search className="size-5" />
+    </IconButton>
+  );
+  const popButton = popOut && (
+    <IconButton label={t.palette.popOut} onClick={() => popOut(hostId, paneId)}>
+      <PictureInPicture2 className="size-5" />
+    </IconButton>
+  );
+  const moreButton = (
+    <IconButton label={t.more} onClick={() => setMenu(true)}>
+      <MoreHorizontal className="size-5" />
+    </IconButton>
+  );
 
   return (
     <div className="flex h-full flex-col bg-bg pt-safe">
-      {!zen && (
+      {!zen && embed && (
+        <>
+          <EmbedHeader
+            leading={embed.leading}
+            title={embed.title}
+            sub={embed.sub}
+            right={
+              <>
+                {findButton}
+                {popButton}
+                {moreButton}
+                {embed.trailing}
+              </>
+            }
+          />
+          <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-2">
+            {embed.tabs ?? <span className="flex-1" />}
+            <Segmented
+              label={t.pane.terminal}
+              value={view === 'history' ? 'history' : 'term'}
+              onChange={setView}
+              options={[
+                { value: 'term', label: t.pane.terminal },
+                { value: 'history', label: t.pane.history },
+              ]}
+            />
+          </div>
+        </>
+      )}
+      {!zen && !embed && (
         <>
           <Header
             onBack={surface === 'pane' ? undefined : () => goBack({ name: 'panes' })}
@@ -307,7 +379,7 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
         <SheetRow icon={<History className="size-5" />} onClick={() => (setMenu(false), setView('history'))}>
           {t.pane.history}
         </SheetRow>
-        <SheetRow icon={<FileDiff className="size-5" />} onClick={() => (setMenu(false), setView('changes'))}>
+        <SheetRow icon={<FileDiff className="size-5" />} onClick={() => (setMenu(false), embed ? embed.onChanges() : setView('changes'))}>
           {t.pane.changes}
         </SheetRow>
         <SheetRow
@@ -347,6 +419,20 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
       {row && <ShareSheet row={row} open={shareOpen} onClose={() => setShareOpen(false)} />}
       {row && <HandoffSheet row={row} open={handoffOpen} onClose={() => setHandoffOpen(false)} />}
     </div>
+  );
+}
+
+function EmbedHeader({ leading, title, sub, right }: { leading?: ReactNode; title: string; sub: string; right?: ReactNode }) {
+  const wide = useWide();
+  return (
+    <header className={cx('titlebar flex h-11 shrink-0 items-center gap-1 border-b border-border pl-3 pr-2', !wide && 'titlebar-inset pl-1.5')}>
+      {leading}
+      <div className={cx('flex min-w-0 flex-1 pl-0.5', wide ? 'items-baseline gap-2' : 'flex-col leading-tight')}>
+        <h1 className="truncate text-base font-semibold">{title}</h1>
+        {sub && <span className={cx('truncate text-muted', wide ? 'text-sm' : 'text-xs')}>{sub}</span>}
+      </div>
+      {right}
+    </header>
   );
 }
 

@@ -9,8 +9,8 @@ import { Button, Card, Dot, Empty, IconButton, Spinner } from '../components/ui'
 import { t } from '../i18n';
 import { IdleLock } from '../lib/idle-lock';
 import { useStore } from '../lib/store';
-import { navigate } from '../router';
-import { useWide } from '../app/shell';
+import { navigate, workspaceRoute } from '../router';
+import { TopBar } from '../app/shell';
 
 export function CrewScreen() {
   const app = useApp();
@@ -53,16 +53,17 @@ export function InteractionRoute({ host, id, preselect }: { host: string; id: st
   const h = useHost(host);
   const item = items.find((x) => x.host_id === host && x.interaction.id === id);
   const done = h?.dashboard?.interactions.find((i) => i.id === id);
-  const wide = useWide();
   return (
     <div className="flex h-full flex-col pt-safe">
-      <div className={`titlebar flex items-center gap-1 px-1 py-1 ${wide ? '' : 'titlebar-inset'}`}>
-        <IconButton label={t.back} onClick={() => navigate({ name: 'inbox' })}>
-          <ArrowLeft className="size-5" />
-        </IconButton>
-        <div className="text-base font-semibold">{t.tabs.inbox}</div>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3">
+      <TopBar
+        title={t.tabs.inbox}
+        leading={
+          <IconButton label={t.back} onClick={() => navigate({ name: 'inbox' })}>
+            <ArrowLeft className="size-5" />
+          </IconButton>
+        }
+      />
+      <div className="vk-scroll mx-auto w-full max-w-[720px] flex-1 overflow-y-auto p-3">
         {item ? (
           <InteractionCard item={item} preselect={preselect} showHost />
         ) : !h?.dashboard ? (
@@ -85,8 +86,10 @@ export function RunRoute({ host, run }: { host: string; run: string }) {
   const h = useHost(host);
   useEffect(() => {
     const r = h?.dashboard?.runs.find((x) => x.id === run);
-    if (r) navigate({ name: 'pane', host, pane: r.pane, view: 'term' }, { replace: true });
-    else if (h?.dashboard) navigate({ name: 'panes' }, { replace: true });
+    const ws = r ? h?.dashboard?.panes.find((p) => p.id === r.pane)?.workspace : undefined;
+    if (r && ws) navigate(workspaceRoute(host, ws, { pane: r.pane }), { replace: true });
+    else if (r) navigate({ name: 'pane', host, pane: r.pane, view: 'term' }, { replace: true });
+    else if (h?.dashboard) navigate({ name: 'home' }, { replace: true });
   }, [h?.dashboard, host, run]);
   return (
     <div className="flex h-full items-center justify-center">

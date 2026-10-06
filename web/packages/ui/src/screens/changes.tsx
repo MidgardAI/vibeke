@@ -6,7 +6,8 @@ import { ArrowLeft, ChevronLeft, ChevronRight, EyeOff, FileDiff, GitBranch, Refr
 import type { GitDiff, GitFile, GitStatus } from '@vibeke/core';
 import { useApp, useTree, useVisible } from '../app/hooks';
 import { DiffView } from '../components/diff';
-import { Empty, IconButton, Notice, Spinner, cx } from '../components/ui';
+import { FileIcon } from '../components/file-icon';
+import { DiffCount, Empty, IconButton, Notice, Spinner, cx } from '../components/ui';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
 import { filterFiles, repoTargets, splitPath, statusLetter, type ChangeFilter } from '../lib/changes';
@@ -88,14 +89,14 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto pb-4">
-      <div className="sticky top-0 z-10 space-y-2 border-b border-border bg-bg px-3 py-2">
+      <div className="sticky top-0 z-10 space-y-2 border-b border-border bg-bg px-3 py-2.5">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t.changes.filter}
           data-find-input
           aria-keyshortcuts="/"
-          className="h-9 w-full rounded-xl border border-border bg-surface px-3 text-sm placeholder:text-faint"
+          className="h-7 w-full rounded-md border border-border bg-surface px-2.5 text-sm placeholder:text-faint focus:border-border-strong focus:outline-none"
         />
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
           {(['all', 'staged', 'unstaged', 'untracked'] as ChangeFilter[]).map((f) => (
@@ -103,7 +104,8 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
               key={f}
               type="button"
               onClick={() => setFilter(f)}
-              className={cx('h-7 shrink-0 rounded-full border px-3 text-xs', filter === f ? 'border-accent bg-accent/10' : 'border-border text-muted')}
+              aria-pressed={filter === f}
+              className={cx('vk-focus h-6 shrink-0 rounded-full border px-2.5 text-xs', filter === f ? 'border-border-strong bg-selected text-fg' : 'border-border text-muted hover:text-fg')}
             >
               {t.changes[f]}
             </button>
@@ -121,8 +123,8 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
         const st = r.status;
         const files = filterFiles(st.files, filter, query);
         return (
-          <section key={key} className="mt-3">
-            <div className="flex items-center gap-2 px-4 pb-1.5 text-sm">
+          <section key={key} className="mt-2.5">
+            <div className="flex items-center gap-2 px-3 pb-1 text-xs">
               <span className="font-semibold">{basename(st.repo_root)}</span>
               {st.branch && (
                 <span className="flex items-center gap-1 text-muted">
@@ -135,9 +137,9 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
               {tree.hosts.length > 1 && <span className="text-faint">· {tree.hosts.find((h) => h.host.record.host_id === r.host)?.host.record.name}</span>}
             </div>
             {st.clean ? (
-              <div className="px-4 text-sm text-muted">{t.changes.clean}</div>
+              <div className="px-3 text-sm text-muted">{t.changes.clean}</div>
             ) : (
-              <div className="inset-group divide-y divide-border border-y border-border bg-surface">
+              <div className="px-1.5">
                 {files.map((f) => (
                   <FileRow key={f.path} f={f} onClick={() => setOpen({ repo: key, path: f.path })} />
                 ))}
@@ -156,20 +158,15 @@ function FileRow({ f, onClick }: { f: GitFile; onClick(): void }) {
   const letter = statusLetter(f);
   const tone = { A: 'text-ok', '?': 'text-ok', D: 'text-danger', U: 'text-warn', R: 'text-accent', M: 'text-warn' }[letter] ?? 'text-muted';
   return (
-    <button type="button" onClick={onClick} className="flex w-full items-center gap-3 px-4 py-2 text-left active:bg-surface-2">
-      <span className={cx('w-4 font-mono text-sm font-semibold', tone)}>{letter}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-sm">
+    <button type="button" onClick={onClick} className="vk-focus flex min-h-[var(--row-h)] w-full items-center gap-2 rounded-md px-1.5 text-left hover:bg-hover pointer-coarse:min-h-9">
+      <FileIcon path={f.path} />
+      <span className="min-w-0 flex-1 truncate text-sm">
         <span className="text-faint">{dir}</span>
         {name}
       </span>
       {f.secret && <EyeOff className="size-3.5 text-faint" />}
-      {f.binary ? (
-        <span className="text-2xs text-faint">bin</span>
-      ) : (
-        <span className="shrink-0 font-mono text-2xs">
-          {f.adds != null && <span className="text-ok">+{f.adds}</span>} {f.dels != null && <span className="text-danger">-{f.dels}</span>}
-        </span>
-      )}
+      {f.binary ? <span className="text-2xs text-faint">bin</span> : <DiffCount adds={f.adds ?? 0} dels={f.dels ?? 0} />}
+      <span className={cx('w-3 text-center font-mono text-2xs font-semibold', tone)}>{letter}</span>
     </button>
   );
 }
@@ -239,14 +236,6 @@ function DiffScreen({
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-export function ChangesScreen() {
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ChangesPanel />
     </div>
   );
 }

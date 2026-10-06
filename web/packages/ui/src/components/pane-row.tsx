@@ -59,60 +59,6 @@ export function stateWord(r: PaneRow): string {
   return r.pane.exited ? t.panes.exited : t.panes.shell;
 }
 
-export function PaneRowView({ row, showHost }: { row: PaneRow; showHost?: boolean }) {
-  const [menu, setMenu] = useState(false);
-  const lp = useLongPress(() => setMenu(true));
-  const now = useNow(30_000);
-  const r = row;
-  const sub = [
-    r.run ? harnessLabel(r.run.harness) : (r.pane.fg_cmdline[0]?.split('/').pop() ?? null),
-    showHost ? r.hostName : null,
-    shortPath(r.run?.cwd ?? r.pane.cwd, 2),
-  ].filter(Boolean);
-  const since = r.run ? now - r.run.execution.since_ms : null;
-  return (
-    <>
-      <button
-        type="button"
-        {...lp.handlers}
-        onClick={() => {
-          if (lp.fired.current) return;
-          navigate({ name: 'pane', host: r.host, pane: r.pane.id, view: 'term' });
-        }}
-        className={cx(
-          'flex w-full items-center gap-3 border border-transparent px-4 py-2.5 text-left active:bg-surface-2',
-          r.needsYou && 'bg-need',
-        )}
-        data-needs-you={r.needsYou || undefined}
-        data-nav-item={r.key}
-        id={`row-${r.key}`}
-      >
-        <span className="text-muted">{r.run ? <Bot className="size-4.5" /> : <SquareTerminal className="size-4.5" />}</span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5">
-            {r.pinned && <Pin className="size-3 shrink-0 text-faint" />}
-            <span className="truncate text-base font-medium">{rowTitle(r)}</span>
-          </span>
-          <span className="block truncate text-xs text-muted">{sub.join(' · ')}</span>
-          {r.run?.last_message && r.attention !== 'working' && <span className="mt-0.5 block truncate text-xs text-faint">{r.run.last_message}</span>}
-        </span>
-        <span className="flex shrink-0 flex-col items-end gap-1">
-          <span className="flex items-center gap-1.5 text-xs text-muted">
-            <Dot tone={stateTone(r)} />
-            {stateWord(r)}
-          </span>
-          {r.open.length > 0 ? (
-            <span className="rounded-full bg-need-strong px-1.5 text-2xs font-semibold text-black">{r.open.length}</span>
-          ) : (
-            since !== null && <span className="text-2xs tabular-nums text-faint">{shortDuration(since)}</span>
-          )}
-        </span>
-      </button>
-      <PaneMenu row={r} open={menu} onClose={() => setMenu(false)} />
-    </>
-  );
-}
-
 export function PaneMenu({ row, open, onClose }: { row: PaneRow; open: boolean; onClose(): void }) {
   const app = useApp();
   const host = useHost(row.host);
