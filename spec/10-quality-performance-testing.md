@@ -47,6 +47,23 @@ All budgets are measured on the two reference machines (§2.1) unless noted. "Ad
 | Disk write rate, idle session | ≤ 10 KiB/s (snapshots only on change) | M1 |
 | `state.db` growth, 10 agents working 8h | ≤ 200 MiB (events + items; scrollback archive separate) | M1 |
 
+#### 1.3.1 Measured baseline (2026-10-06, first measurement)
+
+Tool: `vibeke debug idle --panes 30 --seconds N --repeat R` (also a row group in `mise run perf-budgets`). It starts an isolated server (private runtime/state dirs), 30 idle panes (20 `cat` as agents waiting for input, 10 `sh`), samples with `proc_pid_rusage` (macOS: CPU, `ri_resident_size`, `ri_interrupt_wkups`, `ri_pkg_idle_wkups`; Linux: `/proc` stat/status, voluntary context switches as the wakeup proxy, untested), first with no client and then with a headless TUI (`vibeke attach` in a PTY, answering terminal queries) attached. Medians of 3 windows of 20 s, release build, Apple M1 Pro (10 cores), macOS 26. **The host was heavily loaded by other builds for every run (load1 14 to 82 on 10 cores), so none of these numbers is a valid gate result;** the tool marks verdicts "(loaded)" when load1 > cores/2. CPU and wakeup counts are the process's own, so contention inflates them less than latency, but treat budget compliance as unconfirmed until re-measured on a quiet reference machine.
+
+| Metric | Budget | Measured (4 runs) | Verdict |
+|---|---|---|---|
+| Server idle CPU, 30 panes, no client | <= 0.3% | 0.07 to 0.13% | within budget (loaded host) |
+| Server + TUI CPU, 30 idle panes, TUI attached | <= 1% / 3% | 0.12 to 0.17% (server ~0.1, TUI 0.03 to 0.06) | within budget (loaded host); spinner scenarios not yet exercised |
+| Holder idle RSS | <= 2 MiB + ring | 1.1 to 1.7 MiB mean | within budget |
+| Server RSS, no panes | <= 25 MiB | 21.7 to 22.3 MiB | within budget |
+| Server RSS per idle pane | <= 6 MiB (10k lines) | 0.00 to 0.05 MiB (idle, no scrollback yet) | not meaningful until panes hold scrollback |
+| TUI client RSS | <= 30 MiB | 8.4 to 9.9 MiB | within budget |
+| Server idle wakeups | <= 2/s | **11 to 13/s** (pkg-idle 0/s); TUI 6.5 to 8/s | **over budget**; wakeup counts are not load-dependent and were stable across all runs |
+| Holder CPU / wakeups, 30 holders | informational | 0.00% / 0.0 per s | blocked in poll |
+
+Cause of the wakeup miss (by inspection, not yet profiled): each pane's server task runs a 500 ms `tokio::time::interval` (`vk-server/src/pane.rs`), plus the 1 s housekeeping tick (`run.rs`), the 2 s preview tick and the 2 s sandbox tick. Timers were not coalesced; the fix is to drive snapshot/idle checks from one shared deadline (or only arm a timer while the pane is dirty). Not measured: disk write rate, `state.db` growth, spinner CPU scenarios, 10k-line scrollback RSS, Linux numbers, `powermetrics` energy. Reproduce: `mise run perf-budgets` (`PERF_IDLE_SECONDS`, `PERF_IDLE_REPEAT`, `PERF_IDLE=0` to skip).
+
 ### 1.4 Startup and recovery
 
 | Metric | Budget | Gate |
@@ -147,6 +164,7 @@ Coverage target: ≥ 80% line coverage on `vk-proto`, `vk-hold`, `vk-store`, `vk
 ### 4.1 VT conformance [M0 selection, M1 gate]
 
 - **esctest2** (George Nachman's suite, xterm reference) run headless against `vk-term` through a PTY: target ≥ the chosen engine's upstream pass rate; any regression fails CI. Known deviations are listed in `tests/vt/expected-failures.toml` with justification.
+- **Status (2026-10-06)**: neither esctest2 nor vttest is vendored (no network in the build), so the M0 "measured esctest pass rate" is **not** available. In its place `crates/vk-term/tests/conformance.rs` is a deterministic in-repo suite (239 cases in 10 categories: cursor movement, erase/edit, scroll regions incl. DECLRMM, SGR, DEC modes, OSC 7/8/9/52/133/777, kitty keyboard flags, DA/DSR/DECRQM/DECRQSS/XTWINOPS replies, wide/combining/grapheme clusters, wrap) written from ECMA-48 and xterm ctlseqs, each also fed byte by byte (split invariance). It runs in the normal `cargo nextest run --workspace` (about 0.1 s). Baseline for libghostty-vt: **237 pass, 2 expected failures** (DECSTR leaves DECCKM set; no reply to DECXCPR `CSI ? 6 n`). Divergences are `.xfail("why")` in the table and must keep failing, so a fix forces the marker to be removed. Behaviour worth knowing: grapheme clustering (ZWJ, VS16, flags, skin tones) only applies after DECSET 2027; by default widths are per code point. OSC 8 links render their text but the render rows do not carry the URI. To run upstream esctest2 later: start the terminal under test as a Vibeke pane and run `python3 esctest/esctest.py --expected-terminal xterm` inside it (it needs a real PTY and the terminal as the program); record failures as `xfail` entries in the same style. Keyboard matrix (tier-1 real terminals) is unchanged: physical, not automatable here.
 - **vttest** screens automated by scripted input and screen-diff against golden captures for menus 1–8 and 11 (xterm extensions).
 - **Own corpus** (`tests/vt/corpus/`): sequences that real agents/tools emit — synchronized output (DECSET 2026), OSC 8 hyperlinks, OSC 52, OSC 133 prompt marks, OSC 7 cwd, OSC 9/777 notifications, kitty keyboard flags push/pop, kitty graphics (transmit/place/delete, chunked, shared memory refused), sixel, undercurl/colored underline (SGR 4:3, 58), VS-16 emoji and ZWJ sequences, CJK wide chars, combining marks, RTL text, DECSTBM scroll regions, alternate screen with saved cursor, bracketed paste, focus events, mouse modes 1000/1002/1003/1006/1016, title stack. Each case: input bytes → expected cell grid (+ attributes) snapshot.
 - **Grapheme width consistency**: property test that server cell widths match the client-side compositor's widths for the Unicode 16 test file, and a per-terminal width probe at TUI startup (query cursor position after printing ambiguous glyphs) to detect host-terminal width disagreement and adapt.

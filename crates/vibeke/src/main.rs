@@ -8,6 +8,7 @@ use vk_cli::{EXIT_NO_SERVER, EXIT_OK, EXIT_USAGE, Global};
 mod commands;
 mod debug;
 mod doctor;
+mod idle;
 mod integration;
 mod remote;
 
@@ -111,6 +112,11 @@ fn main() {
         && args.get(1).map(String::as_str) == Some("ptyshot")
     {
         std::process::exit(debug::ptyshot(&args[2..]));
+    }
+    if args.first().map(String::as_str) == Some("debug")
+        && args.get(1).map(String::as_str) == Some("idle")
+    {
+        std::process::exit(idle::idle(&args[2..]));
     }
     // Sandbox launch helpers (13): exec-only, no runtime, must not spawn threads first.
     if args.first().map(String::as_str) == Some("sandbox")

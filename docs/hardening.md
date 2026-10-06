@@ -96,6 +96,8 @@ table against the spec 10 §1 budgets. It is report-only: exit status is 0 unles
 | VT parse throughput | `cargo test --release -p vk-term --test recovery throughput -- --ignored` | >= 300 MB/s (1.2) |
 | Added keystroke latency | `vibeke debug latency` | p50 <= 1 ms, p99 <= 3 ms (1.1) |
 | Remote bandwidth (`PERF_MACHINE=<label>`) | `vibeke debug bandwidth` | idle 0 B/s, spinner <= 2 KiB/s unfocused, <= 8 KiB/s focused (1.5); printed for review |
+| Idle CPU / RSS / wakeups (`PERF_IDLE=0` skips) | `vibeke debug idle` (isolated server, 30 idle panes, headless attached TUI; load average recorded, verdicts marked "(loaded)" on a busy host) | server <= 0.3% CPU, <= 2 wakeups/s, holder <= 2 MiB, server <= 25 MiB, TUI <= 30 MiB (1.3) |
+| VT conformance (`cargo test -p vk-term --test conformance`, also in `mise run test`) | in-repo corpus, `VK_CONFORMANCE_REPORT=1` prints per-category counts and expected failures | 0 unexpected failures (4.1) |
 | Browser frame path (`PERF_BROWSER=1`) | `cargo run -p vk-browser --example bench` | 1.6; printed for review |
 
 Budgets are defined on the two reference machines (spec 10 §2.1); numbers from other hardware
