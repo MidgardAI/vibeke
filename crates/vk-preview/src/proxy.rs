@@ -1,24 +1,38 @@
 //! Authenticated reverse proxy for the user's normal browser (06 B4, 09 §8).
 //!
-//! One HTTP/1.1 listener on `127.0.0.1:<port>` (and `[::1]` when available). Each preview gets
-//! its own origin `http://<handle>-…​.vibeke.localhost:<port>` (`*.localhost` resolves to
-//! loopback in browsers and is a secure context), selected by the `Host` header; unknown hosts
-//! get `421` (DNS-rebinding defence).
+//! One HTTP/1.1 listener on `127.0.0.1:<port>` and `[::1]:<port>` (when the machine has IPv6
+//! loopback; if another process holds `[::1]:<port>` the proxy refuses to start, since a
+//! browser may resolve `*.localhost` to `::1` first). Each preview gets its own origin
+//! `http://<handle>-…-<tag>.vibeke.localhost:<port>` (`*.localhost` resolves to loopback in
+//! browsers and is a secure context), selected by the `Host` header; unknown hosts get `421`
+//! (DNS-rebinding defence). `<tag>` is a random per-session component persisted by the server,
+//! so two Vibeke sessions never use the same hostname: cookies are scoped by host, not by
+//! port, and a host shared by two sessions would hand one session's application cookies to
+//! the other.
 //!
 //! **Capability.** Opening a preview mints a one-time `vk_token` (60 s). The first navigation
-//! carrying it is answered with a `303` to the same URL without the token and an unguessable
-//! per-preview session cookie (`__Host-vk_preview`, HttpOnly, SameSite=Strict, Secure,
-//! host-only, `Path=/`; plus a non-`Secure` twin `vk_preview` with the same attributes for
-//! browsers that refuse `Secure` cookies over `http://*.localhost`). Every request — including
-//! WebSocket upgrades — must carry a session of *that* host. Only SHA-256 digests of tokens and
-//! sessions are kept, in memory (a server restart revokes everything).
+//! carrying it is answered with a `303` to the same URL (absolute, on the preview's own
+//! origin) without the token and an unguessable per-preview session cookie
+//! (`__Host-vk_preview`: HttpOnly, SameSite=Strict, Secure, host-only, `Path=/`). There is no
+//! non-`Secure` copy: a non-`Secure` cookie can be read by any other local listener that
+//! serves the same hostname on another port. Browsers that drop `Secure` cookies on
+//! `http://*.localhost` cannot use proxy mode (use the browser profile instead). Every
+//! request — including WebSocket upgrades — must carry a session of *that* host. Only SHA-256
+//! digests of tokens and sessions are kept, in memory (a server restart revokes everything).
 //!
 //! **Not leakable cross-origin.** All previews share the site `vibeke.localhost`, so SameSite
 //! does not separate them and is not relied on: requests whose `Sec-Fetch-Site` is
-//! `same-site`/`cross-site` are refused unless they are top-level navigations, and requests
-//! with a foreign `Origin` are refused for WebSocket upgrades and non-GET/HEAD methods. The
-//! proxy strips `vk_token` and every reserved `vk_` cookie before forwarding, drops upstream
+//! `same-site` (another preview) are refused; `cross-site` requests are refused unless they
+//! are top-level document navigations (`Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest:
+//! document`; an iframe navigation has `Sec-Fetch-Dest: iframe`). Requests with a foreign
+//! `Origin` are refused for WebSocket upgrades and non-GET/HEAD methods. Responses the proxy
+//! generates itself carry `X-Frame-Options: DENY` and `frame-ancestors 'none'`. The proxy
+//! strips `vk_token` and every reserved `vk_` cookie before forwarding, drops upstream
 //! `Set-Cookie` for reserved names and strips `Domain=` from the rest (host-only cookies).
+//!
+//! **Revocation.** Before each forwarded request the route is re-checked with the
+//! [`Upstream`] (the preview must still exist, not be gone, and still be on the same port);
+//! a route that fails the check is removed together with its sessions (`410`).
 //!
 //! **Rewriting** (only what B4 lists): `Host` → `localhost:<port>`; `Origin`/`Referer` →
 //! the upstream origin when they are the preview's own origin; response `Location` and
@@ -44,10 +58,9 @@ use tokio::net::TcpListener;
 
 pub type Body = BoxBody<Bytes, hyper::Error>;
 
-/// The session cookie (spec name). `__Host-` = Secure, host-only, `Path=/`.
+/// The session cookie (spec name). `__Host-` = Secure, host-only, `Path=/`. The only cookie
+/// the proxy sets or accepts (see the module docs for why there is no non-`Secure` copy).
 pub const COOKIE: &str = "__Host-vk_preview";
-/// Same value without `Secure`, for browsers that drop `Secure` cookies on `http://*.localhost`.
-pub const COOKIE_COMPAT: &str = "vk_preview";
 /// The one-time query parameter.
 pub const TOKEN_PARAM: &str = "vk_token";
 /// Parent domain of every preview origin.
@@ -73,10 +86,25 @@ pub struct Route {
     pub scheme: String,
 }
 
+/// Whether a route still points at the preview it was opened for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteCheck {
+    /// The preview exists, is not gone and is still on the route's port.
+    Live,
+    /// The preview was forgotten/retired or moved: the route and its sessions are revoked.
+    Gone,
+    /// The preview's machine could not be asked (link down): refuse this request only.
+    Unavailable,
+}
+
 /// How the proxy reaches a route's upstream (a direct loopback connection, or a bridge `tcp:`
 /// channel to the preview's machine).
 pub trait Upstream: Send + Sync + 'static {
     fn connect(&self, route: &Route) -> BoxFuture<std::io::Result<Box<dyn Stream>>>;
+    /// Re-check the route before a request is forwarded (default: always live).
+    fn check(&self, _route: &Route) -> BoxFuture<RouteCheck> {
+        Box::pin(async { RouteCheck::Live })
+    }
 }
 
 type Digest32 = [u8; 32];
@@ -138,16 +166,20 @@ fn dns_part(s: &str, max: usize) -> String {
     out
 }
 
-/// `<handle>[-<machine>][-<slug>].vibeke.localhost` (one DNS label ≤ 63 bytes). Uniqueness is
-/// guaranteed by [`Proxy::register`], not by this function.
-pub fn hostname_for(handle: &str, machine: Option<&str>, slug: Option<&str>) -> String {
+/// `<handle>[-<machine>][-<slug>]-<tag>.vibeke.localhost` (one DNS label ≤ 63 bytes). `tag`
+/// is the session's random host tag (see [`session_tag`]), always kept whole, so hostnames
+/// of different sessions never collide. Uniqueness within a session is guaranteed by
+/// [`Proxy::register`], not by this function.
+pub fn hostname_for(handle: &str, machine: Option<&str>, slug: Option<&str>, tag: &str) -> String {
+    let tag = dns_part(tag, 20);
+    let reserve = if tag.is_empty() { 0 } else { tag.len() + 1 };
     let mut label = dns_part(handle, 16);
     if label.is_empty() {
         label.push('p');
     }
     for (part, max) in [(machine, 20usize), (slug, 63)] {
         if let Some(p) = part {
-            let room = 63usize.saturating_sub(label.len() + 1).min(max);
+            let room = 63usize.saturating_sub(label.len() + 1 + reserve).min(max);
             let p = dns_part(p, room);
             if !p.is_empty() {
                 label.push('-');
@@ -155,7 +187,19 @@ pub fn hostname_for(handle: &str, machine: Option<&str>, slug: Option<&str>) -> 
             }
         }
     }
+    if !tag.is_empty() {
+        label.push('-');
+        label.push_str(&tag);
+    }
     format!("{label}.{DOMAIN}")
+}
+
+/// A fresh random session host tag (`s` + 9 lower-case hex digits). The server persists one per
+/// session and passes it to [`hostname_for`].
+pub fn session_tag() -> String {
+    let b: [u8; 5] = rand::random();
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("s{}", &hex[..9])
 }
 
 /// A cookie name the proxy reserves (`vk_*`, also behind `__Host-`/`__Secure-` prefixes).
@@ -229,7 +273,7 @@ fn session_cookies(headers: &HeaderMap) -> Vec<String> {
         let Ok(v) = v.to_str() else { continue };
         for c in v.split(';') {
             if let Some((n, val)) = c.trim().split_once('=')
-                && (n == COOKIE || n == COOKIE_COMPAT)
+                && n == COOKIE
             {
                 out.push(val.to_string());
             }
@@ -301,11 +345,20 @@ pub fn foreign_request(
     upgrade: bool,
 ) -> Option<&'static str> {
     let get = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
-    if let Some(site) = get("sec-fetch-site")
-        && matches!(site, "same-site" | "cross-site")
-        && get("sec-fetch-mode") != Some("navigate")
-    {
-        return Some("cross-origin subresource or fetch");
+    match get("sec-fetch-site") {
+        // Another `*.vibeke.localhost` origin: a sibling preview (of this or another
+        // session). Never allowed, not even as a navigation (a sibling could frame or
+        // navigate to this preview to drive GET requests with its cookie).
+        Some("same-site") => return Some("request from another preview origin"),
+        // Only a top-level document navigation (a link from elsewhere); iframes, workers and
+        // subresources are refused.
+        Some("cross-site")
+            if !(get("sec-fetch-mode") == Some("navigate")
+                && get("sec-fetch-dest") == Some("document")) =>
+        {
+            return Some("cross-origin subresource, frame or fetch");
+        }
+        _ => {}
     }
     if let Some(origin) = get("origin")
         && !origin.eq_ignore_ascii_case(own_origin)
@@ -379,6 +432,12 @@ fn secure_headers(h: &mut HeaderMap) {
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
+    );
+    // Proxy pages (login required, link expired, …) and the token exchange are never framed.
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
     );
 }
 
@@ -475,6 +534,35 @@ impl Proxy {
         }
     }
 
+    /// Forget every origin of `machine` whose preview id or handle is `target` (a remote
+    /// `preview.forget` names the preview by handle or id).
+    pub fn remove_matching(&self, machine: &str, target: &str) -> usize {
+        let mut st = self.state.lock().unwrap();
+        let hosts: Vec<String> = st
+            .by_host
+            .iter()
+            .filter(|(_, e)| {
+                e.route.machine == machine
+                    && (e.route.preview == target || e.route.handle == target)
+            })
+            .map(|(h, _)| h.clone())
+            .collect();
+        for h in &hosts {
+            if let Some(e) = st.by_host.remove(h) {
+                st.by_preview
+                    .remove(&(e.route.machine.clone(), e.route.preview.clone()));
+            }
+        }
+        hosts.len()
+    }
+
+    fn remove_host(&self, host: &str) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(e) = st.by_host.remove(host) {
+            st.by_preview.remove(&(e.route.machine, e.route.preview));
+        }
+    }
+
     pub fn routes(&self) -> Vec<Route> {
         let st = self.state.lock().unwrap();
         let mut v: Vec<Route> = st.by_host.values().map(|e| e.route.clone()).collect();
@@ -503,11 +591,18 @@ impl Proxy {
         } else {
             format!("/{path}")
         };
+        // The token goes into the query, before any fragment (a browser never sends the
+        // fragment; it keeps it across the exchange redirect).
+        let (path, frag) = match path.find('#') {
+            Some(i) => (path[..i].to_string(), &path[i..]),
+            None => (path.clone(), ""),
+        };
         let mut u = format!("{}{path}", self.origin(host));
         if let Some(t) = token {
-            u.push(if u.contains('?') { '&' } else { '?' });
+            u.push(if path.contains('?') { '&' } else { '?' });
             u.push_str(&format!("{TOKEN_PARAM}={t}"));
         }
+        u.push_str(frag);
         u
     }
 
@@ -556,16 +651,24 @@ impl Proxy {
             .map(|e| e.route.clone())
     }
 
-    /// Bind `127.0.0.1:<port>` (0 = ephemeral) and, best effort, `[::1]` on the same port.
-    /// Never a wildcard address (09 §7).
+    /// Bind `127.0.0.1:<port>` (0 = ephemeral) and `[::1]` on the same port. Never a
+    /// wildcard address (09 §7). `[::1]` is skipped only when the machine has no IPv6
+    /// loopback; when another process already listens there the bind fails with
+    /// `AddrInUse` (a browser resolving `*.localhost` to `::1` would reach that process, cookie
+    /// included). For an ephemeral port a few candidates are tried.
     pub async fn bind(port: u16) -> std::io::Result<Vec<TcpListener>> {
-        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
-        let p = v4.local_addr()?.port();
-        let mut v = vec![v4];
-        if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, p)).await {
-            v.push(v6);
+        let mut last = None;
+        for _ in 0..if port == 0 { 8 } else { 1 } {
+            let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+            let p = v4.local_addr()?.port();
+            match TcpListener::bind((Ipv6Addr::LOCALHOST, p)).await {
+                Ok(v6) => return Ok(vec![v4, v6]),
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => last = Some(e),
+                // No IPv6 loopback on this machine: browsers can't reach `::1` either.
+                Err(_) => return Ok(vec![v4]),
+            }
         }
-        Ok(v)
+        Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrInUse)))
     }
 
     /// Serve on the listeners from [`Proxy::bind`] (spawns the accept loops).
@@ -671,16 +774,14 @@ impl Proxy {
             let mut r = Response::new(full(Bytes::new()));
             *r.status_mut() = StatusCode::SEE_OTHER;
             let h = r.headers_mut();
-            if let Ok(v) = HeaderValue::from_str(&target) {
+            // Absolute, on the authenticated origin: a path like `//elsewhere/` stays a path
+            // of this preview instead of becoming a network-path reference.
+            if let Ok(v) = HeaderValue::from_str(&format!("{own_origin}{target}")) {
                 h.insert(header::LOCATION, v);
             }
-            for c in [
-                format!("{COOKIE}={sess}; Path=/; HttpOnly; SameSite=Strict; Secure"),
-                format!("{COOKIE_COMPAT}={sess}; Path=/; HttpOnly; SameSite=Strict"),
-            ] {
-                if let Ok(v) = HeaderValue::from_str(&c) {
-                    h.append(header::SET_COOKIE, v);
-                }
+            let c = format!("{COOKIE}={sess}; Path=/; HttpOnly; SameSite=Strict; Secure");
+            if let Ok(v) = HeaderValue::from_str(&c) {
+                h.append(header::SET_COOKIE, v);
             }
             secure_headers(h);
             return r;
@@ -698,6 +799,26 @@ impl Proxy {
         if let Some(why) = foreign_request(req.method(), req.headers(), &own_origin, upgrade) {
             tracing::warn!(host = %host, why, "preview proxy: refused a cross-origin request");
             return self.deny(StatusCode::FORBIDDEN, "Cross-origin request refused", why);
+        }
+
+        // Revocation: the preview must still exist (not forgotten/retired) on the same port.
+        match self.upstream.check(&route).await {
+            RouteCheck::Live => {}
+            RouteCheck::Gone => {
+                self.remove_host(&host);
+                return self.deny(
+                    StatusCode::GONE,
+                    "Preview closed",
+                    &format!("This preview was closed or moved; its sign-in was revoked. {how_to}"),
+                );
+            }
+            RouteCheck::Unavailable => {
+                return self.deny(
+                    StatusCode::BAD_GATEWAY,
+                    "Preview machine not reachable",
+                    &format!("Could not confirm the preview with {}.", route.machine),
+                );
+            }
         }
 
         // ---- forward ----

@@ -28,11 +28,57 @@ pub enum Reply {
 }
 
 /// An external program to run with the TUI suspended (the main loop owns the terminal).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct External {
     pub argv: Vec<String>,
-    /// Deleted after the program exits.
-    pub file: PathBuf,
+    /// Deleted after the program exits ([`run_external`]), or when this is dropped without
+    /// running (the app quit or unwound first).
+    pub file: TempFile,
+}
+
+/// A temp file that is removed when dropped unless [`TempFile::persist`]ed: every failure,
+/// early return or unwind between creating the file and its consumer finishing cleans up.
+#[derive(Debug, PartialEq)]
+pub struct TempFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Disarm: the caller now owns deleting the file.
+    pub fn persist(mut self) -> PathBuf {
+        self.armed = false;
+        std::mem::take(&mut self.path)
+    }
+}
+
+impl std::ops::Deref for TempFile {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempFile {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if self.armed {
+            remove_file(&self.path);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -291,10 +337,56 @@ pub fn editor_argv(editor: &[String], file: &Path, line: usize) -> Vec<String> {
     argv
 }
 
-/// Write `text` to a new read-only file in the private directory `dir` (0700).
-pub fn write_private(dir: &Path, pane: &str, text: &str) -> std::io::Result<PathBuf> {
+/// Write `text` to a new read-only file in the private directory `dir` (0700). The file is
+/// removed again if any step fails, and when the returned guard drops.
+pub fn write_private(dir: &Path, pane: &str, text: &str) -> std::io::Result<TempFile> {
     use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
+    create_private(
+        dir,
+        pane,
+        |f| f.write_all(text.as_bytes()),
+        |p| std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o400)),
+    )
+}
+
+/// Copies older than this are leftovers of a TUI that was killed (SIGKILL, SIGHUP without
+/// unwinding) while an editor had one open; no editor session lasts this long in practice.
+const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Remove `scrollback-*.txt` files in `dir` last modified more than `age` ago (best effort).
+fn sweep_stale(dir: &Path, age: std::time::Duration) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("scrollback-") && name.ends_with(".txt")) {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|d| d > age);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// [`write_private`] with the write and finishing (chmod) steps supplied by the caller.
+fn create_private(
+    dir: &Path,
+    pane: &str,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+    finish: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<TempFile> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -312,6 +404,7 @@ pub fn write_private(dir: &Path, pane: &str, text: &str) -> std::io::Result<Path
             )));
         }
     }
+    sweep_stale(dir, STALE_AFTER);
     let safe: String = pane
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
@@ -326,10 +419,12 @@ pub fn write_private(dir: &Path, pane: &str, text: &str) -> std::io::Result<Path
         .create_new(true)
         .mode(0o600)
         .open(&path)?;
-    f.write_all(text.as_bytes())?;
+    // Ours from here on: the guard removes it on any error or unwind below.
+    let guard = TempFile::new(path);
+    write(&mut f)?;
     drop(f);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))?;
-    Ok(path)
+    finish(guard.path())?;
+    Ok(guard)
 }
 
 /// `e`: hand the text to `$VISUAL`/`$EDITOR` (run by the main loop with the TUI suspended).
@@ -352,12 +447,13 @@ fn open_editor(app: &mut App) {
     }
 }
 
-/// Run an [`External`] with inherited stdio (the caller suspended the TUI), then delete its file.
+/// Run an [`External`] with inherited stdio (the caller suspended the TUI), then delete its file
+/// (dropping the [`External`] would too; this deletes it as soon as the program exits).
 pub fn run_external(x: &External) -> Result<(), String> {
     let status = std::process::Command::new(&x.argv[0])
         .args(&x.argv[1..])
         .status();
-    remove_file(&x.file);
+    remove_file(x.file.path());
     match status {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(format!("{} exited with {s}", x.argv[0])),
@@ -538,3 +634,153 @@ fn body_rows(app: &App) -> usize {
 #[cfg(test)]
 #[path = "scrollback_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn leftovers_of_a_killed_tui_are_swept_on_the_next_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("priv");
+        let first = write_private(&dir, "p1", "one").unwrap();
+        // A killed TUI never ran the guard: the file stays behind.
+        let left = first.path().to_path_buf();
+        first.persist();
+        let other = dir.join("notes.txt");
+        std::fs::write(&other, "keep").unwrap();
+        // Not stale yet: kept.
+        let second = write_private(&dir, "p2", "two").unwrap();
+        assert!(left.exists());
+        drop(second);
+        // Stale: swept (other files in the directory are never touched).
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        sweep_stale(&dir, std::time::Duration::ZERO);
+        assert!(!left.exists());
+        assert!(other.exists());
+    }
+
+    fn entries(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_write_removes_the_partial_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("priv");
+        let err = create_private(
+            &dir,
+            "p1",
+            |f| {
+                use std::io::Write as _;
+                f.write_all(b"partial")?;
+                Err(std::io::Error::other("disk full"))
+            },
+            |_| panic!("finish must not run after a failed write"),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "disk full");
+        assert!(entries(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_failed_chmod_removes_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("priv");
+        let mut seen = None;
+        let err = create_private(
+            &dir,
+            "p1",
+            |f| {
+                use std::io::Write as _;
+                f.write_all(b"text")
+            },
+            |p| {
+                assert!(p.exists());
+                seen = Some(p.to_path_buf());
+                Err(std::io::Error::other("chmod refused"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "chmod refused");
+        assert!(!seen.unwrap().exists());
+        assert!(entries(&dir).is_empty());
+    }
+
+    #[test]
+    fn dropping_the_guard_on_early_return_or_panic_removes_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("priv");
+        // Early return after the file was made, before handing it off.
+        let mut made = None;
+        let r = (|| -> std::io::Result<External> {
+            let f = write_private(&dir, "p1", "x")?;
+            made = Some(f.path().to_path_buf());
+            Err(std::io::Error::other("later step failed"))
+        })();
+        assert!(r.is_err());
+        assert!(!made.unwrap().exists());
+        // A panic between creation and handoff.
+        let d = dir.clone();
+        let r = std::panic::catch_unwind(move || {
+            let _f = write_private(&d, "p1", "x").unwrap();
+            panic!("interrupted");
+        });
+        assert!(r.is_err());
+        assert!(entries(&dir).is_empty());
+        // Queued for the editor but never run (the app quit first).
+        let file = write_private(&dir, "p1", "x").unwrap();
+        let path = file.path().to_path_buf();
+        let x = External {
+            argv: vec!["true".into()],
+            file,
+        };
+        assert!(path.exists());
+        drop(x);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn on_success_the_file_lives_until_the_consumer_is_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("priv");
+        let file = write_private(&dir, "p1", "hello\n").unwrap();
+        let path = file.path().to_path_buf();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\n");
+        // The consumer reads the file while it runs; it is gone once it exits.
+        let out = tmp.path().join("seen");
+        let x = External {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "cat \"$1\" > \"$2\"".into(),
+                "sh".into(),
+                path.display().to_string(),
+                out.display().to_string(),
+            ],
+            file,
+        };
+        assert!(path.exists());
+        run_external(&x).unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello\n");
+        assert!(!path.exists());
+        drop(x);
+        // A failing consumer still cleans up.
+        let file = write_private(&dir, "p1", "x").unwrap();
+        let path = file.path().to_path_buf();
+        let x = External {
+            argv: vec!["/bin/sh".into(), "-c".into(), "exit 3".into()],
+            file,
+        };
+        assert!(run_external(&x).is_err());
+        assert!(!path.exists());
+        // `persist` hands ownership to the caller: nothing is removed on drop.
+        let kept = write_private(&dir, "p1", "x").unwrap().persist();
+        assert!(kept.exists());
+        remove_file(&kept);
+        assert!(entries(&dir).is_empty());
+    }
+}

@@ -38,6 +38,9 @@ pub const SNAPSHOT_CANDIDATE: &str =
     "Snapshot of uncommitted work · accept-capable while the checkout still matches it";
 pub const SNAPSHOT_EARLIER: &str = "Earlier snapshot · the checkout changed since — inspect only; snapshot again to review the current work";
 pub const NOTE_LABEL: &str = "Reviewer finding · agent opinion, not evidence";
+
+/// Shown with the renewed prompt after `subject_changed`.
+pub const SUBJECT_CHANGED: &str = "The change under review moved to a new subject since you edited the prompt — nothing was sent. This is a fresh prompt for the new subject; review it and press ctrl+s to confirm.";
 pub const DISMISS_NEEDS_REASON: &str = "A dismissal needs a reason";
 pub const NEWER_SERVER: &str = "This needs a newer server on this machine (15 T4)";
 
@@ -77,9 +80,13 @@ pub enum T4Sub {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RvPhase {
     /// `request_reviewer` in flight; with `auto_start` the user already confirmed this exact
-    /// (edited) text, so a reply carrying exactly it starts the reviewer.
+    /// (edited) text for subject `expected_subject`, so a reply carrying exactly that text
+    /// *and* that subject starts the reviewer. `renewed`: a fresh prompt after the subject
+    /// changed — always shown for confirmation.
     Requesting {
         auto_start: Option<String>,
+        expected_subject: Option<String>,
+        renewed: bool,
     },
     Prompt {
         request: String,
@@ -306,7 +313,7 @@ pub fn main_key(app: &mut App, ev: KeyEvent) {
     }
     match ev.key {
         Key::Char('s') => snapshot(app),
-        Key::Char('R') => request_reviewer(app, None),
+        Key::Char('R') => request_reviewer(app, None, None, false),
         Key::Char('N') => {
             set_sub(
                 app,
@@ -399,8 +406,11 @@ fn snapshot(app: &mut App) {
 }
 
 /// `task.review.request_reviewer`, with the user's edited text when `prompt` is given (that
-/// text is then started as soon as the server records exactly it).
-fn request_reviewer(app: &mut App, prompt: Option<String>) {
+/// text is then started as soon as the server records exactly it for `subject`, the subject
+/// the user was shown — sent as `expected_subject`, so the server refuses with
+/// `subject_changed` instead of silently reviewing a newer candidate). `renewed`: the fresh
+/// request after such a refusal (shown for confirmation, never auto-started).
+fn request_reviewer(app: &mut App, prompt: Option<String>, subject: Option<String>, renewed: bool) {
     let Some(v) = &app.task_view else {
         return;
     };
@@ -409,9 +419,14 @@ fn request_reviewer(app: &mut App, prompt: Option<String>) {
     if let Some(p) = &prompt {
         params["prompt"] = json!(p);
     }
+    if let Some(s) = subject.as_deref().filter(|s| !s.is_empty()) {
+        params["expected_subject"] = json!(s);
+    }
     let flow = ReviewerFlow {
         phase: RvPhase::Requesting {
             auto_start: prompt.clone(),
+            expected_subject: subject,
+            renewed,
         },
         error: None,
         notice: None,
@@ -522,8 +537,9 @@ fn reviewer_key(app: &mut App, mut f: ReviewerFlow, ev: KeyEvent) {
                     start_reviewer(app, &request, &digest);
                     return;
                 } else {
-                    // Record the edited text first; it starts once the server holds exactly it.
-                    request_reviewer(app, Some(text));
+                    // Record the edited text first, for the same subject; it starts once the
+                    // server holds exactly it (and the subject has not changed).
+                    request_reviewer(app, Some(text), Some(subject), false);
                     return;
                 }
             } else if ev.mods.ctrl() && ev.key == Key::Char('r') {
@@ -840,8 +856,12 @@ pub fn on_reply(app: &mut App, mi: usize, r: T4Reply, res: Result<Value, RpcErr>
             let TaskSub::T4(T4Sub::Reviewer(f)) = &mut v.sub else {
                 return;
             };
-            let auto = match &f.phase {
-                RvPhase::Requesting { auto_start } => auto_start.clone(),
+            let (auto, expected, renewed) = match &f.phase {
+                RvPhase::Requesting {
+                    auto_start,
+                    expected_subject,
+                    renewed,
+                } => (auto_start.clone(), expected_subject.clone(), *renewed),
                 _ => return,
             };
             match res {
@@ -853,11 +873,20 @@ pub fn on_reply(app: &mut App, mi: usize, r: T4Reply, res: Result<Value, RpcErr>
                         .to_string();
                     let prompt = st(&x, "prompt").to_string();
                     let digest = st(&x, "prompt_digest").to_string();
-                    if auto.as_deref() == Some(prompt.as_str()) && !digest.is_empty() {
+                    let subject = st(&x, "subject").to_string();
+                    // Text equality alone never starts it: the subject must be the one shown.
+                    let same_subject = expected.as_deref().is_none_or(|s| s == subject);
+                    if !renewed
+                        && auto.as_deref() == Some(prompt.as_str())
+                        && same_subject
+                        && !digest.is_empty()
+                    {
                         start_reviewer(app, &request, &digest);
                         return;
                     }
-                    if auto.is_some() {
+                    if renewed || !same_subject {
+                        f.notice = Some(SUBJECT_CHANGED.into());
+                    } else if auto.is_some() {
                         f.notice = Some(
                             "The server recorded a different text (clipped?) — review it and press ctrl+s again"
                                 .into(),
@@ -873,6 +902,11 @@ pub fn on_reply(app: &mut App, mi: usize, r: T4Reply, res: Result<Value, RpcErr>
                         label: st(&x, "label").to_string(),
                         uses_provider: st(&x, "uses_provider").to_string(),
                     };
+                }
+                Err(e) if e.reason() == Some("subject_changed") => {
+                    // The candidate moved since the prompt was shown: nothing was recorded.
+                    // Prepare a fresh prompt for the new subject and ask again.
+                    request_reviewer(app, None, None, true);
                 }
                 Err(e) => {
                     let msg = if e.is_method_not_found() {
@@ -1220,7 +1254,7 @@ pub fn draw_sub(app: &App, g: &mut Grid, v: &TaskView, s: &T4Sub, r: SRect, mut 
                 lines.push((e.clone(), t.s(t.red)));
             }
             match &f.phase {
-                RvPhase::Requesting { auto_start } => {
+                RvPhase::Requesting { auto_start, .. } => {
                     lines.push((
                         if auto_start.is_some() {
                             "Recording your edited prompt… (nothing is launched yet)".to_string()

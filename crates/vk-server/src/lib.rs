@@ -30,6 +30,9 @@ pub mod search;
 pub mod theme;
 pub mod tracking;
 
+#[cfg(test)]
+mod scope_catalog_tests;
+
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
 use crate::paths::Paths;

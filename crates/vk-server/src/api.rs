@@ -243,6 +243,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("task.check.get", false),
     // 15 T4 (crate::review::t4).
     ("task.review.snapshot", true),
+    ("task.review.snapshot.gc", true),
     ("task.review.request_reviewer", true),
     ("task.review.start_reviewer", true),
     ("task.review.notes", false),
@@ -260,8 +261,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("worktree.open", true),
 ];
 
-/// Methods a pane-scoped caller may never call (09 §5.2). Also the source of the API
-/// catalog's scope column (`docs/api/methods.json`).
+/// Methods a pane-scoped caller may never call (09 §5.2): the explicit full-scope list, read
+/// through [`pane_scope_of`] by both [`authorize`] and the API catalog's scope column
+/// (`docs/api/methods.json`).
 pub const PANE_FORBIDDEN: &[&str] = &[
     "interaction.answer",
     "interaction.cancel",
@@ -297,6 +299,7 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     // 15 T4: snapshots, reviewer runs, finding classification and dependency links are
     // human decisions.
     "task.review.snapshot",
+    "task.review.snapshot.gc",
     "task.review.request_reviewer",
     "task.review.start_reviewer",
     "task.review.note.classify",
@@ -314,7 +317,91 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "desk.forget",
     "desk.index",
     "desk.status",
+    // Refused by their handlers for every pane-scoped call regardless of params; listed here
+    // so `authorize` refuses them first and the catalog cannot call them pane-accessible
+    // (the handler checks stay as defense in depth).
+    "preview.mirror",
+    "preview.unmirror",
+    "preview.profile.reset",
+    "preview.profile_reset",
+    "client.focus",
+    "screenshot.delete",
+    "browser.watch",
+    "browser.install",
+    "browser.take_over",
+    "browser.release",
+    "browser.attach_screencast",
+    "browser.detach_screencast",
+    "browser.screencast_frame",
+    "browser.pane.update",
+    "browser.command",
+    "group.create",
+    "group.rename",
+    "group.move",
+    "group.delete",
+    "group.collapse",
+    "group.add",
+    "group.remove",
+    "sandbox.start",
+    "sandbox.stop",
+    "sandbox.remove",
+    "sandbox.allow",
+    "task.sync",
+    "compat.invocation.verify",
+    "plugin.surface.close",
 ];
+
+/// Method prefixes whose every method is forbidden for pane scope (14 §9: pane/adapter tokens
+/// get no assistant access).
+pub const PANE_FORBIDDEN_PREFIXES: &[&str] = &["assistant."];
+
+// Handlers that refuse pane scope only for some params stay `Open`/`OwnTarget` here (their
+// handler checks are authoritative), e.g. `preview.profile {action: "reset"}`, `preview.open`
+// of a non-loopback URL, `browser.pane.create` of a non-loopback URL or next to another
+// pane, `browser.eval` without the `browser.script` capability (`preview.browser_script`),
+// `git.status|diff {path}`, `worktree.create {focus: true}`, `compat.herdr.call` of a
+// focus/close method, `screenshot.*` / `task.*` / `draft.*` reads outside the caller's
+// workspace, and `task.operation.get` receipts.
+
+/// How a pane-scoped caller may use a method (09 §5.2). The single source for both
+/// [`authorize`] (dispatch) and the generated API catalog (`docs/api/methods.json`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneScope {
+    /// Full scope only: a pane token is refused.
+    Forbidden,
+    /// Callable from a pane, but only against the caller's own panes / runs.
+    OwnTarget,
+    /// Callable from a pane (handlers may still refuse particular params).
+    Open,
+}
+
+impl PaneScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PaneScope::Forbidden => "forbidden",
+            PaneScope::OwnTarget => "own_target",
+            PaneScope::Open => "open",
+        }
+    }
+}
+
+/// The pane scope of `method` (see [`PaneScope`]).
+pub fn pane_scope_of(method: &str) -> PaneScope {
+    if PANE_FORBIDDEN.contains(&method)
+        || PANE_FORBIDDEN_PREFIXES
+            .iter()
+            .any(|p| method.starts_with(p))
+    {
+        PaneScope::Forbidden
+    } else if is_pane_targeted(method)
+        || is_run_targeted(method)
+        || matches!(method, "agent.start" | "agent.resume")
+    {
+        PaneScope::OwnTarget
+    } else {
+        PaneScope::Open
+    }
+}
 
 /// `pane.*` methods that act on a pane (a pane-scoped caller may only target its own panes).
 pub fn is_pane_targeted(method: &str) -> bool {
@@ -353,7 +440,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         )
         .details(json!({"scope": "pane"})))
     };
-    if PANE_FORBIDDEN.contains(&method) {
+    if pane_scope_of(method) == PaneScope::Forbidden {
         if method == "interaction.answer" {
             return Err(err(
                 ErrorKind::PermissionDenied,

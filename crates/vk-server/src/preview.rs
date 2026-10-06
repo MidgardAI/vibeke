@@ -74,7 +74,8 @@ pub struct PreviewConfig {
     pub pane_browser: String,
     /// Window browser: auto | chrome | chromium | edge | brave | firefox | an absolute path.
     pub profile_browser: String,
-    /// Reverse proxy listener port (B4); busy → an ephemeral port (logged). 0 = ephemeral.
+    /// Reverse proxy listener port (B4), machine-wide: busy → proxy mode is refused (no
+    /// fallback; pick another port for this session). 0 = ephemeral.
     pub proxy_port: u16,
 }
 
@@ -179,6 +180,10 @@ pub struct Previews {
     pub rejected: AtomicU64,
     /// The B4 reverse proxy (started on the first proxy open).
     pub(crate) proxy: tokio::sync::Mutex<Option<Arc<vk_preview::proxy::Proxy>>>,
+    /// The same proxy for synchronous paths (route revocation from commits).
+    pub(crate) proxy_handle: Mutex<Option<Arc<vk_preview::proxy::Proxy>>>,
+    /// Test hook: the proxy port to use instead of `[preview] proxy_port`.
+    pub(crate) proxy_port_override: Mutex<Option<u16>>,
     /// Explicit mirrors by local port (B4; never persisted, never automatic).
     pub(crate) mirrors: Mutex<HashMap<u16, crate::preview_fabric::Mirror>>,
 }
@@ -201,6 +206,8 @@ impl Default for Previews {
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             proxy: tokio::sync::Mutex::new(None),
+            proxy_handle: Mutex::default(),
+            proxy_port_override: Mutex::default(),
             mirrors: Mutex::default(),
         }
     }
@@ -222,6 +229,11 @@ impl Previews {
     /// Test hook: replace the clock used for lifecycle timing.
     pub fn set_clock(&self, c: Clock) {
         *self.clock.lock().unwrap() = c;
+    }
+
+    /// Test hook / embedding: the proxy port to use instead of `[preview] proxy_port`.
+    pub fn set_proxy_port(&self, port: u16) {
+        *self.proxy_port_override.lock().unwrap() = Some(port);
     }
 
     /// Test hook / embedding: how links to machines are made.
@@ -460,6 +472,10 @@ pub(crate) fn commit_previews(server: &Server, items: Vec<(Preview, Option<&'sta
     }
     if server.commit(&mut c, tx).is_ok() {
         for (p, _) in items {
+            // A gone preview loses its proxy origin and sessions, whatever retired it.
+            if p.status == PreviewStatus::Gone {
+                crate::preview_fabric::revoke_route(server, "local", &p.id);
+            }
             apply_model(&mut c, p);
         }
     }
@@ -1353,13 +1369,7 @@ pub(crate) fn declare(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         Some(t) => Some(resolve_pane(server, ctx, Some(t))?.id),
         None => ctx.pane_scope.clone(),
     };
-    let mut path = s(p, "path").unwrap_or("/").to_string();
-    if !path.starts_with('/') {
-        path.insert(0, '/');
-    }
-    if path.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(invalid("path must not contain whitespace"));
-    }
+    let path = vk_tasks::normalize_preview_path(s(p, "path").unwrap_or("/")).map_err(invalid)?;
     let scheme = s(p, "scheme").unwrap_or("http");
     if scheme != "http" && scheme != "https" {
         return Err(invalid("scheme must be http or https"));
@@ -1496,6 +1506,9 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
     let t = s(p, "preview").ok_or_else(|| invalid("missing param `preview`"))?;
     let (m, t) = split_target(server, p, t);
     if !m.is_empty() {
+        // Revoke this server's origins for it first: the old link must not reach whatever
+        // listens on that remote port next, even if the remote call fails.
+        crate::preview_fabric::forget_remote_routes(server, &m, &t);
         return remote_call(server, &m, "preview.forget", json!({"preview": t})).await;
     }
     let mut x = find_local(server, &t)?;

@@ -12,6 +12,9 @@ use tokio::net::TcpStream;
 struct FakeUpstream {
     map: StdMutex<HashMap<u16, u16>>,
     connects: AtomicU64,
+    /// Preview ids whose route check answers `Gone` (forgotten/retired on their machine).
+    gone: StdMutex<Vec<String>>,
+    checks: AtomicU64,
 }
 
 impl Upstream for FakeUpstream {
@@ -22,6 +25,18 @@ impl Upstream for FakeUpstream {
             let p = real.ok_or_else(|| std::io::Error::other("no such upstream"))?;
             let s = TcpStream::connect(("127.0.0.1", p)).await?;
             Ok(Box::new(s) as Box<dyn Stream>)
+        })
+    }
+
+    fn check(&self, route: &Route) -> BoxFuture<RouteCheck> {
+        self.checks.fetch_add(1, Ordering::Relaxed);
+        let gone = self.gone.lock().unwrap().contains(&route.preview);
+        Box::pin(async move {
+            if gone {
+                RouteCheck::Gone
+            } else {
+                RouteCheck::Live
+            }
         })
     }
 }
@@ -123,6 +138,8 @@ async fn fixture() -> Fixture {
     let up = Arc::new(FakeUpstream {
         map: StdMutex::new(HashMap::new()),
         connects: AtomicU64::new(0),
+        gone: StdMutex::new(vec![]),
+        checks: AtomicU64::new(0),
     });
     let proxy = Proxy::new(up.clone());
     proxy.serve(Proxy::bind(0).await.unwrap());
@@ -132,7 +149,7 @@ async fn fixture() -> Fixture {
     up.map.lock().unwrap().insert(5173, pa);
     up.map.lock().unwrap().insert(5174, pb);
     let route = |id: &str, handle: &str, port: u16, slug: &str| Route {
-        host: hostname_for(handle, Some("devbox"), Some(slug)),
+        host: hostname_for(handle, Some("devbox"), Some(slug), "s0123456789"),
         machine: "devbox".into(),
         preview: id.into(),
         handle: handle.into(),
@@ -221,15 +238,29 @@ async fn login(f: &Fixture, r: &Route) -> String {
 #[test]
 fn hostnames_and_cookie_rules() {
     assert_eq!(
-        hostname_for("v4", None, Some("fix-login")),
-        "v4-fix-login.vibeke.localhost"
+        hostname_for("v4", None, Some("fix-login"), "sabc"),
+        "v4-fix-login-sabc.vibeke.localhost"
     );
     assert_eq!(
-        hostname_for("v12", Some("demo@devbox.ts.net"), Some("Fix Login!")),
-        "v12-demo-devbox-ts-net-fix-login.vibeke.localhost"
+        hostname_for("v12", Some("demo@devbox.ts.net"), Some("Fix Login!"), "s1"),
+        "v12-demo-devbox-ts-net-fix-login-s1.vibeke.localhost"
     );
-    let long = hostname_for("v1", Some("m"), Some(&"x".repeat(200)));
-    assert!(long.split('.').next().unwrap().len() <= 63, "{long}");
+    // The session tag survives truncation: two sessions never share a host.
+    let tag = session_tag();
+    assert_eq!(tag.len(), 10, "{tag}");
+    assert!(
+        tag.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    );
+    assert_ne!(session_tag(), tag);
+    let long = hostname_for("v1", Some("m"), Some(&"x".repeat(200)), &tag);
+    let label = long.split('.').next().unwrap();
+    assert!(label.len() <= 63, "{long}");
+    assert!(label.ends_with(&format!("-{tag}")), "{long}");
+    assert_ne!(
+        hostname_for("v1", None, Some("web"), "saaaaaaaaa"),
+        hostname_for("v1", None, Some("web"), "sbbbbbbbbb")
+    );
     assert!(reserved_cookie("vk_token") && reserved_cookie("__Host-vk_preview"));
     assert!(reserved_cookie("__Secure-VK_x") && !reserved_cookie("app"));
     assert_eq!(
@@ -288,7 +319,8 @@ async fn capability_is_required_and_bound_to_its_host() {
     assert!(f.seen_a.all().is_empty(), "nothing reached the app");
     assert_eq!(f.up.connects.load(Ordering::Relaxed), 0);
 
-    // The one-time token: 303 to the same URL without it, cookies HttpOnly + SameSite=Strict.
+    // The one-time token: 303 to the same URL (absolute, on the preview's own origin) without
+    // it; one cookie, Secure + HttpOnly + SameSite=Strict (no non-Secure copy).
     let t = f.proxy.mint_token(&f.a.host).unwrap();
     let r = send(
         port,
@@ -301,16 +333,23 @@ async fn capability_is_required_and_bound_to_its_host() {
     )
     .await;
     assert_eq!(r.status, 303, "{}", r.head);
-    assert_eq!(r.header("location").as_deref(), Some("/app?x=1&y=2"));
+    assert_eq!(
+        r.header("location"),
+        Some(format!("{}/app?x=1&y=2", f.proxy.origin(&f.a.host)))
+    );
     let cookies = r.header_values("set-cookie");
-    assert_eq!(cookies.len(), 2, "{cookies:?}");
+    assert_eq!(cookies.len(), 1, "{cookies:?}");
     for c in &cookies {
         assert!(c.contains("HttpOnly") && c.contains("SameSite=Strict") && c.contains("Path=/"));
         assert!(!c.to_ascii_lowercase().contains("domain"), "host-only: {c}");
     }
     assert!(cookies[0].starts_with(&format!("{COOKIE}=")) && cookies[0].contains("Secure"));
-    assert!(cookies[1].starts_with(&format!("{COOKIE_COMPAT}=")));
     assert_eq!(r.header("cache-control").as_deref(), Some("no-store"));
+    assert_eq!(r.header("x-frame-options").as_deref(), Some("DENY"));
+    assert_eq!(
+        r.header("content-security-policy").as_deref(),
+        Some("frame-ancestors 'none'")
+    );
     assert_eq!(r.header("referrer-policy").as_deref(), Some("no-referrer"));
     let sess = cookies[0]
         .split(';')
@@ -348,18 +387,21 @@ async fn capability_is_required_and_bound_to_its_host() {
     .await;
     assert_eq!(r.status, 200, "{}", r.head);
     assert!(r.body.contains("hello /app"));
-    // The compat cookie alone works too.
+    // A non-Secure `vk_preview` cookie with the session value is not a credential (another
+    // local listener could have read or planted it).
     let r = send(
         port,
         get(
             &f.a.host,
             port,
             "/c",
-            &format!("Cookie: {COOKIE_COMPAT}={sess}\r\n"),
+            &format!("Cookie: vk_preview={sess}\r\n"),
         ),
     )
     .await;
-    assert_eq!(r.status, 200);
+    assert_eq!(r.status, 401);
+    // Proxy-generated pages can't be framed either.
+    assert_eq!(r.header("x-frame-options").as_deref(), Some("DENY"));
     // A's session on B's host: 401 (sessions are per origin).
     let r = send(
         port,
@@ -388,7 +430,7 @@ async fn credentials_never_reach_the_app_and_cookies_are_host_only() {
             port,
             "/page?q=1",
             &format!(
-                "Cookie: {COOKIE}={sess}; app=1; {COOKIE_COMPAT}={sess}; vk_other=x\r\nOrigin: {own}\r\nReferer: {own}/prev?z=1\r\n"
+                "Cookie: {COOKIE}={sess}; app=1; vk_preview={sess}; vk_other=x\r\nOrigin: {own}\r\nReferer: {own}/prev?z=1\r\n"
             ),
         ),
     )
@@ -488,18 +530,59 @@ async fn cross_origin_requests_are_refused() {
     )
     .await;
     assert_eq!(r.status, 403);
-    // Top-level navigations are fine (link from elsewhere), as are same-origin fetches.
-    let r = send(
-        port,
-        get(
-            &f.a.host,
+    // A sibling preview (same site) can't navigate to A at all: not in an iframe, not at top
+    // level either.
+    for dest in ["iframe", "document", "frame", "embed"] {
+        let r = send(
             port,
-            "/nav",
-            &format!("{ck}Sec-Fetch-Site: same-site\r\nSec-Fetch-Mode: navigate\r\n"),
-        ),
-    )
-    .await;
-    assert_eq!(r.status, 200);
+            get(
+                &f.a.host,
+                port,
+                "/framed",
+                &format!(
+                    "{ck}Sec-Fetch-Site: same-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: {dest}\r\n"
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, 403, "same-site {dest}: {}", r.head);
+        assert_eq!(r.header("x-frame-options").as_deref(), Some("DENY"));
+    }
+    // A cross-site iframe navigation (or one without a destination) is refused...
+    for extra in [
+        "Sec-Fetch-Dest: iframe\r\n",
+        "Sec-Fetch-Dest: frame\r\n",
+        "",
+    ] {
+        let r = send(
+            port,
+            get(
+                &f.a.host,
+                port,
+                "/framed",
+                &format!("{ck}Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\n{extra}"),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, 403, "cross-site {extra:?}: {}", r.head);
+    }
+    // ...while a top-level document navigation (link from elsewhere) is fine, as are
+    // same-origin fetches and navigations typed by the user (`none`).
+    for site in ["cross-site", "none", "same-origin"] {
+        let r = send(
+            port,
+            get(
+                &f.a.host,
+                port,
+                "/nav",
+                &format!(
+                    "{ck}Sec-Fetch-Site: {site}\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: document\r\n"
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(r.status, 200, "{site}: {}", r.head);
+    }
     let r = send(
         port,
         get(
@@ -521,12 +604,107 @@ async fn cross_origin_requests_are_refused() {
         )
     };
     assert_eq!(send(port, ws(&sibling)).await.status, 403);
-    assert!(
-        !f.seen_a
-            .all()
-            .iter()
-            .any(|h| h.contains("/ws") || h.contains("/api") || h.contains("/img"))
-    );
+    assert!(!f.seen_a.all().iter().any(|h| h.contains("/ws")
+        || h.contains("/api")
+        || h.contains("/img")
+        || h.contains("/framed")));
+}
+
+/// Repo-controlled preview paths can't turn the token exchange into an open redirect: the
+/// `Location` is always the authenticated preview's own origin + the request path.
+#[tokio::test]
+async fn token_exchange_redirect_stays_on_the_preview_origin() {
+    let f = fixture().await;
+    let port = f.proxy.port();
+    let own = f.proxy.origin(&f.a.host);
+    for (path, want) in [
+        ("//attacker.example/", "//attacker.example/"),
+        ("//attacker.example/x?y=1", "//attacker.example/x?y=1"),
+        ("/\\attacker.example/", "/%5Cattacker.example/"),
+        ("/app", "/app"),
+    ] {
+        let t = f.proxy.mint_token(&f.a.host).unwrap();
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let r = send(
+            port,
+            get(
+                &f.a.host,
+                port,
+                &format!("{path}{sep}{TOKEN_PARAM}={t}"),
+                "",
+            ),
+        )
+        .await;
+        if r.status == 400 && path.contains('\\') {
+            continue; // hyper refused the raw backslash request target: also fine
+        }
+        assert_eq!(r.status, 303, "{path}: {}", r.head);
+        let loc = r.header("location").unwrap();
+        assert!(loc.starts_with(&format!("{own}/")), "{path} -> {loc}");
+        let rest = &loc[own.len()..];
+        assert!(rest == path || rest == want, "{path} -> {loc}");
+    }
+    // `url()` puts the token before a fragment (the fragment never reaches the server and
+    // survives the redirect in the browser).
+    let u = f.proxy.url(&f.a.host, "/#/dash", Some("tok"));
+    assert_eq!(u, format!("{own}/?{TOKEN_PARAM}=tok#/dash"));
+    let u = f.proxy.url(&f.a.host, "/app?x=1#frag", Some("tok"));
+    assert_eq!(u, format!("{own}/app?x=1&{TOKEN_PARAM}=tok#frag"));
+    assert_eq!(f.proxy.url(&f.a.host, "/a#b", None), format!("{own}/a#b"));
+}
+
+/// A route whose preview is gone (forgotten, retired, moved) is revoked on the next request:
+/// the old cookie can't reach anything, not even after the preview's port is reused.
+#[tokio::test]
+async fn a_gone_preview_revokes_its_route_and_sessions() {
+    let f = fixture().await;
+    let port = f.proxy.port();
+    let sess = login(&f, &f.a).await;
+    let ck = format!("Cookie: {COOKIE}={sess}\r\n");
+    assert_eq!(send(port, get(&f.a.host, port, "/", &ck)).await.status, 200);
+    assert!(f.up.checks.load(Ordering::Relaxed) >= 1);
+    f.up.gone.lock().unwrap().push(f.a.preview.clone());
+    let n = f.seen_a.all().len();
+    let connects = f.up.connects.load(Ordering::Relaxed);
+    let r = send(port, get(&f.a.host, port, "/", &ck)).await;
+    assert_eq!(r.status, 410, "{}", r.head);
+    assert_eq!(f.seen_a.all().len(), n, "nothing reached the old upstream");
+    assert_eq!(f.up.connects.load(Ordering::Relaxed), connects);
+    // The route itself is gone (421), even if the preview "comes back" on the same port.
+    f.up.gone.lock().unwrap().clear();
+    assert_eq!(send(port, get(&f.a.host, port, "/", &ck)).await.status, 421);
+    assert!(f.proxy.routes().iter().all(|r| r.host != f.a.host));
+    // Re-registering the preview starts with no sessions: the old cookie is refused.
+    let a2 = f.proxy.register(f.a.clone());
+    assert_eq!(send(port, get(&a2.host, port, "/", &ck)).await.status, 401);
+    // `remove_matching` (a remote forget by handle) drops the route too.
+    assert_eq!(f.proxy.remove_matching("devbox", &f.b.handle), 1);
+    assert!(f.proxy.routes().iter().all(|r| r.host != f.b.host));
+}
+
+/// Another listener on `[::1]:<port>` (where a browser may send `*.localhost` first) stops the
+/// proxy from starting on that port.
+#[tokio::test]
+async fn bind_refuses_a_port_held_on_either_loopback() {
+    let v4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let p = v4.local_addr().unwrap().port();
+    let e = Proxy::bind(p).await.unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse);
+    drop(v4);
+    if let Ok(v6) = std::net::TcpListener::bind("[::1]:0") {
+        let p = v6.local_addr().unwrap().port();
+        if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
+            let e = Proxy::bind(p).await.unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse, "{p}");
+        }
+        // Ephemeral: both families on one port.
+        let ls = Proxy::bind(0).await.unwrap();
+        assert_eq!(ls.len(), 2);
+        assert_eq!(
+            ls[0].local_addr().unwrap().port(),
+            ls[1].local_addr().unwrap().port()
+        );
+    }
 }
 
 #[tokio::test]
@@ -662,11 +840,13 @@ async fn https_upstream_with_a_self_signed_certificate() {
     let up = Arc::new(FakeUpstream {
         map: StdMutex::new(HashMap::from([(8443, srv.port)])),
         connects: AtomicU64::new(0),
+        gone: StdMutex::new(vec![]),
+        checks: AtomicU64::new(0),
     });
     let proxy = Proxy::new(up);
     proxy.serve(Proxy::bind(0).await.unwrap());
     let r = proxy.register(Route {
-        host: hostname_for("v9", None, Some("tls")),
+        host: hostname_for("v9", None, Some("tls"), "s1"),
         machine: "local".into(),
         preview: "01T".into(),
         handle: "v9".into(),

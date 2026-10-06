@@ -636,3 +636,679 @@ fn t4_mutations_are_human_only_and_listed() {
         }
     }
 }
+
+// ---- review findings (2026-10-06) ---------------------------------------------------------------
+
+/// A reviewer run as the launch path would create it (fresh: no completed turns).
+fn reviewer_run(id: &str, cwd: &Path) -> AgentRun {
+    let t = now();
+    AgentRun {
+        id: id.into(),
+        handle: format!("h-{id}"),
+        name: Some(id.into()),
+        pane: format!("pane-{id}"),
+        harness: "claude".into(),
+        harness_version: None,
+        integration: "process".into(),
+        harness_session_id: Some(format!("sess-{id}")),
+        transcript_path: None,
+        resume_argv: vec![],
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        model: None,
+        task: None,
+        execution: Facet {
+            value: Execution::Idle,
+            since_ms: t,
+            source: StateSource::Structured,
+            confidence: 1.0,
+            detail: None,
+        },
+        health: AdapterHealth::Healthy,
+        yolo: false,
+        permission_mode: None,
+        last_message: None,
+        last_tool: None,
+        turns_completed: 0,
+        done_rev: 0,
+        started_at_ms: t,
+        ended_at_ms: None,
+        capabilities: vec![],
+        usage: Default::default(),
+        rate_limit: None,
+    }
+}
+
+fn put_run_on(srv: &Arc<Server>, r: AgentRun) {
+    let mut c = srv.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.run(r);
+    srv.commit(&mut c, tx).unwrap();
+}
+
+/// One settled harness turn (prompt, Stop) reported through the hook path, like `Env::turn`.
+fn settle_turn(srv: &Arc<Server>, run: &str, prompt: &str, last: &str) {
+    let r = srv.with_core(|c| c.run(run).cloned()).unwrap();
+    let sid = r.harness_session_id.clone().unwrap();
+    tracking::observe(
+        srv,
+        &r,
+        "UserPromptSubmit",
+        &json!({"session_id": sid, "prompt": prompt}),
+    );
+    tracking::observe(
+        srv,
+        &r,
+        "Stop",
+        &json!({"session_id": sid, "last_assistant_message": last}),
+    );
+    let mut r = srv.with_core(|c| c.run(run).cloned()).unwrap();
+    r.turns_completed += 1;
+    r.done_rev += 1;
+    put_run_on(srv, r);
+}
+
+/// A task with a committed candidate and a prepared reviewer request: `(task, request, digest)`.
+async fn prepared_reviewer(e: &Env) -> (String, String, String) {
+    let task = tracked(e, json!(["Looks right"])).await;
+    e.write("status.txt", "pass\n");
+    e.commit("fix");
+    let rq = ok(
+        e,
+        "task.review.request_reviewer",
+        json!({"task": task, "harness": "claude"}),
+    )
+    .await;
+    (
+        task,
+        rq["request"]["id"].as_str().unwrap().to_string(),
+        rq["prompt_digest"].as_str().unwrap().to_string(),
+    )
+}
+
+fn reviewer_state(e: &Env, request: &str) -> String {
+    e.server.with_core(|c| {
+        let r = c
+            .store
+            .get::<t4::ReviewerRequest>(t4::K_REVREQ, request)
+            .unwrap()
+            .unwrap();
+        serde_json::to_value(r.state)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    })
+}
+
+fn review_bindings_of(e: &Env, run: &str) -> usize {
+    e.server.with_core(|c| {
+        tracking::bindings(c)
+            .into_iter()
+            .filter(|b| b.run_id == run && b.role == BindingRole::Review)
+            .count()
+    })
+}
+
+/// Finding 6: two confirmations of one request race; the second is refused while the first
+/// launches, the reviewer is launched exactly once, and the first result is replayable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_confirmations_launch_the_reviewer_once() {
+    let e = Env::new();
+    let (task, id, digest) = prepared_reviewer(&e).await;
+    let launched = Arc::new(AtomicUsize::new(0));
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Arc::new(Mutex::new(gate));
+    let (l2, repo) = (launched.clone(), e.repo.clone());
+    t4::set_test_launcher(
+        &task,
+        Arc::new(move |srv, _rq| {
+            let n = l2.fetch_add(1, Ordering::SeqCst) + 1;
+            // Held at the launch barrier until the test lets it go.
+            let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(30));
+            let id = format!("rev{n}");
+            put_run_on(srv, reviewer_run(&id, &repo));
+            Ok((id.clone(), format!("pane-{id}")))
+        }),
+    );
+    let p1 = json!({"request": id, "prompt_digest": digest, "idempotency_key": "start-1"});
+    let srv = e.server.clone();
+    let p = p1.clone();
+    let first = tokio::spawn(async move {
+        api(&srv, &user_ctx(), "task.review.start_reviewer", &p)
+            .await
+            .unwrap()
+    });
+    wait_until("the first launch", || launched.load(Ordering::SeqCst) == 1).await;
+    assert_eq!(reviewer_state(&e, &id), "starting");
+    // Another confirmation (another key) and a retry of the first (same key, nothing recorded
+    // yet) are both refused while the first launches.
+    for p in [
+        json!({"request": id, "prompt_digest": digest, "idempotency_key": "start-2"}),
+        p1.clone(),
+        json!({"request": id, "prompt_digest": digest}),
+    ] {
+        assert_eq!(
+            reason(call(&e, "task.review.start_reviewer", p).await),
+            "reviewer_starting"
+        );
+    }
+    release.send(()).unwrap();
+    let r1 = first.await.unwrap().unwrap();
+    assert_eq!(launched.load(Ordering::SeqCst), 1, "launched exactly once");
+    assert_eq!(r1["request"]["state"], "started");
+    assert_eq!(reviewer_state(&e, &id), "started");
+    assert_eq!(review_bindings_of(&e, "rev1"), 1);
+    assert_eq!(events(&e, "review.reviewer_started").len(), 1);
+    // The same key replays the recorded result (operation receipt).
+    let again = ok(&e, "task.review.start_reviewer", p1).await;
+    assert_eq!(again["replayed"], true);
+    assert_eq!(again["run"], r1["run"]);
+    assert_eq!(again["binding"]["id"], r1["binding"]["id"]);
+    let receipt = receipts::lookup(&e.server, &user_ctx(), "start-1").unwrap();
+    assert_eq!(receipt.method, "task.review.start_reviewer");
+    assert_eq!(receipt.result["run"], "rev1");
+    // A later confirmation with another key is answered from the started request.
+    let later = ok(
+        &e,
+        "task.review.start_reviewer",
+        json!({"request": id, "prompt_digest": digest, "idempotency_key": "start-3"}),
+    )
+    .await;
+    assert_eq!(later["replayed"], true);
+    assert_eq!(later["run"], "rev1");
+    assert_eq!(launched.load(Ordering::SeqCst), 1);
+}
+
+/// Finding 6: a failed launch returns the request to `prepared` deterministically (a retry is
+/// another explicit confirmation); a restart's recovery after the launch but before the state
+/// transaction leaves it `unknown`, never relaunched.
+#[tokio::test(flavor = "multi_thread")]
+async fn launch_failure_and_recovery_mid_launch_are_deterministic() {
+    let e = Env::new();
+    let (task, id, digest) = prepared_reviewer(&e).await;
+    let launched = Arc::new(AtomicUsize::new(0));
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (l2, f2, repo) = (launched.clone(), fail.clone(), e.repo.clone());
+    t4::set_test_launcher(
+        &task,
+        Arc::new(move |srv, _rq| {
+            l2.fetch_add(1, Ordering::SeqCst);
+            if f2.load(Ordering::SeqCst) {
+                return Err(internal("harness not installed"));
+            }
+            put_run_on(srv, reviewer_run("rev1", &repo));
+            Ok(("rev1".into(), "pane-rev1".into()))
+        }),
+    );
+    let start = json!({"request": id, "prompt_digest": digest, "idempotency_key": "k1"});
+    assert!(
+        call(&e, "task.review.start_reviewer", start.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(reviewer_state(&e, &id), "prepared");
+    let notes = ok(&e, "task.review.notes", json!({"task": task})).await;
+    assert!(
+        notes["reviewer_runs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("harness not installed")
+    );
+    assert!(receipts::lookup(&e.server, &user_ctx(), "k1").is_none());
+
+    // Retry: the launch succeeds, then a restart's recovery runs before the state transaction.
+    fail.store(false, Ordering::SeqCst);
+    let srv = e.server.clone();
+    hooks::set(
+        "reviewer_after_launch",
+        &task,
+        Arc::new(move || t4::recover(&srv)),
+    );
+    let r = call(&e, "task.review.start_reviewer", start.clone()).await;
+    hooks::clear("reviewer_after_launch", &task);
+    assert_eq!(reason(r), "reviewer_state_unknown");
+    assert_eq!(launched.load(Ordering::SeqCst), 2);
+    assert_eq!(reviewer_state(&e, &id), "unknown");
+    assert_eq!(review_bindings_of(&e, "rev1"), 0, "nothing bound blindly");
+    assert_eq!(events(&e, "review.reviewer_unknown").len(), 1);
+    assert!(events(&e, "review.reviewer_started").is_empty());
+    // Never relaunched: further confirmations are refused until the user requests anew.
+    for p in [start, json!({"request": id, "prompt_digest": digest})] {
+        assert_eq!(
+            reason(call(&e, "task.review.start_reviewer", p).await),
+            "reviewer_state_unknown"
+        );
+    }
+    assert_eq!(launched.load(Ordering::SeqCst), 2);
+    let notes = ok(&e, "task.review.notes", json!({"task": task})).await;
+    assert_eq!(notes["reviewer_runs"][0]["state"], "unknown");
+
+    // A request found `starting` at startup becomes `unknown` too.
+    let rq2 = ok(&e, "task.review.request_reviewer", json!({"task": task})).await;
+    let id2 = rq2["request"]["id"].as_str().unwrap().to_string();
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut r: t4::ReviewerRequest = c.store.get(t4::K_REVREQ, &id2).unwrap().unwrap();
+        r.state = t4::ReviewerState::Starting;
+        r.attempt = Some("st_crashed".into());
+        let mut tx = Tx::new();
+        tx.m.put(t4::K_REVREQ, &id2, None, &r);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    t4::recover(&e.server);
+    assert_eq!(reviewer_state(&e, &id2), "unknown");
+    assert_eq!(launched.load(Ordering::SeqCst), 2);
+}
+
+/// Finding 7: a reviewer whose first turn (with a blocking finding) settles before the launch
+/// returns still has that finding recorded — exactly once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fast_reviewers_first_turn_is_recorded_once() {
+    let e = Env::new();
+    let (task, id, digest) = prepared_reviewer(&e).await;
+    let repo = e.repo.clone();
+    t4::set_test_launcher(
+        &task,
+        Arc::new(move |srv, _rq| {
+            put_run_on(srv, reviewer_run("rev1", &repo));
+            // Turn 1 finishes during the launch's readiness wait: no binding exists yet.
+            settle_turn(
+                srv,
+                "rev1",
+                "review",
+                "FINDING [blocking] status.txt: the value is not validated",
+            );
+            Ok(("rev1".into(), "pane-rev1".into()))
+        }),
+    );
+    let st = ok(
+        &e,
+        "task.review.start_reviewer",
+        json!({"request": id, "prompt_digest": digest}),
+    )
+    .await;
+    assert_eq!(st["binding"]["start_turn"], 1);
+    let blocking = |pkg: &Value| {
+        pkg["review_notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["severity"] == "blocking" && n["turn"] == 1)
+            .count()
+    };
+    let pkg = review(&e, &task).await;
+    assert_eq!(blocking(&pkg), 1, "{}", pkg["review_notes"]);
+    assert!(blockers(&pkg).contains(&"blocking_concern".to_string()));
+    // Settlement hooks running again never duplicate it.
+    t4::on_reviewer_turn(&e.server, "rev1");
+    assert_eq!(blocking(&review(&e, &task).await), 1);
+    // A later turn is recorded as well.
+    settle_turn(&e.server, "rev1", "more", "FINDING [nit] wording");
+    let pkg = review(&e, &task).await;
+    assert_eq!(pkg["review_notes"].as_array().unwrap().len(), 2);
+}
+
+/// Finding 8: re-preparing an edited prompt keeps the subject the user was shown; if the
+/// candidate moved meanwhile it is refused (`subject_changed`), nothing recorded.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edited_prompt_never_changes_the_confirmed_subject() {
+    let e = Env::new();
+    let task = tracked(&e, json!(["Looks right"])).await;
+    e.write("status.txt", "pass\n");
+    e.commit("fix");
+    let rq = ok(&e, "task.review.request_reviewer", json!({"task": task})).await;
+    let s1 = rq["subject"].as_str().unwrap().to_string();
+    // Unchanged candidate: the edited text is recorded for the original subject.
+    let edited = ok(
+        &e,
+        "task.review.request_reviewer",
+        json!({"task": task, "prompt": "Review the redirect only.", "expected_subject": s1}),
+    )
+    .await;
+    assert_eq!(edited["subject"], s1.as_str());
+    assert_eq!(edited["request"]["subject"], s1.as_str());
+    assert_eq!(edited["request"]["prompt_source"], "user_edited");
+    let requested = events(&e, "review.reviewer_requested").len();
+
+    // The candidate advances between preparation and the edited confirmation.
+    e.write("status.txt", "pass\nmore\n");
+    e.commit("more");
+    let r = call(
+        &e,
+        "task.review.request_reviewer",
+        json!({"task": task, "prompt": "Review the redirect only!", "expected_subject": s1}),
+    )
+    .await;
+    let err = r.unwrap_err();
+    assert_eq!(err.data.details["reason"], "subject_changed", "{err:?}");
+    assert_eq!(err.data.details["expected"], s1.as_str());
+    let s2 = err.data.details["current"].as_str().unwrap().to_string();
+    assert_ne!(s2, s1);
+    assert_eq!(
+        events(&e, "review.reviewer_requested").len(),
+        requested,
+        "nothing recorded"
+    );
+    // A renewed request names the new subject explicitly.
+    let renewed = ok(&e, "task.review.request_reviewer", json!({"task": task})).await;
+    assert_eq!(renewed["subject"], s2.as_str());
+}
+
+/// Finding 9: an executable-bit change of an untracked file invalidates a snapshot, also
+/// between showing it and accepting it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_untracked_mode_change_invalidates_the_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    let task = tracked(&e, json!(["Looks right"])).await;
+    e.write("tool.sh", "#!/bin/sh\necho hi\n");
+    let chmod = |repo: &Path, mode: u32| {
+        std::fs::set_permissions(repo.join("tool.sh"), std::fs::Permissions::from_mode(mode))
+            .unwrap()
+    };
+    chmod(&e.repo, 0o644);
+    let s1 = ok(&e, "task.review.snapshot", json!({"task": task})).await["subject"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(subject_of(&review(&e, &task).await), s1);
+    chmod(&e.repo, 0o755);
+    let pkg = review(&e, &task).await;
+    assert!(
+        pkg["subject"].is_null(),
+        "the snapshot is no longer current"
+    );
+    let s2 = ok(&e, "task.review.snapshot", json!({"task": task})).await["subject"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(s2, s1);
+    // chmod between presentation and acceptance: refused.
+    let repo = e.repo.clone();
+    hooks::set(
+        "accept_after_package",
+        &task,
+        Arc::new(move || chmod(&repo, 0o644)),
+    );
+    let r = call(
+        &e,
+        "task.review.accept",
+        json!({"task": task, "intent_revision": 1, "subject_id": s2}),
+    )
+    .await;
+    hooks::clear("accept_after_package", &task);
+    assert_eq!(reason(r), "review_changed");
+    assert!(events(&e, "review.accepted").is_empty());
+}
+
+/// Finding 3: a submodule with changes of its own is refused with `unsupported_capture`, and a
+/// change inside a submodule invalidates an earlier snapshot.
+#[tokio::test(flavor = "multi_thread")]
+async fn submodule_changes_are_refused_and_invalidate_snapshots() {
+    let e = Env::new();
+    let lib = tempfile::tempdir().unwrap();
+    let lib_path = lib.path().canonicalize().unwrap();
+    git(&lib_path, &["init", "-q", "-b", "main"]);
+    std::fs::write(lib_path.join("x.txt"), "lib v1\n").unwrap();
+    git(&lib_path, &["add", "-A"]);
+    git(&lib_path, &["commit", "-q", "-m", "lib"]);
+    git(
+        &e.repo,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            lib_path.to_str().unwrap(),
+            "sub",
+        ],
+    );
+    e.commit("add submodule");
+    let task = tracked(&e, json!(["Looks right"])).await;
+    e.write("status.txt", "pass\n");
+    e.write("sub/x.txt", "lib edit\n");
+    let err = call(&e, "task.review.snapshot", json!({"task": task}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.details["reason"], "unsupported_capture", "{err:?}");
+    assert_eq!(err.data.details["unsupported"], "submodule");
+    assert_eq!(err.data.details["paths"], json!(["sub"]));
+    assert!(err.message.starts_with("unsupported_capture: submodule"));
+    assert!(events(&e, "review.snapshot_created").is_empty());
+    assert_eq!(
+        git(&e.repo, &["for-each-ref", "refs/vibeke/snapshots/"]),
+        ""
+    );
+
+    // Submodule clean again: the snapshot works and is current…
+    git(&e.repo.join("sub"), &["checkout", "-q", "--", "x.txt"]);
+    let s1 = ok(&e, "task.review.snapshot", json!({"task": task})).await["subject"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(subject_of(&review(&e, &task).await), s1);
+    // …until something changes inside the submodule.
+    e.write("sub/x.txt", "lib edit 2\n");
+    assert!(review(&e, &task).await["subject"].is_null());
+}
+
+/// Finding 10: dependency reads show linked tasks outside the caller's workspace only as
+/// placeholders, in both directions, via `task.dependency.list` and `task.review.get`.
+#[tokio::test(flavor = "multi_thread")]
+async fn dependency_reads_hide_linked_tasks_outside_the_callers_workspace() {
+    let e = Env::new();
+    put_pane(&e, "pane-a", "wsA");
+    put_pane(&e, "pane-b", "wsB");
+    e.add_run("a", &e.repo);
+    e.add_run("b", &e.repo);
+    e.turn("a", "Visible A work", &[], "");
+    let ta = track(&e, "a", json!(["A ok"])).await;
+    e.turn("b", "Secret B title", &[], "");
+    let tb = track(&e, "b", json!(["B ok"])).await;
+    let mut tc = put_task(&e, "task-secret-c", "Secret C title", None);
+    tc.workspace = Some("wsB".into());
+    let mut td = put_task(&e, "task-visible-d", "Visible D", None);
+    td.workspace = Some("wsA".into());
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.task(tc);
+        tx.task(td);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    ok(
+        &e,
+        "task.dependency.add",
+        json!({"task": ta, "depends_on": tb}),
+    )
+    .await;
+    ok(
+        &e,
+        "task.dependency.add",
+        json!({"task": "task-secret-c", "depends_on": ta}),
+    )
+    .await;
+    ok(
+        &e,
+        "task.dependency.add",
+        json!({"task": "task-visible-d", "depends_on": ta, "kind": "related"}),
+    )
+    .await;
+    let hidden =
+        |kind: &str| json!({"hidden": true, "title": "hidden task", "edge": {"kind": kind}});
+    let leaks = |v: &Value| {
+        let s = v.to_string();
+        s.contains("Secret") || s.contains(&tb) || s.contains("task-secret-c")
+    };
+
+    // Pane in wsA reading its own task: the wsB endpoints are placeholders either way.
+    let pa = pane_ctx("pane-a");
+    let l = call_as(&e, &pa, "task.dependency.list", json!({"task": ta}))
+        .await
+        .unwrap();
+    let d = &l["dependencies"];
+    assert_eq!(d["depends_on"], json!([hidden("blocks")]), "{d}");
+    let dependents = d["dependents"].as_array().unwrap();
+    assert_eq!(dependents.len(), 2);
+    assert!(dependents.contains(&hidden("blocks")), "{d}");
+    let visible = dependents.iter().find(|x| x["hidden"].is_null()).unwrap();
+    assert_eq!(visible["title"], "Visible D");
+    assert_eq!(visible["edge"]["task"], "task-visible-d");
+    assert!(!leaks(&l), "{l}");
+    let pkg = call_as(&e, &pa, "task.review.get", json!({"task": ta}))
+        .await
+        .unwrap();
+    assert_eq!(pkg["dependencies"], l["dependencies"]);
+    assert!(!leaks(&pkg["dependencies"]), "{}", pkg["dependencies"]);
+
+    // Pane in wsB reading its task: the wsA dependent is a placeholder.
+    let pb = pane_ctx("pane-b");
+    let l = call_as(&e, &pb, "task.dependency.list", json!({"task": tb}))
+        .await
+        .unwrap();
+    assert_eq!(l["dependencies"]["dependents"], json!([hidden("blocks")]));
+    assert!(!l.to_string().contains(&ta) && !l.to_string().contains("Visible A"));
+    let pkg = call_as(&e, &pb, "task.review.get", json!({"task": tb}))
+        .await
+        .unwrap();
+    assert_eq!(pkg["dependencies"]["dependents"], json!([hidden("blocks")]));
+
+    // Full scope sees everything.
+    let full = ok(&e, "task.dependency.list", json!({"task": ta})).await;
+    assert_eq!(
+        full["dependencies"]["depends_on"][0]["edge"]["depends_on"],
+        tb.as_str()
+    );
+    assert!(full.to_string().contains("Secret C title"));
+    let pkg = review(&e, &ta).await;
+    assert!(pkg["dependencies"].to_string().contains("Secret C title"));
+}
+
+fn snapshot_refs(e: &Env) -> Vec<String> {
+    let out = git(
+        &e.repo,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/vibeke/snapshots/",
+        ],
+    );
+    out.lines().map(str::to_string).collect()
+}
+
+async fn snap(e: &Env, task: &str) -> (String, String) {
+    let v = ok(e, "task.review.snapshot", json!({"task": task})).await;
+    (
+        v["subject"]["id"].as_str().unwrap().to_string(),
+        v["snapshot"]["commit"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Snapshot refs: superseded, unaccepted snapshots lose their ref; accepted ones keep it;
+/// `task.review.snapshot.gc` removes what a finished task no longer references and leaves
+/// unrecorded refs unless asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_refs_are_collected_when_nothing_references_them() {
+    let e = Env::new();
+    let task = tracked(&e, json!(["Looks right"])).await;
+    e.write("status.txt", "pass\n");
+    let (s1, c1) = snap(&e, &task).await;
+    let run = verify(&e, &task, &s1, "unit").await;
+    assert_eq!(run["state"], "passed");
+    ok(
+        &e,
+        "task.review.accept",
+        json!({"task": task, "intent_revision": 1, "subject_id": s1}),
+    )
+    .await;
+    e.write("wip.txt", "two\n");
+    let (_s2, c2) = snap(&e, &task).await;
+    assert_eq!(snapshot_refs(&e).len(), 2);
+    e.write("wip.txt", "three\n");
+    let (_s3, c3) = snap(&e, &task).await;
+    // c2 was superseded and never accepted: its ref is gone; c1 (accepted) and c3 (current).
+    let refs = snapshot_refs(&e);
+    assert!(
+        refs.contains(&c1) && refs.contains(&c3) && !refs.contains(&c2),
+        "{refs:?}"
+    );
+    // The superseded snapshot's commit object is still there for now.
+    assert_eq!(git(&e.repo, &["cat-file", "-t", &c2]), "commit");
+
+    // A ref no record names (another session's).
+    let head = git(&e.repo, &["rev-parse", "HEAD"]);
+    git(
+        &e.repo,
+        &[
+            "update-ref",
+            &format!("refs/vibeke/snapshots/{head}"),
+            &head,
+        ],
+    );
+    let gc = ok(&e, "task.review.snapshot.gc", json!({"task": task})).await;
+    assert!(gc["removed"].as_array().unwrap().is_empty(), "{gc}");
+    assert_eq!(snapshot_refs(&e).len(), 3);
+
+    // The task finishes: its last snapshot is no longer a candidate.
+    let mut t = tracking::find_task(&e.server, &task).unwrap();
+    t.status = "finished".into();
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.task(t);
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    let repo = e.repo.to_string_lossy().into_owned();
+    let dry = ok(
+        &e,
+        "task.review.snapshot.gc",
+        json!({"repo": repo, "dry_run": true}),
+    )
+    .await;
+    assert_eq!(dry["removed"][0]["commit"], c3.as_str());
+    assert_eq!(snapshot_refs(&e).len(), 3, "dry run removes nothing");
+    let gc = ok(&e, "task.review.snapshot.gc", json!({"repo": repo})).await;
+    let removed: Vec<&str> = gc["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["commit"].as_str().unwrap())
+        .collect();
+    assert_eq!(removed, [c3.as_str()]);
+    assert_eq!(gc["unrecorded"][0]["commit"], head.as_str());
+    let refs = snapshot_refs(&e);
+    assert!(
+        refs.contains(&c1) && refs.contains(&head) && refs.len() == 2,
+        "{refs:?}"
+    );
+    assert_eq!(events(&e, "review.snapshot_refs_removed").len(), 1);
+    // Unrecorded refs only on request; the accepted snapshot's ref stays.
+    let gc = ok(
+        &e,
+        "task.review.snapshot.gc",
+        json!({"repo": repo, "include_unrecorded": true}),
+    )
+    .await;
+    assert_eq!(gc["removed"][0]["commit"], head.as_str());
+    assert_eq!(snapshot_refs(&e), vec![c1]);
+    // Branches untouched.
+    assert_eq!(
+        git(
+            &e.repo,
+            &["for-each-ref", "--format=%(refname)", "refs/heads"]
+        ),
+        "refs/heads/main"
+    );
+    // Pane scope may not collect.
+    put_pane(&e, "pane-a", "wsA");
+    let r = call_as(
+        &e,
+        &pane_ctx("pane-a"),
+        "task.review.snapshot.gc",
+        json!({"repo": repo}),
+    )
+    .await;
+    assert_eq!(r.unwrap_err().code, ErrorKind::PermissionDenied.code());
+}

@@ -5,16 +5,22 @@
 //! check's environment manifest) — into an immutable Git commit:
 //!
 //! 1. Digest the checkout ([`subject::observation_baseline`]: status, `diff --binary HEAD`,
-//!    untracked file hashes).
+//!    untracked file contents and executable bits, and the state of changed submodules).
+//!    A checkout whose submodules (or nested repositories) have changes of their own is
+//!    refused with `unsupported_capture`: `git add -A` records a submodule only as its commit,
+//!    so its uncommitted content could not be part of the snapshot.
 //! 2. Copy the user's index to a private temporary file (keeping its mtime, so Git's racy-entry
 //!    rules still apply), write its tree (the staged part), then `git add -A` **into the copy**
 //!    and write the full working-tree tree. Objects go into the object store; the user's index,
-//!    worktree and refs are untouched.
+//!    worktree and branches are untouched.
 //! 3. Digest again. Only when both digests and HEAD agree is the capture consistent; otherwise
 //!    retry, and after the last attempt report **Workspace changing — verification subject
 //!    unavailable**.
 //! 4. `commit-tree` with fixed author/committer/date (same content ⇒ same commit ⇒ same subject
-//!    id) and keep it reachable under `refs/vibeke/snapshots/<commit>`.
+//!    id) and keep it reachable under `refs/vibeke/snapshots/<commit>`. This private ref is the
+//!    one write to the repository's ref namespace; no branch, tag or `HEAD` changes. Refs no
+//!    longer referenced by a candidate, acceptance, reviewer or running check are deleted by
+//!    [`gc_snapshot_refs`] (the server decides which are referenced).
 //!
 //! Matching digests narrow, but cannot rule out, a write that happened and was reverted inside
 //! the window; the snapshot's content is nevertheless exactly what is stored and what checks
@@ -49,6 +55,16 @@ pub enum SnapshotError {
     Unmerged,
     #[error("snapshot capture failed: {0}")]
     Io(String),
+    /// Content a snapshot can't hold. `what` is `submodule` (a submodule or nested repository
+    /// with changes of its own: `git add -A` would record only its commit, not its edits).
+    #[error(
+        "unsupported_capture: {what} — changes inside {} can't be captured in a snapshot; commit them in the {what} (and record the new commit in this repository), or select a committed revision",
+        paths.join(", ")
+    )]
+    UnsupportedCapture {
+        what: &'static str,
+        paths: Vec<String>,
+    },
 }
 
 impl SnapshotError {
@@ -59,6 +75,7 @@ impl SnapshotError {
             SnapshotError::Clean => "nothing_to_snapshot",
             SnapshotError::UnbornHead => "unborn_head",
             SnapshotError::Unmerged => "unmerged_paths",
+            SnapshotError::UnsupportedCapture { .. } => "unsupported_capture",
             _ => "snapshot_failed",
         }
     }
@@ -116,6 +133,12 @@ pub fn capture_dirty_snapshot_with(
             DirtyState::Clean => return Err(SnapshotError::Clean),
             DirtyState::Unknown => continue,
             DirtyState::Dirty => {}
+        }
+        if !before.changed_submodules.is_empty() {
+            return Err(SnapshotError::UnsupportedCapture {
+                what: "submodule",
+                paths: before.changed_submodules,
+            });
         }
         hook(attempt);
         let trees = write_trees(&root);
@@ -239,6 +262,85 @@ fn commit_snapshot(
         &env,
     )?;
     Ok(out)
+}
+
+/// One `refs/vibeke/snapshots/*` ref.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotRefEntry {
+    pub ref_name: String,
+    pub commit: String,
+}
+
+/// How the caller's records relate to a snapshot commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefUse {
+    /// Named by a live candidate, an acceptance, a reviewer or a running check: kept.
+    Referenced,
+    /// Recorded, but nothing references it any more: deleted.
+    Unreferenced,
+    /// No record names it (another session's, or a crashed capture's): deleted only on request.
+    Unrecorded,
+}
+
+/// What [`gc_snapshot_refs`] did (or, with `dry_run`, would do).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GcReport {
+    pub removed: Vec<SnapshotRefEntry>,
+    pub kept: Vec<SnapshotRefEntry>,
+    /// Refs no record names; removed only with `include_unrecorded` (then also in `removed`).
+    pub unrecorded: Vec<SnapshotRefEntry>,
+}
+
+/// Every snapshot ref of the repository containing `repo` (shared by all its worktrees).
+pub fn list_snapshot_refs(repo: &Path) -> Result<Vec<SnapshotRefEntry>, SnapshotError> {
+    let out = gitcmd::run(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            REF_PREFIX,
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(r, c)| SnapshotRefEntry {
+            ref_name: r.to_string(),
+            commit: c.to_string(),
+        })
+        .collect())
+}
+
+/// Delete the snapshot refs `classify` reports as unreferenced (and unrecorded ones when
+/// `include_unrecorded`). Each deletion is conditional on the ref still pointing at the listed
+/// commit. Only the ref goes; the objects become ordinary unreachable objects that Git's own
+/// gc prunes on its schedule. Nothing else in the repository is touched.
+pub fn gc_snapshot_refs(
+    repo: &Path,
+    classify: &dyn Fn(&str) -> RefUse,
+    include_unrecorded: bool,
+    dry_run: bool,
+) -> Result<GcReport, SnapshotError> {
+    let mut report = GcReport::default();
+    for e in list_snapshot_refs(repo)? {
+        let remove = match classify(&e.commit) {
+            RefUse::Referenced => false,
+            RefUse::Unreferenced => true,
+            RefUse::Unrecorded => {
+                report.unrecorded.push(e.clone());
+                include_unrecorded
+            }
+        };
+        if !remove {
+            report.kept.push(e);
+            continue;
+        }
+        if !dry_run {
+            gitcmd::run(repo, &["update-ref", "-d", &e.ref_name, &e.commit])?;
+        }
+        report.removed.push(e);
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -432,5 +534,231 @@ mod tests {
             }
             Err(e) => panic!("unexpected {e}"),
         }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=Test", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A superproject with a submodule `sub` (cloned from a local repository).
+    fn with_submodule() -> (TestRepo, TestRepo, String) {
+        let lib = TestRepo::new();
+        lib.write("x.txt", "lib v1\n");
+        lib.commit("lib");
+        let r = TestRepo::new();
+        r.write("a.txt", "base\n");
+        r.commit("base");
+        let lib_path = lib.path().to_string_lossy().into_owned();
+        r.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &lib_path,
+            "sub",
+        ]);
+        let base = r.commit("add submodule");
+        (r, lib, base)
+    }
+
+    #[test]
+    fn submodule_changes_are_refused_and_part_of_the_digest() {
+        let (r, _lib, base) = with_submodule();
+        let clean = subject::observation_baseline(r.root()).unwrap();
+        assert_eq!(clean.dirty_state, DirtyState::Clean);
+        assert!(clean.changed_submodules.is_empty());
+
+        // A tracked file modified inside the submodule (plus ordinary superproject work).
+        r.write("a.txt", "super edit\n");
+        r.write("sub/x.txt", "lib edit 1\n");
+        let b1 = subject::observation_baseline(r.root()).unwrap();
+        assert_eq!(b1.dirty_state, DirtyState::Dirty);
+        assert_eq!(b1.changed_submodules, vec!["sub".to_string()]);
+        let e = capture_dirty_snapshot(r.root(), &base, &fast()).unwrap_err();
+        assert!(
+            matches!(&e, SnapshotError::UnsupportedCapture { what: "submodule", paths } if paths == &["sub".to_string()]),
+            "{e}"
+        );
+        assert_eq!(e.reason(), "unsupported_capture");
+        assert!(
+            e.to_string().starts_with("unsupported_capture: submodule"),
+            "{e}"
+        );
+        assert_eq!(
+            r.git(&["for-each-ref", REF_PREFIX]),
+            "",
+            "no ref for a refusal"
+        );
+
+        // A further edit inside the already-dirty submodule: the superproject's own status and
+        // diff are unchanged (`-dirty`), but the digest changes.
+        let status = |r: &TestRepo| {
+            r.git(&[
+                "status",
+                "--porcelain=v2",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ])
+        };
+        let super_status = status(&r);
+        let super_diff = r.git(&["diff", "HEAD"]);
+        r.write("sub/x.txt", "lib edit 2\n");
+        assert_eq!(status(&r), super_status);
+        assert_eq!(r.git(&["diff", "HEAD"]), super_diff);
+        let b2 = subject::observation_baseline(r.root()).unwrap();
+        assert_ne!(b1.change_digest, b2.change_digest);
+        // Untracked content inside the submodule counts too.
+        r.write("sub/new.txt", "n\n");
+        let b3 = subject::observation_baseline(r.root()).unwrap();
+        assert_ne!(b2.change_digest, b3.change_digest);
+        assert!(matches!(
+            capture_dirty_snapshot(r.root(), &base, &fast()),
+            Err(SnapshotError::UnsupportedCapture { .. })
+        ));
+
+        // A moved gitlink (a new commit inside the submodule) is refused as well.
+        let sub = r.root().join("sub");
+        std::fs::remove_file(sub.join("new.txt")).unwrap();
+        git_in(&sub, &["commit", "-q", "-am", "lib edit"]);
+        let b4 = subject::observation_baseline(r.root()).unwrap();
+        assert_eq!(b4.changed_submodules, vec!["sub".to_string()]);
+        assert!(matches!(
+            capture_dirty_snapshot(r.root(), &base, &fast()),
+            Err(SnapshotError::UnsupportedCapture { .. })
+        ));
+
+        // Submodule back at the recorded commit and clean: the superproject work is captured.
+        git_in(&sub, &["reset", "-q", "--hard", "HEAD~1"]);
+        let s = capture_dirty_snapshot(r.root(), &base, &fast()).unwrap();
+        let c = s.snapshot.unwrap().commit;
+        assert_eq!(r.git(&["show", &format!("{c}:a.txt")]), "super edit");
+    }
+
+    #[test]
+    fn a_nested_repository_with_changes_is_refused() {
+        let r = TestRepo::new();
+        r.write("a.txt", "base\n");
+        let base = r.commit("base");
+        let nested = r.root().join("vendor/inner");
+        std::fs::create_dir_all(&nested).unwrap();
+        git_in(&nested, &["init", "-q", "-b", "main"]);
+        std::fs::write(nested.join("f.txt"), "1").unwrap();
+        git_in(&nested, &["add", "-A"]);
+        git_in(&nested, &["commit", "-q", "-m", "inner"]);
+        let b1 = subject::observation_baseline(r.root()).unwrap();
+        assert_eq!(b1.changed_submodules, vec!["vendor/inner".to_string()]);
+        std::fs::write(nested.join("f.txt"), "2").unwrap();
+        let b2 = subject::observation_baseline(r.root()).unwrap();
+        assert_ne!(b1.change_digest, b2.change_digest);
+        assert_eq!(
+            capture_dirty_snapshot(r.root(), &base, &fast())
+                .unwrap_err()
+                .reason(),
+            "unsupported_capture"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_executable_bit_change_during_capture_forces_a_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = TestRepo::new();
+        r.write("a.txt", "base\n");
+        let base = r.commit("base");
+        r.write("tool.sh", "#!/bin/sh\necho hi\n");
+        let root = r.root().to_path_buf();
+        let s = capture_dirty_snapshot_with(&root, &base, &fast(), &mut |attempt| {
+            if attempt == 1 {
+                let p = root.join("tool.sh");
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        })
+        .unwrap();
+        let sn = s.snapshot.clone().unwrap();
+        assert_eq!(
+            sn.attempts, 2,
+            "the mode change between digests is a change"
+        );
+        assert!(
+            r.git(&["ls-tree", &sn.commit, "tool.sh"])
+                .starts_with("100755"),
+            "the snapshot holds the settled (executable) mode"
+        );
+        assert_eq!(
+            subject::observation_baseline(r.root())
+                .unwrap()
+                .change_digest,
+            s.dirty_digest
+        );
+    }
+
+    #[test]
+    fn gc_keeps_referenced_and_removes_unreferenced_refs() {
+        let r = TestRepo::new();
+        r.write("a.txt", "base\n");
+        let base = r.commit("base");
+        r.write("a.txt", "one\n");
+        let one = capture_dirty_snapshot(r.root(), &base, &fast()).unwrap();
+        r.write("a.txt", "two\n");
+        let two = capture_dirty_snapshot(r.root(), &base, &fast()).unwrap();
+        let (c1, c2) = (one.snapshot.unwrap().commit, two.snapshot.unwrap().commit);
+        // A ref no record names (e.g. left by another session).
+        r.git(&["update-ref", &format!("{REF_PREFIX}{base}"), &base]);
+        assert_eq!(list_snapshot_refs(r.root()).unwrap().len(), 3);
+        let classify = |c: &str| {
+            if c == c1 {
+                RefUse::Referenced
+            } else if c == c2 {
+                RefUse::Unreferenced
+            } else {
+                RefUse::Unrecorded
+            }
+        };
+        // Dry run: reported, nothing deleted.
+        let dry = gc_snapshot_refs(r.root(), &classify, false, true).unwrap();
+        assert_eq!(dry.removed.len(), 1);
+        assert_eq!(list_snapshot_refs(r.root()).unwrap().len(), 3);
+
+        let rep = gc_snapshot_refs(r.root(), &classify, false, false).unwrap();
+        assert_eq!(
+            rep.removed
+                .iter()
+                .map(|e| e.commit.as_str())
+                .collect::<Vec<_>>(),
+            [c2.as_str()]
+        );
+        assert_eq!(rep.unrecorded.len(), 1);
+        let left: Vec<String> = list_snapshot_refs(r.root())
+            .unwrap()
+            .into_iter()
+            .map(|e| e.commit)
+            .collect();
+        assert!(left.contains(&c1) && left.contains(&base) && !left.contains(&c2));
+        // The objects themselves stay until Git prunes them; branches are untouched.
+        assert_eq!(r.git(&["cat-file", "-t", &c2]), "commit");
+        assert_eq!(r.git(&["rev-parse", "HEAD"]), base);
+
+        // Unrecorded refs go only when asked.
+        let rep = gc_snapshot_refs(r.root(), &classify, true, false).unwrap();
+        assert_eq!(rep.removed.len(), 1);
+        assert_eq!(rep.removed[0].commit, base);
+        let left = list_snapshot_refs(r.root()).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].commit, c1);
     }
 }

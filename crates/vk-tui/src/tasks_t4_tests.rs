@@ -312,6 +312,75 @@ fn edited_prompt_is_recorded_then_started_only_if_exact() {
     assert!(commands(&mut rxs[0]).is_empty());
 }
 
+fn prepared_for(prompt: &str, id: &str, digest: &str, subject: &str) -> Value {
+    let mut v = prepared(prompt, id, digest);
+    v["subject"] = json!(subject);
+    v
+}
+
+#[test]
+fn edited_prompt_keeps_its_subject_and_a_changed_subject_needs_a_new_confirmation() {
+    let (mut app, mut rxs) = setup();
+    open(&mut app, &mut rxs[0], t4_package());
+    app.on_key(ch('R'));
+    let (req, _) = only(&commands(&mut rxs[0]), "task.review.request_reviewer");
+    reply(&mut app, 0, req, prepared("Review.", "rv_1", "dg-1"));
+    typ(&mut app, " Focus on auth.");
+    app.on_key(ctl('s'));
+    // The re-prepare names the subject the user was shown.
+    let (req, p) = only(&commands(&mut rxs[0]), "task.review.request_reviewer");
+    assert_eq!(p["prompt"], "Review. Focus on auth.");
+    assert_eq!(p["expected_subject"], "subj-1");
+    // The candidate advanced meanwhile: refused, nothing started; a fresh prompt is requested
+    // for the new subject (no edited text, no expected subject).
+    reply_err(
+        &mut app,
+        0,
+        req,
+        "conflict",
+        json!({"reason": "subject_changed", "expected": "subj-1", "current": "subj-2"}),
+    );
+    let cmds = commands(&mut rxs[0]);
+    assert!(cmds.iter().all(|c| c.1 != "task.review.start_reviewer"));
+    let (req, p) = only(&cmds, "task.review.request_reviewer");
+    assert!(p.get("prompt").is_none() && p.get("expected_subject").is_none());
+    reply(
+        &mut app,
+        0,
+        req,
+        prepared_for("Review the new diff.", "rv_2", "dg-2", "subj-2"),
+    );
+    // Shown as a renewed confirmation, never auto-started.
+    assert!(commands(&mut rxs[0]).is_empty());
+    let s = screen(&app);
+    assert!(s.contains("moved to a new subject"), "{s}");
+    assert!(s.contains("Review the new diff."));
+    // The user confirms it explicitly.
+    app.on_key(ctl('s'));
+    let (_, p) = only(&commands(&mut rxs[0]), "task.review.start_reviewer");
+    assert_eq!(p["request"], "rv_2");
+    assert_eq!(p["prompt_digest"], "dg-2");
+
+    // Text equality alone does not auto-start when the server answers for another subject.
+    let (mut app, mut rxs) = setup();
+    open(&mut app, &mut rxs[0], t4_package());
+    app.on_key(ch('R'));
+    let (req, _) = only(&commands(&mut rxs[0]), "task.review.request_reviewer");
+    reply(&mut app, 0, req, prepared("Review.", "rv_1", "dg-1"));
+    typ(&mut app, "!");
+    app.on_key(ctl('s'));
+    let (req, p) = only(&commands(&mut rxs[0]), "task.review.request_reviewer");
+    assert_eq!(p["expected_subject"], "subj-1");
+    reply(
+        &mut app,
+        0,
+        req,
+        prepared_for("Review.!", "rv_3", "dg-3", "subj-9"),
+    );
+    assert!(commands(&mut rxs[0]).is_empty(), "not started");
+    assert!(screen(&app).contains("moved to a new subject"));
+}
+
 #[test]
 fn reviewer_refusals() {
     let (mut app, mut rxs) = setup();

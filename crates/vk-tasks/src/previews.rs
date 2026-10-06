@@ -127,6 +127,44 @@ pub fn offset_of_env(name: &str, offsets: &[(String, u16)]) -> Option<u16> {
         .and_then(|i| i.parse().ok())
 }
 
+/// A preview path as an absolute-path reference on the preview's own origin: `/` followed by
+/// anything but `/` or `\`. A missing leading `/` is added (`app` → `/app`). Refused: URLs
+/// and other scheme-prefixed values (`https://x`, `javascript:…`), network-path references
+/// (`//host/…`), any backslash (browsers treat `\` like `/`, so `/\host` is `//host`), and
+/// whitespace or control characters. Query and fragment are kept (`/app?x=1#/route`).
+pub fn normalize_preview_path(raw: &str) -> Result<String, &'static str> {
+    if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("path must not contain whitespace or control characters");
+    }
+    if raw.contains('\\') {
+        return Err("path must not contain a backslash");
+    }
+    if !raw.starts_with('/') {
+        // `scheme:` before any `/`, `?` or `#` is a URL (or `javascript:`), not a path.
+        let head = raw.split(['/', '?', '#']).next().unwrap_or("");
+        if let Some((scheme, _)) = head.split_once(':')
+            && scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        {
+            return Err("path must be a path on the preview (`/app`), not a URL");
+        }
+    }
+    let path = if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{raw}")
+    };
+    if path.starts_with("//") {
+        return Err("path must not start with `//` (that names another host)");
+    }
+    Ok(path)
+}
+
 /// Resolve specs against the lease. `allow_absolute` permits `port = N` (user-supplied config
 /// only). Returns the previews and warnings for skipped entries.
 pub fn resolve_previews(
@@ -184,17 +222,13 @@ pub fn resolve_previews(
                 continue;
             }
         };
-        let mut path = s.path.clone().unwrap_or_else(|| "/".into());
-        if !path.starts_with('/') {
-            path.insert(0, '/');
-        }
-        if path.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            warn.push(format!(
-                "preview {}: path must not contain whitespace",
-                s.name
-            ));
-            continue;
-        }
+        let path = match normalize_preview_path(s.path.as_deref().unwrap_or("/")) {
+            Ok(p) => p,
+            Err(e) => {
+                warn.push(format!("preview {}: {e}", s.name));
+                continue;
+            }
+        };
         let scheme = s.scheme.clone().unwrap_or_else(|| "http".into());
         if scheme != "http" && scheme != "https" {
             warn.push(format!("preview {}: scheme must be http or https", s.name));
@@ -223,6 +257,53 @@ pub fn resolve_previews(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn preview_paths_are_absolute_path_references() {
+        for (raw, want) in [
+            ("/", "/"),
+            ("app", "/app"),
+            ("/app?x=1", "/app?x=1"),
+            ("/#/dashboard", "/#/dashboard"),
+            ("/a/b#frag", "/a/b#frag"),
+            ("/app:1/x", "/app:1/x"),
+            ("/a//b", "/a//b"),
+        ] {
+            assert_eq!(normalize_preview_path(raw).as_deref(), Ok(want), "{raw}");
+        }
+        for raw in [
+            "//attacker.example/",
+            "//attacker.example",
+            "/\\attacker.example/",
+            "\\attacker.example",
+            "\\\\attacker.example/",
+            "/app\\x",
+            "https://attacker.example/",
+            "http:attacker.example",
+            "javascript:alert(1)",
+            "localhost:3000/x",
+            "/a b",
+            "/a\tb",
+            "/a\nb",
+        ] {
+            assert!(normalize_preview_path(raw).is_err(), "{raw:?} accepted");
+        }
+    }
+
+    #[test]
+    fn repo_declarations_with_unsafe_paths_are_skipped() {
+        let (specs, w) = parse_previews(&json!({
+            "evil": {"port_env": "PORT", "path": "//attacker.example/"},
+            "bs": {"offset": 1, "path": "/\\attacker.example/"},
+            "ok": {"offset": 2, "path": "/app#/x"},
+        }));
+        assert!(w.is_empty(), "{w:?}");
+        let (out, warn) = resolve_previews(&specs, Some(&lease()), &port_env_offsets(None), false);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].path, "/app#/x");
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn.iter().all(|w| w.contains("path")), "{warn:?}");
+    }
 
     fn lease() -> Lease {
         Lease {

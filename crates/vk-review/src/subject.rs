@@ -60,7 +60,8 @@ pub enum SubjectKind {
 
 /// Where a [`SubjectKind::DirtySnapshot`]'s content lives: an immutable commit (parent = the
 /// checkout's HEAD at capture) in the repository's object store, kept reachable by a
-/// Vibeke-private ref. The user's index, worktree and refs are never touched.
+/// Vibeke-private ref (`refs/vibeke/snapshots/<commit>`, removed again by snapshot GC once
+/// nothing references it). The user's index, worktree, branches and tags are never touched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotRef {
     /// Snapshot commit; its tree is the full working-tree content.
@@ -322,18 +323,32 @@ pub struct Baseline {
     pub may_include_preexisting_changes: bool,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Submodules and nested repositories with changes of their own (a moved gitlink, or
+    /// modified/untracked content inside). Their state is part of `change_digest`; a dirty
+    /// snapshot can't capture them and refuses (`unsupported_capture`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_submodules: Vec<String>,
 }
 
 /// Capture an observation baseline: `git status --porcelain=v2 -z --untracked-files=all`,
-/// `git diff --binary HEAD` and the contents of every untracked file, hashed together.
-/// Missing capture data yields `change_digest: None` / `DirtyState::Unknown`.
+/// `git diff --binary HEAD`, the contents and executable bit of every untracked file, and —
+/// recursively — the HEAD and change digest of every submodule or nested repository that has
+/// changes, hashed together. Missing capture data yields `change_digest: None` /
+/// `DirtyState::Unknown`.
 pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
+    baseline_at(repo, 0)
+}
+
+/// How deep submodules / nested repositories are followed into for the digest.
+const MAX_NESTING: u32 = 8;
+
+fn baseline_at(repo: &Path, depth: u32) -> Result<Baseline, SubjectError> {
     let identity = repo_identity(repo)?;
     let root = Path::new(&identity.root).to_path_buf();
     let head = rev_parse(&root, "HEAD").ok();
     let mut warnings = Vec::new();
 
-    let digest = (|| -> Result<(String, bool), String> {
+    let digest = (|| -> Result<(String, bool, Vec<String>), String> {
         let status = gitcmd::run_bytes(
             &root,
             &[
@@ -345,7 +360,7 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
             ],
         )
         .map_err(|e| e.to_string())?;
-        let mut h = FieldHasher::new("vk-review/baseline/v1");
+        let mut h = FieldHasher::new("vk-review/baseline/v2");
         h.field(&status);
         let dirty = !status.is_empty();
         if head.is_some() {
@@ -377,7 +392,16 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
             .map_err(|e| e.to_string())?;
             h.field(&diff);
         }
+        let mut nested = Vec::new();
         for path in untracked_paths(&status) {
+            // With `--untracked-files=all` Git lists a directory only when it is an embedded
+            // repository it does not descend into: its content is followed like a submodule's.
+            if let Some(dir) = path.strip_suffix('/') {
+                h.str("nested").str(dir);
+                hash_nested(&mut h, &root, dir, depth)?;
+                nested.push(dir.to_string());
+                continue;
+            }
             h.str(&path);
             let full = root.join(&path);
             match std::fs::symlink_metadata(&full) {
@@ -396,7 +420,9 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
                         }
                         fh.update(&buf[..n]);
                     }
-                    h.str("file").str(&fh.finalize().to_hex());
+                    // The mode Git records (100755 vs 100644): `chmod +x` changes the subject.
+                    h.str(if is_executable(&m) { "file+x" } else { "file" })
+                        .str(&fh.finalize().to_hex());
                 }
                 Ok(_) => {
                     h.str("other");
@@ -404,21 +430,30 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
                 Err(e) => return Err(format!("{path}: {e}")),
             }
         }
-        Ok((h.finish(), dirty))
+        // A submodule appears in the superproject's status/diff only as its commit (plus a
+        // `-dirty` marker): edits inside an already-dirty submodule would leave both unchanged,
+        // so its own state is part of the digest.
+        for path in submodule_paths(&status) {
+            h.str("submodule").str(&path);
+            hash_nested(&mut h, &root, &path, depth)?;
+            nested.push(path);
+        }
+        Ok((h.finish(), dirty, nested))
     })();
 
-    let (change_digest, dirty_state) = match digest {
-        Ok((d, dirty)) => (
+    let (change_digest, dirty_state, changed_submodules) = match digest {
+        Ok((d, dirty, nested)) => (
             Some(d),
             if dirty {
                 DirtyState::Dirty
             } else {
                 DirtyState::Clean
             },
+            nested,
         ),
         Err(e) => {
             warnings.push(format!("change capture incomplete: {e}"));
-            (None, DirtyState::Unknown)
+            (None, DirtyState::Unknown, vec![])
         }
     };
     if head.is_none() {
@@ -432,7 +467,76 @@ pub fn observation_baseline(repo: &Path) -> Result<Baseline, SubjectError> {
         observed_at_ms: now_ms(),
         may_include_preexisting_changes: dirty_state != DirtyState::Clean,
         warnings,
+        changed_submodules,
     })
+}
+
+#[cfg(unix)]
+fn is_executable(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    // Git records a file as executable when its owner-execute bit is set.
+    m.permissions().mode() & 0o100 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_m: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Fold a submodule's / nested repository's own HEAD and change digest into `h`.
+fn hash_nested(h: &mut FieldHasher, root: &Path, rel: &str, depth: u32) -> Result<(), String> {
+    if depth >= MAX_NESTING {
+        return Err(format!(
+            "{rel}: repositories nested deeper than {MAX_NESTING} levels"
+        ));
+    }
+    let canon = root.join(rel).canonicalize().ok();
+    let sub = canon.as_ref().and_then(|c| {
+        baseline_at(c, depth + 1)
+            .ok()
+            // An uninitialized submodule directory resolves to the superproject: not its own.
+            .filter(|b| Path::new(&b.repo.root).canonicalize().ok().as_ref() == Some(c))
+    });
+    match sub {
+        Some(b) => {
+            let Some(d) = b.change_digest.as_deref() else {
+                return Err(format!("{rel}: {}", b.warnings.join("; ")));
+            };
+            h.str("repo").opt(b.head.as_deref()).str(d);
+        }
+        None => {
+            h.str("uninitialized");
+        }
+    }
+    Ok(())
+}
+
+/// Paths of submodule entries (`<sub>` field `S...`) in `git status --porcelain=v2 -z` output:
+/// a changed gitlink, or modified/untracked content inside the submodule.
+fn submodule_paths(status: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fields = status.split(|b| *b == 0);
+    while let Some(rec) = fields.next() {
+        let Some(&kind) = rec.first() else {
+            continue;
+        };
+        // Space-separated fields up to and including the path: `1` 9, `2` 10 (the original
+        // path follows as its own NUL field), `u` 11.
+        let n = match kind {
+            b'1' => 9,
+            b'2' => 10,
+            b'u' => 11,
+            _ => continue,
+        };
+        let parts: Vec<&[u8]> = rec.splitn(n, |b| *b == b' ').collect();
+        if parts.len() == n && parts[2].first() == Some(&b'S') {
+            out.push(String::from_utf8_lossy(parts[n - 1]).into_owned());
+        }
+        if kind == b'2' {
+            fields.next();
+        }
+    }
+    out
 }
 
 /// Paths of untracked entries (`? <path>`) in `git status --porcelain=v2 -z` output.
@@ -951,6 +1055,55 @@ mod tests {
         // Nothing was stashed/reset: staged change and untracked file still present.
         assert!(r.git(&["status", "--porcelain"]).contains("M  a.txt"));
         assert!(r.root().join("new/untracked.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_executable_bit_and_symlinks_change_the_digest() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = TestRepo::new();
+        r.write("a.txt", "base\n");
+        r.commit("1");
+        r.write("run.sh", "#!/bin/sh\n");
+        let plain = observation_baseline(r.root()).unwrap();
+        let p = r.root().join("run.sh");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let exec = observation_baseline(r.root()).unwrap();
+        assert_ne!(
+            plain.change_digest, exec.change_digest,
+            "chmod +x is a change"
+        );
+        // Group/other execute bits alone are not recorded by Git, so they are not a change.
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            observation_baseline(r.root()).unwrap().change_digest,
+            plain.change_digest
+        );
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o655)).unwrap();
+        assert_eq!(
+            observation_baseline(r.root()).unwrap().change_digest,
+            plain.change_digest
+        );
+        // A symlink with the same "content" as a file is a different entry.
+        std::fs::remove_file(&p).unwrap();
+        std::os::unix::fs::symlink("#!/bin/sh\n", &p).unwrap();
+        assert_ne!(
+            observation_baseline(r.root()).unwrap().change_digest,
+            plain.change_digest
+        );
+    }
+
+    #[test]
+    fn submodule_status_records_are_parsed() {
+        let status = b"1 .M S.M. 160000 160000 160000 aaa aaa sub dir\0\
+            1 .M N... 100644 100644 100644 bbb bbb plain.txt\0\
+            2 R. S... 160000 160000 160000 ccc ccc R100 new sub\0old sub\0\
+            ? untracked\0";
+        assert_eq!(
+            submodule_paths(status),
+            vec!["sub dir".to_string(), "new sub".to_string()]
+        );
+        assert_eq!(untracked_paths(status), vec!["untracked".to_string()]);
     }
 
     #[test]

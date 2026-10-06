@@ -79,6 +79,9 @@ impl Env {
             shims: false,
         };
         let server = Server::new(paths, opts).unwrap();
+        // Never the machine-wide default port (a user's real proxy may hold it; parallel
+        // tests would collide on it).
+        server.previews.set_proxy_port(0);
         let e = Env { _dir: dir, server };
         e.put_pane("pane-a");
         e
@@ -219,8 +222,17 @@ fn free_port() -> u16 {
 /// The fake remote machine "fakebox": `previews` maps handle → remote port; `ports` maps a
 /// remote port → where it really listens here.
 fn fake_link(previews: HashMap<String, u16>, ports: HashMap<u16, u16>) -> Link {
-    let previews = Arc::new(previews);
-    let ports = Arc::new(ports);
+    fake_link_shared(
+        Arc::new(std::sync::Mutex::new(previews)),
+        Arc::new(std::sync::Mutex::new(ports)),
+    )
+}
+
+type Shared<K, V> = Arc<std::sync::Mutex<HashMap<K, V>>>;
+
+/// [`fake_link`] whose remote previews and port map the test can change afterwards (a
+/// preview forgotten or moved on the remote, a port reused by another service).
+fn fake_link_shared(previews: Shared<String, u16>, ports: Shared<u16, u16>) -> Link {
     let connector: vk_remote::link::Connector = Arc::new(move || {
         let previews = previews.clone();
         let ports = ports.clone();
@@ -243,8 +255,11 @@ fn fake_link(previews: HashMap<String, u16>, ports: HashMap<u16, u16>) -> Link {
                     let (h, p) =
                         vk_remote::split_host_port(target).ok_or_else(|| anyhow::anyhow!("bad"))?;
                     anyhow::ensure!(vk_remote::is_loopback_host(&h), "not loopback");
-                    let real = *ports
+                    let real = ports
+                        .lock()
+                        .unwrap()
                         .get(&p)
+                        .copied()
                         .ok_or_else(|| anyhow::anyhow!("connection refused"))?;
                     let s = TcpStream::connect(("127.0.0.1", real)).await?;
                     Ok(Box::new(s) as Box<dyn vk_remote::mux::Stream>)
@@ -258,7 +273,7 @@ fn fake_link(previews: HashMap<String, u16>, ports: HashMap<u16, u16>) -> Link {
     Link::with_connector("fakebox", connector)
 }
 
-async fn fake_rpc(s: tokio::io::DuplexStream, previews: Arc<HashMap<String, u16>>) {
+async fn fake_rpc(s: tokio::io::DuplexStream, previews: Shared<String, u16>) {
     let (rd, mut wr) = tokio::io::split(s);
     let mut rd = tokio::io::BufReader::new(rd);
     let mut line = String::new();
@@ -266,8 +281,14 @@ async fn fake_rpc(s: tokio::io::DuplexStream, previews: Arc<HashMap<String, u16>
         return;
     }
     let req: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-    let handle = req["params"]["preview"].as_str().unwrap_or("").to_string();
-    let resp = match previews.get(&handle) {
+    // By handle or by id (`01REMOTE<handle>`).
+    let target = req["params"]["preview"].as_str().unwrap_or("");
+    let handle = target
+        .strip_prefix("01REMOTE")
+        .unwrap_or(target)
+        .to_string();
+    let port = previews.lock().unwrap().get(&handle).copied();
+    let resp = match port.as_ref() {
         Some(port) => {
             let pv = Preview {
                 id: format!("01REMOTE{handle}"),
@@ -289,7 +310,7 @@ async fn fake_rpc(s: tokio::io::DuplexStream, previews: Arc<HashMap<String, u16>
             json!({"jsonrpc": "2.0", "id": req["id"], "result": {"preview": pv}})
         }
         None => {
-            json!({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32001, "message": "not found"}})
+            json!({"jsonrpc": "2.0", "id": req["id"], "error": crate::api::not_found("preview", &handle)})
         }
     };
     let _ = wr.write_all(format!("{resp}\n").as_bytes()).await;
@@ -386,6 +407,13 @@ async fn proxy_mode_for_a_local_preview() {
     assert_eq!(st["proxy"]["port"], json!(pport));
     assert_eq!(st["proxy"]["routes"][0]["host"], json!(host));
     assert_eq!(st["mirrors"], json!([]));
+    // The hostname carries this session's persisted host tag.
+    let tag = session_host_tag(&e.server);
+    assert!(
+        host.ends_with(&format!("-{tag}.vibeke.localhost")),
+        "{host}"
+    );
+    assert_eq!(session_host_tag(&e.server), tag, "stable");
     // Forgetting the preview removes its origin.
     e.call(&full, "preview.forget", json!({"preview": handle}))
         .await
@@ -627,7 +655,27 @@ async fn task_previews_use_the_lease_and_retire_with_the_task() {
         });
         assert_eq!(up, Some(PreviewStatus::Up));
     }
+    // A proxy origin for a task preview goes with the task.
+    let web = by("web")["handle"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &ctx_full(),
+            "preview.open",
+            json!({"preview": web, "mode": "proxy", "no_open": true}),
+        )
+        .await
+        .unwrap();
+    let host = r["host"].as_str().unwrap().to_string();
+    assert!(proxy_port(&e.server).is_some());
     retire_task_previews(&e.server, "task-1");
+    let st = e
+        .call(&ctx_full(), "preview.status", json!({}))
+        .await
+        .unwrap();
+    assert!(
+        !st["proxy"]["routes"].to_string().contains(&host),
+        "task finish revokes the origin: {st}"
+    );
     let left = e.server.with_core(|c| {
         c.model
             .previews
@@ -702,4 +750,283 @@ fn task_panes_get_the_leased_ports_and_other_panes_do_not() {
         .server
         .with_core(|c| e.server.task_env_for(c, Some("new")));
     assert_eq!(p, vec![("PORT".to_string(), "1".to_string())]);
+}
+
+/// Two independent servers (sessions) with identical preview handles and labels: their proxy
+/// origins never share a hostname (cookies are per host, not per port), each proxy serves
+/// only its own hosts, and a cookie obtained from one is useless on the other.
+#[tokio::test]
+async fn two_sessions_with_identical_previews_never_share_a_host() {
+    let a = Env::new();
+    let b = Env::new();
+    let (pa, seen_a) = app("app-a").await;
+    let (pb, seen_b) = app("app-b").await;
+    let full = ctx_full();
+    let mut opened = vec![];
+    for (e, port) in [(&a, pa), (&b, pb)] {
+        let d = e
+            .call(
+                &full,
+                "preview.declare",
+                json!({"port": port, "label": "web"}),
+            )
+            .await
+            .unwrap();
+        let h = d["preview"]["handle"].as_str().unwrap().to_string();
+        let r = e
+            .call(
+                &full,
+                "preview.open",
+                json!({"preview": h, "mode": "proxy", "no_open": true}),
+            )
+            .await
+            .unwrap();
+        opened.push((h, r));
+    }
+    assert_eq!(opened[0].0, opened[1].0, "same handle in both sessions");
+    let (ha, hb) = (
+        opened[0].1["host"].as_str().unwrap(),
+        opened[1].1["host"].as_str().unwrap(),
+    );
+    assert_ne!(ha, hb, "two sessions must never share a preview hostname");
+    assert_ne!(session_host_tag(&a.server), session_host_tag(&b.server));
+    // One browser cookie jar: log into both. A's cookie is only ever sent to A's host; and
+    // even replayed against B's proxy under A's host it is refused (B doesn't serve it).
+    let (porta, autha, cka) = login(opened[0].1["open_url"].as_str().unwrap()).await;
+    let (portb, authb, ckb) = login(opened[1].1["open_url"].as_str().unwrap()).await;
+    assert_ne!(porta, portb);
+    assert_eq!(
+        http(porta, &autha, "/", Some(&cka)).await.2,
+        "<p>app-a /</p>"
+    );
+    assert_eq!(
+        http(portb, &authb, "/", Some(&ckb)).await.2,
+        "<p>app-b /</p>"
+    );
+    let a_on_b = format!("{ha}:{portb}");
+    assert_eq!(http(portb, &a_on_b, "/", Some(&cka)).await.0, 421);
+    assert_eq!(http(portb, &authb, "/", Some(&cka)).await.0, 401);
+    assert_eq!(seen_a.lock().unwrap().len(), 1);
+    assert_eq!(seen_b.lock().unwrap().len(), 1);
+}
+
+/// The configured proxy port is machine-wide: a second session asking for the same port is
+/// refused (naming the owner), never silently moved to another port.
+#[tokio::test]
+async fn a_second_proxy_on_the_same_port_is_refused() {
+    let a = Env::new();
+    let b = Env::new();
+    let port = free_port();
+    a.server.previews.set_proxy_port(port);
+    b.server.previews.set_proxy_port(port);
+    let (app_port, _) = app("x").await;
+    let full = ctx_full();
+    let mut results = vec![];
+    for e in [&a, &b] {
+        let d = e
+            .call(&full, "preview.declare", json!({"port": app_port}))
+            .await
+            .unwrap();
+        let h = d["preview"]["handle"].as_str().unwrap().to_string();
+        results.push(
+            e.call(
+                &full,
+                "preview.open",
+                json!({"preview": h, "mode": "proxy", "no_open": true}),
+            )
+            .await,
+        );
+    }
+    let first = results[0].as_ref().unwrap();
+    assert_eq!(first["proxy_port"], json!(port));
+    let second = results[1].as_ref().unwrap_err();
+    assert_eq!(second.code, ErrorKind::Conflict.code(), "{second:?}");
+    assert!(
+        second.message.contains(&port.to_string()) && second.message.contains("pid"),
+        "{}",
+        second.message
+    );
+    assert!(proxy_port(&b.server).is_none(), "no proxy started for b");
+}
+
+/// Repo- or caller-controlled preview paths are absolute-path references; proxy mode re-checks
+/// the stored path (e.g. one a remote machine reports) before minting a link.
+#[tokio::test]
+async fn preview_paths_cannot_leave_the_preview_origin() {
+    let e = Env::new();
+    let (port, _) = app("p").await;
+    let full = ctx_full();
+    for bad in [
+        "//attacker.example/",
+        "/\\attacker.example/",
+        "https://attacker.example/",
+        "javascript:alert(1)",
+    ] {
+        let r = e
+            .call(&full, "preview.declare", json!({"port": port, "path": bad}))
+            .await
+            .unwrap_err();
+        assert_eq!(r.code, ErrorKind::InvalidParams.code(), "{bad}: {r:?}");
+    }
+    let d = e
+        .call(
+            &full,
+            "preview.declare",
+            json!({"port": port, "path": "/app#/route"}),
+        )
+        .await
+        .unwrap();
+    let h = d["preview"]["handle"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &full,
+            "preview.open",
+            json!({"preview": h, "mode": "proxy", "no_open": true}),
+        )
+        .await
+        .unwrap();
+    let open_url = r["open_url"].as_str().unwrap();
+    assert!(
+        open_url.contains("/app?vk_token=") && open_url.ends_with("#/route"),
+        "{open_url}"
+    );
+    // A stored record with a network-path reference (older data / a remote's answer).
+    let mut pv = find_local(&e.server, &h).unwrap();
+    pv.path = "//attacker.example/".into();
+    commit_previews(&e.server, vec![(pv, None)]);
+    let r = e
+        .call(
+            &full,
+            "preview.open",
+            json!({"preview": h, "mode": "proxy", "no_open": true}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(r.code, ErrorKind::InvalidParams.code(), "{r:?}");
+}
+
+/// Retiring a local preview by any path (lifecycle, task finish) revokes its origin and
+/// sessions; a request re-checks the preview before connecting.
+#[tokio::test]
+async fn retired_local_previews_lose_their_origin() {
+    let e = Env::new();
+    let (port, seen) = app("local").await;
+    let full = ctx_full();
+    let d = e
+        .call(&full, "preview.declare", json!({"port": port}))
+        .await
+        .unwrap();
+    let h = d["preview"]["handle"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &full,
+            "preview.open",
+            json!({"preview": h, "mode": "proxy", "no_open": true}),
+        )
+        .await
+        .unwrap();
+    let (pport, auth, ck) = login(r["open_url"].as_str().unwrap()).await;
+    assert_eq!(http(pport, &auth, "/", Some(&ck)).await.0, 200);
+    // Moved to another port in the model (e.g. re-declared): the old route is refused
+    // before anything connects, then gone.
+    let mut pv = find_local(&e.server, &h).unwrap();
+    pv.port = free_port();
+    commit_previews(&e.server, vec![(pv.clone(), None)]);
+    let n = seen.lock().unwrap().len();
+    assert_eq!(http(pport, &auth, "/", Some(&ck)).await.0, 410);
+    assert_eq!(http(pport, &auth, "/", Some(&ck)).await.0, 421);
+    assert_eq!(seen.lock().unwrap().len(), n);
+    // Retired through the commit path (what lifecycle timeouts and task finish use).
+    pv.port = port;
+    commit_previews(&e.server, vec![(pv.clone(), None)]);
+    let r = e
+        .call(
+            &full,
+            "preview.open",
+            json!({"preview": h, "mode": "proxy", "no_open": true}),
+        )
+        .await
+        .unwrap();
+    let (pport, auth, ck) = login(r["open_url"].as_str().unwrap()).await;
+    assert_eq!(http(pport, &auth, "/", Some(&ck)).await.0, 200);
+    vk_preview::lifecycle::retire(&mut pv);
+    commit_previews(&e.server, vec![(pv, Some("preview.gone"))]);
+    assert_eq!(http(pport, &auth, "/", Some(&ck)).await.0, 421);
+}
+
+/// Forgetting a remote preview revokes this server's origin for it at once; a remote preview
+/// that disappears or moves on its machine (task finished there, port reused) is revoked on the
+/// next request. The old cookie never reaches the replacement service.
+#[tokio::test]
+async fn remote_forget_and_retirement_revoke_the_route() {
+    let e = Env::new();
+    let (real, seen) = app("remote-app").await;
+    let (other, other_seen) = app("replacement").await;
+    let remote_port = free_port();
+    let previews: Shared<String, u16> = Arc::new(std::sync::Mutex::new(HashMap::from([
+        ("v7".to_string(), remote_port),
+        ("v9".to_string(), remote_port + 1),
+    ])));
+    let ports: Shared<u16, u16> = Arc::new(std::sync::Mutex::new(HashMap::from([
+        (remote_port, real),
+        (remote_port + 1, real),
+    ])));
+    let (pv2, po2) = (previews.clone(), ports.clone());
+    e.server.previews.set_link_factory(Arc::new(move |m: &str| {
+        (m == "fakebox").then(|| fake_link_shared(pv2.clone(), po2.clone()))
+    }));
+    let full = ctx_full();
+    let open = |t: &'static str| {
+        let e = &e;
+        let full = full.clone();
+        async move {
+            e.call(
+                &full,
+                "preview.open",
+                json!({"preview": t, "mode": "proxy", "no_open": true}),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // 1. Explicit forget through this server.
+    let r = open("fakebox/v7").await;
+    let (pport, auth, ck) = login(r["open_url"].as_str().unwrap()).await;
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 200);
+    e.call(&full, "preview.forget", json!({"preview": "fakebox/v7"}))
+        .await
+        .unwrap();
+    // The remote port now belongs to another service.
+    ports.lock().unwrap().insert(remote_port, other);
+    let n = seen.lock().unwrap().len();
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 421);
+    assert_eq!(seen.lock().unwrap().len(), n);
+    assert!(other_seen.lock().unwrap().is_empty());
+
+    // 2. Retired on the remote (e.g. its task finished there): refused on the next request.
+    let r = open("fakebox/v9").await;
+    let (pport, auth, ck) = login(r["open_url"].as_str().unwrap()).await;
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 200);
+    previews.lock().unwrap().remove("v9");
+    ports.lock().unwrap().insert(remote_port + 1, other);
+    tokio::time::sleep(REMOTE_CHECK_TTL + Duration::from_millis(100)).await;
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 410);
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 421);
+    assert!(other_seen.lock().unwrap().is_empty());
+
+    // 3. Moved on the remote (same handle, new port): the old route is revoked too.
+    previews
+        .lock()
+        .unwrap()
+        .insert("v9".into(), remote_port + 1);
+    ports.lock().unwrap().insert(remote_port + 1, real);
+    let r = open("fakebox/v9").await;
+    let (pport, auth, ck) = login(r["open_url"].as_str().unwrap()).await;
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 200);
+    previews
+        .lock()
+        .unwrap()
+        .insert("v9".into(), remote_port + 2);
+    tokio::time::sleep(REMOTE_CHECK_TTL + Duration::from_millis(100)).await;
+    assert_eq!(http(pport, &auth, "/app", Some(&ck)).await.0, 410);
 }

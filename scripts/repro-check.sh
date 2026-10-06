@@ -7,6 +7,8 @@
 #   REPRO_KEEP=1    keep the scratch build directories
 #
 # Exit 0: identical. Exit 1: differing digests (both are printed). Exit 2: prerequisites missing.
+# Exit 3: a build failed, an artifact is missing, or a checksum could not be computed.
+# Tests: scripts/tests/repro-check-test.sh (stubs cargo/zig/sha256sum on PATH).
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -30,9 +32,23 @@ export TZ=UTC LC_ALL=C
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/vibeke-repro.XXXXXX")
 [ "${REPRO_KEEP:-}" = 1 ] || trap 'rm -rf "$SCRATCH"' EXIT
 
+fail() { echo "repro-check: $*" >&2; exit 3; }
+
+# Prints the sha256 of $1, or exits 3. No pipelines: each command's status is checked directly,
+# and the result must be exactly 64 lowercase hex digits.
 sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  [ -f "$1" ] || fail "artifact not found: $1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    out=$(sha256sum "$1") || fail "sha256sum failed for $1"
+  else
+    out=$(shasum -a 256 "$1") || fail "shasum failed for $1"
+  fi
+  hash=${out%%[[:space:]]*}
+  case $hash in
+    *[!0-9a-f]*|'') fail "malformed checksum for $1: '$out'" ;;
+  esac
+  [ ${#hash} -eq 64 ] || fail "malformed checksum for $1: '$out'"
+  printf '%s\n' "$hash"
 }
 
 echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
@@ -42,10 +58,19 @@ for target in $TARGETS; do
   for run in 1 2; do
     echo "==> $target build $run"
     # Different target dirs, same source path: the remap hides the target dir too.
-    RUSTFLAGS="$RUSTFLAGS_COMMON --remap-path-prefix=$SCRATCH/target-$run=/target" \
+    # Output goes to a log (not a pipe) so cargo's exit status is not masked.
+    log="$SCRATCH/build-$target-$run.log"
+    if RUSTFLAGS="$RUSTFLAGS_COMMON --remap-path-prefix=$SCRATCH/target-$run=/target" \
       CARGO_TARGET_DIR="$SCRATCH/target-$run" \
-      cargo zigbuild --release --locked -p vibeke --target "$target" 2>&1 | tail -3
+      cargo zigbuild --release --locked -p vibeke --target "$target" >"$log" 2>&1; then
+      tail -3 "$log"
+    else
+      rc=$?
+      tail -30 "$log" >&2
+      fail "$target build $run failed (cargo exit $rc)"
+    fi
   done
+  # Command substitution in an assignment propagates sha256's exit status, so set -e stops here.
   a=$(sha256 "$SCRATCH/target-1/$target/release/vibeke")
   b=$(sha256 "$SCRATCH/target-2/$target/release/vibeke")
   echo "$a  $target (build 1)"

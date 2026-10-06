@@ -6,7 +6,7 @@
     "proto": 1,
     "min": 1
   },
-  "method_count": 229,
+  "method_count": 230,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -275,8 +275,8 @@
     {
       "name": "assistant.cancel",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "assist"
@@ -287,8 +287,8 @@
     {
       "name": "assistant.confirm",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "assist"
@@ -299,8 +299,8 @@
     {
       "name": "assistant.consent",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "assist"
@@ -311,8 +311,8 @@
     {
       "name": "assistant.generate",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "assist"
@@ -323,8 +323,8 @@
     {
       "name": "assistant.get",
       "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "open",
       "tables": [
         "assist"
@@ -335,8 +335,8 @@
     {
       "name": "assistant.list",
       "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "open",
       "tables": [
         "assist"
@@ -347,8 +347,8 @@
     {
       "name": "assistant.providers",
       "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "open",
       "tables": [
         "assist"
@@ -359,8 +359,8 @@
     {
       "name": "assistant.purge",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "assist"
@@ -371,8 +371,8 @@
     {
       "name": "assistant.revoke",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "assist"
@@ -383,8 +383,8 @@
     {
       "name": "assistant.status",
       "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "open",
       "tables": [
         "assist"
@@ -479,8 +479,8 @@
     {
       "name": "browser.attach_screencast",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "agent_browser"
@@ -515,8 +515,8 @@
     {
       "name": "browser.command",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "browser_pane"
@@ -539,8 +539,8 @@
     {
       "name": "browser.detach_screencast",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "agent_browser"
@@ -587,8 +587,8 @@
     {
       "name": "browser.install",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "agent_browser"
@@ -683,8 +683,8 @@
     {
       "name": "browser.pane.update",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "browser_pane"
@@ -707,8 +707,8 @@
     {
       "name": "browser.release",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "agent_browser"
@@ -719,8 +719,8 @@
     {
       "name": "browser.screencast_frame",
       "mutating": false,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "open",
       "tables": [
         "agent_browser"
@@ -791,8 +791,8 @@
     {
       "name": "browser.take_over",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "agent_browser"
@@ -827,8 +827,8 @@
     {
       "name": "browser.watch",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "browser_pane"
@@ -852,8 +852,8 @@
     {
       "name": "client.focus",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity",
@@ -901,8 +901,8 @@
     {
       "name": "compat.invocation.verify",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "compat"
@@ -1213,8 +1213,8 @@
     {
       "name": "group.add",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1225,8 +1225,8 @@
     {
       "name": "group.collapse",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1237,8 +1237,8 @@
     {
       "name": "group.create",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1249,8 +1249,8 @@
     {
       "name": "group.delete",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1273,8 +1273,8 @@
     {
       "name": "group.move",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1285,8 +1285,8 @@
     {
       "name": "group.remove",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1297,8 +1297,8 @@
     {
       "name": "group.rename",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "parity"
@@ -1866,8 +1866,8 @@
     {
       "name": "plugin.surface.close",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "compat"
@@ -1938,8 +1938,8 @@
     {
       "name": "preview.mirror",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "preview"
@@ -1986,8 +1986,8 @@
     {
       "name": "preview.profile.reset",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "preview"
@@ -2022,8 +2022,8 @@
     {
       "name": "preview.unmirror",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "preview"
@@ -2046,8 +2046,8 @@
     {
       "name": "sandbox.allow",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "sandbox"
@@ -2070,8 +2070,8 @@
     {
       "name": "sandbox.remove",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "sandbox"
@@ -2082,8 +2082,8 @@
     {
       "name": "sandbox.start",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "sandbox"
@@ -2106,8 +2106,8 @@
     {
       "name": "sandbox.stop",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "sandbox"
@@ -2118,8 +2118,8 @@
     {
       "name": "screenshot.delete",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "screenshots"
@@ -2580,6 +2580,19 @@
       "spec": null
     },
     {
+      "name": "task.review.snapshot.gc",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "api",
+        "review::t4"
+      ],
+      "milestone": null,
+      "spec": null
+    },
+    {
       "name": "task.review.start_reviewer",
       "mutating": true,
       "scope": "full",
@@ -2595,8 +2608,8 @@
     {
       "name": "task.sync",
       "mutating": true,
-      "scope": "pane",
-      "pane_scope": "open",
+      "scope": "full",
+      "pane_scope": "forbidden",
       "gateway": "actor_required",
       "tables": [
         "sandbox"

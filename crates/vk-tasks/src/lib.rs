@@ -73,8 +73,8 @@ pub use jj::{Jj, JjStatus, JjWorkspace, find_root as jj_root, is_colocated as jj
 pub use naming::{DEFAULT_SLUG_MAX, render_branch, slugify, slugify_raw, unique_slug, user_handle};
 pub use ports::{Lease, LeaseRequest, PortLeases, PortPool};
 pub use previews::{
-    MAX_TASK_PREVIEWS, PreviewSpec, ResolvedPreview, offset_of_env, parse_previews,
-    port_env_offsets, resolve_previews,
+    MAX_TASK_PREVIEWS, PreviewSpec, ResolvedPreview, normalize_preview_path, offset_of_env,
+    parse_previews, port_env_offsets, resolve_previews,
 };
 pub use remove::{RemovalEvent, RemovalJob, RemovalState, RemoveOptions, reap_trash, start_remove};
 pub use repo::{RepoInfo, Vcs, detect, repo_root};
