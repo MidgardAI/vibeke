@@ -151,3 +151,68 @@ fn network_is_off_unless_granted() {
     let on = text(&run(&fx.b, &probe));
     assert!(on.contains("nc=0"), "network granted\n{on}");
 }
+
+/// `network = true` opens remote IP endpoints only: the Unix-socket allowlist (the invocation's
+/// own broker) stays, so another invocation's broker is neither connectable nor discoverable
+/// (the runtime dir with `brokers.json` stays hidden).
+#[test]
+fn open_network_keeps_unix_sockets_and_the_runtime_dir_closed() {
+    if plugin::probe().is_err() {
+        eprintln!("skipped: no working sandbox here (nested?)");
+        return;
+    }
+    let mut fx = fixture();
+    let run_dir = fx.root.join("r/default/herdr-compat");
+    std::fs::create_dir_all(run_dir.join("brokers")).unwrap();
+    let own = run_dir.join("brokers/own.sock");
+    let other = run_dir.join("brokers/other.sock");
+    std::fs::write(
+        run_dir.join("brokers.json"),
+        format!("[{{\"path\": \"{}\"}}]", other.display()),
+    )
+    .unwrap();
+    for p in [&own, &other] {
+        let l = std::os::unix::net::UnixListener::bind(p).unwrap();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut s = s;
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+    }
+    let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = tcp.local_addr().unwrap().port();
+    std::thread::spawn(move || while tcp.accept().is_ok() {});
+    fx.b.hidden.push(fx.root.join("r"));
+    fx.b.sockets = vec![own.clone()];
+    fx.b.network = true;
+    // curl exits 7 when it cannot connect, 0 when the socket answered.
+    let script = format!(
+        r#"
+        /usr/bin/curl -s -m 3 --unix-socket "{own}" http://x/ >/dev/null 2>&1; echo "own=$?"
+        /usr/bin/curl -s -m 3 --unix-socket "{other}" http://x/ >/dev/null 2>&1; echo "other=$?"
+        cat "{reg}" >/dev/null 2>&1; echo "registry=$?"
+        ls "{dir}" >/dev/null 2>&1; echo "listing=$?"
+        /usr/bin/nc -z -w 2 127.0.0.1 {port} >/dev/null 2>&1; echo "tcp=$?"
+        "#,
+        own = own.display(),
+        other = other.display(),
+        reg = run_dir.join("brokers.json").display(),
+        dir = run_dir.join("brokers").display(),
+    );
+    let t = text(&run(&fx.b, &script));
+    let get = |k: &str| -> String {
+        t.lines()
+            .find_map(|l| l.trim().strip_prefix(&format!("{k}=")))
+            .unwrap_or("missing")
+            .to_string()
+    };
+    assert_eq!(get("tcp"), "0", "remote IP endpoints are open\n{t}");
+    assert_eq!(get("own"), "0", "its own broker stays reachable\n{t}");
+    assert_eq!(get("other"), "7", "another broker is not connectable\n{t}");
+    assert_ne!(get("registry"), "0", "brokers.json is hidden\n{t}");
+    assert_ne!(get("listing"), "0", "the broker dir cannot be listed\n{t}");
+}

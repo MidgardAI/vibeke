@@ -193,7 +193,7 @@ pub const ENTRIES: &[Entry] = &[
         "broker bindings survive server recovery",
         Implemented,
         "spec",
-        "persisted in `brokers.json`, re-issued at the same path for live invocations whose grant still matches; output is tailed from files so it survives; pid reuse is not detected; exit status after a restart is unknown",
+        "persisted in `brokers.json`, re-issued at the same path for live invocations whose grant still matches; output is written by a capture helper (bounded per invocation) to files that are tailed, so it survives; pid reuse is not detected; exit status after a restart is unknown",
     ),
     e(
         Wire,

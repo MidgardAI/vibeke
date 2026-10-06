@@ -193,8 +193,17 @@ fn grant(dirs: &registry::PluginDirs, id: &str) -> Result<Value, i32> {
             Ok(_) => return Err(revoke_this("the manifest changed after review".into())),
             Err(e) => return Err(revoke_this(e.to_string())),
         };
-        if let Err(e) = build(&entry, &m, &g.manifest_sha256) {
+        // Managed checkouts are read-only on disk except while their build runs.
+        if let Err(e) = registry::set_tree_writable(&entry.root, true) {
+            return Err(revoke_this(format!("{}: {e}", entry.root.display())));
+        }
+        let built = build(&entry, &m, &g.manifest_sha256);
+        let sealed = registry::set_tree_writable(&entry.root, false);
+        if let Err(e) = built {
             return Err(revoke_this(e));
+        }
+        if let Err(e) = sealed {
+            return Err(revoke_this(format!("{}: {e}", entry.root.display())));
         }
         if let Err(e) = Registry::update(dirs, |reg| reg.finish_build(id, &g.grant_id)) {
             return Err(revoke_this(e.to_string()));
@@ -306,9 +315,15 @@ fn local(g: &Global, op: Local) -> i32 {
                     EXIT_PERMISSION,
                 );
             }
+            // The copy is staged and verified outside the registry lock; the lock is held only
+            // to publish it (new immutable checkout path, origin and grant in one save).
             let (entry, m) = match remote {
                 None => {
-                    match Registry::update(&dirs, |r| r.install(&dirs, &path, git_ref.as_deref())) {
+                    let staged = match registry::stage_local(&dirs, &path, git_ref.as_deref()) {
+                        Ok(s) => s,
+                        Err(e) => return reg_fail(e),
+                    };
+                    match Registry::update(&dirs, |r| r.install_staged(&dirs, staged)) {
                         Ok(x) => x,
                         Err(e) => return reg_fail(e),
                     }
@@ -322,8 +337,13 @@ fn local(g: &Global, op: Local) -> i32 {
                         Ok(f) => f,
                         Err(e) => return fail("fetch_failed", e, EXIT_API),
                     };
-                    let r = Registry::update(&dirs, |r| r.install_git(&dirs, &fetched, &src));
+                    let staged = registry::stage_git(&dirs, &fetched, &src);
                     let _ = std::fs::remove_dir_all(&fetched.work);
+                    let staged = match staged {
+                        Ok(s) => s,
+                        Err(e) => return reg_fail(e),
+                    };
+                    let r = Registry::update(&dirs, |r| r.install_staged(&dirs, staged));
                     match r {
                         Ok(x) => x,
                         Err(e) => return reg_fail(e),
@@ -974,6 +994,20 @@ fn broker() -> Option<(PathBuf, String)> {
     vk_server::compat::registered_broker(&b).ok()
 }
 
+/// One request line. To the invocation's own broker the shim adds the invocation's secret
+/// (`VIBEKE_HERDR_TOKEN`) as `vibeke_token`, so the broker serves it even from a process it
+/// cannot place in the invocation's process tree; it is never sent anywhere else.
+fn request_line(sock: &Path, id: &str, method: &str, params: Value) -> String {
+    let mut req = json!({"id": id, "method": method, "params": params});
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let to_broker = std::env::var_os("VIBEKE_HERDR_BROKER")
+        .is_some_and(|b| Path::new(&b) == sock || canon(Path::new(&b)) == canon(sock));
+    if to_broker && let Ok(t) = std::env::var("VIBEKE_HERDR_TOKEN") {
+        req["vibeke_token"] = json!(t);
+    }
+    req.to_string() + "\n"
+}
+
 /// Server lifecycle methods are never forwarded by the shim (to Vibeke or anything else).
 fn lifecycle(method: &str) -> bool {
     method.starts_with("server.") && method != "server.reload_config"
@@ -985,8 +1019,7 @@ async fn invocation_ticket(broker: &Path) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
     let (rd, mut wr) = s.into_split();
-    let line =
-        json!({"id": "t", "method": "vibeke.invocation_ticket", "params": {}}).to_string() + "\n";
+    let line = request_line(broker, "t", "vibeke.invocation_ticket", json!({}));
     wr.write_all(line.as_bytes())
         .await
         .map_err(|e| e.to_string())?;
@@ -1061,7 +1094,7 @@ async fn raw(sock: &Path, method: &str, params: Value) -> i32 {
         }
     };
     let (rd, mut wr) = stream.into_split();
-    let line = json!({"id": "1", "method": method, "params": params}).to_string() + "\n";
+    let line = request_line(sock, "1", method, params);
     if wr.write_all(line.as_bytes()).await.is_err() {
         return fail("server_unavailable", "write failed", EXIT_NO_SERVER);
     }

@@ -109,6 +109,12 @@ fn main() {
         let r = vk_hold::main_daemon(&spec, get("--log").as_deref());
         std::process::exit(if r.is_ok() { 0 } else { 1 });
     }
+    // Plugin output capture helper (07 §7.7): sync, no runtime.
+    if args.first().map(String::as_str) == Some("compat")
+        && args.get(1).map(String::as_str) == Some("plugin-output")
+    {
+        std::process::exit(vk_server::compat::capture::main(&args[2..]));
+    }
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("ptyshot")
     {

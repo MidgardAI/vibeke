@@ -564,7 +564,11 @@ async fn plugin_pane_open(
         return Err(denied(format!("plugin {plugin} is {}", st.as_str())));
     }
     let m = m.expect("active plugins have a manifest");
-    if super::limits::settings(plugin).isolate == herdr::settings::Isolate::Sandbox {
+    let settings = super::limits::settings(plugin);
+    if let Some(why) = settings.error {
+        return Err(denied(why));
+    }
+    if settings.isolate == herdr::settings::Isolate::Sandbox {
         return Err(WireError::new(
             "unsupported",
             format!(
@@ -631,6 +635,10 @@ async fn plugin_pane_open(
             created_at_ms: vk_store::now_ms(),
             stdout: None,
             stderr: None,
+            // Plugin panes are host-only; their processes prove themselves by pane ancestry
+            // (no token in a pane's command line).
+            isolation: Some("host".into()),
+            token: String::new(),
         },
     )
     .map_err(internal)?;

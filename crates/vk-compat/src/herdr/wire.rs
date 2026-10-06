@@ -17,6 +17,11 @@ pub struct Request {
     pub id: String,
     pub method: String,
     pub params: Value,
+    /// Vibeke extension: the invocation's broker token (`VIBEKE_HERDR_TOKEN`), sent by the
+    /// private `herdr` launcher as a top-level `vibeke_token` so a process the server cannot
+    /// place in the invocation's process tree (a daemon that left its session) still proves it
+    /// belongs to the invocation. Herdr ignores unknown top-level keys.
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +102,16 @@ pub fn parse_request(line: &[u8]) -> Result<Request, (String, WireError)> {
             ));
         }
     };
-    Ok(Request { id, method, params })
+    let token = obj
+        .get("vibeke_token")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(Request {
+        id,
+        method,
+        params,
+        token,
+    })
 }
 
 /// A success line: `result` must already contain `type`.
@@ -157,6 +171,9 @@ mod tests {
         assert_eq!(r.method, "pane.list");
         let r = parse_request(b"{\"id\":\"x\",\"method\":\"ping\"}\n").unwrap();
         assert_eq!(r.params, json!({}));
+        assert_eq!(r.token, None);
+        let r = parse_request(br#"{"id":"1","method":"ping","vibeke_token":"abc"}"#).unwrap();
+        assert_eq!(r.token.as_deref(), Some("abc"));
         // Integer ids are rejected and cannot be echoed.
         let (id, e) = parse_request(br#"{"id":1,"method":"pane.list"}"#).unwrap_err();
         assert_eq!((id.as_str(), e.code.as_str()), ("", "invalid_request"));

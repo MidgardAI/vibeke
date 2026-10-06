@@ -19,6 +19,17 @@
 //! flight, `events.subscribe` streams, `events.wait`), so a child that connected before its
 //! action exited keeps no authority. Every request re-checks the binding's liveness and its
 //! exact grant (`grant_id`, so a revoke followed by a new grant never revives a connection).
+//!
+//! **Identity is bound to the invocation, not to the socket path.** A connection is served
+//! only when the connecting process belongs to the invocation — a descendant of its process,
+//! a member of its process group (long-running entrypoints), or a process of its pane — or
+//! when its first request carries the invocation's secret token (`VIBEKE_HERDR_TOKEN`, sent by
+//! the private `herdr` launcher; for daemons that left the process tree). Knowing another
+//! invocation's socket path is therefore not enough to act as that plugin, on macOS and Linux
+//! alike (peer credentials are checked server-side).
+//!
+//! A broker of a sandboxed invocation (`isolation = "sandbox"`) also enforces the restricted
+//! capability policy of [`super::sandbox_allows`].
 
 use super::{Caller, compat_root, private_dir, serve_wire, state};
 use crate::Server;
@@ -66,6 +77,14 @@ pub struct Binding {
     pub stdout: Option<PathBuf>,
     #[serde(default)]
     pub stderr: Option<PathBuf>,
+    /// `host` or `sandbox`: the capability policy this broker enforces. `None` only in
+    /// bindings persisted by an older version, which are not re-issued after a restart.
+    #[serde(default)]
+    pub isolation: Option<String>,
+    /// The invocation's secret (also exported to it as `VIBEKE_HERDR_TOKEN`); empty when the
+    /// invocation proves itself by process ancestry only (plugin panes).
+    #[serde(default)]
+    pub token: String,
 }
 
 impl Binding {
@@ -83,6 +102,51 @@ impl Binding {
             broker: Some(self.path.clone()),
             grant_id: Some(self.grant_id.clone()),
             cross_session: false,
+            sandboxed: self.isolation.as_deref() != Some("host"),
+            peer_bound: false,
+            token: (!self.token.is_empty()).then(|| self.token.clone()),
+        }
+    }
+}
+
+/// A fresh per-invocation secret.
+pub fn new_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    bytes.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// `pid` is `ancestor` or one of its descendants.
+fn descends(pid: u32, ancestor: u32) -> bool {
+    let mut cur = pid;
+    for _ in 0..64 {
+        if cur == ancestor {
+            return true;
+        }
+        let Some(info) = vk_hold::procinfo::info(cur) else {
+            return false;
+        };
+        if info.ppid <= 1 || info.ppid == cur {
+            return false;
+        }
+        cur = info.ppid;
+    }
+    false
+}
+
+/// Does the connecting process `pid` belong to the invocation of a binding with lifetime
+/// `life`? (Its process tree, its process group for long-running entrypoints, its pane.)
+pub(super) fn peer_belongs(server: &Server, life: &Life, pid: Option<i32>) -> bool {
+    let Some(pid) = pid.filter(|p| *p > 1).map(|p| p as u32) else {
+        return false;
+    };
+    match life {
+        Life::Pending => false,
+        Life::Process { pid: p } => descends(pid, *p),
+        Life::Group { pid: p, pgid } => {
+            descends(pid, *p) || vk_hold::procinfo::info(pid).is_some_and(|i| i.pgid == *pgid)
+        }
+        Life::Pane { pane } => {
+            crate::run::ancestry_pane(server, Some(pid as i32)).as_deref() == Some(pane.as_str())
         }
     }
 }
@@ -148,12 +212,29 @@ pub fn bind(server: &Arc<Server>, b: Binding) -> std::io::Result<()> {
             if !super::same_uid(&s) {
                 continue;
             }
-            // The identity comes from the server-side binding as it is now.
-            let Some(c) = get(&srv, &path).map(|b| b.caller()) else {
+            // The identity comes from the server-side binding as it is now, and only for a
+            // process of this invocation (or one presenting its token, checked per request).
+            if get(&srv, &path).is_none() {
                 return;
-            };
-            let srv = srv.clone();
-            let h = tokio::spawn(async move { serve_wire(srv, s, c).await }).abort_handle();
+            }
+            let pid = s.peer_cred().ok().and_then(|c| c.pid());
+            let (srv, path) = (srv.clone(), path.clone());
+            let h = tokio::spawn(async move {
+                // A process may connect before its invocation's pid is recorded.
+                let mut b = get(&srv, &path);
+                for _ in 0..40 {
+                    if !b.as_ref().is_some_and(|b| b.life == Life::Pending) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    b = get(&srv, &path);
+                }
+                let Some(b) = b else { return };
+                let mut c = b.caller();
+                c.peer_bound = peer_belongs(&srv, &b.life, pid);
+                serve_wire(srv, s, c).await
+            })
+            .abort_handle();
             let mut v = held.lock().unwrap();
             v.retain(|x| !x.is_finished());
             v.push(h);
@@ -289,6 +370,7 @@ pub fn recover(server: &Arc<Server>) -> (usize, usize) {
     let (mut ok, mut dropped) = (0, 0);
     for b in list {
         let keep = !matches!(b.life, Life::Pending)
+            && b.isolation.is_some()
             && alive(server, &b.life)
             && grant_ok(&b.plugin_id, &b.digest, &b.grant_id)
             && b.path.starts_with(compat_root(server));

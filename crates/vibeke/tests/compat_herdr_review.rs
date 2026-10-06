@@ -226,10 +226,15 @@ command = ["sh", "bin/go.sh"]
     assert!(r["plugin"]["trust"].is_null());
     let (code, e) = s_.fail(&["plugin", "action", "run", "acme.tool", "go"]);
     assert_eq!(code, 5, "{e}");
+    // Each install is a new immutable checkout; the reviewed one is left as it was.
+    let fresh = PathBuf::from(s(&r["plugin"]["root"]));
+    assert_ne!(fresh, root);
     assert!(
-        !root.join("builds.txt").exists(),
+        !fresh.join("builds.txt").exists(),
         "fresh checkout, not built"
     );
+    assert_eq!(read(&root.join("builds.txt")).lines().count(), 1);
+    let root = fresh;
 
     // Renewed review: the build runs again before anything executes.
     let r = s_.json(&["plugin", "trust", "acme.tool", "--legacy"]);
@@ -508,12 +513,17 @@ command = ["sh", "bin/hold.sh"]
 "#,
         &[(
             "hold.sh",
-            "echo \"$HERDR_SOCKET_PATH\" > \"$HERDR_PLUGIN_STATE_DIR/sock.$$\"\nsleep 4\n",
+            "printf '%s\\n%s\\n' \"$VIBEKE_HERDR_TOKEN\" \"$HERDR_SOCKET_PATH\" > \"$HERDR_PLUGIN_STATE_DIR/sock.$$\"\nsleep 4\n",
         )],
     );
     s_.json(&["plugin", "link", src.to_str().unwrap(), "--yes"]);
     s_.path("state/plugins/state/acme.life")
 }
+
+/// Broker tokens by socket: the test process is not part of the invocation, so it proves
+/// itself with the invocation's token (as a detached daemon of the plugin would).
+static TOKENS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, String>>> =
+    std::sync::LazyLock::new(Default::default);
 
 /// Start the `hold` action; returns its log id and broker socket.
 fn start_hold(s_: &Session, state: &Path) -> (String, PathBuf) {
@@ -521,7 +531,12 @@ fn start_hold(s_: &Session, state: &Path) -> (String, PathBuf) {
     let id = s(&log["log"]["log_id"]);
     let f = state.join(format!("sock.{}", log["log"]["pid"]));
     wait_for("broker path", 15000, || read(&f).trim().ends_with(".sock"));
-    (id, PathBuf::from(read(&f).trim()))
+    let text = read(&f);
+    let mut lines = text.lines();
+    let token = lines.next().unwrap_or_default().to_string();
+    let sock = PathBuf::from(lines.next().unwrap_or_default());
+    TOKENS.lock().unwrap().insert(sock.clone(), token);
+    (id, sock)
 }
 
 fn connect(sock: &Path) -> BufReader<UnixStream> {
@@ -530,7 +545,15 @@ fn connect(sock: &Path) -> BufReader<UnixStream> {
     BufReader::new(st)
 }
 
-fn send(c: &mut BufReader<UnixStream>, req: Value) {
+fn send(c: &mut BufReader<UnixStream>, mut req: Value) {
+    let peer = c
+        .get_ref()
+        .peer_addr()
+        .ok()
+        .and_then(|a| a.as_pathname().map(Path::to_path_buf));
+    if let Some(t) = peer.and_then(|p| TOKENS.lock().unwrap().get(&p).cloned()) {
+        req["vibeke_token"] = json!(t);
+    }
     let _ = c.get_mut().write_all(format!("{req}\n").as_bytes());
 }
 
