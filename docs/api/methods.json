@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 309,
+  "method_count": 312,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -3261,9 +3261,9 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both. If the scope no longer matches `plan`, the server returns `conflict`. The CLI sends the dry run's `scope` + `plan` to confirm the deletion. This prevents a focus change or relative cutoff from changing the deletion target. Idempotent. `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`.",
+      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both. If the scope no longer matches `plan`, the server returns `conflict`. The CLI sends the dry run's `scope` + `plan` to confirm the deletion. This prevents a focus change or relative cutoff from changing the deletion target. Idempotent. `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only.",
       "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}",
-      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}"
+      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, review?: ReviewPurge}"
     },
     {
       "name": "search.query",
@@ -3277,7 +3277,35 @@
       "milestone": "M1",
       "spec": "`{q, scope?: {workspace?, pane?, run?}, sources?: [scrollback, transcript, events], limit?: 50, regex?: false}` → `{hits: [{pane, run?, source, line, text, ts, context}]}` — FTS5 over archive + transcripts",
       "params": "{q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false}",
-      "result": "{hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}"
+      "result": "{hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}], redacted?: bool}"
+    },
+    {
+      "name": "security.encryption.migrate",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "privacy"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` / `{to: sealed\\|plain, dry_run?}`: state encryption status (key id, keychain, error, sealed/plain counts) and rewriting existing segments and blobs (09 §9.1). Event `security.encryption_migrated`. Full scope only.",
+      "params": "{to?: sealed|plain|encrypted|decrypted = sealed, dry_run?: bool = false}",
+      "result": "{to: sealed|plain, dry_run: bool, files: int, changed: int, unchanged: int, failed: [string]}"
+    },
+    {
+      "name": "security.encryption.status",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "privacy"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` / `{to: sealed\\|plain, dry_run?}`: state encryption status (key id, keychain, error, sealed/plain counts) and rewriting existing segments and blobs (09 §9.1). Event `security.encryption_migrated`. Full scope only.",
+      "params": "{}",
+      "result": "{encrypt_state: bool, active: bool, key_id: string|null, keychain: string|null, readable: bool, error: string|null, files: {sealed: int, plain: int}, covers: [string], not_covered: [string], redact_scrollback_index: bool, note: string}"
     },
     {
       "name": "server.reload_config",
@@ -3404,6 +3432,20 @@
       "spec": "`{name, kill_panes?: false}` → `{}`",
       "params": "{name: string, kill_panes?: bool = false}",
       "result": "{session: object, stopped: bool}"
+    },
+    {
+      "name": "state.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "privacy"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string, scrollback_only?: bool = false}",
+      "result": "{scope: any, pane_ids: [string]|null, plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, assistant_purged?: int, scrollback_only?: bool, review?: ReviewPurge, also?: {items: int, blobs: {screenshots: int, files: int}, uploads: {removed: int, kept_shared: int}, drafts: {drafts: int, notes: int, failed: int}, assistant: {purged: int|null, by: string}, desk: {calls: int, rows: int|null, errors?: [string]}, snapshots: int, events_tombstoned: int}, not_covered?: [string]}"
     },
     {
       "name": "status.segments",
