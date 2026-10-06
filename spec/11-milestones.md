@@ -81,7 +81,16 @@ Tasks:
     - **Theme: server side built.** `theme.mode`, `client.appearance {dark}`, the `theme.changed` event and `SessionModel.appearance`. New panes get `COLORFGBG` and `VIBEKE_THEME[_NAME]`.
     - **jj workspaces: built.** `task new --isolation jj_workspace|worktree|none|auto`: `jj workspace add`, `jj workspace forget` plus directory removal, and bookmark/change status in `task.get`. Verified against a fake `jj` only; jj was not installed when this was written.
     - **Groups, floats and status segments: model/API built.** `group.*` (membership stored on `Group`), `Tab.floating`/`floats_hidden` with `pane.float`/`pane.embed`/`tab.floats` (floats are kept in layout export/apply), and `status.segments`.
-    - **TUI work: open for every item.** Details are in 08 §13 notes. Palette, goto, sidebar side, bottom tabs, copy-on-select and copy-mode keys are TUI-only and also open.
+  - *Status (2026-10-06), TUI side:*
+    - **Groups: built.** Sidebar group level with aggregate badges, collapse/expand (`group.collapse`), navigate-mode keys (`enter`/`h`/`l`/`r`, `m` move picker, `G` new), drag a workspace onto a group, palette `group_new/move/rename/collapse` (08 §2.1).
+    - **Floating panes: built.** Drawn over the tiling in z order with a frame and title, mouse move/resize/raise, resize-mode keys (`m` move), `prefix+f`/`prefix+shift+f`, palette `float_pane`/`embed_pane`; floats are in `pane_rects`/`ViewHint`, so their PTYs get real sizes and browser tiles clip (08 §5).
+    - **Status bar: built.** Top/bottom row from `[ui.status_bar]`, data from `status.segments` (refresh ≥ 1 s after model changes, every 10 s otherwise), local fallback, local clock/mode/prefix, attention click (08 §4).
+    - **Search: built.** Copy-mode `/` falls back to `search.query` + `pane.read` loading; archive paging with `pane.read` past memory; global search popup (`prefix+alt+/`) with jump-to (08 §13 copy mode). Edit-scrollback popup still open.
+    - **Theme auto: built, with a limit.** Startup OSC 11 + `CSI ? 996 n`, `client.appearance` to every machine, `dark_name`/`light_name` switching; re-query on focus regain instead of mode 2031 (crossterm can't parse unsolicited 997 reports). Panes' OSC 10/11 queries are answered once, server-side, from the appearance's palette (small server change in `theme.rs`/`pane.rs`).
+    - **Notifications: built.** `host` in `render.attach` (local machine only), no OSC forward when `delivered` has `native`, coalesced `(×n)` toasts. The signed helper bundle is still open.
+    - **Layout save/apply: built** as palette entries; save prints/copies a `[layouts.<name>]` snippet (no config-write API).
+    - Server change for paging: `pane.read {source: archive}` also returns `mem_first`.
+    - Still open (TUI-only): sidebar left/right, bottom tab bar, copy-on-select/PRIMARY, configurable copy-mode keys, edit-scrollback popup, goto improvements (`ctrl+enter`), jj bookmark display. Verified with fake machines and the unit/draw tests only — not yet driven in a real terminal against a live server.
 
 ## M5 — Full Herdr plugin/automation compatibility + plugins
 

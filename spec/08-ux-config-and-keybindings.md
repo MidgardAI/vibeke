@@ -43,6 +43,7 @@ Regions: **sidebar** (left or right, collapsible), **tab bar** (top or bottom), 
 - Collapsing a node aggregates its children: `●2` = two working, a red badge = needs you. Aggregates always bubble up the **most urgent** child state (precedence: `needs_approval` > `needs_answer` > `error` > `rate_limited` > `done` > `working` > `idle` > `unknown`).
 - Keyboard: navigate mode (§6) or `prefix+w` picker. Mouse: click to focus, drag to reorder or move into a group, right-click opens a context menu.
 - **Needs-you section on top** (learned from Claude Code agent view): when any run has an open interaction or is `error`/`rate_limited`, a `─ needs you ─` section lists those rows first, oldest first, across all workspaces and machines; the rows still also appear in their workspace. `ui.sidebar.attention_section = true` (default).
+- *As built (M4 TUI, `vk-tui::groups`):* per machine, groups come first (by `order`, children nested, two spaces per level), then ungrouped workspaces. A group row is `▾ name` (`▸` when collapsed) with aggregate badges over every member workspace including child groups: `⚠n` runs with an open approval/question, `✗n` error/rate-limited, `●n` working, `✓n` done-unseen; a collapsed group with no agents shows `(n)` workspaces. Group rows are selectable in navigate mode: `enter`/`space` toggle, `l`/`→` expand, `h`/`←` collapse, `r` rename; other pane keys are ignored on a group row. On any row `m` opens a "move to group" picker (`(no group)`, every group, `+ new group…`) and `G` creates a group. Mouse: click a group row to toggle; drag a workspace or agent row onto a group row to move that workspace in, or onto an ungrouped workspace row to take it out (same machine only). Collapse is drawn at once and sent as `group.collapse {group, collapsed}`. Palette: `group_new` (creates a group and moves the focused workspace into it), `group_move`, `group_rename`, `group_collapse`. Not built: reordering groups or workspaces by drag (`group.move`), the right-click menu.
 
 ### 2.2 Agent row anatomy
 `<harness icon/name> <name?> <state glyph> <short label> <age?>`
@@ -103,7 +104,9 @@ right    = ["agents_summary", "clock"]
 
 Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` (task port range and live previews), `attention`, `agents_summary` (`●3 ✓1 ⚠1`), `cpu`, `clock`, `prefix_indicator`, `mode` (normal/navigate/copy/resize), `sync_input`.
 
-*Implementation (M4, server side):* `status.segments {pane?, client?}` (07 §2.1) returns the data for every built-in segment from a client's focus: machine, session, workspace, task, branch, ports with live previews, attention (count plus oldest unfocused interaction), agents_summary (working/done/needs_input/error), cpu load, clock and sync_input. `mode` and `prefix_indicator` are client state. Open TUI work: draw the bar from `ui.status_bar`, refresh on model changes plus a 1 s clock tick, and make the `attention` click open the oldest card.
+*Implementation (M4, server side):* `status.segments {pane?, client?}` (07 §2.1) returns the data for every built-in segment from a client's focus: machine, session, workspace, task, branch, ports with live previews, attention (count plus oldest unfocused interaction), agents_summary (working/done/needs_input/error), cpu load, clock and sync_input. `mode` and `prefix_indicator` are client state.
+
+*As built (M4 TUI, `vk-tui::statusbar`):* `ui.status_bar.enabled` turns it on; `position = "top"` puts it on the row under the tab bar, `"bottom"` on the last row (the pane area shrinks by one row either way). Lists are separated by ` │ `; the left list starts at the pane area's left edge, the centre list is centred and the right list right-aligned (on a narrow bar later lists overwrite earlier ones). Data comes from `status.segments` on the focused machine: requested at most once a second after a model change, and every 10 s otherwise (for `cpu`); one request in flight at most. Until the first reply, or when the server has no `status.segments`, the model-derived segments (machine, session, workspace, task, branch, attention, agents_summary) are computed locally. `clock` (local `HH:MM`, redrawn when the minute turns), `mode` and `prefix_indicator` are drawn locally. Clicking `attention` opens the oldest unfocused card (`next_attention`). Palette `status_bar_toggle` flips it for this client without touching the config. Empty segments are skipped; plugin segments (M5) render nothing yet.
 
 **Plugin segments** (M5): plugins contribute `status.segment` with `{id, interval_ms | event_driven, render → spans}` (07). They appear as `plugin:<id>/<segment>` in the lists above. A segment that renders slower than 50 ms is dropped with a warning.
 
@@ -114,6 +117,7 @@ Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` 
 - **Resize mode**: `prefix+r` then `h j k l` / arrows (shift = ×5), `=` equalizes, `esc`/`enter` exits. Mouse: drag borders.
 - **Floating panes** (M4): `prefix+f` creates a floating pane (default 70%×70%, centred); `prefix+shift+f` toggles visibility of all floats in the tab. Floats can be moved/resized with the mouse or in resize mode (`m` toggles move). A tiled pane can be floated and back (`pane float`/`pane embed`).
   - *Implementation (M4, server side):* `Tab.floating: [{pane, x, y, w, h, z}]` (percent of the pane area) and `Tab.floats_hidden`; `pane.float`, `pane.embed`, `tab.floats` (07 §2.6). Floats survive layout export/apply; closing a tab's last tiled pane closes its floats. Open TUI work: draw floats over the tiling (z order, border, focus ring), skip them when `floats_hidden`, `prefix+f`/`prefix+shift+f`, mouse move/resize and resize-mode `m`, and include floats in `ViewHint` so their PTYs get real sizes (they stay 80×24 until then).
+  - *As built (M4 TUI, `vk-tui::floats`):* floats draw after the tiling in `z` order: the rect is cleared (tiled cells and browser-tile placeholders under it are overwritten, so images clip), then a rounded frame (`╭╮╰`, `◢` resize handle) in the accent colour when focused, with the agent name or pane title on the top row. Geometry: percent of the pane area → cells, at least 6×3, kept inside the area. The content rect (frame excluded) is what `App::pane_rects` returns — floats first, topmost first, then the tiling — so hit tests, `ViewHint` sizes, browser panes inside floats and focus cycling all see floats; hidden floats (`floats_hidden`) and floats of a zoomed tab are skipped everywhere. Mouse: pressing a float's title row focuses and raises it and starts a move; the bottom-right corner starts a resize; the drag is drawn locally and sent once on release as `pane.float {pane, rect}` (a model update mid-drag keeps the dragged rect); a press inside a lower float's content raises it (`pane.float {pane}`) and goes to the pane as usual. Keys: `prefix+f` new float (`pane.float {tab, focus}`), `prefix+shift+f` hide/show (`tab.floats`, focus moves to the tiling when the focused float hides); in resize mode on a float `h j k l` resize by 2% (shift: 10%), `m` toggles moving (title shows `· move`), `=` re-centres at 70%×70%. Palette: `float_pane` (float the focused tiled pane ⇄ embed the focused float) and `embed_pane`. A tiled pane's cursor under a float is hidden.
 - **Popups** (`type = "popup"`): session-modal terminals that don't change the layout and close when the command exits (used by `[[keys.command]]`, edit-scrollback, plugin actions). Width and height accept cells or `%`.
 - **Synchronized input** (post-1.0): `prefix+shift+s` toggles sync for the current tab. Input to the focused pane is mirrored to every pane in the tab that is in the sync set (default all; `prefix+alt+s` toggles a single pane's membership). A bright `SYNC` badge shows in the tab bar and the status bar. Paste is mirrored too. Agent panes are **excluded by default** (`ui.sync_input.include_agents = false`) to avoid prompting N agents by accident.
 - **Focus follows mouse**: `ui.focus_follows_mouse = false`. When enabled, hovering a pane focuses it after `ui.focus_follows_mouse_delay_ms = 120`; it never applies while a popup or card is open.
@@ -201,11 +205,11 @@ notification.created → policy (rules, quiet hours, presence) → channels
   - macOS raising: `osascript -e 'tell application id "<bundle>" to activate'`. The bundle id comes from the client's `host` metadata, else from the server's own `__CFBundleIdentifier`/`TERM_PROGRAM` (mapped for iTerm2, Terminal, Ghostty, WezTerm, kitty, VS Code, Warp, Alacritty…).
   - Linux raising (xdg-activation) is not implemented.
 - **Sound and bell** are recorded as channels for clients; the server plays nothing.
-- **Open TUI work:**
-  - send `host: {bundle_id: $__CFBundleIdentifier, term_program: $TERM_PROGRAM}` in `render.attach`;
-  - skip the OSC forward when `Notify.delivered` contains `native`;
-  - drop the TUI's own presence check for frames the server already filtered;
-  - show coalesced counts on toasts.
+- **As built (M4 TUI, `vk-tui::notifications`):**
+  - `render.attach` carries `host: {bundle_id: $__CFBundleIdentifier, term_program: $TERM_PROGRAM}` — only to the server on this machine (a remote server can't raise this window and shouldn't pop OS notifications on its own host), so native delivery is automatic for local sessions.
+  - The OSC 9 forward to the host terminal is skipped when `Notify.delivered` contains `native`, while the host window is focused, and for coalesced repeats.
+  - Toasts coalesce per pane: another `Notify` for a pane whose toast is still up (or within `max(coalesce_ms, 1 s)`) updates that toast to `… (×n)` and extends it instead of stacking a new one.
+  - The client still drops toasts for the focused pane while the host window is focused (`suppress_when_focused`); the server's presence filter only governs external channels.
 
 ### 7.2 Toasts
 Stacked at the top-right of the pane area, max 3, auto-dismiss after 6 s (except interactions, which stay until answered or dismissed). `prefix+o` (`open_notification_target`) jumps to the newest toast's target.
@@ -306,6 +310,8 @@ Vibeke additions beyond the base set are marked ✚.
 | | | | ✚ preview_list / open | `prefix+shift+o` |
 | | | | ✚ last_workspace (§6.7) | `prefix+shift+l` |
 | | | | ✚ url_hints (§6.7) | `prefix+shift+u` |
+
+✚ `search_global` (search all panes, popup) defaults to `prefix+alt+/` (`prefix+/` is `search_scrollback`); M4 palette-only actions: `float_pane`, `embed_pane`, `group_new`, `group_move`, `group_rename`, `group_collapse`, `layout_save`, `layout_apply`, `status_bar_toggle`, `theme_detect`.
 
 Action names: the copy-mode binding is `enter_copy_mode` and the picker is `workspace_picker`, because `[keys.copy_mode]`/`[keys.navigate]` are tables (Goal 01 deviation).
 
@@ -627,10 +633,10 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Persistent server, detach/attach, named sessions | 01 §1, holders | M1 |
 | Multiple clients on one session | render stream per client, geometry controller lease (03) | M1 |
 | Notifications (terminal-routed) | §7 OSC out + OSC 9/99/777 in + `vibeke notify` | M1 |
-| Native notifications, click-to-focus | §7 | M4 — server pipeline, notifiers and `vibeke focus` built; TUI `host` report + helper bundle open |
+| Native notifications, click-to-focus | §7 | M4 — server pipeline, notifiers and `vibeke focus` built; TUI sends `host` in `render.attach`, skips its OSC forward for `delivered: [native]`, coalesces toasts (§7.1); signed helper bundle open |
 | Keybindings with prefix, custom commands (shell/pane/popup) | §10 | M1 |
-| Themes | §11 | M1 (fixed), M4 (auto light/dark + propagation) — server side built (`theme.mode`, `client.appearance`, `theme.changed`, `SessionModel.appearance`, `COLORFGBG`/`VIBEKE_THEME` in new panes); open TUI work: query OSC 11 / subscribe `CSI ? 2031 h` + `CSI ? 996 n` and report it, switch `dark_name`/`light_name` on `appearance` changes, answer panes' OSC 10/11 queries with the effective palette |
-| Copy mode | 03 §11 | M1 (vi keys, `/` in buffer), M4 (archive search, edit scrollback) — server side built (`search.query`, `pane.read {source: archive}` paging by absolute line); open TUI work: copy-mode `/` falling back to `search.query` for the pane, paging older rows via `pane.read archive` instead of `FetchHistory` past memory, edit-scrollback popup writing the archive range to a temp file for `$EDITOR`, a search popup over `search.query` |
+| Themes | §11 | M1 (fixed), M4 (auto light/dark + propagation) — built. Server: `theme.mode`, `client.appearance`, `theme.changed`, `SessionModel.appearance`, `COLORFGBG`/`VIBEKE_THEME` in new panes, and panes' OSC 10/11/12/4 colour queries answered by their VT engine from the appearance's palette (mocha/latte), live panes included — the TUI never answers them, so there is one reply. TUI (`vk-tui::appearance`): the startup probe asks OSC 11 + `CSI ? 996 n` (the 997 report wins), reports `client.appearance {dark, source}` to every connected machine (again after a reconnect), and themes the chrome with `dark_name`/`light_name` (`theme.mode` forced values win; else this host's detection; else the server's `appearance`). Built-in chrome themes: `catppuccin`, `catppuccin-latte`, `terminal`. Mode 2031 is **not** enabled: crossterm can't parse unsolicited `CSI ? 997 ; n n` reports and would swallow keystrokes after one; instead the host is re-queried (event reader paused, replies read raw, ≤ 150 ms) when its window regains focus (at most every 3 s, `mode = auto` only) and from the palette (`theme_detect`) |
+| Copy mode | 03 §11 | M1 (vi keys, `/` in buffer), M4 (archive search, edit scrollback) — server side built (`search.query`, `pane.read {source: archive}` paging by absolute line, `mem_first` in its reply). TUI built (`vk-tui::search`): entering copy mode asks `pane.read {lines: 0}` for the archive's `first` line and `mem_first`; `FetchHistory` pages only in-memory rows and older rows come from `pane.read {to, lines: 2000}`, stopping at the archive's first row (servers without `mem_first` keep the old all-`FetchHistory` paging). `/`, `?` or `n` with no match in the loaded rows sends `search.query {q, pane}`, picks the nearest hit older than the loaded rows, loads up to it with `pane.read` (5000-row pages, at most 200 000 rows, else a "too far" message) and puts the cursor on the match; no hit → `not found: q (whole history)`. Global search popup (`search_global`, `prefix+alt+/`, palette): `enter` runs `search.query` on every connected machine and lists hits (`[machine] handle title ▤/↑/▣ text`, closed panes marked); `enter` on a hit focuses the pane and opens copy mode on the hit's absolute line. Open: the edit-scrollback popup |
 | Config reload | §11.2 | M1 |
 | Socket API + CLI | 07 | M1 |
 | `agent start / prompt --wait / wait / read / send-keys` | 04, 07 | M1 |
@@ -641,7 +647,7 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Worktree helpers | git worktree tasks (05) | M1 |
 | Remote via SSH, saved machines, `--machine` forwarding | 06 | M3 |
 | Remote image paste | 06 | M3 |
-| Layout export/apply | 07 `layout.*` | M4 — built (API + CLI, named layouts in `[layouts.<name>]`); open TUI work: palette entries "save layout"/"apply layout" |
+| Layout export/apply | 07 `layout.*` | M4 — built (API + CLI, named layouts in `[layouts.<name>]`). TUI (`vk-tui::layouts`): palette `layout_save` asks for a name, runs `layout.export {tab, format: toml}` and — there is no config-write API — shows the `[layouts.<name>]` snippet (headers re-rooted) and copies it to the clipboard; `layout_apply` lists `layout.list` (invalid ones shown with their error and refused) and applies with `enter` (new workspace) or `w` (into the focused workspace) |
 | Plugins (full Herdr plugin contract + native process/UI/storage additions) | 07 | M5; Windows M6; marketplace post-1.0 |
 | Live handoff on update | normal path via holders | M1 |
 | Update channels | §11 `[update]` | M1 |
@@ -657,14 +663,14 @@ The importer prints a report of mapped, defaulted and unsupported keys, and neve
 | Mark unread | `marked_unread`, `prefix+u` | M1 |
 | `/` search in copy mode | in-buffer vi search (M1); FTS over archived scrollback (M4) | M1 / M4 |
 | Async worktree delete | background removal job with progress; UI never blocks (05) | M1 |
-| D#1620 Hierarchical groups | `Group` entity, aggregate badges | M4 — model/API built (`group.*`, `SessionModel.groups`, aggregate `agent_summary`); open TUI work: group level in the sidebar tree with collapse, drag-into-group, badges |
+| Hierarchical groups | `Group` entity, aggregate badges | M4 — built: model/API (`group.*`, `SessionModel.groups`) and the sidebar group level with badges, collapse, move keys/picker and drag-into-group (§2.1) |
 | D#748 Copy-on-select (PRIMARY) | `clipboard.copy_on_select`, `primary_selection` | M4 |
 | D#587 Configurable copy-mode keys | `[keys.copy_mode]` | M4 |
 | D#480 / D#2209 Jujutsu workspaces | `tasks.vcs = "jj"` (05) | M4 — built (`task new --isolation jj_workspace`, auto-detected); open TUI work: show bookmark/change instead of branch for jj tasks |
 | D#834 Tab bar at the bottom | `ui.tabs.position = "bottom"` | M4 |
-| D#1629 Status bar | built-in segments (M4); plugin segments (M5) | M4 / M5 — segment data API built (`status.segments`); drawing is TUI work |
+| Status bar | built-in segments (M4); plugin segments (M5) | M4 / M5 — built-in segments built (`status.segments` + the TUI bar, §4); plugin segments M5 |
 | D#1465 Sidebar left/right | `ui.sidebar.position` | M4 |
-| D#782 Floating panes | floating panes + popups (popups for custom commands in M1) | M4 — model/API built (`Tab.floating`, `pane.float/embed`, `tab.floats`); drawing/input is TUI work (§5) |
+| Floating panes | floating panes + popups (popups for custom commands in M1) | M4 — built: model/API (`Tab.floating`, `pane.float/embed`, `tab.floats`) and TUI drawing, mouse/keys and `ViewHint` sizing (§5) |
 | Click notification to focus | native notifier with `vibeke://focus` | M4 — `vibeke focus <url>` + notifiers built (§7.1 notes) |
 | Command palette | `prefix+:` / `ctrl+shift+p` | M4 |
 | Mosh transport | QUIC roaming + predictive echo (06) | post-1.0 |

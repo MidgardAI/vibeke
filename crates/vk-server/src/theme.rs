@@ -5,7 +5,9 @@
 //! `theme.mode` when forced (`light`/`dark`), else the report of the most recently active client
 //! that reported one. Changes emit `theme.changed`, update `SessionModel.appearance`, and new
 //! panes get `COLORFGBG` / `VIBEKE_THEME` / `VIBEKE_THEME_NAME` so CLIs pick matching colours.
-//! Running panes keep their environment (env can't change under a live process).
+//! Running panes keep their environment (env can't change under a live process), but their
+//! OSC 10/11/12/4 colour queries — answered here by the pane's VT engine, never by a client —
+//! follow the appearance at once (catppuccin mocha / latte default colours).
 
 use crate::Server;
 use crate::api::{R, b, invalid, s};
@@ -13,8 +15,11 @@ use crate::core::Tx;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 use vk_proto::model::Appearance;
+use vk_term::Engine;
+use vk_term::engine::Palette;
 
 #[derive(Default)]
 pub struct State {
@@ -149,6 +154,7 @@ pub fn recompute(server: &Server, cfg: &ThemeCfg) -> Appearance {
         (p.known, p.dark, &p.mode, &p.theme) != (next.known, next.dark, &next.mode, &next.theme)
     });
     if changed {
+        set_query_palettes(server, &next);
         let mut c = server.core.lock().unwrap();
         c.model.appearance = next.clone();
         let mut tx = Tx::new();
@@ -162,6 +168,67 @@ pub fn recompute(server: &Server, cfg: &ThemeCfg) -> Appearance {
         let _ = server.commit(&mut c, tx);
     }
     next
+}
+
+/// What panes' OSC 10/11/12/4 colour queries answer (the VT engine replies for the PTY; clients
+/// never answer, so there is exactly one reply): 0 = unknown (engine default, dark), 1 = dark,
+/// 2 = light.
+static QUERY_APPEARANCE: AtomicU8 = AtomicU8::new(0);
+
+/// The default colours a pane reports for an appearance: catppuccin mocha (dark) or latte
+/// (light), matching the chrome's default `dark_name`/`light_name`.
+pub fn query_palette(dark: bool) -> Palette {
+    if dark {
+        return Palette::default();
+    }
+    Palette {
+        fg: (0x4c, 0x4f, 0x69),
+        bg: (0xef, 0xf1, 0xf5),
+        cursor: (0xdc, 0x8a, 0x78),
+        ansi: [
+            (0x5c, 0x5f, 0x77),
+            (0xd2, 0x0f, 0x39),
+            (0x40, 0xa0, 0x2b),
+            (0xdf, 0x8e, 0x1d),
+            (0x1e, 0x66, 0xf5),
+            (0xea, 0x76, 0xcb),
+            (0x17, 0x92, 0x99),
+            (0xac, 0xb0, 0xbe),
+            (0x6c, 0x6f, 0x85),
+            (0xd2, 0x0f, 0x39),
+            (0x40, 0xa0, 0x2b),
+            (0xdf, 0x8e, 0x1d),
+            (0x1e, 0x66, 0xf5),
+            (0xea, 0x76, 0xcb),
+            (0x17, 0x92, 0x99),
+            (0xbc, 0xc0, 0xcc),
+        ],
+    }
+}
+
+/// Give a new or reset engine the palette of the current appearance.
+pub fn apply_query_palette(e: &mut Engine) {
+    match QUERY_APPEARANCE.load(Ordering::Relaxed) {
+        1 => e.set_palette(query_palette(true)),
+        2 => e.set_palette(query_palette(false)),
+        _ => {}
+    }
+}
+
+/// The appearance changed: every running pane answers colour queries from the new palette.
+/// Called without `core` held; locks `panes`, then each screen.
+fn set_query_palettes(server: &Server, a: &Appearance) {
+    let v = match (a.known, a.dark) {
+        (false, _) => 0,
+        (true, true) => 1,
+        (true, false) => 2,
+    };
+    QUERY_APPEARANCE.store(v, Ordering::Relaxed);
+    let rts: Vec<_> = server.panes.lock().unwrap().values().cloned().collect();
+    for rt in rts {
+        let mut sc = rt.screen.lock().unwrap();
+        sc.engine.set_palette(query_palette(!a.known || a.dark));
+    }
 }
 
 pub fn forget_client(server: &Server, client: &str) {
@@ -245,6 +312,30 @@ mod tests {
             };
             c
         })
+    }
+
+    /// Panes answer OSC 11 from the appearance's palette (one reply, from the engine).
+    #[test]
+    fn colour_queries_follow_the_appearance() {
+        let mut e = Engine::new(80, 24, 100);
+        e.set_palette(query_palette(false));
+        let mut out = vec![];
+        e.feed(b"\x1b]11;?\x07", &mut out);
+        assert_eq!(
+            out,
+            vec![vk_term::Effect::Reply(
+                b"\x1b]11;rgb:efef/f1f1/f5f5\x07".to_vec()
+            )]
+        );
+        e.set_palette(query_palette(true));
+        let mut out = vec![];
+        e.feed(b"\x1b]10;?\x07", &mut out);
+        assert_eq!(
+            out,
+            vec![vk_term::Effect::Reply(
+                b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07".to_vec()
+            )]
+        );
     }
 
     #[test]

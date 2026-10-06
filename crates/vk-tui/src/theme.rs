@@ -52,9 +52,26 @@ impl Theme {
             selection: Color::Indexed(0),
         }
     }
+    /// Catppuccin latte: the light counterpart (`theme.light_name` default, theme auto).
+    pub fn latte() -> Self {
+        Theme {
+            bg: Color::Default,
+            panel: Color::Rgb(0xe6, 0xe9, 0xef),
+            fg: Color::Rgb(0x4c, 0x4f, 0x69),
+            muted: Color::Rgb(0x8c, 0x8f, 0xa1),
+            accent: Color::Rgb(0x88, 0x39, 0xef),
+            red: Color::Rgb(0xd2, 0x0f, 0x39),
+            yellow: Color::Rgb(0xdf, 0x8e, 0x1d),
+            green: Color::Rgb(0x40, 0xa0, 0x2b),
+            blue: Color::Rgb(0x1e, 0x66, 0xf5),
+            border: Color::Rgb(0xbc, 0xc0, 0xcc),
+            selection: Color::Rgb(0xcc, 0xd0, 0xda),
+        }
+    }
     pub fn named(name: &str) -> Self {
         match name {
             "terminal" => Self::terminal(),
+            "catppuccin-latte" | "latte" => Self::latte(),
             _ => Self::default(),
         }
     }
