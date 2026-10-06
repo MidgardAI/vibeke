@@ -577,11 +577,16 @@ esac
 
 #[test]
 fn doctor_warns_when_the_port_pool_is_exhausted_and_a_task_starts_without_ports() {
-    // A pool of exactly one block.
-    let s = Session::new("port_pool = \"20000-20009\"\nport_block = 10\n", "");
+    // A pool of exactly one block, on ports nothing else is using right now (a fixed range
+    // collides with other tests and listeners on a busy host).
+    let base = free_block(10);
+    let s = Session::new(
+        &format!("port_pool = \"{base}-{}\"\nport_block = 10\n", base + 9),
+        "",
+    );
     let r = repo(&s, "ports", "");
     let first = s.create(&r, "first", json!({"setup": false}));
-    assert_eq!(first["task"]["port_range"][0], 20000);
+    assert_eq!(first["task"]["port_range"][0], base);
     // The second finds no block: it still gets created, with a warning and no range.
     let second = s.create(&r, "second", json!({"setup": false}));
     assert!(second["task"]["port_range"].is_null(), "{second}");
@@ -605,4 +610,14 @@ fn doctor_warns_when_the_port_pool_is_exhausted_and_a_task_starts_without_ports(
             .any(|c| c["level"] == "warn" && c["message"].as_str().unwrap().contains("exhausted")),
         "{tasks:?}"
     );
+}
+
+/// The first of `n` consecutive loopback ports that are all free, searched from a
+/// pid-dependent start so parallel test processes don't race for the same block.
+fn free_block(n: u16) -> u16 {
+    let start = 30_000 + (std::process::id() % 1_000) as u16 * 20;
+    (0..2_000u16)
+        .map(|i| 30_000 + (start - 30_000 + i * n) % 20_000)
+        .find(|&b| (b..b + n).all(|p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok()))
+        .expect("no free port block")
 }
