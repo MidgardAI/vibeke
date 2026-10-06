@@ -280,6 +280,9 @@ max_unacked = 2
 herdr_env    = true
 herdr_socket = false
 
+[compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/<session>/herdr-compat/herdr.sock
+enabled = false
+
 [update]
 channel        = "stable"             # stable | preview
 version_check  = true

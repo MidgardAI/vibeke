@@ -1,0 +1,52 @@
+id = "structupath.browser"
+name = "Browser"
+version = "0.8.0"
+min_herdr_version = "0.7.0"
+description = "Driveable browser pane: live screenshots, console output, localhost links; drives agent-browser sessions, attaches to any CDP browser, or launches its own Chromium"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "open"
+title = "Open browser pane"
+description = "Navigate the workspace browser session (or attach view-only with no URL)"
+command = ["bash", "scripts/open.sh"]
+
+[[actions]]
+id = "close"
+title = "Close browser session and pane"
+command = ["bash", "scripts/close.sh"]
+
+[[actions]]
+id = "browse"
+title = "Browse (interactive)"
+description = "Open an interactive carbonyl browser pane — prompts for a URL"
+command = ["bash", "scripts/browse.sh"]
+
+[[actions]]
+id = "record-start"
+title = "Start session recording"
+description = "Record the workspace browser session to WebM (starts a fresh context: page reloads, cookies kept)"
+command = ["bash", "scripts/record.sh", "start"]
+
+[[actions]]
+id = "record-stop"
+title = "Stop session recording"
+command = ["bash", "scripts/record.sh", "stop"]
+
+[[panes]]
+id = "view"
+title = "Browser"
+placement = "split"
+command = ["bash", "scripts/pane.sh"]
+
+[[panes]]
+id = "browse"
+title = "Browse"
+placement = "zoomed"
+command = ["bash", "scripts/browse-pane.sh"]
+
+[[link_handlers]]
+id = "localhost"
+title = "Open localhost URL in browser pane"
+pattern = "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?([/?#].*)?$"
+action = "open"

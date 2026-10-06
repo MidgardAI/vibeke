@@ -1,0 +1,24 @@
+id = "third774.last-workspace"
+name = "Last Workspace"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Toggle between the current and previously focused Herdr workspace."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "toggle"
+title = "Last workspace"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-last-workspace", "toggle"]
+
+[[events]]
+on = "workspace.focused"
+command = ["./target/release/herdr-last-workspace", "focused"]
+
+[[events]]
+on = "workspace.closed"
+command = ["./target/release/herdr-last-workspace", "closed"]

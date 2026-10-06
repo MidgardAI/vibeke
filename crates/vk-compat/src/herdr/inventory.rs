@@ -1,0 +1,1135 @@
+//! The Herdr baseline inventory (07 §8.0): every public surface the spec and the plugin corpus
+//! name, with its implementation status. `docs/herdr-compat-inventory.md` is generated from
+//! this table (`VIBEKE_UPDATE_INVENTORY=1 cargo test -p vk-compat inventory`) and a test keeps
+//! them in sync.
+//!
+//! This is **not yet the exhaustive inventory** 07 §8.0 requires: that one is derived from the
+//! pinned binary's `herdr api schema --json`, CLI help and manifest schema, which have not been
+//! captured (no Herdr binary may be run here). Entries come from the spec's tables and from the
+//! 99 real manifests/READMEs in the plugin source record; the schema capture will add rows.
+//! "implemented" means mapped and tested against Vibeke with the spec's shapes; no entry is
+//! certified until the differential suite (07 §8.4) passes.
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Implemented,
+    Partial,
+    Missing,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Implemented => "implemented",
+            Status::Partial => "partial",
+            Status::Missing => "missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Wire,
+    Method,
+    Event,
+    Cli,
+    Manifest,
+    Env,
+    Lifecycle,
+}
+
+impl Kind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Kind::Wire => "Socket wire protocol and endpoints",
+            Kind::Method => "Socket methods",
+            Kind::Event => "Events (subscriptions and `[[events]]` hooks)",
+            Kind::Cli => "CLI commands",
+            Kind::Manifest => "Plugin manifest fields",
+            Kind::Env => "Plugin invocation environment",
+            Kind::Lifecycle => "Plugin lifecycle, registry and trust",
+        }
+    }
+    pub const ALL: [Kind; 7] = [
+        Kind::Wire,
+        Kind::Method,
+        Kind::Event,
+        Kind::Cli,
+        Kind::Manifest,
+        Kind::Env,
+        Kind::Lifecycle,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Entry {
+    pub kind: Kind,
+    pub name: &'static str,
+    pub status: Status,
+    /// Where the entry comes from: `spec` (07 §7.7/§8 text and tables) or `corpus` (named by
+    /// the real plugins' manifests/READMEs but not by the spec).
+    pub source: &'static str,
+    pub note: &'static str,
+}
+
+use Kind::*;
+use Status::*;
+
+const fn e(
+    kind: Kind,
+    name: &'static str,
+    status: Status,
+    source: &'static str,
+    note: &'static str,
+) -> Entry {
+    Entry {
+        kind,
+        name,
+        status,
+        source,
+        note,
+    }
+}
+
+pub const ENTRIES: &[Entry] = &[
+    // ---- wire -----------------------------------------------------------------------------
+    e(
+        Wire,
+        "newline-delimited JSON request `{id, method, params}`",
+        Implemented,
+        "spec",
+        "no JSON-RPC envelope, no handshake",
+    ),
+    e(
+        Wire,
+        "string `id` required; integer id rejected",
+        Implemented,
+        "spec",
+        "`invalid_request`, empty id echoed",
+    ),
+    e(
+        Wire,
+        "success `{id, result: {type, …}}`",
+        Implemented,
+        "spec",
+        "result types from the 07 §8.3 table",
+    ),
+    e(
+        Wire,
+        "error `{id, error: {code, message}}`",
+        Implemented,
+        "spec",
+        "string id echoed when recoverable; code set unverified",
+    ),
+    e(
+        Wire,
+        "one request per connection, closed after the response",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Wire,
+        "`events.subscribe` streams `{event, data}` lines",
+        Partial,
+        "spec",
+        "projected subset of events; loss/reconnect behavior not reproduced",
+    ),
+    e(
+        Wire,
+        "invalid UTF-8 / invalid JSON handling",
+        Partial,
+        "spec",
+        "`parse_error`; exact baseline codes unverified",
+    ),
+    e(
+        Wire,
+        "line limit",
+        Partial,
+        "spec",
+        "16 MiB; baseline limit unverified",
+    ),
+    e(
+        Wire,
+        "socket path `<herdr_root>/herdr.sock`",
+        Partial,
+        "spec",
+        "`$RUNTIME/<session>/herdr-compat/herdr.sock`; named-session layout `sessions/<name>/` missing; never under ~/.config/herdr",
+    ),
+    e(
+        Wire,
+        "socket removed on clean stop",
+        Partial,
+        "spec",
+        "removed on SIGTERM/SIGINT stop path",
+    ),
+    e(
+        Wire,
+        "caller identity from peer credentials (pane scope)",
+        Implemented,
+        "spec",
+        "same ancestry rule as the native socket",
+    ),
+    e(
+        Wire,
+        "private broker endpoint per plugin invocation",
+        Implemented,
+        "spec",
+        "0600 socket in a 0700 dir, bound server-side to plugin id + grant digest",
+    ),
+    e(
+        Wire,
+        "broker re-checks the grant on every request",
+        Implemented,
+        "spec",
+        "revoked/disabled/stale grants get `permission_denied`",
+    ),
+    e(
+        Wire,
+        "broker bindings survive server recovery",
+        Missing,
+        "spec",
+        "brokers die with the server",
+    ),
+    e(
+        Wire,
+        "broker authority for long-lived children after the action exits",
+        Missing,
+        "spec",
+        "broker closes when the invocation's process exits",
+    ),
+    e(
+        Wire,
+        "Herdr-style ids from a persisted mapping table",
+        Partial,
+        "spec",
+        "Vibeke handles (`w<n>`, `w<n>:t<n>`, `w<n>:p<n>`) are persisted and use the same grammar; baseline allocation/move semantics unverified",
+    ),
+    // ---- methods: 07 §8.3 mapping table ---------------------------------------------------
+    e(
+        Method,
+        "session.snapshot",
+        Partial,
+        "spec",
+        "`layouts` empty; version/protocol report the emulated baseline",
+    ),
+    e(Method, "workspace.list", Implemented, "spec", ""),
+    e(
+        Method,
+        "workspace.create",
+        Implemented,
+        "spec",
+        "`workspace_created {workspace, tab, root_pane}`",
+    ),
+    e(Method, "workspace.rename", Implemented, "spec", ""),
+    e(
+        Method,
+        "workspace.move",
+        Implemented,
+        "spec",
+        "`insert_index`",
+    ),
+    e(Method, "workspace.focus", Implemented, "spec", ""),
+    e(Method, "tab.list", Implemented, "spec", ""),
+    e(Method, "tab.create", Implemented, "spec", ""),
+    e(Method, "tab.rename", Implemented, "spec", ""),
+    e(Method, "tab.move", Implemented, "spec", "`insert_index`"),
+    e(Method, "tab.focus", Implemented, "spec", ""),
+    e(Method, "tab.close", Implemented, "spec", "closes all panes"),
+    e(
+        Method,
+        "pane.list",
+        Partial,
+        "spec",
+        "`terminal_id` = pane id, `foreground_cwd` = cwd, `scroll` always 0",
+    ),
+    e(Method, "pane.get", Implemented, "spec", ""),
+    e(Method, "pane.current", Implemented, "spec", ""),
+    e(
+        Method,
+        "pane.read",
+        Partial,
+        "spec",
+        "`format: ansi` returns text; baseline wrapping rules unverified",
+    ),
+    e(
+        Method,
+        "pane.send_text",
+        Implemented,
+        "spec",
+        "raw bytes, no bracketed paste",
+    ),
+    e(
+        Method,
+        "pane.send_keys",
+        Partial,
+        "spec",
+        "Vibeke key grammar, not restricted to Herdr's accepted set",
+    ),
+    e(Method, "pane.send_input", Partial, "spec", "text then keys"),
+    e(
+        Method,
+        "agent.send",
+        Implemented,
+        "spec",
+        "literal text, no Enter",
+    ),
+    e(Method, "pane.focus", Implemented, "spec", ""),
+    e(Method, "pane.rename", Implemented, "spec", "null clears"),
+    e(Method, "pane.close", Implemented, "spec", ""),
+    e(
+        Method,
+        "pane.split",
+        Partial,
+        "spec",
+        "direction/cwd/focus; size params ignored",
+    ),
+    e(
+        Method,
+        "pane.wait_for_output",
+        Partial,
+        "spec",
+        "`match`/`regex`, `timeout_ms`; no output_matched event",
+    ),
+    e(
+        Method,
+        "pane.report_agent",
+        Implemented,
+        "spec",
+        "Herdr self-report path (selfreport.rs)",
+    ),
+    e(Method, "pane.report_agent_session", Implemented, "spec", ""),
+    e(
+        Method,
+        "agent.list",
+        Partial,
+        "spec",
+        "status projection unverified",
+    ),
+    e(Method, "agent.get", Partial, "spec", ""),
+    e(
+        Method,
+        "agent.read",
+        Partial,
+        "spec",
+        "reads the agent's pane",
+    ),
+    e(Method, "agent.start", Missing, "spec", ""),
+    e(Method, "agent.prompt", Missing, "spec", ""),
+    e(Method, "agent.wait", Missing, "spec", ""),
+    e(Method, "agent.rename", Missing, "spec", ""),
+    e(
+        Method,
+        "worktree.list",
+        Partial,
+        "spec",
+        "native shape under `worktree_list`",
+    ),
+    e(Method, "worktree.repo_root", Partial, "spec", ""),
+    e(Method, "worktree.create", Missing, "spec", ""),
+    e(Method, "worktree.open", Missing, "spec", ""),
+    e(Method, "events.subscribe", Partial, "spec", "see events"),
+    e(
+        Method,
+        "events.wait",
+        Partial,
+        "spec",
+        "first projected event matching the subscription",
+    ),
+    // ---- methods: 07 §8.3 required-coverage list -------------------------------------------
+    e(
+        Method,
+        "plugin.list",
+        Implemented,
+        "spec",
+        "registry entries with status",
+    ),
+    e(
+        Method,
+        "plugin.link",
+        Missing,
+        "spec",
+        "CLI-local only (registry file); not over the socket",
+    ),
+    e(Method, "plugin.unlink", Missing, "spec", "CLI-local only"),
+    e(Method, "plugin.enable", Missing, "spec", "CLI-local only"),
+    e(Method, "plugin.disable", Missing, "spec", "CLI-local only"),
+    e(Method, "plugin.action.list", Implemented, "spec", ""),
+    e(
+        Method,
+        "plugin.action.invoke",
+        Implemented,
+        "spec",
+        "returns the running log record immediately",
+    ),
+    e(
+        Method,
+        "plugin.log.list",
+        Implemented,
+        "spec",
+        "status, timestamps, exit code, separate stdout/stderr",
+    ),
+    e(Method, "plugin.pane.open", Missing, "spec", ""),
+    e(Method, "plugin.pane.focus", Missing, "spec", ""),
+    e(Method, "plugin.pane.close", Missing, "spec", ""),
+    e(Method, "popup.close", Missing, "spec", ""),
+    e(
+        Method,
+        "layout.export",
+        Missing,
+        "spec",
+        "PaneLayoutSnapshot shape unknown",
+    ),
+    e(Method, "layout.apply", Missing, "spec", ""),
+    e(Method, "layout.set_split_ratio", Missing, "spec", ""),
+    e(Method, "pane.process_info", Missing, "spec", ""),
+    e(Method, "pane.move", Missing, "spec", ""),
+    e(Method, "pane.swap", Missing, "spec", ""),
+    e(
+        Method,
+        "pane.resize",
+        Partial,
+        "spec",
+        "direction + percent",
+    ),
+    e(Method, "pane.zoom", Partial, "spec", ""),
+    e(Method, "client.window_title.set", Missing, "spec", ""),
+    e(Method, "client.window_title.clear", Missing, "spec", ""),
+    e(Method, "agent.view.set", Missing, "spec", ""),
+    e(Method, "agent.view.clear", Missing, "spec", ""),
+    e(
+        Method,
+        "pane.report_metadata",
+        Missing,
+        "spec",
+        "named as \"metadata reporting\"; also in corpus",
+    ),
+    e(Method, "workspace.report_metadata", Missing, "spec", ""),
+    e(
+        Method,
+        "ping",
+        Partial,
+        "spec",
+        "reports the emulated baseline",
+    ),
+    e(
+        Method,
+        "api.schema",
+        Partial,
+        "spec",
+        "lists inventory methods, not the baseline JSON schema",
+    ),
+    e(
+        Method,
+        "server.reload_config",
+        Partial,
+        "corpus",
+        "acknowledged; Vibeke reloads config itself",
+    ),
+    e(
+        Method,
+        "server.stop",
+        Missing,
+        "corpus",
+        "refused on the compat endpoint",
+    ),
+    e(
+        Method,
+        "workspace.close",
+        Partial,
+        "corpus",
+        "inferred from CLI usage",
+    ),
+    e(Method, "workspace.get", Partial, "corpus", "inferred"),
+    e(
+        Method,
+        "notification.show",
+        Partial,
+        "corpus",
+        "`herdr notification show`; maps to a Vibeke notification",
+    ),
+    e(
+        Method,
+        "pane.run",
+        Partial,
+        "corpus",
+        "`herdr pane run`; types the command + Enter",
+    ),
+    // ---- events ---------------------------------------------------------------------------
+    e(Event, "workspace.created", Implemented, "spec", ""),
+    e(
+        Event,
+        "workspace.updated",
+        Partial,
+        "spec",
+        "emitted on rename only",
+    ),
+    e(Event, "workspace.renamed", Implemented, "spec", ""),
+    e(Event, "workspace.closed", Implemented, "spec", ""),
+    e(
+        Event,
+        "workspace.focused",
+        Partial,
+        "spec",
+        "derived from pane focus of any client",
+    ),
+    e(Event, "workspace.moved", Implemented, "spec", ""),
+    e(Event, "tab.created", Implemented, "spec", ""),
+    e(Event, "tab.closed", Implemented, "spec", ""),
+    e(
+        Event,
+        "tab.focused",
+        Partial,
+        "spec",
+        "derived from pane focus",
+    ),
+    e(Event, "tab.renamed", Implemented, "spec", ""),
+    e(
+        Event,
+        "tab.moved",
+        Missing,
+        "spec",
+        "Vibeke emits no tab move event",
+    ),
+    e(Event, "pane.created", Implemented, "spec", ""),
+    e(Event, "pane.closed", Implemented, "spec", ""),
+    e(Event, "pane.focused", Implemented, "spec", ""),
+    e(Event, "pane.moved", Missing, "spec", ""),
+    e(Event, "pane.exited", Implemented, "spec", ""),
+    e(
+        Event,
+        "pane.agent_detected",
+        Partial,
+        "spec",
+        "no 250 ms debounce",
+    ),
+    e(
+        Event,
+        "pane.agent_status_changed",
+        Partial,
+        "spec",
+        "fires on mapped-status change only; status enumeration unverified",
+    ),
+    e(Event, "pane.output_matched", Missing, "spec", ""),
+    e(Event, "pane.scroll_changed", Missing, "spec", ""),
+    e(
+        Event,
+        "layout.updated",
+        Partial,
+        "spec",
+        "payload is not a PaneLayoutSnapshot",
+    ),
+    e(
+        Event,
+        "worktree.created",
+        Missing,
+        "spec",
+        "used by 9 corpus plugins",
+    ),
+    e(
+        Event,
+        "worktree.opened",
+        Missing,
+        "spec",
+        "used by 6 corpus plugins",
+    ),
+    e(Event, "worktree.removed", Partial, "spec", ""),
+    e(
+        Event,
+        "workspace.reordered",
+        Missing,
+        "corpus",
+        "declared by one plugin; not named by the spec (may not exist in the baseline)",
+    ),
+    // ---- CLI --------------------------------------------------------------------------------
+    e(
+        Cli,
+        "--version",
+        Implemented,
+        "spec",
+        "reports the emulated baseline",
+    ),
+    e(
+        Cli,
+        "global session selection (`--session`, HERDR_SESSION)",
+        Missing,
+        "spec",
+        "shim uses VIBEKE_SESSION or the broker",
+    ),
+    e(
+        Cli,
+        "plugin install <path>",
+        Partial,
+        "corpus",
+        "local directories and manifest paths; build runs after trust",
+    ),
+    e(
+        Cli,
+        "plugin install owner/repo[/subdir] [--ref]",
+        Missing,
+        "spec",
+        "git sources need network; not built",
+    ),
+    e(
+        Cli,
+        "plugin install --yes",
+        Implemented,
+        "spec",
+        "accepts the displayed legacy trust terms (operator only)",
+    ),
+    e(Cli, "plugin link", Implemented, "corpus", "no build"),
+    e(
+        Cli,
+        "plugin unlink",
+        Implemented,
+        "corpus",
+        "files preserved",
+    ),
+    e(
+        Cli,
+        "plugin uninstall",
+        Implemented,
+        "corpus",
+        "managed checkout removed, config/state kept",
+    ),
+    e(Cli, "plugin enable / disable", Implemented, "corpus", ""),
+    e(
+        Cli,
+        "plugin list",
+        Partial,
+        "corpus",
+        "JSON output shape unverified",
+    ),
+    e(Cli, "plugin config-dir", Implemented, "corpus", ""),
+    e(
+        Cli,
+        "plugin action list / invoke",
+        Partial,
+        "corpus",
+        "argument grammar unverified",
+    ),
+    e(Cli, "plugin log list", Partial, "corpus", ""),
+    e(Cli, "plugin pane open|focus|close", Missing, "corpus", ""),
+    e(Cli, "plugin update", Missing, "corpus", ""),
+    e(
+        Cli,
+        "pane list|get|current|read",
+        Partial,
+        "corpus",
+        "flag grammar unverified",
+    ),
+    e(
+        Cli,
+        "pane send-text|send-keys|run|focus|split|close|rename|wait-output",
+        Partial,
+        "corpus",
+        "",
+    ),
+    e(
+        Cli,
+        "pane report-metadata|process-info|move",
+        Missing,
+        "corpus",
+        "",
+    ),
+    e(
+        Cli,
+        "workspace list|create|rename|focus|move|close",
+        Partial,
+        "corpus",
+        "",
+    ),
+    e(Cli, "workspace report-metadata", Missing, "corpus", ""),
+    e(
+        Cli,
+        "tab list|create|rename|focus|move|close",
+        Partial,
+        "corpus",
+        "",
+    ),
+    e(Cli, "agent list|get|send|read", Partial, "corpus", ""),
+    e(
+        Cli,
+        "agent start|prompt|wait|explain",
+        Missing,
+        "corpus",
+        "",
+    ),
+    e(Cli, "worktree list|repo-root", Partial, "corpus", ""),
+    e(Cli, "worktree create|open", Missing, "corpus", ""),
+    e(Cli, "notification show", Partial, "corpus", ""),
+    e(Cli, "server reload-config", Partial, "corpus", ""),
+    e(Cli, "server stop", Missing, "corpus", "refused"),
+    e(Cli, "api schema", Partial, "corpus", ""),
+    e(
+        Cli,
+        "integration install|status",
+        Missing,
+        "corpus",
+        "refused by design: never installs into Herdr; use `vibeke integration`",
+    ),
+    e(
+        Cli,
+        "config check, completion, update/upgrade, web ui",
+        Missing,
+        "corpus",
+        "refused; Vibeke equivalents exist for some",
+    ),
+    // ---- manifest ---------------------------------------------------------------------------
+    e(
+        Manifest,
+        "id",
+        Implemented,
+        "spec",
+        "identifier rule unverified",
+    ),
+    e(
+        Manifest,
+        "name, version, description",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Manifest,
+        "min_herdr_version",
+        Implemented,
+        "spec",
+        "checked against 0.9.3, never Vibeke's version",
+    ),
+    e(
+        Manifest,
+        "platforms (plugin level)",
+        Implemented,
+        "spec",
+        "linux, macos, windows",
+    ),
+    e(
+        Manifest,
+        "[[build]] command, platforms",
+        Implemented,
+        "spec",
+        "entry platforms override the plugin's",
+    ),
+    e(
+        Manifest,
+        "[[startup]] command, platforms",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Manifest,
+        "[[actions]] id, title, description, command, platforms",
+        Implemented,
+        "spec",
+        "per-platform twins with one id",
+    ),
+    e(
+        Manifest,
+        "[[actions]] contexts",
+        Partial,
+        "spec",
+        "validated; default when omitted (`global`) unverified",
+    ),
+    e(
+        Manifest,
+        "[[events]] on, command, platforms, id",
+        Implemented,
+        "spec",
+        "unknown event names warn",
+    ),
+    e(
+        Manifest,
+        "[[panes]] id, title, description, placement, command, width, height, platforms",
+        Partial,
+        "spec",
+        "parsed and validated; default placement unverified; panes cannot open yet",
+    ),
+    e(
+        Manifest,
+        "[[link_handlers]] id, title, pattern, action, platforms",
+        Partial,
+        "spec",
+        "regex compiled, action resolved; not wired to clicks",
+    ),
+    e(
+        Manifest,
+        "[[keys.command]] key, type, command, description",
+        Partial,
+        "spec",
+        "parsed, action resolution warns; bindings not installed",
+    ),
+    e(
+        Manifest,
+        "qualified action resolution (`<plugin>.<action>`)",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Manifest,
+        "unknown-key warnings",
+        Partial,
+        "spec",
+        "warning text differs from upstream",
+    ),
+    // ---- env ---------------------------------------------------------------------------------
+    e(Env, "HERDR_ENV", Implemented, "spec", ""),
+    e(
+        Env,
+        "HERDR_SOCKET_PATH",
+        Implemented,
+        "spec",
+        "the invocation's private broker",
+    ),
+    e(
+        Env,
+        "HERDR_BIN_PATH + private PATH launcher dir",
+        Implemented,
+        "spec",
+        "`herdr` → Vibeke shim; never the user's Herdr",
+    ),
+    e(
+        Env,
+        "HERDR_PLUGIN_ID, HERDR_PLUGIN_ROOT",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Env,
+        "HERDR_PLUGIN_CONFIG_DIR, HERDR_PLUGIN_STATE_DIR",
+        Implemented,
+        "spec",
+        "Vibeke-owned, outside the checkout",
+    ),
+    e(
+        Env,
+        "HERDR_PLUGIN_CONTEXT_JSON",
+        Partial,
+        "spec",
+        "source, correlation id, workspace/tab/pane ids and labels, cwd; not the full PluginInvocationContext",
+    ),
+    e(
+        Env,
+        "HERDR_WORKSPACE_ID, HERDR_TAB_ID, HERDR_PANE_ID",
+        Partial,
+        "spec",
+        "from the invocation context; upstream presence rules unverified",
+    ),
+    e(Env, "HERDR_PLUGIN_ACTION_ID", Implemented, "spec", ""),
+    e(
+        Env,
+        "HERDR_PLUGIN_EVENT, HERDR_PLUGIN_EVENT_JSON",
+        Partial,
+        "spec",
+        "payload shape unverified",
+    ),
+    e(
+        Env,
+        "HERDR_PLUGIN_ENTRYPOINT_ID",
+        Partial,
+        "spec",
+        "set for actions/hooks/startup",
+    ),
+    e(
+        Env,
+        "HERDR_PLUGIN_CLICKED_URL, HERDR_PLUGIN_LINK_HANDLER_ID",
+        Missing,
+        "spec",
+        "link handlers not wired",
+    ),
+    e(
+        Env,
+        "stale context variables cleared",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Env,
+        "build steps without socket/context/authority",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Env,
+        "HERDR_* in ordinary panes (`compat.herdr_env`)",
+        Missing,
+        "spec",
+        "still stripped",
+    ),
+    e(
+        Env,
+        "HERDR_SESSION",
+        Missing,
+        "corpus",
+        "named in 7 corpus files; semantics unverified",
+    ),
+    // ---- lifecycle -------------------------------------------------------------------------
+    e(
+        Lifecycle,
+        "per-user registry shared across sessions (`plugins.json`, atomic)",
+        Implemented,
+        "spec",
+        "works with no server running",
+    ),
+    e(
+        Lifecycle,
+        "explicit `herdr_legacy` trust grant, shown with entrypoints",
+        Implemented,
+        "spec",
+        "`vibeke plugin trust <id> --legacy`",
+    ),
+    e(
+        Lifecycle,
+        "nothing runs before trust",
+        Implemented,
+        "spec",
+        "actions, hooks, startup, build",
+    ),
+    e(
+        Lifecycle,
+        "grant bound to manifest digest + root; change requires re-review",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Lifecycle,
+        "disable/unlink/uninstall/revoke stop future execution and brokers",
+        Implemented,
+        "spec",
+        "",
+    ),
+    e(
+        Lifecycle,
+        "no escalation from pane scope",
+        Implemented,
+        "spec",
+        "pane-scoped callers cannot run, trust or install legacy plugins",
+    ),
+    e(
+        Lifecycle,
+        "build runs for installs only, after trust",
+        Partial,
+        "spec",
+        "abort-on-manifest-mutation during build missing",
+    ),
+    e(Lifecycle, "link never builds", Implemented, "spec", ""),
+    e(
+        Lifecycle,
+        "async action invocation with log records",
+        Implemented,
+        "spec",
+        "100 records/session, 64 KiB per stream",
+    ),
+    e(
+        Lifecycle,
+        "[[startup]] once per server activation",
+        Partial,
+        "spec",
+        "runs at server start for active plugins; takeover/restart semantics unverified",
+    ),
+    e(
+        Lifecycle,
+        "[[events]] dispatch with baseline names",
+        Partial,
+        "spec",
+        "projected subset; concurrency/log limits unverified",
+    ),
+    e(
+        Lifecycle,
+        "actions in the command palette",
+        Missing,
+        "spec",
+        "API `plugin.action.list/run` ready for the TUI",
+    ),
+    e(
+        Lifecycle,
+        "plugin panes and popups (all placements)",
+        Missing,
+        "spec",
+        "",
+    ),
+    e(Lifecycle, "link handlers", Missing, "spec", ""),
+    e(
+        Lifecycle,
+        "`[[keys.command]] type = plugin_action` bindings",
+        Missing,
+        "spec",
+        "",
+    ),
+    e(
+        Lifecycle,
+        "migration of Herdr plugin registry/config/state (copy, conflict report, rollback)",
+        Missing,
+        "spec",
+        "",
+    ),
+    e(
+        Lifecycle,
+        "`herdr` launcher symlink installed only on request into a Vibeke bin dir",
+        Implemented,
+        "spec",
+        "`vibeke compat install-shim`",
+    ),
+    e(
+        Lifecycle,
+        "compat CLI never reaches a live Herdr server",
+        Implemented,
+        "spec",
+        "HERDR_SOCKET_PATH honored only for Vibeke brokers",
+    ),
+    e(
+        Lifecycle,
+        "differential suite against pinned Herdr 0.9.3",
+        Missing,
+        "spec",
+        "harness gated behind VIBEKE_HERDR_DIFF=1 + VIBEKE_HERDR_BIN; not run",
+    ),
+];
+
+/// Methods the baseline is known (by this inventory) to have. Requests for other methods get
+/// `method_not_found`; known-but-missing methods get an explicit `unsupported` error.
+pub fn known_methods() -> impl Iterator<Item = &'static str> {
+    ENTRIES.iter().filter(|e| e.kind == Method).map(|e| e.name)
+}
+
+pub fn method_status(m: &str) -> Option<Status> {
+    ENTRIES
+        .iter()
+        .find(|e| e.kind == Method && e.name == m)
+        .map(|e| e.status)
+}
+
+/// `(implemented, partial, missing)` for one kind, or all kinds with `None`.
+pub fn counts(kind: Option<Kind>) -> (usize, usize, usize) {
+    let mut c = (0, 0, 0);
+    for e in ENTRIES.iter().filter(|e| kind.is_none_or(|k| e.kind == k)) {
+        match e.status {
+            Implemented => c.0 += 1,
+            Partial => c.1 += 1,
+            Missing => c.2 += 1,
+        }
+    }
+    c
+}
+
+/// The generated Markdown document.
+pub fn render_markdown() -> String {
+    let mut s = String::new();
+    s.push_str("# Herdr compatibility inventory (generated)\n\n");
+    s.push_str(&format!(
+        "Baseline: **Herdr v{}** at commit `{}` (spec 07 §8.0). Generated from \
+         `crates/vk-compat/src/herdr/inventory.rs`; regenerate with \
+         `VIBEKE_UPDATE_INVENTORY=1 cargo test -p vk-compat inventory`.\n\n",
+        super::BASELINE_VERSION,
+        super::BASELINE_COMMIT
+    ));
+    s.push_str(
+        "**Status: partial.** This inventory lists every surface the spec's §7.7/§8 text and \
+         tables name, plus surfaces the 99 real plugins in \
+         `tests/compat/herdr/0.9.3/manifests/` use. It is not yet the exhaustive inventory \
+         §8.0 requires, which must be derived from the pinned binary's `herdr api schema \
+         --json`, CLI help and manifest schema. No Herdr binary was run to build it. \
+         *Implemented* means mapped and tested against Vibeke using the spec's shapes; no entry \
+         is certified until the differential suite (07 §8.4) passes. *Source* `corpus` marks \
+         entries the plugins use but the spec does not name.\n\n",
+    );
+    let (i, p, m) = counts(None);
+    s.push_str("| Area | Implemented | Partial | Missing | Total |\n|---|---|---|---|---|\n");
+    for k in Kind::ALL {
+        let (a, b, c) = counts(Some(k));
+        s.push_str(&format!(
+            "| {} | {a} | {b} | {c} | {} |\n",
+            k.title(),
+            a + b + c
+        ));
+    }
+    s.push_str(&format!(
+        "| **All** | **{i}** | **{p}** | **{m}** | **{}** |\n\n",
+        i + p + m
+    ));
+    for k in Kind::ALL {
+        s.push_str(&format!(
+            "## {}\n\n| Entry | Status | Source | Notes |\n|---|---|---|---|\n",
+            k.title()
+        ));
+        for e in ENTRIES.iter().filter(|e| e.kind == k) {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                if k == Method || k == Event {
+                    format!("`{}`", e.name)
+                } else {
+                    e.name.to_string()
+                },
+                e.status.as_str(),
+                e.source,
+                e.note
+            ));
+        }
+        s.push('\n');
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inventory_doc_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/herdr-compat-inventory.md");
+        let want = render_markdown();
+        if std::env::var_os("VIBEKE_UPDATE_INVENTORY").is_some() {
+            std::fs::write(&path, &want).unwrap();
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            have == want,
+            "docs/herdr-compat-inventory.md is stale; run VIBEKE_UPDATE_INVENTORY=1 cargo test -p vk-compat inventory"
+        );
+    }
+
+    #[test]
+    fn entries_are_unique_and_cover_the_grammar() {
+        let mut seen = std::collections::BTreeSet::new();
+        for e in ENTRIES {
+            assert!(
+                seen.insert((e.kind as u8, e.name)),
+                "duplicate {:?} {}",
+                e.kind,
+                e.name
+            );
+        }
+        // Every method the CLI shim can send is in the inventory.
+        for m in super::super::cli::shim_methods() {
+            assert!(
+                method_status(m).is_some(),
+                "shim method {m} missing from inventory"
+            );
+        }
+        // Every baseline event has an entry.
+        for ev in super::super::events::BASELINE_EVENTS {
+            assert!(
+                ENTRIES.iter().any(|e| e.kind == Event && e.name == *ev),
+                "event {ev}"
+            );
+        }
+        // Event statuses agree with what the projector can emit.
+        for e in ENTRIES.iter().filter(|e| e.kind == Event) {
+            let projected = super::super::events::PROJECTED.contains(&e.name);
+            assert_eq!(projected, e.status != Missing, "event {} status", e.name);
+        }
+        let (i, p, m) = counts(None);
+        assert_eq!(i + p + m, ENTRIES.len());
+    }
+}

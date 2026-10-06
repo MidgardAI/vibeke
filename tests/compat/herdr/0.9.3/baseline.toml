@@ -1,0 +1,28 @@
+# Pinned Herdr baseline for the compatibility layer (spec 07 §8.0).
+# Captures marked "pending" must be made from the reference binary in an isolated HOME
+# (crates/vibeke/tests/compat_herdr_diff.rs) before M5 can pass; nothing here was produced by
+# running Herdr.
+
+version = "0.9.3"
+tag_commit = "7b116c05bfda646af39d2524c54e70c751f57ee8"
+resolved = "2026-10-06"
+
+[references]
+plugins = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/plugins.mdx"
+plugin_schema = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/src/api/schema/plugins.rs"
+plugin_cli = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/src/cli/plugin.rs"
+cli_reference = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/cli-reference.mdx"
+socket_api = "https://github.com/herdrdev/herdr/blob/7b116c05bfda646af39d2524c54e70c751f57ee8/docs/preview/website/src/content/docs/socket-api.mdx"
+
+[captures]
+reference_binary_sha256 = { macos-arm64 = "pending", linux-x86_64 = "pending" }
+api_schema_json = "pending"        # `herdr api schema --json` → api-schema.json
+cli_help = "pending"               # every `herdr <noun> [verb] --help` → cli-help/
+manifest_schema = "pending"        # from src/api/schema/plugins.rs at tag_commit
+plugin_manifests = "manifests/"    # 99 real manifests, sha256-verified against manifests/index.json
+
+[differential]
+# Gated: VIBEKE_HERDR_DIFF=1 VIBEKE_HERDR_BIN=/abs/path/herdr [VIBEKE_HERDR_SHA256=…]
+#        cargo test -p vibeke --test compat_herdr_diff
+harness = "crates/vibeke/tests/compat_herdr_diff.rs"
+status = "not run"

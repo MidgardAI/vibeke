@@ -1,0 +1,50 @@
+# Herd Auto Prompter — Herdr plugin manifest (IR-004)
+id = "herd-auto-prompter"
+name = "Herd Auto Prompter"
+version = "0.9.63"
+description = "Monitors every agent in the herd, auto-supplies the next prompt or response when confident, and escalates to you when not — learned from your own past decisions."
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos"]
+
+# The build step fetches the prebuilt binary for this platform from the
+# GitHub release matching `version`, verified against SHA256SUMS — no Go
+# toolchain required to install. Dev installs (`herdr plugin link`) build
+# with Go themselves: go build -o bin/hap ./cmd/hap
+[[build]]
+command = ["bash", "scripts/install.sh"]
+
+# The TUI control surface, run as a Herdr pane.
+[[panes]]
+id = "control"
+title = "Auto Prompter"
+placement = "tab"
+command = ["./bin/hap", "tui"]
+
+# The monitoring daemon is ensured (started once, flock-guarded) whenever an
+# agent appears in the herd; the hook command returns immediately.
+[[events]]
+on = "pane.agent_detected"
+command = ["./bin/hap", "daemon", "--ensure"]
+
+[[events]]
+on = "workspace.created"
+command = ["./bin/hap", "daemon", "--ensure"]
+
+# One-shot control actions.
+[[actions]]
+id = "pause"
+title = "Pause auto-prompting (kill switch)"
+contexts = ["workspace"]
+command = ["./bin/hap", "pause"]
+
+[[actions]]
+id = "resume"
+title = "Resume auto-prompting"
+contexts = ["workspace"]
+command = ["./bin/hap", "resume"]
+
+[[actions]]
+id = "status"
+title = "Auto Prompter status"
+contexts = ["workspace"]
+command = ["./bin/hap", "status"]

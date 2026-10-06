@@ -1,0 +1,244 @@
+# Manifest for herdr-sidebar — the VS Code sidebar for herdr: file explorer
+# and source control in one plugin (one pane by default, separated panes on
+# request via the ⚙ settings).
+#
+# Cross-platform notes (verified against herdr 0.8; see AGENTS.md for the
+# full findings list):
+#  - Action ids must be GLOBALLY unique across platforms, so Windows launchers
+#    use `-windows`-suffixed ids; both variants gate with the item-level
+#    `platforms` key.
+#  - Relative action/event commands resolve from the plugin root since herdr
+#    0.8. Unix invokes the main binary's native launcher modes; Windows uses
+#    the GUI-subsystem sidecar because any console process in a hook chain
+#    flashes a Windows Terminal window per focus event on Windows 11.
+#  - Relative [[panes]] commands still fail on Windows (a separate herdr code
+#    path), so the declarative pane below serves linux/macos only.
+#  - Launchers dock on the persisted left/right edge. A left dock needs a
+#    split+swap; a right dock is already in place after the split.
+
+id = "herdr-sidebar"
+name = "herdr-sidebar"
+version = "0.15.0"
+description = "VS Code-style sidebar: file explorer + source control (with ✧ AI commit messages) in one herdr pane."
+min_herdr_version = "0.8.0"
+platforms = ["linux", "macos", "windows"]
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/fetch-or-build.ps1"]
+
+# Declarative pane entry — usable on linux/macos (`plugin pane open`) and as
+# the unix launcher's fallback. No Windows [[panes]] entry: the relative
+# command is unspawnable there.
+[[panes]]
+id = "sidebar"
+title = "Sidebar"
+placement = "split"
+command = ["./target/release/herdr-sidebar"]
+platforms = ["linux", "macos"]
+
+# Internal entrypoint used when unified mode is off. plugin.pane.open launches
+# it directly, without an intermediary shell or a visible prompt.
+[[panes]]
+id = "source-control"
+title = "Source Control"
+placement = "split"
+command = ["./target/release/herdr-sidebar", "--view", "git"]
+platforms = ["linux", "macos"]
+
+# Toggle the sidebar: open at the configured dock edge / focus / close.
+[[actions]]
+id = "open-sidebar"
+platforms = ["linux", "macos"]
+title = "Toggle sidebar"
+description = "Open the sidebar at its configured dock edge (focus it if open; close it if focused)."
+command = ["./target/release/herdr-sidebar", "--toggle"]
+
+[[actions]]
+id = "open-sidebar-windows"
+platforms = ["windows"]
+title = "Toggle sidebar"
+description = "Open the sidebar at its configured dock edge (focus it if open; close it if focused)."
+command = [".\\target\\release\\herdr-sidebar-ensure.exe", "--toggle"]
+
+# Separated-panels mode: open the Source Control pane on its own (the ⚙
+# settings' "Unified sidebar: off"). The explorer side is what the sidebar
+# opens by default.
+[[actions]]
+id = "open-git"
+platforms = ["linux", "macos"]
+title = "Toggle source control"
+description = "Open a separate Source Control pane (focus it if open; close it if focused)."
+command = ["./target/release/herdr-sidebar", "--toggle-git"]
+
+[[actions]]
+id = "open-git-windows"
+platforms = ["windows"]
+title = "Toggle source control"
+description = "Open a separate Source Control pane (focus it if open; close it if focused)."
+command = [".\\target\\release\\herdr-sidebar-ensure.exe", "--toggle-git"]
+
+# Direct activities for host-level keybindings. Unlike the legacy toggles,
+# these always open/focus the sidebar and leave it on the requested view.
+[[actions]]
+id = "show-explorer"
+platforms = ["linux", "macos"]
+title = "Show Explorer"
+description = "Open or focus the sidebar and switch to Explorer."
+command = ["./target/release/herdr-sidebar", "--show-explorer"]
+
+[[actions]]
+id = "show-explorer-windows"
+platforms = ["windows"]
+title = "Show Explorer"
+description = "Open or focus the sidebar and switch to Explorer."
+command = [".\\target\\release\\herdr-sidebar-ensure.exe", "--show-explorer"]
+
+[[actions]]
+id = "show-search"
+platforms = ["linux", "macos"]
+title = "Show Search"
+description = "Open or focus the sidebar and switch to project text search."
+command = ["./target/release/herdr-sidebar", "--show-search"]
+
+[[actions]]
+id = "show-search-windows"
+platforms = ["windows"]
+title = "Show Search"
+description = "Open or focus the sidebar and switch to project text search."
+command = [".\\target\\release\\herdr-sidebar-ensure.exe", "--show-search"]
+
+[[actions]]
+id = "show-git"
+platforms = ["linux", "macos"]
+title = "Show Source Control"
+description = "Open or focus the sidebar and switch to Source Control."
+command = ["./target/release/herdr-sidebar", "--show-git"]
+
+[[actions]]
+id = "show-git-windows"
+platforms = ["windows"]
+title = "Show Source Control"
+description = "Open or focus the sidebar and switch to Source Control."
+command = [".\\target\\release\\herdr-sidebar-ensure.exe", "--show-git"]
+
+[[actions]]
+id = "quick-open"
+platforms = ["linux", "macos"]
+title = "Quick Open"
+description = "Open or focus the sidebar and show the file picker."
+command = ["./target/release/herdr-sidebar", "--quick-open"]
+
+[[actions]]
+id = "quick-open-windows"
+platforms = ["windows"]
+title = "Quick Open"
+description = "Open or focus the sidebar and show the file picker."
+command = [".\\target\\release\\herdr-sidebar-ensure.exe", "--quick-open"]
+
+# Refresh every workspace onto the latest builds after a rebuild.
+[[actions]]
+id = "redeploy"
+platforms = ["linux", "macos"]
+title = "Redeploy sidebar panes"
+description = "Close all sidebar panes in every workspace so they respawn on the latest build."
+command = ["bash", "scripts/redeploy.sh"]
+
+[[actions]]
+id = "update"
+title = "Update sidebar"
+description = "Install the latest stable release and refresh sidebar panes; preserve previews."
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--update-latest"]
+
+[[actions]]
+id = "update-windows"
+title = "Update sidebar"
+description = "Install the latest stable release and refresh sidebar panes; preserve previews."
+platforms = ["windows"]
+command = ['.\target\release\herdr-sidebar-ensure.exe', "--update-latest"]
+
+[[actions]]
+id = "refresh-sidebars"
+title = "Refresh all sidebars"
+description = "Refresh running sidebar views without closing preview or editor panes."
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--refresh-sidebars"]
+
+[[actions]]
+id = "refresh-sidebars-windows"
+title = "Refresh all sidebars"
+description = "Refresh running sidebar views without closing preview or editor panes."
+platforms = ["windows"]
+command = ['.\target\release\herdr-sidebar-ensure.exe', "--refresh-sidebars"]
+
+[[actions]]
+id = "redeploy-windows"
+platforms = ["windows"]
+title = "Redeploy sidebar panes"
+description = "Close all sidebar panes in every workspace so they respawn on the latest build."
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/redeploy.ps1"]
+
+# Sidebar mode: on every tab focus, quietly ensure the focused tab
+# has a sidebar at the configured dock edge (idempotent, never steals focus). A tab hooked at
+# first focus still has its single full-height pane, so the sidebar becomes a
+# full-height edge column that later splits can't shorten.
+# v0.9 lifecycle subscriptions start with live events instead of replaying
+# restored history. workspace.focused heals restored sidebar panes when the
+# user returns to a workspace; pane.focused covers interaction within it.
+# The native launcher stamps identity before any layout operation can re-enter
+# these hooks. Re-entrant focus invocations skip while its OS-backed lock is
+# held; later ones observe a live pane.
+[[events]]
+on = "pane.focused"
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--ensure"]
+
+[[events]]
+on = "pane.focused"
+platforms = ["windows"]
+command = [".\\target\\release\\herdr-sidebar-ensure.exe"]
+
+[[events]]
+on = "tab.created"
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--ensure"]
+
+[[events]]
+on = "tab.created"
+platforms = ["windows"]
+command = [".\\target\\release\\herdr-sidebar-ensure.exe"]
+
+[[events]]
+on = "workspace.created"
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--ensure"]
+
+[[events]]
+on = "workspace.created"
+platforms = ["windows"]
+command = [".\\target\\release\\herdr-sidebar-ensure.exe"]
+
+[[events]]
+on = "workspace.focused"
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--ensure"]
+
+[[events]]
+on = "workspace.focused"
+platforms = ["windows"]
+command = [".\\target\\release\\herdr-sidebar-ensure.exe"]
+
+[[events]]
+on = "tab.focused"
+platforms = ["linux", "macos"]
+command = ["./target/release/herdr-sidebar", "--ensure"]
+
+[[events]]
+on = "tab.focused"
+platforms = ["windows"]
+command = [".\\target\\release\\herdr-sidebar-ensure.exe"]

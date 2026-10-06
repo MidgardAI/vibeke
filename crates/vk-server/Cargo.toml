@@ -14,6 +14,7 @@ vk-tasks = { workspace = true }
 vk-review = { workspace = true }
 vk-redact = { workspace = true }
 vk-config = { workspace = true }
+vk-compat = { workspace = true }
 vk-agents = { workspace = true }
 vk-preview = { workspace = true }
 vk-browser = { workspace = true }

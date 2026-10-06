@@ -8,6 +8,7 @@ pub mod agents;
 pub mod api;
 pub mod assist;
 pub mod browser_pane;
+pub mod compat;
 pub mod core;
 pub mod desk;
 pub mod drafts;

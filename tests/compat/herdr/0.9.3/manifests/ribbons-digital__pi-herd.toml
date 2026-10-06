@@ -1,0 +1,51 @@
+id = "ribbons-digital.pi-herd"
+name = "pi-herd"
+version = "0.1.0"
+min_herdr_version = "0.7.1"
+description = "Visible Pi session orchestration with Herdr panes and git worktrees."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "doctor"
+title = "pi-herd doctor"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "dist/herdr-plugin-action.js", "doctor"]
+
+[[actions]]
+id = "start"
+title = "pi-herd start usage"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "dist/herdr-plugin-action.js", "start-help"]
+
+[[actions]]
+id = "status"
+title = "pi-herd status"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "dist/herdr-plugin-action.js", "status"]
+
+[[actions]]
+id = "collect"
+title = "pi-herd collect read-only"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "dist/herdr-plugin-action.js", "collect"]
+
+[[actions]]
+id = "cleanup"
+title = "pi-herd cleanup report"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "dist/herdr-plugin-action.js", "cleanup"]
+
+[[panes]]
+id = "run-board"
+title = "pi-herd run board"
+command = ["node", "dist/herdr-plugin-pane.js", "run-board"]
+
+[[panes]]
+id = "start-wizard"
+title = "pi-herd start wizard"
+command = ["node", "dist/herdr-plugin-pane.js", "start-wizard"]
+
+[[panes]]
+id = "send-message"
+title = "pi-herd send message"
+command = ["node", "dist/herdr-plugin-pane.js", "send-message"]

@@ -1,0 +1,38 @@
+# Herdr Auto Title plugin manifest.
+
+id = "herdr.auto-title"
+name = "Auto Title"
+version = "0.13.0"
+min_herdr_version = "0.8.2"
+description = "Automatically generates contextual tab titles"
+# Herdr enforces this list: on a platform left out of it, nothing below runs.
+platforms = ["linux", "macos", "windows"]
+
+# Built at install time; Go is the only requirement. Windows has a pair of its
+# own so the binary carries the extension Windows expects of one.
+[[build]]
+platforms = ["linux", "macos"]
+command = ["go", "build", "-o", "herdr-auto-title", "./cmd/herdr-auto-title"]
+
+[[build]]
+platforms = ["windows"]
+command = ["go", "build", "-o", "herdr-auto-title.exe", "./cmd/herdr-auto-title"]
+
+# A one-shot launch, not a supervised daemon: the process stays alive itself.
+[[startup]]
+platforms = ["linux", "macos"]
+command = ["./herdr-auto-title"]
+
+[[startup]]
+platforms = ["windows"]
+command = ["./herdr-auto-title.exe"]
+
+# Starts a fresh instance in place of the running one, without a server stop.
+# One entry for every platform: Herdr rejects a second action with this id even
+# for another platform, and Herdr 0.9.0 on Windows finds the `.exe` itself.
+[[actions]]
+id = "restart"
+title = "Auto Title: restart"
+description = "Start a fresh Auto Title in place of the running one"
+contexts = ["global"]
+command = ["./herdr-auto-title", "restart"]

@@ -1,0 +1,47 @@
+# herdr-plugin.toml — manifest for herdr-floax.
+#
+# A floating scratch shell for the current workspace, modeled on tmux-floax
+# (https://github.com/omerxx/tmux-floax). The pane runs a small Rust TUI that
+# draws a centered, sized box over a dimmed backdrop and hosts a real shell PTY
+# inside it — herdr has no sized floating-pane primitive that survives a
+# keybinding, so the floating look is drawn in-pane (the same way
+# herdr-file-viewer draws its help overlay). A single keybinding toggles it:
+# open -> reveal -> dismiss, one instance per workspace. The shell session
+# persists across toggles via a per-workspace detach session.
+#
+# KNOWN LIMITATION: the backdrop around the floating box is a solid fill drawn
+# by the app, NOT the user's live panes dimmed behind it (as tmux-floax shows).
+# A plugin only controls its own pane's canvas; herdr owns the other panes'
+# PTYs and has no primitive for compositing a persistent popup over them. See
+# README.md "Limitations".
+
+id = "herdr-floax"
+name = "herdr-floax"
+version = "0.2.0"
+description = "Toggle a floating scratch shell (sized popup) for the current workspace, à la tmux-floax."
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos"]
+
+# Build the pane binary at install/link time.
+[[build]]
+command = ["cargo", "build", "--release"]
+
+# The floating pane: the floax TUI app hosting the shell PTY. `title` becomes
+# the pane `label`, which toggle-floating.sh uses to find our pane within a
+# workspace. Placement is `split` — the toggle script zooms the pane so the app
+# fills the workspace and the drawn box appears centered over it. (herdr's
+# `overlay`/`zoomed` placements are transient views that are torn down the
+# moment the invoking keybinding action completes, so they can't be used here.)
+[[panes]]
+id = "floating"
+title = "⌂ floax"
+placement = "split"
+command = ["./target/release/herdr-floax"]
+
+# The action the keybinding invokes. herdr qualifies this as `herdr-floax.toggle`
+# — that is the id the config.toml `[[keys.command]]` binding references.
+[[actions]]
+id = "toggle"
+title = "Toggle floating pane"
+description = "Open, reveal, or dismiss the floating scratch shell for this workspace."
+command = ["bash", "scripts/toggle-floating.sh"]

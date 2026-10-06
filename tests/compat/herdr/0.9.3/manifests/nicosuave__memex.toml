@@ -1,0 +1,106 @@
+# memex as a herdr plugin: a session desk for your agent history.
+#
+# memex indexes the transcripts every coding agent on this machine leaves behind (Claude Code,
+# Codex, Cursor, OpenCode, Pi, Oh My Pi, OpenClaw, Copilot, Grok, Jcode, Muse). Inside herdr it becomes a native
+# pane: browse and search past sessions, then resume one straight into a new herdr tab.
+#
+# The version here must match Cargo.toml — herdr/install.sh downloads the release tarball tagged
+# with exactly this version.
+id = "nicosuave.memex"
+name = "memex"
+version = "0.27.1"
+min_herdr_version = "0.7.0"
+platforms = ["macos", "linux"]
+description = "Session desk for your agent history: search past Claude Code / Codex / Cursor / Pi / Oh My Pi sessions and resume one into a herdr tab."
+
+# On `herdr plugin install`, put a working memex binary under $HERDR_PLUGIN_ROOT/bin: reuse one
+# already on PATH if it speaks the herdr surface, else download the matching release tarball, else
+# build from source. Skipped by `herdr plugin link` — from a local checkout run `cargo build
+# --release` first and the scripts pick up target/release/memex.
+[[build]]
+command = ["bash", "herdr/install.sh"]
+
+# Both panes run the same launcher, which resolves the binary and execs `memex tui`.
+#
+# The pane command is resolved against the PANE's cwd (the repo you are working in), never the
+# plugin root, so the script is invoked through the absolute $HERDR_PLUGIN_ROOT path.
+#
+# Both entrypoints carry the title "memex" on purpose: the toggle action treats every pane labeled
+# "memex" in the workspace as its own, so closing the sidebar also clears a stray desk pane.
+
+# The full-height session desk: search and browse, then resume into a new tab.
+[[panes]]
+id = "desk"
+title = "memex"
+placement = "zoomed"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/herdr/memex-pane.sh\""]
+
+# The same TUI as a side split, for keeping history next to a running agent.
+[[panes]]
+id = "sidebar"
+title = "memex"
+placement = "split"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/herdr/memex-pane.sh\""]
+
+# The session palette: the TUI as an overlay, in the spirit of a command palette. Herdr restores
+# your previous focus when it closes (quit memex with q), so it reads as "flip through recent
+# sessions, resume one into a tab, land back where you were".
+[[panes]]
+id = "palette"
+title = "memex"
+placement = "overlay"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/herdr/memex-pane.sh\""]
+
+# Open the session desk zoomed over the focused pane.
+[[actions]]
+id = "desk"
+title = "memex: session desk"
+command = ["bash", "herdr/plugin.sh", "desk"]
+
+# Open the sidebar, or close it if one is already open. Placement and direction are configurable
+# (toggle_placement / toggle_direction); see herdr/plugin.sh.
+[[actions]]
+id = "toggle"
+title = "memex: toggle sidebar"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/plugin.sh", "toggle"]
+
+# The session palette: recent sessions as an overlay, Enter resumes into a new tab, q returns
+# focus wherever it was. The natural keybinding target.
+[[actions]]
+id = "palette"
+title = "memex: session palette"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/plugin.sh", "palette"]
+
+# The palette pre-filtered to the focused workspace's repo: "what was I doing here?".
+[[actions]]
+id = "recent-here"
+title = "memex: recent sessions here"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/plugin.sh", "recent-here"]
+
+# Resume the most recent session for the focused pane's directory without opening the TUI.
+# memex resolves the session and asks herdr for a new tab itself.
+[[actions]]
+id = "resume-last"
+title = "memex: resume last session"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/plugin.sh", "resume-last"]
+
+# Incrementally reindex now; output goes to $HERDR_PLUGIN_STATE_DIR/index.log.
+[[actions]]
+id = "index"
+title = "memex: refresh index"
+command = ["bash", "herdr/plugin.sh", "index"]
+
+# Open the local web UI, starting `memex web` first if nothing answers on web_listen.
+[[actions]]
+id = "web"
+title = "memex: open web UI"
+command = ["bash", "herdr/plugin.sh", "web"]
+
+# Once per herdr session start: kick off a background incremental index so the first search of the
+# day is warm. Gated by index_on_startup; never blocks session start and never reports failure.
+[[startup]]
+command = ["bash", "herdr/plugin.sh", "startup"]

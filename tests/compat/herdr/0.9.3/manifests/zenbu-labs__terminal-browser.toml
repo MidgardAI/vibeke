@@ -1,0 +1,17 @@
+id = "zenbu-labs.terminal-browser"
+name = "Terminal Browser"
+version = "0.1.1"
+min_herdr_version = "0.8.2"
+description = "Open a browser inside herdr"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bash", "-c", "set -o pipefail; curl -fsSL https://terminal-browser.sh/install | bash"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-split"
+title = "Open terminal-browser (right split)"
+description = "Split the focused pane and open terminal-browser in it"
+contexts = ["global"]
+command = ["bash", "open-split.sh"]

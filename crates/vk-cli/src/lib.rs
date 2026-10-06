@@ -4,6 +4,7 @@
 //! positional arguments per verb. `vibeke <noun>` alone prints help and never executes.
 
 pub mod client;
+pub mod compat;
 pub mod mcp;
 
 use anyhow::Result;

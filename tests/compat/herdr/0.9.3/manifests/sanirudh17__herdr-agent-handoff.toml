@@ -1,0 +1,74 @@
+id = "agent-handoff"
+name = "Agent Handoff"
+version = "0.3.1"
+min_herdr_version = "0.7.5"
+description = "Transfer an in-progress session to a fresh session of another installed agent"
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "handoff"
+title = "Handoff to agent"
+description = "Transfer the active agent session to a fresh agent beside it"
+contexts = ["pane"]
+command = ["node", "bin/handoff-split.js"]
+
+[[actions]]
+id = "handoff-split"
+title = "Handoff to agent (split)"
+description = "Transfer the active agent session to a fresh agent beside it"
+contexts = ["pane"]
+command = ["node", "bin/handoff-split.js"]
+
+[[actions]]
+id = "handoff-tab"
+title = "Handoff to agent (new tab)"
+description = "Transfer the active agent session to a fresh agent in a new tab"
+contexts = ["pane"]
+command = ["node", "bin/handoff-tab.js"]
+
+[[actions]]
+id = "handoff-headless"
+title = "Handoff to agent (headless)"
+description = "Transfer the active pane session without opening a picker (automation: set HERDR_HANDOFF_TARGET or pass --target)"
+contexts = ["pane"]
+command = ["node", "bin/handoff-headless.js"]
+
+[[actions]]
+id = "setup-keys"
+title = "Install Agent Handoff keybindings"
+description = "Add prefix+a and prefix+shift+a to config.toml"
+contexts = ["global"]
+command = ["node", "bin/setup-keys.js"]
+
+[[panes]]
+id = "picker"
+title = "Handoff to Agent"
+description = "Choose the agent to hand off to"
+placement = "popup"
+width = "70%"
+# Sized to hug the roster: six rows of chrome plus room for all 21 agent kinds in
+# the not-installed section, without leaving a screenful of dead space for the
+# handful that are usually installed.
+height = "60%"
+# Launched via `node -e` rather than `node bin/picker.js` on purpose.
+#
+# Herdr sets a plugin pane's cwd to the plugin root as a Windows verbatim path
+# (\\?\C:\...). Node cannot resolve a *relative main script* from such a cwd: it
+# calls realpathSync during resolveMainPath, walks the components, and dies with
+# "EISDIR: illegal operation on a directory, lstat 'C:'" before any plugin code
+# runs — the popup blinks and vanishes. Passing code to -e skips main-module
+# resolution entirely, so the picker is located from HERDR_PLUGIN_ROOT (verbatim
+# prefix stripped) and required by absolute path. Independent of cwd on every
+# platform.
+command = ["node", "-e", '''require(require('path').join((process.env.HERDR_PLUGIN_ROOT || process.cwd()).replace(/^\\\\\?\\/, ''), 'bin', 'picker.js'))''']
+
+[[panes]]
+id = "mode-picker"
+title = "Choose Handoff Context"
+description = "Choose focused handoff or full session transcript"
+placement = "popup"
+width = "70%"
+height = "40%"
+# Same Windows-safe `node -e` pattern as the picker pane: Herdr gives plugin
+# panes a \\?\ cwd that Node cannot resolve a relative main script from.
+command = ["node", "-e", '''require(require('path').join((process.env.HERDR_PLUGIN_ROOT || process.cwd()).replace(/^\\\\\?\\/, ''), 'bin', 'mode-picker.js'))''']

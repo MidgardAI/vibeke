@@ -2930,8 +2930,10 @@ dependencies = [
 name = "vk-compat"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "toml",
@@ -3142,6 +3144,7 @@ dependencies = [
  "vk-agents",
  "vk-assist",
  "vk-browser",
+ "vk-compat",
  "vk-config",
  "vk-hold",
  "vk-preview",
