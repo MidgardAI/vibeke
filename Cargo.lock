@@ -1417,6 +1417,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vk-review"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "ulid",
+]
+
+[[package]]
 name = "vk-server"
 version = "0.1.0"
 dependencies = [
