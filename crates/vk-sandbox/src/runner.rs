@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `host` | [`HostRunner`] | identity |
 //! | `sandbox` | [`SandboxRunner`] | Seatbelt (macOS, tested); bubblewrap+Landlock+seccomp (Linux, generated + unit-tested, unverified on a Linux host) |
-//! | `container` | [`crate::container::ContainerRunner`] | groundwork: provider detection and `run` argv; only network `none`/`open` |
+//! | `container` | [`crate::container::ContainerRunner`] | per-task box (`run -d`), panes are `exec -it` (Docker/OrbStack/Podman; Apple `container` open network only) |
 //! | `vm` | [`VmRunner`] | placeholder (M4) |
 
 use crate::creds::Projection;
@@ -325,8 +325,12 @@ pub fn availability() -> Vec<(IsolationLevel, Result<String, String>)> {
     } else {
         Err("no sandbox-exec".to_string())
     };
-    let ctr = match crate::container::detect() {
-        Some(p) => Ok(format!("{} (groundwork: network none/open only)", p.name())),
+    let ctr = match crate::container::select(None, crate::net::NetworkProfile::Dev) {
+        Some(p) => Ok(format!(
+            "{} at {} (per-task box; proxy profiles need the Linux vibeke binary)",
+            p.name(),
+            p.cli().display()
+        )),
         None => {
             Err("no container runtime found (Apple container, OrbStack, Docker, Podman)".into())
         }

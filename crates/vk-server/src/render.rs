@@ -334,6 +334,8 @@ impl Session {
                 text,
             } => {
                 self.touch();
+                // Drops translated into the host inbox are `/vibeke/inbox/…` in a box (06 A11.4).
+                let text = crate::sandbox::paste_text(&self.server, &pane, text);
                 let bytes = encode::encode_paste(&text, &input_modes(&self.server, &pane));
                 self.write_input(input_id, &pane, bytes, wr).await?;
             }

@@ -326,6 +326,56 @@ fn check_isolation(r: &mut Report) {
             ),
         }
     }
+    // Container details (13 §11): the in-box binary, the default image, Docker Sandboxes.
+    let cfg = vk_server::sandbox::load_cfg();
+    let home = paths::home();
+    if vk_sandbox::container::detect().is_some() {
+        match vk_server::sandbox::container::linux_vibeke(&cfg, &home) {
+            Some(p) => r.add(
+                ISOLATION,
+                Level::Pass,
+                format!(
+                    "container: in-box vibeke {} (egress forwarder, hooks)",
+                    p.display()
+                ),
+            ),
+            None => r.add_hint(
+                ISOLATION,
+                Level::Info,
+                "container: no static Linux vibeke for the box — network none/open only, no hooks inside",
+                format!(
+                    "set [isolation.container] vibeke_linux, or put vibeke-linux-{} in $VIBEKE_ARTIFACT_DIR or ~/.cache/vibeke/releases/{}/",
+                    std::env::consts::ARCH,
+                    vk_proto::VERSION
+                ),
+            ),
+        }
+        match &cfg.container.image {
+            Some(i) => r.add(
+                ISOLATION,
+                Level::Pass,
+                format!(
+                    "container: default image {i} (code isolation: {})",
+                    cfg.container.code
+                ),
+            ),
+            None => r.add(
+                ISOLATION,
+                Level::Info,
+                "container: no default image; tasks need --image, .vibeke/sandbox.toml or a devcontainer",
+            ),
+        }
+    }
+    if let Some(p) = vk_sandbox::container::detect_docker_sandboxes(&home) {
+        r.add(
+            ISOLATION,
+            Level::Info,
+            format!(
+                "docker sandboxes plugin at {} (detected; not used as a provider yet)",
+                p.display()
+            ),
+        );
+    }
 }
 
 fn check_install(r: &mut Report) {
