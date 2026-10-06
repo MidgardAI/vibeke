@@ -27,3 +27,7 @@ run = [
 
 [tasks.ci]
 depends = ["lint", "test"]
+
+[tasks.dist]
+description = "Release binaries (macOS arm64, Linux x86_64/arm64 musl) into dist/<version>/ and ~/.cache/vibeke/releases/<version>/"
+run = "sh scripts/dist.sh"
