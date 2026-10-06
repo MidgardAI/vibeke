@@ -88,6 +88,8 @@ fn mutating(method: &str) -> bool {
     crate::api::METHODS
         .iter()
         .chain(crate::agents::METHODS.iter())
+        .chain(crate::desk::METHODS.iter())
+        .chain(crate::drafts::METHODS.iter())
         .find(|(n, _)| *n == method)
         .map(|(_, m)| *m)
         .unwrap_or(
@@ -195,7 +197,7 @@ fn summarize(v: &Value) -> String {
 
 /// Items from one transcript line, for Claude (`message.content[]`) and Codex rollout
 /// (`response_item` payloads). Returns (is_user_prompt, items).
-fn line_items(v: &Value) -> (bool, Vec<Value>) {
+pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
     let mut items = Vec::new();
     let mut user_prompt = false;
     if let Some(msg) = v.get("message") {

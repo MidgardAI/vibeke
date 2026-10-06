@@ -7,6 +7,8 @@ pub mod agent_browser;
 pub mod agents;
 pub mod api;
 pub mod core;
+pub mod desk;
+pub mod drafts;
 pub mod gateway_api;
 pub mod git_api;
 pub mod pane;
@@ -96,6 +98,10 @@ pub struct Server {
     /// Execution isolation contexts (13).
     pub sandbox: sandbox::State,
     pub agent_browser: agent_browser::AgentBrowsers,
+    /// Session desk conversation index (research R2).
+    pub desk: desk::State,
+    /// Drafts composer in-flight sends (research R3).
+    pub drafts: drafts::State,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -168,6 +174,8 @@ impl Server {
             previews: preview::Previews::default(),
             sandbox: sandbox::State::default(),
             agent_browser: agent_browser::AgentBrowsers::default(),
+            desk: Default::default(),
+            drafts: Default::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),

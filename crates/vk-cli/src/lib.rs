@@ -622,6 +622,134 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "agent calls fail with human_control until release",
     ),
     ("browser", "release", "browser.release", &["session"], ""),
+    (
+        "desk",
+        "search",
+        "desk.search",
+        &["text..."],
+        "<words> [--repo dir] [--harness h] [--since 7d|YYYY-MM-DD] [--until …] [--limit n] [--sort recent]",
+    ),
+    (
+        "desk",
+        "sessions",
+        "desk.sessions",
+        &[],
+        "[--repo dir] [--harness h] — live / resumable / neither",
+    ),
+    (
+        "desk",
+        "open",
+        "desk.open",
+        &["session"],
+        "<session> [--turn n] [--focus] — focus only with --focus; else shows resume options",
+    ),
+    (
+        "desk",
+        "resume",
+        "desk.resume",
+        &["session"],
+        "<session> [--pane p] = Resume native session | --mode new_agent [--start --harness h] = Start new agent with context (a draft; never sent)",
+    ),
+    (
+        "desk",
+        "context",
+        "desk.context",
+        &["session"],
+        "<session> [--turns 3-5] [--objective text] — editable context package",
+    ),
+    (
+        "desk",
+        "forget",
+        "desk.forget",
+        &["session"],
+        "<session> | --repo dir | --workspace w | --before date — purge from the conversation index",
+    ),
+    (
+        "desk",
+        "status",
+        "desk.status",
+        &[],
+        "indexed sources, selection, exclusions, retention",
+    ),
+    (
+        "desk",
+        "index",
+        "desk.index",
+        &[],
+        "run an indexing pass now",
+    ),
+    (
+        "draft",
+        "new",
+        "draft.create",
+        &["text"],
+        "<text|-> [--workspace w | --task t] [--file path]… [--screenshot path]… [--title t]",
+    ),
+    (
+        "draft",
+        "list",
+        "draft.list",
+        &[],
+        "[--workspace w | --task t] [--all]",
+    ),
+    ("draft", "show", "draft.get", &["draft"], ""),
+    (
+        "draft",
+        "edit",
+        "draft.update",
+        &["draft"],
+        "<draft> [--text t|-] [--title t] [--file path] [--remove-attachment i] [--expected-rev n]",
+    ),
+    (
+        "draft",
+        "check",
+        "draft.check",
+        &["draft"],
+        "<draft> --run r — send_path prompt_input | open_pane_only and why",
+    ),
+    (
+        "draft",
+        "send",
+        "draft.send",
+        &["draft"],
+        "<draft> --run r [--include-notes] [--keep] [--retry-despite-unknown] (zero bytes when unsafe)",
+    ),
+    (
+        "draft",
+        "reconcile",
+        "draft.reconcile",
+        &["draft"],
+        "inspect an uncertain send before retrying",
+    ),
+    (
+        "draft",
+        "combine",
+        "draft.combine",
+        &["ids..."],
+        "<draft> <draft>… [--title t] [--delete-sources]",
+    ),
+    (
+        "draft",
+        "reorder",
+        "draft.reorder",
+        &["order..."],
+        "<draft>… in their new order",
+    ),
+    ("draft", "rm", "draft.delete", &["draft"], ""),
+    (
+        "notes",
+        "get",
+        "notes.get",
+        &[],
+        "[--workspace w] — never sent unless included",
+    ),
+    (
+        "notes",
+        "set",
+        "notes.set",
+        &["text"],
+        "<text|-> [--workspace w]",
+    ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
 ];
@@ -758,6 +886,8 @@ fn adjust(method: &str, p: &mut Value) {
         "key",
         "selector",
         "expression",
+        "draft",
+        "workspace",
     ] {
         if let Some(v) = o.get_mut(k)
             && (v.is_number() || v.is_boolean())
@@ -790,6 +920,64 @@ fn adjust(method: &str, p: &mut Value) {
         "browser.network" => {
             if let Some(f) = o.remove("failed") {
                 o.insert("failed_only".into(), f);
+            }
+        }
+        "desk.search" => {
+            if let Some(Value::Array(words)) = o.get("text").cloned() {
+                let t: Vec<&str> = words.iter().filter_map(Value::as_str).collect();
+                o.insert("text".into(), json!(t.join(" ")));
+            }
+        }
+        "draft.create" | "draft.update" | "notes.set" | "draft.list" => {
+            if o.get("text").and_then(Value::as_str) == Some("-") {
+                let mut s = String::new();
+                let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut s);
+                o.insert("text".into(), json!(s));
+            }
+            if method != "notes.set" {
+                if let Some(t) = o.remove("task") {
+                    o.insert("scope".into(), json!("task"));
+                    o.insert("id".into(), t);
+                } else if let Some(w) = o.remove("workspace") {
+                    o.insert("id".into(), w);
+                }
+            }
+            let abs = |v: &Value| {
+                let s = v.as_str().unwrap_or("");
+                std::fs::canonicalize(s)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| s.to_string())
+            };
+            let mut att: Vec<Value> = vec![];
+            for (flag, kind) in [("file", "file"), ("screenshot", "screenshot")] {
+                let items = match o.remove(flag) {
+                    Some(Value::Array(a)) => a,
+                    Some(v) => vec![v],
+                    None => vec![],
+                };
+                att.extend(items.iter().map(|v| json!({"kind": kind, "path": abs(v)})));
+            }
+            if method == "draft.update" {
+                if let Some(first) = att.into_iter().next() {
+                    o.insert("add_attachment".into(), first);
+                }
+            } else if !att.is_empty() {
+                o.insert("attachments".into(), json!(att));
+            }
+        }
+        "draft.send" | "draft.check" => {
+            if let Some(r) = o.remove("run") {
+                o.insert("target_run".into(), r);
+            }
+            if method == "draft.send" && !o.contains_key("idempotency_key") {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                o.insert(
+                    "idempotency_key".into(),
+                    json!(format!("cli-{}-{nanos}", std::process::id())),
+                );
             }
         }
         "interaction.answer" => {
@@ -1212,6 +1400,38 @@ mod tests {
         let mut p = build_params(pos, &["b1".into(), "--failed".into()]).unwrap();
         adjust(m, &mut p);
         assert_eq!(p, json!({"session": "b1", "failed_only": true}));
+    }
+
+    #[test]
+    fn draft_and_desk_params() {
+        let (m, pos) = lookup("draft", "new").unwrap();
+        let mut p = build_params(
+            pos,
+            &[
+                "hello".into(),
+                "--task".into(),
+                "t1".into(),
+                "--screenshot".into(),
+                "/tmp".into(),
+            ],
+        )
+        .unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["scope"], "task");
+        assert_eq!(p["id"], "t1");
+        assert_eq!(p["attachments"][0]["kind"], "screenshot");
+        let (m, pos) = lookup("draft", "send").unwrap();
+        let mut p = build_params(pos, &["d1".into(), "--run".into(), "r1".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["target_run"], "r1");
+        assert!(p["idempotency_key"].as_str().unwrap().starts_with("cli-"));
+        let (m, pos) = lookup("desk", "search").unwrap();
+        let mut p = build_params(pos, &["login".into(), "redirect".into()]).unwrap();
+        adjust(m, &mut p);
+        assert_eq!(p["text"], "login redirect");
+        let (_, pos) = lookup("draft", "combine").unwrap();
+        let p = build_params(pos, &["a".into(), "b".into()]).unwrap();
+        assert_eq!(p["ids"], json!(["a", "b"]));
     }
 
     #[test]

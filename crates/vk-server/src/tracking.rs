@@ -1563,14 +1563,28 @@ fn input_text(screen: &str) -> Option<String> {
 
 /// Every reason the prompt-input path is unsafe right now; `Ok` means it may be attempted.
 fn send_safety(server: &Server, m: &TaskMessage) -> Result<(), String> {
-    let run = server
+    server
         .with_core(|c| c.run(&m.run).cloned())
         .ok_or("the target run has ended")?;
     let b = active_binding(server, &m.task).ok_or("the task has no active binding")?;
     if b.id != m.binding || b.run_id != m.run {
         return Err("the task moved to another run or binding".into());
     }
-    if run.harness_session_id.as_deref() != Some(m.native_conversation_id.as_str()) {
+    prompt_input_safety(server, &m.run, &m.native_conversation_id)
+}
+
+/// The task-independent part of [`send_safety`] (15 §9), shared with the drafts composer: the
+/// run is live, still in `conversation`, idle, has no open interaction, no attached client
+/// focuses its pane, and its input box is provably empty.
+pub(crate) fn prompt_input_safety(
+    server: &Server,
+    run_id: &str,
+    conversation: &str,
+) -> Result<(), String> {
+    let run = server
+        .with_core(|c| c.run(run_id).cloned())
+        .ok_or("the target run has ended")?;
+    if run.harness_session_id.as_deref() != Some(conversation) {
         return Err("the run is in a different conversation now".into());
     }
     if run.execution.value != Execution::Idle {
@@ -1720,6 +1734,12 @@ async fn message_send(server: &Arc<Server>, p: &Value) -> R {
     Ok(json!({"message": m}))
 }
 
+struct DeliveryTarget<'a> {
+    run: &'a str,
+    native_conversation_id: &'a str,
+    text: &'a str,
+}
+
 fn b_flag(p: &Value, k: &str) -> bool {
     p.get(k).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -1730,13 +1750,51 @@ async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option
     if let Err(why) = send_safety(server, m) {
         return (MessageState::Failed, Some(format!("not sent: {why}")));
     }
-    let Some(run) = server.with_core(|c| c.run(&m.run).cloned()) else {
+    deliver_text(server, &m.run, &m.native_conversation_id, &m.text).await
+}
+
+/// Whether a turn numbered `n0` or later started on `run` in `conversation` with `text` in its
+/// prompt (whitespace-normalized): the only evidence that counts as delivery (15 §9).
+pub(crate) fn turn_matches(
+    server: &Server,
+    run: &str,
+    conversation: &str,
+    n0: u32,
+    text: &str,
+) -> bool {
+    let want: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    turns_of(server, run, 5).into_iter().any(|t| {
+        t.n >= n0
+            && t.native_conversation_id.as_deref() == Some(conversation)
+            && t.prompt
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(&want)
+    })
+}
+
+/// The prompt-input delivery itself (caller has just checked safety): paste under the pane's
+/// input lock, recheck, submit, then wait for a matching turn. Shared by task messages and
+/// drafts.
+pub(crate) async fn deliver_text(
+    server: &Arc<Server>,
+    run_id: &str,
+    conversation: &str,
+    text: &str,
+) -> (MessageState, Option<String>) {
+    let m = DeliveryTarget {
+        run: run_id,
+        native_conversation_id: conversation,
+        text,
+    };
+    let Some(run) = server.with_core(|c| c.run(m.run).cloned()) else {
         return (MessageState::Failed, Some("run ended".into()));
     };
     let n0 = run.turns_completed + 1;
     let modes = crate::render::input_modes(server, &run.pane);
     let bytes = if modes.bracketed_paste {
-        vk_term::encode::encode_paste(&m.text, &modes)
+        vk_term::encode::encode_paste(m.text, &modes)
     } else {
         m.text.replace('\n', " ").into_bytes()
     };
@@ -1759,32 +1817,31 @@ async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option
     tokio::time::sleep(Duration::from_millis(80)).await;
     // Recheck before submitting: still idle, nothing opened, nobody focused, and the input box
     // holds exactly our text (never a user draft merged with it).
-    let ok = {
-        let focus_free = !server
-            .clients
-            .lock()
-            .unwrap()
-            .values()
-            .any(|cl| cl.focus.pane.as_deref() == Some(run.pane.as_str()) && cl.kind == "tui");
-        let quiet = server.with_core(|c| {
-            c.run(&m.run)
-                .is_some_and(|r| r.execution.value == Execution::Idle)
-                && !c
-                    .model
-                    .interactions
-                    .iter()
-                    .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
-        });
-        let shown = server
-            .pane_rt(&run.pane)
-            .and_then(|rt| input_text(&rt.screen.lock().unwrap().engine.screen_text()));
-        let norm = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
-        focus_free
-            && quiet
-            && shown.is_some_and(|t| {
-                norm(&t) == norm(&m.text) || norm(&m.text).starts_with(&norm(&t)) && !t.is_empty()
-            })
-    };
+    let ok =
+        {
+            let focus_free =
+                !server.clients.lock().unwrap().values().any(|cl| {
+                    cl.focus.pane.as_deref() == Some(run.pane.as_str()) && cl.kind == "tui"
+                });
+            let quiet = server.with_core(|c| {
+                c.run(m.run)
+                    .is_some_and(|r| r.execution.value == Execution::Idle)
+                    && !c
+                        .model
+                        .interactions
+                        .iter()
+                        .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
+            });
+            let shown = server
+                .pane_rt(&run.pane)
+                .and_then(|rt| input_text(&rt.screen.lock().unwrap().engine.screen_text()));
+            let norm = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
+            focus_free
+                && quiet
+                && shown.is_some_and(|t| {
+                    norm(&t) == norm(m.text) || norm(m.text).starts_with(&norm(&t)) && !t.is_empty()
+                })
+        };
     if !ok {
         server.agents.unlock_input(&run.pane);
         return (MessageState::DeliveryUnknown, Some("conditions changed after pasting; the text may be in the input box but was not submitted — check the pane".into()));
@@ -1797,20 +1854,10 @@ async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option
     )
     .await;
     server.agents.unlock_input(&run.pane);
-    let want: String = m.text.split_whitespace().collect::<Vec<_>>().join(" ");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(150)).await;
-        let hit = turns_of(server, &m.run, 3).into_iter().any(|t| {
-            t.n >= n0
-                && t.native_conversation_id.as_deref() == Some(m.native_conversation_id.as_str())
-                && t.prompt
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .contains(&want)
-        });
-        if hit {
+        if turn_matches(server, m.run, m.native_conversation_id, n0, m.text) {
             return (MessageState::Delivered, None);
         }
     }

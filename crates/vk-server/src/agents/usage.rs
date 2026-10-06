@@ -444,7 +444,7 @@ pub fn codex_usage(text: &str) -> (Option<RunUsage>, Option<RateLimitInfo>) {
 }
 
 /// `2026-10-06T12:00:00.123Z` → epoch ms (UTC only; enough for rollout timestamps).
-fn parse_rfc3339_ms(s: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339_ms(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-').map(|x| x.parse::<i64>().ok());
     let (y, mo, da) = (d.next()??, d.next()??, d.next()??);
