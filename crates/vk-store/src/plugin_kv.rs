@@ -175,7 +175,11 @@ impl Store {
     }
 
     /// Newest first; `plugin` filters.
-    pub fn plugin_commands(&self, plugin: Option<&str>, limit: usize) -> Result<Vec<PluginCommand>> {
+    pub fn plugin_commands(
+        &self,
+        plugin: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PluginCommand>> {
         let mut st = self.conn.prepare(
             "SELECT id, plugin_id, status, started_at, ended_at, json FROM plugin_commands
              WHERE (?1 IS NULL OR plugin_id = ?1) ORDER BY started_at DESC, id DESC LIMIT ?2",
@@ -214,10 +218,18 @@ mod tests {
     #[test]
     fn kv_limits_quota_and_namespaces() {
         let s = Store::open_in_memory().unwrap();
-        s.plugin_kv_set("a.b", "k", b"v1", DEFAULT_QUOTA).unwrap().unwrap();
-        s.plugin_kv_set("a.b", "k", b"v2", DEFAULT_QUOTA).unwrap().unwrap();
+        s.plugin_kv_set("a.b", "k", b"v1", DEFAULT_QUOTA)
+            .unwrap()
+            .unwrap();
+        s.plugin_kv_set("a.b", "k", b"v2", DEFAULT_QUOTA)
+            .unwrap()
+            .unwrap();
         assert_eq!(s.plugin_kv_get("a.b", "k").unwrap(), Some(b"v2".to_vec()));
-        assert_eq!(s.plugin_kv_get("c.d", "k").unwrap(), None, "per-plugin namespace");
+        assert_eq!(
+            s.plugin_kv_get("c.d", "k").unwrap(),
+            None,
+            "per-plugin namespace"
+        );
         let big = vec![0u8; MAX_VALUE + 1];
         assert_eq!(
             s.plugin_kv_set("a.b", "big", &big, DEFAULT_QUOTA).unwrap(),
@@ -231,12 +243,21 @@ mod tests {
             Err(KvError::Quota { .. })
         ));
         assert_eq!(s.plugin_kv_usage("q.q").unwrap(), 91);
-        assert!(s.plugin_kv_set("a.b", "", b"x", DEFAULT_QUOTA).unwrap().is_err());
+        assert!(
+            s.plugin_kv_set("a.b", "", b"x", DEFAULT_QUOTA)
+                .unwrap()
+                .is_err()
+        );
         for k in ["p/1", "p/2", "q/1"] {
-            s.plugin_kv_set("a.b", k, b"x", DEFAULT_QUOTA).unwrap().unwrap();
+            s.plugin_kv_set("a.b", k, b"x", DEFAULT_QUOTA)
+                .unwrap()
+                .unwrap();
         }
         let l = s.plugin_kv_list("a.b", "p/", None, 10).unwrap();
-        assert_eq!(l.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["p/1", "p/2"]);
+        assert_eq!(
+            l.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+            ["p/1", "p/2"]
+        );
         let l = s.plugin_kv_list("a.b", "", Some("p/2"), 10).unwrap();
         assert_eq!(l[0].0, "q/1");
         assert!(s.plugin_kv_delete("a.b", "p/1").unwrap());

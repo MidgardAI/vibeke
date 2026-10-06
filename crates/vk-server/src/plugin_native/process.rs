@@ -184,24 +184,31 @@ pub async fn request(
         .unwrap()
         .get(id)
         .cloned()
-        .ok_or_else(|| err(ErrorKind::Conflict, format!("{id}'s process is not running")))?;
+        .ok_or_else(|| {
+            err(
+                ErrorKind::Conflict,
+                format!("{id}'s process is not running"),
+            )
+        })?;
     send_request(&h, method, params, timeout).await
 }
 
 async fn send_request(h: &Handle, method: &str, params: Value, timeout: Duration) -> R {
-    let tx = h
-        .tx
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| err(ErrorKind::Conflict, "the plugin process is not running"))?;
+    let tx =
+        h.tx.lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| err(ErrorKind::Conflict, "the plugin process is not running"))?;
     let n = h.next_id.fetch_add(1, Ordering::Relaxed);
     let (otx, orx) = oneshot::channel();
     h.pending.lock().unwrap().insert(n, otx);
     let line = json!({"jsonrpc": "2.0", "id": n, "method": method, "params": params}).to_string();
     if tx.send(line).is_err() {
         h.pending.lock().unwrap().remove(&n);
-        return Err(err(ErrorKind::Conflict, "the plugin process is not running"));
+        return Err(err(
+            ErrorKind::Conflict,
+            "the plugin process is not running",
+        ));
     }
     match tokio::time::timeout(timeout, orx).await {
         Ok(Ok(Ok(v))) => Ok(v),
@@ -216,7 +223,10 @@ async fn send_request(h: &Handle, method: &str, params: Value, timeout: Duration
         Ok(Err(_)) => Err(err(ErrorKind::Conflict, "the plugin process exited")),
         Err(_) => {
             h.pending.lock().unwrap().remove(&n);
-            Err(err(ErrorKind::Timeout, format!("{method}: no answer from the plugin")))
+            Err(err(
+                ErrorKind::Timeout,
+                format!("{method}: no answer from the plugin"),
+            ))
         }
     }
 }
@@ -261,7 +271,9 @@ async fn supervise(server: &Arc<Server>, id: &str, h: Handle) {
                 break;
             }
         };
-        let Some(pdecl) = m.process.clone() else { break };
+        let Some(pdecl) = m.process.clone() else {
+            break;
+        };
         if let Err(why) = vk_compat::native::registry::verify_launch(&e) {
             super::launch::launch_failed(server, id, "process", &why);
             server.notify("plugin", None, &format!("{id} not started"), &why, "normal");
@@ -286,18 +298,25 @@ async fn supervise(server: &Arc<Server>, id: &str, h: Handle) {
             .filter(|(k, _)| !k.starts_with("VIBEKE_"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let launch =
-            match super::launch::prepare(server, &e, &m, &pdecl.command, &token, &extra, &incarnation)
-                .await
-            {
-                Ok(l) => l,
-                Err(why) => {
-                    tokens::revoke_kind(server, &kind);
-                    super::launch::launch_failed(server, id, "process", &why);
-                    server.notify("plugin", None, &format!("{id} not started"), &why, "normal");
-                    break;
-                }
-            };
+        let launch = match super::launch::prepare(
+            server,
+            &e,
+            &m,
+            &pdecl.command,
+            &token,
+            &extra,
+            &incarnation,
+        )
+        .await
+        {
+            Ok(l) => l,
+            Err(why) => {
+                tokens::revoke_kind(server, &kind);
+                super::launch::launch_failed(server, id, "process", &why);
+                server.notify("plugin", None, &format!("{id} not started"), &why, "normal");
+                break;
+            }
+        };
         let mut cmd = super::launch::command(&launch);
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -398,11 +417,12 @@ async fn supervise(server: &Arc<Server>, id: &str, h: Handle) {
                                 continue;
                             }
                             // Never echo the plugin's own api_call/violation records back.
-                            if ev.actor.get("id").and_then(Value::as_str) == Some(plugin.as_str())
-                            {
+                            if ev.actor.get("id").and_then(Value::as_str) == Some(plugin.as_str()) {
                                 continue;
                             }
-                            if super::authorize_live(&s, &super::plugin_ctx(&plugin, &kind)).is_err() {
+                            if super::authorize_live(&s, &super::plugin_ctx(&plugin, &kind))
+                                .is_err()
+                            {
                                 break;
                             }
                             let line = notify_line("events.event", json!({"event": &*ev}));
@@ -556,7 +576,14 @@ async fn handle_exit(
     let stderr_tail = {
         let b = h.stderr.lock().unwrap();
         let s = String::from_utf8_lossy(&b);
-        let t: String = s.chars().rev().take(2048).collect::<Vec<_>>().into_iter().rev().collect();
+        let t: String = s
+            .chars()
+            .rev()
+            .take(2048)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         vk_redact::redact(&t).into_owned()
     };
     let (n, exhausted) = record_crash(server, id);
@@ -578,7 +605,11 @@ async fn handle_exit(
         }),
     );
     if exhausted {
-        state(server).crash_disabled.lock().unwrap().insert(id.to_string());
+        state(server)
+            .crash_disabled
+            .lock()
+            .unwrap()
+            .insert(id.to_string());
         h.set_state("crashed");
         server.notify(
             "plugin",
@@ -593,7 +624,13 @@ async fn handle_exit(
     }
     if !will_restart {
         h.set_state("crashed");
-        server.notify("plugin", None, &format!("plugin {id} stopped"), why, "normal");
+        server.notify(
+            "plugin",
+            None,
+            &format!("plugin {id} stopped"),
+            why,
+            "normal",
+        );
         return false;
     }
     h.restarts.fetch_add(1, Ordering::Relaxed);
@@ -644,7 +681,12 @@ fn on_line(
 
 /// Process status of plugin `id` (for `plugin.list`).
 pub fn status(server: &Server, id: &str) -> Option<Value> {
-    state(server).procs.lock().unwrap().get(id).map(|h| h.json())
+    state(server)
+        .procs
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|h| h.json())
 }
 
 #[cfg(test)]

@@ -212,7 +212,11 @@ pub fn list(server: &Server, plugin: Option<&str>) -> Vec<Value> {
     let reg = super::registry(server);
     let pf = vk_compat::herdr::current_platform();
     let mut out = vec![];
-    for e in reg.native.values().filter(|e| plugin.is_none_or(|p| p == e.id)) {
+    for e in reg
+        .native
+        .values()
+        .filter(|e| plugin.is_none_or(|p| p == e.id))
+    {
         let (st, m) = native_status(e, super::vibeke_version());
         let Some(m) = m else { continue };
         let crashed = state(server).crash_disabled.lock().unwrap().contains(&e.id);
@@ -323,7 +327,8 @@ pub async fn api_action(server: &Arc<Server>, ctx: &Ctx, p: &Value, wait: bool) 
         let mut q = p.clone();
         q["plugin"] = json!(plugin);
         q["pane"] = json!(pane);
-        return super::ui::open_pane(server, ctx, &q).map(|v| json!({"log": null, "pane": v["pane"]}));
+        return super::ui::open_pane(server, ctx, &q)
+            .map(|v| json!({"log": null, "pane": v["pane"]}));
     }
     let ictx = InvokeCtx::from_params(server, p);
     let (rec, done) = invoke(server, &plugin, &action, ictx).await?;
@@ -399,7 +404,17 @@ pub async fn invoke(
                     Ok(v) => (true, v.to_string(), None),
                     Err(e) => (false, String::new(), Some(e.message)),
                 };
-                let fin = finish(&s, &plugin, &action, &id, ok, if ok { Some(0) } else { Some(1) }, out.as_bytes(), msg.as_deref().unwrap_or("").as_bytes(), msg.as_deref());
+                let fin = finish(
+                    &s,
+                    &plugin,
+                    &action,
+                    &id,
+                    ok,
+                    if ok { Some(0) } else { Some(1) },
+                    out.as_bytes(),
+                    msg.as_deref().unwrap_or("").as_bytes(),
+                    msg.as_deref(),
+                );
                 let _ = tx.send(fin);
             });
             Ok((rec, rx))
@@ -416,9 +431,26 @@ pub async fn invoke(
                 extra.push(("VIBEKE_CONTEXT_PANE".into(), pn.clone()));
             }
             extra.push(("VIBEKE_PLUGIN_CONTEXT_JSON".into(), ictx.json().to_string()));
-            let (s, e2, m2, id2, act2) = (server.clone(), e.clone(), m.clone(), id.clone(), action.clone());
+            let (s, e2, m2, id2, act2) = (
+                server.clone(),
+                e.clone(),
+                m.clone(),
+                id.clone(),
+                action.clone(),
+            );
             tokio::spawn(async move {
-                let fin = run_argv(&s, &e2, &m2, &argv, extra, None, &id2, &act2, TokenKind::Action).await;
+                let fin = run_argv(
+                    &s,
+                    &e2,
+                    &m2,
+                    &argv,
+                    extra,
+                    None,
+                    &id2,
+                    &act2,
+                    TokenKind::Action,
+                )
+                .await;
                 drop(slot);
                 let _ = tx.send(fin);
             });
@@ -427,7 +459,14 @@ pub async fn invoke(
     }
 }
 
-fn emit_invoked(server: &Server, plugin: &str, action: &str, id: &str, ictx: &InvokeCtx, how: &str) {
+fn emit_invoked(
+    server: &Server,
+    plugin: &str,
+    action: &str,
+    id: &str,
+    ictx: &InvokeCtx,
+    how: &str,
+) {
     emit(
         server,
         "plugin.action_invoked",
@@ -602,7 +641,17 @@ pub async fn run_argv(
     let er = er.await.unwrap_or_default();
     tokens::revoke_kind(server, &tkind);
     let code = status.and_then(|s| s.code());
-    finish(server, &e.id, what, id, code == Some(0), code, &out, &er, None)
+    finish(
+        server,
+        &e.id,
+        what,
+        id,
+        code == Some(0),
+        code,
+        &out,
+        &er,
+        None,
+    )
 }
 
 // ---- [[on]] hooks ----------------------------------------------------------------------------
@@ -623,7 +672,13 @@ pub async fn hook_dispatcher(server: Arc<Server>) {
         }
         let reg = super::registry(&server);
         for (e, m) in reg.native_active(super::vibeke_version()) {
-            if m.on.is_empty() || state(&server).crash_disabled.lock().unwrap().contains(&e.id) {
+            if m.on.is_empty()
+                || state(&server)
+                    .crash_disabled
+                    .lock()
+                    .unwrap()
+                    .contains(&e.id)
+            {
                 continue;
             }
             for h in &m.on {
@@ -683,7 +738,18 @@ fn fire_hook(
         format!("on {}", ev.kind),
     );
     tokio::spawn(async move {
-        run_argv(&s, &e2, &m2, &argv, extra, Some(payload), &id, &what, TokenKind::Hook).await;
+        run_argv(
+            &s,
+            &e2,
+            &m2,
+            &argv,
+            extra,
+            Some(payload),
+            &id,
+            &what,
+            TokenKind::Hook,
+        )
+        .await;
         drop(slot);
     });
 }

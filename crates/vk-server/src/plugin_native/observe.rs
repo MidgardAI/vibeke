@@ -144,7 +144,13 @@ pub async fn tick(server: &Arc<Server>) -> bool {
     if changed {
         if let Some(old) = &old {
             for (t, id, data) in diff(old, &snap) {
-                emit(server, t, json!({"plugin": id}), json!({"kind": "system"}), data);
+                emit(
+                    server,
+                    t,
+                    json!({"plugin": id}),
+                    json!({"kind": "system"}),
+                    data,
+                );
             }
         }
         emit(
@@ -190,7 +196,14 @@ async fn reconcile(server: &Arc<Server>, reg: &Registry) {
         }
     }
     // Tokens and contributions of plugins that are no longer active.
-    let ids: Vec<String> = state(server).ui.lock().unwrap().by_plugin.keys().cloned().collect();
+    let ids: Vec<String> = state(server)
+        .ui
+        .lock()
+        .unwrap()
+        .by_plugin
+        .keys()
+        .cloned()
+        .collect();
     for id in ids {
         let ok = reg
             .native
@@ -300,7 +313,14 @@ fn auto_update(server: &Server) {
     let session = server.paths.session.clone();
     tokio::spawn(async move {
         let r = tokio::process::Command::new(&bin)
-            .args(["--session", &session, "plugin", "update", "--auto", "--json"])
+            .args([
+                "--session",
+                &session,
+                "plugin",
+                "update",
+                "--auto",
+                "--json",
+            ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

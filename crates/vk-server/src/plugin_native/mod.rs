@@ -184,7 +184,9 @@ pub fn active(server: &Server, id: &str) -> Result<(NativeEntry, Manifest), RpcE
     if state(server).crash_disabled.lock().unwrap().contains(id) {
         return Err(err(
             ErrorKind::Conflict,
-            format!("{id} was disabled after repeated crashes; `vibeke plugin enable {id}` or restart it"),
+            format!(
+                "{id} was disabled after repeated crashes; `vibeke plugin enable {id}` or restart it"
+            ),
         ));
     }
     match native_status(e, vibeke_version()) {
@@ -236,7 +238,11 @@ pub fn caller(server: &Server, ctx: &Ctx) -> Option<tokens::TokenInfo> {
 }
 
 /// The plugin id a plugin-only method acts for, or `permission_denied`.
-pub fn require_plugin(server: &Server, ctx: &Ctx, method: &str) -> Result<tokens::TokenInfo, RpcError> {
+pub fn require_plugin(
+    server: &Server,
+    ctx: &Ctx,
+    method: &str,
+) -> Result<tokens::TokenInfo, RpcError> {
     caller(server, ctx).ok_or_else(|| {
         err(
             ErrorKind::PermissionDenied,
@@ -262,8 +268,16 @@ fn token_current(server: &Server, info: &tokens::TokenInfo) -> Result<(), String
         NativeStatus::Active => {}
         st => return Err(format!("{} is {}", info.plugin, st.as_str())),
     }
-    if state(server).crash_disabled.lock().unwrap().contains(&info.plugin) {
-        return Err(format!("{} was disabled after repeated crashes", info.plugin));
+    if state(server)
+        .crash_disabled
+        .lock()
+        .unwrap()
+        .contains(&info.plugin)
+    {
+        return Err(format!(
+            "{} was disabled after repeated crashes",
+            info.plugin
+        ));
     }
     Ok(())
 }
@@ -479,7 +493,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     if own.is_some() {
                         a.retain(|r| r["plugin_id"].as_str() == plugin);
                     }
-                    a.extend(actions::logs(server, plugin, p.get("limit").and_then(Value::as_u64)));
+                    a.extend(actions::logs(
+                        server,
+                        plugin,
+                        p.get("limit").and_then(Value::as_u64),
+                    ));
                 }
                 v
             })

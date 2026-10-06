@@ -264,15 +264,27 @@ impl Capabilities {
         let flags = [
             ("panes_read", self.panes_read, approved.panes_read),
             ("panes_write", self.panes_write, approved.panes_write),
-            ("agents_control", self.agents_control, approved.agents_control),
+            (
+                "agents_control",
+                self.agents_control,
+                approved.agents_control,
+            ),
             (
                 "interactions_answer",
                 self.interactions_answer,
                 approved.interactions_answer,
             ),
             ("tasks_write", self.tasks_write, approved.tasks_write),
-            ("preview_access", self.preview_access, approved.preview_access),
-            ("browser_script", self.browser_script, approved.browser_script),
+            (
+                "preview_access",
+                self.preview_access,
+                approved.preview_access,
+            ),
+            (
+                "browser_script",
+                self.browser_script,
+                approved.browser_script,
+            ),
             ("storage", self.storage, approved.storage),
         ];
         for (name, want, have) in flags {
@@ -340,7 +352,10 @@ impl Capabilities {
         let mut v = vec![];
         for u in &self.ui {
             if !UI_KINDS.contains(&u.as_str()) {
-                v.push(format!("unknown ui kind `{u}` (one of {})", UI_KINDS.join(", ")));
+                v.push(format!(
+                    "unknown ui kind `{u}` (one of {})",
+                    UI_KINDS.join(", ")
+                ));
             }
         }
         for e in &self.events_read {
@@ -350,7 +365,9 @@ impl Capabilities {
         }
         for n in &self.network {
             if n.trim().is_empty() || n.contains(['/', ' ']) {
-                v.push(format!("invalid network host `{n}` (a host name, `*.domain` or `*`)"));
+                v.push(format!(
+                    "invalid network host `{n}` (a host name, `*.domain` or `*`)"
+                ));
             }
         }
         for f in &self.filesystem {
@@ -416,28 +433,43 @@ pub fn need(method: &str) -> Need {
         return Never;
     }
     match method {
-        "client.hello" | "client.list" | "api.methods" | "api.schema" | "workspace.list"
-        | "workspace.get" | "tab.list" | "pane.list" | "pane.get" | "pane.current"
-        | "agent.list" | "agent.get" | "layout.export" | "task.list" | "task.get"
-        | "notification.send" | "plugin.list" | "plugin.action.list" | "plugin.log.list"
-        | "plugin.action" | "plugin.action.run" | "plugin.action.invoke" | "ui.contributions"
-        | "worktree.list" | "status.segments" => Base,
+        "client.hello"
+        | "client.list"
+        | "api.methods"
+        | "api.schema"
+        | "workspace.list"
+        | "workspace.get"
+        | "tab.list"
+        | "pane.list"
+        | "pane.get"
+        | "pane.current"
+        | "agent.list"
+        | "agent.get"
+        | "layout.export"
+        | "task.list"
+        | "task.get"
+        | "notification.send"
+        | "plugin.list"
+        | "plugin.action.list"
+        | "plugin.log.list"
+        | "plugin.action"
+        | "plugin.action.run"
+        | "plugin.action.invoke"
+        | "ui.contributions"
+        | "worktree.list"
+        | "status.segments" => Base,
         "plugin.kv.get" | "plugin.kv.set" | "plugin.kv.delete" | "plugin.kv.list" => Storage,
         "ui.contribute" => Ui,
         "events.read" | "events.wait" | "events.subscribe" | "events.unsubscribe" => Events,
         "pane.read" | "pane.wait_output" | "pane.wait_idle" | "search.query" | "agent.read"
         | "interaction.list" | "interaction.get" | "git.status" | "git.diff" | "git.log"
-        | "fs.list" | "fs.read" | "notification.list" | "pane.can_see_paths" => {
-            Cap("panes_read")
-        }
+        | "fs.list" | "fs.read" | "notification.list" | "pane.can_see_paths" => Cap("panes_read"),
         "pane.split" | "pane.close" | "pane.zoom" | "pane.resize" | "pane.equalize"
         | "pane.rename" | "pane.send_text" | "pane.send_keys" | "pane.send_bytes" | "pane.run"
-        | "pane.mark_unread" | "pane.mark_seen" | "pane.pin" | "tab.create" | "workspace.create"
-        | "notification.read" => Cap("panes_write"),
+        | "pane.mark_unread" | "pane.mark_seen" | "pane.pin" | "tab.create"
+        | "workspace.create" | "notification.read" => Cap("panes_write"),
         "agent.start" | "agent.resume" | "agent.prompt" | "agent.interrupt" | "agent.send_keys"
-        | "agent.rename" | "agent.release" | "agent.stop" | "agent.kill" => {
-            Cap("agents_control")
-        }
+        | "agent.rename" | "agent.release" | "agent.stop" | "agent.kill" => Cap("agents_control"),
         "interaction.answer" | "interaction.cancel" => Cap("interactions_answer"),
         m if m.starts_with("task.") || m.starts_with("worktree.") => Cap("tasks_write"),
         "browser.eval" | "browser.script" => Cap("browser_script"),
@@ -576,8 +608,16 @@ mod tests {
             network: vec!["*".into()],
             ..Default::default()
         };
-        assert!(caps().widened_from(&star).iter().all(|w| !w.starts_with("events_read")));
-        assert!(star.widened_from(&caps()).contains(&"events_read:*".to_string()));
+        assert!(
+            caps()
+                .widened_from(&star)
+                .iter()
+                .all(|w| !w.starts_with("events_read"))
+        );
+        assert!(
+            star.widened_from(&caps())
+                .contains(&"events_read:*".to_string())
+        );
         // Read-only filesystem is covered by read-write, not the reverse.
         let rw = Capabilities {
             filesystem: vec!["$HOME/notes".into()],
@@ -596,7 +636,11 @@ mod tests {
         let c = caps();
         assert!(c.check("pane.list", &json!({})).is_ok());
         assert!(c.check("pane.read", &json!({})).is_ok());
-        assert!(c.check("pane.send_text", &json!({})).unwrap_err().contains("panes_write"));
+        assert!(
+            c.check("pane.send_text", &json!({}))
+                .unwrap_err()
+                .contains("panes_write")
+        );
         assert!(c.check("interaction.answer", &json!({})).is_err());
         assert!(c.check("plugin.kv.set", &json!({})).is_ok());
         assert!(c.check("some.new_method", &json!({})).is_err());
@@ -635,16 +679,25 @@ mod tests {
         let c = caps();
         assert!(c.check("events.subscribe", &json!({})).is_err());
         assert!(
-            c.check("events.subscribe", &json!({"types": ["agent.started", "agent.*"]}))
+            c.check(
+                "events.subscribe",
+                &json!({"types": ["agent.started", "agent.*"]})
+            )
+            .is_ok()
+        );
+        assert!(
+            c.check("events.read", &json!({"types": "pane.created"}))
                 .is_ok()
         );
-        assert!(c.check("events.read", &json!({"types": "pane.created"})).is_ok());
         assert!(
             c.check("events.wait", &json!({"types": ["interaction.opened"]}))
                 .unwrap_err()
                 .contains("interaction.opened")
         );
-        assert!(c.check("events.subscribe", &json!({"types": ["*"]})).is_err());
+        assert!(
+            c.check("events.subscribe", &json!({"types": ["*"]}))
+                .is_err()
+        );
         assert!(c.reads_event("agent.exited"));
         assert!(!c.reads_event("pane.closed"));
     }

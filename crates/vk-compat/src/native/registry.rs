@@ -18,13 +18,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::MANIFEST_FILE;
 use super::caps::Capabilities;
 use super::manifest::{Manifest, ManifestError};
-use super::MANIFEST_FILE;
 use crate::herdr::registry::{
-    Origin, PluginDirs, Registry, RegistryError, copy_tree, escaping_symlink, new_grant_id,
-    nonce, now_ms, remove_checkout, set_tree_writable, sha256_hex, tree_digest,
-    tree_digest_cached,
+    Origin, PluginDirs, Registry, RegistryError, copy_tree, escaping_symlink, new_grant_id, nonce,
+    now_ms, remove_checkout, set_tree_writable, sha256_hex, tree_digest, tree_digest_cached,
 };
 
 impl From<ManifestError> for RegistryError {
@@ -114,7 +113,10 @@ impl NativeStatus {
 pub fn read_manifest(root: &Path) -> Result<(Manifest, String), RegistryError> {
     let f = root.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&f).map_err(|e| {
-        RegistryError::Io(std::io::Error::new(e.kind(), format!("{}: {e}", f.display())))
+        RegistryError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", f.display()),
+        ))
     })?;
     let m = Manifest::parse(&text)?;
     Ok((m, sha256_hex(text.as_bytes())))
@@ -127,7 +129,10 @@ fn plugin_root(src: &Path) -> Result<PathBuf, RegistryError> {
         src.to_path_buf()
     };
     let p = std::fs::canonicalize(&p).map_err(|e| {
-        RegistryError::Io(std::io::Error::new(e.kind(), format!("{}: {e}", p.display())))
+        RegistryError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {e}", p.display()),
+        ))
     })?;
     if !p.join(MANIFEST_FILE).is_file() {
         return Err(RegistryError::Conflict(format!(
@@ -300,7 +305,10 @@ pub fn verify_launch(e: &NativeEntry) -> Result<(), String> {
         return Ok(());
     }
     if e.tree_sha256.is_empty() {
-        return Err(format!("{} has no recorded tree digest; reinstall it", e.id));
+        return Err(format!(
+            "{} has no recorded tree digest; reinstall it",
+            e.id
+        ));
     }
     let actual =
         tree_digest_cached(&e.root).map_err(|err| format!("{}: {err}", e.root.display()))?;
@@ -620,16 +628,17 @@ pub fn consent_and_build(
     if e.managed && !e.built && !m.build_on(crate::herdr::current_platform()).is_empty() {
         if let Err(why) = run_build(&e, &m, &digest) {
             let _ = Registry::update(dirs, |r| {
-                if r.native.get(id).and_then(|x| x.consent.as_ref()).map(|x| x.consent_id.as_str())
+                if r.native
+                    .get(id)
+                    .and_then(|x| x.consent.as_ref())
+                    .map(|x| x.consent_id.as_str())
                     == Some(c.consent_id.as_str())
                 {
                     r.native_revoke(id)?;
                 }
                 Ok(())
             });
-            return Err(RegistryError::Conflict(format!(
-                "{why}; consent revoked"
-            )));
+            return Err(RegistryError::Conflict(format!("{why}; consent revoked")));
         }
         Registry::update(dirs, |r| r.native_finish_build(id, &c.consent_id))?;
     }
@@ -730,9 +739,11 @@ mod tests {
         assert!(reg.plugins.is_empty(), "never visible to the Herdr paths");
         assert_eq!(reg.generation, 1);
         // Consent must cover every item.
-        let err = Registry::update(&d, |r| r.native_consent("acme.tool", Some(&["storage".into()])))
-            .unwrap_err()
-            .to_string();
+        let err = Registry::update(&d, |r| {
+            r.native_consent("acme.tool", Some(&["storage".into()]))
+        })
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("capabilities_not_accepted"), "{err}");
         Registry::update(&d, |r| r.native_consent("acme.tool", Some(&["*".into()]))).unwrap();
         let reg = Registry::load(&d).unwrap();
@@ -753,8 +764,15 @@ mod tests {
             native_status(e, "1.0.0").0,
             NativeStatus::Reconsent(vec!["panes_write".into()])
         );
-        let terms = consent_terms(e, &read_manifest(&e.root).unwrap().0, Some(&e.consent.as_ref().unwrap().capabilities));
-        assert!(terms.contains("HIGH panes_write") && terms.contains("(new)"), "{terms}");
+        let terms = consent_terms(
+            e,
+            &read_manifest(&e.root).unwrap().0,
+            Some(&e.consent.as_ref().unwrap().capabilities),
+        );
+        assert!(
+            terms.contains("HIGH panes_write") && terms.contains("(new)"),
+            "{terms}"
+        );
         // Tampering with the managed checkout stops launches.
         set_tree_writable(&e.root, true).unwrap();
         std::fs::write(e.root.join("go.sh"), "echo changed\n").unwrap();
@@ -767,7 +785,9 @@ mod tests {
             "id = \"acme.tool\"\nname = \"x\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
-        let err = Registry::update(&d, |r| r.link(&h).map(|_| ())).unwrap_err().to_string();
+        let err = Registry::update(&d, |r| r.link(&h).map(|_| ()))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("native"), "{err}");
         Registry::update(&d, |r| r.native_remove(&d, "acme.tool").map(|_| ())).unwrap();
         assert!(!d.checkouts.join("acme.tool").exists());
@@ -778,13 +798,20 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let d = dirs(t.path());
         let src = t.path().join("dev");
-        plugin(&src, "", "min_vibeke = \"9.0.0\"\n[[build]]\ncommand = [\"true\"]");
+        plugin(
+            &src,
+            "",
+            "min_vibeke = \"9.0.0\"\n[[build]]\ncommand = [\"true\"]",
+        );
         let (e, _) = Registry::update(&d, |r| r.native_link(&src)).unwrap();
         assert!(!e.managed && e.built, "links never build");
         Registry::update(&d, |r| r.native_consent("acme.tool", None)).unwrap();
         let reg = Registry::load(&d).unwrap();
         let e = reg.native_get("acme.tool").unwrap();
-        assert!(matches!(native_status(e, "1.0.0").0, NativeStatus::Incompatible(_)));
+        assert!(matches!(
+            native_status(e, "1.0.0").0,
+            NativeStatus::Incompatible(_)
+        ));
         assert_eq!(native_status(e, "9.0.0").0, NativeStatus::Active);
         // A managed install with a build is `unbuilt` until the build is recorded.
         Registry::update(&d, |r| r.native_remove(&d, "acme.tool").map(|_| ())).unwrap();
@@ -802,6 +829,37 @@ mod tests {
         assert_eq!(
             native_status(reg.native_get("acme.tool").unwrap(), "9.0.0").0,
             NativeStatus::Active
+        );
+        // A failing build revokes the consent it ran for.
+        let bad = t.path().join("bad");
+        plugin(
+            &bad,
+            "",
+            "[[build]]\ncommand = [\"sh\", \"-c\", \"echo nope >&2; exit 1\"]",
+        );
+        std::fs::write(
+            bad.join(MANIFEST_FILE),
+            std::fs::read_to_string(bad.join(MANIFEST_FILE))
+                .unwrap()
+                .replace("acme.tool", "acme.bad"),
+        )
+        .unwrap();
+        let staged = stage(&d, &bad, local_origin(&bad, None)).unwrap();
+        Registry::update(&d, |r| r.native_install_staged(&d, staged)).unwrap();
+        let err = consent_and_build(&d, "acme.bad", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("nope") && err.contains("consent revoked"),
+            "{err}"
+        );
+        assert!(
+            Registry::load(&d)
+                .unwrap()
+                .native_get("acme.bad")
+                .unwrap()
+                .consent
+                .is_none()
         );
         let df = diff(
             &Capabilities::default(),

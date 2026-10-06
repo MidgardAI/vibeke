@@ -163,7 +163,11 @@ fn build() -> Result<Registry, Vec<String>> {
         out
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
-    let events = load(&[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES], "event", &mut errs);
+    let events = load(
+        &[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES, BATCH_3B_EVENT_SHAPES],
+        "event",
+        &mut errs,
+    );
     let notifications = load(&[NOTIFICATION_SHAPES], "notification", &mut errs);
     let mut reg = Registry {
         defs,
@@ -471,6 +475,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
     BATCH_3D_SHAPES,
+    BATCH_3B_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -720,7 +725,7 @@ browser.pane.console :: {pane?: Target, toggle?: bool = true, focus?: bool = fal
 browser.pane.console_push :: {pane: Target, entries: [object]} => {pane: string, stored: int}
 
 # --- plugins ---
-plugin.list :: {} => {plugins: [{id: string, version?: string, enabled: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}
+plugin.list :: {} => {plugins: [{id?: string, plugin_id?: string, version?: string|null, enabled: bool, native?: bool, kind?: actions|process|string, capabilities?: any, status?: any}]}
 "##;
 
 /// Methods outside spec 07 §2's tables (tasks' review/check/dependency surface, adapters,
@@ -823,7 +828,7 @@ compat.herdr.call :: {method: string, params?: object, as_plugin?: {session: str
 # not available from a pane
 compat.invocation.verify :: {ticket: string} => {plugin_id: string, digest: string, grant_id: string, log_id: string, session: string, sandboxed: bool}
 compat.status :: {} => {baseline: {herdr: string, commit: string}, support: string, listener: {enabled: bool, path: string, live: bool}, inventory: {implemented: int, partial: int, missing: int}, brokers: int, herdr_root: string, registry: string}
-compat.ui.state :: {} => {window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}
+compat.ui.state :: {} => {window_title?: string, popup?: {pane: string, plugin_id: string, entrypoint_id: string}, contributions?: [object], agent_views: [{plugin_id: string, run: string, text: string, detail?: string, tone?: string, updated_ms: int}]}
 plugin.action.list :: {plugin?: string} => {actions: [{plugin_id: string, action_id: string, qualified_id: string, title: string, description?: string, contexts: any, available: bool, status: string}], keybindings: [{plugin_id: string, key: string, action: string, description?: string, installed: bool, reason?: string, conflicts_with?: any}]}
 # source only honoured as palette|keybinding, otherwise cli; context ids (pane_id/pane, tab_id/tab, workspace_id/workspace) may be given at top level or under context
 plugin.action.run :: {plugin: string, action: string, source?: palette|keybinding, context?: {pane_id?: Target, pane?: Target, tab_id?: Target, tab?: Target, workspace_id?: Target, workspace?: Target}, pane_id?: Target, tab_id?: Target, workspace_id?: Target}
@@ -1229,6 +1234,55 @@ machine.removed :: {machine: string} => {label: string}
 agent.item :: {run: string, pane: string} => {kind: ItemKind, summary: string, item: string, turn: string, seq: int, payload_ref: string|null}
 agent.subagent_started :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
 agent.subagent_finished :: {run: string, pane: string} => {agent_id: string|null, agent_type: string}
+"##;
+
+/// Native plugin runtime (07 §7.1–7.6, lane 3B; `crate::plugin_native`).
+const BATCH_3B_SHAPES: &str = r##"
+# --- registry over the API (full scope only; 07 §2.16) ---
+# native: refused with permission_denied capabilities_not_accepted (details.requested_capabilities) until accept_capabilities covers every requested item; Herdr manifests need trust herdr_legacy
+plugin.install :: {source: string, ref?: string, accept_capabilities?: [string], trust?: scoped|herdr_legacy = scoped}
+  => {plugin: string, kind: native|herdr, requested_capabilities: [object], entrypoints?: [string], status: string}
+plugin.link :: {path: string} => {plugin: string, kind: native|herdr, requested_capabilities?: [object]}
+plugin.enable :: {plugin: string} => {plugin: string, enabled: bool}
+plugin.disable :: {plugin: string} => {plugin: string, enabled: bool}
+plugin.remove :: {plugin: string, purge_data?: bool = false} => {plugin: string, removed: bool, kind: native|herdr}
+# re-consent after a widening update; runs [[build]] when the managed checkout needs it
+plugin.consent :: {plugin: string, accept_capabilities: [string]} => {plugin: string, consent_id: string, capabilities: object}
+plugin.restart :: {plugin: string} => {plugin: string, restarted: bool}
+# waits for the action (07 §7.2): last 4 KiB of stdout; an action without a command is sent to the process
+plugin.action :: {plugin?: string, action: string, context?: {workspace?: Target, pane?: Target, tab?: Target}, source?: string}
+  => {exit_code: int|null, stdout_tail: string|null, status: string, log: object}
+# --- plugin-only (a plugin token) ---
+plugin.kv.get :: {key: string} => {key: string, found: bool, value?: any, value_b64?: string}
+plugin.kv.set :: {key: string, value?: any, value_b64?: string} => {key: string, bytes: int, used: int, quota: int}
+plugin.kv.delete :: {key: string} => {key: string, deleted: bool}
+plugin.kv.list :: {prefix?: string, after?: string, limit?: int = 100} => {keys: [{key: string, bytes: int}], next: string|null}
+ui.contribute :: {contributions?: [object], replace?: bool = false, remove?: [{kind: string, id: string}]} => {plugin: string, contributions: int}
+# --- clients ---
+ui.contributions :: {} => {contributions: [object]}
+ui.pane.open :: {plugin: string, pane: string, target?: Target, direction?: right|down|left|up = right} => {pane: Pane}
+"##;
+
+const BATCH_3B_EVENT_SHAPES: &str = r##"
+plugin.installed :: {plugin: string} => {kind: string, update?: bool}
+plugin.linked :: {plugin: string} => {kind: string, update?: bool}
+plugin.unlinked :: {plugin: string} => {kind: string}
+plugin.uninstalled :: {plugin: string} => {kind: string}
+plugin.enabled :: {plugin: string} => {kind: string}
+plugin.disabled :: {plugin: string} => {kind: string}
+plugin.trust_changed :: {plugin: string} => {kind: string, trusted: bool}
+plugin.registry_observed :: {} => {generation: int, plugins: int}
+plugin.reloaded :: {plugin: string} => {reason: string}
+plugin.crashed :: {plugin: string} => {exit_code: int|null, reason: string, crashes_in_window: int, restart: bool, restart_in_ms: int|null, disabled: bool, stderr_tail: string}
+plugin.process_started :: {plugin: string} => {pid: int, sandbox: bool, restarts: int}
+plugin.process_stopped :: {plugin: string} => {exit_code: int|null, signal: int|null, requested: bool}
+plugin.action_invoked :: {plugin: string} => {action: string, log: string, source: string, via: argv|process}
+plugin.command_finished :: {plugin: string} => {log: string, what: string, status: completed|failed, exit_code: int|null}
+plugin.capability_violation :: {plugin: string} => {method: string, reason: string, token?: string}
+plugin.api_call :: {plugin: string} => {method: string, token?: string, ok?: bool, error_code?: string|null}
+plugin.launch_failed :: {plugin: string} => {what: string, error: string}
+plugin.pane_opened :: {plugin: string, pane?: string} => {entrypoint?: string}
+ui.contributions_changed :: {plugin: string} => {contributions: int}
 "##;
 
 #[cfg(test)]

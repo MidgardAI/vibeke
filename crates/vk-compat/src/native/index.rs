@@ -67,7 +67,10 @@ impl Index {
                 let fields = [
                     e.id.to_ascii_lowercase(),
                     e.name.clone().unwrap_or_default().to_ascii_lowercase(),
-                    e.description.clone().unwrap_or_default().to_ascii_lowercase(),
+                    e.description
+                        .clone()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase(),
                     e.repo.to_ascii_lowercase(),
                 ];
                 let mut score = 0;
@@ -82,9 +85,7 @@ impl Index {
             })
             .collect();
         hits.sort_by(|(sa, a), (sb, b)| {
-            sb.cmp(sa)
-                .then(b.stars.cmp(&a.stars))
-                .then(a.id.cmp(&b.id))
+            sb.cmp(sa).then(b.stars.cmp(&a.stars)).then(a.id.cmp(&b.id))
         });
         hits.into_iter().map(|(_, e)| e).collect()
     }
@@ -111,7 +112,9 @@ pub fn fetch(url: &str) -> Result<Index, String> {
         }
         String::from_utf8_lossy(&out.stdout).into_owned()
     } else {
-        return Err(format!("{url}: only https://, file:// and paths are supported"));
+        return Err(format!(
+            "{url}: only https://, file:// and paths are supported"
+        ));
     };
     Index::parse(&text)
 }
@@ -130,8 +133,17 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let ids = |q: &str| idx.search(q).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids("ci"), vec!["zed.ci-lite", "acme.ci"], "same score: stars decide");
+        let ids = |q: &str| {
+            idx.search(q)
+                .iter()
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids("ci"),
+            vec!["zed.ci-lite", "acme.ci"],
+            "same score: stars decide"
+        );
         assert_eq!(ids("ci sidebar"), vec!["acme.ci"]);
         assert_eq!(ids("notes"), vec!["x.notes"]);
         assert!(ids("nothing").is_empty());
@@ -139,7 +151,12 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let f = t.path().join("index.json");
         std::fs::write(&f, r#"{"plugins": []}"#).unwrap();
-        assert!(fetch(&format!("file://{}", f.display())).unwrap().plugins.is_empty());
+        assert!(
+            fetch(&format!("file://{}", f.display()))
+                .unwrap()
+                .plugins
+                .is_empty()
+        );
         assert!(fetch("ftp://x").is_err());
     }
 }

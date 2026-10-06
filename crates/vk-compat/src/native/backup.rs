@@ -77,7 +77,8 @@ pub fn export(dirs: &PluginDirs, out: &Path) -> Result<Report, RegistryError> {
     std::fs::create_dir_all(out)?;
     let reg = Registry::load_shared(dirs)?;
     let mut rep = Report::default();
-    let text = serde_json::to_vec_pretty(&reg).map_err(|e| RegistryError::Corrupt(e.to_string()))?;
+    let text =
+        serde_json::to_vec_pretty(&reg).map_err(|e| RegistryError::Corrupt(e.to_string()))?;
     std::fs::write(out.join("plugins.json"), text)?;
     let _ = std::fs::copy(super::lockfile::path(dirs), out.join("plugins.lock"));
     let mut ids: Vec<(String, PathBuf, bool)> = reg
@@ -91,10 +92,23 @@ pub fn export(dirs: &PluginDirs, out: &Path) -> Result<Report, RegistryError> {
             .map(|e| (e.id.clone(), e.root.clone(), e.managed)),
     );
     for (id, root, managed) in &ids {
-        copy_missing(&dirs.config_dir(id), &out.join("config").join(id), &mut rep, id)?;
-        copy_missing(&dirs.state_dir(id), &out.join("state").join(id), &mut rep, id)?;
+        copy_missing(
+            &dirs.config_dir(id),
+            &out.join("config").join(id),
+            &mut rep,
+            id,
+        )?;
+        copy_missing(
+            &dirs.state_dir(id),
+            &out.join("state").join(id),
+            &mut rep,
+            id,
+        )?;
         if *managed && root.is_dir() {
-            let name = root.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+            let name = root
+                .file_name()
+                .map(|n| n.to_os_string())
+                .unwrap_or_default();
             let dest = out.join("checkouts").join(id).join(name);
             copy_tree(root, &dest)?;
             let _ = set_tree_writable(&dest, true);
@@ -133,10 +147,14 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
         if current.plugins.contains_key(&e.id) || current.native.contains_key(&e.id) {
             rep.conflicts.push(format!("{}: already registered", e.id));
         } else if e.managed && checkout_of(&e.id, &e.root).is_none() {
-            rep.skipped.push(format!("{}: checkout missing from the export", e.id));
-        } else if !e.managed && !e.root.is_dir() {
             rep.skipped
-                .push(format!("{}: linked directory {} missing", e.id, e.root.display()));
+                .push(format!("{}: checkout missing from the export", e.id));
+        } else if !e.managed && !e.root.is_dir() {
+            rep.skipped.push(format!(
+                "{}: linked directory {} missing",
+                e.id,
+                e.root.display()
+            ));
         } else {
             herdr.push(e.clone());
         }
@@ -145,10 +163,14 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
         if current.plugins.contains_key(&e.id) || current.native.contains_key(&e.id) {
             rep.conflicts.push(format!("{}: already registered", e.id));
         } else if e.managed && checkout_of(&e.id, &e.root).is_none() {
-            rep.skipped.push(format!("{}: checkout missing from the export", e.id));
-        } else if !e.managed && !e.root.is_dir() {
             rep.skipped
-                .push(format!("{}: linked directory {} missing", e.id, e.root.display()));
+                .push(format!("{}: checkout missing from the export", e.id));
+        } else if !e.managed && !e.root.is_dir() {
+            rep.skipped.push(format!(
+                "{}: linked directory {} missing",
+                e.id,
+                e.root.display()
+            ));
         } else {
             native.push(e.clone());
         }
@@ -163,10 +185,7 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
     }
     let place = |id: &str, root: &Path| -> Result<PathBuf, RegistryError> {
         let src = checkout_of(id, root).ok_or_else(|| RegistryError::NotFound(id.into()))?;
-        let dest = dirs
-            .checkouts
-            .join(id)
-            .join(format!("import-{}", nonce()));
+        let dest = dirs.checkouts.join(id).join(format!("import-{}", nonce()));
         copy_tree(&src, &dest)?;
         set_tree_writable(&dest, false)?;
         Ok(dest)
@@ -205,8 +224,18 @@ pub fn import(dirs: &PluginDirs, from: &Path, dry_run: bool) -> Result<Report, R
         Ok(ids)
     })?;
     for id in &ids {
-        copy_missing(&from.join("config").join(id), &dirs.config_dir(id), &mut rep, id)?;
-        copy_missing(&from.join("state").join(id), &dirs.state_dir(id), &mut rep, id)?;
+        copy_missing(
+            &from.join("config").join(id),
+            &dirs.config_dir(id),
+            &mut rep,
+            id,
+        )?;
+        copy_missing(
+            &from.join("state").join(id),
+            &dirs.state_dir(id),
+            &mut rep,
+            id,
+        )?;
     }
     rep.plugins = ids;
     Ok(rep)
@@ -247,13 +276,19 @@ mod tests {
         let rep = export(&a, &out).unwrap();
         assert_eq!(rep.plugins, vec!["acme.bk"]);
         assert!(out.join("state/acme.bk/db.json").is_file());
-        assert!(!out.join("state/acme.bk/.sandbox").exists(), "private dirs left out");
+        assert!(
+            !out.join("state/acme.bk/.sandbox").exists(),
+            "private dirs left out"
+        );
         assert!(export(&a, &out).is_err(), "never into a non-empty dir");
 
         let b = dirs(&t.path().join("b"));
         let dry = import(&b, &out, true).unwrap();
         assert_eq!(dry.plugins, vec!["acme.bk"]);
-        assert!(Registry::load(&b).unwrap().native.is_empty(), "dry run writes nothing");
+        assert!(
+            Registry::load(&b).unwrap().native.is_empty(),
+            "dry run writes nothing"
+        );
         let rep = import(&b, &out, false).unwrap();
         assert_eq!(rep.plugins, vec!["acme.bk"]);
         let reg = Registry::load(&b).unwrap();

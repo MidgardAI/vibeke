@@ -254,6 +254,7 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         };
         segs.push((format!(" ▸ {}", v.text), t.s(c)));
     }
+    crate::plugin_ui::decorate(app, mi, &r.pane, &mut segs);
     // Screenshots captured since the gallery was last opened for this agent (06 B7/B8).
     if let Some(n) = crate::gallery::badge(app, mi, &r.pane) {
         segs.push((format!(" 📷{n}"), t.s(t.accent)));
@@ -351,6 +352,8 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
         }
         crate::groups::push_machine(app, mi, &mut rows);
     }
+    // Native plugin sidebar sections (07 §7.4).
+    crate::plugin_ui::push_sidebar(app, &mut rows);
     let pinned: Vec<(usize, &Pane)> = app
         .machines
         .iter()
@@ -1051,7 +1054,9 @@ fn draw_borders(
             };
             let near_focus = fr
                 .is_some_and(|f| x + 1 >= f.x && x <= f.x + f.w && y + 1 >= f.y && y <= f.y + f.h);
-            g.put_str(x, y, ch, app.theme.border(near_focus), 1);
+            let st = crate::plugin_ui::border_style(app, rects, x, y)
+                .unwrap_or_else(|| app.theme.border(near_focus));
+            g.put_str(x, y, ch, st, 1);
         }
     }
 }

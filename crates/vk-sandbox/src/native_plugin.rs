@@ -291,7 +291,13 @@ mod tests {
             .tempdir_in("/tmp")
             .unwrap();
         let r = t.path().canonicalize().unwrap();
-        for d in ["h/notes", "s/plugins/state/a.b", "s/co/a.b", "c/plugins/a.b", "s/prof"] {
+        for d in [
+            "h/notes",
+            "s/plugins/state/a.b",
+            "s/co/a.b",
+            "c/plugins/a.b",
+            "s/prof",
+        ] {
             std::fs::create_dir_all(r.join(d)).unwrap();
         }
         let b = NativeBox {
@@ -320,9 +326,18 @@ mod tests {
         let (_t, b) = fixture();
         let p = Policy::from_spec(&b.spec());
         assert!(p.allow_write.contains(&b.state_dir));
-        assert!(p.allow_write.contains(&b.home.join("notes")), "declared rw path");
-        assert!(!p.allow_write.contains(&b.plugin_root), "plugin dir read-only");
-        assert!(!p.allow_write.iter().any(|w| w.ends_with("opt/data")), ":ro stays read-only");
+        assert!(
+            p.allow_write.contains(&b.home.join("notes")),
+            "declared rw path"
+        );
+        assert!(
+            !p.allow_write.contains(&b.plugin_root),
+            "plugin dir read-only"
+        );
+        assert!(
+            !p.allow_write.iter().any(|w| w.ends_with("opt/data")),
+            ":ro stays read-only"
+        );
         assert!(p.network.is_none() && !p.network_open);
         let mut open = b.clone();
         open.net = Net::Proxy(4567);
@@ -350,7 +365,11 @@ mod tests {
         assert_eq!(net_for(&[], Some(1)), Net::None);
         assert_eq!(net_for(&["*".into()], None), Net::Open);
         assert_eq!(net_for(&["a.com".into()], Some(9)), Net::Proxy(9));
-        assert_eq!(net_for(&["a.com".into()], None), Net::None, "no proxy, no network");
+        assert_eq!(
+            net_for(&["a.com".into()], None),
+            Net::None,
+            "no proxy, no network"
+        );
     }
 
     #[test]
@@ -373,7 +392,10 @@ mod tests {
         ));
         // …unless declared.
         let q = egress_policy(&[first.to_string()]);
-        assert!(matches!(q.check_host(first, 443), HostVerdict::Allow { .. }));
+        assert!(matches!(
+            q.check_host(first, 443),
+            HostVerdict::Allow { .. }
+        ));
     }
 
     #[test]

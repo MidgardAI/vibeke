@@ -79,7 +79,9 @@ pub fn api(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> R {
             if let Err(e) = r {
                 let (kind, reason) = match e {
                     vk_store::KvError::Key(_) => (ErrorKind::InvalidParams, "key"),
-                    vk_store::KvError::ValueTooLarge(_) => (ErrorKind::InvalidParams, "value_too_large"),
+                    vk_store::KvError::ValueTooLarge(_) => {
+                        (ErrorKind::InvalidParams, "value_too_large")
+                    }
                     vk_store::KvError::Quota { .. } => (ErrorKind::Conflict, "quota_exceeded"),
                 };
                 return Err(err(kind, e.to_string()).details(json!({"quota": q, "reason": reason})));

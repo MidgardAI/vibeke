@@ -75,7 +75,12 @@ fn color_ok(c: &str) -> bool {
         || c.parse::<u8>().is_ok()
 }
 
-fn str_field(o: &Map<String, Value>, k: &str, max: usize, required: bool) -> Result<Option<String>, String> {
+fn str_field(
+    o: &Map<String, Value>,
+    k: &str,
+    max: usize,
+    required: bool,
+) -> Result<Option<String>, String> {
     match o.get(k) {
         Some(Value::String(s)) => {
             let c = clean(s, max);
@@ -211,7 +216,11 @@ pub fn validate(
             let cmd: Vec<String> = o
                 .get("command")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             if cmd.is_empty() {
                 return Err("`command` (argv) is required".into());
@@ -226,7 +235,11 @@ pub fn validate(
             let contexts: Vec<String> = o
                 .get("contexts")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_else(|| vec!["global".into()]);
             if let Some(c) = contexts
                 .iter()
@@ -243,7 +256,10 @@ pub fn validate(
         "keybinding" => {
             let key = str_field(o, "key", 40, true)?.unwrap_or_default();
             let action = action_ok("action")?.ok_or("`action` is required")?;
-            (key.clone(), json!({"id": key, "key": key, "action": action}))
+            (
+                key.clone(),
+                json!({"id": key, "key": key, "action": action}),
+            )
         }
         "pane_decoration" => {
             let pane = id_of("pane")?;
@@ -260,7 +276,10 @@ pub fn validate(
         }
         "link_handler" => {
             let id = id_of("id")?;
-            let pattern = match (o.get("regex").and_then(Value::as_str), o.get("scheme").and_then(Value::as_str)) {
+            let pattern = match (
+                o.get("regex").and_then(Value::as_str),
+                o.get("scheme").and_then(Value::as_str),
+            ) {
                 (Some(r), _) => {
                     regex::RegexBuilder::new(r)
                         .size_limit(1 << 20)
@@ -268,7 +287,10 @@ pub fn validate(
                         .map_err(|e| format!("`regex`: {e}"))?;
                     r.to_string()
                 }
-                (None, Some(s)) if s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) => {
+                (None, Some(s))
+                    if s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+                {
                     format!("^{}:", regex::escape(s))
                 }
                 (None, Some(s)) => return Err(format!("`scheme` `{s}` is not a URL scheme")),
@@ -286,7 +308,8 @@ pub fn validate(
                 .get("path")
                 .and_then(Value::as_str)
                 .ok_or("`path` is required")?;
-            if rel.starts_with('/') || rel.split('/').any(|c| c == "..") || !rel.ends_with(".toml") {
+            if rel.starts_with('/') || rel.split('/').any(|c| c == "..") || !rel.ends_with(".toml")
+            {
                 return Err("`path`: a .toml file inside the plugin directory".into());
             }
             let full = root.join(rel);
@@ -329,7 +352,9 @@ pub fn contribute(
             let need = ui_cap_for(&kind).unwrap_or("?");
             return Err(err(
                 ErrorKind::PermissionDenied,
-                format!("capability_violation: contributions[{i}] ({kind}) needs ui = [\"{need}\"]"),
+                format!(
+                    "capability_violation: contributions[{i}] ({kind}) needs ui = [\"{need}\"]"
+                ),
             ));
         }
         parsed.push((kind, id, v));
@@ -384,14 +409,26 @@ pub fn api_contribute(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 .filter_map(|x| {
                     Some((
                         x.get("kind")?.as_str()?.to_string(),
-                        x.get("id").or(x.get("key")).or(x.get("pane"))?.as_str()?.to_string(),
+                        x.get("id")
+                            .or(x.get("key"))
+                            .or(x.get("pane"))?
+                            .as_str()?
+                            .to_string(),
                     ))
                 })
                 .collect()
         })
         .unwrap_or_default();
     let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
-    let r = contribute(server, &info.plugin, &info.caps, &info.consent_id, &list, replace, &remove);
+    let r = contribute(
+        server,
+        &info.plugin,
+        &info.caps,
+        &info.consent_id,
+        &list,
+        replace,
+        &remove,
+    );
     if let Err(e) = &r
         && e.message.starts_with("capability_violation")
     {
@@ -625,7 +662,10 @@ pub fn link_handlers(server: &Server) -> Vec<Value> {
 /// `clicked_url`/`link_handler_id` in its context (`VIBEKE_PLUGIN_CONTEXT_JSON`).
 pub async fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if ctx.pane_scope.is_some() {
-        return Err(err(ErrorKind::PermissionDenied, "not available from a pane"));
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "not available from a pane",
+        ));
     }
     let plugin = super::plugin_param(p)?;
     let handler = p
@@ -639,7 +679,12 @@ pub async fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let h = items_of(server, "link_handler")
         .into_iter()
         .find(|v| v["plugin_id"] == plugin && v["id"] == handler)
-        .ok_or_else(|| err(ErrorKind::NotFound, format!("{plugin} has no link handler {handler}")))?;
+        .ok_or_else(|| {
+            err(
+                ErrorKind::NotFound,
+                format!("{plugin} has no link handler {handler}"),
+            )
+        })?;
     let re = regex::Regex::new(h["pattern"].as_str().unwrap_or("^$"))
         .map_err(|e| invalid(e.to_string()))?;
     if !re.is_match(url) {
@@ -668,19 +713,34 @@ pub fn open_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let v = items_of(server, "pane")
         .into_iter()
         .find(|v| v["plugin_id"] == plugin && v["id"] == pane_id)
-        .ok_or_else(|| err(ErrorKind::NotFound, format!("{plugin} contributes no pane {pane_id}")))?;
+        .ok_or_else(|| {
+            err(
+                ErrorKind::NotFound,
+                format!("{plugin} contributes no pane {pane_id}"),
+            )
+        })?;
     let cmd: Vec<String> = v["command"]
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let cmd = super::launch::resolve_argv(&e.root, &cmd);
     let target = crate::api::resolve_pane(
         server,
         ctx,
-        Some(p.get("target").and_then(Value::as_str).unwrap_or("@focused")),
+        Some(
+            p.get("target")
+                .and_then(Value::as_str)
+                .unwrap_or("@focused"),
+        ),
     )?;
     let dir = vk_proto::layout::Direction::parse(
-        p.get("direction").and_then(Value::as_str).unwrap_or("right"),
+        p.get("direction")
+            .and_then(Value::as_str)
+            .unwrap_or("right"),
     )
     .ok_or_else(|| invalid("direction must be right|down|left|up"))?;
     let pane = server

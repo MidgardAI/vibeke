@@ -467,7 +467,10 @@ storage = true
         assert_eq!(m.id, "demo.phone-bridge");
         assert_eq!(m.kind(), "process");
         assert_eq!(m.process.as_ref().unwrap().restart, Restart::Always);
-        assert!(m.process.as_ref().unwrap().autostart, "autostart defaults on");
+        assert!(
+            m.process.as_ref().unwrap().autostart,
+            "autostart defaults on"
+        );
         assert_eq!(m.actions.len(), 2);
         assert!(m.actions[1].command.is_none());
         assert_eq!(m.actions[1].contexts, vec!["global"]);
@@ -475,8 +478,16 @@ storage = true
         assert!(m.capabilities.storage);
         assert_eq!(m.warnings, vec!["unknown key `future_field` ignored"]);
         assert!(m.compatible("0.1.0", "macos").is_ok());
-        assert!(m.compatible("0.0.9", "macos").unwrap_err().contains("requires Vibeke"));
-        assert!(m.compatible("1.0.0", "windows").unwrap_err().contains("supports"));
+        assert!(
+            m.compatible("0.0.9", "macos")
+                .unwrap_err()
+                .contains("requires Vibeke")
+        );
+        assert!(
+            m.compatible("1.0.0", "windows")
+                .unwrap_err()
+                .contains("supports")
+        );
         assert_eq!(m.entrypoints("linux").len(), 5);
     }
 

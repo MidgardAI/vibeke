@@ -21,19 +21,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use vk_compat::herdr::registry::{Registry, RegistryError};
 use vk_compat::herdr::source;
-use vk_compat::native::registry::{
-    self as nreg, NativeStatus, consent_and_build, native_status,
-};
+use vk_compat::native::registry::{self as nreg, NativeStatus, consent_and_build, native_status};
 use vk_proto::rpc::{ErrorKind, RpcError};
 
 fn reg_err(e: RegistryError) -> RpcError {
     match e {
-        RegistryError::NotFound(id) => {
-            err(ErrorKind::NotFound, format!("plugin not found: {id}"))
-                .details(json!({"object": "plugin"}))
-        }
+        RegistryError::NotFound(id) => err(ErrorKind::NotFound, format!("plugin not found: {id}"))
+            .details(json!({"object": "plugin"})),
         RegistryError::Conflict(m) if m.starts_with("capabilities_not_accepted") => {
-            err(ErrorKind::PermissionDenied, m).details(json!({"reason": "capabilities_not_accepted"}))
+            err(ErrorKind::PermissionDenied, m)
+                .details(json!({"reason": "capabilities_not_accepted"}))
         }
         RegistryError::Conflict(m) => err(ErrorKind::Conflict, m),
         RegistryError::Manifest(m) => invalid(m.to_string()),
@@ -42,11 +39,13 @@ fn reg_err(e: RegistryError) -> RpcError {
 }
 
 fn accepted(p: &Value) -> Option<Vec<String>> {
-    p.get("accept_capabilities").and_then(Value::as_array).map(|a| {
-        a.iter()
-            .filter_map(|x| x.as_str().map(str::to_string))
-            .collect()
-    })
+    p.get("accept_capabilities")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
 }
 
 fn items_json(caps: &vk_compat::native::caps::Capabilities) -> Value {
@@ -79,10 +78,11 @@ async fn resolve_source(
         .ok_or_else(|| invalid(format!("{src}: not a directory, manifest or owner/repo")))?;
     let parent = dirs(server).checkouts.join(".fetch");
     let gs2 = gs.clone();
-    let fetched = tokio::task::spawn_blocking(move || source::fetch(&gs2, &source::base(), &parent))
-        .await
-        .map_err(crate::api::internal)?
-        .map_err(|e| err(ErrorKind::RemoteUnavailable, format!("fetch failed: {e}")))?;
+    let fetched =
+        tokio::task::spawn_blocking(move || source::fetch(&gs2, &source::base(), &parent))
+            .await
+            .map_err(crate::api::internal)?
+            .map_err(|e| err(ErrorKind::RemoteUnavailable, format!("fetch failed: {e}")))?;
     Ok((fetched.plugin_dir.clone(), Some((fetched, gs))))
 }
 
@@ -117,7 +117,10 @@ pub async fn install(server: &Arc<Server>, p: &Value) -> R {
         };
         cleanup(&fetched);
         let m = staged.manifest.clone();
-        if let Err(why) = m.compatible(super::vibeke_version(), vk_compat::herdr::current_platform()) {
+        if let Err(why) = m.compatible(
+            super::vibeke_version(),
+            vk_compat::herdr::current_platform(),
+        ) {
             staged.discard();
             return Err(err(ErrorKind::Unsupported, why));
         }
@@ -141,14 +144,15 @@ pub async fn install(server: &Arc<Server>, p: &Value) -> R {
         }
         let id = m.id.clone();
         let d2 = d.clone();
-        let (e, _) = Registry::update(&d, move |r| r.native_install_staged(&d2, staged))
-            .map_err(reg_err)?;
+        let (e, _) =
+            Registry::update(&d, move |r| r.native_install_staged(&d2, staged)).map_err(reg_err)?;
         let d3 = d.clone();
         let id2 = id.clone();
-        let consent = tokio::task::spawn_blocking(move || consent_and_build(&d3, &id2, Some(acc.as_slice())))
-            .await
-            .map_err(crate::api::internal)?
-            .map_err(reg_err)?;
+        let consent =
+            tokio::task::spawn_blocking(move || consent_and_build(&d3, &id2, Some(acc.as_slice())))
+                .await
+                .map_err(crate::api::internal)?
+                .map_err(reg_err)?;
         registry_changed(server);
         audit(
             server,
@@ -161,7 +165,9 @@ pub async fn install(server: &Arc<Server>, p: &Value) -> R {
             .get(&id)
             .map(|e| native_status(e, super::vibeke_version()).0.as_str())
             .unwrap_or("unknown");
-        return Ok(json!({"plugin": id, "kind": "native", "requested_capabilities": requested, "status": st}));
+        return Ok(
+            json!({"plugin": id, "kind": "native", "requested_capabilities": requested, "status": st}),
+        );
     }
     // A Herdr manifest.
     let staged = match &fetched {
@@ -233,7 +239,11 @@ pub fn set_enabled(server: &Arc<Server>, p: &Value, on: bool) -> R {
     if reg.native.contains_key(&id) {
         Registry::update(&d, |r| r.native_set_enabled(&id, on)).map_err(reg_err)?;
         if on {
-            super::state(server).crash_disabled.lock().unwrap().remove(&id);
+            super::state(server)
+                .crash_disabled
+                .lock()
+                .unwrap()
+                .remove(&id);
             super::state(server).crashes.lock().unwrap().remove(&id);
         }
     } else {
@@ -245,7 +255,10 @@ pub fn set_enabled(server: &Arc<Server>, p: &Value, on: bool) -> R {
 
 pub async fn remove(server: &Arc<Server>, p: &Value) -> R {
     let id = super::plugin_param(p)?.to_string();
-    let purge = p.get("purge_data").and_then(Value::as_bool).unwrap_or(false);
+    let purge = p
+        .get("purge_data")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let d = dirs(server);
     let reg = Registry::load_shared(&d).map_err(reg_err)?;
     let kind = if reg.native.contains_key(&id) {
@@ -259,7 +272,9 @@ pub async fn remove(server: &Arc<Server>, p: &Value) -> R {
         }
         "native"
     } else {
-        let e = reg.get(&id).map_err(|_| reg_err(RegistryError::NotFound(id.clone())))?;
+        let e = reg
+            .get(&id)
+            .map_err(|_| reg_err(RegistryError::NotFound(id.clone())))?;
         if e.managed {
             let d2 = d.clone();
             Registry::update(&d, |r| r.uninstall(&d2, &id)).map_err(reg_err)?;
@@ -269,7 +284,12 @@ pub async fn remove(server: &Arc<Server>, p: &Value) -> R {
         "herdr"
     };
     registry_changed(server);
-    audit(server, "plugin.remove", &id, json!({"kind": kind, "purge_data": purge}));
+    audit(
+        server,
+        "plugin.remove",
+        &id,
+        json!({"kind": kind, "purge_data": purge}),
+    );
     Ok(json!({"plugin": id, "removed": true, "kind": kind}))
 }
 
@@ -297,7 +317,12 @@ pub async fn consent(server: &Arc<Server>, p: &Value) -> R {
         .map_err(crate::api::internal)?
         .map_err(reg_err)?;
     registry_changed(server);
-    audit(server, "plugin.consent", &id, json!({"consent": c.consent_id}));
+    audit(
+        server,
+        "plugin.consent",
+        &id,
+        json!({"consent": c.consent_id}),
+    );
     Ok(json!({"plugin": id, "consent_id": c.consent_id, "capabilities": c.capabilities}))
 }
 
