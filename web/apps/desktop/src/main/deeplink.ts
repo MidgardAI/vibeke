@@ -61,6 +61,10 @@ function fromParts(path: string, query: URLSearchParams): string | null {
     case 'i':
       if (parts.length === 3 && ID.test(b!) && ID.test(c!)) return `#/i/${enc(b!)}/${enc(c!)}`;
       return null;
+    case 'w':
+      if (parts.length === 3 && ID.test(b!) && ID.test(c!)) return `#/w/${enc(b!)}/${enc(c!)}`;
+      if (parts.length === 5 && ID.test(b!) && ID.test(c!) && d === 't' && ID.test(parts[4]!)) return `#/w/${enc(b!)}/${enc(c!)}/t/${enc(parts[4]!)}`;
+      return null;
     case 'h':
       if (parts.length === 4 && ID.test(b!) && c === 'p' && ID.test(d!)) return `#/h/${enc(b!)}/p/${enc(d!)}`;
       return null;

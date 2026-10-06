@@ -52,11 +52,13 @@ test('connect to this Mac, keyboard approvals, palette, popover, pane window', a
   // First run shows the tour (a modal dialog); skip it.
   await page.getByRole('button', { name: 'Skip' }).click();
 
-  // Dashboard: the host is online and both workspaces' panes are listed.
+  // Dashboard: the host is online and both workspaces are listed in the sidebar; ⌘2 opens the
+  // first one.
+  const workspaces = page.getByRole('navigation', { name: 'Workspaces' }).locator('[data-nav-item]');
+  await expect(workspaces).toHaveCount(2);
   await page.keyboard.press(`${mod}+2`);
-  await expect(page).toHaveURL(/#\/panes$/);
-  await expect(page.locator('[data-nav-item]')).toHaveCount(2);
-  await shoot(app, page, 'main-panes');
+  await expect(page).toHaveURL(/#\/w\/[^/]+\/[^/?]+/);
+  await shoot(app, page, 'main-workspace');
 
   // Two approvals from two panes → two Inbox cards.
   host.requestApproval(wsA.pane, 'echo hello-alpha', wsA.cwd);
@@ -127,9 +129,8 @@ test('connect to this Mac, keyboard approvals, palette, popover, pane window', a
   await shoot(app, page, 'main-settings');
 
   // Pop the pane out: bound to its pane (no previous/next), no Lock without a resume path.
-  await page.keyboard.press(`${mod}+2`);
-  await page.locator('[data-nav-item]').first().click();
-  await expect(page).toHaveURL(/#\/h\/[^/]+\/p\//);
+  await workspaces.first().click();
+  await expect(page).toHaveURL(/#\/w\/[^/]+\/[^/?]+/);
   await page.getByRole('button', { name: 'Open this pane in a new window' }).click();
   const paneWin = await app.waitForEvent('window', { predicate: (p) => p.url().includes('surface=pane'), timeout: 15_000 });
   await expect(paneWin.getByText('HOOK-DONE').first()).toBeVisible({ timeout: 20_000 });

@@ -15,6 +15,8 @@ describe('deep links', () => {
     expect(deepLinkToHash('vibeke://inbox')).toBe('#/inbox');
     expect(deepLinkToHash('vibeke://i/abc/01HXYZ')).toBe('#/i/abc/01HXYZ');
     expect(deepLinkToHash('vibeke://h/abc/p/01HXYZ')).toBe('#/h/abc/p/01HXYZ');
+    expect(deepLinkToHash('vibeke://w/abc/01HWS')).toBe('#/w/abc/01HWS');
+    expect(deepLinkToHash('vibeke://w/abc/01HWS/t/01HXYZ')).toBe('#/w/abc/01HWS/t/01HXYZ');
     expect(deepLinkToHash('vibeke://')).toBe('#/');
   });
   test('anything else is ignored', () => {
@@ -25,6 +27,9 @@ describe('deep links', () => {
       'vibeke://evil',
       'vibeke://i/a',
       'vibeke://i/a/b/c',
+      'vibeke://w/a',
+      'vibeke://w/a/b/x/c',
+      'vibeke://w/a/b/t',
       'javascript:alert(1)',
       'file:///etc/passwd',
       'https://example.com/',
