@@ -123,6 +123,44 @@ pub fn ancestry_pane(server: &Server, pid: Option<i32>) -> Option<String> {
     None
 }
 
+/// Whether `pid` runs inside a pane of *any* session under the Vibeke runtime root
+/// `runtime_root` (every session of this installation on the machine): one of its ancestors is
+/// a pane holder (`vibeke hold --spec <runtime_root>/<session>/spawn-…`). Used where a pane of
+/// another session must not pass for an operator (the Herdr shim's session switch, 07 §8.2).
+pub fn inside_any_pane(pid: Option<i32>, runtime_root: &std::path::Path) -> bool {
+    let Some(mut pid) = pid.filter(|p| *p > 1).map(|p| p as u32) else {
+        return false;
+    };
+    let roots = [
+        Some(runtime_root.to_path_buf()),
+        runtime_root.canonicalize().ok(),
+    ];
+    let ours = |spec: &str| {
+        roots
+            .iter()
+            .flatten()
+            .any(|r| std::path::Path::new(spec).starts_with(r))
+    };
+    for _ in 0..64 {
+        let Some(info) = vk_hold::procinfo::info(pid) else {
+            return false;
+        };
+        let spec = info
+            .argv
+            .iter()
+            .position(|a| a == "--spec")
+            .and_then(|i| info.argv.get(i + 1));
+        if info.argv.get(1).is_some_and(|a| a == "hold") && spec.is_some_and(|s| ours(s)) {
+            return true;
+        }
+        if info.ppid <= 1 || info.ppid == pid {
+            return false;
+        }
+        pid = info.ppid;
+    }
+    false
+}
+
 /// Per-connection cleanup that must run however the connection ends (EOF, error, panic
 /// unwinding): client-held agent-browser screencast subscriptions and take-overs.
 struct ConnGuard {
@@ -200,6 +238,14 @@ where
                     "render.attach" => break Some(req),
                     "events.subscribe" => {
                         subscribe(&server, &req, out_tx.clone())?;
+                    }
+                    // The Herdr shim reaches another session through this method. A process
+                    // inside a pane of another session is not this session's operator, with or
+                    // without its pane token (07 §8.2, 09 §6).
+                    "compat.herdr.call" if ctx.pane_scope.is_none()
+                        && inside_any_pane(peer_pid, server.paths.runtime.parent().unwrap_or(&server.paths.runtime)) => {
+                        let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, "a pane cannot select another session"));
+                        let _ = out_tx.send(serde_json::to_string(&r)?);
                     }
                     _ => {
                         let (srv, c, tx, l) = (server.clone(), ctx.clone(), out_tx.clone(), l.to_string());

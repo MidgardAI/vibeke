@@ -431,7 +431,7 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
     ]);
     let log_id = s(&r["log"]["log_id"]);
     assert!(
-        matches!(r["log"]["status"].as_str(), Some("running" | "completed")),
+        matches!(r["log"]["status"].as_str(), Some("running" | "succeeded")),
         "{r}"
     );
     let mut last = Value::Null;
@@ -450,7 +450,7 @@ fn herdr_plugin_install_trust_actions_hooks_and_revocation() {
         .find(|l| l["log_id"] == log_id.as_str())
         .unwrap()
         .clone();
-    assert_eq!(log["status"], "completed", "{log}");
+    assert_eq!(log["status"], "succeeded", "{log}");
     assert_eq!(log["exit_code"], 0);
     assert!(s(&log["stdout"]).contains("done"));
     let panes: Value =

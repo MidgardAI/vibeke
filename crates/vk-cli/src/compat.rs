@@ -6,8 +6,10 @@
 //! * `plugin action list|run` and `plugin logs` go through the server API.
 //! * `vibeke compat herdr <args>` (and the binary invoked as `herdr`) speaks the Herdr CLI
 //!   grammar. It routes to the invocation's private broker when it runs inside a plugin
-//!   invocation (`VIBEKE_HERDR_BROKER`), otherwise to this session's Vibeke server. It never
-//!   uses a `HERDR_SOCKET_PATH` that is not a Vibeke broker, so it cannot reach a live Herdr.
+//!   invocation (`VIBEKE_HERDR_BROKER`), otherwise to this session's Vibeke server. A broker path
+//!   is used only after `vk_server::compat::registered_broker` has resolved it to a socket the
+//!   session registered (no `..`, no symlinks), so it cannot reach a live Herdr; `server.stop`
+//!   and other server lifecycle methods are never forwarded anywhere.
 
 use crate::client::{self, Client};
 use crate::{EXIT_API, EXIT_NO_SERVER, EXIT_OK, EXIT_PERMISSION, EXIT_USAGE, Global};
@@ -110,9 +112,24 @@ fn print(g: &Global, v: &Value, human: impl FnOnce() -> String) {
     }
 }
 
-/// Run `[[build]]` for a managed checkout with the build environment (no broker/context).
-fn build(entry: &registry::Entry, m: &herdr::manifest::Manifest) -> Result<(), String> {
+/// Run `[[build]]` for a managed checkout with the build environment (no broker/context). The
+/// manifest must stay the reviewed one (`digest`) before every step and after the last one;
+/// a change aborts the build (and with it the registration).
+fn build(
+    entry: &registry::Entry,
+    m: &herdr::manifest::Manifest,
+    digest: &str,
+) -> Result<(), String> {
+    let unchanged = || match registry::read_manifest(&entry.root) {
+        Ok((_, d)) if d == digest => Ok(()),
+        Ok(_) => Err(format!(
+            "{}'s manifest changed during the build; build and registration aborted",
+            entry.id
+        )),
+        Err(e) => Err(format!("manifest unreadable during the build: {e}")),
+    };
     for step in m.build_on(herdr::current_platform()) {
+        unchanged()?;
         let argv = launch::resolve_argv(&entry.root, &step.command);
         let env = launch::build_env(&entry.id, &entry.root, std::env::vars());
         let out = std::process::Command::new(&argv[0])
@@ -132,24 +149,46 @@ fn build(entry: &registry::Entry, m: &herdr::manifest::Manifest) -> Result<(), S
             ));
         }
     }
-    Ok(())
+    unchanged()
 }
 
-/// Grant legacy trust for `id`, then build a managed checkout that was not built yet. A build
-/// failure revokes the grant again.
-fn grant(dirs: &registry::PluginDirs, reg: &mut Registry, id: &str) -> Result<Value, i32> {
-    let g = reg.trust(id).map_err(reg_fail)?;
-    let entry = reg.get(id).map_err(reg_fail)?.clone();
-    if entry.managed && !entry.built {
-        let (m, _) = registry::read_manifest(&entry.root).map_err(reg_fail)?;
-        if let Err(e) = build(&entry, &m) {
-            reg.revoke(id).map_err(reg_fail)?;
-            reg.save(dirs).map_err(reg_fail)?;
-            return Err(fail("build_failed", e, EXIT_API));
+/// Grant legacy trust for `id`, then build a managed checkout. Each registry step is its own
+/// locked read-modify-write (the build runs without the lock), and the build is recorded only
+/// for the grant it was made for: a revocation made meanwhile stays. A build failure or a
+/// manifest change during the build revokes the grant again.
+fn grant(dirs: &registry::PluginDirs, id: &str) -> Result<Value, i32> {
+    let (g, entry) = Registry::update(dirs, |reg| {
+        let g = reg.trust(id)?;
+        Ok((g, reg.get(id)?.clone()))
+    })
+    .map_err(reg_fail)?;
+    if entry.managed {
+        let revoke_this = |why: String| {
+            let _ = Registry::update(dirs, |reg| {
+                if reg
+                    .get(id)
+                    .ok()
+                    .and_then(|e| e.trust.as_ref())
+                    .is_some_and(|t| t.grant_id == g.grant_id)
+                {
+                    reg.revoke(id)?;
+                }
+                Ok(())
+            });
+            fail("build_failed", why, EXIT_API)
+        };
+        let m = match registry::read_manifest(&entry.root) {
+            Ok((m, d)) if d == g.manifest_sha256 => m,
+            Ok(_) => return Err(revoke_this("the manifest changed after review".into())),
+            Err(e) => return Err(revoke_this(e.to_string())),
+        };
+        if let Err(e) = build(&entry, &m, &g.manifest_sha256) {
+            return Err(revoke_this(e));
         }
-        reg.mark_built(id);
+        if let Err(e) = Registry::update(dirs, |reg| reg.finish_build(id, &g.grant_id)) {
+            return Err(revoke_this(e.to_string()));
+        }
     }
-    reg.save(dirs).map_err(reg_fail)?;
     Ok(json!(g))
 }
 
@@ -183,9 +222,15 @@ fn local(g: &Global, op: Local) -> i32 {
             EXIT_PERMISSION,
         );
     }
-    let mut reg = match Registry::load(&dirs) {
+    // Reads use a snapshot; every change is a locked read-modify-write (`Registry::update`).
+    let reg = match Registry::load(&dirs) {
         Ok(r) => r,
         Err(e) => return reg_fail(e),
+    };
+    let current = |id: &str| {
+        Registry::load(&dirs)
+            .ok()
+            .and_then(|r| r.get(id).ok().cloned())
     };
     match op {
         Local::PluginList => {
@@ -250,31 +295,28 @@ fn local(g: &Global, op: Local) -> i32 {
                     EXIT_PERMISSION,
                 );
             }
-            let (entry, m) = match reg.install(&dirs, &path, git_ref.as_deref()) {
-                Ok(x) => x,
-                Err(e) => return reg_fail(e),
-            };
-            if let Err(e) = reg.save(&dirs) {
-                return reg_fail(e);
-            }
+            let (entry, m) =
+                match Registry::update(&dirs, |r| r.install(&dirs, &path, git_ref.as_deref())) {
+                    Ok(x) => x,
+                    Err(e) => return reg_fail(e),
+                };
             let digest = registry::read_manifest(&entry.root)
                 .map(|(_, d)| d)
                 .unwrap_or_default();
             let terms = registry::trust_terms(&entry, &m, &digest);
             let grant_v = if yes {
-                match grant(&dirs, &mut reg, &entry.id) {
+                match grant(&dirs, &entry.id) {
                     Ok(g) => Some(g),
                     Err(code) => {
                         // Abort registration on build failure (07 §7.7).
-                        let _ = reg.uninstall(&dirs, &entry.id);
-                        let _ = reg.save(&dirs);
+                        let _ = Registry::update(&dirs, |r| r.uninstall(&dirs, &entry.id));
                         return code;
                     }
                 }
             } else {
                 None
             };
-            let e = reg.get(&entry.id).cloned().unwrap_or(entry);
+            let e = current(&entry.id).unwrap_or(entry);
             print(
                 g,
                 &json!({"plugin": entry_json(&dirs, &e), "grant": grant_v, "trust_terms": terms}),
@@ -299,21 +341,21 @@ fn local(g: &Global, op: Local) -> i32 {
                     EXIT_PERMISSION,
                 );
             }
-            let (entry, m) = match reg.link(Path::new(&path)) {
+            let (entry, m) = match Registry::update(&dirs, |r| {
+                let x = r.link(Path::new(&path))?;
+                if yes {
+                    r.trust(&x.0.id)?;
+                }
+                Ok(x)
+            }) {
                 Ok(x) => x,
                 Err(e) => return reg_fail(e),
             };
-            if yes && let Err(e) = reg.trust(&entry.id) {
-                return reg_fail(e);
-            }
-            if let Err(e) = reg.save(&dirs) {
-                return reg_fail(e);
-            }
             let digest = registry::read_manifest(&entry.root)
                 .map(|(_, d)| d)
                 .unwrap_or_default();
             let terms = registry::trust_terms(&entry, &m, &digest);
-            let e = reg.get(&entry.id).cloned().unwrap_or(entry);
+            let e = current(&entry.id).unwrap_or(entry);
             print(
                 g,
                 &json!({"plugin": entry_json(&dirs, &e), "trust_terms": terms}),
@@ -327,22 +369,17 @@ fn local(g: &Global, op: Local) -> i32 {
             );
             EXIT_OK
         }
-        Local::PluginUnlink { id } => {
-            match reg.unlink(&id).and_then(|e| reg.save(&dirs).map(|_| e)) {
-                Ok(e) => {
-                    print(g, &json!({"unlinked": e.id, "root": e.root}), || {
-                        format!("unlinked {id} (files kept)")
-                    });
-                    EXIT_OK
-                }
-                Err(e) => reg_fail(e),
+        Local::PluginUnlink { id } => match Registry::update(&dirs, |r| r.unlink(&id)) {
+            Ok(e) => {
+                print(g, &json!({"unlinked": e.id, "root": e.root}), || {
+                    format!("unlinked {id} (files kept)")
+                });
+                EXIT_OK
             }
-        }
+            Err(e) => reg_fail(e),
+        },
         Local::PluginUninstall { id } => {
-            match reg
-                .uninstall(&dirs, &id)
-                .and_then(|e| reg.save(&dirs).map(|_| e))
-            {
+            match Registry::update(&dirs, |r| r.uninstall(&dirs, &id)) {
                 Ok(e) => {
                     print(g, &json!({"uninstalled": e.id}), || {
                         format!("uninstalled {id} (config/state kept)")
@@ -352,16 +389,13 @@ fn local(g: &Global, op: Local) -> i32 {
                 Err(e) => reg_fail(e),
             }
         }
-        Local::PluginEnable { id } => toggle(g, &dirs, &mut reg, &id, true),
-        Local::PluginDisable { id } => toggle(g, &dirs, &mut reg, &id, false),
+        Local::PluginEnable { id } => toggle(g, &dirs, &id, true),
+        Local::PluginDisable { id } => toggle(g, &dirs, &id, false),
     }
 }
 
-fn toggle(g: &Global, dirs: &registry::PluginDirs, reg: &mut Registry, id: &str, on: bool) -> i32 {
-    match reg
-        .set_enabled(id, on)
-        .and_then(|e| reg.save(dirs).map(|_| e))
-    {
+fn toggle(g: &Global, dirs: &registry::PluginDirs, id: &str, on: bool) -> i32 {
+    match Registry::update(dirs, |r| r.set_enabled(id, on)) {
         Ok(e) => {
             let v = entry_json(dirs, &e);
             print(g, &json!({"plugin": v}), || {
@@ -387,7 +421,7 @@ fn trust_cmd(g: &Global, args: &[String]) -> i32 {
         );
     }
     let dirs = vk_server::compat::plugin_dirs();
-    let mut reg = match Registry::load(&dirs) {
+    let reg = match Registry::load(&dirs) {
         Ok(r) => r,
         Err(e) => return reg_fail(e),
     };
@@ -411,9 +445,12 @@ fn trust_cmd(g: &Global, args: &[String]) -> i32 {
         }
         return EXIT_PERMISSION;
     }
-    match grant(&dirs, &mut reg, id) {
+    match grant(&dirs, id) {
         Ok(gr) => {
-            let e = reg.get(id).cloned().unwrap_or(entry);
+            let e = Registry::load(&dirs)
+                .ok()
+                .and_then(|r| r.get(id).ok().cloned())
+                .unwrap_or(entry);
             print(
                 g,
                 &json!({"plugin": entry_json(&dirs, &e), "grant": gr, "trust_terms": terms}),
@@ -444,11 +481,7 @@ fn untrust_cmd(g: &Global, args: &[String]) -> i32 {
         );
     }
     let dirs = vk_server::compat::plugin_dirs();
-    let mut reg = match Registry::load(&dirs) {
-        Ok(r) => r,
-        Err(e) => return reg_fail(e),
-    };
-    match reg.revoke(id).and_then(|e| reg.save(&dirs).map(|_| e)) {
+    match Registry::update(&dirs, |r| r.revoke(id)) {
         Ok(e) => {
             print(g, &json!({"plugin": entry_json(&dirs, &e)}), || {
                 format!("revoked trust for {id}")
@@ -483,17 +516,22 @@ fn migrate_cmd(g: &Global, args: &[String]) -> i32 {
             return fail("not_found", "no migration to roll back", EXIT_API);
         };
         let rb = herdr::migrate::rollback(&rec);
-        let done = path.with_extension("rolled-back");
-        let _ = std::fs::rename(&path, &done);
+        herdr::migrate::retire(&path);
         print(
             g,
-            &json!({"rolled_back": rec.id, "from": rec.from, "result": rb}),
+            &json!({"rolled_back": rec.id, "from": rec.from, "complete": rec.complete, "result": rb}),
             || {
                 format!(
-                    "rolled back {}: removed {} path(s), kept {} changed file(s); {} was never modified",
+                    "rolled back {}{}: removed {} path(s), kept {} changed file(s), refused {} unsafe path(s); {} was never modified",
                     rec.id,
+                    if rec.complete {
+                        ""
+                    } else {
+                        " (a migration that had failed part-way)"
+                    },
                     rb.removed.len(),
                     rb.kept_changed.len(),
+                    rb.refused.len(),
                     rec.from.display()
                 )
             },
@@ -552,25 +590,31 @@ fn migrate_cmd(g: &Global, args: &[String]) -> i32 {
     }
     let rec = match herdr::migrate::apply(&plan, &records) {
         Ok(r) => r,
-        Err(e) => return fail("internal", e, EXIT_API),
+        Err(e) => {
+            return fail(
+                "internal",
+                format!(
+                    "{e}; the files copied so far are recorded: retry the same command to continue, or undo with `vibeke plugin migrate --rollback`"
+                ),
+                EXIT_API,
+            );
+        }
     };
     let mut linked = Vec::new();
     let mut link_errors = Vec::new();
     if flag(args, "--link") {
-        match Registry::load(&dirs) {
-            Ok(mut reg) => {
-                for p in plan.plugins.iter().filter(|p| p.has_manifest) {
-                    let Some(root) = &p.root else { continue };
-                    match reg.link(root) {
-                        Ok((e, _)) => linked.push(e.id),
-                        Err(e) => link_errors.push(format!("{}: {e}", p.id)),
-                    }
-                }
-                if let Err(e) = reg.save(&dirs) {
-                    return reg_fail(e);
+        let r = Registry::update(&dirs, |reg| {
+            for p in plan.plugins.iter().filter(|p| p.has_manifest) {
+                let Some(root) = &p.root else { continue };
+                match reg.link(root) {
+                    Ok((e, _)) => linked.push(e.id),
+                    Err(e) => link_errors.push(format!("{}: {e}", p.id)),
                 }
             }
-            Err(e) => return reg_fail(e),
+            Ok(())
+        });
+        if let Err(e) = r {
+            return reg_fail(e);
         }
     }
     let suggestions: Vec<String> = plan
@@ -785,14 +829,49 @@ pub async fn plugin_cmd(g: &Global, args: &[String]) -> i32 {
 
 // ---- the herdr shim ---------------------------------------------------------------------------
 
-/// The invocation's broker, only when it is a Vibeke broker under this machine's runtime root.
-fn broker() -> Option<PathBuf> {
+/// The invocation's broker `(canonical socket, its session)`, only when `VIBEKE_HERDR_BROKER`
+/// equals `HERDR_SOCKET_PATH` and resolves to a broker the session registered.
+fn broker() -> Option<(PathBuf, String)> {
     let b = std::env::var_os("VIBEKE_HERDR_BROKER").map(PathBuf::from)?;
     let herdr_sock = std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from);
-    (herdr_sock.as_deref() == Some(b.as_path())
-        && b.starts_with(vk_server::paths::runtime_root())
-        && b.exists())
-    .then_some(b)
+    if herdr_sock.as_deref() != Some(b.as_path()) {
+        return None;
+    }
+    vk_server::compat::registered_broker(&b).ok()
+}
+
+/// Server lifecycle methods are never forwarded by the shim (to Vibeke or anything else).
+fn lifecycle(method: &str) -> bool {
+    method.starts_with("server.") && method != "server.reload_config"
+}
+
+/// A single-use ticket from our own broker that proves this invocation to another session.
+async fn invocation_ticket(broker: &Path) -> Result<String, String> {
+    let s = tokio::net::UnixStream::connect(broker)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (rd, mut wr) = s.into_split();
+    let line =
+        json!({"id": "t", "method": "vibeke.invocation_ticket", "params": {}}).to_string() + "\n";
+    wr.write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    let resp = BufReader::new(rd)
+        .lines()
+        .next_line()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no response")?;
+    let v: Value = serde_json::from_str(&resp).map_err(|e| e.to_string())?;
+    v["result"]["ticket"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| {
+            v["error"]["message"]
+                .as_str()
+                .unwrap_or("no ticket")
+                .to_string()
+        })
 }
 
 /// A session's public compat listener (Herdr layout under `$RUNTIME/herdr-compat`), if running.
@@ -802,22 +881,10 @@ fn listener(session: &str) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// The Vibeke session a broker belongs to (`$RUNTIME/<session>/herdr-compat/brokers/…`).
-fn broker_session(b: &Path) -> Option<String> {
-    let rel = b.strip_prefix(vk_server::paths::runtime_root()).ok()?;
-    rel.components()
-        .next()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-}
-
 /// A request to an explicitly selected session through its native socket (never spawns a
-/// server). From a plugin invocation the destination re-checks the plugin's grant (09 §6).
-async fn session_call(
-    session: &str,
-    method: &str,
-    params: Value,
-    as_plugin: Option<String>,
-) -> i32 {
+/// server). From a plugin invocation, `as_plugin` carries `{session, ticket}`: the destination
+/// verifies the ticket with the issuing session and re-checks the plugin's grant (09 §6).
+async fn session_call(session: &str, method: &str, params: Value, as_plugin: Option<Value>) -> i32 {
     let socket = vk_server::paths::Paths::new(session).socket();
     let stream = match client::connect(&socket).await {
         Ok(s) => s,
@@ -835,8 +902,8 @@ async fn session_call(
         return crate::exit_code_for(&e);
     }
     let mut p = json!({"method": method, "params": params});
-    if let Some(id) = as_plugin {
-        p["as_plugin"] = json!(id);
+    if let Some(ap) = as_plugin {
+        p["as_plugin"] = ap;
     }
     match c.call("compat.herdr.call", p).await {
         Ok(v) => print_herdr(&v.to_string()),
@@ -948,6 +1015,15 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
             local(&g, op)
         }
         Parsed::Call { method, params } => {
+            if lifecycle(&method) {
+                return fail(
+                    "unsupported",
+                    format!(
+                        "{method} is not forwarded by the Herdr compatibility shim; use `vibeke server …`"
+                    ),
+                    EXIT_API,
+                );
+            }
             let broker = broker();
             // Inside a plugin invocation whose broker is gone (the action ended, the grant was
             // revoked): never fall back to the user-level socket, which would bypass the grant.
@@ -959,12 +1035,19 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
                 );
             }
             let current = broker
-                .as_deref()
-                .and_then(broker_session)
+                .as_ref()
+                .map(|(_, s)| s.clone())
                 .unwrap_or_else(|| g.session.clone());
             let target = selected.unwrap_or_else(|| current.clone());
             if target != current {
-                if pane_scoped() {
+                // Any process inside a pane of any session (token or not) stays in its session;
+                // the destination enforces the same rule.
+                if pane_scoped()
+                    || vk_server::run::inside_any_pane(
+                        Some(std::process::id() as i32),
+                        &vk_server::paths::runtime_root(),
+                    )
+                {
                     return fail(
                         "permission_denied",
                         "a pane cannot select another session",
@@ -983,12 +1066,24 @@ pub async fn herdr_shim(g: &Global, args: &[String]) -> i32 {
                         ),
                     };
                 }
-                let as_plugin = broker
-                    .as_ref()
-                    .and_then(|_| std::env::var("HERDR_PLUGIN_ID").ok());
+                // The plugin's identity travels as a ticket from its own broker, never as an
+                // environment value.
+                let as_plugin = match &broker {
+                    Some((b, session)) => match invocation_ticket(b).await {
+                        Ok(t) => Some(json!({"session": session, "ticket": t})),
+                        Err(e) => {
+                            return fail(
+                                "permission_denied",
+                                format!("this plugin invocation cannot prove its identity: {e}"),
+                                EXIT_PERMISSION,
+                            );
+                        }
+                    },
+                    None => None,
+                };
                 return session_call(&target, &method, params, as_plugin).await;
             }
-            if let Some(b) = broker {
+            if let Some((b, _)) = broker {
                 return raw(&b, &method, params).await;
             }
             if method == "events.subscribe" {

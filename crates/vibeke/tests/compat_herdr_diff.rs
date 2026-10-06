@@ -7,11 +7,24 @@
 //! The reference binary must report the pinned version (and, when `VIBEKE_HERDR_SHA256` is
 //! given, match that checksum) or the harness refuses to run.
 //!
-//! Each scenario runs the same Herdr CLI script against both sides and compares exit codes and
-//! the JSON shape of stdout/stderr after normalization: generated ids are mapped through a
-//! bijection (first-seen order), temp roots and timestamps are replaced. Missing fields, extra
-//! fields, different error codes and different event sequences are failures; nothing else is
-//! normalized away. The normalizer is unit-tested here without any Herdr binary.
+//! Each scenario runs the same Herdr CLI script against both sides and compares, per step, the
+//! exit code and the full **values** of stdout and stderr after a small, explicit normalization:
+//!
+//! * generated ids (`*_id` keys) are replaced by tokens in first-seen order on each side, so equal
+//!   token sequences mean the two sides' ids correspond one to one (a bijection) — a response
+//!   that points at a different pane, or reuses one id for two objects, differs;
+//! * volatile numbers (`*_at`, `*_ms`, `revision`, `pid`) become `<n>` and the side's temp root
+//!   becomes `<root>`;
+//! * error `message` text (wording differs between implementations) becomes `<message>`; the
+//!   error `code` is compared exactly.
+//!
+//! Everything else is compared exactly: object keys (missing and extra fields), array lengths
+//! and order, strings (statuses, labels, error codes), numbers and booleans (focus). Output that
+//! is neither empty, one JSON document nor JSON lines is a failure on its own. The comparator is
+//! unit-tested here, including negative cases, without any Herdr binary.
+//!
+//! Not covered yet: event streams (`events.subscribe`) and unmodified plugins; the inventory
+//! records both as gaps.
 
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -60,15 +73,20 @@ const SCENARIOS: &[Scenario] = &[
     },
 ];
 
-/// Replace generated ids with a first-seen bijection and temp roots with `<root>`.
+/// Replace generated ids with a first-seen bijection, volatile numbers and error messages with
+/// placeholders, and temp roots with `<root>`.
 #[derive(Default)]
 struct Normalizer {
     ids: HashMap<String, String>,
     root: String,
 }
 
-fn looks_generated(k: &str) -> bool {
-    k.ends_with("_id") || k == "revision" || k.ends_with("_at") || k == "pid"
+fn is_id_key(k: &str) -> bool {
+    k.ends_with("_id")
+}
+
+fn is_volatile_number_key(k: &str) -> bool {
+    k.ends_with("_at") || k.ends_with("_ms") || k == "revision" || k == "pid"
 }
 
 impl Normalizer {
@@ -78,26 +96,34 @@ impl Normalizer {
             root: root.to_string_lossy().into_owned(),
         }
     }
+    fn token(&mut self, s: &str) -> Value {
+        let n = self.ids.len();
+        Value::String(
+            self.ids
+                .entry(s.to_string())
+                .or_insert_with(|| format!("<id{n}>"))
+                .clone(),
+        )
+    }
     fn value(&mut self, key: Option<&str>, v: &Value) -> Value {
         match v {
-            Value::Object(o) => Value::Object(
-                o.iter()
-                    .map(|(k, x)| (k.clone(), self.value(Some(k), x)))
-                    .collect::<Map<_, _>>(),
-            ),
-            Value::Array(a) => Value::Array(a.iter().map(|x| self.value(key, x)).collect()),
-            Value::String(s) if key.is_some_and(looks_generated) => {
-                let n = self.ids.len();
-                Value::String(
-                    self.ids
-                        .entry(s.clone())
-                        .or_insert_with(|| format!("<id{n}>"))
-                        .clone(),
+            Value::Object(o) => {
+                let in_error = key == Some("error");
+                Value::Object(
+                    o.iter()
+                        .map(|(k, x)| {
+                            if in_error && k == "message" && x.is_string() {
+                                (k.clone(), Value::String("<message>".into()))
+                            } else {
+                                (k.clone(), self.value(Some(k), x))
+                            }
+                        })
+                        .collect::<Map<_, _>>(),
                 )
             }
-            Value::Number(_)
-                if key.is_some_and(|k| k.ends_with("_at") || k == "revision" || k == "pid") =>
-            {
+            Value::Array(a) => Value::Array(a.iter().map(|x| self.value(key, x)).collect()),
+            Value::String(s) if key.is_some_and(is_id_key) => self.token(s),
+            Value::Number(_) if key.is_some_and(is_volatile_number_key) => {
                 Value::String("<n>".into())
             }
             Value::String(s) if !self.root.is_empty() && s.contains(&self.root) => {
@@ -108,16 +134,78 @@ impl Normalizer {
     }
 }
 
-/// The JSON *shape*: keys and value kinds, recursively (arrays by their first element).
-fn shape(v: &Value) -> Value {
-    match v {
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), shape(x))).collect()),
-        Value::Array(a) => Value::Array(a.first().map(shape).into_iter().collect()),
-        Value::String(_) => Value::String("string".into()),
-        Value::Number(_) => Value::String("number".into()),
-        Value::Bool(_) => Value::String("bool".into()),
-        Value::Null => Value::Null,
+/// Parse one side's output stream: empty → `null`, one JSON document, or JSON lines (an
+/// array). Anything else is malformed and fails the step.
+fn parse_output(bytes: &[u8]) -> Result<Value, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("not UTF-8: {e}"))?;
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(Value::Null);
     }
+    if let Ok(v) = serde_json::from_str(t) {
+        return Ok(v);
+    }
+    t.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).map_err(|e| format!("malformed output ({e}): {l}")))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+}
+
+/// Every difference between two normalized values, as `path: herdr … vibeke …` lines.
+fn compare(path: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for (k, va) in x {
+                let p = format!("{path}.{k}");
+                match y.get(k) {
+                    Some(vb) => compare(&p, va, vb, out),
+                    None => out.push(format!("{p}: missing in vibeke (herdr {va})")),
+                }
+            }
+            for (k, vb) in y {
+                if !x.contains_key(k) {
+                    out.push(format!("{path}.{k}: extra in vibeke ({vb})"));
+                }
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            if x.len() != y.len() {
+                out.push(format!(
+                    "{path}: herdr has {} element(s), vibeke {}",
+                    x.len(),
+                    y.len()
+                ));
+            }
+            for (i, (va, vb)) in x.iter().zip(y).enumerate() {
+                compare(&format!("{path}[{i}]"), va, vb, out);
+            }
+        }
+        _ if a == b => {}
+        _ => out.push(format!("{path}: herdr {a} vibeke {b}")),
+    }
+}
+
+/// One side's result for one step: exit code, stdout, stderr (each parsed or malformed).
+type StepOut = (i32, Result<Value, String>, Result<Value, String>);
+
+/// Compare one step of both sides; returns the differences (empty when they agree).
+fn diff_step(nh: &mut Normalizer, nv: &mut Normalizer, h: &StepOut, v: &StepOut) -> Vec<String> {
+    let mut out = Vec::new();
+    if h.0 != v.0 {
+        out.push(format!("exit code: herdr {} vibeke {}", h.0, v.0));
+    }
+    for (name, a, b) in [("stdout", &h.1, &v.1), ("stderr", &h.2, &v.2)] {
+        match (a, b) {
+            (Ok(a), Ok(b)) => {
+                let (a, b) = (nh.value(None, a), nv.value(None, b));
+                compare(name, &a, &b, &mut out);
+            }
+            (Err(e), _) => out.push(format!("{name}: herdr output malformed: {e}")),
+            (_, Err(e)) => out.push(format!("{name}: vibeke output malformed: {e}")),
+        }
+    }
+    out
 }
 
 struct Side {
@@ -144,7 +232,7 @@ impl Side {
             let _ = std::fs::create_dir_all(h.join(d));
         }
     }
-    fn run(&self, step: &[&str]) -> (i32, Value, Value) {
+    fn run(&self, step: &[&str]) -> StepOut {
         let cwd = self.home.path().join("work");
         let mut c = Command::new(&self.argv0);
         self.isolated_env(&mut c);
@@ -154,11 +242,10 @@ impl Side {
                 .map(|a| a.replace("{cwd}", &cwd.to_string_lossy())),
         );
         let out = c.output().expect("run side");
-        let parse = |b: &[u8]| serde_json::from_slice(b).unwrap_or(Value::Null);
         (
             out.status.code().unwrap_or(-1),
-            parse(&out.stdout),
-            parse(&out.stderr),
+            parse_output(&out.stdout),
+            parse_output(&out.stderr),
         )
     }
 }
@@ -220,22 +307,23 @@ fn differential_against_pinned_herdr() {
             Normalizer::new(vibeke.home.path()),
         );
         for step in sc.steps {
-            let (ch, oh, eh) = herdr.run(step);
-            let (cv, ov, ev) = vibeke.run(step);
-            let (oh, ov) = (nh.value(None, &oh), nv.value(None, &ov));
-            let (eh, ev) = (nh.value(None, &eh), nv.value(None, &ev));
-            if ch != cv || shape(&oh) != shape(&ov) || shape(&eh) != shape(&ev) {
-                failures.push(format!(
-                    "{} / {step:?}: herdr exit {ch} {oh} {eh} — vibeke exit {cv} {ov} {ev}",
-                    sc.name
-                ));
+            let h = herdr.run(step);
+            let v = vibeke.run(step);
+            for d in diff_step(&mut nh, &mut nv, &h, &v) {
+                failures.push(format!("{} / {step:?}: {d}", sc.name));
             }
         }
     }
     for side in [&herdr, &vibeke] {
         let mut c = Command::new(&side.argv0);
         side.isolated_env(&mut c);
-        let _ = c.args(&side.prefix).args(["server", "stop"]).output();
+        // Vibeke's shim never forwards `server stop`; stop its isolated server natively.
+        let args: &[&str] = if side.prefix.is_empty() {
+            &["server", "stop"]
+        } else {
+            &["server", "stop", "--kill-panes"]
+        };
+        let _ = c.args(args).output();
     }
     assert!(
         failures.is_empty(),
@@ -245,26 +333,130 @@ fn differential_against_pinned_herdr() {
     );
 }
 
+/// Compare two raw outputs as the harness would (fresh normalizers, same exit code).
+fn differs(herdr: &str, vibeke: &str) -> Vec<String> {
+    let (mut nh, mut nv) = (
+        Normalizer::new(Path::new("/tmp/h")),
+        Normalizer::new(Path::new("/tmp/v")),
+    );
+    diff_step(
+        &mut nh,
+        &mut nv,
+        &(0, parse_output(herdr.as_bytes()), Ok(Value::Null)),
+        &(0, parse_output(vibeke.as_bytes()), Ok(Value::Null)),
+    )
+}
+
 #[test]
-fn normalizer_bijection_and_shapes() {
+fn normalizer_bijection_and_volatile_fields() {
     let mut n = Normalizer::new(Path::new("/tmp/x"));
     let a = n.value(
         None,
-        &serde_json::json!({"workspace_id": "w7", "panes": [{"pane_id": "w7:p3", "cwd": "/tmp/x/work", "revision": 12}], "focused_pane_id": "w7:p3"}),
+        &serde_json::json!({"workspace_id": "w7", "panes": [{"pane_id": "w7:p3", "cwd": "/tmp/x/work", "revision": 12, "started_unix_ms": 99}], "focused_pane_id": "w7:p3", "error": {"code": "pane_not_found", "message": "pane w7:p3 is gone"}}),
     );
     assert_eq!(a["workspace_id"], "<id0>");
     assert_eq!(a["panes"][0]["pane_id"], "<id1>");
     assert_eq!(a["focused_pane_id"], "<id1>", "same id, same token");
     assert_eq!(a["panes"][0]["cwd"], "<root>/work");
     assert_eq!(a["panes"][0]["revision"], "<n>");
-    assert_eq!(
-        shape(&serde_json::json!({"a": [1, 2], "b": "x", "c": null})),
-        serde_json::json!({"a": ["number"], "b": "string", "c": null})
-    );
-    // Missing fields are not normalized away.
-    assert_ne!(
-        shape(&serde_json::json!({"a": 1})),
-        shape(&serde_json::json!({"a": 1, "b": 2}))
-    );
+    assert_eq!(a["panes"][0]["started_unix_ms"], "<n>");
+    assert_eq!(a["error"]["message"], "<message>");
+    assert_eq!(a["error"]["code"], "pane_not_found", "codes are kept");
     assert!(SCENARIOS.iter().all(|s| !s.steps.is_empty()));
+}
+
+#[test]
+fn comparator_accepts_equivalent_outputs() {
+    // Different concrete ids and temp roots, same structure and correspondence.
+    let d = differs(
+        r#"{"type":"pane_list","panes":[{"pane_id":"w1:p1","cwd":"/tmp/h/a","focused":false},{"pane_id":"w1:p2","cwd":"/tmp/h/b","focused":true}],"focused_pane_id":"w1:p2"}"#,
+        r#"{"type":"pane_list","panes":[{"pane_id":"w3:p7","cwd":"/tmp/v/a","focused":false},{"pane_id":"w3:p9","cwd":"/tmp/v/b","focused":true}],"focused_pane_id":"w3:p9"}"#,
+    );
+    assert!(d.is_empty(), "{d:?}");
+    assert!(differs("", "").is_empty());
+    assert!(
+        differs(
+            r#"{"error":{"code":"pane_not_found","message":"no pane w9:p9"}}"#,
+            r#"{"error":{"code":"pane_not_found","message":"pane not found: w9:p9"}}"#
+        )
+        .is_empty(),
+        "message wording is not compared"
+    );
+}
+
+#[test]
+fn comparator_rejects_real_differences() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "error code",
+            r#"{"error":{"code":"pane_not_found","message":"x"}}"#,
+            r#"{"error":{"code":"invalid_params","message":"x"}}"#,
+        ),
+        (
+            "status",
+            r#"{"logs":[{"log_id":"a","status":"succeeded"}]}"#,
+            r#"{"logs":[{"log_id":"b","status":"completed"}]}"#,
+        ),
+        (
+            "result type",
+            r#"{"type":"pane_info"}"#,
+            r#"{"type":"pane_list"}"#,
+        ),
+        (
+            "id correspondence (focus points at the other pane)",
+            r#"{"panes":[{"pane_id":"w1:p1"},{"pane_id":"w1:p2"}],"focused_pane_id":"w1:p2"}"#,
+            r#"{"panes":[{"pane_id":"w1:p1"},{"pane_id":"w1:p2"}],"focused_pane_id":"w1:p1"}"#,
+        ),
+        (
+            "one id reused for two objects",
+            r#"{"a_id":"x","b_id":"y"}"#,
+            r#"{"a_id":"x","b_id":"x"}"#,
+        ),
+        (
+            "focus value",
+            r#"{"pane":{"pane_id":"p","focused":true}}"#,
+            r#"{"pane":{"pane_id":"p","focused":false}}"#,
+        ),
+        (
+            "missing later array element",
+            r#"{"panes":[{"pane_id":"a"},{"pane_id":"b"}]}"#,
+            r#"{"panes":[{"pane_id":"a"}]}"#,
+        ),
+        (
+            "array order",
+            r#"{"labels":["one","two"]}"#,
+            r#"{"labels":["two","one"]}"#,
+        ),
+        ("missing field", r#"{"a":1,"b":2}"#, r#"{"a":1}"#),
+        ("extra field", r#"{"a":1}"#, r#"{"a":1,"b":2}"#),
+        ("number", r#"{"number":1}"#, r#"{"number":2}"#),
+        ("malformed vibeke output", r#"{"a":1}"#, "{not json"),
+        ("malformed herdr output", "Error: boom", r#"{"a":1}"#),
+        ("output vs none", r#"{"a":1}"#, ""),
+    ];
+    for (what, h, v) in cases {
+        assert!(!differs(h, v).is_empty(), "{what} must be a difference");
+    }
+    // Exit codes are compared too.
+    let (mut nh, mut nv) = (Normalizer::default(), Normalizer::default());
+    let d = diff_step(
+        &mut nh,
+        &mut nv,
+        &(1, Ok(Value::Null), Ok(Value::Null)),
+        &(0, Ok(Value::Null), Ok(Value::Null)),
+    );
+    assert_eq!(d.len(), 1, "{d:?}");
+    // JSON lines (event streams) parse as arrays and compare element by element.
+    let lines = |n: usize| {
+        (0..n)
+            .map(|i| format!("{{\"event\":\"e{i}\"}}\n"))
+            .collect::<String>()
+    };
+    assert!(differs(&lines(3), &lines(3)).is_empty());
+    assert!(
+        differs(&lines(3), &lines(2))
+            .iter()
+            .any(|x| x.contains("element")),
+        "a missing event is a difference"
+    );
 }

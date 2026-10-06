@@ -122,7 +122,7 @@ fn binary(sn: &Snap, dir: SplitDir, children: &[(LayoutNode, f32)], path: &str) 
         "type": "split",
         "split_id": path,
         "direction": dir_name(dir),
-        "ratio": (ratio * 1000.0).round() / 1000.0,
+        "ratio": (f64::from(ratio) * 1000.0).round() / 1000.0,
         "first": node_json(sn, &children[0].0, &format!("{path}0")),
         "second": binary(sn, dir, &children[1..], &format!("{path}1")),
     })
@@ -525,10 +525,7 @@ fn registry_change(
             "plugin registrations cannot be changed from a pane; ask the user to run it",
         ));
     }
-    let dirs = plugin_dirs();
-    let mut reg = Registry::load(&dirs).map_err(reg_err)?;
-    let id = f(&mut reg).map_err(reg_err)?;
-    reg.save(&dirs).map_err(reg_err)?;
+    let id = Registry::update(&plugin_dirs(), f).map_err(reg_err)?;
     Ok(typed("plugin_info", json!({"plugin": plugin_json(&id)})))
 }
 
@@ -615,6 +612,11 @@ async fn plugin_pane_open(
             entrypoint: Some(decl.id.clone()),
             source: format!("pane:{placement}"),
             log_id: None,
+            grant_id: entry
+                .trust
+                .as_ref()
+                .map(|g| g.grant_id.clone())
+                .unwrap_or_default(),
             life: brokers::Life::Pending,
             created_at_ms: vk_store::now_ms(),
             stdout: None,
@@ -1015,15 +1017,18 @@ pub async fn call(
             if caller.ctx.pane_scope.is_some() {
                 return Err(denied("layouts cannot be applied from a pane"));
             }
-            let layout = p
-                .get("layout")
-                .ok_or_else(|| invalid("layout is required"))?;
-            let p2 = match (sp(p, "tab_id"), layout.get("tab_id")) {
+            // Baseline requests carry the tree as `root` next to `tab_id`; a whole snapshot
+            // under `layout` (as `layout.export` returns it) is accepted too.
+            let (root, snapshot_tab) = match (p.get("root"), p.get("layout")) {
+                (Some(r), _) => (r, None),
+                (None, Some(l)) => (l.get("root").unwrap_or(l), l.get("tab_id")),
+                (None, None) => return Err(invalid("root is required")),
+            };
+            let p2 = match (sp(p, "tab_id"), snapshot_tab) {
                 (None, Some(t)) => json!({"tab_id": t}),
                 _ => p.clone(),
             };
             let t = layout_tab(caller, sn, &p2)?;
-            let root = layout.get("root").unwrap_or(layout);
             let tab_panes = t.layout.panes();
             let resolve = |h: &str| {
                 sn.pane(h)
@@ -1059,9 +1064,24 @@ pub async fn call(
                 return Err(invalid("ratio must be between 0 and 1"));
             }
             let t = layout_tab(caller, sn, p)?;
-            let path = match sp(p, "split_id") {
-                Some(s) => s.to_string(),
-                None => {
+            // Baseline: `path` is the list of turns from the root, `false` = first child,
+            // `true` = second; `[]` is the root split. Vibeke also accepts its `split_id` or a
+            // pane whose enclosing split is meant.
+            let path = match (p.get("path"), sp(p, "split_id")) {
+                (Some(Value::Array(turns)), _) => {
+                    let mut s = String::from("s");
+                    for t in turns {
+                        match t.as_bool() {
+                            Some(false) => s.push('0'),
+                            Some(true) => s.push('1'),
+                            None => return Err(invalid("path must be a list of booleans")),
+                        }
+                    }
+                    s
+                }
+                (Some(_), _) => return Err(invalid("path must be a list of booleans")),
+                (None, Some(s)) => s.to_string(),
+                (None, None) => {
                     let pane = pane_target(caller, sn, p)?;
                     split_of_leaf(&t.layout, &pane, "s")
                         .ok_or_else(|| invalid("the pane is not part of a split"))?
@@ -1368,10 +1388,7 @@ pub async fn call(
             if caller.ctx.pane_scope.is_some() {
                 return Err(denied("plugin registrations cannot be changed from a pane"));
             }
-            let dirs = plugin_dirs();
-            let mut reg = Registry::load(&dirs).map_err(reg_err)?;
-            let e = reg.unlink(&id).map_err(reg_err)?;
-            reg.save(&dirs).map_err(reg_err)?;
+            let e = Registry::update(&plugin_dirs(), |reg| reg.unlink(&id)).map_err(reg_err)?;
             Ok(typed(
                 "plugin_info",
                 json!({"plugin": {"plugin_id": e.id, "root": e.root, "status": "unlinked"}}),
