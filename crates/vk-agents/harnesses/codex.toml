@@ -68,3 +68,24 @@ confidence = 0.6
 
 [ui]
 interrupt_keys = ["esc"]
+
+[identity]
+sources = ["hook:SessionStart", "transcript_scan"]
+transcript_glob = "~/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl"
+
+[transcript]
+format = "codex_rollout"
+usage = true
+
+[answer]
+keystrokes = "screen:codex"
+
+[sandbox]
+paths = [{ path = "~/.codex", mode = "rw" }]
+[sandbox.network]
+allow = ["api.openai.com", "chatgpt.com", "auth.openai.com"]
+
+[auth]
+files = ["~/.codex/auth.json"]
+env = ["OPENAI_API_KEY"]
+notice = "Codex in the box will receive your ChatGPT auth token (an ephemeral CODEX_HOME, removed on teardown)."

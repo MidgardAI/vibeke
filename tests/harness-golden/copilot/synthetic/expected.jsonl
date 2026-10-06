@@ -1,0 +1,3 @@
+{"screen": "working.txt", "state": "working"}
+{"screen": "idle.txt", "state": "idle"}
+{"screen": "approval.txt", "dialog": {"kind": "approval", "options": 3, "pointer": 1, "title_contains": "run this command"}, "keys": {"allow": ["1"], "allow_always": ["2"], "deny": ["3"]}}

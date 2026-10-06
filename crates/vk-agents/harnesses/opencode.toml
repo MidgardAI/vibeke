@@ -77,3 +77,13 @@ confidence = 0.75
 
 [ui]
 interrupt_keys = ["esc"]
+
+[identity]
+sources = ["plugin"]
+
+[transcript]
+format = "none"
+usage = true
+
+[sandbox]
+paths = [{ path = "~/.config/opencode", mode = "ro" }, { path = "~/.local/share/opencode", mode = "rw" }]

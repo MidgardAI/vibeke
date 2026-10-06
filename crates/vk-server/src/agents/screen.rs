@@ -5,6 +5,7 @@
 use super::Harness;
 use regex::Regex;
 use std::sync::LazyLock;
+use vk_agents::manifest::{HoldTracker, Snapshot};
 use vk_proto::model::*;
 
 #[derive(Debug, Clone)]
@@ -64,14 +65,43 @@ static QUESTION: LazyLock<Regex> = LazyLock::new(|| {
 /// Evaluate the bottom of the visible screen. Code-backed harnesses (and custom wrappers of
 /// them) use the built-in evaluator; everything else runs its manifest's rules (04 §9).
 pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
-    let h = h.base();
+    evaluate_snapshot(h, &Snapshot::from_text(screen), 0, None).0
+}
+
+/// [`evaluate`] with the full terminal context (cell styles, title, cursor, alternate screen,
+/// OSC 133) and the pane's [`HoldTracker`] for `hold_ms` rules. The second value is the
+/// milliseconds after which the screen should be evaluated again (a `hold_ms` rule that matches
+/// but has not held long enough yet).
+pub fn evaluate_snapshot(
+    h: Harness,
+    snap: &Snapshot,
+    now_ms: i64,
+    hold: Option<&mut HoldTracker>,
+) -> (ScreenMatch, Option<u64>) {
+    let base = h.base();
     if !matches!(
-        h,
+        base,
         Harness::Claude | Harness::Codex | Harness::Pi | Harness::Omp
     ) {
-        return evaluate_manifest(h, screen);
+        return evaluate_manifest(base, snap, now_ms, hold);
     }
-    let lines: Vec<&str> = screen.lines().collect();
+    let mut m = evaluate_code(base, snap);
+    // 04 §9.2: a boxed, numbered, pointer-marked list that matches no rule is a provisional
+    // question rather than a silent `idle`.
+    let heuristic = base.manifest().is_none_or(|l| l.m.screen.unknown_dialog);
+    if heuristic && m.dialog.is_none() && m.state.as_ref().is_none_or(|s| s.0 == Execution::Idle) {
+        let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
+        let start = lines.len().saturating_sub(40);
+        if let Some(d) = vk_agents::manifest::unknown_dialog_in(&lines[start..]) {
+            m.state = None;
+            m.dialog = Some(dialog_of(d));
+        }
+    }
+    (m, None)
+}
+
+fn evaluate_code(h: Harness, snap: &Snapshot) -> ScreenMatch {
+    let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
     let start = lines.len().saturating_sub(40);
     let tail = &lines[start..];
     let mut m = ScreenMatch::default();
@@ -203,11 +233,116 @@ pub fn screen_manifest(h: Harness) -> Option<std::sync::Arc<vk_agents::manifest:
     super::manifests::lookup(&l.m.screen.manifest).map(|(_, l)| l)
 }
 
-fn evaluate_manifest(h: Harness, screen: &str) -> ScreenMatch {
-    let Some(l) = screen_manifest(h) else {
-        return ScreenMatch::default();
+fn col_of(c: vk_proto::render::Color) -> vk_agents::manifest::Col {
+    use vk_agents::manifest::Col;
+    match c {
+        vk_proto::render::Color::Default => Col::Default,
+        vk_proto::render::Color::Indexed(i) => Col::Indexed(i),
+        vk_proto::render::Color::Rgb(r, g, b) => Col::Rgb(r, g, b),
+    }
+}
+
+/// What the screen engine sees of a pane, for the manifest DSL's context matchers (04 §9.1):
+/// rows (as `screen_text` joins them), per-cell styles, the OSC 0/2 title, the cursor, the
+/// alternate screen and the shell-integration state at the cursor (`A` prompt row, `B` command
+/// line continuation, `C` a command running).
+pub fn snapshot_of(engine: &vk_term::Engine) -> Snapshot {
+    use vk_agents::manifest::CellStyle;
+    use vk_proto::render::{attr, mark};
+    let text = engine.screen_text();
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let rows = engine.visible_rows();
+    let mut styles: Vec<Vec<CellStyle>> = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let mut cells = Vec::with_capacity(line.chars().count());
+        if let Some(row) = rows.get(i) {
+            for span in &row.spans {
+                let st = CellStyle {
+                    fg: col_of(span.style.fg),
+                    bg: col_of(span.style.bg),
+                    bold: span.style.attrs & attr::BOLD != 0,
+                    dim: span.style.attrs & attr::DIM != 0,
+                    inverse: span.style.attrs & attr::INVERSE != 0,
+                    underline: span.style.attrs & attr::ANY_UNDERLINE != 0,
+                };
+                cells.extend(span.text.chars().map(|_| st));
+            }
+        }
+        cells.truncate(line.chars().count());
+        styles.push(cells);
+    }
+    let cur = engine.cursor();
+    let alt = engine.modes().alt_screen;
+    let osc133 = if alt {
+        None
+    } else {
+        match rows.get(cur.row as usize).map(|r| r.mark) {
+            Some(mark::PROMPT) => Some('A'),
+            Some(mark::PROMPT_CONT) => Some('B'),
+            _ => engine.last_command().filter(|c| c.running).map(|_| 'C'),
+        }
     };
-    let r = l.evaluate(screen);
+    Snapshot {
+        lines,
+        styles,
+        alt_screen: alt,
+        title: engine.title(),
+        cursor: Some((cur.row as usize, cur.col as usize)),
+        osc133,
+    }
+}
+
+/// A manifest dialog match as the server's [`Dialog`].
+fn dialog_of(d: vk_agents::manifest::DialogMatch) -> Dialog {
+    let kind = match d.kind.as_str() {
+        "question" => InteractionKind::Question,
+        "plan_review" => InteractionKind::PlanReview,
+        _ => InteractionKind::Approval,
+    };
+    let fingerprint = format!(
+        "{:x}",
+        fnv(&format!(
+            "{}|{}|{}",
+            d.title,
+            d.command.clone().unwrap_or_default(),
+            d.options
+                .iter()
+                .map(|o| o.1.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        ))
+    );
+    Dialog {
+        kind,
+        title: d.title,
+        tool: d.command.as_ref().map(|_| "Bash".to_string()),
+        command: d.command,
+        options: d.options,
+        pointer: d.pointer,
+        fingerprint,
+        confidence: d.confidence,
+        rule: d.rule_id,
+    }
+}
+
+impl Dialog {
+    /// Opened by the unknown-dialog heuristic: shown, never answered by keystrokes.
+    pub fn is_unknown(&self) -> bool {
+        self.rule == vk_agents::manifest::UNKNOWN_DIALOG_RULE
+    }
+}
+
+fn evaluate_manifest(
+    h: Harness,
+    snap: &Snapshot,
+    now_ms: i64,
+    hold: Option<&mut HoldTracker>,
+) -> (ScreenMatch, Option<u64>) {
+    let Some(l) = screen_manifest(h) else {
+        return (ScreenMatch::default(), None);
+    };
+    let r = l.evaluate_snapshot(snap, now_ms, hold);
+    let pending = r.hold_pending_ms;
     let mut m = ScreenMatch {
         state: r
             .state
@@ -215,38 +350,10 @@ fn evaluate_manifest(h: Harness, screen: &str) -> ScreenMatch {
         dialog: None,
     };
     if let Some(d) = r.dialog {
-        let kind = match d.kind.as_str() {
-            "question" => InteractionKind::Question,
-            "plan_review" => InteractionKind::PlanReview,
-            _ => InteractionKind::Approval,
-        };
-        let fingerprint = format!(
-            "{:x}",
-            fnv(&format!(
-                "{}|{}|{}",
-                d.title,
-                d.command.clone().unwrap_or_default(),
-                d.options
-                    .iter()
-                    .map(|o| o.1.as_str())
-                    .collect::<Vec<_>>()
-                    .join("|")
-            ))
-        );
         m.state = None;
-        m.dialog = Some(Dialog {
-            kind,
-            title: d.title,
-            tool: d.command.as_ref().map(|_| "Bash".to_string()),
-            command: d.command,
-            options: d.options,
-            pointer: d.pointer,
-            fingerprint,
-            confidence: d.confidence,
-            rule: d.rule_id,
-        });
+        m.dialog = Some(dialog_of(d));
     }
-    m
+    (m, pending)
 }
 
 fn fnv(s: &str) -> u64 {

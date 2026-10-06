@@ -100,3 +100,25 @@ confidence = 0.6
 [ui]
 interrupt_keys = ["esc"]
 quit_keys = ["ctrl+c", "ctrl+c"]
+slash_commands_from = "transcript"
+
+[identity]
+sources = ["hook:SessionStart", "preassigned", "transcript_scan"]
+transcript_glob = "~/.claude/projects/{cwd_slug}/{session_id}.jsonl"
+cwd_slug = "replace:/,-;replace:.,-"
+
+[transcript]
+format = "claude_jsonl"
+usage = true
+
+[answer]
+keystrokes = "screen:claude"
+
+[sandbox]
+paths = [{ path = "~/.claude", mode = "rw" }, { path = "~/.claude.json", mode = "rw" }]
+[sandbox.network]
+allow = ["api.anthropic.com", "statsig.anthropic.com", "sentry.io"]
+
+[auth]
+env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+notice = "Claude Code in the box will receive your Claude token (env, harness process only)."

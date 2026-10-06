@@ -467,6 +467,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_2A_SHAPES,
     SECURITY_SHAPES,
     V1_REMAINDER_SHAPES,
+    ADAPTER_POLISH_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -905,6 +906,26 @@ task.ports.re_lease :: {task: Target}
   => {task: string, handle: string, lease: {start: int, end: int, count: int}|null, env: object, old_lease: {start: int, end: int}|null, note: string}
 "##;
 
+/// Adapter polish (04 §7.7, §10, §12.3, §13; `crate::agents::polish`).
+const ADAPTER_POLISH_SHAPES: &str = r##"
+# --- 2F adapter polish ---
+# fingerprints approved at least min_count times with at most max_denials denials, as ready-to-paste
+# rules (04 §7.7); `rule` is null (and `blocked` says why) for risky or compound commands
+policy.suggest :: {min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}
+  => {suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}
+# compact per-turn records written by the transcript tailer (04 §10); cost_source: harness|price_table|subscription|none
+agent.turn_usage :: {run?: Target, target?: Target, limit?: int = 200}
+  => {run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}
+# the "limits" status segment's data: the latest rate-limit observation per harness
+agent.limits :: {} => {limits: [{harness: string, scope: string|null, limited: bool, used_percent: number|null, resets_at_ms: int|null, message: string|null, observed_at_ms: int}]}
+# drift telemetry (04 §12.3), local only
+agent.drift :: {} => {versions: [{harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number, drifting: bool}]}
+# poll the signed manifest channel now (04 §13); refused unless the index verifies
+agent.manifests_check :: {url?: string} => {serial: int, applied: [string], skipped?: [string], unsigned?: bool, warnings?: [string], announced?: int, unchanged?: bool, index_serial?: int}
+# freeze a cached remote manifest at its version, or release the pin
+agent.manifest_pin :: {id: string, version?: string, unpin?: bool = false} => {id: string, version?: string, pinned_at_ms?: int, unpinned?: bool}
+"##;
+
 /// Server security (09, `crate::security`): policy, auth, audit, integration integrity.
 const SECURITY_SHAPES: &str = r##"
 # --- policy.* (07 §2.9, 09 §4); full scope only ---
@@ -992,12 +1013,12 @@ pane.scroll_changed :: {pane: string, tab?: string, workspace?: string} => {offs
 pane.output_matched :: {pane: string, tab?: string, workspace?: string} => {matched: any, revision: any}
 pane.isolation_changed :: {pane: string} => {level: string, scope: string, network: string}
 pane.input_unconfirmed :: {pane: string, run?: string} => {input_id: string, reason?: string, preview_chars?: int}
-adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string}
-adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string}
+adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string, reason?: string}
+adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string, source?: string}
 agent.detected :: {run: string, pane: string} => {harness: string, via: string, argv0?: string|null}
 agent.started :: {run: string, pane: string} => {harness: string, via?: string}
 agent.identified :: {run: string, pane: string} => {harness_session_id?: any, transcript_path?: any}
-agent.state_changed :: {run: string, pane: string} => {facet: string, from?: string, to: string, source?: string, confidence?: number}
+agent.state_changed :: {run: string, pane: string} => {facet: string, from?: string, to: string, source?: string, confidence?: number, inferred?: bool}
 agent.named :: {run: string} => {name: string|null}
 agent.turn_started :: {run: string, pane: string} => any
 agent.turn_completed :: {run: string, pane: string} => {stop_reason?: any, usage?: any}
@@ -1007,6 +1028,11 @@ agent.rate_limited :: {run: string, pane: string} => {resets_at_ms: int|null, me
 agent.resume_handle :: {run: string} => {argv: [string]}
 agent.session_ended :: {run: string, pane: string} => {reason: string}
 agent.harness_version_unvalidated :: {run: string, pane: string} => {harness: string, version: any}
+agent.turn_usage :: {run: string, pane: string} => {turn: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, source: string}
+agent.cwd_changed :: {run: string, pane: string} => {cwd: string, old_cwd: string|null}
+agent.tool_blocked :: {run: string, pane: string} => {tool: string, effect: string, rule: string|null, command: string|null}
+agent.drift_detected :: {run: string, pane: string} => {harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number}
+harness.manifest_loaded :: {manifest: string} => {id: string, version: string, source: string, serial: int, verified: string}
 agent.exited :: {run: string, pane: string} => {reason: string, harness: string}
 interaction.opened :: {interaction?: string, pane?: string, run?: string} => any
 interaction.updated :: {interaction: string, pane: string} => {gate?: bool, reason?: string}

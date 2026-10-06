@@ -105,6 +105,7 @@ pub const EXTERNAL_SECTIONS: &[&str] = &[
     "security",
     "plugins",
     "desk",
+    "search",
 ];
 
 const BUILTIN_SEGMENTS: &[&str] = &[
@@ -705,6 +706,7 @@ fn element_schema(path: &str) -> Option<&'static [&'static str]> {
             "extra_args",
             "shim",
             "headless_shared",
+            "billing",
         ],
         _ => return None,
     })

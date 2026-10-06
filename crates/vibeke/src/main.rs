@@ -34,7 +34,7 @@ usage:
   vibeke trust [path] [--yes] [--check]   review and trust a repo's .vibeke/ (repo-local config)
   vibeke plugin list|install|link|trust|enable|disable|action|logs   Herdr-compatible plugins (partial)
   vibeke compat herdr <args>      Herdr CLI shim against Vibeke (partial); compat install-shim|status
-  vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
+  vibeke integration install|status|uninstall|doctor|capabilities|update|pin|unpin <harness|all> [--mcp] [--sources]
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
   vibeke doctor [--rebuild-index] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index offline

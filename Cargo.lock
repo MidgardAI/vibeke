@@ -3701,6 +3701,7 @@ dependencies = [
  "hmac",
  "image",
  "libc",
+ "notify",
  "rand 0.9.5",
  "regex",
  "rustls",

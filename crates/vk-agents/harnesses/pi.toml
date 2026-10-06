@@ -57,3 +57,18 @@ id = "working"
 state = "working"
 any = ['esc to interrupt', 'Esc to interrupt', 'Working\.\.\.']
 confidence = 0.8
+
+[identity]
+sources = ["extension", "transcript_scan"]
+transcript_glob = "~/.pi/agent/sessions/--{cwd_slug}--/*_{session_id}.jsonl"
+cwd_slug = "replace:/,-;trim:-"
+
+[transcript]
+format = "pi_jsonl"
+usage = true
+
+[sandbox]
+paths = [{ path = "~/.pi", mode = "rw" }]
+
+[auth]
+notice = "pi reads provider keys from env: only the providers a run uses are injected."

@@ -41,3 +41,15 @@ survive_disconnect = true
 always = false
 flags = ["--yolo"]
 pairs = [["--approval", "off"]]
+
+[identity]
+sources = ["extension", "transcript_scan"]
+transcript_glob = "~/.omp/agent/sessions/--{cwd_slug}--/*_{session_id}.jsonl"
+cwd_slug = "replace:/,-;trim:-"
+
+[transcript]
+format = "omp_jsonl"
+usage = true
+
+[sandbox]
+paths = [{ path = "~/.omp", mode = "rw" }]

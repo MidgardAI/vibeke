@@ -345,6 +345,27 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     ("agent", "harnesses", "agent.harnesses", &[], ""),
     (
+        "agent",
+        "turn-usage",
+        "agent.turn_usage",
+        &["run"],
+        "<run> [--limit 200] — per-turn tokens and cost from the transcript",
+    ),
+    (
+        "agent",
+        "limits",
+        "agent.limits",
+        &[],
+        "latest rate-limit observation per harness",
+    ),
+    (
+        "agent",
+        "drift",
+        "agent.drift",
+        &[],
+        "disagreement/answer-failure counters per harness version",
+    ),
+    (
         "interaction",
         "list",
         "interaction.list",
@@ -1388,6 +1409,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "policy",
+        "suggest",
+        "policy.suggest",
+        &[],
+        "[--min-count 3] [--max-denials 0] [--harness h] [--include-covered] — approvals repeated often enough to become rules, ready to paste into config.toml",
+    ),
+    (
+        "policy",
         "test",
         "policy.test",
         &[],
@@ -1957,7 +1985,10 @@ pub fn pretty(method: &str, v: &Value) -> String {
             .iter()
             .map(|r| {
                 let src = r["execution"]["source"].as_str().unwrap_or("");
-                let inferred = if src == "Structured" || src == "SelfReport" {
+                let marked = r["execution"]["detail"]
+                    .as_str()
+                    .is_some_and(|d| d == "inferred" || d.starts_with("inferred:"));
+                let inferred = if (src == "Structured" || src == "SelfReport") && !marked {
                     ""
                 } else {
                     "~"
@@ -2088,6 +2119,42 @@ pub fn pretty(method: &str, v: &Value) -> String {
                 ));
             }
             out
+        }
+        "policy.suggest" => {
+            let list = rows("suggestions");
+            if list.is_empty() {
+                format!(
+                    "no approval was repeated {} times without a denial yet ({} answered approvals seen)",
+                    v["min_count"], v["samples"]
+                )
+            } else {
+                let mut out = String::new();
+                for s in &list {
+                    out.push_str(&format!(
+                        "# {} {} {:?}: approved {}x, denied {}x, risk {}{}\n",
+                        s["harness"].as_str().unwrap_or(""),
+                        s["tool"].as_str().unwrap_or(""),
+                        s["subject"].as_str().unwrap_or(""),
+                        s["approvals"],
+                        s["denials"],
+                        s["risk"].as_str().unwrap_or(""),
+                        if s["covered"].as_bool() == Some(true) {
+                            ", already covered by a rule"
+                        } else {
+                            ""
+                        }
+                    ));
+                    match (s["toml"].as_str(), s["blocked"].as_str()) {
+                        (Some(t), _) => out.push_str(t),
+                        (None, why) => out.push_str(&format!(
+                            "# no rule offered: {}\n",
+                            why.unwrap_or("not expressible")
+                        )),
+                    }
+                    out.push('\n');
+                }
+                out.trim_end().to_string()
+            }
         }
         "preview.mirror" => format!(
             "{}/{} mirrored on {} — {}",

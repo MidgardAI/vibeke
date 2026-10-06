@@ -43,6 +43,8 @@ url.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 font8x8 = "0.3"
 unicode-width = { workspace = true }
+# TranscriptTailer (04 §10): FSEvents/inotify on transcript directories.
+notify.workspace = true
 
 [dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

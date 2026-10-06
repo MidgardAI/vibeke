@@ -23,6 +23,9 @@ pub(super) fn effective(server: &Server, pane: &str, h: Harness) -> Harness {
 
 /// `adapter.signal` for any harness family.
 pub(super) fn signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
+    if super::arbiter::handle_signal(server, pane, event, p) {
+        return;
+    }
     match h.family() {
         Family::Pi | Family::Omp => on_extension_signal(server, pane, h, event, p),
         Family::OpenCode => super::opencode::on_event(server, pane, h, event, p),
@@ -133,8 +136,10 @@ pub(super) async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value
         "agent.manifests" => Some(Ok(manifests_json())),
         "agent.manifests_reload" => {
             let warnings = super::manifests::reload();
+            // An update fetched by the CLI is announced here, once (`harness.manifest_loaded`).
+            let announced = super::channel::announce_loaded(server);
             Some(Ok(
-                json!({"warnings": warnings, "manifests": manifests_json()["manifests"]}),
+                json!({"warnings": warnings, "manifests": manifests_json()["manifests"], "announced": announced}),
             ))
         }
         _ => None,
