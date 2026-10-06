@@ -131,6 +131,99 @@ impl CopyMode {
         true
     }
 
+    /// Double click (03 §11.1): select the word (or run of blanks, or single punctuation
+    /// character) under view cell (`row`, `col`), following soft wraps. Word characters:
+    /// [`crate::selection::word_class`]. False outside the loaded rows.
+    pub fn select_word_at(&mut self, row: u16, col: u16) -> bool {
+        let y = self.top + row as usize;
+        if y >= self.lines.len() {
+            return false;
+        }
+        use crate::selection::word_class as class;
+        let cells = |y: usize| row_chars(&self.lines[y]);
+        let mut cur = cells(y);
+        let mut x = (col as usize).min(cur.len().saturating_sub(1));
+        // A wide character's second cell belongs to the first.
+        while x > 0 && cur.get(x).is_some_and(|g| g.is_empty()) {
+            x -= 1;
+        }
+        let cls = cur.get(x).map_or(0, |g| class(g));
+        let joins = |g: &str| g.is_empty() || (cls != 2 && class(g) == cls);
+        // Back to the start, crossing soft wraps from the row above.
+        let (mut sy, mut sx) = (y, x);
+        loop {
+            if sx > 0 && joins(&cur[sx - 1]) {
+                sx -= 1;
+            } else if sx == 0 && sy > 0 && self.lines[sy - 1].wrapped && cls != 2 {
+                let prev = cells(sy - 1);
+                match prev.last() {
+                    Some(g) if joins(g) => {
+                        sy -= 1;
+                        sx = prev.len() - 1;
+                        cur = prev;
+                    }
+                    _ => break,
+                }
+            } else {
+                break;
+            }
+        }
+        // Forward to the end.
+        let mut cur = cells(y);
+        let (mut ey, mut ex) = (y, x);
+        loop {
+            if ex + 1 < cur.len() && joins(&cur[ex + 1]) {
+                ex += 1;
+            } else if ex + 1 >= cur.len()
+                && self.lines[ey].wrapped
+                && ey + 1 < self.lines.len()
+                && cls != 2
+            {
+                let next = cells(ey + 1);
+                match next.first() {
+                    Some(g) if joins(g) => {
+                        ey += 1;
+                        ex = 0;
+                        cur = next;
+                    }
+                    _ => break,
+                }
+            } else {
+                break;
+            }
+        }
+        self.sel = Some((sy, sx as u16, SelKind::Char));
+        self.cy = ey;
+        self.cx = ex as u16;
+        true
+    }
+
+    /// Triple click: select the whole logical line under view row `row` (soft-wrapped rows
+    /// joined). False outside the loaded rows.
+    pub fn select_line_at(&mut self, row: u16) -> bool {
+        let y = self.top + row as usize;
+        if y >= self.lines.len() {
+            return false;
+        }
+        let mut start = y;
+        while start > 0 && self.lines[start - 1].wrapped {
+            start -= 1;
+        }
+        let mut end = y;
+        while self.lines[end].wrapped && end + 1 < self.lines.len() {
+            end += 1;
+        }
+        self.sel = Some((start, 0, SelKind::Line));
+        self.cy = end;
+        self.cx = 0;
+        true
+    }
+
+    /// Rows shown at the last draw.
+    pub fn view_height(&self) -> u16 {
+        self.height.get()
+    }
+
     /// Mouse wheel in copy mode: move the view and cursor by `n` rows (older rows load at the
     /// top as with the keys).
     pub fn wheel(&mut self, up: bool, n: usize) -> Outcome {
@@ -552,7 +645,12 @@ impl CopyMode {
                 .map(|(_, c)| c.as_str())
                 .collect();
             let wrapped = self.lines[y].wrapped && k != SelKind::Block;
-            out.push_str(if wrapped { &picked } else { picked.trim_end() });
+            // Trailing blanks are trimmed at every line end and at the end of the selection.
+            out.push_str(if wrapped && y < y1 {
+                &picked
+            } else {
+                picked.trim_end()
+            });
             if y < y1 && !wrapped {
                 out.push('\n');
             }

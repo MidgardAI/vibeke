@@ -107,6 +107,10 @@ pub struct ScrollbackView {
     pub page: usize,
     /// Where editor temp files go (a private per-user directory under the system temp dir).
     pub dir: PathBuf,
+    /// Mouse selection `(anchor, end)` as (logical line, char index), inclusive.
+    pub sel: Option<((usize, usize), (usize, usize))>,
+    /// The left button is down over the text (a drag extends `sel`).
+    pub selecting: bool,
 }
 
 /// Private per-user temp directory for editor copies.
@@ -151,6 +155,8 @@ pub fn open(app: &mut App, goal: Option<u64>) {
         error: None,
         page,
         dir: default_dir(),
+        sel: None,
+        selecting: false,
     });
     app.mode = Mode::Popup(Popup::Scrollback);
     app.command_on(
@@ -503,6 +509,15 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     }
     v.message = None;
     match ev.key {
+        Key::Named(NamedKey::Escape) if v.sel.is_some() => v.sel = None,
+        Key::Char('y') | Key::Named(NamedKey::Enter) if v.sel.is_some() => {
+            let text = selection_text(v);
+            v.sel = None;
+            if !text.is_empty() {
+                app.copy_text(&text);
+            }
+            return;
+        }
         Key::Named(NamedKey::Escape) | Key::Char('q') => {
             app.scrollback = None;
             app.mode = Mode::Normal;
@@ -592,7 +607,8 @@ pub fn draw(app: &App, g: &mut Grid) {
     let x = a.r.x + 1;
     let mut y = a.y;
     let q = v.last_search.as_deref().filter(|q| !q.is_empty());
-    for (_, l) in v.lines.iter().skip(v.top) {
+    let sel = v.sel.map(ordered);
+    for (li, (_, l)) in v.lines.iter().enumerate().skip(v.top) {
         let hit = q.is_some_and(|q| {
             if q.chars().any(char::is_uppercase) {
                 l.contains(q)
@@ -600,6 +616,7 @@ pub fn draw(app: &App, g: &mut Grid) {
                 l.to_lowercase().contains(&q.to_lowercase())
             }
         });
+        let mut off = 0;
         for part in wrap(l, w) {
             if y >= body_bottom {
                 break;
@@ -611,6 +628,18 @@ pub fn draw(app: &App, g: &mut Grid) {
                 if hit { t.s(t.accent) } else { t.text() },
                 w as u16,
             );
+            // The mouse selection, highlighted cell by cell.
+            if let Some((s0, s1)) = sel {
+                let mut cx = x;
+                for (i, c) in part.chars().enumerate() {
+                    let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as u16;
+                    if s0 <= (li, off + i) && (li, off + i) <= s1 {
+                        a.g.put_str(cx, y, &c.to_string(), t.sel(t.fg), cw.max(1));
+                    }
+                    cx += cw;
+                }
+            }
+            off += part.chars().count();
             y += 1;
         }
         if y >= body_bottom {
@@ -621,9 +650,184 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.g.put_str(x, body_bottom, &s, st, w as u16);
     }
     a.footer(
-        "j/k scroll · space/b page · g/G top/bottom · / search · n/N next · e open in $EDITOR (read-only copy) · esc close",
+        if v.sel.is_some() && !v.selecting {
+            "y copy selection · esc clear · drag select · double/triple click word/line"
+        } else {
+            "j/k scroll · space/b page · g/G top/bottom · / search · n/N next · e open in $EDITOR (read-only copy) · drag to copy · esc close"
+        },
         t.dim(),
     );
+}
+
+/// Body text geometry of the viewer: (x, first row, row past the last, width).
+fn body_geom(app: &App, v: &ScrollbackView) -> (u16, u16, u16, usize) {
+    let a = app.pane_area();
+    let top = a.y + 2 + u16::from(v.error.is_some());
+    let status = v.search.is_some() || v.message.is_some();
+    let bottom = (a.y + a.h.saturating_sub(1)).saturating_sub(u16::from(status));
+    (
+        a.x + 1,
+        top,
+        bottom.max(top),
+        a.w.saturating_sub(2) as usize,
+    )
+}
+
+type Pos = (usize, usize);
+
+fn ordered((a, b): (Pos, Pos)) -> (Pos, Pos) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// The text position (logical line, char index) under screen cell (`x`, `y`), clamped to the
+/// shown text; `None` when nothing is loaded.
+fn hit(app: &App, v: &ScrollbackView, x: u16, y: u16) -> Option<Pos> {
+    let (x0, top, bottom, w) = body_geom(app, v);
+    if v.lines.is_empty() {
+        return None;
+    }
+    let want = y.clamp(top, bottom.saturating_sub(1).max(top)) - top;
+    let col = x.saturating_sub(x0) as usize;
+    let mut row = 0u16;
+    let mut last = (v.top.min(v.lines.len() - 1), 0);
+    for (li, (_, l)) in v.lines.iter().enumerate().skip(v.top) {
+        let mut off = 0;
+        for part in wrap(l, w) {
+            let n = part.chars().count();
+            if row == want {
+                let mut cw = 0;
+                let mut i = 0;
+                for c in part.chars() {
+                    let wd = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                    if cw + wd > col {
+                        break;
+                    }
+                    cw += wd;
+                    i += 1;
+                }
+                return Some((li, off + i.min(n.saturating_sub(1))));
+            }
+            last = (li, off + n.saturating_sub(1));
+            off += n;
+            row += 1;
+        }
+    }
+    Some(last)
+}
+
+/// Selected text: logical lines joined with newlines, trailing blanks trimmed.
+pub fn selection_text(v: &ScrollbackView) -> String {
+    let Some((s0, s1)) = v.sel.map(ordered) else {
+        return String::new();
+    };
+    let mut out = Vec::new();
+    for li in s0.0..=s1.0.min(v.lines.len().saturating_sub(1)) {
+        let chars: Vec<char> = v.lines[li].1.chars().collect();
+        let from = if li == s0.0 { s0.1 } else { 0 };
+        let to = if li == s1.0 { s1.1 + 1 } else { chars.len() };
+        let part: String = chars[from.min(chars.len())..to.min(chars.len())]
+            .iter()
+            .collect();
+        out.push(part.trim_end().to_string());
+    }
+    out.join("\n")
+}
+
+/// The mouse over the viewer (03 §11.1): a drag selects (copied on release with
+/// `copy_on_select`, else kept for `y`), a double/triple click selects a word/line, dragging
+/// past the top/bottom scrolls, the wheel scrolls. True while the viewer is open (it is modal).
+pub fn on_mouse(app: &mut App, me: &crossterm::event::MouseEvent) -> bool {
+    use crossterm::event::{MouseButton as B, MouseEventKind as K};
+    if !matches!(app.mode, Mode::Popup(Popup::Scrollback)) {
+        return false;
+    }
+    let Some(v) = app.scrollback.as_mut() else {
+        return false;
+    };
+    app.dirty = true;
+    match me.kind {
+        K::Down(B::Left) => {
+            let v = app.scrollback.as_ref().unwrap();
+            let Some(p) = hit(app, v, me.column, me.row) else {
+                return true;
+            };
+            let n = crate::selection::click_count(
+                &mut app.parity.selection,
+                "\u{0}scrollback",
+                me.column,
+                me.row,
+                std::time::Instant::now(),
+            );
+            let v = app.scrollback.as_mut().unwrap();
+            let line = &v.lines[p.0].1;
+            v.selecting = true;
+            v.sel = Some(match n {
+                // Anchor only: a drag makes it a selection.
+                1 => (p, p),
+                2 => word_at(line, p),
+                _ => ((p.0, 0), (p.0, line.chars().count().saturating_sub(1))),
+            });
+            app.parity.selection.dragged = n >= 2;
+        }
+        K::Drag(B::Left) => {
+            if !v.selecting {
+                return true;
+            }
+            let (_, top, bottom, _) = body_geom(app, app.scrollback.as_ref().unwrap());
+            let v = app.scrollback.as_mut().unwrap();
+            if me.row < top {
+                v.top = v.top.saturating_sub(1);
+            } else if me.row >= bottom {
+                v.top = (v.top + 1).min(v.lines.len().saturating_sub(1));
+            }
+            let pos = hit(app, app.scrollback.as_ref().unwrap(), me.column, me.row);
+            let v = app.scrollback.as_mut().unwrap();
+            if let (Some(p), Some((a, _))) = (pos, v.sel) {
+                v.sel = Some((a, p));
+            }
+            app.parity.selection.dragged = true;
+        }
+        K::Up(B::Left) => {
+            if !v.selecting {
+                return true;
+            }
+            v.selecting = false;
+            let dragged = std::mem::take(&mut app.parity.selection.dragged);
+            let v = app.scrollback.as_mut().unwrap();
+            if !dragged {
+                v.sel = None;
+            } else if app.config.clipboard.copy_on_select {
+                let text = selection_text(v);
+                v.sel = None;
+                if !text.is_empty() {
+                    app.copy_text(&text);
+                }
+            }
+        }
+        K::ScrollUp => v.top = v.top.saturating_sub(3),
+        K::ScrollDown => v.top = (v.top + 3).min(v.lines.len().saturating_sub(1)),
+        _ => {}
+    }
+    true
+}
+
+/// The word (or blank run, or single other character) around char `p.1` of `line`.
+fn word_at(line: &str, p: Pos) -> (Pos, Pos) {
+    let chars: Vec<String> = line.chars().map(String::from).collect();
+    if chars.is_empty() {
+        return (p, p);
+    }
+    let i = p.1.min(chars.len() - 1);
+    let cls = crate::selection::word_class(&chars[i]);
+    let same = |j: usize| cls != 2 && crate::selection::word_class(&chars[j]) == cls;
+    let (mut a, mut b) = (i, i);
+    while a > 0 && same(a - 1) {
+        a -= 1;
+    }
+    while b + 1 < chars.len() && same(b + 1) {
+        b += 1;
+    }
+    ((p.0, a), (p.0, b))
 }
 
 /// Body rows of the viewer (title, range line and footer excluded).

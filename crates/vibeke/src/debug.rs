@@ -2,7 +2,10 @@
 //! the VT engine and print the final screen. Used to test the TUI end to end.
 //!
 //! `--keys` script: `text` is typed as-is; `{...}` is a key in the key grammar (`{ctrl+b}`,
-//! `{enter}`), `{sleep:300}` waits, `{wait:TEXT}` waits until TEXT is on screen (≤ 10 s).
+//! `{enter}`), `{sleep:300}` waits, `{wait:TEXT}` waits until TEXT is on screen (≤ 10 s),
+//! `{paste:TEXT}` sends a bracketed paste. Mouse: `{sgr:0;10;5M}` sends a raw SGR report,
+//! `{drag:TEXT}` drags over the first on-screen TEXT and `{dclick:TEXT}` double-clicks its first
+//! cell. OSC 52 writes from the program are printed to stderr as `[host clipboard set: …]`.
 
 use std::time::{Duration, Instant};
 use vk_term::Engine;
@@ -87,6 +90,49 @@ pub fn ptyshot(args: &[String]) -> i32 {
                 // What a host terminal sends for a drop/paste when bracketed paste is on.
                 let b = format!("\x1b[200~{text}\x1b[201~");
                 let _ = rustix::io::write(&pty.master, b.as_bytes());
+                pump(&mut engine, &mut fx, Duration::from_millis(100));
+            } else if let Some(seq) = tok.strip_prefix("sgr:") {
+                // A raw SGR mouse report: `{sgr:0;10;5M}` sends `ESC [ < 0;10;5M`.
+                let b = format!("\x1b[<{seq}");
+                let _ = rustix::io::write(&pty.master, b.as_bytes());
+                pump(&mut engine, &mut fx, Duration::from_millis(80));
+            } else if let Some((how, text)) = tok
+                .strip_prefix("drag:")
+                .map(|t| ("drag", t))
+                .or_else(|| tok.strip_prefix("dclick:").map(|t| ("dclick", t)))
+            {
+                // Mouse over the first on-screen occurrence of `text` (SGR reports, 1-based):
+                // `drag` presses on its first cell, drags to its last and releases there;
+                // `dclick` double-clicks its first cell.
+                let screen = engine.screen_text();
+                let Some((y, x)) = screen
+                    .lines()
+                    .enumerate()
+                    .find_map(|(y, l)| l.find(text).map(|b| (y + 1, l[..b].chars().count() + 1)))
+                else {
+                    eprintln!("{how}: `{text}` not on screen");
+                    continue;
+                };
+                let end = x + text.chars().count() - 1;
+                let reports = if how == "drag" {
+                    vec![
+                        format!("\x1b[<0;{x};{y}M"),
+                        format!("\x1b[<32;{};{y}M", (x + end) / 2),
+                        format!("\x1b[<32;{end};{y}M"),
+                        format!("\x1b[<0;{end};{y}m"),
+                    ]
+                } else {
+                    vec![
+                        format!("\x1b[<0;{x};{y}M"),
+                        format!("\x1b[<0;{x};{y}m"),
+                        format!("\x1b[<0;{x};{y}M"),
+                        format!("\x1b[<0;{x};{y}m"),
+                    ]
+                };
+                for r in reports {
+                    let _ = rustix::io::write(&pty.master, r.as_bytes());
+                    pump(&mut engine, &mut fx, Duration::from_millis(40));
+                }
                 pump(&mut engine, &mut fx, Duration::from_millis(100));
             } else if let Some(ms) = tok.strip_prefix("sleep:") {
                 pump(
