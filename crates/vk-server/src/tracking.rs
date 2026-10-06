@@ -547,7 +547,7 @@ fn apply_pending_switches(
 fn identity(run: &AgentRun) -> IdentityEvidence {
     IdentityEvidence {
         deterministic: run.harness_session_id.is_some()
-            && matches!(run.integration.as_str(), "hooks" | "extension" | "launched"),
+            && !matches!(run.integration.as_str(), "process" | "screen" | "self_report" | ""),
     }
 }
 

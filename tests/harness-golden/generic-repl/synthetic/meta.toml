@@ -1,0 +1,6 @@
+# SYNTHETIC golden fixtures (spec 04 §12.1) for the generic REPL screen manifest (used by Hermes
+# and by self-reported agents Vibeke has no manifest for). Hand-written, NOT live recordings.
+synthetic = true
+harness = "generic-repl"
+recorded_version = ""
+source = "spec 04 §5.3 mybot example"

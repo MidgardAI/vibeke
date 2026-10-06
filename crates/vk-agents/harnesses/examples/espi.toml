@@ -1,0 +1,19 @@
+# Example user manifest (spec 04 §5.3): a personal pi wrapper. Copy to
+# ~/.config/vibeke/harnesses/espi.toml. `~/bin/espi` runs
+# `pi --models anthropic/*,openai/* -e ~/pi-ext/review.ts "$@"`.
+schema = 1
+id = "espi"
+name = "pi (the maintainer)"
+extends = "pi"                          # inherits transports, capabilities, screen rules
+
+[detect]
+priority = 200                          # beats pi itself, which runs as a descendant
+[[detect.process]]
+argv_regex = '(^|/)espi( |$)'           # matches the wrapper shell process
+
+[launch]
+argv = ["espi"]
+argv_with_session = ["espi", "--session-id", "{session_id}"]
+
+[resume]
+argv = ["espi", "--session", "{resume_id}"]

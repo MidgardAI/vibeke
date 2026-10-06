@@ -1,0 +1,8 @@
+  ┃ Build  claude-sonnet-4
+  ┃
+  ┃  △ Permission required
+  ┃  $ rm -rf dist
+  ┃
+  ┃  1. Allow once
+  ┃  2. Allow always
+  ┃  3. Reject

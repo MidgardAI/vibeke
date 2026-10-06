@@ -12,6 +12,8 @@ const MAX_STDIN: u64 = 4 << 20;
 fn gate_capable(harness: &str, event: &str, payload: &Value) -> bool {
     match (harness, event) {
         ("claude", "PermissionRequest") | ("codex", "PermissionRequest") => true,
+        // OpenCode plugin `permission.ask` waits for the decision (04 §6.4).
+        ("opencode", "permission.ask") => true,
         ("claude", "PreToolUse") => {
             let tool = payload
                 .get("tool_name")

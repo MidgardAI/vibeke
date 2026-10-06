@@ -1,0 +1,6 @@
+# SYNTHETIC golden fixtures (spec 04 §12.1): hand-written from the upstream plugin docs and
+# spec 04 §6.4, NOT live recordings. The TUI permission dialog layout is a guess [verify M2].
+synthetic = true
+harness = "opencode"
+recorded_version = ""
+source = "spec 04 §6.4 + opencode plugin docs (unverified)"

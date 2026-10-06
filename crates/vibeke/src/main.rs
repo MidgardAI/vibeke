@@ -22,7 +22,7 @@ usage:
   vibeke <noun> <verb> [args]     API commands (vibeke <noun> for help)
   vibeke notify <title> [body]    notification from a pane or script
   vibeke import herdr [--config] [--session] [--dry-run]
-  vibeke integration install|status|uninstall|doctor <claude|codex>
+  vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all>
   vibeke doctor                   diagnose install, sockets, integrations, terminal, remote
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart]
@@ -125,6 +125,10 @@ fn main() {
             std::process::exit(1);
         }
         std::process::exit(0);
+    }
+    if args.first().map(String::as_str) == Some("acp-host") {
+        // Runs in the pane: drives an ACP agent over stdio (04 §6.6). Sync, no runtime.
+        std::process::exit(vk_server::agents::acp::host_main(&args[1..]));
     }
     let g = match parse_global(&mut args) {
         Ok(g) => g,

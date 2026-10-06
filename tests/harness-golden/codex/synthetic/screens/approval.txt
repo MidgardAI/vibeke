@@ -1,0 +1,11 @@
+• Running cargo build
+
+Would you like to run the following command?
+
+  $ rm -rf target
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for this command (a)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

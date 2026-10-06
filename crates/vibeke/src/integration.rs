@@ -1,25 +1,25 @@
-//! `vibeke integration install|status|uninstall|doctor <claude|codex|pi|omp|all>` (04 §11).
+//! `vibeke integration list|install|status|uninstall|doctor|capabilities|update` (04 §11, §13).
 //!
-//! Writing the user's real `~/.claude` / `~/.codex` needs explicit consent: without `--yes` the
-//! command shows the planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` redirect it (e.g. to
+//! Writing the user's real harness configs needs explicit consent: without `--yes` the command
+//! shows the planned diff only. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `VIBEKE_PI_HOME` /
+//! `VIBEKE_OMP_HOME` / `VIBEKE_OPENCODE_HOME` / `VIBEKE_GEMINI_HOME` redirect it (e.g. to
 //! temporary copies).
+//!
+//! `doctor` and `capabilities` read the harness manifests (built-ins, the verified remote cache
+//! and `<config dir>/harnesses/*.toml`) and report each installed harness's version against the
+//! manifest's validated range: outside it, runs get `observe` (+ keystrokes) only (04 §12.3).
 
+use serde_json::{Value, json};
+use vk_agents::manifest::{self, Loaded, Sources};
 use vk_agents::{Dirs, Harness, InstallState};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
 
+const USAGE: &str = "vibeke integration list|status|install|uninstall|doctor|capabilities <claude|codex|pi|omp|opencode|gemini|all> [--dry-run] [--yes]\n       vibeke integration update [--url URL]   (signed manifest channel; refuses unsigned indexes)";
+
 fn harnesses(arg: Option<&str>) -> Option<Vec<Harness>> {
     match arg {
-        Some("claude") => Some(vec![Harness::Claude]),
-        Some("codex") => Some(vec![Harness::Codex]),
-        Some("pi") => Some(vec![Harness::Pi]),
-        Some("omp") => Some(vec![Harness::Omp]),
-        Some("all") | None => Some(vec![
-            Harness::Claude,
-            Harness::Codex,
-            Harness::Pi,
-            Harness::Omp,
-        ]),
-        _ => None,
+        Some("all") | None => Some(Harness::ALL.to_vec()),
+        Some(id) => Harness::from_id(id).map(|h| vec![h]),
     }
 }
 
@@ -32,7 +32,67 @@ fn stable_bin() -> std::path::PathBuf {
     }
 }
 
-pub async fn run(_g: &Global, args: &[String]) -> i32 {
+fn manifests() -> manifest::Set {
+    manifest::load(&Sources {
+        user_dir: Some(vk_server::agents::manifests::user_dir()),
+        remote: vk_server::agents::channel::cached_dir(),
+        trusted_repos: vec![],
+    })
+}
+
+/// Run a manifest's `[version] command` (only when the binary exists on PATH).
+fn probe_version(l: &Loaded) -> Option<(String, String)> {
+    let cmd = &l.m.version.command;
+    let bin = cmd.first()?;
+    let found = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(bin))
+            .find(|c| c.is_file())
+    })?;
+    let out = std::process::Command::new(&found)
+        .args(&cmd[1..])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let v = l.parse_version(&text)?;
+    Some((found.to_string_lossy().into_owned(), v))
+}
+
+fn doctor_row(l: &Loaded) -> Value {
+    let probe = probe_version(l);
+    let range = l.validated_range();
+    let (status, caps) = match &probe {
+        None => ("not_installed", l.capabilities(None, "tui")),
+        Some((_, v)) if l.validated(v) => ("validated", l.capabilities(Some(v), "tui")),
+        Some(_) => {
+            let mut c = vec!["observe".to_string()];
+            if l.has_dialog_rules() {
+                c.push("answer_keystroke".into());
+            }
+            ("unvalidated", c)
+        }
+    };
+    json!({
+        "id": l.m.id,
+        "name": l.display(),
+        "source": l.source.label(),
+        "binary": probe.as_ref().map(|p| p.0.clone()),
+        "version": probe.as_ref().map(|p| p.1.clone()),
+        "validated_range": range,
+        "status": status,
+        "capabilities": caps,
+        "unverified": l.unverified_capabilities(),
+    })
+}
+
+fn is_json(g: &Global) -> bool {
+    use std::io::IsTerminal;
+    g.json.unwrap_or(!std::io::stdout().is_terminal())
+}
+
+pub async fn run(g: &Global, args: &[String]) -> i32 {
     let verb = args.first().map(String::as_str).unwrap_or("status");
     let target = args
         .iter()
@@ -41,20 +101,19 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
         .map(String::as_str);
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let dry = args.iter().any(|a| a == "--dry-run");
+    match verb {
+        "doctor" | "capabilities" => return doctor(g, verb, target),
+        "update" => return update(g, args),
+        _ => {}
+    }
     let Some(hs) = harnesses(target) else {
-        eprintln!("vibeke integration {verb} <claude|codex|pi|omp|all> [--dry-run] [--yes]");
+        eprintln!("{USAGE}");
         return EXIT_USAGE;
     };
     let dirs = Dirs::from_env();
-    let redirected = [
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-        "PI_CODING_AGENT_DIR",
-        "VIBEKE_PI_HOME",
-        "VIBEKE_OMP_HOME",
-    ]
-    .iter()
-    .any(|k| std::env::var_os(k).is_some());
+    let redirected = Dirs::REDIRECT_VARS
+        .iter()
+        .any(|k| std::env::var_os(k).is_some());
     match verb {
         "list" | "status" => {
             for h in hs {
@@ -64,18 +123,18 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
                     InstallState::Partial => "partial",
                     InstallState::NotInstalled => "not installed",
                 };
-                println!("{:<7} {state:<14} {}", h.id(), st.file.display());
+                println!("{:<8} {state:<14} {}", h.id(), st.file.display());
                 for m in &st.missing_events {
-                    println!("        missing: {m}");
+                    println!("         missing: {m}");
                 }
                 for f in &st.foreign {
-                    println!("        foreign (left alone): {f}");
+                    println!("         foreign (left alone): {f}");
                 }
                 for t in &st.todo {
-                    println!("        todo: {t}");
+                    println!("         todo: {t}");
                 }
                 for p in &st.problems {
-                    println!("        problem: {p}");
+                    println!("         problem: {p}");
                 }
                 if h == Harness::Codex {
                     let untrusted = st
@@ -85,9 +144,29 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
                         .count();
                     if untrusted > 0 {
                         println!(
-                            "        {untrusted} hook(s) untrusted — run /hooks in Codex once"
+                            "         {untrusted} hook(s) untrusted — run /hooks in Codex once"
                         );
                     }
+                }
+            }
+            if verb == "list" && target.is_none() {
+                let set = manifests();
+                println!("\nmanifests (04 §5):");
+                for l in &set.manifests {
+                    println!(
+                        "  {:<14} {:<8} {}{}",
+                        l.m.id,
+                        l.source.label(),
+                        l.display(),
+                        if l.m.detect.process.is_empty() {
+                            " (not detected; referenced/screen-only)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                for w in &set.warnings {
+                    println!("  warning: {w}");
                 }
             }
             EXIT_OK
@@ -156,32 +235,134 @@ pub async fn run(_g: &Global, args: &[String]) -> i32 {
             }
             code
         }
-        "doctor" => {
-            for h in hs {
+        _ => {
+            eprintln!("{USAGE}");
+            EXIT_USAGE
+        }
+    }
+}
+
+fn doctor(g: &Global, verb: &str, target: Option<&str>) -> i32 {
+    let set = manifests();
+    let rows: Vec<&Loaded> = set
+        .manifests
+        .iter()
+        .filter(|l| match target {
+            None | Some("all") => !l.m.detect.process.is_empty(),
+            Some(id) => l.m.id == id,
+        })
+        .collect();
+    if rows.is_empty() {
+        eprintln!("unknown harness {}", target.unwrap_or(""));
+        return EXIT_USAGE;
+    }
+    let dirs = Dirs::from_env();
+    let report: Vec<Value> = rows
+        .iter()
+        .map(|l| {
+            let mut r = doctor_row(l);
+            if let Some(h) = Harness::from_id(&l.m.id) {
                 let st = vk_agents::status(h, &dirs);
-                let version = std::process::Command::new(h.id())
-                    .arg("--version")
-                    .output()
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+                r["integration"] = json!({
+                    "file": st.file,
+                    "state": format!("{:?}", st.state).to_lowercase(),
+                    "todo": st.todo,
+                    "problems": st.problems,
+                });
+            }
+            r
+        })
+        .collect();
+    if is_json(g) {
+        println!(
+            "{}",
+            json!({"harnesses": report, "warnings": set.warnings, "inside_vibeke": std::env::var("VIBEKE").as_deref() == Ok("1")})
+        );
+        return EXIT_OK;
+    }
+    for r in &report {
+        let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
+        let version = r["version"].as_str().unwrap_or("not found");
+        let range = r["validated_range"]
+            .as_str()
+            .unwrap_or("none (unverified: observe + keystrokes)");
+        println!(
+            "{:<10} {:<9} version {version} · validated {range} · {}",
+            s("id"),
+            s("source"),
+            match s("status").as_str() {
+                "validated" => "ok".to_string(),
+                "unvalidated" =>
+                    "UNVALIDATED → observe-only until the golden corpus covers it".into(),
+                _ => "not installed".into(),
+            }
+        );
+        if verb == "capabilities" || s("status") != "not_installed" {
+            let caps: Vec<String> =
+                serde_json::from_value(r["capabilities"].clone()).unwrap_or_default();
+            println!("           capabilities: {}", caps.join(", "));
+            let unv: Vec<String> =
+                serde_json::from_value(r["unverified"].clone()).unwrap_or_default();
+            if !unv.is_empty() {
+                println!("           documented, unverified (✓?): {}", unv.join(", "));
+            }
+        }
+        if let Some(i) = r.get("integration") {
+            println!(
+                "           integration: {} ({})",
+                i["state"].as_str().unwrap_or(""),
+                i["file"].as_str().unwrap_or("")
+            );
+        }
+    }
+    for w in &set.warnings {
+        println!("warning: {w}");
+    }
+    if std::env::var("VIBEKE").as_deref() != Ok("1") {
+        println!("(run inside a vibeke pane to verify hooks reach the server)");
+    }
+    EXIT_OK
+}
+
+fn update(g: &Global, args: &[String]) -> i32 {
+    let url = args
+        .windows(2)
+        .find(|w| w[0] == "--url")
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| vk_server::agents::channel::DEFAULT_URL.to_string());
+    let root = vk_server::agents::channel::root();
+    match vk_server::agents::channel::update(&url, &root) {
+        Ok(r) => {
+            for w in &r.warnings {
+                eprintln!("{w}");
+            }
+            if is_json(g) {
                 println!(
-                    "{}: binary {} · hooks {:?} · {}",
-                    h.id(),
-                    version.as_deref().unwrap_or("not found"),
-                    st.state,
-                    st.file.display()
+                    "{}",
+                    json!({"serial": r.serial, "applied": r.applied, "skipped": r.skipped, "unsigned": r.unsigned})
                 );
-                if std::env::var("VIBEKE").as_deref() != Ok("1") {
-                    println!("  (run inside a vibeke pane to verify hooks reach the server)");
+            } else {
+                println!(
+                    "manifest channel serial {}: applied {}",
+                    r.serial,
+                    if r.applied.is_empty() {
+                        "nothing".to_string()
+                    } else {
+                        r.applied.join(", ")
+                    }
+                );
+                for s in &r.skipped {
+                    println!("  skipped {s}");
                 }
+                println!(
+                    "(a running server picks it up on restart or `vibeke api call agent.manifests_reload`)"
+                );
             }
             EXIT_OK
         }
-        _ => {
-            eprintln!(
-                "vibeke integration list|status|install|uninstall|doctor <claude|codex|pi|omp|all>"
-            );
-            EXIT_USAGE
+        Err(e) => {
+            eprintln!("vibeke integration update: {e}");
+            EXIT_API
         }
     }
 }

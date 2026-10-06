@@ -32,6 +32,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const CLAUDE_MARKER_KEY: &str = "_vibeke";
 pub const GATE_TIMEOUT_SECS: u64 = 1800;
 pub const CODEX_TRUST_INSTRUCTION: &str = "run /hooks in Codex once to trust the Vibeke hooks";
+pub const GEMINI_NOTE: &str = "Gemini CLI hooks are unverified against a live binary [verify M2]: check `/hooks` in Gemini lists the Vibeke entries (hooks may need enabling in settings)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Harness {
@@ -41,6 +42,11 @@ pub enum Harness {
     Pi,
     /// omp (`@oh-my-pi/pi-coding-agent`): extension file.
     Omp,
+    /// OpenCode: a managed plugin file (`<opencode>/plugin/vibeke.ts`), see [`OPENCODE_PLUGIN`].
+    OpenCode,
+    /// Gemini CLI: hooks merged into `<gemini>/settings.json`. Like Codex, Vibeke entries are
+    /// recognised by their command (no marker key: the settings schema is unverified).
+    Gemini,
 }
 
 impl Harness {
@@ -50,12 +56,32 @@ impl Harness {
             Harness::Codex => "codex",
             Harness::Pi => "pi",
             Harness::Omp => "omp",
+            Harness::OpenCode => "opencode",
+            Harness::Gemini => "gemini",
         }
     }
 
+    pub fn from_id(id: &str) -> Option<Harness> {
+        Harness::ALL.into_iter().find(|h| h.id() == id)
+    }
+
+    pub const ALL: [Harness; 6] = [
+        Harness::Claude,
+        Harness::Codex,
+        Harness::Pi,
+        Harness::Omp,
+        Harness::OpenCode,
+        Harness::Gemini,
+    ];
+
     /// Installed as a single extension file rather than merged into a JSON config.
     fn is_extension(self) -> bool {
-        matches!(self, Harness::Pi | Harness::Omp)
+        matches!(self, Harness::Pi | Harness::Omp | Harness::OpenCode)
+    }
+
+    /// Hook entries recognised by their command rather than a marker key.
+    fn command_marked(self) -> bool {
+        matches!(self, Harness::Codex | Harness::Gemini)
     }
 }
 
@@ -67,6 +93,10 @@ pub struct Dirs {
     pub pi: PathBuf,
     /// omp root (`~/.omp`); the agent dir is `<omp>/agent`.
     pub omp: PathBuf,
+    /// OpenCode global config dir (`~/.config/opencode`).
+    pub opencode: PathBuf,
+    /// Gemini CLI home (`~/.gemini`).
+    pub gemini: PathBuf,
 }
 
 impl Dirs {
@@ -100,14 +130,37 @@ impl Dirs {
             omp: std::env::var_os("VIBEKE_OMP_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".omp")),
+            // VIBEKE_OPENCODE_HOME / VIBEKE_GEMINI_HOME redirect to scratch copies (tests).
+            opencode: match std::env::var_os("VIBEKE_OPENCODE_HOME") {
+                Some(v) if !v.is_empty() => PathBuf::from(v),
+                _ => match std::env::var_os("XDG_CONFIG_HOME") {
+                    Some(x) if !x.is_empty() => PathBuf::from(x).join("opencode"),
+                    _ => home.join(".config/opencode"),
+                },
+            },
+            gemini: pick("VIBEKE_GEMINI_HOME", ".gemini"),
         }
     }
+
+    /// Env vars that redirect installs away from the user's real harness configs.
+    pub const REDIRECT_VARS: &[&str] = &[
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "PI_CODING_AGENT_DIR",
+        "VIBEKE_PI_HOME",
+        "VIBEKE_OMP_HOME",
+        "VIBEKE_OPENCODE_HOME",
+        "VIBEKE_GEMINI_HOME",
+    ];
     pub fn config_file(&self, h: Harness) -> PathBuf {
         match h {
             Harness::Claude => self.claude.join("settings.json"),
             Harness::Codex => self.codex.join("hooks.json"),
             Harness::Pi => self.pi.join("agent/extensions/vibeke/index.js"),
             Harness::Omp => self.omp.join("agent/extensions/vibeke.js"),
+            // [verify M2] upstream docs name `plugin/` (some versions also read `plugins/`).
+            Harness::OpenCode => self.opencode.join("plugin/vibeke.ts"),
+            Harness::Gemini => self.gemini.join("settings.json"),
         }
     }
 }
@@ -165,11 +218,25 @@ const CODEX_EVENTS: &[EventSpec] = &[
     ev("PostCompact", None, None),
 ];
 
+/// Gemini CLI hooks (04 §6.5) [verify M2]: names and the Claude-like group shape come from the
+/// upstream hooks docs; `timeout` is in milliseconds there. `BeforeTool` gets the gate timeout.
+const GEMINI_EVENTS: &[EventSpec] = &[
+    ev("SessionStart", None, None),
+    ev("BeforeAgent", None, None),
+    ev("AfterAgent", None, None),
+    ev("BeforeTool", Some(".*"), Some(GATE_TIMEOUT_SECS * 1000)),
+    ev("AfterTool", Some(".*"), None),
+    ev("Notification", None, None),
+    ev("PreCompress", None, None),
+    ev("SessionEnd", None, None),
+];
+
 fn events(h: Harness) -> &'static [EventSpec] {
     match h {
         Harness::Claude => CLAUDE_EVENTS,
         Harness::Codex => CODEX_EVENTS,
-        Harness::Pi | Harness::Omp => &[],
+        Harness::Gemini => GEMINI_EVENTS,
+        Harness::Pi | Harness::Omp | Harness::OpenCode => &[],
     }
 }
 
@@ -201,6 +268,9 @@ fn marker(h: Harness) -> String {
 
 fn desired_group(h: Harness, bin: &Path, spec: &EventSpec) -> Value {
     let mut hook = Map::new();
+    if h == Harness::Gemini {
+        hook.insert("name".into(), json!("vibeke"));
+    }
     hook.insert("type".into(), json!("command"));
     hook.insert("command".into(), json!(command_for(h, bin, spec.name)));
     if let Some(t) = spec.timeout {
@@ -241,11 +311,11 @@ fn claude_marked(group: &Value) -> bool {
 fn is_ours_group(h: Harness, group: &Value) -> bool {
     match h {
         Harness::Claude => claude_marked(group),
-        Harness::Codex => {
+        Harness::Codex | Harness::Gemini => {
             let mut it = hook_commands(group).peekable();
             it.peek().is_some() && it.all(|c| is_ours_command(h, c))
         }
-        Harness::Pi | Harness::Omp => false,
+        Harness::Pi | Harness::Omp | Harness::OpenCode => false,
     }
 }
 
@@ -256,8 +326,7 @@ fn is_foreign_command(cmd: &str) -> bool {
 /// Codex has no marker: remove Vibeke hook objects that sit in a group shared
 /// with user hooks (so they are not duplicated on install). Returns whether
 /// anything changed.
-fn strip_mixed_codex(group: &mut Value) -> bool {
-    let h = Harness::Codex;
+fn strip_mixed(h: Harness, group: &mut Value) -> bool {
     let Some(arr) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
         return false;
     };
@@ -476,6 +545,9 @@ fn plan(h: Harness, dirs: &Dirs, bin: Option<&Path>) -> Result<Plan> {
         Some(render(&root, text))
     };
     let mut notes = vec![];
+    if bin.is_some() && h == Harness::Gemini {
+        notes.push(GEMINI_NOTE.to_string());
+    }
     if bin.is_some() && h == Harness::Codex {
         notes.push(CODEX_TRUST_INSTRUCTION.to_string());
         if codex_features_hooks_disabled(&dirs.codex.join("config.toml")) {
@@ -543,9 +615,9 @@ fn install_into(h: Harness, root: &mut Value, bin: &Path, path: &Path) -> Result
             Value::Array(a) => a,
             _ => bail!("{}: hooks.{} is not an array", path.display(), spec.name),
         };
-        if h == Harness::Codex {
+        if h.command_marked() {
             arr.iter_mut().for_each(|g| {
-                strip_mixed_codex(g);
+                strip_mixed(h, g);
             });
         }
         let ours: Vec<usize> = arr
@@ -582,9 +654,9 @@ fn remove_ours_from_event(
     let _ = path;
     let n = arr.len();
     let mut modified = false;
-    if h == Harness::Codex {
+    if h.command_marked() {
         for g in arr.iter_mut() {
-            modified |= strip_mixed_codex(g);
+            modified |= strip_mixed(h, g);
         }
     }
     arr.retain(|g| !is_ours_group(h, g));
@@ -808,8 +880,8 @@ pub fn status(h: Harness, dirs: &Dirs) -> Status {
                 let cmd = hook.get("command").and_then(Value::as_str).unwrap_or("");
                 let ours = match h {
                     Harness::Claude => group_ours,
-                    Harness::Codex => is_ours_command(h, cmd),
-                    Harness::Pi | Harness::Omp => false,
+                    Harness::Codex | Harness::Gemini => is_ours_command(h, cmd),
+                    Harness::Pi | Harness::Omp | Harness::OpenCode => false,
                 };
                 if ours {
                     found = true;
@@ -942,6 +1014,10 @@ fn codex_features_hooks_disabled(config: &Path) -> bool {
 pub const EXTENSION_BUNDLE: &str =
     include_str!("../../../integrations/pi-extension/dist/vibeke.js");
 
+/// The OpenCode plugin (`integrations/opencode-plugin/vibeke.ts`): forwards plugin events to
+/// `vibeke hook opencode <event>` and answers `permission.ask` from the hook's decision.
+pub const OPENCODE_PLUGIN: &str = include_str!("../../../integrations/opencode-plugin/vibeke.ts");
+
 const EXTENSION_MARKER_PREFIX: &str = "// managed by vibeke (vibeke-integration=";
 
 fn extension_header(h: Harness) -> String {
@@ -961,7 +1037,11 @@ fn extension_marker_version(h: Harness, text: &str) -> Option<String> {
 }
 
 fn extension_content(h: Harness) -> String {
-    format!("{}{}", extension_header(h), EXTENSION_BUNDLE)
+    let body = match h {
+        Harness::OpenCode => OPENCODE_PLUGIN,
+        _ => EXTENSION_BUNDLE,
+    };
+    format!("{}{}", extension_header(h), body)
 }
 
 fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
@@ -990,6 +1070,12 @@ fn plan_extension(h: Harness, dirs: &Dirs, install: bool) -> Result<Plan> {
     if install && h == Harness::Pi {
         notes.push(
             "pi loads the extension from ~/.pi/agent/extensions/vibeke/index.js (restart pi or /reload)"
+                .to_string(),
+        );
+    }
+    if install && h == Harness::OpenCode {
+        notes.push(
+            "OpenCode loads plugins from ~/.config/opencode/plugin/ (restart opencode) [verify M2]"
                 .to_string(),
         );
     }
@@ -1067,10 +1153,12 @@ fn status_extension(h: Harness, dirs: &Dirs) -> Status {
     // Everything else in the extensions dir is foreign (Herdr's herdr-omp-agent-state.ts, user extensions).
     let ext_dir = match h {
         Harness::Pi => dirs.pi.join("agent/extensions"),
+        Harness::OpenCode => dirs.opencode.join("plugin"),
         _ => dirs.omp.join("agent/extensions"),
     };
     let own = match h {
         Harness::Pi => "vibeke",
+        Harness::OpenCode => "vibeke.ts",
         _ => "vibeke.js",
     };
     if let Ok(rd) = fs::read_dir(&ext_dir) {
@@ -1183,6 +1271,8 @@ mod tests {
             codex: t.path().join("codex"),
             pi: t.path().join("pi"),
             omp: t.path().join("omp"),
+            opencode: t.path().join("opencode"),
+            gemini: t.path().join("gemini"),
         };
         fs::create_dir_all(&d.claude).unwrap();
         fs::create_dir_all(&d.codex).unwrap();
@@ -1991,5 +2081,79 @@ mod tests {
         fs::write(&path, text).unwrap();
         assert!(apply(&p).is_err());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn gemini_hooks_merge_and_coexist() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        fs::create_dir_all(&d.gemini).unwrap();
+        let user = r#"{"theme":"dark","hooks":{"BeforeTool":[{"matcher":"run_shell_command","hooks":[{"type":"command","command":"my-guard"}]}]}}"#;
+        fs::write(d.config_file(Harness::Gemini), user).unwrap();
+        let p = install(Harness::Gemini, &d);
+        assert!(p.notes.iter().any(|n| n.contains("verify")));
+        let v = json_of(&d.config_file(Harness::Gemini));
+        assert_eq!(v["theme"], "dark");
+        let bt = v["hooks"]["BeforeTool"].as_array().unwrap();
+        assert_eq!(bt.len(), 2, "user hook kept, ours appended");
+        assert_eq!(bt[0]["hooks"][0]["command"], "my-guard");
+        assert_eq!(
+            bt[1]["hooks"][0]["command"],
+            format!("{BIN} hook gemini BeforeTool")
+        );
+        assert_eq!(bt[1]["hooks"][0]["name"], "vibeke");
+        assert_eq!(bt[1]["hooks"][0]["timeout"], GATE_TIMEOUT_SECS * 1000);
+        assert!(
+            bt[1].get(CLAUDE_MARKER_KEY).is_none(),
+            "no unknown keys in Gemini settings"
+        );
+        // Idempotent; status sees every event; uninstall restores the user's hooks only.
+        assert!(
+            !plan_install(Harness::Gemini, &d, Path::new(BIN))
+                .unwrap()
+                .changed()
+        );
+        let st = status(Harness::Gemini, &d);
+        assert_eq!(st.state, InstallState::Installed, "{st:?}");
+        apply(&plan_uninstall(Harness::Gemini, &d).unwrap()).unwrap();
+        let v = json_of(&d.config_file(Harness::Gemini));
+        assert_eq!(v["hooks"]["BeforeTool"].as_array().unwrap().len(), 1);
+        assert!(v["hooks"].get("AfterAgent").is_none());
+    }
+
+    #[test]
+    fn opencode_plugin_is_a_managed_file() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        let other = d.opencode.join("plugin/mine.ts");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "export const Mine = async () => ({})").unwrap();
+        install(Harness::OpenCode, &d);
+        let path = d.config_file(Harness::OpenCode);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("// managed by vibeke (vibeke-integration=opencode@"));
+        assert!(text.contains("\"permission.ask\""));
+        assert!(text.contains("[\"hook\", \"opencode\", event]"));
+        let st = status(Harness::OpenCode, &d);
+        assert_eq!(st.state, InstallState::Installed);
+        assert_eq!(st.foreign, vec!["extension: mine.ts".to_string()]);
+        assert!(
+            !plan_install(Harness::OpenCode, &d, Path::new(BIN))
+                .unwrap()
+                .changed()
+        );
+        apply(&plan_uninstall(Harness::OpenCode, &d).unwrap()).unwrap();
+        assert!(!path.exists() && other.exists());
+        // An unmanaged file at our path is never overwritten.
+        fs::write(&path, "user plugin").unwrap();
+        assert!(plan_install(Harness::OpenCode, &d, Path::new(BIN)).is_err());
+    }
+
+    #[test]
+    fn harness_ids_round_trip() {
+        for h in Harness::ALL {
+            assert_eq!(Harness::from_id(h.id()), Some(h));
+        }
+        assert_eq!(Harness::from_id("hermes"), None);
     }
 }

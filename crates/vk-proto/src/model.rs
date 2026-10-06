@@ -192,6 +192,41 @@ pub struct AgentRun {
     pub started_at_ms: i64,
     pub ended_at_ms: Option<i64>,
     pub capabilities: Vec<String>,
+    /// Token usage for the harness session (04 §10), from transcripts, extensions or hooks.
+    #[serde(default)]
+    pub usage: RunUsage,
+    /// Last rate-limit observation (04 §10): `StopFailure{rate_limit}`, Codex `rate_limits`,
+    /// pi/omp/OpenCode retry messages.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitInfo>,
+}
+
+/// Session token usage (04 §10). Totals for the harness session, not per turn.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// Harness-reported cost (pi `cost`, OpenCode `cost`, Claude stream-json); no price table yet.
+    pub cost_usd: Option<f64>,
+    pub model: Option<String>,
+    /// `transcript` | `extension` | `hook` | `acp`; empty when nothing was reported.
+    pub source: String,
+    pub updated_at_ms: i64,
+}
+
+/// A rate-limit observation (04 §10).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    /// The harness is currently held by the limit (false: a usage snapshot, e.g. Codex `used_percent`).
+    pub limited: bool,
+    pub resets_at_ms: Option<i64>,
+    /// e.g. `primary` / `secondary` (Codex windows) or the harness's own label.
+    pub scope: Option<String>,
+    pub used_percent: Option<f32>,
+    pub message: Option<String>,
+    pub observed_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

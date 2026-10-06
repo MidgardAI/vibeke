@@ -1,0 +1,5 @@
+# SYNTHETIC golden fixtures (spec 04 §12.1): hand-written, NOT live recordings.
+synthetic = true
+harness = "codex"
+recorded_version = ""
+source = "spec 04 §6.2 + the Codex approval dialog shape the screen fallback was built against"

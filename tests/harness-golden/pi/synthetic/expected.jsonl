@@ -1,0 +1,2 @@
+{"screen": "dialog.txt", "dialog": {"kind": "approval", "options": 2, "pointer": 1, "title_contains": "Do you want to proceed"}, "keys": {"deny": ["down", "enter"], "allow": ["enter"]}}
+{"screen": "working.txt", "state": "working"}

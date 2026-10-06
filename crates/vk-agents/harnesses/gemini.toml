@@ -1,0 +1,86 @@
+# Built-in manifest: Gemini CLI (spec 04 §6.5). Manifest-driven. Hook names, payload fields,
+# the settings.json shape and the TUI dialog below come from upstream docs and have NOT been
+# exercised against a live binary ([verify M2]): every version is observe + keystrokes.
+schema = 1
+id = "gemini"
+name = "Gemini CLI"
+icon = "✦"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["gemini", ".gemini-wrapped"]
+[[detect.process]]
+interpreter = ["node", "bun"]
+script_regex = '(@google/gemini-cli|/gemini-cli/|/gemini$)'
+
+[version]
+command = ["gemini", "--version"]
+
+[launch]
+argv = ["gemini"]
+session_id_format = "none"
+prompt_arg = "flag:--prompt-interactive"
+acp_argv = ["gemini", "--experimental-acp"]   # [verify M2]
+
+[resume]
+argv = ["gemini", "--resume", "{resume_id}"]  # [verify M2]
+
+[integration]
+transports = ["hooks", "screen"]
+install = "builtin:gemini"                     # ~/.gemini/settings.json hooks
+headless = "acp"
+
+[[capabilities]]
+versions = "*"
+mode = "tui"
+verified = false
+observe = true
+gate = true            # BeforeTool deny only
+answer_keystroke = true
+resume = true
+survive_disconnect = true
+
+[states]
+"SessionStart" = "SessionStart"
+"BeforeAgent" = "UserPromptSubmit"
+"AfterAgent" = "Stop"
+"BeforeTool" = "PreToolUse"
+"AfterTool" = "PostToolUse"
+"PreCompress" = "PreCompact"
+"Notification" = "open:approval"
+"SessionEnd" = "SessionEnd"
+
+[yolo]
+flags = ["--yolo", "-y"]
+pairs = [["--approval-mode", "yolo"]]
+
+[screen]
+rows = 30
+[[screen.rules]]
+id = "confirmation"
+opens = "approval"
+any = ['(?i)allow execution', '(?i)apply this change\?', '(?i)do you want to proceed\?']
+all = ['(?i)allow once']
+confidence = 0.85
+title_regex = '(?i)((allow execution[^?\n]*\??)|(apply this change\?)|(do you want to proceed\?))'
+command_regex = "(?i)allow execution of:? '?([^'?\\n]+)'?"
+[screen.rules.dialog]
+pointer = "●"
+accelerators = "digits"
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['\(esc to cancel']
+confidence = 0.8
+
+[[screen.rules]]
+id = "input"
+state = "idle"
+any = ['Type your message']
+confidence = 0.6
+
+[ui]
+interrupt_keys = ["esc"]
+quit_keys = ["ctrl+c", "ctrl+c"]

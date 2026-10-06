@@ -2,9 +2,19 @@
 //! interactions with the recoverable delivery transaction (§7.3), gate/observe modes with
 //! release-on-focus (§7.2), screen fallback (§9) and best-effort verified keystrokes (§8).
 
+pub mod acp;
+pub mod channel;
+mod gemini;
+#[cfg(test)]
+mod golden;
 pub mod harness;
 pub mod hook;
+pub mod manifests;
+mod opencode;
+mod route;
 pub mod screen;
+mod selfreport;
+pub mod usage;
 
 use crate::Server;
 use crate::api::{Ctx, R, err, internal, invalid, not_found, resolve_pane, s, u};
@@ -44,6 +54,12 @@ pub const METHODS: &[(&str, bool)] = &[
     ("adapter.signal", true),
     ("adapter.gate", true),
     ("adapter.delivery_ack", true),
+    // M2 (04 §4.1, §5, §6.6): self-report, manifests.
+    ("adapter.report_self", true),
+    ("pane.report_agent", true),
+    ("pane.report_agent_session", true),
+    ("agent.manifests", false),
+    ("agent.manifests_reload", true),
 ];
 
 /// Gate timeout (04 §7.2): after this the hook returns no decision and the native dialog shows.
@@ -77,6 +93,7 @@ pub struct Agents {
 }
 
 pub fn start(server: &Arc<Server>) {
+    manifests::init();
     let cfg = vk_config::Config::load(vk_config::config_path())
         .map(|(c, _)| c)
         .unwrap_or_default();
@@ -269,11 +286,9 @@ impl Agents {
 
     /// Process detection (04 §5.2): foreground process tree → harness.
     pub fn on_process(&self, server: &Arc<Server>, pane: &str, st: &ProcStatus) {
-        let detected = st.fg_pgid.and_then(|pg| {
-            vk_hold::procinfo::tree(pg, 6).iter().find_map(|p| {
-                detect_harness(&p.argv, p.exe.as_deref()).map(|h| (h, p.argv.clone()))
-            })
-        });
+        let detected = st
+            .fg_pgid
+            .and_then(|pg| manifests::detect_pane(server, pane, pg));
         let current = server.with_core(|c| c.run_for_pane(pane).cloned());
         match (detected, current) {
             (Some((h, argv)), None) => {
@@ -526,6 +541,8 @@ fn new_run(
         started_at_ms: now_ms(),
         ended_at_ms: None,
         capabilities: h.capabilities().iter().map(|s| s.to_string()).collect(),
+        usage: Default::default(),
+        rate_limit: None,
     }
 }
 
@@ -700,15 +717,15 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
             } else {
                 AdapterHealth::Healthy
             };
-            if r.integration != "hooks" || r.health != want {
+            if r.integration != h.transport() || r.health != want {
                 let mut r2 = r.clone();
-                r2.integration = "hooks".into();
+                r2.integration = h.transport().into();
                 r2.health = want;
                 let mut tx = Tx::new();
                 tx.event(
                     "adapter.health_changed",
                     json!({"run": r2.id}),
-                    json!({"to": "healthy", "transport": "hooks"}),
+                    json!({"to": "healthy", "transport": h.transport()}),
                 );
                 tx.run(r2.clone());
                 let _ = server.commit(&mut c, tx);
@@ -720,13 +737,13 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
         server.agents.end_run_tx(&mut c, &mut tx, &r, "replaced");
         let _ = server.commit(&mut c, tx);
     }
-    let run = new_run(&mut c, pane, h, "hooks", StateSource::Structured, 1.0);
+    let run = new_run(&mut c, pane, h, h.transport(), StateSource::Structured, 1.0);
     let mut tx = Tx::new();
     tx.counters = true;
     tx.event(
         "agent.started",
         json!({"run": run.id, "pane": pane}),
-        json!({"harness": h.id(), "via": "hooks"}),
+        json!({"harness": h.id(), "via": h.transport()}),
     );
     tx.run(run.clone());
     let _ = server.commit(&mut c, tx);
@@ -823,7 +840,10 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
             on_signal(server, pane, h, ev, p);
         }
         "SessionEnded" => on_signal(server, pane, h, "SessionEnd", p),
-        "Usage" => {}
+        "Usage" => {
+            let run = bound_run(server, pane, h);
+            usage::from_extension(server, &run, p);
+        }
         "ApprovalRequested" => {
             // omp's own approval dialog: observe only; answering happens in the pane (or via
             // the dialog bridge when omp routes it through uiContext).
@@ -1012,6 +1032,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     if event != "SessionStart" {
         crate::tracking::observe(server, &run, event, p);
     }
+    usage::observe(server, &run, event, p);
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
@@ -2045,6 +2066,9 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
 }
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
+    if let Some(r) = route::api(server, ctx, method, p).await {
+        return Some(r);
+    }
     Some(match method {
         "agent.list" => {
             let ws = s(p, "workspace")
@@ -2316,7 +2340,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             resume_run(server, &run, pane).await
         }
         "agent.harnesses" => {
-            let list: Vec<Value> = [Harness::Claude, Harness::Codex, Harness::Pi, Harness::Omp]
+            let list: Vec<Value> = Harness::all()
                 .iter()
                 .map(|h| json!({"id": h.id(), "display": h.display(), "capabilities": h.capabilities(), "version_detected": harness::version(*h)}))
                 .collect();
@@ -2425,14 +2449,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             let Some(h) = s(p, "harness").and_then(Harness::from_id) else {
                 return Some(Ok(json!({})));
             };
+            let h = route::effective(server, &pane, h);
             let event = s(p, "event").unwrap_or("").to_string();
             let payload = p.get("payload").cloned().unwrap_or(Value::Null);
             if method == "adapter.signal" {
-                if matches!(h, Harness::Pi | Harness::Omp) {
-                    on_extension_signal(server, &pane, h, &event, &payload);
-                } else {
-                    on_signal(server, &pane, h, &event, &payload);
-                }
+                route::signal(server, &pane, h, &event, &payload);
                 Ok(json!({}))
             } else {
                 gate(server, &pane, h, &event, &payload).await

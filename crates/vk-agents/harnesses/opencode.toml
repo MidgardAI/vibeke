@@ -1,0 +1,79 @@
+# Built-in manifest: OpenCode (spec 04 §6.4). Manifest-driven (no code-backed detection).
+# Everything below is from upstream docs and has NOT been exercised against a live binary
+# ([verify M2]): no validated range, so every version runs observe + keystrokes until the golden
+# corpus covers it. The `verified = false` row documents the ✓? capabilities of 04 §2.3.
+schema = 1
+id = "opencode"
+name = "OpenCode"
+icon = "◇"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["opencode", ".opencode-wrapped"]
+[[detect.process]]
+interpreter = ["node", "bun"]
+script_regex = '(opencode-ai|/opencode/bin/opencode|/opencode$)'
+
+[version]
+command = ["opencode", "--version"]
+
+[launch]
+argv = ["opencode"]
+session_id_format = "none"
+prompt_arg = "flag:--prompt"
+acp_argv = ["opencode", "acp"]          # [verify M2]
+
+[resume]
+argv = ["opencode", "--session", "{resume_id}"]   # [verify M2]
+continue_argv = ["opencode", "--continue"]
+
+[integration]
+transports = ["extension", "screen"]
+install = "builtin:opencode"            # ~/.config/opencode/plugin/vibeke.ts
+headless = "acp"
+
+[[capabilities]]
+versions = "*"
+mode = "tui"
+verified = false
+observe = true
+gate = true
+answer_native = ["approval"]
+answer_keystroke = true
+reconcile = true
+resume = true
+survive_disconnect = true
+
+[states]
+"session.created" = "SessionStart"
+"chat.message" = "UserPromptSubmit"
+"tool.execute.before" = "PreToolUse"
+"tool.execute.after" = "PostToolUse"
+"session.idle" = "Stop"
+"session.error" = "StopFailure"
+"session.compacted" = "PostCompact"
+"permission.ask" = "open:approval"
+
+[screen]
+rows = 30
+[[screen.rules]]
+id = "permission"
+opens = "approval"
+any = ['(?i)permission required', '(?i)allow once']
+all = ['(?i)reject']
+confidence = 0.85
+title_regex = '(?i)(permission required[^\n]*)'
+command_regex = '(?m)^[\s┃│]*\$\s+(.+?)\s*$'
+[screen.rules.dialog]
+accelerators = "digits"
+map = { allow = 1, allow_always = 2, deny = 3 }
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['(?i)esc (to )?interrupt', 'Working…', 'working\.\.\.']
+confidence = 0.75
+
+[ui]
+interrupt_keys = ["esc"]

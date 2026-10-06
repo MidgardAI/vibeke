@@ -1,0 +1,6 @@
+# SYNTHETIC golden fixtures (spec 04 §12.1): hand-written, NOT live recordings. Shared by omp
+# (extends pi) until omp has its own corpus.
+synthetic = true
+harness = "pi"
+recorded_version = ""
+source = "spec 04 §6.3 generic-dialog fallback"

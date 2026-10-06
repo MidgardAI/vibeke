@@ -1,0 +1,2 @@
+{"screen": "permission.txt", "dialog": {"kind": "approval", "options": 3, "command": "rm -rf dist", "title_contains": "Permission required"}, "keys": {"allow": ["1"], "allow_always": ["2"], "deny": ["3"]}}
+{"screen": "working.txt", "state": "working"}

@@ -1,0 +1,10 @@
+{"event": "SessionStart", "payload": {"session_id": "gem-1", "transcript_path": "/home/u/.gemini/tmp/x/chats/session-1.json", "cwd": "/work", "hook_event_name": "SessionStart", "source": "startup"}}
+{"event": "BeforeAgent", "payload": {"session_id": "gem-1", "hook_event_name": "BeforeAgent", "prompt": "Run the tests and fix failures"}}
+{"event": "BeforeTool", "payload": {"session_id": "gem-1", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command", "tool_input": {"command": "rm -rf dist", "description": "clean"}}}
+{"event": "Notification", "payload": {"session_id": "gem-1", "hook_event_name": "Notification", "notification_type": "ToolPermission", "message": "Allow execution of: 'rm'?", "details": {"command": "rm -rf dist"}}}
+{"event": "AfterTool", "payload": {"session_id": "gem-1", "hook_event_name": "AfterTool", "tool_name": "run_shell_command", "tool_input": {"command": "rm -rf dist"}, "tool_response": {"exitCode": 0}}}
+{"event": "BeforeTool", "payload": {"session_id": "gem-1", "tool_name": "replace", "tool_input": {"file_path": "/work/src/a.ts", "old_string": "x", "new_string": "y"}}}
+{"event": "AfterTool", "payload": {"session_id": "gem-1", "tool_name": "replace", "tool_input": {"file_path": "/work/src/a.ts"}, "tool_response": {"error": "no match"}}}
+{"event": "PreCompress", "payload": {"session_id": "gem-1", "trigger": "auto"}}
+{"event": "AfterAgent", "payload": {"session_id": "gem-1", "prompt": "Run the tests and fix failures", "prompt_response": "Fixed: all 42 tests pass.", "stop_hook_active": false}}
+{"event": "SessionEnd", "payload": {"session_id": "gem-1", "reason": "exit"}}

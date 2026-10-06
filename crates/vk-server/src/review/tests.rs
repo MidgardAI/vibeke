@@ -154,6 +154,8 @@ impl Env {
             started_at_ms: t,
             ended_at_ms: None,
             capabilities: vec![],
+            usage: Default::default(),
+            rate_limit: None,
         };
         self.put_run(r.clone());
         r
