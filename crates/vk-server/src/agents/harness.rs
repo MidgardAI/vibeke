@@ -903,8 +903,14 @@ mod version_tests {
     fn version_strings() {
         assert_eq!(parse_version("omp/17.2.12\n").as_deref(), Some("17.2.12"));
         assert_eq!(parse_version("0.84.1").as_deref(), Some("0.84.1"));
-        assert_eq!(parse_version("codex-cli 0.160.1").as_deref(), Some("0.160.1"));
-        assert_eq!(parse_version("2.1.290 (Claude Code)").as_deref(), Some("2.1.290"));
+        assert_eq!(
+            parse_version("codex-cli 0.160.1").as_deref(),
+            Some("0.160.1")
+        );
+        assert_eq!(
+            parse_version("2.1.290 (Claude Code)").as_deref(),
+            Some("2.1.290")
+        );
     }
 
     #[test]
