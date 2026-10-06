@@ -18074,6 +18074,39 @@
         }
       }
     },
+    "pane.input_unconfirmed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "input_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "preview_chars": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_id"
+        ]
+      }
+    },
     "pane.isolation_changed": {
       "subject": {
         "type": "object",

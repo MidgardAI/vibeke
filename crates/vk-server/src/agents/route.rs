@@ -123,6 +123,10 @@ pub(super) async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value
         "pane.report_agent" | "pane.report_agent_session" | "adapter.report_self" => {
             Some(super::selfreport::api(server, ctx, method, p))
         }
+        // Headless (01 §3.3): the harness runs under a pipe-mode holder in a new tab.
+        "agent.start" | "agent.spawn" if s(p, "mode") == Some("headless") => {
+            Some(super::headless::start(server, Some(ctx), p).await)
+        }
         "agent.start" | "agent.spawn" if s(p, "acp").is_some() => {
             Some(super::acp::start(server, ctx, method, p).await)
         }

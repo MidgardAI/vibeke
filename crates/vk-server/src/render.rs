@@ -147,7 +147,7 @@ fn ack_status(st: Option<InputStatus>) -> AckStatus {
     match st {
         Some(InputStatus::Written | InputStatus::Duplicate) => AckStatus::Written,
         Some(InputStatus::ChildExited) => AckStatus::Rejected,
-        Some(InputStatus::Failed) | None => AckStatus::Unconfirmed,
+        Some(InputStatus::Failed | InputStatus::Unconfirmed) | None => AckStatus::Unconfirmed,
     }
 }
 

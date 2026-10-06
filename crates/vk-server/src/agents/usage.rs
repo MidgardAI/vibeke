@@ -251,6 +251,22 @@ pub(super) fn from_gemini(server: &Server, run: &AgentRun, p: &Value) {
     store(server, &run.id, Some(add(run, d)), None);
 }
 
+/// Headless adapters (04 §10): a per-turn delta (Claude `result.usage`, pi `turn_end`, ACP) or
+/// the session total (Codex `thread/tokenUsage/updated`).
+pub(super) fn from_headless(server: &Server, run: &AgentRun, u: RunUsage, total: bool) {
+    let next = if total {
+        RunUsage {
+            cost_usd: u.cost_usd.or(run.usage.cost_usd),
+            model: u.model.clone().or(run.usage.model.clone()),
+            updated_at_ms: now_ms(),
+            ..u
+        }
+    } else {
+        add(run, u)
+    };
+    store(server, &run.id, Some(next), None);
+}
+
 /// ACP `usage` on a prompt result (camelCase or snake_case token fields).
 pub(super) fn from_acp(server: &Server, run: &AgentRun, u: &Value) {
     let d = RunUsage {

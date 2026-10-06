@@ -83,6 +83,58 @@ pub fn spawn(
     Ok((Pty { master }, child))
 }
 
+/// Pipe mode (01 §1.2): the child's stdin, stdout and stderr, holder side, non-blocking.
+pub struct Pipes {
+    pub stdin: OwnedFd,
+    pub stdout: OwnedFd,
+    pub stderr: OwnedFd,
+}
+
+/// Spawn `argv` with pipes instead of a PTY (headless harness over stdio). The child becomes
+/// a session and process-group leader without a controlling terminal, so `FgPgrp` signals
+/// reach its whole group and it never competes for the holder's (absent) terminal.
+pub fn spawn_pipe(argv: &[String], cwd: &Path, env: &[(String, String)]) -> Result<(Pipes, Child)> {
+    anyhow::ensure!(!argv.is_empty(), "empty argv");
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]).current_dir(cwd).env_clear();
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawn {:?}", argv[0]))?;
+    let stdin: OwnedFd = child.stdin.take().context("stdin pipe")?.into();
+    let stdout: OwnedFd = child.stdout.take().context("stdout pipe")?.into();
+    let stderr: OwnedFd = child.stderr.take().context("stderr pipe")?.into();
+    for fd in [&stdin, &stdout, &stderr] {
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
+        rustix::fs::fcntl_setfl(fd, rustix::fs::OFlags::NONBLOCK)?;
+    }
+    Ok((
+        Pipes {
+            stdin,
+            stdout,
+            stderr,
+        },
+        child,
+    ))
+}
+
 /// Foreground process group of the terminal, if any.
 pub fn fg_pgrp(master: impl AsFd) -> Option<u32> {
     rustix::termios::tcgetpgrp(master)

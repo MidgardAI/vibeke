@@ -55,8 +55,20 @@ impl Ring {
             let drop = (new_start - self.start) as usize;
             self.data.drain(..drop);
             self.start = new_start;
+            // Pipe mode: the stream of the bytes that now start the ring must survive the
+            // trim, or replay would attribute them to the wrong stream.
+            let mut stream = None;
             while self.markers.front().is_some_and(|(o, _)| *o < self.start) {
-                self.markers.pop_front();
+                if let Some((_, k @ MarkerKind::Stream { .. })) = self.markers.pop_front() {
+                    stream = Some(k);
+                }
+            }
+            if let Some(k) = stream
+                && !self.markers.front().is_some_and(|(o, m)| {
+                    *o == self.start && matches!(m, MarkerKind::Stream { .. })
+                })
+            {
+                self.markers.push_front((self.start, k));
             }
             while self.cuts.front().is_some_and(|&o| o < self.start) {
                 self.cuts.pop_front();
@@ -73,6 +85,19 @@ impl Ring {
         {
             self.cuts.push_back(offset);
         }
+    }
+
+    /// Pipe mode: the stream of the byte at `offset` (the last `Stream` marker at or before
+    /// it), if any.
+    pub fn stream_at(&self, offset: u64) -> Option<vk_proto::holder::Stream> {
+        self.markers
+            .iter()
+            .rev()
+            .filter(|(o, _)| *o <= offset)
+            .find_map(|(_, m)| match m {
+                MarkerKind::Stream { stream } => Some(*stream),
+                _ => None,
+            })
     }
 
     pub fn last_cut(&self) -> Option<u64> {
@@ -159,5 +184,36 @@ mod tests {
         assert_eq!(r.start(), 3000);
         assert_eq!(r.end(), 6000);
         assert_eq!(bytes_of(&r.read_from(0)), vec![b'y'; 3000]);
+    }
+
+    #[test]
+    fn trimming_keeps_the_stream_of_the_new_start() {
+        use vk_proto::holder::Stream;
+        let mut r = Ring::new(4096);
+        r.marker(MarkerKind::Stream {
+            stream: Stream::Stdout,
+        });
+        r.push(&[b'o'; 200]);
+        r.marker(MarkerKind::Stream {
+            stream: Stream::Stdin,
+        });
+        r.push(&[b'i'; 4500]);
+        // Trimmed into the stdin run: its marker moved to the new start.
+        assert!(r.start() > 200);
+        assert_eq!(r.stream_at(r.start()), Some(Stream::Stdin));
+        assert!(matches!(
+            r.read_from(0)[0],
+            Item::Marker(
+                _,
+                MarkerKind::Stream {
+                    stream: Stream::Stdin
+                }
+            )
+        ));
+        r.marker(MarkerKind::Stream {
+            stream: Stream::Stdout,
+        });
+        r.push(b"x");
+        assert_eq!(r.stream_at(r.end() - 1), Some(Stream::Stdout));
     }
 }

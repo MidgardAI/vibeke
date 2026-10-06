@@ -17,9 +17,13 @@ use vk_proto::frame::{FrameBuf, encode};
 use vk_proto::holder::*;
 
 const KEY_LISTENER: usize = 0;
+/// PTY master, or the child's stdout in pipe mode.
 const KEY_MASTER: usize = 1;
 const KEY_SIGNAL: usize = 2;
 const KEY_USR1: usize = 3;
+/// Pipe mode: the child's stderr (readable) and stdin (writable while input is queued).
+const KEY_STDERR: usize = 4;
+const KEY_STDIN: usize = 5;
 const KEY_CONN_BASE: usize = 16;
 /// A server that stops reading is dropped once this much output is queued for it; it will
 /// re-attach from its last processed offset.
@@ -54,9 +58,16 @@ struct Modes {
 
 pub struct Holder {
     spec: SpawnSpec,
+    mode: Mode,
     poller: Poller,
     listener: UnixListener,
+    /// PTY mode: the master (read and write). Pipe mode: the child's stdout (read only).
     master: Option<rustix::fd::OwnedFd>,
+    /// Pipe mode only: the child's stdin (written) and stderr (read).
+    stdin: Option<rustix::fd::OwnedFd>,
+    stderr: Option<rustix::fd::OwnedFd>,
+    /// Pipe mode: stream of the most recent ring bytes (a `Stream` marker on every switch).
+    cur_stream: Option<Stream>,
     master_queue: VecDeque<PendingWrite>,
     child: std::process::Child,
     child_pid: u32,
@@ -132,13 +143,23 @@ pub fn bind_socket(path: &Path) -> Result<UnixListener> {
 
 impl Holder {
     pub fn new(spec: SpawnSpec, listener: UnixListener) -> Result<Self> {
-        let (pty, child) = pty::spawn(
-            &spec.argv,
-            Path::new(&spec.cwd),
-            &spec.env,
-            spec.cols,
-            spec.rows,
-        )?;
+        let mode = spec.mode;
+        let (master, stdin, stderr, child) = match mode {
+            Mode::Pty => {
+                let (pty, child) = pty::spawn(
+                    &spec.argv,
+                    Path::new(&spec.cwd),
+                    &spec.env,
+                    spec.cols,
+                    spec.rows,
+                )?;
+                (pty.master, None, None, child)
+            }
+            Mode::Pipe => {
+                let (p, child) = pty::spawn_pipe(&spec.argv, Path::new(&spec.cwd), &spec.env)?;
+                (p.stdout, Some(p.stdin), Some(p.stderr), child)
+            }
+        };
         let child_pid = child.id();
         let (sig_rx, sig_tx) = UnixStream::pair()?;
         sig_rx.set_nonblocking(true)?;
@@ -159,23 +180,35 @@ impl Holder {
         // SAFETY: the registered fds outlive their registration (deleted before drop).
         unsafe {
             poller.add_with_mode(&listener, Event::readable(KEY_LISTENER), PollMode::Level)?;
-            poller.add_with_mode(&pty.master, Event::readable(KEY_MASTER), PollMode::Level)?;
+            poller.add_with_mode(&master, Event::readable(KEY_MASTER), PollMode::Level)?;
             poller.add_with_mode(&sig_rx, Event::readable(KEY_SIGNAL), PollMode::Level)?;
             poller.add_with_mode(&usr1_rx, Event::readable(KEY_USR1), PollMode::Level)?;
+            if let Some(e) = &stderr {
+                poller.add_with_mode(e, Event::readable(KEY_STDERR), PollMode::Level)?;
+            }
+            if let Some(i) = &stdin {
+                poller.add_with_mode(i, Event::none(KEY_STDIN), PollMode::Level)?;
+            }
         }
         let mut ring = Ring::new(spec.ring_bytes as usize);
-        ring.marker(MarkerKind::Resize {
-            cols: spec.cols,
-            rows: spec.rows,
-            px_w: 0,
-            px_h: 0,
-        });
+        if mode == Mode::Pty {
+            ring.marker(MarkerKind::Resize {
+                cols: spec.cols,
+                rows: spec.rows,
+                px_w: 0,
+                px_h: 0,
+            });
+        }
         ring.mark_cut(0);
         Ok(Holder {
             spec,
+            mode,
             poller,
             listener,
-            master: Some(pty.master),
+            master: Some(master),
+            stdin,
+            stderr,
+            cur_stream: None,
             master_queue: VecDeque::new(),
             child,
             child_pid,
@@ -234,6 +267,8 @@ impl Holder {
                     }
                     KEY_SIGNAL => self.on_sigchld(),
                     KEY_USR1 => self.on_usr1(),
+                    KEY_STDERR => self.read_stderr(),
+                    KEY_STDIN => self.flush_master(),
                     k => {
                         if w {
                             self.flush_conn(k);
@@ -413,11 +448,19 @@ impl Holder {
         let epoch_ok = |e: u64, this: &Self| acquired && e == this.epoch;
         match msg {
             ToHolder::Hello { proto_max, .. } => {
-                if proto_max < PROTO_MIN {
+                let min = if self.mode == Mode::Pipe {
+                    PROTO_PIPE
+                } else {
+                    PROTO_MIN
+                };
+                if proto_max < min {
                     self.send(
                         key,
                         &FromHolder::Rejected {
-                            reason: format!("holder speaks holder/{PROTO}"),
+                            reason: format!(
+                                "holder speaks holder/{min}..{PROTO} ({:?} mode)",
+                                self.mode
+                            ),
                         },
                     );
                     return;
@@ -427,10 +470,11 @@ impl Holder {
                     c.nonce = nonce.clone();
                 }
                 let msg = FromHolder::HelloOk {
-                    proto: PROTO,
+                    // The highest version both sides speak (an older server gets its own).
+                    proto: PROTO.min(proto_max),
                     holder_version: vk_proto::VERSION.to_string(),
                     pane_id: self.spec.pane_id.clone(),
-                    mode: Mode::Pty,
+                    mode: self.mode,
                     child_pid: self.child_pid,
                     started_at_ms: self.started_at_ms,
                     ring: RingInfo {
@@ -511,7 +555,7 @@ impl Holder {
                         return;
                     }
                     InputStatus::Duplicate
-                } else if self.exit.is_some() || self.master.is_none() {
+                } else if self.exit.is_some() || !self.writable() {
                     InputStatus::ChildExited
                 } else {
                     self.remember_input(input_id);
@@ -541,7 +585,8 @@ impl Holder {
                 px_w,
                 px_h,
             } => {
-                if !epoch_ok(epoch, self) {
+                if !epoch_ok(epoch, self) || self.mode == Mode::Pipe {
+                    // Pipe mode has no terminal size.
                     return;
                 }
                 if let Some(m) = &self.master {
@@ -610,6 +655,11 @@ impl Holder {
                 available_from: self.ring.start(),
             });
         }
+        // Pipe mode: bytes carry the stream of the last `Stream` marker before them.
+        let mut stream = match self.mode {
+            Mode::Pty => Stream::Pty,
+            Mode::Pipe => self.ring.stream_at(from_offset).unwrap_or(Stream::Stdout),
+        };
         for item in self.ring.read_from(from_offset) {
             match item {
                 Item::Bytes(off, a, b) => {
@@ -618,12 +668,13 @@ impl Holder {
                     for (i, chunk) in bytes.chunks(64 * 1024).enumerate() {
                         frames.push(FromHolder::Output {
                             offset: off + (i * 64 * 1024) as u64,
-                            stream: Stream::Pty,
+                            stream,
                             bytes: chunk.to_vec(),
                             replay: true,
                         });
                     }
                 }
+                Item::Marker(_, MarkerKind::Stream { stream: s }) => stream = *s,
                 Item::Marker(off, kind) => frames.push(FromHolder::Marker {
                     offset: off,
                     kind: kind.clone(),
@@ -713,17 +764,30 @@ impl Holder {
     fn flush_master(&mut self) {
         let mut done = Vec::new();
         let mut failed = false;
-        if let Some(m) = &self.master {
+        // Pipe mode journals what reached the child's stdin (holder/2 `Stream::Stdin`).
+        let mut written: Vec<u8> = Vec::new();
+        let pipe = self.mode == Mode::Pipe;
+        let fd = if pipe {
+            self.stdin.as_ref()
+        } else {
+            self.master.as_ref()
+        };
+        if let Some(m) = fd {
             while let Some(w) = self.master_queue.front_mut() {
                 if w.pos >= w.bytes.len() {
                     if let Some(id) = w.input_id {
-                        done.push(id);
+                        done.push((id, written.len()));
                     }
                     self.master_queue.pop_front();
                     continue;
                 }
                 match rustix::io::write(m, &w.bytes[w.pos..]) {
-                    Ok(n) => w.pos += n,
+                    Ok(n) => {
+                        if pipe {
+                            written.extend_from_slice(&w.bytes[w.pos..w.pos + n]);
+                        }
+                        w.pos += n
+                    }
                     Err(rustix::io::Errno::AGAIN) => break,
                     Err(rustix::io::Errno::INTR) => continue,
                     Err(_) => {
@@ -732,20 +796,53 @@ impl Holder {
                     }
                 }
             }
-            let ev = if self.master_queue.is_empty() {
-                Event::readable(KEY_MASTER)
+            let _ = if pipe {
+                let ev = if self.master_queue.is_empty() {
+                    Event::none(KEY_STDIN)
+                } else {
+                    Event::writable(KEY_STDIN)
+                };
+                self.poller.modify_with_mode(m, ev, PollMode::Level)
             } else {
-                Event::all(KEY_MASTER)
+                let ev = if self.master_queue.is_empty() {
+                    Event::readable(KEY_MASTER)
+                } else {
+                    Event::all(KEY_MASTER)
+                };
+                self.poller.modify_with_mode(m, ev, PollMode::Level)
             };
-            let _ = self.poller.modify_with_mode(m, ev, PollMode::Level);
         } else {
             failed = true;
         }
-        for id in done {
+        // Journal each input's bytes before its `InputWritten` marker, so a replay shows the
+        // marker after the request it confirms.
+        let mut from = 0;
+        for (id, upto) in done {
+            if upto > from {
+                self.on_pipe_output(Stream::Stdin, &written[from..upto]);
+                from = upto;
+            }
             self.ack_input(id, InputStatus::Written);
         }
+        if written.len() > from {
+            self.on_pipe_output(Stream::Stdin, &written[from..]);
+        }
         if failed {
+            if pipe {
+                // EPIPE: the child closed stdin (or exited); nothing more can be written.
+                if let Some(i) = self.stdin.take() {
+                    let _ = self.poller.delete(&i);
+                }
+            }
             self.fail_pending();
+        }
+    }
+
+    /// Can input still be written to the child (PTY master or stdin pipe open)?
+    fn writable(&self) -> bool {
+        match self.mode {
+            Mode::Pty => self.master.is_some(),
+            Mode::Pipe => self.stdin.is_some(),
         }
     }
 
@@ -763,7 +860,11 @@ impl Holder {
     }
 
     fn fg(&self) -> Option<u32> {
-        self.master.as_ref().and_then(pty::fg_pgrp)
+        match self.mode {
+            Mode::Pty => self.master.as_ref().and_then(pty::fg_pgrp),
+            // No terminal: the child leads its own session and process group.
+            Mode::Pipe => self.exit.is_none().then_some(self.child_pid),
+        }
     }
 
     fn status(&self) -> ProcStatus {
@@ -790,6 +891,10 @@ impl Holder {
                     self.close_master();
                     return;
                 }
+                Ok(n) if self.mode == Mode::Pipe => {
+                    let chunk = buf[..n].to_vec();
+                    self.on_pipe_output(Stream::Stdout, &chunk)
+                }
                 Ok(n) => self.on_output(&buf[..n]),
                 Err(rustix::io::Errno::AGAIN) => break,
                 Err(rustix::io::Errno::INTR) => continue,
@@ -799,6 +904,9 @@ impl Holder {
                     return;
                 }
             }
+        }
+        if self.mode == Mode::Pipe {
+            return;
         }
         let fg = self.fg();
         if fg != self.last_fg {
@@ -813,8 +921,62 @@ impl Holder {
         if let Some(m) = self.master.take() {
             let _ = self.poller.delete(&m);
         }
-        self.fail_pending();
+        // Pipe mode: stdout closing doesn't close stdin; the child may still read.
+        if self.mode == Mode::Pty {
+            self.fail_pending();
+        }
         self.on_sigchld();
+    }
+
+    /// Pipe mode: the child's stderr.
+    fn read_stderr(&mut self) {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let Some(e) = &self.stderr else { return };
+            match rustix::io::read(e, &mut buf) {
+                Ok(n) if n > 0 => {
+                    let chunk = buf[..n].to_vec();
+                    self.on_pipe_output(Stream::Stderr, &chunk)
+                }
+                Err(rustix::io::Errno::AGAIN) => break,
+                Err(rustix::io::Errno::INTR) => continue,
+                _ => {
+                    if let Some(e) = self.stderr.take() {
+                        let _ = self.poller.delete(&e);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Pipe mode journal (01 §1.2): raw protocol bytes per stream, a `Stream` marker on every
+    /// switch, and a safe cut point after each complete line (JSONL frames), so a replay or a
+    /// trimmed ring starts on a frame boundary.
+    fn on_pipe_output(&mut self, stream: Stream, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if self.cur_stream != Some(stream) {
+            self.ring.marker(MarkerKind::Stream { stream });
+            self.cur_stream = Some(stream);
+        }
+        let start = self.ring.end();
+        self.ring.push(bytes);
+        if bytes.ends_with(b"\n") {
+            self.ring.mark_cut(self.ring.end());
+        }
+        if let Some(k) = self.attached_key() {
+            self.send(
+                k,
+                &FromHolder::Output {
+                    offset: start,
+                    stream,
+                    bytes: bytes.to_vec(),
+                    replay: false,
+                },
+            );
+        }
     }
 
     fn on_output(&mut self, bytes: &[u8]) {
@@ -994,8 +1156,17 @@ impl Holder {
         if let Ok(Some(st)) = self.child.try_wait() {
             use std::os::unix::process::ExitStatusExt;
             self.exit = Some((st.code(), st.signal()));
-            // Drain any final output still in the PTY.
-            if self.master.is_some() {
+            if self.mode == Mode::Pipe {
+                // Final output still in the pipes (stop at EAGAIN: a grandchild may keep
+                // them open). Nothing more can be written.
+                self.read_master();
+                self.read_stderr();
+                if let Some(i) = self.stdin.take() {
+                    let _ = self.poller.delete(&i);
+                }
+                self.fail_pending();
+            } else if self.master.is_some() {
+                // Drain any final output still in the PTY.
                 let mut b = vec![0u8; 65536];
                 while let Some(m) = &self.master {
                     match rustix::io::read(m, &mut b) {

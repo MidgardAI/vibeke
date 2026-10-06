@@ -55,6 +55,11 @@ pub fn main(args: &[String]) -> i32 {
     if std::env::var("VIBEKE").as_deref() != Ok("1") {
         return 0;
     }
+    // A headless run (01 §3.3): the server's adapter owns the harness's stdio stream and
+    // already sees everything the hooks would report; reporting twice would double events.
+    if std::env::var("VIBEKE_HEADLESS_OWNER").as_deref() == Ok("1") {
+        return 0;
+    }
     let (Ok(socket), Ok(token)) = (
         std::env::var("VIBEKE_SOCKET"),
         std::env::var("VIBEKE_PANE_TOKEN"),

@@ -531,6 +531,8 @@ impl Server {
         } else {
             paths::home().to_string_lossy().into_owned()
         };
+        // Headless harnesses run under a pipe-mode holder (01 §1.2).
+        let (mode, argv) = pane::holder_mode(argv);
         // Execution isolation (13): a sandboxed task's panes get a wrapped command and env.
         let (argv, env, isolation) = sandbox::wrap_spawn(self, pane_id, &cwd, argv, env, ws_task)
             .context("prepare isolated spawn")?;
@@ -544,6 +546,7 @@ impl Server {
             cols: cols.max(2),
             rows: rows.max(1),
             ring_bytes: 16 << 20,
+            mode,
         };
         let args: Vec<&str> = self.opts.hold_args.iter().map(String::as_str).collect();
         let log = self.paths.logs().join(format!("holder-{pane_id}.log"));

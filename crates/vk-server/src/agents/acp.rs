@@ -179,6 +179,48 @@ pub fn decision_json(it: &Interaction, a: &Answer) -> Value {
 /// `agent.start --acp "<cmd …>"` (or `--acp` with `--harness <id>`): launch the command through
 /// the ACP host. `--harness gemini --acp ""` uses Gemini's manifest `acp_argv`.
 pub(super) async fn start(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
+    let (h, args) = harness_and_args(p)?;
+    let mut q = p.clone();
+    if let Some(o) = q.as_object_mut() {
+        o.remove("acp");
+        o.insert("harness".into(), json!(h.id()));
+        o.insert("args".into(), json!(args));
+    }
+    if method == "agent.spawn" {
+        // Reuse the split + start flow with the rewritten params.
+        return Box::pin(super::api(server, ctx, "agent.spawn", &q))
+            .await
+            .unwrap_or_else(|| Err(invalid("agent.spawn unavailable")));
+    }
+    let pane = resolve_pane(server, ctx, s(&q, "pane"))?;
+    start_in_pane(
+        server,
+        &pane.id,
+        h.id(),
+        s(&q, "name"),
+        s(&q, "prompt"),
+        &args,
+        None,
+    )
+    .await
+}
+
+/// The ACP agent command of `agent.start --acp … --mode headless`: the harness and the full
+/// argv (the manifest's `acp_argv`, then the `--acp` words and `args`).
+pub(super) fn resolve(p: &Value) -> Result<(Harness, Vec<String>), vk_proto::rpc::RpcError> {
+    let (h, args) = harness_and_args(p)?;
+    let mut argv: Vec<String> = h
+        .manifest()
+        .map(|l| l.m.launch.acp_argv.clone())
+        .unwrap_or_default();
+    argv.extend(args);
+    if argv.is_empty() {
+        return Err(invalid("--acp needs a command"));
+    }
+    Ok((h, argv))
+}
+
+fn harness_and_args(p: &Value) -> Result<(Harness, Vec<String>), vk_proto::rpc::RpcError> {
     let acp = s(p, "acp").unwrap_or("").trim();
     let base = s(p, "harness").filter(|h| !h.is_empty() && *h != "acp");
     let mut args: Vec<String> = if acp.is_empty() || acp == "true" {
@@ -225,30 +267,7 @@ pub(super) async fn start(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Val
             "{id}: no acp_argv in its manifest; pass --acp \"<cmd>\""
         )));
     }
-    let mut q = p.clone();
-    if let Some(o) = q.as_object_mut() {
-        o.remove("acp");
-        o.insert("harness".into(), json!(h.id()));
-        o.insert("args".into(), json!(args));
-    }
-    let _ = method;
-    if method == "agent.spawn" {
-        // Reuse the split + start flow with the rewritten params.
-        return Box::pin(super::api(server, ctx, "agent.spawn", &q))
-            .await
-            .unwrap_or_else(|| Err(invalid("agent.spawn unavailable")));
-    }
-    let pane = resolve_pane(server, ctx, s(&q, "pane"))?;
-    start_in_pane(
-        server,
-        &pane.id,
-        h.id(),
-        s(&q, "name"),
-        s(&q, "prompt"),
-        &args,
-        None,
-    )
-    .await
+    Ok((h, args))
 }
 
 /// Minimal shell-style word splitting for `--acp "<cmd …>"` (quotes, backslash escapes).

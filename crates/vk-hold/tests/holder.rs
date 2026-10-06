@@ -24,6 +24,7 @@ fn spec(dir: &Path, argv: &[&str]) -> SpawnSpec {
         cols: 80,
         rows: 24,
         ring_bytes: 1 << 20,
+        mode: Mode::Pty,
     }
 }
 
@@ -49,7 +50,10 @@ impl Drop for Held {
 }
 
 fn launch(dir: &Path, argv: &[&str]) -> (SpawnSpec, Held) {
-    let sp = spec(dir, argv);
+    launch_spec(dir, spec(dir, argv))
+}
+
+fn launch_spec(dir: &Path, sp: SpawnSpec) -> (SpawnSpec, Held) {
     let l = vk_hold::launch(
         Path::new(env!("CARGO_BIN_EXE_vk-hold")),
         &[],
@@ -61,22 +65,33 @@ fn launch(dir: &Path, argv: &[&str]) -> (SpawnSpec, Held) {
     (sp, Held(l))
 }
 
+/// Connect as a holder/1 server (the N-1 direction: an older server attaching to this holder,
+/// which must keep working for PTY panes).
 fn connect(sp: &SpawnSpec, epoch: u64) -> Srv {
+    connect_proto(sp, epoch, 1)
+}
+
+fn connect_proto(sp: &SpawnSpec, epoch: u64, proto_max: u32) -> Srv {
     let mut s = UnixStream::connect(&sp.socket).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write_frame(
         &mut s,
         &ToHolder::Hello {
             proto_min: 1,
-            proto_max: 1,
+            proto_max,
             server_pid: 1,
             server_boot_id: "t".into(),
         },
     )
     .unwrap();
-    let FromHolder::HelloOk { nonce, .. } = read_frame(&mut s).unwrap() else {
+    let FromHolder::HelloOk {
+        nonce, proto, mode, ..
+    } = read_frame(&mut s).unwrap()
+    else {
         panic!()
     };
+    assert_eq!(proto, proto_max.min(PROTO), "negotiated protocol");
+    assert_eq!(mode, sp.mode);
     write_frame(
         &mut s,
         &ToHolder::Acquire {
@@ -482,4 +497,329 @@ fn sigusr1_drops_server_connections_but_keeps_the_child() {
     let (replayed, _) = b.attach(0);
     assert!(String::from_utf8_lossy(&replayed).contains("up"));
     unsafe { libc::kill(l.child_pid as i32, libc::SIGKILL) };
+}
+
+// ---- pipe mode (01 §1.2, holder/2) ---------------------------------------------------------
+
+fn launch_pipe(dir: &Path, script: &str) -> (SpawnSpec, Held) {
+    let mut sp = spec(dir, &["/bin/sh", "-c", script]);
+    sp.mode = Mode::Pipe;
+    launch_spec(dir, sp)
+}
+
+/// Everything a pipe-mode holder sends, flattened: `(stream, bytes)` runs and markers.
+#[derive(Debug, PartialEq)]
+enum Ev {
+    Out(Stream, String),
+    Mark(MarkerKind),
+}
+
+impl Srv {
+    /// Attach and collect the replay as stream-tagged events.
+    fn attach_pipe(&mut self, from: u64) -> Vec<Ev> {
+        write_frame(
+            &mut self.s,
+            &ToHolder::Attach {
+                epoch: self.epoch,
+                from_offset: from,
+            },
+        )
+        .unwrap();
+        let mut evs = vec![];
+        loop {
+            match read_frame(&mut self.s).unwrap() {
+                FromHolder::Output {
+                    bytes,
+                    replay,
+                    stream,
+                    ..
+                } => {
+                    assert!(replay);
+                    push_out(&mut evs, stream, &bytes);
+                }
+                FromHolder::Marker { kind, .. } => evs.push(Ev::Mark(kind)),
+                FromHolder::ReplayDone { .. } => return evs,
+                FromHolder::Gap { .. } => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    /// Read live frames until `pred` holds for the collected events.
+    fn pipe_until(&mut self, evs: &mut Vec<Ev>, pred: impl Fn(&[Ev]) -> bool) -> Vec<FromHolder> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut others = vec![];
+        while !pred(evs) {
+            assert!(Instant::now() < deadline, "timeout; got {evs:?}");
+            match read_frame(&mut self.s).unwrap() {
+                FromHolder::Output { bytes, stream, .. } => push_out(evs, stream, &bytes),
+                FromHolder::Marker { kind, .. } => evs.push(Ev::Mark(kind)),
+                o => others.push(o),
+            }
+        }
+        others
+    }
+}
+
+fn push_out(evs: &mut Vec<Ev>, stream: Stream, bytes: &[u8]) {
+    let s = String::from_utf8_lossy(bytes).to_string();
+    if let Some(Ev::Out(last, text)) = evs.last_mut()
+        && *last == stream
+    {
+        text.push_str(&s);
+        return;
+    }
+    evs.push(Ev::Out(stream, s));
+}
+
+fn text_of(evs: &[Ev], stream: Stream) -> String {
+    evs.iter()
+        .filter_map(|e| match e {
+            Ev::Out(s, t) if *s == stream => Some(t.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn pipe_mode_journals_stdio_dedupes_input_and_survives_server_loss() {
+    let (_d, dir) = tmp();
+    let (sp, l) = launch_pipe(
+        &dir,
+        "echo '{\"ready\":1}'; echo diag >&2; while read l; do echo \"{\\\"got\\\":\\\"$l\\\"}\"; done",
+    );
+    // A holder/1 server cannot attach to a pipe-mode holder (it could not decode `Stdin`).
+    let mut old = UnixStream::connect(&sp.socket).unwrap();
+    old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write_frame(
+        &mut old,
+        &ToHolder::Hello {
+            proto_min: 1,
+            proto_max: 1,
+            server_pid: 1,
+            server_boot_id: "old".into(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        read_frame::<_, FromHolder>(&mut old).unwrap(),
+        FromHolder::Rejected { .. }
+    ));
+
+    let mut a = connect_proto(&sp, 1, PROTO);
+    let mut evs = a.attach_pipe(0);
+    a.pipe_until(&mut evs, |e| {
+        text_of(e, Stream::Stdout).contains("ready") && text_of(e, Stream::Stderr).contains("diag")
+    });
+    // Resizes mean nothing without a terminal: no marker, no error.
+    write_frame(
+        &mut a.s,
+        &ToHolder::Resize {
+            epoch: 1,
+            cols: 100,
+            rows: 30,
+            px_w: 0,
+            px_h: 0,
+        },
+    )
+    .unwrap();
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 7,
+            bytes: b"one\n".to_vec(),
+        },
+    )
+    .unwrap();
+    let others = a.pipe_until(&mut evs, |e| text_of(e, Stream::Stdout).contains("got"));
+    assert_eq!(text_of(&evs, Stream::Stdin), "one\n", "stdin echoed live");
+    let mut acks: Vec<InputStatus> = others
+        .iter()
+        .filter_map(|m| match m {
+            FromHolder::InputAck { status, .. } => Some(*status),
+            _ => None,
+        })
+        .collect();
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 7,
+            bytes: b"one\n".to_vec(),
+        },
+    )
+    .unwrap();
+    while acks.len() < 2 {
+        if let FromHolder::InputAck { status, .. } = read_frame(&mut a.s).unwrap() {
+            acks.push(status);
+        }
+    }
+    assert_eq!(acks, vec![InputStatus::Written, InputStatus::Duplicate]);
+
+    // "Server crash": the child keeps running and keeps its stdio.
+    drop(a);
+    assert_eq!(
+        unsafe { libc::kill(l.child_pid as i32, 0) },
+        0,
+        "child alive"
+    );
+
+    let mut b = connect_proto(&sp, 2, PROTO);
+    let evs = b.attach_pipe(0);
+    let order: Vec<&Ev> = evs
+        .iter()
+        .filter(|e| matches!(e, Ev::Out(..) | Ev::Mark(MarkerKind::InputWritten { .. })))
+        .collect();
+    // Streams replay in journal order; the stdin bytes precede the marker confirming them.
+    let pos = |pred: &dyn Fn(&Ev) -> bool| order.iter().position(|e| pred(e)).unwrap();
+    let ready = pos(&|e| matches!(e, Ev::Out(Stream::Stdout, t) if t.contains("ready")));
+    let stdin = pos(&|e| matches!(e, Ev::Out(Stream::Stdin, t) if t == "one\n"));
+    let marker = pos(&|e| matches!(e, Ev::Mark(MarkerKind::InputWritten { input_id: 7 })));
+    let got = pos(&|e| matches!(e, Ev::Out(Stream::Stdout, t) if t.contains("got")));
+    assert!(ready < stdin && stdin < marker && marker < got, "{evs:?}");
+    assert!(text_of(&evs, Stream::Stderr).contains("diag"));
+    assert!(
+        !evs.iter().any(|e| matches!(
+            e,
+            Ev::Mark(MarkerKind::Resize { .. } | MarkerKind::Stream { .. })
+        )),
+        "pipe mode journals no resize; stream markers stay internal: {evs:?}"
+    );
+    // A second attach (reconnect) replays the same stream attribution.
+    let mid = b.attach_pipe(0);
+    assert_eq!(text_of(&mid, Stream::Stdin), "one\n");
+
+    // Dedupe survives the server change.
+    write_frame(
+        &mut b.s,
+        &ToHolder::Input {
+            epoch: 2,
+            input_id: 7,
+            bytes: b"one\n".to_vec(),
+        },
+    )
+    .unwrap();
+    loop {
+        if let FromHolder::InputAck { status, .. } = read_frame(&mut b.s).unwrap() {
+            assert_eq!(status, InputStatus::Duplicate);
+            break;
+        }
+    }
+    // Status reports the child as its own process group; FgPgrp signals reach it.
+    write_frame(&mut b.s, &ToHolder::StatusQuery).unwrap();
+    loop {
+        if let FromHolder::Status(st) = read_frame(&mut b.s).unwrap() {
+            assert_eq!(st.fg_pgid, Some(l.child_pid));
+            break;
+        }
+    }
+    write_frame(
+        &mut b.s,
+        &ToHolder::Signal {
+            epoch: 2,
+            sig: Sig::Term,
+            target: SigTarget::FgPgrp,
+        },
+    )
+    .unwrap();
+    loop {
+        if let FromHolder::ChildExited { signal, .. } = read_frame(&mut b.s).unwrap() {
+            assert_eq!(signal, Some(libc::SIGTERM));
+            break;
+        }
+    }
+    // Input after exit is refused explicitly.
+    write_frame(
+        &mut b.s,
+        &ToHolder::Input {
+            epoch: 2,
+            input_id: 8,
+            bytes: b"late\n".to_vec(),
+        },
+    )
+    .unwrap();
+    loop {
+        if let FromHolder::InputAck {
+            input_id: 8,
+            status,
+            ..
+        } = read_frame(&mut b.s).unwrap()
+        {
+            assert_eq!(status, InputStatus::ChildExited);
+            break;
+        }
+    }
+    write_frame(&mut b.s, &ToHolder::AckExit { epoch: 2 }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while unsafe { libc::kill(l.holder_pid as i32, 0) } == 0 {
+        assert!(Instant::now() < deadline, "holder did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn pipe_mode_input_to_a_closed_stdin_is_failed_not_dropped() {
+    let (_d, dir) = tmp();
+    let (sp, _l) = launch_pipe(&dir, "exec 0<&-; echo closed; exec sleep 30");
+    let mut a = connect_proto(&sp, 1, PROTO);
+    let mut evs = a.attach_pipe(0);
+    a.pipe_until(&mut evs, |e| text_of(e, Stream::Stdout).contains("closed"));
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 1,
+            bytes: b"x\n".to_vec(),
+        },
+    )
+    .unwrap();
+    let mut acc = vec![];
+    assert_eq!(next_ack(&mut a, &mut acc), (1, InputStatus::Failed));
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 2,
+            bytes: b"y\n".to_vec(),
+        },
+    )
+    .unwrap();
+    assert_eq!(next_ack(&mut a, &mut acc), (2, InputStatus::ChildExited));
+}
+
+#[test]
+fn pipe_mode_keeps_journaling_while_no_server_is_attached() {
+    let (_d, dir) = tmp();
+    let (sp, _l) = launch_pipe(
+        &dir,
+        "read l; echo \"{\\\"turn\\\":\\\"$l\\\"}\"; sleep 0.3; echo '{\"done\":true}'; exec sleep 30",
+    );
+    let mut a = connect_proto(&sp, 1, PROTO);
+    a.attach_pipe(0);
+    write_frame(
+        &mut a.s,
+        &ToHolder::Input {
+            epoch: 1,
+            input_id: 3,
+            bytes: b"go\n".to_vec(),
+        },
+    )
+    .unwrap();
+    // Kill the "server" mid-turn: the turn finishes while nobody is attached.
+    drop(a);
+    std::thread::sleep(Duration::from_millis(700));
+    let mut b = connect_proto(&sp, 2, PROTO);
+    let evs = b.attach_pipe(0);
+    let out = text_of(&evs, Stream::Stdout);
+    assert!(
+        out.contains("\"turn\":\"go\"") && out.contains("\"done\":true"),
+        "{evs:?}"
+    );
+    assert_eq!(text_of(&evs, Stream::Stdin), "go\n");
+    // Holder-originated terminal answers never happen in pipe mode: no stray stdin bytes.
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, Ev::Mark(MarkerKind::Resize { .. })))
+    );
 }
