@@ -27,6 +27,8 @@ export const INVOKE = {
   resetVibeke: 'vk:local.reset-binary',
   /** The renderer's listeners are registered: main may now send it navigation. */
   ready: 'vk:ready',
+  /** Start / stop receiving `EVENT.hostEvent` for one host (`hostId`, `on: boolean`). */
+  hostEvents: 'vk:host.events',
 } as const;
 
 /** Main → renderer (webContents.send). */
@@ -37,6 +39,8 @@ export const EVENT = {
   command: 'vk:command',
   settings: 'vk:settings',
   visibility: 'vk:visibility',
+  /** A host's live event (`HostEventPayload`, see host-events.ts), to windows that subscribed. */
+  hostEvent: 'vk:host-event',
 } as const;
 
 /**
@@ -58,6 +62,10 @@ export const RENDERER_METHODS = [
   'agent.start',
   'agent.harnesses',
   'tab.create',
+  'tab.rename',
+  'tab.close',
+  'tab.focus',
+  'preview.open',
   'interaction.list',
   'interaction.get',
   'interaction.answer',

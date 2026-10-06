@@ -24,6 +24,7 @@ import {
 } from 'electron';
 import { systemClock, type Lifecycle, type Platform } from '@vibeke/core';
 import { EVENT, INVOKE, type BootInfo, type ChooseVibekeResult, type DesktopSettings, type LocalConnectResult, type WireResult } from '../shared/contract';
+import { EventSubscriptions, forwardableEvent, type HostEventPayload } from '../shared/host-events';
 import { deepLinkFromArgv, deepLinkToHash, PROTOCOL } from './deeplink';
 import { Engine } from './engine';
 import { registerIpc } from './ipc';
@@ -132,6 +133,8 @@ function deviceName(): string {
  * window's webContents must not be kept alive by this set. */
 const stale = new WeakSet<WebContents>();
 const sentVisibility = new WeakMap<WebContents, boolean>();
+/** Which windows asked for which hosts' live events (`vk:host.events`); reset per document. */
+const eventSubs = new EventSubscriptions<WebContents>();
 const ttl = (env: string | undefined, fallback: number) => (env && /^\d+$/.test(env) ? Number(env) : fallback);
 
 const windows: Windows = new Windows({
@@ -142,6 +145,7 @@ const windows: Windows = new Windows({
     if (stale.delete(win.webContents)) win.webContents.send(EVENT.hosts, engine.fullPatch());
   },
   trayBounds: () => tray.bounds(),
+  onNewDocument: (wc) => eventSubs.clear(wc),
   onVisibilityChange: () => {
     // Each window learns its own shown/hidden state (renderers pause display timers while hidden).
     for (const w of windows.all()) {
@@ -192,6 +196,21 @@ engine.onPatch((patch) => {
     // Hidden windows catch up when shown: no work while hidden beyond the sockets (§16.3).
     if (w.isVisible()) w.webContents.send(EVENT.hosts, patch);
     else stale.add(w.webContents);
+  }
+});
+
+// Live host events, filtered to the types the UI needs, only to visible windows that subscribed
+// for that host (hidden ones catch up from the dashboard when shown).
+engine.onEvent((hostId, e) => {
+  let payload: HostEventPayload | null = null;
+  for (const w of windows.all()) {
+    if (!w.isVisible() || !eventSubs.wants(w.webContents, hostId)) continue;
+    if (!payload) {
+      const event = forwardableEvent(e);
+      if (!event) return;
+      payload = { hostId, event };
+    }
+    w.webContents.send(EVENT.hostEvent, payload);
   }
 });
 
@@ -424,6 +443,7 @@ app.whenReady().then(() => {
 
   registerIpc({
     engine,
+    setHostEvents: (wc, hostId, on) => eventSubs.set(wc, hostId, on),
     windows,
     trusted: trustedOrigins,
     settings: () => settings,

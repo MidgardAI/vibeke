@@ -142,6 +142,11 @@ export function windowOp(v: unknown): WindowOp {
   }
 }
 
+/** `vk:host.events` on/off flag. */
+export function flag(v: unknown, what: string): boolean {
+  return typeof v === 'boolean' ? v : fail(what);
+}
+
 export function theme(v: unknown): Theme {
   return v === 'system' || v === 'light' || v === 'dark' ? v : fail('theme');
 }

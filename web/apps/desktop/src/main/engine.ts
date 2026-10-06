@@ -16,6 +16,7 @@ import {
   x25519Public,
   type HostRecord,
   type HostState,
+  type AppEvent,
   type HostStore,
   type PairingLink,
   type Platform,
@@ -49,6 +50,7 @@ export class Engine {
   private starting: Promise<void> | null = null;
   private last = new Map<string, HostState>();
   private listeners = new Set<(p: HostsPatch) => void>();
+  private eventListeners = new Set<(hostId: string, e: AppEvent) => void>();
   /** Bumped per published patch; snapshots carry it so renderers can drop older patches. */
   version = 0;
 
@@ -67,6 +69,9 @@ export class Engine {
       const m = new HostManager({ platform: p, store: this.o.hostStore, devicePrivate: this.devicePrivate, client: this.o.client });
       this.manager = m;
       m.subscribe(() => this.publish());
+      m.onAnyEvent((id, e) => {
+        for (const cb of [...this.eventListeners]) cb(id, e);
+      });
       await m.start();
       this.publish();
     })();
@@ -93,6 +98,12 @@ export class Engine {
   onPatch(cb: (p: HostsPatch) => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
+  }
+
+  /** Every host's live events (main filters and forwards them to subscribed windows). */
+  onEvent(cb: (hostId: string, e: AppEvent) => void): () => void {
+    this.eventListeners.add(cb);
+    return () => this.eventListeners.delete(cb);
   }
 
   private publish(): void {

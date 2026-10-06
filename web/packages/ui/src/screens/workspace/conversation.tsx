@@ -2,8 +2,9 @@
 // (`agent.transcript`) as a reading column — the user's prompts as right-aligned pills, the
 // agent's words as Markdown, tool calls as one-line rows (long runs fold into "N steps"), and a
 // footer per turn (copy, time worked, counts; the latest turn adds the working tree's +/−).
-// Live: when the run's state moves (dashboard refreshes on agent.* events) the newest two turns
-// are fetched again (debounced) and merged by `n`; while the agent works they are polled.
+// Live: the run's host events (turn started / completed, state changes, usage, file edits,
+// interactions) refetch the newest two turns (debounced) and merge them by `n`; a change of the
+// run's dashboard fields does too (fallback), and a slow safety poll runs while the agent works.
 // Older turns load when scrolling to the top (`next_before`).
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -26,7 +27,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { RpcError, applyLatest, applyOlder, emptyTranscript, type AgentRun, type TranscriptItem, type TranscriptState, type TranscriptTurn } from '@vibeke/core';
+import { NotConnectedError, RpcError, applyLatest, applyOlder, emptyTranscript, type AgentRun, type AppApi, type TranscriptItem, type TranscriptState, type TranscriptTurn } from '@vibeke/core';
 import { useApp, useVisible } from '../../app/hooks';
 import { Markdown } from '../../components/markdown';
 import { Button, Chip, DiffCount, Empty, IconButton, Spinner, cx } from '../../components/ui';
@@ -34,12 +35,13 @@ import { t } from '../../i18n';
 import { errorMessage } from '../../lib/answer';
 import { turnBlocks, turnHasWork, turnStats, turnText, workedFor, type ConvBlock, type Step, type ToolStep } from '../../lib/conversation';
 import { toolSummary, type ToolKind } from '../../lib/tool-summary';
+import { EVENT_DEBOUNCE_MS, LatestFeed, SAFETY_POLL_MS, watchRunEvents } from '../../lib/live-transcript';
 import { useGitStatus } from '../../lib/use-git-status';
 
 const FIRST_PAGE = 20;
 const LIVE_PAGE = 2;
 const OLDER_PAGE = 20;
-const DEBOUNCE_MS = 300;
+const DEBOUNCE_MS = 250;
 const WORKING_POLL_MS = 4000;
 const LONG_USER = 600;
 
@@ -91,57 +93,62 @@ export function Conversation({
   const trRef = useRef(tr);
   trRef.current = tr;
   const pendingScroll = useRef<{ k: 'bottom' } | { k: 'keep'; height: number; top: number } | null>(null);
-  const inflight = useRef(false);
-  const again = useRef(false);
   const working = run.execution.value === 'working' || run.execution.value === 'starting';
+  const runRef = useRef(run.id);
+  runRef.current = run.id;
 
   const nearBottom = () => {
     const el = listRef.current;
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 64;
   };
 
-  const loadLatest = useCallback(async () => {
-    const conn = app.conn(hostId);
-    if (!conn) return;
-    if (inflight.current) {
-      again.current = true;
-      return;
-    }
-    inflight.current = true;
-    try {
-      const have = trRef.current.turns.length > 0 && trRef.current.run === run.id;
-      const r = await conn.request('agent.transcript', { target: run.id, limit: have ? LIVE_PAGE : FIRST_PAGE });
-      if (nearBottom() || !have) pendingScroll.current = { k: 'bottom' };
-      setTr((s) => applyLatest(s.run !== null && s.run !== run.id ? emptyTranscript() : s, r));
-      setPhase('ready');
-      setError(null);
-    } catch (e) {
-      if (isUnsupported(e)) setPhase('none');
-      else if (!trRef.current.turns.length) {
-        setPhase('error');
-        setError(errorMessage(e));
-      }
-    } finally {
-      inflight.current = false;
-      if (again.current) {
-        again.current = false;
-        void loadLatest();
-      }
-    }
-  }, [app, hostId, run.id]);
+  // The newest turns: one request at a time, responses fenced by run (a late answer for the
+  // previous run is dropped; see LatestFeed).
+  const feed = useMemo(
+    () =>
+      new LatestFeed<{ r: AppApi['agent.transcript']['result']; have: boolean }>({
+        fetch: async (target) => {
+          const conn = app.conn(hostId);
+          if (!conn) throw new NotConnectedError(hostId);
+          const have = trRef.current.turns.length > 0 && trRef.current.run === target;
+          const r = await conn.request('agent.transcript', { target, limit: have ? LIVE_PAGE : FIRST_PAGE });
+          return { r, have };
+        },
+        apply: (target, { r, have }) => {
+          if (target !== runRef.current) return;
+          if (nearBottom() || !have) pendingScroll.current = { k: 'bottom' };
+          setTr((s) => applyLatest(s.run !== null && s.run !== target ? emptyTranscript() : s, r));
+          setPhase('ready');
+          setError(null);
+        },
+        fail: (target, e) => {
+          if (target !== runRef.current) return;
+          if (isUnsupported(e)) setPhase('none');
+          else if (!trRef.current.turns.length || trRef.current.run !== target) {
+            setPhase('error');
+            setError(errorMessage(e));
+          }
+        },
+        debounceMs: EVENT_DEBOUNCE_MS,
+      }),
+    [app, hostId],
+  );
+  useEffect(() => () => feed.dispose(), [feed]);
 
   const loadOlder = useCallback(async () => {
     const conn = app.conn(hostId);
     const cur = trRef.current;
     if (!conn || cur.nextBefore === null || olderBusy) return;
+    const target = run.id;
     setOlderBusy(true);
     try {
-      const r = await conn.request('agent.transcript', { target: run.id, limit: OLDER_PAGE, before: cur.nextBefore });
+      const r = await conn.request('agent.transcript', { target, limit: OLDER_PAGE, before: cur.nextBefore });
+      if (target !== runRef.current) return;
       const el = listRef.current;
       if (el) pendingScroll.current = { k: 'keep', height: el.scrollHeight, top: el.scrollTop };
-      setTr((s) => applyOlder(s, r));
+      setTr((s) => (s.run === target ? applyOlder(s, r) : s));
     } catch (e) {
-      app.toast(errorMessage(e), 'error');
+      if (target === runRef.current) app.toast(errorMessage(e), 'error');
     } finally {
       setOlderBusy(false);
     }
@@ -151,10 +158,18 @@ export function Conversation({
   useEffect(() => {
     setTr(emptyTranscript());
     setPhase('loading');
-    void loadLatest();
-  }, [run.id]);
+    feed.setRun(run.id);
+  }, [run.id, feed]);
 
-  // Turn started / completed / state changed (and sends): refetch the newest turns, debounced.
+  // Live: the run's events (turn started / completed, state, usage, file edits, approvals).
+  const [eventsLive, setEventsLive] = useState(false);
+  useEffect(() => {
+    const off = watchRunEvents(app.manager, hostId, run.id, pane, () => feed.schedule());
+    setEventsLive(!!off);
+    return () => off?.();
+  }, [app, hostId, run.id, pane, feed]);
+
+  // Fallback: the run's dashboard fields moved (and sends) — refetch the newest turns, debounced.
   const rev = runRevision(run);
   const first = useRef(true);
   useEffect(() => {
@@ -162,16 +177,15 @@ export function Conversation({
       first.current = false;
       return;
     }
-    const id = setTimeout(() => void loadLatest(), DEBOUNCE_MS);
-    return () => clearTimeout(id);
+    feed.schedule(DEBOUNCE_MS);
   }, [rev, refreshKey]);
 
-  // Tool calls do not always reach the dashboard: poll while the agent works and we are seen.
+  // Safety poll while the agent works and we are seen: slow when events flow, faster without.
   useEffect(() => {
     if (!working || !visible || phase === 'none') return;
-    const id = setInterval(() => void loadLatest(), WORKING_POLL_MS);
+    const id = setInterval(() => void feed.load(), eventsLive ? SAFETY_POLL_MS : WORKING_POLL_MS);
     return () => clearInterval(id);
-  }, [working, visible, phase, loadLatest]);
+  }, [working, visible, phase, eventsLive, feed]);
 
   useLayoutEffect(() => {
     const p = pendingScroll.current;
