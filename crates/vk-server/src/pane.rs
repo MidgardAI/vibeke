@@ -31,11 +31,25 @@ pub fn holder_mode(argv: &[String]) -> (Mode, &[String]) {
     }
 }
 
-/// A fresh VT engine whose colour-query answers follow the session appearance (theme auto).
+/// A fresh VT engine whose colour-query answers follow the session appearance (theme auto),
+/// with the `[graphics]` limits and `terminal.allow_passthrough` of the current config.
 fn new_engine(cols: u16, rows: u16) -> Engine {
+    let cfg = graphics_config();
     let mut e = Engine::new(cols, rows, SCROLLBACK);
+    e.set_allow_passthrough(cfg);
     crate::theme::apply_query_palette(&mut e);
     e
+}
+
+/// Apply the config's `[graphics]` limits (for engines created or restored from now on, 03 §9)
+/// and return `terminal.allow_passthrough` (03 §8).
+fn graphics_config() -> bool {
+    let cfg = crate::config_api::current();
+    vk_term::engine::set_graphics_limits(
+        cfg.graphics.max_image_bytes.0,
+        cfg.graphics.max_total_per_pane.0,
+    );
+    cfg.terminal.allow_passthrough
 }
 const SNAPSHOT_IDLE: Duration = Duration::from_secs(2);
 const SNAPSHOT_MAX_INTERVAL: Duration = Duration::from_secs(30);
@@ -472,10 +486,14 @@ async fn run_inner(
             && s.version == vk_term::engine::ENGINE_VERSION
             && s.incarnation.as_deref() == Some(incarnation.as_str())
             && in_ring(s.offset)
-            && let Ok(e) = Engine::restore(&s.blob, SCROLLBACK)
+            && let Ok(e) = {
+                let _ = graphics_config();
+                Engine::restore(&s.blob, SCROLLBACK)
+            }
         {
             let mut sc = rt.screen.lock().unwrap();
             sc.engine = e;
+            sc.engine.set_allow_passthrough(graphics_config());
             crate::theme::apply_query_palette(&mut sc.engine);
             sc.fed_offset = s.offset;
             from = s.offset;

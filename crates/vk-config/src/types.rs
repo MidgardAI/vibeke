@@ -115,6 +115,7 @@ pub struct Config {
     pub remote: Remote,
     pub pane: Pane,
     pub render: Render,
+    pub graphics: Graphics,
     pub compat: Compat,
     pub update: Update,
     /// `[layouts.<name>]`: named declarative layouts (07 §2.14 `LayoutSpec`, parsed by the
@@ -839,6 +840,24 @@ pub struct Render {
 impl Default for Render {
     fn default() -> Self {
         Render { max_unacked: 2 }
+    }
+}
+
+/// `[graphics]` (03 §9): limits on images programs place in panes (kitty graphics).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Graphics {
+    /// Largest decoded image a pane may store; bigger transmissions and PNGs are refused.
+    pub max_image_bytes: ByteSize,
+    /// Image storage per pane screen; the oldest images are evicted beyond it.
+    pub max_total_per_pane: ByteSize,
+}
+impl Default for Graphics {
+    fn default() -> Self {
+        Graphics {
+            max_image_bytes: ByteSize::mib(32),
+            max_total_per_pane: ByteSize::mib(256),
+        }
     }
 }
 

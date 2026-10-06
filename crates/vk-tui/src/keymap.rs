@@ -12,6 +12,8 @@ pub struct Bound {
     pub action: String,
     /// For indexed bindings (`switch_tab = prefix+1..9`): the index.
     pub index: Option<usize>,
+    /// The binding names `altgr+…` explicitly: it matches AltGr text keys (03 §7.1).
+    pub altgr: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +22,8 @@ pub struct Keymap {
     pub bindings: Vec<Bound>,
     pub prefix_timeout_ms: u64,
     pub passthrough: bool,
+    /// `keys.altgr_mode`: AltGr text keys are text (`text`, `auto`) or chords (`chord`).
+    pub altgr_text: bool,
 }
 
 impl Keymap {
@@ -42,6 +46,7 @@ impl Keymap {
                         chords: b.chords,
                         action: action.to_string(),
                         index: indexed.then_some(i),
+                        altgr: names_altgr(s),
                     });
                 }
             }
@@ -69,6 +74,7 @@ impl Keymap {
             bindings,
             prefix_timeout_ms: cfg.keys.prefix_timeout_ms as u64,
             passthrough: cfg.keys.prefix_passthrough,
+            altgr_text: cfg.keys.altgr_mode != vk_config::AltgrMode::Chord,
         };
         // `ctrl+shift+p` opens the palette directly when the host reports it unambiguously
         // (kitty keyboard; legacy hosts send plain ctrl+p, which never matches). A user binding
@@ -109,8 +115,50 @@ impl Keymap {
             chords: b.chords,
             action: action.to_string(),
             index: None,
+            altgr: names_altgr(spec),
         });
         true
+    }
+
+    /// Apply `keys.altgr_mode` to a decoded key (03 §7.1). An AltGr text key (alt, with or
+    /// without ctrl, whose associated text is not the key itself: `@` from AltGr+2) is **text
+    /// input** in `text` mode (the default; `auto` behaves the same, since only hosts that
+    /// report associated text produce such keys): it becomes the typed character, so it never
+    /// matches a ctrl+alt / alt chord and reaches the pane as text, unless a binding names
+    /// `altgr+…` for it, which then keeps it a chord. In `chord` mode the text is dropped and
+    /// the key stays a chord for bindings and for the pane.
+    pub fn altgr(&self, ev: KeyEvent) -> KeyEvent {
+        if !is_altgr_text(&ev) {
+            return ev;
+        }
+        let mut ev = ev;
+        if !self.altgr_text {
+            ev.text = None;
+            return ev;
+        }
+        let as_chord = KeyEvent {
+            mods: ev.mods.union(Mods::CTRL | Mods::ALT),
+            text: None,
+            ..ev.clone()
+        };
+        let bound = self
+            .bindings
+            .iter()
+            .any(|b| b.altgr && b.chords.len() == 1 && key_matches(&b.chords[0], &as_chord));
+        if bound {
+            ev.mods = as_chord.mods;
+            return ev;
+        }
+        let text = ev.text.clone().unwrap_or_default();
+        let c = text.chars().next().unwrap_or(' ');
+        KeyEvent {
+            key: Key::Char(c),
+            mods: Mods::empty(),
+            kind: ev.kind,
+            base_layout_key: None,
+            shifted: None,
+            text: Some(text),
+        }
     }
 
     pub fn is_prefix(&self, ev: &KeyEvent) -> bool {
@@ -148,6 +196,34 @@ impl Keymap {
                 )
             })
     }
+}
+
+/// The binding spec names the `altgr` modifier.
+fn names_altgr(spec: &str) -> bool {
+    spec.to_ascii_lowercase()
+        .split(|c: char| c == '+' || c.is_whitespace())
+        .any(|p| p == "altgr")
+}
+
+/// An AltGr text key: alt (ctrl optional) with associated text that is not the key's own
+/// character (03 §7.1).
+pub fn is_altgr_text(ev: &KeyEvent) -> bool {
+    let Some(t) = ev.text.as_deref() else {
+        return false;
+    };
+    if !ev.mods.alt() || t.is_empty() || t.chars().any(char::is_control) || ev.mods.sup() {
+        return false;
+    }
+    let own = match ev.key {
+        Key::Char(c) => {
+            let mut b = [0u8; 4];
+            t == c.encode_utf8(&mut b)
+                || ev.shifted.is_some_and(|s| t == s.encode_utf8(&mut b))
+                || t.to_lowercase() == c.to_lowercase().to_string()
+        }
+        Key::Named(_) => true,
+    };
+    !own
 }
 
 fn norm(ev: &KeyEvent) -> (Key, Mods) {
@@ -287,6 +363,72 @@ mod tests {
 
     fn cfg() -> Keymap {
         Keymap::from_config(&vk_config::Config::default())
+    }
+
+    fn altgr_key(text: &str) -> KeyEvent {
+        KeyEvent {
+            key: Key::Char('2'),
+            mods: Mods::CTRL | Mods::ALT,
+            kind: KeyKind::Press,
+            base_layout_key: Some('2'),
+            shifted: None,
+            text: Some(text.into()),
+        }
+    }
+
+    fn with_keys(extra: &[(&str, &str)], mode: &str) -> Keymap {
+        let mut cfg = vk_config::Config::default();
+        for (a, b) in extra {
+            cfg.keys.bindings.insert(a.to_string(), b.to_string());
+        }
+        cfg.keys.altgr_mode = match mode {
+            "chord" => vk_config::AltgrMode::Chord,
+            "text" => vk_config::AltgrMode::Text,
+            _ => vk_config::AltgrMode::Auto,
+        };
+        Keymap::from_config(&cfg)
+    }
+
+    #[test]
+    fn altgr_text_is_text_unless_a_binding_names_altgr() {
+        // A ctrl+alt+2 binding must not fire for AltGr+2 = "@" (Norwegian layout).
+        let km = with_keys(&[("split_vertical", "ctrl+alt+2")], "auto");
+        assert!(km.altgr_text, "auto behaves as text");
+        let ev = km.altgr(altgr_key("@"));
+        assert_eq!(ev.key, Key::Char('@'));
+        assert_eq!(ev.mods, Mods::empty());
+        assert_eq!(ev.text.as_deref(), Some("@"));
+        assert!(km.direct(&ev).is_none());
+        // macOS Option+2 (alt only) with text "@" too.
+        let mut mac = altgr_key("@");
+        mac.mods = Mods::ALT;
+        assert_eq!(km.altgr(mac).key, Key::Char('@'));
+        // A binding that names altgr+2 keeps it a chord.
+        let km = with_keys(&[("split_vertical", "altgr+2")], "text");
+        let ev = km.altgr(altgr_key("@"));
+        assert_eq!(ev.mods, Mods::CTRL | Mods::ALT);
+        assert_eq!(km.direct(&ev).unwrap().action, "split_vertical");
+        // Chord mode: the text is dropped and the chord matches.
+        let km = with_keys(&[("split_vertical", "ctrl+alt+2")], "chord");
+        let ev = km.altgr(altgr_key("@"));
+        assert_eq!(ev.text, None);
+        assert_eq!(km.direct(&ev).unwrap().action, "split_vertical");
+        // Not AltGr text: alt+x reporting its own character, or no text at all.
+        let km = with_keys(&[], "text");
+        let mut alt_x = KeyEvent::new(Key::Char('x'), Mods::ALT);
+        alt_x.text = Some("x".into());
+        assert_eq!(km.altgr(alt_x.clone()), alt_x);
+        let plain = KeyEvent::new(Key::Char('q'), Mods::CTRL | Mods::ALT);
+        assert_eq!(km.altgr(plain.clone()), plain);
+    }
+
+    #[test]
+    fn base_layout_key_matches_bindings_on_other_layouts() {
+        // Norwegian: the key at US `[` produces `å`; kitty reports base layout key `[`.
+        let km = cfg();
+        let mut ev = KeyEvent::new(Key::Char('å'), Mods::empty());
+        ev.base_layout_key = Some('[');
+        assert_eq!(km.prefixed(&ev).unwrap().action, "enter_copy_mode");
     }
 
     #[test]

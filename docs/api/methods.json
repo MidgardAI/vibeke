@@ -3,7 +3,7 @@
   "generated_from": "vk-server METHODS tables; signatures from spec/07 §2; params/result shapes from the schema registry (crates/vk-server/src/api_schema.rs)",
   "schema": "vibeke-1.schema.json",
   "shape_language": "{field, field?: type = default, ...}; [T]; A|B (bare lowercase words are string literals); {*: T} maps; CamelCase names are shared definitions in the schema's $defs",
-  "render_protocol": 4,
+  "render_protocol": 5,
   "holder_protocol": {
     "proto": 2,
     "min": 1

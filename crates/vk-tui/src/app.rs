@@ -8,8 +8,7 @@ use crate::screen::{Grid, HostCaps};
 use crate::theme::Theme;
 use crate::{draw, paste, term};
 use anyhow::{Context, Result};
-use crossterm::event::{Event, EventStream, MouseButton as CtButton, MouseEventKind};
-use futures::StreamExt;
+use crossterm::event::{Event, MouseButton as CtButton, MouseEventKind};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::Write;
@@ -665,7 +664,7 @@ async fn run_inner(
         crate::sidebar::width_path(&opts.session, &crate::nav::client_key()),
     );
     crate::onboarding::maybe_open(&mut app);
-    let mut events = EventStream::new();
+    let mut events = crate::input::Source::new(app.kitty);
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         if app.dirty {
@@ -686,7 +685,7 @@ async fn run_inner(
             let res = crate::scrollback::run_external(&x);
             let _ = term::raw();
             let _ = term::enter(app.kitty);
-            events = EventStream::new();
+            events = crate::input::Source::new(app.kitty);
             app.prev = Grid::new(0, 0);
             app.dirty = true;
             if let Err(e) = res {
@@ -698,7 +697,7 @@ async fn run_inner(
         if crate::appearance::take_reprobe(&mut app) {
             drop(events);
             let det = crate::appearance::reprobe();
-            events = EventStream::new();
+            events = crate::input::Source::new(app.kitty);
             crate::appearance::on_detect(&mut app, det);
         }
         let redraw_in = if app.dirty {
@@ -719,7 +718,7 @@ async fn run_inner(
         tokio::select! {
             ev = events.next() => {
                 match ev {
-                    Some(Ok(ev)) => app.on_event(ev),
+                    Some(Ok(ev)) => app.on_input(ev),
                     Some(Err(_)) | None => return Ok("input closed".into()),
                 }
             }
@@ -1737,6 +1736,20 @@ impl App {
 
     // ---- host events --------------------------------------------------------------------
 
+    /// Host input from [`crate::input::Source`]: keys the client decoded itself (kitty hosts,
+    /// with associated text) or crossterm events.
+    fn on_input(&mut self, i: crate::input::Input) {
+        match i {
+            crate::input::Input::Event(ev) => self.on_event(ev),
+            crate::input::Input::Key(k) => {
+                self.dirty = true;
+                crate::gateway::on_input(self);
+                let k = self.keymap.altgr(k);
+                self.on_key(k);
+            }
+        }
+    }
+
     fn on_event(&mut self, ev: Event) {
         self.dirty = true;
         if matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) {
@@ -1749,6 +1762,7 @@ impl App {
         match ev {
             Event::Key(k) => {
                 if let Some(ev) = keymap::from_crossterm(&k) {
+                    let ev = self.keymap.altgr(ev);
                     self.on_key(ev);
                 }
             }

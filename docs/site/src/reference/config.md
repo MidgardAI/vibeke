@@ -308,6 +308,10 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # [render]
 # max_unacked = 2
 
+# [graphics]                            # images programs place in panes (kitty graphics), new panes
+# max_image_bytes    = "32MiB"          # bigger images are refused
+# max_total_per_pane = "256MiB"         # per pane screen; the oldest images are evicted
+
 # [compat]
 # herdr_env    = true
 # herdr_socket = false

@@ -37,6 +37,7 @@ usage:
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
   vibeke doctor [--rebuild-index] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index offline
+  vibeke doctor terminal         probe the host terminal: a pass/warn row per feature (03 §6.1)
   vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart [--binary PATH]|reload-config]
