@@ -91,6 +91,8 @@ pub enum Pending {
     Reconcile {
         key: String,
     },
+    /// M4 parity surfaces (status bar, search, groups, layouts, appearance).
+    Parity(crate::parity::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -177,6 +179,20 @@ pub enum PromptKind {
     BrowserUrl {
         pane: String,
     },
+    /// New workspace group (moving `ws` into it when set).
+    GroupNew {
+        mi: usize,
+        ws: Option<String>,
+    },
+    GroupRename {
+        mi: usize,
+        group: String,
+    },
+    /// Name for `layout_save` (exports `tab`).
+    LayoutSave {
+        mi: usize,
+        tab: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +260,20 @@ pub enum Popup {
     Message {
         title: String,
         body: String,
+    },
+    /// Move a workspace into a group (or out of one).
+    GroupPick {
+        mi: usize,
+        ws: String,
+        sel: usize,
+    },
+    /// Search across panes' scrollback and archive (`search_global`).
+    Search(Box<crate::search::GlobalSearch>),
+    /// Named layouts from `layout.list` (`layout_apply`).
+    LayoutPick {
+        mi: usize,
+        layouts: Vec<crate::layouts::Entry>,
+        sel: usize,
     },
 }
 
@@ -338,6 +368,8 @@ pub struct App {
     pub push: crate::push::State,
     /// Palette/goto history, last workspace, agent browser sessions, title sync.
     pub nav: crate::nav::Nav,
+    /// M4 parity state: floats, groups, status bar, search, appearance, notifications.
+    pub parity: crate::parity::State,
 }
 
 pub struct Opts {
@@ -372,9 +404,14 @@ pub async fn attach_stream(
 ) -> Result<()> {
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
-    let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{
+    let mut req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{
         "client_id": client_id, "remote": remote,
         "caps": {"max_fps": if remote { 60 } else { 120 }, "kitty_keyboard": true, "osc52": true, "truecolor": true}}});
+    // Host terminal identity for native notifications and click-to-focus (08 §7.1): only to a
+    // server on this machine, which is the one that can raise this terminal window.
+    if !remote && let Some(h) = crate::notifications::host_meta() {
+        req["params"]["host"] = h;
+    }
     wr.write_all(format!("{req}\n").as_bytes()).await?;
     wr.flush().await?;
     let mut line = String::new();
@@ -513,6 +550,8 @@ async fn run_inner(
             Duration::ZERO,
         );
     }
+    // Host appearance from the startup probe (OSC 11 / `CSI ? 996 n`, theme auto).
+    crate::appearance::on_detect(&mut app, crate::appearance::startup());
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -527,6 +566,14 @@ async fn run_inner(
         }
         if let Some(r) = app.quit.take() {
             return Ok(r);
+        }
+        // Re-query the host's light/dark appearance (after a focus change): crossterm can't
+        // parse the replies, so the event reader is stopped while we read them raw.
+        if crate::appearance::take_reprobe(&mut app) {
+            drop(events);
+            let det = crate::appearance::reprobe();
+            events = EventStream::new();
+            crate::appearance::on_detect(&mut app, det);
         }
         let redraw_in = if app.dirty {
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
@@ -637,6 +684,7 @@ impl App {
             browser: Default::default(),
             push: Default::default(),
             nav: Default::default(),
+            parity: Default::default(),
         }
     }
 }
@@ -699,15 +747,17 @@ impl App {
     pub fn pane_area(&self) -> Rect {
         let (cols, rows) = self.size;
         let x = if self.sidebar { self.sidebar_w + 1 } else { 0 };
+        // The status bar takes a row below the tab bar or at the bottom (08 §4).
+        let (top, bottom) = crate::statusbar::reserved(self);
         Rect {
             x,
-            y: 1,
+            y: 1 + top,
             w: cols.saturating_sub(x),
-            h: rows.saturating_sub(1),
+            h: rows.saturating_sub(1 + top + bottom),
         }
     }
-    /// Pane rects for the focused tab (zoom applied).
-    pub fn pane_rects(&self) -> Vec<(String, Rect)> {
+    /// Tiled pane rects for the focused tab (zoom applied).
+    pub fn tiled_rects(&self) -> Vec<(String, Rect)> {
         let Some(tab) = self.focused_tab() else {
             return vec![];
         };
@@ -716,6 +766,18 @@ impl App {
             return vec![(z.clone(), area)];
         }
         layout::rects(&tab.layout, area)
+    }
+    /// Every visible pane of the focused tab: floating panes first (topmost first, content
+    /// rects inside their frames), then the tiling. Hit tests take the first match, so floats
+    /// win; `ViewHint` reports them so their PTYs get real sizes (08 §5).
+    pub fn pane_rects(&self) -> Vec<(String, Rect)> {
+        let mut v: Vec<(String, Rect)> = crate::floats::visible(self)
+            .into_iter()
+            .rev()
+            .map(|f| (f.pane, f.inner))
+            .collect();
+        v.extend(self.tiled_rects());
+        v
     }
 
     pub(crate) fn command(&mut self, method: &str, params: Value, pending: Pending) {
@@ -830,6 +892,7 @@ impl App {
         crate::inbox::on_connected(self, i);
         crate::gateway::on_connected(self, i);
         crate::push::on_connected(self, i);
+        crate::parity::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -976,6 +1039,7 @@ impl App {
                 }
                 crate::tasks::on_model(self, i);
                 crate::gateway::on_model(self, i);
+                crate::parity::on_model(self, i);
                 crate::inbox::invalidate(self);
                 if let Mode::Popup(Popup::Card { interaction, .. }) = &self.mode
                     && !self.machines.iter().any(|m| {
@@ -1084,42 +1148,16 @@ impl App {
                     });
                 }
                 self.history_reqs.remove(&req);
+                // Copy mode jumping to a search hit continues once history is in.
+                crate::search::after_history(self);
             }
             ServerFrame::Notify {
-                title, body, pane, ..
-            } => {
-                let label = if self.machines.len() > 1 {
-                    format!("[{}] ", self.machines[i].label)
-                } else {
-                    String::new()
-                };
-                let text = if body.is_empty() {
-                    format!("{label}{title}")
-                } else {
-                    format!("{label}{title}: {body}")
-                };
-                let focused_here = pane.is_some()
-                    && pane == self.focused_pane()
-                    && self.cur == i
-                    && self.host_focused;
-                if !focused_here || !self.config.notifications.suppress_when_focused {
-                    self.toasts.push(Toast {
-                        text,
-                        until: Instant::now() + Duration::from_secs(6),
-                        pane: pane.map(|p| (i, p)),
-                    });
-                    if self.toasts.len() > 3 {
-                        self.toasts.remove(0);
-                    }
-                    // Forward to the host terminal so it can raise a native notification (08 §7.1).
-                    if !self.host_focused {
-                        let _ = std::io::stdout().write_all(
-                            format!("\x1b]9;{}\x07", title.replace(['\x07', '\x1b'], ""))
-                                .as_bytes(),
-                        );
-                    }
-                }
-            }
+                title,
+                body,
+                pane,
+                delivered,
+                ..
+            } => crate::notifications::on_notify(self, i, title, body, pane, delivered),
             ServerFrame::Bell { pane } => {
                 if Some(&pane) != self.focused_pane().as_ref() {
                     let _ = std::io::stdout().write_all(b"\x07");
@@ -1199,6 +1237,7 @@ impl App {
                 self.dispatch_result(i, *then, res);
             }
             Pending::Reconcile { key } => self.on_reconciled(i, &key, res),
+            Pending::Parity(r) => crate::parity::on_reply(self, i, r, res),
         }
     }
 
@@ -1364,6 +1403,7 @@ impl App {
         crate::inbox::tick(self);
         crate::tasks::tick(self);
         crate::gateway::tick(self);
+        crate::parity::on_tick(self);
         // Keep spinners/ages in the sidebar fresh once a second.
         if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
             self.dirty = true;
@@ -1397,6 +1437,7 @@ impl App {
             Event::FocusGained => {
                 self.host_focused = true;
                 self.send_view_hints(true);
+                crate::appearance::on_focus_gained(self);
             }
             Event::FocusLost => {
                 self.host_focused = false;
@@ -1516,6 +1557,12 @@ impl App {
                         });
                         self.mode = Mode::Copy(cm);
                     }
+                    // No match in memory: search the archive (and unloaded scrollback).
+                    crate::copy::Outcome::Search { q, back } => {
+                        crate::search::copy_search(self, cm, q, back)
+                    }
+                    // At the top of everything in memory: page older rows from the archive.
+                    crate::copy::Outcome::Archive => crate::search::copy_page(self, cm),
                 }
             }
             Mode::Prompt(p) => self.prompt_key(ev, p),
@@ -1579,6 +1626,10 @@ impl App {
 
     pub(crate) fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
+        // Float frames (move/resize/raise), group rows and drags, the status bar.
+        if crate::parity::on_mouse(self, &me) {
+            return;
+        }
         if crate::browser::on_mouse(self, &me, px) {
             return;
         }
@@ -1660,7 +1711,7 @@ impl App {
     // ---- actions --------------------------------------------------------------------------
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
-        if crate::browser::action_name(self, action) {
+        if crate::browser::action_name(self, action) || crate::parity::action(self, action) {
             return;
         }
         let pane = self.focused_pane();
@@ -1900,6 +1951,7 @@ impl App {
                         self.keymap = Keymap::from_config(&c);
                         self.theme = Theme::named(&c.theme.name);
                         self.config = c;
+                        crate::appearance::apply(self, true);
                         self.toast("config reloaded");
                     }
                     Err(e) => self.toast(format!("config error: {e}")),
@@ -1987,6 +2039,9 @@ impl App {
             return;
         };
         let mut cm = CopyMode::new(&pane, buf.lines.clone(), buf.cols, buf.cursor);
+        // Where in-memory rows end and the archive begins (archive paging, M4); asked first so
+        // the first history page can stay in memory.
+        crate::search::request_bounds(self, &pane);
         let req = self.next_req;
         self.next_req += 1;
         cm.pending_req = Some(req);
@@ -2063,6 +2118,9 @@ impl App {
     }
 
     fn navigate_key(&mut self, ev: KeyEvent, sel: usize) {
+        if crate::groups::navigate_key(self, &ev, sel) {
+            return;
+        }
         let rows = draw::sidebar_targets(self);
         let n = rows.len().max(1);
         match ev.key {
@@ -2140,6 +2198,9 @@ impl App {
     }
 
     fn resize_key(&mut self, ev: KeyEvent) {
+        if crate::floats::resize_key(self, &ev) {
+            return;
+        }
         let Some(pane) = self.focused_pane() else {
             return;
         };
@@ -2271,6 +2332,9 @@ impl App {
                 self.answer(mi, &interaction, json!({"decision": "deny", "text": v}));
             }
             PromptKind::BrowserUrl { pane } => crate::browser::navigate(self, &pane, &v),
+            k @ (PromptKind::GroupNew { .. }
+            | PromptKind::GroupRename { .. }
+            | PromptKind::LayoutSave { .. }) => crate::parity::submit_prompt(self, k, v),
             PromptKind::Command => {
                 let mut it = v.splitn(2, ' ');
                 let action = it.next().unwrap_or("").replace('-', "_");

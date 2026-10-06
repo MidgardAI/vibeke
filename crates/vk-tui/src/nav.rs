@@ -538,6 +538,23 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Browser: take over ⇄ release the watched agent session",
     ),
     ("browser_watch", "Watch the focused agent's browser session"),
+    ("float_pane", "Float this pane ⇄ back into the tiling"),
+    ("embed_pane", "Embed this floating pane into the tiling"),
+    (
+        "group_new",
+        "New workspace group (moves this workspace into it)",
+    ),
+    ("group_move", "Move this workspace into a group…"),
+    ("group_rename", "Rename this workspace's group"),
+    ("group_collapse", "Collapse/expand this workspace's group"),
+    ("search_global", "Search all panes (scrollback + archive)"),
+    ("layout_save", "Save this tab's layout…"),
+    ("layout_apply", "Apply a saved layout…"),
+    ("status_bar_toggle", "Show/hide the status bar"),
+    (
+        "theme_detect",
+        "Re-detect the terminal's light/dark appearance",
+    ),
 ];
 
 /// Actions only reachable from the palette (no keymap entry).
@@ -548,6 +565,17 @@ const EXTRA_ACTIONS: &[&str] = &[
     "open_preview",
     "browser_stop",
     "browser_watch",
+    "float_pane",
+    "embed_pane",
+    "group_new",
+    "group_move",
+    "group_rename",
+    "group_collapse",
+    "search_global",
+    "layout_save",
+    "layout_apply",
+    "status_bar_toggle",
+    "theme_detect",
 ];
 
 pub fn describe(action: &str) -> String {
@@ -609,7 +637,12 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
         );
     }
     for a in EXTRA_ACTIONS {
-        push(&mut out, a.to_string(), describe(a), None);
+        push(
+            &mut out,
+            a.to_string(),
+            describe(a),
+            app.keymap.binding_for(a),
+        );
     }
     for (i, c) in app.config.keys.command.iter().enumerate() {
         let desc = c

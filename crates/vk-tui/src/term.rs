@@ -27,10 +27,13 @@ pub fn probe() -> (ProbeResult, vk_browser::probe::GraphicsCaps) {
     // A 3-byte shm object for the `t=s` probe; a host that supports it reads and unlinks it.
     let shm_name = format!("/vkp-{:x}", std::process::id());
     let shm_ok = vk_browser::kitty::shm::write(&shm_name, &[0, 0, 0]).is_ok();
-    let extra = graphics_queries(shm_ok.then_some(shm_name.as_str()));
+    let mut extra = graphics_queries(shm_ok.then_some(shm_name.as_str()));
+    // Colour-scheme report (theme auto); the OSC 11 background query is in the base batch.
+    extra.extend_from_slice(b"\x1b[?996n");
     let _ = out.write_all(&caps::probe_queries_with(&extra));
     let _ = out.flush();
     let (r, buf) = read_replies(&env);
+    crate::appearance::record_probe(&buf);
     if shm_ok {
         vk_browser::kitty::shm::unlink(&shm_name);
     }

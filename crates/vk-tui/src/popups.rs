@@ -129,6 +129,9 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             }
         },
         p @ Popup::PasteAsk { .. } => crate::upload::ask_key(app, ev, p),
+        p @ (Popup::GroupPick { .. } | Popup::Search(_) | Popup::LayoutPick { .. }) => {
+            crate::parity::popup_key(app, ev, p)
+        }
         Popup::Goto { filter, sel } => crate::nav::goto_key(app, ev, filter, sel),
         Popup::Palette { filter, sel } => crate::nav::palette_key(app, ev, filter, sel),
         Popup::Hints(h) => crate::nav::hints_key(app, ev, h),
@@ -454,6 +457,9 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::Hints(h) => crate::nav::draw_hints(app, g, h),
+            p @ (Popup::GroupPick { .. } | Popup::Search(_) | Popup::LayoutPick { .. }) => {
+                return crate::parity::popup_draw(app, g, p);
+            }
             Popup::Inbox => crate::inbox::draw(app, g),
             Popup::Task => crate::tasks::draw_task(app, g),
             Popup::Track => crate::tasks::draw_track(app, g),

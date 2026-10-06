@@ -470,6 +470,9 @@ pub fn read_archive(server: &Server, ctx: &Ctx, p: &Value) -> R {
     Ok(json!({
         "pane": id, "source": "archive", "live": live,
         "first": first, "end": end, "from": from, "to": to.max(from),
+        // First in-memory line (live panes): clients page memory with `FetchHistory` and older
+        // rows with this method.
+        "mem_first": mem_first,
         "more_before": from > first, "more_after": to < end,
         "rows": rows, "text": text,
     }))

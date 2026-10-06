@@ -7,10 +7,21 @@ use vk_proto::model::*;
 use vk_proto::render::{CursorShape, Style, attr};
 
 /// One sidebar line: text segments with styles, and the pane it targets when clicked/entered.
+#[derive(Default)]
 pub struct SideRow {
     pub segs: Vec<(String, Style)>,
     pub target: Option<(usize, String)>,
     pub focused: bool,
+    /// A workspace group row (machine, group id): selectable in navigate mode, collapses on
+    /// enter/click (08 §2.1, M4).
+    pub group: Option<(usize, String)>,
+}
+
+impl SideRow {
+    /// Navigate mode can select it (a pane target or a group).
+    pub fn selectable(&self) -> bool {
+        self.target.is_some() || self.group.is_some()
+    }
 }
 
 pub fn harness_icon(h: &str) -> &'static str {
@@ -204,6 +215,7 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs,
         target: Some((mi, r.pane.clone())),
         focused,
+        ..Default::default()
     }
 }
 
@@ -251,6 +263,7 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
                 segs: vec![("─ needs you ─".into(), t.bold(t.red))],
                 target: None,
                 focused: false,
+                ..Default::default()
             });
             for (_, mi, r) in need {
                 rows.push(agent_row(app, mi, r, " "));
@@ -259,6 +272,7 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
                 segs: vec![],
                 target: None,
                 focused: false,
+                ..Default::default()
             });
         }
     }
@@ -283,97 +297,10 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
                 ],
                 target: None,
                 focused: false,
+                ..Default::default()
             });
         }
-        for w in &m.model.workspaces {
-            let runs: Vec<&AgentRun> = m
-                .model
-                .runs
-                .iter()
-                .filter(|r| {
-                    m.model
-                        .panes
-                        .iter()
-                        .any(|p| p.id == r.pane && p.workspace == w.id)
-                })
-                .collect();
-            let focused_ws = mi == app.cur && m.focus.workspace.as_deref() == Some(&w.id);
-            let unread = m
-                .model
-                .panes
-                .iter()
-                .any(|p| p.workspace == w.id && (p.unread || p.marked_unread));
-            let badge = runs.iter().map(|r| urgency(app, m, r)).max().unwrap_or(0);
-            let (bg, bc) = match badge {
-                8 => ("⚠", t.red),
-                7 => ("?", t.yellow),
-                6 => ("✗", t.red),
-                4 => ("✓", t.green),
-                3 => ("●", t.accent),
-                _ => ("", t.muted),
-            };
-            let target = m
-                .model
-                .tabs
-                .iter()
-                .find(|tb| tb.workspace == w.id)
-                .and_then(|tb| {
-                    tb.focused_pane
-                        .clone()
-                        .or_else(|| tb.layout.panes().first().cloned())
-                });
-            let marker = if w.task.is_some() { "◆ " } else { "" };
-            let name_style = if unread { t.bold(t.fg) } else { t.text() };
-            let mut segs = vec![
-                (
-                    format!("{}{marker}", if focused_ws { "▸ " } else { "  " }),
-                    t.s(t.accent),
-                ),
-                (w.display_name().to_string(), name_style),
-            ];
-            if let Some(b) = &w.branch {
-                segs.push((format!(" ⎇ {b}"), t.dim()));
-            }
-            if !bg.is_empty() {
-                let working = runs
-                    .iter()
-                    .filter(|r| r.execution.value == Execution::Working)
-                    .count();
-                let n = if bg == "●" && working > 1 {
-                    working.to_string()
-                } else {
-                    String::new()
-                };
-                segs.push((format!(" {bg}{n}"), t.bold(bc)));
-            }
-            rows.push(SideRow {
-                segs,
-                target: target.map(|p| (mi, p)),
-                focused: false,
-            });
-            for r in &runs {
-                rows.push(agent_row(app, mi, r, "    "));
-            }
-            if app.config.ui.sidebar.show_shell_panes {
-                for p in m
-                    .model
-                    .panes
-                    .iter()
-                    .filter(|p| p.workspace == w.id && !runs.iter().any(|r| r.pane == p.id))
-                {
-                    let focused = mi == app.cur && m.focus.pane.as_deref() == Some(&p.id);
-                    let mut segs = vec![(format!("    {}", p.display_title()), t.dim())];
-                    if let Some(gl) = isolation_glyph(app, &p.isolation) {
-                        segs.push((format!(" {gl}"), t.s(t.accent)));
-                    }
-                    rows.push(SideRow {
-                        segs,
-                        target: Some((mi, p.id.clone())),
-                        focused,
-                    });
-                }
-            }
-        }
+        crate::groups::push_machine(app, mi, &mut rows);
     }
     let pinned: Vec<(usize, &Pane)> = app
         .machines
@@ -392,12 +319,14 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
             segs: vec![("─ pinned ─".into(), t.dim())],
             target: None,
             focused: false,
+            ..Default::default()
         });
         for (mi, p) in pinned {
             rows.push(SideRow {
                 segs: vec![(format!("  {}", p.display_title()), t.text())],
                 target: Some((mi, p.id.clone())),
                 focused: false,
+                ..Default::default()
             });
         }
     }
@@ -408,22 +337,128 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
             segs: vec![("─ previews ─".into(), t.dim())],
             target: None,
             focused: false,
+            ..Default::default()
         });
         for (mi, p) in &previews {
             rows.push(SideRow {
                 segs: crate::browser::preview_segs(app, *mi, p),
                 target: None,
                 focused: false,
+                ..Default::default()
             });
         }
     }
     rows
 }
 
+/// One workspace row plus its agent (and optional shell pane) rows, indented by group depth.
+pub(crate) fn workspace_rows(
+    app: &App,
+    mi: usize,
+    w: &Workspace,
+    depth: usize,
+    rows: &mut Vec<SideRow>,
+) {
+    let t = &app.theme;
+    let m = &app.machines[mi];
+    let pad = "  ".repeat(depth);
+    let runs: Vec<&AgentRun> = m
+        .model
+        .runs
+        .iter()
+        .filter(|r| {
+            m.model
+                .panes
+                .iter()
+                .any(|p| p.id == r.pane && p.workspace == w.id)
+        })
+        .collect();
+    let focused_ws = mi == app.cur && m.focus.workspace.as_deref() == Some(&w.id);
+    let unread = m
+        .model
+        .panes
+        .iter()
+        .any(|p| p.workspace == w.id && (p.unread || p.marked_unread));
+    let badge = runs.iter().map(|r| urgency(app, m, r)).max().unwrap_or(0);
+    let (bg, bc) = match badge {
+        8 => ("⚠", t.red),
+        7 => ("?", t.yellow),
+        6 => ("✗", t.red),
+        4 => ("✓", t.green),
+        3 => ("●", t.accent),
+        _ => ("", t.muted),
+    };
+    let target = m
+        .model
+        .tabs
+        .iter()
+        .find(|tb| tb.workspace == w.id)
+        .and_then(|tb| {
+            tb.focused_pane
+                .clone()
+                .or_else(|| tb.layout.panes().first().cloned())
+        });
+    let marker = if w.task.is_some() { "◆ " } else { "" };
+    let name_style = if unread { t.bold(t.fg) } else { t.text() };
+    let mut segs = vec![
+        (
+            format!("{pad}{}{marker}", if focused_ws { "▸ " } else { "  " }),
+            t.s(t.accent),
+        ),
+        (w.display_name().to_string(), name_style),
+    ];
+    if let Some(b) = &w.branch {
+        segs.push((format!(" ⎇ {b}"), t.dim()));
+    }
+    if !bg.is_empty() {
+        let working = runs
+            .iter()
+            .filter(|r| r.execution.value == Execution::Working)
+            .count();
+        let n = if bg == "●" && working > 1 {
+            working.to_string()
+        } else {
+            String::new()
+        };
+        segs.push((format!(" {bg}{n}"), t.bold(bc)));
+    }
+    rows.push(SideRow {
+        segs,
+        target: target.map(|p| (mi, p)),
+        focused: false,
+        ..Default::default()
+    });
+    for r in &runs {
+        rows.push(agent_row(app, mi, r, &format!("{pad}    ")));
+    }
+    if app.config.ui.sidebar.show_shell_panes {
+        for p in m
+            .model
+            .panes
+            .iter()
+            .filter(|p| p.workspace == w.id && !runs.iter().any(|r| r.pane == p.id))
+        {
+            let focused = mi == app.cur && m.focus.pane.as_deref() == Some(&p.id);
+            let mut segs = vec![(format!("{pad}    {}", p.display_title()), t.dim())];
+            if let Some(gl) = isolation_glyph(app, &p.isolation) {
+                segs.push((format!(" {gl}"), t.s(t.accent)));
+            }
+            rows.push(SideRow {
+                segs,
+                target: Some((mi, p.id.clone())),
+                focused,
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Navigate-mode selectable rows, in order: pane targets, and group rows as `(machine, group
+/// id)` (`crate::groups::navigate_key` handles keys on those before anything else sees them).
 pub fn sidebar_targets(app: &App) -> Vec<(usize, String)> {
     sidebar_rows(app)
         .into_iter()
-        .filter_map(|r| r.target)
+        .filter_map(|r| r.target.or(r.group))
         .collect()
 }
 
@@ -545,8 +580,8 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             if y >= rows {
                 break;
             }
-            let selected = r.target.is_some() && nav_sel == Some(target_i);
-            if r.target.is_some() {
+            let selected = r.selectable() && nav_sel == Some(target_i);
+            if r.selectable() {
                 target_i += 1;
             }
             if selected || r.focused {
@@ -654,12 +689,15 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     for (s, st) in &right {
         x += g.put_str(x, 0, s, *st, cols.saturating_sub(x));
     }
-    // Panes.
+    // Status bar (08 §4), when enabled.
+    crate::statusbar::draw(app, g);
+    // Panes: the tiling, then floating panes on top in z order (08 §5).
     let area = app.pane_area();
-    let rects = app.pane_rects();
+    let rects = app.tiled_rects();
+    let floats = crate::floats::visible(app);
     let focused = app.m().focus.pane.clone();
     let mut cursor = None;
-    if rects.is_empty() {
+    if rects.is_empty() && floats.is_empty() {
         let msg = if app.m().connected() {
             "no panes — prefix+c for a new tab, prefix+shift+n for a workspace"
         } else {
@@ -674,44 +712,16 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         );
     }
     draw_borders(app, g, area, &rects, focused.as_deref());
-    let copy_pane = if let Mode::Copy(cm) = &app.mode {
-        Some(cm.pane.clone())
-    } else {
-        None
-    };
     for (pid, r) in &rects {
-        if copy_pane.as_deref() == Some(pid.as_str())
-            && let Mode::Copy(cm) = &app.mode
-        {
-            cm.draw(g, *r, &t);
-            continue;
+        draw_pane_at(app, g, pid, *r, focused.as_deref(), &mut cursor);
+    }
+    for f in &floats {
+        // A tiled pane's cursor hidden under a float doesn't show through it.
+        if cursor.is_some_and(|(x, y, _)| f.outer.contains(x, y)) {
+            cursor = None;
         }
-        if crate::browser::browser_of(app, app.cur, pid).is_some() {
-            crate::browser::draw_pane(app, g, pid, *r);
-            continue;
-        }
-        let Some(buf) = app.m().panes.get(pid) else {
-            g.put_str(r.x + 1, r.y, "…", t.dim(), r.w);
-            continue;
-        };
-        draw_pane(g, buf, *r);
-        if focused.as_deref() == Some(pid.as_str())
-            && buf.cursor.visible
-            && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
-        {
-            let (cx, cy) = (buf.cursor.col, buf.cursor.row);
-            if cx < r.w && cy < r.h {
-                cursor = Some((r.x + cx, r.y + cy, buf.cursor.shape));
-            }
-        }
-        // Recovery / exit badges.
-        if let Some(p) = app.m().model.panes.iter().find(|p| &p.id == pid)
-            && p.recovered.as_deref() == Some("ring_only")
-        {
-            let badge = " recovered (ring only) ";
-            let w = badge.len() as u16;
-            g.put_str(r.x + r.w.saturating_sub(w), r.y, badge, t.dim(), w);
-        }
+        crate::floats::draw_frame(app, g, f, focused.as_deref() == Some(f.pane.as_str()));
+        draw_pane_at(app, g, &f.pane, f.inner, focused.as_deref(), &mut cursor);
     }
     if !matches!(
         app.mode,
@@ -727,6 +737,51 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         cursor = None;
     }
     cursor
+}
+
+/// One pane's content in `r`: copy mode, a browser pane, or terminal cells (+ badges); sets the
+/// host cursor for the focused pane.
+fn draw_pane_at(
+    app: &App,
+    g: &mut Grid,
+    pid: &str,
+    r: Rect,
+    focused: Option<&str>,
+    cursor: &mut Option<(u16, u16, CursorShape)>,
+) {
+    let t = app.theme;
+    if let Mode::Copy(cm) = &app.mode
+        && cm.pane == pid
+    {
+        cm.draw(g, r, &t);
+        return;
+    }
+    if crate::browser::browser_of(app, app.cur, pid).is_some() {
+        crate::browser::draw_pane(app, g, pid, r);
+        return;
+    }
+    let Some(buf) = app.m().panes.get(pid) else {
+        g.put_str(r.x + 1, r.y, "…", t.dim(), r.w);
+        return;
+    };
+    draw_pane(g, buf, r);
+    if focused == Some(pid)
+        && buf.cursor.visible
+        && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
+    {
+        let (cx, cy) = (buf.cursor.col, buf.cursor.row);
+        if cx < r.w && cy < r.h {
+            *cursor = Some((r.x + cx, r.y + cy, buf.cursor.shape));
+        }
+    }
+    // Recovery / exit badges.
+    if let Some(p) = app.m().model.panes.iter().find(|p| p.id == pid)
+        && p.recovered.as_deref() == Some("ring_only")
+    {
+        let badge = " recovered (ring only) ";
+        let w = badge.len() as u16;
+        g.put_str(r.x + r.w.saturating_sub(w), r.y, badge, t.dim(), w);
+    }
 }
 
 fn draw_pane(g: &mut Grid, buf: &PaneBuf, r: Rect) {

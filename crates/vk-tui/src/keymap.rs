@@ -53,6 +53,9 @@ impl Keymap {
         for (action, spec) in [
             ("inbox", "prefix+i"),
             ("next_attention_focus", "prefix+shift+a"),
+            // `prefix+/` is search_scrollback (copy-mode search); the cross-pane search popup
+            // takes alt+/ (M4).
+            ("search_global", "prefix+alt+/"),
         ] {
             if !cfg.keys.bindings.contains_key(action) {
                 add(action, spec);

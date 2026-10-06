@@ -16,6 +16,13 @@ use vk_store::archive::ArchivedRow;
 use vk_term::{Effect, Engine};
 
 pub const SCROLLBACK: usize = 10_000;
+
+/// A fresh VT engine whose colour-query answers follow the session appearance (theme auto).
+fn new_engine(cols: u16, rows: u16) -> Engine {
+    let mut e = Engine::new(cols, rows, SCROLLBACK);
+    crate::theme::apply_query_palette(&mut e);
+    e
+}
 const SNAPSHOT_IDLE: Duration = Duration::from_secs(2);
 const SNAPSHOT_MAX_INTERVAL: Duration = Duration::from_secs(30);
 /// How long a caller awaiting a holder ack waits. Acks now follow the PTY write, so a
@@ -74,7 +81,7 @@ impl PaneRt {
         let rt = Arc::new(PaneRt {
             id: id.to_string(),
             screen: Mutex::new(Screen {
-                engine: Engine::new(cols, rows, SCROLLBACK),
+                engine: new_engine(cols, rows),
                 rev: 1,
                 epoch: 1,
                 fed_offset: 0,
@@ -340,7 +347,7 @@ async fn run_inner(
             // screens).
             let mut sc = rt.screen.lock().unwrap();
             let (c, r) = (sc.engine.cols(), sc.engine.rows());
-            sc.engine = Engine::new(c, r, SCROLLBACK);
+            sc.engine = new_engine(c, r);
             sc.fed_offset = 0;
         }
         let snap = server
@@ -357,6 +364,7 @@ async fn run_inner(
         {
             let mut sc = rt.screen.lock().unwrap();
             sc.engine = e;
+            crate::theme::apply_query_palette(&mut sc.engine);
             sc.fed_offset = s.offset;
             from = s.offset;
             method = "snapshot+replay";
@@ -517,7 +525,7 @@ impl PaneLoop {
                 // Journal overflowed past our snapshot: reset and replay what remains.
                 let mut sc = self.rt.screen.lock().unwrap();
                 let (c, r) = (sc.engine.cols(), sc.engine.rows());
-                sc.engine = Engine::new(c, r, SCROLLBACK);
+                sc.engine = new_engine(c, r);
                 sc.engine.set_replaying(true);
                 self.method = "ring_only".into();
             }

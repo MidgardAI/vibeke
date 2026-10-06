@@ -34,13 +34,27 @@ pub struct CopyMode {
     message: Option<String>,
     /// `g` was pressed: stay at the top while older pages load.
     want_top: bool,
+    /// Archive paging and search fallback (`crate::search`, M4).
+    pub archive: crate::search::ArchiveCursor,
 }
 
 pub enum Outcome {
     Stay,
     Exit,
     Yank(String),
-    Fetch { start: u32, count: u32 },
+    Fetch {
+        start: u32,
+        count: u32,
+    },
+    /// `/`/`?`/`n` found nothing in the loaded rows: search the pane's whole history
+    /// (`search.query`, archive included).
+    Search {
+        q: String,
+        back: bool,
+    },
+    /// At the top with every in-memory row loaded: page older rows from the archive
+    /// (`pane.read {source: archive}`).
+    Archive,
 }
 
 fn row_chars(r: &Row) -> Vec<String> {
@@ -76,6 +90,7 @@ impl CopyMode {
             height: Cell::new(h as u16),
             message: None,
             want_top: false,
+            archive: Default::default(),
         }
     }
 
@@ -92,9 +107,16 @@ impl CopyMode {
         }
         self.pending_req = None;
         self.total_hist = total;
-        if rows.is_empty() && self.hist == 0 && total > 0 {
-            let count = total.min(20_000);
-            return Some((total - count, count));
+        self.archive.history_seen = true;
+        if rows.is_empty() && self.hist == 0 && total > 0 && !self.archive.first_page_asked {
+            // The first page stays in memory when we know where memory starts; older rows
+            // come from the archive (`Outcome::Archive`).
+            let floor = self.archive.mem_first.unwrap_or(0).min(total as u64) as u32;
+            let count = (total - floor).min(20_000);
+            if count > 0 {
+                self.archive.first_page_asked = true;
+                return Some((total - count, count));
+            }
         }
         // Each page is older than everything loaded so far: prepend it.
         let n = rows.len();
@@ -161,7 +183,9 @@ impl CopyMode {
                 Key::Named(NamedKey::Enter) => {
                     if !q.is_empty() {
                         self.last_search = Some((q.clone(), back));
-                        self.find(&q, back);
+                        if !self.find(&q, back) {
+                            return Outcome::Search { q, back };
+                        }
                     }
                 }
                 Key::Named(NamedKey::Backspace) => {
@@ -227,7 +251,9 @@ impl CopyMode {
                     } else {
                         back
                     };
-                    self.find(&q, back);
+                    if !self.find(&q, back) {
+                        return Outcome::Search { q, back };
+                    }
                 }
             }
             Key::Char('y') | Key::Named(NamedKey::Enter) => {
@@ -240,14 +266,19 @@ impl CopyMode {
             _ => {}
         }
         self.clamp();
-        // Lazy-load more archived history when scrolling to the top.
+        // Lazy-load older rows when scrolling to the top. `FetchHistory` indexes by absolute
+        // line (archive, then memory); it pages the in-memory rows, and everything when the
+        // server doesn't report where memory starts (`pane.read` → `mem_first`).
+        let mem_first = self.archive.mem_first;
         if self.cy == 0
             && self.pending_req.is_none()
+            && !self.archive.active
             && self.hist > 0
             && (self.total_hist as usize) > self.hist
         {
             let loaded_from = self.total_hist as usize - self.hist;
-            let count = loaded_from.min(20_000) as u32;
+            let floor = mem_first.map_or(0, |m| m as usize).min(loaded_from);
+            let count = (loaded_from - floor).min(20_000) as u32;
             if count > 0 {
                 return Outcome::Fetch {
                     start: loaded_from as u32 - count,
@@ -255,7 +286,110 @@ impl CopyMode {
                 };
             }
         }
+        // Past memory: older rows come from the archive (`pane.read {source: archive}`), which
+        // knows where it ends.
+        let top = self.top_abs();
+        if self.cy == 0
+            && self.pending_req.is_none()
+            && self.archive.history_seen
+            && self.archive.inflight.is_none()
+            && !self.archive.exhausted
+            && top > self.archive.first.unwrap_or(0)
+            && (self.archive.active || mem_first.is_some_and(|m| top <= m))
+        {
+            return Outcome::Archive;
+        }
         Outcome::Stay
+    }
+
+    /// Absolute history line of the first loaded row (shared by `FetchHistory`, `pane.read`
+    /// and `search.query`).
+    pub fn top_abs(&self) -> u64 {
+        if self.archive.active {
+            self.archive.top_abs
+        } else {
+            (self.total_hist as u64).saturating_sub(self.hist as u64)
+        }
+    }
+
+    /// (in-memory history rows loaded, in-memory history rows on the server, archive rows
+    /// prepended).
+    pub fn loaded(&self) -> (usize, u32, usize) {
+        (self.hist, self.total_hist, self.archive.rows)
+    }
+
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// Screen rows after the history, trailing blank rows trimmed (as the server counts them).
+    pub fn screen_rows_trimmed(&self) -> usize {
+        let start = self.hist + self.archive.rows;
+        let screen = &self.lines[start.min(self.lines.len())..];
+        let mut n = screen.len();
+        while n > 0 && screen[n - 1].text().trim_end().is_empty() {
+            n -= 1;
+        }
+        n
+    }
+
+    /// Older rows (from `pane.read`, starting at absolute line `from`) in front of everything
+    /// loaded; the view stays put.
+    pub fn prepend_archive(&mut self, from: u64, rows: Vec<Row>) {
+        let n = rows.len();
+        if n == 0 {
+            return;
+        }
+        let mut new = rows;
+        new.append(&mut self.lines);
+        self.lines = new;
+        self.archive.rows += n;
+        self.archive.active = true;
+        self.archive.top_abs = from;
+        if self.want_top {
+            self.top = 0;
+            self.cy = 0;
+        } else {
+            self.top += n;
+            self.cy += n;
+        }
+        if let Some((l, c, k)) = self.sel {
+            self.sel = Some((l + n, c, k));
+        }
+    }
+
+    /// Put the cursor on row `y` (index into the loaded rows), column `x`.
+    pub fn jump(&mut self, y: usize, x: u16) {
+        self.want_top = false;
+        self.cy = y.min(self.lines.len().saturating_sub(1));
+        self.cx = x;
+        self.clamp();
+    }
+
+    /// Search the loaded rows from the cursor (smart case); false when nothing matches.
+    pub fn find_text(&mut self, q: &str, back: bool) -> bool {
+        self.find(q, back)
+    }
+
+    /// Text of loaded row `y`.
+    pub fn row_text(&self, y: usize) -> String {
+        self.text_of(y)
+    }
+
+    pub fn set_message(&mut self, m: impl Into<String>) {
+        self.message = Some(m.into());
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    pub fn cursor_row(&self) -> usize {
+        self.cy
     }
 
     fn toggle_sel(&mut self, k: SelKind) {
@@ -291,7 +425,7 @@ impl CopyMode {
         self.cx = x as u16;
     }
 
-    fn find(&mut self, q: &str, back: bool) {
+    fn find(&mut self, q: &str, back: bool) -> bool {
         let smart_lower = !q.chars().any(|c| c.is_uppercase());
         let norm = |s: &str| {
             if smart_lower {
@@ -313,10 +447,11 @@ impl CopyMode {
                 self.cy = y;
                 self.cx = hay[..byte].chars().count() as u16;
                 self.clamp();
-                return;
+                return true;
             }
         }
         self.message = Some(format!("not found: {q}"));
+        false
     }
 
     fn in_sel(&self, y: usize, x: u16) -> bool {
