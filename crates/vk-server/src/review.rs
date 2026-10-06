@@ -1180,9 +1180,11 @@ fn command_tools(c: &CheckCommand) -> BTreeSet<String> {
 }
 
 /// Cached tool identities: (path, mtime, size, cwd) → (identity, probed at).
-fn tool_cache() -> &'static Mutex<HashMap<(PathBuf, i128, u64, PathBuf), (String, Instant)>> {
-    static M: OnceLock<Mutex<HashMap<(PathBuf, i128, u64, PathBuf), (String, Instant)>>> =
-        OnceLock::new();
+/// (tool path, mtime ns, size, cwd) → (version string, checked at).
+type ToolCache = Mutex<HashMap<(PathBuf, i128, u64, PathBuf), (String, Instant)>>;
+
+fn tool_cache() -> &'static ToolCache {
+    static M: OnceLock<ToolCache> = OnceLock::new();
     M.get_or_init(Default::default)
 }
 
@@ -2649,6 +2651,12 @@ async fn check_authorize(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         ));
     }
     let entry = find_entry(&pkg, req(p, "check")?)?;
+    // The client confirmed a specific definition; a changed recipe needs a fresh review.
+    if let Some(want) = s(p, "definition_digest")
+        && want != entry.def.definition_digest
+    {
+        return Err(conflict("definition_changed", "the check definition changed since it was shown; review it again").details(json!({"reason": "definition_changed", "current": entry.def.definition_digest, "provenance": entry.provenance})));
+    }
     let grant = checks::grant_per_candidate(&entry.def, &subj, tracking::user(ctx), now())
         .map_err(|e| err(ErrorKind::PermissionDenied, e.to_string()))?;
     let rec = GrantRec {
@@ -2710,6 +2718,12 @@ async fn check_run(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .clone()
         .ok_or_else(|| not_found("subject", subject_id))?;
     let entry = find_entry(&pkg, req(p, "check")?)?;
+    // The client confirmed a specific definition; a changed recipe needs a fresh review.
+    if let Some(want) = s(p, "definition_digest")
+        && want != entry.def.definition_digest
+    {
+        return Err(conflict("definition_changed", "the check definition changed since it was shown; review it again").details(json!({"reason": "definition_changed", "current": entry.def.definition_digest, "provenance": entry.provenance})));
+    }
     let grants: Vec<CheckGrant> = task_grants(server, &pkg.task.id)
         .into_iter()
         .map(|g| g.grant)

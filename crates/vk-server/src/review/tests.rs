@@ -1807,13 +1807,13 @@ async fn pane_scoped_reads_are_authorized_before_retrieval() {
 /// synchronously, so an immediate commit by the next task is never absorbed.
 #[tokio::test(flavor = "multi_thread")]
 async fn boundaries_never_absorb_the_next_tasks_commits() {
-    // /clear without a pinned boundary: the suspended task stops following HEAD.
+    // /clear: suspension pins the end candidate, so the task keeps its own commit.
     let e = Env::new();
     e.add_run("r1", &e.repo);
     e.turn("r1", "Task A", &[], "");
     let ta = track(&e, "r1", json!(["A done"])).await;
     e.write("a.txt", "a\n");
-    e.commit("A work");
+    let c1 = e.commit("A work");
     let r = e.run("r1");
     tracking::observe(
         &e.server,
@@ -1837,12 +1837,11 @@ async fn boundaries_never_absorb_the_next_tasks_commits() {
         "{}",
         pkg["subject"]
     );
-    assert!(
-        pkg["warnings"]
-            .to_string()
-            .contains("end candidate was not pinned"),
+    assert_eq!(
+        pkg["subject"]["head_sha"],
+        c1.as_str(),
         "{}",
-        pkg["warnings"]
+        pkg["subject"]
     );
 
     // With the boundary pinned at suspension (the tracking hook), A keeps its own commit.
@@ -2203,4 +2202,45 @@ async fn default_branch_base_and_full_diff() {
     )
     .await;
     assert!(r.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn authorize_rejects_a_definition_the_user_did_not_see() {
+    let e = Env::new();
+    e.add_run("r1", &e.repo);
+    e.turn("r1", "Fix", &[], "");
+    let task = track(
+        &e,
+        "r1",
+        json!([{"text": "Tests pass", "checks": ["unit"]}]),
+    )
+    .await;
+    e.write("status.txt", "pass\n");
+    e.commit("fix");
+    let pkg = review(&e, &task).await;
+    let s1 = subject_of(&pkg);
+    let unit = pkg["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "unit")
+        .unwrap()
+        .clone();
+    let shown = unit["definition"]["definition_digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = call(
+        &e,
+        "task.check.authorize",
+        json!({"task": task, "check": "unit", "subject": s1, "definition_digest": "stale"}),
+    )
+    .await;
+    assert_eq!(reason(r), "definition_changed");
+    ok(
+        &e,
+        "task.check.authorize",
+        json!({"task": task, "check": "unit", "subject": s1, "definition_digest": shown}),
+    )
+    .await;
 }

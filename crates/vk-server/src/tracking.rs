@@ -145,7 +145,8 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
             if let (Some(old), Some(new)) = (run.harness_session_id.as_deref(), new_sid)
                 && old != new
             {
-                conversation_changed(&c, &mut tx, run, new, n);
+                // Suspension pins the end candidate like a close (15 §4.2).
+                closed.extend(conversation_changed(&c, &mut tx, run, new, n));
             }
             if let Some(sid) = new_sid {
                 resume_binding(&c, &mut tx, run, sid, n, &server.opts.machine);
@@ -274,7 +275,10 @@ pub fn observe(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
 /// `AgentRun.task` is a projection of the run's active implementation binding (15 §4.3).
 pub fn sync_run_tasks(server: &Server) {
     let mut c = server.core.lock().unwrap();
-    let active: HashMap<String, String> = bindings(&c)
+    let active: HashMap<String, String> = c
+        .store
+        .load::<TaskRunBinding>(K_BINDING)
+        .unwrap_or_default()
         .into_iter()
         .filter(|b| b.state == BindingState::Active && b.role == BindingRole::Implementation)
         .map(|b| (b.run_id, b.task_id))
@@ -332,18 +336,8 @@ pub fn turns_of(server: &Server, run: &str, limit: usize) -> Vec<TurnRecord> {
     server.with_core(|c| {
         let mut v: Vec<TurnRecord> = c
             .store
-            .load::<TurnRecord>(K_TURN)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| t.run == run)
-            .collect();
-        v.extend(
-            c.store
-                .load_closed::<TurnRecord>(K_TURN, 2000)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|t| t.run == run),
-        );
+            .load_by_field(K_TURN, "$.run", run)
+            .unwrap_or_default();
         v.sort_by_key(|t| std::cmp::Reverse(t.n));
         v.dedup_by_key(|t| t.n);
         v.truncate(limit);
@@ -353,16 +347,39 @@ pub fn turns_of(server: &Server, run: &str, limit: usize) -> Vec<TurnRecord> {
 
 pub fn items_of(server: &Server, run: &str) -> Vec<vk_review::checks::ToolRecord> {
     server.with_core(|c| {
-        let mut v: Vec<vk_review::checks::ToolRecord> = c.store.load(K_ITEM).unwrap_or_default();
-        v.extend(c.store.load_closed(K_ITEM, 5000).unwrap_or_default());
-        v.retain(|r: &vk_review::checks::ToolRecord| r.run_id == run);
+        let mut v: Vec<vk_review::checks::ToolRecord> = c
+            .store
+            .load_by_field(K_ITEM, "$.run_id", run)
+            .unwrap_or_default();
         v.sort_by_key(|r| r.started_at_ms);
-        v.dedup_by(|a, b| a.item_id == b.item_id);
         v
     })
 }
 
 // ---- bindings -----------------------------------------------------------------------------------
+
+/// Bindings of one run / one task / one native conversation (indexed JSON lookups, open and
+/// closed alike) — never a global "latest N" scan (Codex G02 #13).
+fn run_bindings(c: &crate::core::Core, run: &str) -> Vec<TaskRunBinding> {
+    sorted(
+        c.store
+            .load_by_field(K_BINDING, "$.run_id", run)
+            .unwrap_or_default(),
+    )
+}
+
+fn conv_bindings(c: &crate::core::Core, conv: &str) -> Vec<TaskRunBinding> {
+    sorted(
+        c.store
+            .load_by_field(K_BINDING, "$.native_conversation_id", conv)
+            .unwrap_or_default(),
+    )
+}
+
+fn sorted(mut v: Vec<TaskRunBinding>) -> Vec<TaskRunBinding> {
+    v.sort_by_key(|b| b.created_at_ms);
+    v
+}
 
 pub fn bindings(c: &crate::core::Core) -> Vec<TaskRunBinding> {
     let mut v: Vec<TaskRunBinding> = c.store.load(K_BINDING).unwrap_or_default();
@@ -385,10 +402,17 @@ fn put_binding(tx: &mut Tx, b: &TaskRunBinding) {
 
 /// `/clear`, `/new`, a fork or a resume to another conversation suspends automatic association
 /// (15 §4.2); the user chooses Continue task or Track new work.
-fn conversation_changed(c: &crate::core::Core, tx: &mut Tx, run: &AgentRun, new_sid: &str, n: u32) {
-    for b in bindings(c)
+fn conversation_changed(
+    c: &crate::core::Core,
+    tx: &mut Tx,
+    run: &AgentRun,
+    new_sid: &str,
+    n: u32,
+) -> Vec<TaskRunBinding> {
+    let mut suspended = vec![];
+    for b in run_bindings(c, &run.id)
         .into_iter()
-        .filter(|b| b.run_id == run.id && b.state == BindingState::Active)
+        .filter(|b| b.state == BindingState::Active)
     {
         if let binding::BindingDecision::Suspend { .. } =
             binding::on_conversation_change(&b, Some(new_sid))
@@ -400,8 +424,10 @@ fn conversation_changed(c: &crate::core::Core, tx: &mut Tx, run: &AgentRun, new_
                 json!({"task": b.task_id, "run": run.id, "binding": b.id}),
                 json!({"state": "suspended", "reason": "conversation_changed", "offers": ["continue_task", "track_new_work"]}),
             );
+            suspended.push(sb);
         }
     }
+    suspended
 }
 
 /// Verified same-session resume (15 §4.2): a new run reporting the native session of an ended
@@ -415,10 +441,9 @@ fn resume_binding(
     n: u32,
     machine: &str,
 ) {
-    let all = bindings(c);
-    if all
+    if run_bindings(c, &run.id)
         .iter()
-        .any(|b| b.run_id == run.id && b.state != BindingState::Closed)
+        .any(|b| b.state != BindingState::Closed)
     {
         return;
     }
@@ -431,7 +456,7 @@ fn resume_binding(
         active,
         identity_verified: true,
     };
-    let preds: Vec<(TaskRunBinding, binding::RunFacts)> = all
+    let preds: Vec<(TaskRunBinding, binding::RunFacts)> = conv_bindings(c, sid)
         .into_iter()
         .filter(|b| {
             b.state != BindingState::Closed && b.native_conversation_id == sid && b.run_id != run.id
@@ -495,9 +520,12 @@ fn apply_pending_switches(
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str::<binding::PendingSwitch>(&s).ok())?;
-    let Some(cur) = bindings(c)
-        .into_iter()
-        .find(|b| b.id == p.from_binding && b.state == BindingState::Active)
+    let Some(cur) = c
+        .store
+        .find::<TaskRunBinding>(K_BINDING, &p.from_binding)
+        .ok()
+        .flatten()
+        .filter(|b| b.state == BindingState::Active)
     else {
         tx.m.kv("tracking", &pending_key(&run.id), None);
         return None;
@@ -583,7 +611,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "task.message.send" => message_send(server, p).await,
         "task.message.get" => message_get(server, p),
         "task.message.cancel" => message_cancel(server, p),
-        "task.operation.get" => operation_get(server, p),
+        "task.operation.get" => operation_get(server, ctx, p),
         "task.set" => task_set(server, p),
         _ => return None,
     })
@@ -825,7 +853,13 @@ async fn track(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .as_ref()
             .and_then(|r| vk_review::subject::observation_baseline(r).ok());
         let base = root.as_ref().and_then(|r| {
-            vk_review::subject::propose_review_base(r, None, target_branch.as_deref(), None).ok()
+            vk_review::subject::propose_review_base(
+                r,
+                None,
+                target_branch.as_deref(),
+                crate::review::default_branch(r).as_deref(),
+            )
+            .ok()
         });
         (root, baseline, base)
     })
@@ -881,7 +915,7 @@ async fn track(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     let intent = intent::next_revision(None, draft, actor.clone(), now())
         .map_err(|e| invalid(e.to_string()))?;
-    let existing = bindings(&c);
+    let existing = run_bindings(&c, &run.id);
     let b = binding::bind(
         &existing,
         BindRequest {
@@ -1004,22 +1038,17 @@ fn comm_of(server: &Server, task: &str) -> Vec<CommunicationRecord> {
 
 pub fn task_bindings(server: &Server, task: &str) -> Vec<TaskRunBinding> {
     server.with_core(|c| {
-        bindings(c)
-            .into_iter()
-            .filter(|b| b.task_id == task)
-            .collect()
+        sorted(
+            c.store
+                .load_by_field(K_BINDING, "$.task_id", task)
+                .unwrap_or_default(),
+        )
     })
 }
 
 pub fn messages_of(server: &Server, task: &str) -> Vec<TaskMessage> {
     server.with_core(|c| {
-        let mut v: Vec<TaskMessage> = c.store.load(K_MESSAGE).unwrap_or_default();
-        v.extend(
-            c.store
-                .load_closed::<TaskMessage>(K_MESSAGE, 2000)
-                .unwrap_or_default(),
-        );
-        v.retain(|m| m.task == task);
+        let mut v: Vec<TaskMessage> = c.store.load_by_task(K_MESSAGE, task).unwrap_or_default();
         v.sort_by_key(|m| m.created_at_ms);
         v
     })
@@ -1165,7 +1194,7 @@ fn bind(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .unwrap_or(BindingRole::Implementation);
     let actor = user(ctx);
     let mut c = server.core.lock().unwrap();
-    let all = bindings(&c);
+    let all = run_bindings(&c, &run.id);
     let mut tx = Tx::new();
     let mut newly_closed = vec![];
     let current = all
@@ -1272,7 +1301,13 @@ fn unbind(server: &Arc<Server>, p: &Value) -> R {
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     let mut closed = vec![];
-    for mut b in bindings(&c).into_iter().filter(|b| {
+    for mut b in sorted(
+        c.store
+            .load_by_field(K_BINDING, "$.task_id", &task.id)
+            .unwrap_or_default(),
+    )
+    .into_iter()
+    .filter(|b| {
         b.task_id == task.id
             && b.state != BindingState::Closed
             && s(p, "binding").is_none_or(|x| x == b.id)
@@ -1395,9 +1430,9 @@ pub fn finish_attached(server: &Server, task: &Task, status: &str) -> R {
     )
 }
 
-fn operation_get(server: &Server, p: &Value) -> R {
+fn operation_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let key = req(p, "idempotency_key")?;
-    match server.with_core(|c| c.store.find::<Receipt>(K_RECEIPT, key).ok().flatten()) {
+    match crate::review::receipts::lookup(server, ctx, key) {
         Some(r) if now() - r.at_ms <= RECEIPT_WINDOW_MS => {
             Ok(json!({"known": true, "method": r.method, "result": r.result, "at_ms": r.at_ms}))
         }

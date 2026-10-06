@@ -928,9 +928,14 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                 .unwrap_or_default();
             // Newer extensions list wrapper dialogs still pending; then dialogs not listed were
             // handled elsewhere. Without the list (older extensions) dialogs are left alone.
-            let dialogs: Option<Vec<Value>> = p.get("pending_dialogs").and_then(Value::as_array).cloned();
+            let dialogs: Option<Vec<Value>> =
+                p.get("pending_dialogs").and_then(Value::as_array).cloned();
             if let Some(d) = &dialogs {
-                open.extend(d.iter().filter_map(|x| x.get("dialog_id").and_then(Value::as_str).map(str::to_string)));
+                open.extend(d.iter().filter_map(|x| {
+                    x.get("dialog_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                }));
             }
             let has_dialog_list = dialogs.is_some();
             let stale: Vec<String> = server.with_core(|c| {
@@ -940,9 +945,7 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                     .filter(|i| {
                         i.run == run.id
                             && i.status == InteractionStatus::Open
-                            && i.native_ref
-                                .as_ref()
-                                .is_some_and(|r| !open.contains(r))
+                            && i.native_ref.as_ref().is_some_and(|r| !open.contains(r))
                             && (i.answer_channel == AnswerChannel::None || has_dialog_list)
                     })
                     .map(|i| i.id.clone())
@@ -966,12 +969,22 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
             }
             // Pending dialogs we don't know (opened while disconnected): observe-only.
             for d in dialogs.unwrap_or_default() {
-                let Some(id) = d.get("dialog_id").and_then(Value::as_str) else { continue };
-                let known = server.with_core(|c| c.model.interactions.iter().any(|i| i.run == run.id && i.native_ref.as_deref() == Some(id) && i.status == InteractionStatus::Open));
+                let Some(id) = d.get("dialog_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let known = server.with_core(|c| {
+                    c.model.interactions.iter().any(|i| {
+                        i.run == run.id
+                            && i.native_ref.as_deref() == Some(id)
+                            && i.status == InteractionStatus::Open
+                    })
+                });
                 if known {
                     continue;
                 }
-                let Some(mut it) = harness::interaction_from_hook(h, "Dialog", &d) else { continue };
+                let Some(mut it) = harness::interaction_from_hook(h, "Dialog", &d) else {
+                    continue;
+                };
                 let mut c = server.core.lock().unwrap();
                 it.handle = c.next_interaction_handle();
                 it.run = run.id.clone();
@@ -979,7 +992,11 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
                 it.answerable = false;
                 it.answer_channel = AnswerChannel::None;
                 let mut tx = Tx::new();
-                tx.event("interaction.opened", json!({"interaction": it.id, "run": run.id}), json!({"kind": it.kind.as_str(), "observe_only": true, "via": "snapshot"}));
+                tx.event(
+                    "interaction.opened",
+                    json!({"interaction": it.id, "run": run.id}),
+                    json!({"kind": it.kind.as_str(), "observe_only": true, "via": "snapshot"}),
+                );
                 tx.interaction(it);
                 let _ = server.commit(&mut c, tx);
             }
@@ -990,7 +1007,11 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
 
 fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
     let run = bound_run(server, pane, h);
-    crate::tracking::observe(server, &run, event, p);
+    // SessionStart is observed after the run's session id is updated below, so a binding never
+    // appears suspended while the run still reports the old conversation.
+    if event != "SessionStart" {
+        crate::tracking::observe(server, &run, event, p);
+    }
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
@@ -1039,6 +1060,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
                 1.0,
                 None,
             );
+            crate::tracking::observe(server, &run, event, p);
         }
         "UserPromptSubmit" => {
             set_execution(
