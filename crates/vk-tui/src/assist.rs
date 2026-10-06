@@ -14,8 +14,10 @@
 //! "Grant consent for this workspace?" with `g` calling `assistant.consent` (never implicit).
 //!
 //! Entry points: Track form `ctrl+g` **Suggest task details**, task details `S` **Summarize
-//! review**, palette `assist_pane_title` / agent peek `s` **Suggest title**, palette
-//! `assist_briefing` **Briefing**.
+//! review**, task details `E` **Estimate effort** (15 §8.2: the result is a labelled estimate;
+//! `enter` applies it with `task.set {effort, effort_source: "assistant:<request>"}`), palette
+//! `assist_pane_title` / agent peek `s` **Suggest title**, palette `assist_briefing`
+//! **Briefing**.
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::drafts::{Area, TextEditor, arr, ctrl, st};
@@ -34,6 +36,7 @@ pub enum Op {
     ReviewSummary,
     PaneTitle,
     Briefing,
+    EffortEstimate,
 }
 
 impl Op {
@@ -43,6 +46,7 @@ impl Op {
             Op::ReviewSummary => "review_summary",
             Op::PaneTitle => "pane_title",
             Op::Briefing => "briefing",
+            Op::EffortEstimate => "effort_estimate",
         }
     }
     pub fn title(self) -> &'static str {
@@ -51,6 +55,7 @@ impl Op {
             Op::ReviewSummary => "Summarize review",
             Op::PaneTitle => "Suggest title",
             Op::Briefing => "Briefing",
+            Op::EffortEstimate => "Estimate effort",
         }
     }
 }
@@ -202,6 +207,25 @@ pub fn summarize_review(app: &mut App, mi: usize, task: &str) {
     );
 }
 
+/// Task details `E` (15 §8.2, 14 `effort_estimate`).
+pub fn estimate_effort(app: &mut App, mi: usize, task: &str) {
+    let ws = app.machines[mi]
+        .model
+        .tasks
+        .iter()
+        .find(|t| t.id == task)
+        .and_then(|t| t.workspace.clone())
+        .or_else(|| app.focused_ws().map(|w| w.id));
+    start(
+        app,
+        mi,
+        Op::EffortEstimate,
+        json!({"task": task}),
+        Origin::Task,
+        ws,
+    );
+}
+
 /// Peek `s` / palette `assist_pane_title`.
 pub fn suggest_title(app: &mut App, mi: usize, pane: &str, origin: Origin) {
     let ws = ws_of_pane(app, mi, pane);
@@ -292,6 +316,13 @@ pub fn render_output(op: Op, o: &Value) -> String {
     let mut s = String::new();
     match op {
         Op::PaneTitle => s = st(o, "title").to_string(),
+        Op::EffortEstimate => {
+            s.push_str(&format!(
+                "Estimated effort: {} (source: assistant — not applied)\n\n",
+                crate::tasks_t4::effort_label(st(o, "effort"))
+            ));
+            s.push_str(st(o, "rationale"));
+        }
         Op::ReviewSummary => {
             s.push_str(st(o, "summary"));
             s.push_str("\n\n");
@@ -574,7 +605,23 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                     );
                     f.notice = Some("Saving as a draft (nothing is sent)…".into());
                 }
-                Op::SuggestTaskDetails => {}
+                Op::EffortEstimate if ev.key == Key::Named(NamedKey::Enter) => {
+                    let effort = crate::tasks_t4::effort_param(st(&output, "effort")).to_string();
+                    let task = st(&f.inputs, "task").to_string();
+                    let key = app.new_idempotency_key("effort");
+                    // Applying is this explicit action; the source names the request.
+                    app.command_on(
+                        f.machine,
+                        "task.set",
+                        json!({"task": task, "effort": effort, "effort_source": format!("assistant:{request}"), "idempotency_key": key}),
+                        Pending::Assist(Reply::Applied { flow: f.id }),
+                    );
+                    f.notice = Some(format!(
+                        "Setting effort to {}…",
+                        crate::tasks_t4::effort_label(&effort)
+                    ));
+                }
+                Op::SuggestTaskDetails | Op::EffortEstimate => {}
                 _ => {
                     ed.key(&ev);
                 }
@@ -740,6 +787,21 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
                     match st(&r, "state") {
                         "done" => {
                             let output = r.get("output").cloned().unwrap_or(Value::Null);
+                            if f.op == Op::EffortEstimate {
+                                let (mi, task) = (f.machine, st(&f.inputs, "task").to_string());
+                                let sources = r.get("sources").cloned().unwrap_or(Value::Null);
+                                crate::tasks_t4::on_model_estimate(
+                                    app, mi, &task, &output, &request,
+                                );
+                                let Some(f) = flow_mut(app, flow) else { return };
+                                f.phase = Phase::Done {
+                                    ed: TextEditor::new(&render_output(f.op, &output), true),
+                                    request,
+                                    output,
+                                    sources,
+                                };
+                                return;
+                            }
                             let text = render_output(f.op, &output);
                             let multiline = f.op != Op::PaneTitle;
                             f.phase = Phase::Done {
@@ -767,8 +829,13 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
             let Some(f) = flow_mut(app, flow) else {
                 return;
             };
+            let ok = if f.op == Op::EffortEstimate {
+                "Effort set from the assistant's estimate (effort_source recorded) — esc close"
+            } else {
+                "Pane renamed"
+            };
             f.notice = Some(match res {
-                Ok(_) => "Pane renamed".into(),
+                Ok(_) => ok.into(),
                 Err(e) => format!("✗ {}", e.message),
             });
         }
@@ -898,6 +965,9 @@ pub fn draw(app: &App, g: &mut Grid) {
             let footer = match f.op {
                 Op::SuggestTaskDetails => "enter fill the Track form (still unsaved) · esc discard",
                 Op::PaneTitle => "edit · enter rename the pane · esc discard",
+                Op::EffortEstimate => {
+                    "enter apply this estimate (task.set) · esc close without applying"
+                }
                 Op::ReviewSummary | Op::Briefing => {
                     "edit · ctrl+d save as draft (never sends) · esc close"
                 }

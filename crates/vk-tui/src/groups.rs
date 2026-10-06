@@ -407,7 +407,7 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
 /// group row moves the workspace into that group, onto an ungrouped workspace takes it out.
 pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
     let (x, y) = (me.column, me.row);
-    let in_sidebar = app.sidebar && x < app.sidebar_w;
+    let in_sidebar = crate::chrome::in_sidebar(app, x);
     if !in_sidebar {
         if matches!(me.kind, MouseEventKind::Up(_)) {
             app.parity.groups.drag = None;

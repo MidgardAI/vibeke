@@ -1168,14 +1168,14 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
     let (x, y) = (me.column, me.row);
     let down = matches!(me.kind, MouseEventKind::Down(CtButton::Left));
     // Sidebar preview rows.
-    if app.sidebar && x < app.sidebar_w {
+    if crate::chrome::in_sidebar(app, x) {
         if down && let Some((mi, p)) = preview_hit(app, y) {
             open_preview(app, mi, &p, p.pane.clone());
             return true;
         }
         return false;
     }
-    if y == 0 {
+    if crate::chrome::tab_row(app) == Some(y) {
         if down && let Some((mi, p)) = chip_hit(app, x) {
             open_preview(app, mi, &p, p.pane.clone());
             return true;
@@ -1682,7 +1682,10 @@ pub fn draw_chips(app: &App, g: &mut Grid, tabs_end: u16, limit: u16) {
             PreviewStatus::Down => t.s(t.red),
             _ => t.s(t.yellow),
         };
-        g.put_str(x0, 0, &label, st, x1 - x0);
+        let Some(row) = crate::chrome::tab_row(app) else {
+            return;
+        };
+        g.put_str(x0, row, &label, st, x1 - x0);
     }
 }
 

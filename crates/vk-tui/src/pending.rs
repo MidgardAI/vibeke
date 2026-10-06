@@ -54,6 +54,13 @@ impl PendingOp {
             "task.message.send" => "Send message",
             "task.review.accept" => "Mark reviewed",
             "task.check.run" => "Run check",
+            "task.review.snapshot" => "Snapshot uncommitted work",
+            "task.review.request_reviewer" => "Prepare reviewer prompt",
+            "task.review.start_reviewer" => "Start reviewer",
+            "task.review.note.classify" => "Classify review note",
+            "task.dependency.add" => "Add dependency link",
+            "task.dependency.remove" => "Remove dependency link",
+            "task.set" => "Set task effort",
             "draft.send" => "Send draft",
             other => other,
         };

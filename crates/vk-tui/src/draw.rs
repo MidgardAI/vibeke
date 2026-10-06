@@ -487,7 +487,7 @@ fn tab_entries(app: &App) -> Vec<(Tab, String, u16, u16)> {
     let Some(ws) = &m.focus.workspace else {
         return vec![];
     };
-    let mut x = if app.sidebar { app.sidebar_w + 1 } else { 0 } + 1;
+    let mut x = crate::chrome::main_x(app).0 + 1;
     let mut out = Vec::new();
     for t in m.model.tabs.iter().filter(|t| &t.workspace == ws) {
         let title = t.title.clone().unwrap_or_else(|| {
@@ -537,7 +537,7 @@ pub fn tabs_end(app: &App) -> u16 {
     tab_entries(app)
         .last()
         .map(|(_, _, _, b)| *b)
-        .unwrap_or(if app.sidebar { app.sidebar_w + 1 } else { 0 } + 1)
+        .unwrap_or(crate::chrome::main_x(app).0 + 1)
 }
 
 pub fn tabbar_hit(app: &App, x: u16) -> Option<String> {
@@ -550,13 +550,16 @@ pub fn tabbar_hit(app: &App, x: u16) -> Option<String> {
 /// Compose the whole frame; returns the host cursor position if a pane cursor should show.
 pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     let t = app.theme;
-    let (cols, rows) = app.size;
-    // Sidebar.
-    if app.sidebar {
+    let rows = app.size.1;
+    // Sidebar, left or right (08 §2.4).
+    if let (Some(sx), Some(bx)) = (
+        crate::chrome::sidebar_x(app),
+        crate::chrome::sidebar_border_x(app),
+    ) {
         let w = app.sidebar_w;
         g.fill(
             SRect {
-                x: 0,
+                x: sx,
                 y: 0,
                 w,
                 h: rows,
@@ -572,7 +575,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 m.label.clone()
             }
         );
-        g.put_str(0, 0, &title, t.bold(t.accent), w);
+        g.put_str(sx, 0, &title, t.bold(t.accent), w);
         let nav_sel = if let Mode::Navigate { sel } = app.mode {
             Some(sel)
         } else {
@@ -589,7 +592,7 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 target_i += 1;
             }
             if selected || r.focused {
-                g.fill(SRect { x: 0, y, w, h: 1 }, t.sel(t.fg));
+                g.fill(SRect { x: sx, y, w, h: 1 }, t.sel(t.fg));
             }
             let mut x = 0;
             for (s, st) in &r.segs {
@@ -601,36 +604,117 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 } else {
                     *st
                 };
-                x += g.put_str(x, y, s, st, w.saturating_sub(x));
+                x += g.put_str(sx + x, y, s, st, w.saturating_sub(x));
             }
         }
         for y in 0..rows {
-            g.put_str(w, y, "│", t.border(false), 1);
+            g.put_str(bx, y, "│", t.border(false), 1);
         }
     }
-    // Tab bar.
-    let tx = if app.sidebar { app.sidebar_w + 1 } else { 0 };
-    g.fill(
-        SRect {
-            x: tx,
-            y: 0,
-            w: cols.saturating_sub(tx),
-            h: 1,
-        },
-        t.text(),
-    );
-    let focused_tab = app.m().focus.tab.clone();
-    for (tab, label, x, _) in tab_entries(app) {
-        let st = if Some(&tab.id) == focused_tab.as_ref() {
-            t.rev()
-        } else {
-            t.dim()
-        };
-        g.put_str(x, 0, &label, st, cols.saturating_sub(x));
+    // Tab bar, top or bottom (08 §3); hidden draws no row.
+    let (tx, tw) = crate::chrome::main_x(app);
+    let right = right_cluster(app);
+    if let Some(ty) = crate::chrome::tab_row(app) {
+        g.fill(
+            SRect {
+                x: tx,
+                y: ty,
+                w: tw,
+                h: 1,
+            },
+            t.text(),
+        );
+        let focused_tab = app.m().focus.tab.clone();
+        for (tab, label, x, _) in tab_entries(app) {
+            let st = if Some(&tab.id) == focused_tab.as_ref() {
+                t.rev()
+            } else {
+                t.dim()
+            };
+            g.put_str(x, ty, &label, st, (tx + tw).saturating_sub(x));
+        }
+        // Preview chips for the focused tab's panes (06 B2).
+        crate::browser::draw_chips(app, g, tabs_end(app), tx + tw);
+        put_right(g, &right, ty, tx + tw);
     }
-    // Preview chips for the focused tab's panes (06 B2).
-    crate::browser::draw_chips(app, g, tabs_end(app), cols);
-    // Right side of the tab bar: mode, toasts, connection.
+    // Status bar (08 §4), when enabled.
+    crate::statusbar::draw(app, g);
+    // Panes: the tiling, then floating panes on top in z order (08 §5).
+    let area = app.pane_area();
+    let rects = app.tiled_rects();
+    let floats = crate::floats::visible(app);
+    let focused = app.m().focus.pane.clone();
+    let mut cursor = None;
+    if rects.is_empty() && floats.is_empty() {
+        let msg = if app.m().connected() {
+            "no panes — prefix+c for a new tab, prefix+shift+n for a workspace"
+        } else {
+            "connecting…"
+        };
+        g.put_str(
+            area.x + 2,
+            area.y + 1,
+            msg,
+            t.dim(),
+            area.w.saturating_sub(2),
+        );
+    }
+    draw_borders(app, g, area, &rects, focused.as_deref());
+    for (pid, r) in &rects {
+        draw_pane_at(app, g, pid, *r, focused.as_deref(), &mut cursor);
+        // 📷 counter in the corner of unfocused panes only (never over the focused agent).
+        if focused.as_deref() != Some(pid.as_str())
+            && let Some(n) = crate::gallery::badge(app, app.cur, pid)
+        {
+            let badge = format!(" 📷{n} ");
+            let w = unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16;
+            g.put_str(r.x + r.w.saturating_sub(w), r.y, &badge, t.s(t.accent), w);
+        }
+    }
+    for f in &floats {
+        // A tiled pane's cursor hidden under a float doesn't show through it.
+        if cursor.is_some_and(|(x, y, _)| f.outer.contains(x, y)) {
+            cursor = None;
+        }
+        crate::floats::draw_frame(app, g, f, focused.as_deref() == Some(f.pane.as_str()));
+        draw_pane_at(app, g, &f.pane, f.inner, focused.as_deref(), &mut cursor);
+    }
+    // Plugin overlays and popups on top of everything in the pane area (M5).
+    for s in crate::plugins::surfaces(app) {
+        if cursor.is_some_and(|(x, y, _)| s.outer.contains(x, y)) {
+            cursor = None;
+        }
+        let on = focused.as_deref() == Some(s.pane.as_str());
+        crate::plugins::draw_chrome(app, g, &s, on);
+        draw_pane_at(app, g, &s.pane, s.inner, focused.as_deref(), &mut cursor);
+    }
+    // Hidden tab bar: mode, toasts and notices still show, over the pane area's top-right
+    // corner, only while there is something to say.
+    if crate::chrome::tab_row(app).is_none() && !right.is_empty() {
+        put_right(g, &right, area.y, area.x + area.w);
+        if cursor.is_some_and(|(_, y, _)| y == area.y) {
+            cursor = None;
+        }
+    }
+    if !matches!(
+        app.mode,
+        Mode::Normal | Mode::Prefix(_) | Mode::Navigate { .. } | Mode::Resize
+    ) {
+        cursor = None;
+    }
+    if let Some(c) = crate::popups::draw(app, g) {
+        cursor = Some(c);
+    }
+    if app.gateway.modal() {
+        crate::gateway::draw_overlay(app, g);
+        cursor = None;
+    }
+    cursor
+}
+
+/// The right side of the tab bar: mode, toasts, connection, notices.
+fn right_cluster(app: &App) -> Vec<(String, Style)> {
+    let t = app.theme;
     let mut right: Vec<(String, Style)> = Vec::new();
     match &app.mode {
         Mode::Prefix(_) => right.push((" PREFIX ".into(), t.rev())),
@@ -691,79 +775,19 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     {
         right.insert(0, (format!(" {} ", truncate(title, 40)), t.s(t.accent)));
     }
+    right
+}
+
+/// Draw `right` right-aligned on row `y`, ending before column `end`.
+fn put_right(g: &mut Grid, right: &[(String, Style)], y: u16, end: u16) {
     let rw: u16 = right
         .iter()
         .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
         .sum();
-    let mut x = cols.saturating_sub(rw);
-    for (s, st) in &right {
-        x += g.put_str(x, 0, s, *st, cols.saturating_sub(x));
+    let mut x = end.saturating_sub(rw);
+    for (s, st) in right {
+        x += g.put_str(x, y, s, *st, end.saturating_sub(x));
     }
-    // Status bar (08 §4), when enabled.
-    crate::statusbar::draw(app, g);
-    // Panes: the tiling, then floating panes on top in z order (08 §5).
-    let area = app.pane_area();
-    let rects = app.tiled_rects();
-    let floats = crate::floats::visible(app);
-    let focused = app.m().focus.pane.clone();
-    let mut cursor = None;
-    if rects.is_empty() && floats.is_empty() {
-        let msg = if app.m().connected() {
-            "no panes — prefix+c for a new tab, prefix+shift+n for a workspace"
-        } else {
-            "connecting…"
-        };
-        g.put_str(
-            area.x + 2,
-            area.y + 1,
-            msg,
-            t.dim(),
-            area.w.saturating_sub(2),
-        );
-    }
-    draw_borders(app, g, area, &rects, focused.as_deref());
-    for (pid, r) in &rects {
-        draw_pane_at(app, g, pid, *r, focused.as_deref(), &mut cursor);
-        // 📷 counter in the corner of unfocused panes only (never over the focused agent).
-        if focused.as_deref() != Some(pid.as_str())
-            && let Some(n) = crate::gallery::badge(app, app.cur, pid)
-        {
-            let badge = format!(" 📷{n} ");
-            let w = unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16;
-            g.put_str(r.x + r.w.saturating_sub(w), r.y, &badge, t.s(t.accent), w);
-        }
-    }
-    for f in &floats {
-        // A tiled pane's cursor hidden under a float doesn't show through it.
-        if cursor.is_some_and(|(x, y, _)| f.outer.contains(x, y)) {
-            cursor = None;
-        }
-        crate::floats::draw_frame(app, g, f, focused.as_deref() == Some(f.pane.as_str()));
-        draw_pane_at(app, g, &f.pane, f.inner, focused.as_deref(), &mut cursor);
-    }
-    // Plugin overlays and popups on top of everything in the pane area (M5).
-    for s in crate::plugins::surfaces(app) {
-        if cursor.is_some_and(|(x, y, _)| s.outer.contains(x, y)) {
-            cursor = None;
-        }
-        let on = focused.as_deref() == Some(s.pane.as_str());
-        crate::plugins::draw_chrome(app, g, &s, on);
-        draw_pane_at(app, g, &s.pane, s.inner, focused.as_deref(), &mut cursor);
-    }
-    if !matches!(
-        app.mode,
-        Mode::Normal | Mode::Prefix(_) | Mode::Navigate { .. } | Mode::Resize
-    ) {
-        cursor = None;
-    }
-    if let Some(c) = crate::popups::draw(app, g) {
-        cursor = Some(c);
-    }
-    if app.gateway.modal() {
-        crate::gateway::draw_overlay(app, g);
-        cursor = None;
-    }
-    cursor
 }
 
 /// One pane's content in `r`: copy mode, a browser pane, or terminal cells (+ badges); sets the

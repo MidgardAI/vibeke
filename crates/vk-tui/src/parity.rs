@@ -16,6 +16,10 @@ pub struct State {
     pub search: crate::search::State,
     pub appearance: crate::appearance::State,
     pub notes: crate::notifications::State,
+    /// Request generation of the edit-scrollback viewer's `pane.read` pages.
+    pub scrollback_seq: u64,
+    /// Mouse selection in a pane (copy-on-select).
+    pub selection: crate::selection::State,
 }
 
 /// What a command response is for.
@@ -40,6 +44,8 @@ pub enum Reply {
     LayoutApplied {
         name: String,
     },
+    /// Edit-scrollback viewer pages.
+    Scrollback(crate::scrollback::Reply),
 }
 
 pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
@@ -54,6 +60,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::GroupCreated { ws } => crate::groups::on_created(app, mi, ws, res),
         Reply::LayoutExport { name } => crate::layouts::on_export(app, &name, res),
         Reply::LayoutList => crate::layouts::on_list(app, mi, res),
+        Reply::Scrollback(r) => crate::scrollback::on_reply(app, r, res),
         Reply::LayoutApplied { name } => match res {
             Ok(_) => app.toast(format!("applied layout {name}")),
             Err(e) => app.toast(format!("✗ layout {name}: {}", e.message)),

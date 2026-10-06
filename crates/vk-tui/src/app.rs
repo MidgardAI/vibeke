@@ -295,6 +295,8 @@ pub enum Popup {
     },
     /// Plugin link handlers matching an activated link (07 §7.7).
     PluginLink(Box<crate::plugins::LinkChoice>),
+    /// Edit-scrollback viewer; state in `App::scrollback`.
+    Scrollback,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -397,6 +399,13 @@ pub struct App {
     pub assist: Option<crate::assist::Flow>,
     /// Herdr plugin surfaces: actions, link handlers, window title, scroll reports (M5).
     pub plugins: crate::plugins::State,
+    /// Edit-scrollback viewer (`edit_scrollback`, 03 §11.3).
+    pub scrollback: Option<crate::scrollback::ScrollbackView>,
+    /// A program to run with the TUI suspended (the editor for edit-scrollback); taken by the
+    /// main loop.
+    pub external: Option<crate::scrollback::External>,
+    /// Resolved `[keys.copy_mode]`.
+    pub copy_keys: std::sync::Arc<crate::copykeys::CopyKeys>,
 }
 
 pub struct Opts {
@@ -592,6 +601,21 @@ async fn run_inner(
         if let Some(r) = app.quit.take() {
             return Ok(r);
         }
+        // Edit-scrollback's editor: suspend the TUI (stop reading input, restore the host
+        // terminal), run it in the foreground, then take the terminal back and repaint.
+        if let Some(x) = app.external.take() {
+            drop(events);
+            term::leave();
+            let res = crate::scrollback::run_external(&x);
+            let _ = term::raw();
+            let _ = term::enter(app.kitty);
+            events = EventStream::new();
+            app.prev = Grid::new(0, 0);
+            app.dirty = true;
+            if let Err(e) = res {
+                app.toast(e);
+            }
+        }
         // Re-query the host's light/dark appearance (after a focus change): crossterm can't
         // parse the replies, so the event reader is stopped while we read them raw.
         if crate::appearance::take_reprobe(&mut app) {
@@ -671,6 +695,9 @@ impl App {
         osc52: bool,
         kitty: bool,
     ) -> App {
+        let copy_keys = std::sync::Arc::new(crate::copykeys::CopyKeys::from_config(
+            &config.keys.copy_mode,
+        ));
         App {
             machines,
             cur: 0,
@@ -715,6 +742,9 @@ impl App {
             drafts: None,
             assist: None,
             plugins: Default::default(),
+            scrollback: None,
+            external: None,
+            copy_keys,
         }
     }
 }
@@ -775,15 +805,17 @@ impl App {
         m.model.workspaces.iter().find(|x| &x.id == w).cloned()
     }
     pub fn pane_area(&self) -> Rect {
-        let (cols, rows) = self.size;
-        let x = if self.sidebar { self.sidebar_w + 1 } else { 0 };
-        // The status bar takes a row below the tab bar or at the bottom (08 §4).
+        let rows = self.size.1;
+        // Sidebar left or right, tab bar top/bottom/hidden (08 §2.4, §3).
+        let (x, w) = crate::chrome::main_x(self);
+        let (tt, tb) = crate::chrome::tab_rows(self);
+        // The status bar takes a row next to the tab bar or at the far edge (08 §4).
         let (top, bottom) = crate::statusbar::reserved(self);
         Rect {
             x,
-            y: 1 + top,
-            w: cols.saturating_sub(x),
-            h: rows.saturating_sub(1 + top + bottom),
+            y: tt + top,
+            w,
+            h: rows.saturating_sub(tt + tb + top + bottom),
         }
     }
     /// Tiled pane rects for the focused tab (zoom applied).
@@ -1432,10 +1464,56 @@ impl App {
         if self.osc52 {
             let _ = std::io::stdout().write_all(&clipboard::osc52_set(data, primary));
             let _ = std::io::stdout().flush();
+        } else if primary {
+            let _ = clipboard::os_copy_primary(data);
         } else {
             let _ = clipboard::os_copy(data);
         }
-        self.toast("copied to clipboard");
+        if !primary {
+            self.toast("copied to clipboard");
+        }
+    }
+
+    /// A user copy (copy-mode yank, copy-on-select): the clipboard, plus PRIMARY when
+    /// `clipboard.primary_selection` is on (03 §11.1).
+    pub fn copy_text(&mut self, text: &str) {
+        self.set_clipboard(text.as_bytes(), false);
+        if self.config.clipboard.primary_selection {
+            self.set_clipboard(text.as_bytes(), true);
+        }
+    }
+
+    /// Act on a copy-mode outcome (keys or mouse wheel).
+    pub(crate) fn copy_outcome(&mut self, mut cm: Box<CopyMode>, out: crate::copy::Outcome) {
+        match out {
+            crate::copy::Outcome::Stay => self.mode = Mode::Copy(cm),
+            crate::copy::Outcome::Exit => {}
+            crate::copy::Outcome::Yank(text) => self.copy_text(&text),
+            crate::copy::Outcome::Fetch { start, count } => {
+                let req = self.next_req;
+                self.next_req += 1;
+                self.history_reqs.insert(req, cm.pane.clone());
+                cm.pending_req = Some(req);
+                self.m().send(ClientFrame::FetchHistory {
+                    req,
+                    pane: cm.pane.clone(),
+                    start,
+                    count,
+                });
+                self.mode = Mode::Copy(cm);
+            }
+            // No match in memory: search the archive (and unloaded scrollback).
+            crate::copy::Outcome::Search { q, back } => {
+                crate::search::copy_search(self, cm, q, back)
+            }
+            // At the top of everything in memory: page older rows from the archive.
+            crate::copy::Outcome::Archive => crate::search::copy_page(self, cm),
+            // The viewer / editor at copy mode's view (03 §11.3).
+            crate::copy::Outcome::EditScrollback { line } => {
+                self.mode = Mode::Normal;
+                crate::scrollback::open(self, Some(line));
+            }
+        }
     }
 
     fn on_tick(&mut self) {
@@ -1595,32 +1673,8 @@ impl App {
                     self.mode = Mode::Copy(cm);
                     return;
                 }
-                match cm.key(&ev) {
-                    crate::copy::Outcome::Stay => self.mode = Mode::Copy(cm),
-                    crate::copy::Outcome::Exit => {}
-                    crate::copy::Outcome::Yank(text) => {
-                        self.set_clipboard(text.as_bytes(), false);
-                    }
-                    crate::copy::Outcome::Fetch { start, count } => {
-                        let req = self.next_req;
-                        self.next_req += 1;
-                        self.history_reqs.insert(req, cm.pane.clone());
-                        cm.pending_req = Some(req);
-                        self.m().send(ClientFrame::FetchHistory {
-                            req,
-                            pane: cm.pane.clone(),
-                            start,
-                            count,
-                        });
-                        self.mode = Mode::Copy(cm);
-                    }
-                    // No match in memory: search the archive (and unloaded scrollback).
-                    crate::copy::Outcome::Search { q, back } => {
-                        crate::search::copy_search(self, cm, q, back)
-                    }
-                    // At the top of everything in memory: page older rows from the archive.
-                    crate::copy::Outcome::Archive => crate::search::copy_page(self, cm),
-                }
+                let out = cm.key(&ev);
+                self.copy_outcome(cm, out);
             }
             Mode::Prompt(p) => self.prompt_key(ev, p),
             Mode::Popup(p) => self.popup_key(ev, p),
@@ -1701,7 +1755,7 @@ impl App {
         }
         let (x, y) = (me.column, me.row);
         // Sidebar clicks.
-        if self.sidebar && x < self.sidebar_w {
+        if crate::chrome::in_sidebar(self, x) {
             if let MouseEventKind::Down(CtButton::Left) = me.kind
                 && let Some((mi, pane)) = draw::sidebar_hit(self, y)
             {
@@ -1709,7 +1763,7 @@ impl App {
             }
             return;
         }
-        if y == 0 {
+        if crate::chrome::tab_row(self) == Some(y) {
             if let MouseEventKind::Down(CtButton::Left) = me.kind
                 && let Some(tab) = draw::tabbar_hit(self, x)
             {
@@ -1732,6 +1786,10 @@ impl App {
             if !mouse_mode {
                 return;
             }
+        }
+        // Drag-to-select / copy-on-select, and the mouse inside copy mode (03 §11.1).
+        if crate::selection::on_mouse(self, &me, &pane, r, mouse_mode, shift) {
+            return;
         }
         if mouse_mode && !shift {
             let (kind, button) = match me.kind {
@@ -1788,6 +1846,8 @@ impl App {
             || crate::desk::action(self, action)
             || crate::drafts::action(self, action)
             || crate::assist::action(self, action)
+            || crate::chrome::action(self, action)
+            || crate::scrollback::action(self, action)
         {
             return;
         }
@@ -2026,6 +2086,9 @@ impl App {
                 match vk_config::Config::load(vk_config::config_path()) {
                     Ok((c, _)) => {
                         self.keymap = Keymap::from_config(&c);
+                        self.copy_keys = std::sync::Arc::new(
+                            crate::copykeys::CopyKeys::from_config(&c.keys.copy_mode),
+                        );
                         self.theme = Theme::named(&c.theme.name);
                         self.config = c;
                         crate::appearance::apply(self, true);
@@ -2120,6 +2183,7 @@ impl App {
             return;
         };
         let mut cm = CopyMode::new(&pane, buf.lines.clone(), buf.cols, buf.cursor);
+        cm.set_keys(self.copy_keys.clone());
         // Where in-memory rows end and the archive begins (archive paging, M4); asked first so
         // the first history page can stay in memory.
         crate::search::request_bounds(self, &pane);

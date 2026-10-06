@@ -79,11 +79,11 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn st<'a>(v: &'a Value, k: &str) -> &'a str {
+pub(crate) fn st<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
-fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
+pub(crate) fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
     v.get(k)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
@@ -91,7 +91,7 @@ fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
 }
 
 /// Text input: printable characters append, Backspace deletes, ctrl+u clears.
-fn edit(buf: &mut String, ev: &KeyEvent) -> bool {
+pub(crate) fn edit(buf: &mut String, ev: &KeyEvent) -> bool {
     match ev.key {
         Key::Named(NamedKey::Backspace) => {
             buf.pop();
@@ -168,6 +168,8 @@ pub enum Reply {
     TaskRuns {
         task: String,
     },
+    /// T4 surfaces (snapshot, reviewer, notes, dependencies, effort): `crate::tasks_t4`.
+    T4(crate::tasks_t4::T4Reply),
 }
 
 // ---- Track this work ----------------------------------------------------------------------------
@@ -1003,13 +1005,14 @@ fn criteria_of(pkg: &Value) -> &[Value] {
     }
 }
 
-fn subject_label(s: &Value) -> String {
+pub(crate) fn subject_label(s: &Value) -> String {
     let kind = st(s, "kind");
     let head = st(s, "head_sha");
     let short = &head[..head.len().min(8)];
     match kind {
         "committed" => format!("revision {short}"),
-        "dirty" => format!("uncommitted changes on {short}"),
+        "dirty" | "checkout_live" => format!("uncommitted changes on {short}"),
+        "dirty_snapshot" => format!("snapshot of uncommitted work on {short}"),
         "" if !short.is_empty() => format!("revision {short}"),
         "" => "no captured subject".into(),
         k => format!("{k} {short}"),
@@ -1020,7 +1023,13 @@ fn accept_capable(pkg: &Value) -> bool {
     let s = pkg.get("subject").cloned().unwrap_or(Value::Null);
     s.get("accept_capable")
         .and_then(Value::as_bool)
-        .unwrap_or(st(&s, "kind") == "committed")
+        .or_else(|| {
+            // T4 packages say so at the top level; a validated snapshot is accept-capable.
+            (st(&s, "kind") == "dirty_snapshot")
+                .then(|| pkg.get("accept_capable").and_then(Value::as_bool))
+                .flatten()
+        })
+        .unwrap_or(matches!(st(&s, "kind"), "committed" | "dirty_snapshot"))
 }
 
 // ---- messages ----------------------------------------------------------------------------------------
@@ -1075,8 +1084,12 @@ pub enum TaskSub {
     Edit(IntentForm),
     Exceptions(ExceptionForm),
     Message(MessageFlow),
-    CheckPick { sel: usize },
+    CheckPick {
+        sel: usize,
+    },
     Authorize(AuthDialog),
+    /// T4 screens (`crate::tasks_t4`).
+    T4(crate::tasks_t4::T4Sub),
 }
 
 /// The check authorization dialog (15 §6.3). It freezes the exact subject and check-definition
@@ -1165,6 +1178,8 @@ pub struct TaskView {
     pub last_poll: Option<Instant>,
     pub last_rev: u64,
     pub last_fetch: Option<Instant>,
+    /// T4 state (notes, dependencies, model estimate): `crate::tasks_t4`.
+    pub t4: crate::tasks_t4::T4State,
 }
 
 /// Open the task detail view (from the inbox, goto, peek or a palette action).
@@ -1192,12 +1207,13 @@ pub fn open_task(app: &mut App, mi: usize, task: &str) {
         last_poll: None,
         last_rev: rev,
         last_fetch: None,
+        t4: Default::default(),
     });
     app.mode = Mode::Popup(Popup::Task);
     fetch(app, true);
 }
 
-fn fetch(app: &mut App, all: bool) {
+pub(crate) fn fetch(app: &mut App, all: bool) {
     let Some(v) = &mut app.task_view else {
         return;
     };
@@ -1240,11 +1256,11 @@ fn revalidate_dialog(v: &mut TaskView, container: &Value) {
     }
 }
 
-fn view_of(app: &mut App, id: u64) -> Option<&mut TaskView> {
+pub(crate) fn view_of(app: &mut App, id: u64) -> Option<&mut TaskView> {
     app.task_view.as_mut().filter(|v| v.id == id)
 }
 
-fn package(v: &TaskView) -> Option<&Value> {
+pub(crate) fn package(v: &TaskView) -> Option<&Value> {
     match &v.review {
         Api::Ok(p) => Some(p.get("package").unwrap_or(p)),
         _ => None,
@@ -1417,10 +1433,20 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
             app.task_view = Some(v);
             return;
         }
+        TaskSub::T4(s) => {
+            app.task_view = Some(v);
+            crate::tasks_t4::sub_key(app, s, ev);
+            return;
+        }
         TaskSub::None => {}
     }
     let detail = v.detail.clone().unwrap_or(Value::Null);
     v.notice = None;
+    if crate::tasks_t4::is_main_key(&ev) {
+        app.task_view = Some(v);
+        crate::tasks_t4::main_key(app, ev);
+        return;
+    }
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') => {
             app.restore_return();
@@ -2130,6 +2156,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 Err(e) => v.notice = Some(format!("Check not run: {}", e.message)),
             }
         }
+        Reply::T4(r) => crate::tasks_t4::on_reply(app, mi, r, res),
         Reply::TaskRuns { task } => {
             let Ok(d) = res else {
                 return;
@@ -2247,9 +2274,9 @@ pub fn on_disconnect(app: &mut App, mi: usize) {
 
 // ---- drawing ----------------------------------------------------------------------------------------
 
-type Lines = Vec<(String, Style)>;
+pub(crate) type Lines = Vec<(String, Style)>;
 
-fn wrap_push(out: &mut Lines, text: &str, indent: &str, w: usize, style: Style) {
+pub(crate) fn wrap_push(out: &mut Lines, text: &str, indent: &str, w: usize, style: Style) {
     for raw in text.lines() {
         let mut line = String::new();
         for word in raw.split(' ') {
@@ -2489,6 +2516,12 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
                 .into(),
             t.s(t.yellow),
         ));
+        if p.pointer("/snapshot/available").and_then(Value::as_bool) == Some(true) {
+            out.push((
+                "  [s] Snapshot uncommitted work — an immutable, accept-capable candidate".into(),
+                t.dim(),
+            ));
+        }
     }
     if let Some(a) = acceptance {
         acceptance_lines(app, p, a, w, out);
@@ -2618,6 +2651,7 @@ fn review_lines(app: &App, p: &Value, v: &TaskView, w: usize, out: &mut Lines) {
             ));
         }
     }
+    crate::tasks_t4::review_lines(app, p, v, w, out);
 }
 
 /// The acceptance block, from the server's shape `{acceptance: {subject_id, head_sha,
@@ -2724,7 +2758,7 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
     let t = app.theme;
     let sel = |on: bool| if on { t.sel(t.accent) } else { t.text() };
     match &v.sub {
-        TaskSub::None => None,
+        TaskSub::None | TaskSub::T4(_) => None,
         TaskSub::Edit(f) => {
             let mut l: Lines = Vec::new();
             l.push((
@@ -2996,6 +3030,7 @@ fn task_keys(v: &TaskView) -> String {
         k.push("v run check");
         k.push("m mark reviewed");
     }
+    k.extend(crate::tasks_t4::keys_hint(v));
     k.extend([
         "S summarize review",
         "D drafts",
@@ -3025,6 +3060,10 @@ pub fn draw_task(app: &App, g: &mut Grid) {
     if let Some(n) = &v.notice {
         g.put_str(r.x + 1, y, n, t.bold(t.yellow), r.w.saturating_sub(2));
         y += 1;
+    }
+    if let TaskSub::T4(s) = &v.sub {
+        crate::tasks_t4::draw_sub(app, g, v, s, r, y);
+        return;
     }
     if let Some((title, lines)) = sub_lines(app, v, w) {
         g.put_str(r.x + 1, y, &title, t.bold(t.accent), r.w.saturating_sub(2));
