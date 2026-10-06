@@ -145,6 +145,16 @@ pub fn detect_harness(argv: &[String], exe: Option<&str>) -> Option<Harness> {
             _ => {}
         }
     }
+    // Shell-script wrappers: `sh /path/to/claude …` (shebang scripts are exec'd this way).
+    if matches!(a0.as_str(), "sh" | "bash" | "zsh" | "dash")
+        && let Some(script) = argv.get(1).filter(|a| !a.starts_with('-'))
+    {
+        match base(script).as_str() {
+            "claude" => return Some(Harness::Claude),
+            "codex" => return Some(Harness::Codex),
+            _ => {}
+        }
+    }
     // Interpreter + script path (node/bun shims).
     if matches!(a0.as_str(), "node" | "bun" | "deno") {
         for a in argv.iter().skip(1).take(3) {

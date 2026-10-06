@@ -254,6 +254,22 @@ impl Server {
         Ok(recovered)
     }
 
+    /// A holder vanished while this server was attached to it.
+    pub fn holder_lost(self: &Arc<Self>, pane_id: &str) {
+        self.panes.lock().unwrap().remove(pane_id);
+        let Some(p) = self.with_core(|c| c.pane(pane_id).cloned()) else { return };
+        if let Some(r) = self.with_core(|c| c.run_for_pane(pane_id).cloned()) {
+            self.agents.end_run(self, &r.id, "holder_lost");
+        }
+        let cwd = p.cwd.clone().unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
+        if let Err(e) = self.respawn_pane(&p, &cwd) {
+            tracing::warn!(pane = %pane_id, error = %e, "respawn after holder loss failed");
+            self.pane_ended(pane_id, "holder_lost");
+        } else {
+            self.notify("system", Some(pane_id), "pane restarted", "its process was lost; agents can be resumed (vibeke agent resumable)", "normal");
+        }
+    }
+
     fn respawn_pane(self: &Arc<Self>, old: &Pane, cwd: &str) -> Result<()> {
         let argv = shell_argv(&self.opts);
         let (wsh, tabh) = self.with_core(|c| {

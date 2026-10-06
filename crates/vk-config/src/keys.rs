@@ -53,6 +53,8 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("command_palette", "prefix+:"),
     ("search_scrollback", "prefix+/"),
     ("next_attention", "prefix+a"),
+    ("next_attention_focus", "prefix+shift+a"),
+    ("inbox", "prefix+i"),
     ("mark_unread", "prefix+u"),
     ("pin_pane", "prefix+alt+p"),
     ("float_new", "prefix+f"),

@@ -283,8 +283,9 @@ impl Agents {
                 self.on_process(server, pane, st);
             }
             (None, Some(r)) => {
-                // Harness gone from the foreground: the run ended (the pane keeps its shell).
-                if st.fg_pgid.is_some() && !st.fg_cmdline.is_empty() {
+                // The run ended only when the foreground is back at the pane's own shell (a
+                // tool the agent runs in the foreground must not end it).
+                if st.fg_pgid == Some(st.child_pid) {
                     self.end_run(server, &r.id, "exited");
                 }
             }

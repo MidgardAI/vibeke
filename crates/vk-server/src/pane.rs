@@ -150,8 +150,10 @@ pub async fn run(
             server.pane_ended(&id, &reason);
         }
         Err(e) => {
+            // The holder died without reporting a child exit (crash, kill, reboot): keep the
+            // layout slot with a fresh shell and offer the agent for resume (10 §5.1).
             tracing::warn!(pane = %id, error = %format!("{e:#}"), "holder lost");
-            server.pane_ended(&id, "holder_lost");
+            server.holder_lost(&id);
         }
     }
 }
