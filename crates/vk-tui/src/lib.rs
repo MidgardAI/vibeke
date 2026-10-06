@@ -24,6 +24,7 @@ pub mod parity;
 mod parity_tests;
 pub mod paste;
 pub mod pending;
+pub mod plugins;
 pub mod popups;
 pub mod push;
 pub mod screen;

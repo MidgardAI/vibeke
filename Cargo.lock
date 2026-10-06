@@ -3225,6 +3225,7 @@ dependencies = [
  "crossterm",
  "futures",
  "libc",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

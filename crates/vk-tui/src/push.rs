@@ -29,6 +29,7 @@ pub const TYPES: &[&str] = &[
     "draft.*",
     "notes.updated",
     "assistant.*",
+    "client.window_title_changed",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -119,6 +120,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::drafts::on_event(app, i, k, &v);
         } else if k.starts_with("assistant.") {
             crate::assist::on_event(app, i, k);
+        } else if k == "client.window_title_changed" {
+            crate::plugins::on_title_event(app, i, &v);
         }
     }
     if !confirms.is_empty() {

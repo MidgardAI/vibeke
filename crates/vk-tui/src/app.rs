@@ -101,6 +101,8 @@ pub enum Pending {
     },
     /// M4 parity surfaces (status bar, search, groups, layouts, appearance).
     Parity(crate::parity::Reply),
+    /// Herdr plugin surfaces (actions, link handlers, UI state; M5).
+    Plugin(crate::plugins::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -291,6 +293,8 @@ pub enum Popup {
         layouts: Vec<crate::layouts::Entry>,
         sel: usize,
     },
+    /// Plugin link handlers matching an activated link (07 §7.7).
+    PluginLink(Box<crate::plugins::LinkChoice>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -391,6 +395,8 @@ pub struct App {
     pub desk: Option<crate::desk::Desk>,
     pub drafts: Option<crate::drafts::DraftsView>,
     pub assist: Option<crate::assist::Flow>,
+    /// Herdr plugin surfaces: actions, link handlers, window title, scroll reports (M5).
+    pub plugins: crate::plugins::State,
 }
 
 pub struct Opts {
@@ -708,6 +714,7 @@ impl App {
             desk: None,
             drafts: None,
             assist: None,
+            plugins: Default::default(),
         }
     }
 }
@@ -793,12 +800,27 @@ impl App {
     /// Every visible pane of the focused tab: floating panes first (topmost first, content
     /// rects inside their frames), then the tiling. Hit tests take the first match, so floats
     /// win; `ViewHint` reports them so their PTYs get real sizes (08 §5).
+    /// Plugin popups/overlays come before everything (M5); nothing under an overlay is
+    /// visible, so it is the only pane (with a popup over it) then.
     pub fn pane_rects(&self) -> Vec<(String, Rect)> {
-        let mut v: Vec<(String, Rect)> = crate::floats::visible(self)
-            .into_iter()
+        let surf = crate::plugins::surfaces(self);
+        let mut v: Vec<(String, Rect)> = surf
+            .iter()
             .rev()
-            .map(|f| (f.pane, f.inner))
+            .map(|s| (s.pane.clone(), s.inner))
             .collect();
+        if surf
+            .iter()
+            .any(|s| s.info.kind == vk_proto::model::SurfaceKind::Overlay)
+        {
+            return v;
+        }
+        v.extend(
+            crate::floats::visible(self)
+                .into_iter()
+                .rev()
+                .map(|f| (f.pane, f.inner)),
+        );
         v.extend(self.tiled_rects());
         v
     }
@@ -916,6 +938,7 @@ impl App {
         crate::gateway::on_connected(self, i);
         crate::push::on_connected(self, i);
         crate::parity::on_connected(self, i);
+        crate::plugins::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -973,7 +996,7 @@ impl App {
         id
     }
 
-    fn send_key(&mut self, ev: KeyEvent) {
+    pub(crate) fn send_key(&mut self, ev: KeyEvent) {
         if crate::browser::focused_browser(self).is_some() {
             crate::browser::send_key(self, ev);
             return;
@@ -1265,6 +1288,7 @@ impl App {
             }
             Pending::Reconcile { key } => self.on_reconciled(i, &key, res),
             Pending::Parity(r) => crate::parity::on_reply(self, i, r, res),
+            Pending::Plugin(r) => crate::plugins::on_reply(self, i, r, res),
         }
     }
 
@@ -1432,6 +1456,7 @@ impl App {
         crate::gateway::tick(self);
         crate::parity::on_tick(self);
         crate::assist::tick(self);
+        crate::plugins::report_scroll(self, now);
         // Keep spinners/ages in the sidebar fresh once a second.
         if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
             self.dirty = true;
@@ -1508,6 +1533,10 @@ impl App {
                     self.mode = Mode::Prefix(Instant::now());
                     return;
                 }
+                // A plugin popup is modal: its terminal gets every key (08 §5).
+                if crate::plugins::normal_key(self, &ev) {
+                    return;
+                }
                 // Direct bindings never steal keys from a focused browser page.
                 if let Some(b) = self.keymap.direct(&ev).cloned()
                     && crate::browser::focused_browser(self).is_none()
@@ -1548,7 +1577,7 @@ impl App {
                     self.send_key(ev);
                     return;
                 }
-                if crate::browser::prefix_key(self, &ev) {
+                if crate::plugins::prefix_key(self, &ev) || crate::browser::prefix_key(self, &ev) {
                 } else if let Some(b) = self.keymap.prefixed(&ev).cloned() {
                     self.action(&b.action, b.index);
                 } else if matches!(ev.key, Key::Named(NamedKey::Escape)) {
@@ -1659,6 +1688,10 @@ impl App {
 
     pub(crate) fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
+        // Plugin popups are modal; overlay headers and popup frames are chrome.
+        if crate::plugins::on_mouse(self, me.column, me.row) {
+            return;
+        }
         // Float frames (move/resize/raise), group rows and drags, the status bar.
         if crate::parity::on_mouse(self, &me) {
             return;
@@ -1744,6 +1777,9 @@ impl App {
     // ---- actions --------------------------------------------------------------------------
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
+        if crate::plugins::action(self, action) {
+            return;
+        }
         if crate::browser::action_name(self, action) || crate::parity::action(self, action) {
             return;
         }
@@ -2019,6 +2055,10 @@ impl App {
     }
 
     fn run_key_command(&mut self, c: &vk_config::KeyCommand) {
+        if c.kind == vk_config::CommandType::PluginAction {
+            crate::plugins::run_key_command(self, c);
+            return;
+        }
         let Some(pane) = self.focused_pane() else {
             return;
         };
@@ -2444,6 +2484,7 @@ impl App {
         crate::browser::update_views(self);
         crate::gallery::before_draw(self);
         crate::nav::observe(self);
+        crate::plugins::observe(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);
@@ -2718,7 +2759,14 @@ mod pending_tests {
         let mut v = Vec::new();
         while let Ok(f) = rx.try_recv() {
             if let ClientFrame::Command { req, json } = f {
-                v.push((req, serde_json::from_str(&json).unwrap()));
+                let c: Value = serde_json::from_str(&json).unwrap();
+                // The plugin queries every connect makes (crate::plugins) aren't operations.
+                if !matches!(
+                    c["method"].as_str(),
+                    Some("plugin.action.list" | "plugin.link_handler.list" | "compat.ui.state")
+                ) {
+                    v.push((req, c));
+                }
             }
         }
         v

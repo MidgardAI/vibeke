@@ -312,6 +312,15 @@ impl CopyMode {
         }
     }
 
+    /// Viewport position for scroll reports (`pane.scroll_changed`): rows between the top of
+    /// the view and the live screen (0 = the live screen's top row is visible at the top), and
+    /// the history rows known.
+    pub fn scroll_offset(&self) -> (u32, u32) {
+        let off = self.hist.saturating_sub(self.top) as u32;
+        let total = (self.total_hist as usize).max(self.hist) + self.archive.rows;
+        (off, total as u32)
+    }
+
     /// (in-memory history rows loaded, in-memory history rows on the server, archive rows
     /// prepended).
     pub fn loaded(&self) -> (usize, u32, usize) {

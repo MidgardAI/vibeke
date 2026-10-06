@@ -685,6 +685,12 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     if let Some(dev) = crate::gateway::devices_label(app) {
         right.push((format!(" {dev} "), t.s(t.accent)));
     }
+    // A plugin-set window title shows here when it can't go to the outer terminal (M5).
+    if !app.config.ui.title_sync
+        && let Some(title) = crate::plugins::window_title(app)
+    {
+        right.insert(0, (format!(" {} ", truncate(title, 40)), t.s(t.accent)));
+    }
     let rw: u16 = right
         .iter()
         .map(|(s, _)| unicode_width::UnicodeWidthStr::width(s.as_str()) as u16)
@@ -734,6 +740,15 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         }
         crate::floats::draw_frame(app, g, f, focused.as_deref() == Some(f.pane.as_str()));
         draw_pane_at(app, g, &f.pane, f.inner, focused.as_deref(), &mut cursor);
+    }
+    // Plugin overlays and popups on top of everything in the pane area (M5).
+    for s in crate::plugins::surfaces(app) {
+        if cursor.is_some_and(|(x, y, _)| s.outer.contains(x, y)) {
+            cursor = None;
+        }
+        let on = focused.as_deref() == Some(s.pane.as_str());
+        crate::plugins::draw_chrome(app, g, &s, on);
+        draw_pane_at(app, g, &s.pane, s.inner, focused.as_deref(), &mut cursor);
     }
     if !matches!(
         app.mode,

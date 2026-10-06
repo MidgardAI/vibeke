@@ -1191,6 +1191,10 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
         // Ctrl/Alt+click on a localhost URL printed in a pane opens it in a browser pane.
         let modded = me.modifiers.contains(KeyModifiers::CONTROL)
             || me.modifiers.contains(KeyModifiers::ALT);
+        // Plugin link handlers first (07 §7.7): a matching token offers them.
+        if down && modded && crate::plugins::click(app, cur, &pane, x - r.x, y - r.y) {
+            return true;
+        }
         if down
             && modded
             && let Some(url) = url_at(app, cur, &pane, x - r.x, y - r.y)

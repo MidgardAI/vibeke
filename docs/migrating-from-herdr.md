@@ -112,16 +112,24 @@ What works once a plugin is trusted:
 - Actions (`vibeke plugin action run`), event hooks and startup hooks. Callbacks reach Vibeke
   through a private `herdr` launcher and socket.
 - The worktree, layout, pane move/swap, agent and metadata calls.
-- Plugin panes in the `split`, `tab`, `zoomed` and `overlay` placements. An overlay opens as a
-  zoomed pane.
+- Plugin panes in every placement. A popup is a modal window over the layout (sized by the
+  pane's `width`/`height`); an overlay covers the current tab. Both close when their command
+  exits, with `herdr popup close` (popups), or with `prefix+x`, and the focus goes back to where
+  it was.
+- Plugin actions in the command palette (`prefix+:`). Actions of untrusted or disabled plugins
+  are listed but disabled, with the command that enables them.
+- Your `[[keys.command]] type = "plugin_action"` bindings.
+- Link handlers: a hint label (`prefix+shift+u`) or Ctrl/Alt+click on a matching link offers the
+  plugin's handler next to the default action.
+- Window titles set by plugins (`ui.title_sync`, else shown in the tab bar).
 - `herdr --session NAME`.
 
 A startup hook's background processes keep their callback access while they run, including
 across a Vibeke server restart. Processes an action leaves behind lose it when the action ends.
 Credentials in plugin output are redacted in `vibeke plugin logs`.
 
-Not supported yet: popups, real overlays, plugin key bindings and palette entries, link
-handlers, and installs from git.
+Not supported yet: `agent.view.set/clear`, key bindings declared in a plugin's own manifest
+(add them to your config instead), and installs from git.
 
 With `[compat.herdr] enabled = true`, Vibeke also listens on Herdr's socket layout for tools
 that talk to Herdr directly. The default session uses `$RUNTIME/herdr-compat/herdr.sock`

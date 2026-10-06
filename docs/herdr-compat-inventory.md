@@ -7,13 +7,13 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | Area | Implemented | Partial | Missing | Total |
 |---|---|---|---|---|
 | Socket wire protocol and endpoints | 12 | 4 | 0 | 16 |
-| Socket methods | 28 | 42 | 4 | 74 |
-| Events (subscriptions and `[[events]]` hooks) | 15 | 8 | 2 | 25 |
+| Socket methods | 30 | 41 | 3 | 74 |
+| Events (subscriptions and `[[events]]` hooks) | 15 | 9 | 1 | 25 |
 | CLI commands | 7 | 19 | 5 | 31 |
 | Plugin manifest fields | 9 | 5 | 0 | 14 |
-| Plugin invocation environment | 8 | 5 | 2 | 15 |
-| Plugin lifecycle, registry and trust | 12 | 5 | 4 | 21 |
-| **All** | **91** | **88** | **17** | **196** |
+| Plugin invocation environment | 9 | 5 | 1 | 15 |
+| Plugin lifecycle, registry and trust | 14 | 6 | 1 | 21 |
+| **All** | **96** | **89** | **11** | **196** |
 
 ## Socket wire protocol and endpoints
 
@@ -88,10 +88,10 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `plugin.action.list` | implemented | spec |  |
 | `plugin.action.invoke` | implemented | spec | returns the running log record immediately |
 | `plugin.log.list` | implemented | spec | status, timestamps, exit code, separate stdout/stderr |
-| `plugin.pane.open` | partial | spec | `split`, `tab`, `zoomed`, `overlay` (a zoomed pane that restores focus when it ends, not a real overlay); `popup` needs the TUI; width/height ignored; one broker per pane |
+| `plugin.pane.open` | partial | spec | all placements: `split`, `tab`, `zoomed`; `overlay` = a full-area layer over the tab, `popup` = a session-modal floating window sized by `width`/`height` (cells or `%`, default 80%) with no pane id; both close when the command exits and restore the prior focus; one popup at a time (`popup_busy`, unverified); split size params ignored; one broker per pane |
 | `plugin.pane.focus` | partial | spec | by `plugin_id` + entrypoint or `pane_id` |
 | `plugin.pane.close` | partial | spec | by `plugin_id` + entrypoint or `pane_id` |
-| `popup.close` | missing | spec | needs the TUI popup layer |
+| `popup.close` | partial | spec | closes the open popup (a plugin only its own) and restores focus; `popup_not_found` when none; params/result unverified |
 | `layout.export` | partial | spec | binary split tree (`split_id`, `direction`, `ratio`, `first`, `second` / `pane_id`); PaneLayoutSnapshot shape unverified |
 | `layout.apply` | partial | spec | rearranges the tab's own panes from a snapshot; every pane exactly once |
 | `layout.set_split_ratio` | partial | spec | `split_id` (from the snapshot) or `pane_id`; ratio of the first side |
@@ -100,9 +100,9 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `pane.swap` | partial | spec | within a workspace; emits `pane.moved` for both panes |
 | `pane.resize` | partial | spec | direction + percent |
 | `pane.zoom` | partial | spec |  |
-| `client.window_title.set` | partial | spec | stored and evented (`client.window_title_changed`); the TUI does not apply it yet |
-| `client.window_title.clear` | partial | spec | see `client.window_title.set` |
-| `agent.view.set` | missing | spec | semantics unknown until the baseline schema is captured; TUI |
+| `client.window_title.set` | implemented | spec | evented (`client.window_title_changed`); the TUI shows it as the outer terminal title (OSC 2) with `ui.title_sync`, else in the tab bar; sanitized |
+| `client.window_title.clear` | implemented | spec | back to `ui.title_format`; see `client.window_title.set` |
+| `agent.view.set` | missing | spec | the spec names it but defines no params, result or rendering, and no corpus plugin calls it; waits for the baseline schema capture (07 §8.0) before a TUI projection is built |
 | `agent.view.clear` | missing | spec | see `agent.view.set` |
 | `pane.report_metadata` | partial | spec | merged per pane (`metadata`, `key`/`value` or flat params), shown as `metadata` in pane records; in memory |
 | `workspace.report_metadata` | partial | spec | as `pane.report_metadata`, per workspace |
@@ -138,7 +138,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | `pane.agent_detected` | partial | spec | no 250 ms debounce |
 | `pane.agent_status_changed` | partial | spec | fires on mapped-status change only; status enumeration unverified |
 | `pane.output_matched` | partial | spec | fires when a compat `pane.wait_for_output` matcher matches |
-| `pane.scroll_changed` | missing | spec |  |
+| `pane.scroll_changed` | partial | spec | from the TUI's copy-mode viewport (`ClientFrame::ScrollView`, coalesced to 150 ms); `scroll` = rows above the live screen, also in `pane.list`; payload shape unverified |
 | `layout.updated` | partial | spec | payload carries `layout` (snapshot shape unverified) |
 | `worktree.created` | implemented | spec | from `worktree.create` and `task.create` worktree checkouts; used by 8 corpus plugins |
 | `worktree.opened` | implemented | spec | from `worktree.open`; used by 5 corpus plugins |
@@ -162,7 +162,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | plugin config-dir | implemented | corpus |  |
 | plugin action list / invoke | partial | corpus | argument grammar unverified |
 | plugin log list | partial | corpus |  |
-| plugin pane open|focus|close | partial | corpus | `--plugin --entrypoint --placement --direction --cwd --focus`; popup refused |
+| plugin pane open|focus|close | partial | corpus | `--plugin --entrypoint --placement --direction --cwd --focus`; all placements |
 | plugin update | missing | corpus |  |
 | pane list|get|current|read | partial | corpus | flag grammar unverified |
 | pane send-text|send-keys|run|focus|split|close|rename|wait-output | partial | corpus |  |
@@ -194,9 +194,9 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | [[actions]] id, title, description, command, platforms | implemented | spec | per-platform twins with one id |
 | [[actions]] contexts | partial | spec | validated; default when omitted (`global`) unverified |
 | [[events]] on, command, platforms, id | implemented | spec | unknown event names warn |
-| [[panes]] id, title, description, placement, command, width, height, platforms | partial | spec | parsed and validated; opened by `plugin.pane.open` (split, tab, zoomed, overlay); default placement unverified |
-| [[link_handlers]] id, title, pattern, action, platforms | partial | spec | regex compiled, action resolved; not wired to clicks |
-| [[keys.command]] key, type, command, description | partial | spec | parsed, action resolution warns; bindings not installed |
+| [[panes]] id, title, description, placement, command, width, height, platforms | partial | spec | parsed and validated; opened by `plugin.pane.open` in every placement, `width`/`height` size popups; default placement unverified |
+| [[link_handlers]] id, title, pattern, action, platforms | partial | spec | offered by the TUI on hint labels and Ctrl/Alt+click; matching order (registry, then manifest) and modifier unverified |
+| [[keys.command]] key, type, command, description | partial | spec | manifest defaults parsed (resolution warns) but not installed; the user's `[[keys.command]] type = plugin_action` bindings work |
 | qualified action resolution (`<plugin>.<action>`) | implemented | spec |  |
 | unknown-key warnings | partial | spec | warning text differs from upstream |
 
@@ -214,7 +214,7 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | HERDR_PLUGIN_ACTION_ID | implemented | spec |  |
 | HERDR_PLUGIN_EVENT, HERDR_PLUGIN_EVENT_JSON | partial | spec | payload shape unverified |
 | HERDR_PLUGIN_ENTRYPOINT_ID | partial | spec | set for actions/hooks/startup |
-| HERDR_PLUGIN_CLICKED_URL, HERDR_PLUGIN_LINK_HANDLER_ID | missing | spec | link handlers not wired |
+| HERDR_PLUGIN_CLICKED_URL, HERDR_PLUGIN_LINK_HANDLER_ID | implemented | spec | set for link-handler invocations (`plugin.link.open`), also `clicked_url`/`link_handler_id` in the context JSON |
 | stale context variables cleared | implemented | spec |  |
 | build steps without socket/context/authority | implemented | spec |  |
 | HERDR_* in ordinary panes (`compat.herdr_env`) | missing | spec | still stripped |
@@ -235,10 +235,10 @@ Baseline: **Herdr v0.9.3** at commit `7b116c05bfda646af39d2524c54e70c751f57ee8` 
 | async action invocation with log records | implemented | spec | 100 records/session, 64 KiB per stream |
 | [[startup]] once per server activation | partial | spec | runs at server start for active plugins, in its own process group (its broker follows the group); takeover semantics unverified |
 | [[events]] dispatch with baseline names | partial | spec | projected subset; concurrency/log limits unverified |
-| actions in the command palette | missing | spec | API `plugin.action.list/run` ready for the TUI |
-| plugin panes and popups (all placements) | partial | spec | server side: split/tab/zoomed/overlay as Vibeke panes with their own broker and `HERDR_*` env; popups and real overlays need the TUI |
-| link handlers | missing | spec |  |
-| `[[keys.command]] type = plugin_action` bindings | missing | spec |  |
+| actions in the command palette | implemented | spec | per machine; untrusted/stale/disabled plugins listed but disabled with the fixing command; contexts not filtered yet |
+| plugin panes and popups (all placements) | partial | spec | popups: session-modal TUI window, keys to the popup, hidden from compat pane lists/events, no `HERDR_PANE_ID`, callbacks act on the pane underneath; overlays: full-area layer; dimension rules and busy/error codes unverified |
+| link handlers | partial | spec | TUI chooser lists matching handlers (untrusted ones disabled) next to the default action; baseline runs the handler without a chooser (unverified) |
+| `[[keys.command]] type = plugin_action` bindings | implemented | spec | `command = "<plugin>.<action>"`, `description` shown in the palette |
 | migration of Herdr plugin registry/config/state (copy, conflict report, rollback) | partial | spec | `vibeke plugin migrate --from <dir>`: copy only, conflicts left alone, `--rollback`; registry entries reported, linked with `--link`; Herdr's per-plugin dir layout unverified |
 | `herdr` launcher symlink installed only on request into a Vibeke bin dir | implemented | spec | `vibeke compat install-shim` |
 | compat CLI never reaches a live Herdr server | implemented | spec | HERDR_SOCKET_PATH honored only for Vibeke brokers |
