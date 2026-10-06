@@ -124,8 +124,12 @@ Built-in segments: `machine`, `session`, `workspace`, `task`, `branch`, `ports` 
 ### 6.2 Goto / fuzzy switcher
 `prefix+g`: one fuzzy list over workspaces, tabs, panes, agents (by name, harness, state), tasks, previews and machines. Typing filters; prefix tokens narrow the kind: `@agent`, `#task`, `:tab`, `>command` (switches to the palette), `!state` (`!approve` lists everything awaiting approval). Results are ranked by match score, then recency, then urgency. `enter` jumps; `ctrl+enter` opens in a new client split view (M4).
 
+*As built (research R5):* `vk-tui::nav`. Candidates: workspaces (`~`), tabs (`:`), panes/agents (`@` for panes with a run) and tasks (`#`; untracked tasks only when asked for). Matching is a real fuzzy matcher (fzf-style subsequence with word-boundary/camelCase/first-char bonuses, consecutive-run bonus, gap penalties; every whitespace token must match) over the shown label **plus hidden fields**: workspace root/repo path and git branch, tab/pane handles, pane cwd, the agent's harness, model, run handle and **native session id** (`harness_session_id`), task repo/branch/worktree. Matched letters are highlighted (bold+underline) in the label. Ranking: score, then this client's **recent targets** (per-client history, §6.7), then urgency (open interaction, question, done), then natural order; with an empty query recent targets come first, then urgent ones. `!state` filters by run state (`!approve` = open interactions), kind prefixes narrow, `>` as the first key switches to the palette. Previews and machines are not candidates yet.
+
 ### 6.3 Command palette
 `prefix+p` is taken by `previous_tab`, so the palette is **`prefix+:`** and also `ctrl+shift+p` as a direct binding when the host reports it unambiguously (kitty keyboard). It lists every action (built-in, `[[keys.command]]`, plugin actions) with its current binding. Actions take arguments through inline prompts (for example `split: size?`). It remembers the last 20 used.
+
+*As built (research R5):* `Popup::Palette` (`prefix+:`; the `:` text prompt it replaced is gone). Entries: every `DEFAULT_KEYMAP` action with a one-line description and its effective binding, the browser-pane context actions (binding shown as `… (browser pane)`), palette-only TUI commands (`track_work`, `task_details`, `pending_operations`, `open_preview`, `browser_stop`, `browser_watch`), `[[keys.command]]` entries (`Command: <title>`), and **live entries** `Watch agent browser b3 — <url>` per agent browser session on each connected machine (listed with `browser.list` when the palette opens; refreshed by pushed `browser.*` events). Fuzzy-matched against "description  action_name" with highlights; recently used entries (last 20, per client, persisted) come first with an empty filter and get a bonus otherwise. `↑/↓`, `tab`, `ctrl+n/p` move, `ctrl+u` clears, `enter` runs, `esc` closes. No inline argument prompts yet; plugin actions don't exist yet.
 
 ### 6.4 Peek and reply (without attaching)
 Learned from Claude Code agent view. In the sidebar (or goto list), `space` on an agent row opens a floating peek of that run without changing focus:
@@ -134,6 +138,7 @@ Learned from Claude Code agent view. In the sidebar (or goto list), `space` on a
 - Open interaction, if any, as an inline card with the card keys (`y`/`n`/…) (§8).
 - **Reply box**: start typing to compose a follow-up; `enter` sends via `agent.prompt` (native for structured runs — pi RPC `follow_up`/`steer`, Codex `turn/start`/`turn/steer`, Claude via typed input with bracketed paste), `alt+enter` sends as steer when the run is working and the harness supports it.
 - `enter` on an empty reply focuses the pane; `esc` closes. Peek never marks the run seen unless a reply is sent.
+- *As built (06 B7):* when the agent has an agent-browser session the peek shows `◉ browsing b3 · <url>` and `w` opens a read-only watch pane on it (`browser.watch {agent_pane}`); `prefix+t` in that pane takes over.
 
 ### 6.5 Workspace and agent cycling
 `previous_workspace`, `next_workspace`, `previous_agent`, `next_agent`, `focus_agent` (indexed) and `next_attention` (**default `prefix+a`**: opens the card for the oldest open interaction on an unfocused agent, else focuses the oldest `done`; `prefix+A` focuses that agent's pane instead).
@@ -145,6 +150,13 @@ Learned from Claude Code agent view. In the sidebar (or goto list), `space` on a
   - **Task details** (explicitly opened full pane-area view, never automatic): from the inbox, goto (`#k1`), agent peek `t`, or `:task_details`. Shows ownership/lifecycle, review label, intent with the verbatim source request, "Agent has not been told about revision N", bindings (`c` Continue task / `n` Track new work), messages with delivery state, requirements, observed commands (agent prose shown as *claim*), checks; actions `e` edit intent, `w` message agent (prepare → exact text + recipient → explicit send; refused sends offer Open pane), `v` run check (first run asks "Authorize for this revision"), `m` mark reviewed (reason per unsupported required criterion), `o` open pane.
   - **Track this work**: agent peek `t` or `:track_work` → form with the selected request verbatim (↑/↓ other turns), editable title, optional criteria, stop-at starting at *Not specified*, objective; `ctrl+s` tracks. Unverified runs show "Link run first". Sidebar agent rows show the review label as a separate small marker (`◆review`) beside `✓ done`.
   - Pending task mutations persist in `<state>/<session>/client-pending.json` before dispatch and are reconciled via `task.operation.get` on reconnect; unknown outcomes are never resubmitted automatically (`:pending_operations`).
+
+### 6.7 Recent targets, last workspace, hints and the terminal title (as built, research R5)
+
+- **Per-client history** (`vk-tui::nav`): `<state>/<session>/nav-<client>.json` where `<client>` is `$VIBEKE_CLIENT_NAME` (sanitized) or `default` — so two laptops, or two named clients on one machine, keep separate histories. It holds the last 50 focused targets (machine label + pane/task id + workspace), the last 20 palette actions, and the current and previous workspace. Focus changes are observed once per frame.
+- **`last_workspace`** (default `prefix+shift+l`; spec 08 had no binding and `prefix+l` is `focus_pane_right`) toggles to the previously focused workspace (across machines), landing on the pane this client last used there, else the workspace's first tab.
+- **Hints** (`url_hints`, default `prefix+shift+u`; `prefix+u` stays `mark_unread`): labels (`a s d f j k l g h …`, two letters past 26) over every URL, `file:line[:col]` path, git SHA (7–40 lower-case hex with a digit and a letter), Vibeke handle (`w2:p1`, `b3`, `v4`, `#k12`, …) and ULID visible in the focused pane. A label **opens** URLs — loopback URLs as a browser pane next to the pane (that machine's `localhost`, window without graphics), other `http(s)` URLs with the local OS opener (`open`/`xdg-open`) — and **copies** everything else (OSC 52 / OS clipboard); `SHIFT+label` always copies. Any other key closes. `file:line` targets are not verified against the file system yet.
+- **Terminal title sync**: `ui.title_sync = true` writes OSC 2 with `ui.title_format` (default `"{workspace} · {pane}"`; also `{tab}`, `{machine}`, `{session}`; the pane part is the agent's name/harness, else the pane title) whenever it changes; the host's own title is pushed (`CSI 22;2t`) before the first write and popped (`CSI 23;2t`) on exit. Control characters are stripped, 120 chars max.
 
 ## 7. Notifications
 
@@ -261,6 +273,8 @@ Vibeke additions beyond the base set are marked ✚.
 | remote_image_paste | `ctrl+v` (remote only) | | ✚ sync_input | `prefix+shift+s` |
 | | | | ✚ new_task | `prefix+shift+k` |
 | | | | ✚ preview_list / open | `prefix+shift+o` |
+| | | | ✚ last_workspace (§6.7) | `prefix+shift+l` |
+| | | | ✚ url_hints (§6.7) | `prefix+shift+u` |
 
 Action names: the copy-mode binding is `enter_copy_mode` and the picker is `workspace_picker`, because `[keys.copy_mode]`/`[keys.navigate]` are tables (Goal 01 deviation).
 
@@ -274,6 +288,7 @@ Action names: the copy-mode binding is `enter_copy_mode` and the picker is `work
 | ✚ browser_screenshot | `prefix+shift+s` | sync_input |
 | ✚ browser_window (open in window ⇄ back to pane, 06 B3.3) | `prefix+o` | open_notification_target |
 | ✚ browser_console (console/network split) | `prefix+alt+c` | — (not built yet: Stage 3) |
+| ✚ browser_take_over (watch pane: take over ⇄ release the agent session, 06 B7) | `prefix+t` | — (unbound globally) |
 
 All other keys go to the page except the prefix; direct (non-prefix) bindings such as `ctrl+v` don't apply in a browser pane. Mouse: click the chrome's ←/→/⟳ or its URL; Ctrl/Alt+click a `http://localhost:<port>` URL printed in any pane opens it in a browser pane next to that pane.
 
@@ -358,6 +373,8 @@ focus_follows_mouse        = false
 focus_follows_mouse_delay_ms = 120
 confirm_close              = "running"
 marked_unread_clears_on_focus = false
+title_sync                 = true          # outer terminal title (OSC 2), §6.7
+title_format               = "{workspace} · {pane}"   # also {tab}, {machine}, {session}
 [ui.sidebar]
 attention_section = true              # "needs you" rows on top (§2.1)
 position          = "left"            # left | right
