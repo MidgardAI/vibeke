@@ -62,6 +62,8 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("sync_input", "prefix+shift+s"),
     ("new_task", "prefix+shift+k"),
     ("preview_list", "prefix+shift+o"),
+    ("cancel_transfer", "prefix+shift+c"),
+    ("review_clipboard", "prefix+y"),
 ];
 
 /// Herdr action names accepted as aliases for ours (`from`, `to`).

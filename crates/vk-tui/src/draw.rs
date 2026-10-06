@@ -503,6 +503,21 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         Mode::Resize => right.push((" RESIZE ".into(), t.rev())),
         _ => {}
     }
+    if let Some(up) = crate::upload::status(app) {
+        right.insert(0, (format!(" {up} "), t.s(t.yellow)));
+    }
+    if let Some(r) = app.clip.pending.first() {
+        right.insert(
+            0,
+            (
+                format!(
+                    " ⎘ {} clipboard request — prefix+y ",
+                    truncate(&app.machines[r.machine].label, 16)
+                ),
+                t.bold(t.yellow),
+            ),
+        );
+    }
     if let Some(toast) = app.toasts.last() {
         right.insert(
             0,

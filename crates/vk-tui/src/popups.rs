@@ -152,20 +152,35 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             Key::Char('n' | 'N') | Key::Named(NamedKey::Escape) => {}
             _ => app.mode = Mode::Popup(Popup::Confirm { action, message }),
         },
-        Popup::ClipboardAsk { machine, data } => match ev.key {
-            Key::Char('y' | 'Y') | Key::Char('a') => {
+        // Opened deliberately via `review_clipboard`; only explicit keys act, others are ignored.
+        Popup::ClipboardAsk {
+            machine,
+            data,
+            primary,
+        } => match ev.key {
+            Key::Char('y' | 'Y') => {
                 app.machines[machine].clipboard_allowed = Some(true);
-                app.set_clipboard(&data, false);
+                app.set_clipboard(&data, primary);
             }
-            Key::Char('n' | 'N') | Key::Named(NamedKey::Escape) => {
+            Key::Char('o' | 'O') => app.set_clipboard(&data, primary),
+            Key::Char('n' | 'N') => {
                 app.machines[machine].clipboard_allowed = Some(false);
                 app.toast(format!(
                     "clipboard writes from {} denied",
                     app.machines[machine].label
                 ));
             }
-            _ => app.mode = Mode::Popup(Popup::ClipboardAsk { machine, data }),
+            // Dismiss without a decision; the machine can ask again.
+            Key::Named(NamedKey::Escape) => {}
+            _ => {
+                app.mode = Mode::Popup(Popup::ClipboardAsk {
+                    machine,
+                    data,
+                    primary,
+                })
+            }
         },
+        p @ Popup::PasteAsk { .. } => crate::upload::ask_key(app, ev, p),
         Popup::Goto {
             mut filter,
             mut sel,
@@ -426,8 +441,58 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 b.line(message, t.text());
                 b.line("[y] yes   [n] no", t.dim());
             }
-            Popup::ClipboardAsk { machine, data } => {
-                let mut b = frame(app, g, 66, 6, "clipboard");
+            Popup::PasteAsk {
+                machine,
+                pane,
+                items,
+                sel,
+                ..
+            } => {
+                let h = (items.len().min(6) + 6) as u16;
+                let mut b = frame(app, g, 72, h, "paste local files");
+                let total: u64 = items.iter().map(|i| i.size).sum();
+                b.line(
+                    &format!(
+                        "Upload {} file(s) ({}) to {} for pane {}?",
+                        items.len(),
+                        crate::upload::human(total),
+                        app.machines[*machine].label,
+                        pane
+                    ),
+                    t.text(),
+                );
+                for it in items.iter().take(6) {
+                    b.line(
+                        &format!("  {}  {}", it.name, crate::upload::human(it.size)),
+                        t.dim(),
+                    );
+                }
+                if items.len() > 6 {
+                    b.line(&format!("  … and {} more", items.len() - 6), t.dim());
+                }
+                let btn = |i: usize, s: &str| {
+                    if i == *sel {
+                        format!("[> {s} <]")
+                    } else {
+                        format!("[ {s} ]")
+                    }
+                };
+                b.line(
+                    &format!(
+                        "{} {} {}",
+                        btn(0, "u upload+paste paths"),
+                        btn(1, "o paste original"),
+                        btn(2, "esc cancel")
+                    ),
+                    t.text(),
+                );
+                b.line(
+                    "tab/arrows select, enter confirm; other keys are ignored",
+                    t.dim(),
+                );
+            }
+            Popup::ClipboardAsk { machine, data, .. } => {
+                let mut b = frame(app, g, 66, 7, "clipboard");
                 b.line(
                     &format!(
                         "{} wants to set your clipboard ({} bytes).",
@@ -436,7 +501,14 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     ),
                     t.text(),
                 );
-                b.line("[y] allow for this machine   [n] deny", t.dim());
+                b.line("[y] allow for this machine   [o] allow once", t.dim());
+                b.line("[n] deny for this machine   [esc] dismiss", t.dim());
+                if app.clip.dropped > 0 {
+                    b.line(
+                        &format!("{} further write(s) dropped (size/rate)", app.clip.dropped),
+                        t.dim(),
+                    );
+                }
             }
             Popup::Goto { filter, sel } => {
                 let entries = goto_entries(app, filter);

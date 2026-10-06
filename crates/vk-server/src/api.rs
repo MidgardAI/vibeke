@@ -220,6 +220,10 @@ pub const METHODS: &[(&str, bool)] = &[
     ("events.wait", false),
     ("search.query", false),
     ("blob.put", true),
+    ("blob.begin", true),
+    ("blob.append", true),
+    ("blob.commit", true),
+    ("blob.abort", true),
     ("image.upload", true),
     ("layout.export", false),
     ("task.create", true),
@@ -1084,6 +1088,10 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             Ok(json!({"hits": hits}))
         }
         "blob.put" | "image.upload" => blob_put(server, p),
+        "blob.begin" => blob_begin(server, ctx, p),
+        "blob.append" => blob_append(ctx, p),
+        "blob.commit" => blob_commit(ctx, p),
+        "blob.abort" => blob_abort(ctx, p),
         "layout.export" => {
             let tab = resolve_tab(server, ctx, s(p, "tab"))?;
             let panes: Vec<Value> = server.with_core(|c| {
@@ -1264,6 +1272,238 @@ pub fn blob_put(server: &Server, p: &Value) -> R {
     Ok(json!({"hash": hash, "size": data.len(), "path_on_machine": path, "path": path}))
 }
 
+// ---- chunked uploads (06 A11): blob.begin / blob.append / blob.commit / blob.abort ----------
+
+/// Largest decoded chunk accepted by `blob.append`; keeps every frame far below the 64 MiB limit.
+pub const BLOB_MAX_CHUNK: usize = 1 << 20;
+/// Concurrent in-flight uploads across all connections.
+const BLOB_MAX_UPLOADS: usize = 16;
+/// An upload idle this long is abandoned and its staging file removed.
+const BLOB_IDLE: Duration = Duration::from_secs(600);
+
+struct Upload {
+    owner: String,
+    name: String,
+    size: u64,
+    sha256: Option<String>,
+    staged: std::path::PathBuf,
+    file: std::fs::File,
+    offset: u64,
+    blake: blake3::Hasher,
+    sha: sha2::Sha256,
+    last: Instant,
+}
+
+type UploadMap = std::sync::Mutex<std::collections::HashMap<String, Upload>>;
+
+fn uploads() -> &'static UploadMap {
+    static U: std::sync::OnceLock<UploadMap> = std::sync::OnceLock::new();
+    U.get_or_init(Default::default)
+}
+
+fn blob_limit() -> u64 {
+    vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| c.paste.max_auto_bytes.0)
+        .unwrap_or(vk_config::ByteSize::mib(50).0)
+}
+
+fn blob_begin(server: &Server, ctx: &Ctx, p: &Value) -> R {
+    let _ = server;
+    upload_begin(
+        &crate::paths::Paths::inbox(),
+        &ctx.client_id,
+        blob_limit(),
+        p,
+    )
+}
+fn blob_append(ctx: &Ctx, p: &Value) -> R {
+    upload_append(&ctx.client_id, p)
+}
+fn blob_commit(ctx: &Ctx, p: &Value) -> R {
+    upload_commit(&crate::paths::Paths::inbox(), &ctx.client_id, p)
+}
+fn blob_abort(ctx: &Ctx, p: &Value) -> R {
+    upload_abort(&ctx.client_id, p)
+}
+
+fn upload_drop(u: Upload) {
+    let _ = std::fs::remove_file(&u.staged);
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn upload_begin(inbox: &std::path::Path, owner: &str, limit: u64, p: &Value) -> R {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let size = u(p, "size").ok_or_else(|| invalid("missing param `size`"))?;
+    if size > limit {
+        return Err(invalid(format!(
+            "upload of {size} bytes exceeds the {limit} byte limit (paste.max_auto_bytes)"
+        ))
+        .details(json!({"limit": limit, "size": size})));
+    }
+    let name = s(p, "name")
+        .map(|n| n.rsplit('/').next().unwrap_or(n).to_string())
+        .filter(|n| !n.is_empty() && n != "." && n != ".." && !n.contains('\0'))
+        .ok_or_else(|| invalid("missing or invalid `name`"))?;
+    let sha256 = s(p, "sha256").map(|h| h.to_ascii_lowercase());
+    if let Some(h) = &sha256
+        && (h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err(invalid("sha256 must be 64 hex digits"));
+    }
+    let mut map = uploads().lock().unwrap();
+    let stale: Vec<String> = map
+        .iter()
+        .filter(|(_, x)| x.last.elapsed() > BLOB_IDLE)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in stale {
+        if let Some(x) = map.remove(&k) {
+            upload_drop(x);
+        }
+    }
+    if map.len() >= BLOB_MAX_UPLOADS {
+        return Err(err(ErrorKind::RateLimited, "too many uploads in flight"));
+    }
+    let id = format!("up-{:x}-{:x}", vk_store::now_ms(), rand_u64());
+    let dir = inbox.join(".incoming");
+    std::fs::create_dir_all(&dir).map_err(internal)?;
+    let _ = std::fs::set_permissions(inbox, std::fs::Permissions::from_mode(0o700));
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    let staged = dir.join(&id);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staged)
+        .map_err(internal)?;
+    map.insert(
+        id.clone(),
+        Upload {
+            owner: owner.to_string(),
+            name,
+            size,
+            sha256,
+            staged,
+            file,
+            offset: 0,
+            blake: blake3::Hasher::new(),
+            sha: sha2::Digest::new(),
+            last: Instant::now(),
+        },
+    );
+    Ok(json!({"upload_id": id, "max_chunk": BLOB_MAX_CHUNK}))
+}
+
+fn rand_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+}
+
+pub fn upload_append(owner: &str, p: &Value) -> R {
+    use base64::Engine;
+    let id = req(p, "upload_id")?;
+    let offset = u(p, "offset").ok_or_else(|| invalid("missing param `offset`"))?;
+    let b64 = req(p, "data_b64")?;
+    // Reject before decoding: base64 is 4/3 of the decoded size.
+    if b64.len() > BLOB_MAX_CHUNK / 3 * 4 + 8 {
+        return Err(invalid(format!(
+            "chunk exceeds the {BLOB_MAX_CHUNK} byte maximum"
+        )));
+    }
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| invalid(e.to_string()))?;
+    if data.len() > BLOB_MAX_CHUNK {
+        return Err(invalid(format!(
+            "chunk of {} bytes exceeds the {BLOB_MAX_CHUNK} byte maximum",
+            data.len()
+        )));
+    }
+    let mut map = uploads().lock().unwrap();
+    let up = match map.get_mut(id) {
+        Some(x) if x.owner == owner => x,
+        _ => return Err(not_found("upload", id)),
+    };
+    if offset != up.offset {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!("offset mismatch: expected {}, got {offset}", up.offset),
+        )
+        .details(json!({"expected": up.offset})));
+    }
+    if up.offset + data.len() as u64 > up.size {
+        let x = map.remove(id).unwrap();
+        upload_drop(x);
+        return Err(invalid("upload exceeds its declared size"));
+    }
+    if let Err(e) = std::io::Write::write_all(&mut up.file, &data) {
+        let x = map.remove(id).unwrap();
+        upload_drop(x);
+        return Err(internal(e));
+    }
+    up.blake.update(&data);
+    sha2::Digest::update(&mut up.sha, &data);
+    up.offset += data.len() as u64;
+    up.last = Instant::now();
+    Ok(json!({"offset": up.offset}))
+}
+
+pub fn upload_commit(inbox: &std::path::Path, owner: &str, p: &Value) -> R {
+    use std::os::unix::fs::PermissionsExt;
+    let id = req(p, "upload_id")?;
+    let mut map = uploads().lock().unwrap();
+    match map.get(id) {
+        Some(x) if x.owner == owner => {}
+        _ => return Err(not_found("upload", id)),
+    }
+    let up = map.remove(id).unwrap();
+    drop(map);
+    if up.offset != up.size {
+        let (got, want) = (up.offset, up.size);
+        upload_drop(up);
+        return Err(invalid(format!(
+            "incomplete upload: {got} of {want} bytes received"
+        )));
+    }
+    let sha_hex = hex(&sha2::Digest::finalize(up.sha.clone()));
+    if up.sha256.as_deref().is_some_and(|h| h != sha_hex) {
+        upload_drop(up);
+        return Err(invalid("sha256 mismatch"));
+    }
+    let hash = up.blake.finalize().to_hex().to_string();
+    let dir = inbox.join(&hash[..12]);
+    let path = dir.join(&up.name);
+    let res = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        up.file.sync_all()?;
+        std::fs::rename(&up.staged, &path)
+    })();
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&up.staged);
+        return Err(internal(e));
+    }
+    Ok(
+        json!({"hash": hash, "sha256": sha_hex, "size": up.size, "path_on_machine": path, "path": path}),
+    )
+}
+
+pub fn upload_abort(owner: &str, p: &Value) -> R {
+    let id = req(p, "upload_id")?;
+    let mut map = uploads().lock().unwrap();
+    if map.get(id).is_some_and(|x| x.owner == owner)
+        && let Some(x) = map.remove(id)
+    {
+        upload_drop(x);
+    }
+    Ok(json!({"aborted": true}))
+}
+
 fn write_private(dir: &std::path::Path, name: &str, data: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     std::fs::create_dir_all(dir)?;
@@ -1283,4 +1523,137 @@ fn write_private(dir: &std::path::Path, name: &str, data: &[u8]) -> std::io::Res
         .open(&tmp)?;
     std::io::Write::write_all(&mut f, data)?;
     std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+mod blob_upload_tests {
+    use super::*;
+    use base64::Engine;
+
+    fn b64(d: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(d)
+    }
+    fn id_of(r: R) -> String {
+        r.unwrap()["upload_id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn begin_append_commit_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path();
+        let data: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        let sha = hex(&<sha2::Sha256 as sha2::Digest>::digest(&data));
+        let id = id_of(upload_begin(
+            inbox,
+            "t1",
+            10_000,
+            &json!({"name": "../evil/a.bin", "size": data.len(), "sha256": sha}),
+        ));
+        let chunk =
+            |off: u64, d: &[u8]| json!({"upload_id": id, "offset": off, "data_b64": b64(d)});
+        // Wrong owner cannot touch it.
+        assert!(upload_append("other", &chunk(0, &data[..10])).is_err());
+        let r = upload_append("t1", &chunk(0, &data[..1000])).unwrap();
+        assert_eq!(r["offset"], 1000);
+        // Offset mismatch is a conflict and leaves the upload intact.
+        let e = upload_append("t1", &chunk(5, &data[1000..])).unwrap_err();
+        assert_eq!(e.code, ErrorKind::Conflict.code());
+        // Committing early fails.
+        let early = id_of(upload_begin(
+            inbox,
+            "t1",
+            10_000,
+            &json!({"name": "x", "size": 4}),
+        ));
+        assert!(upload_commit(inbox, "t1", &json!({"upload_id": early})).is_err());
+        upload_append("t1", &chunk(1000, &data[1000..])).unwrap();
+        let r = upload_commit(inbox, "t1", &json!({"upload_id": id})).unwrap();
+        let path = std::path::PathBuf::from(r["path"].as_str().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), data);
+        assert_eq!(path.file_name().unwrap(), "a.bin");
+        let hash = blake3::hash(&data).to_hex().to_string();
+        assert_eq!(
+            path.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            &hash[..12]
+        );
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(upload_commit(inbox, "t1", &json!({"upload_id": id})).is_err());
+    }
+
+    #[test]
+    fn limits_and_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path();
+        // Over the configured limit at begin.
+        assert!(upload_begin(inbox, "t2", 100, &json!({"name": "big", "size": 101})).is_err());
+        // Oversized chunk.
+        let id = id_of(upload_begin(
+            inbox,
+            "t2",
+            u64::MAX,
+            &json!({"name": "c", "size": 3u64 << 20}),
+        ));
+        let big = vec![0u8; BLOB_MAX_CHUNK + 1];
+        assert!(
+            upload_append(
+                "t2",
+                &json!({"upload_id": id, "offset": 0, "data_b64": b64(&big)})
+            )
+            .is_err()
+        );
+        // Exceeding the declared size drops the upload.
+        let id2 = id_of(upload_begin(
+            inbox,
+            "t2",
+            100,
+            &json!({"name": "d", "size": 4}),
+        ));
+        assert!(
+            upload_append(
+                "t2",
+                &json!({"upload_id": id2, "offset": 0, "data_b64": b64(b"12345")})
+            )
+            .is_err()
+        );
+        assert!(
+            upload_append(
+                "t2",
+                &json!({"upload_id": id2, "offset": 0, "data_b64": b64(b"1")})
+            )
+            .is_err()
+        );
+        // Bad checksum.
+        let id3 = id_of(upload_begin(
+            inbox,
+            "t2",
+            100,
+            &json!({"name": "e", "size": 2, "sha256": "0".repeat(64)}),
+        ));
+        upload_append(
+            "t2",
+            &json!({"upload_id": id3, "offset": 0, "data_b64": b64(b"ab")}),
+        )
+        .unwrap();
+        assert!(upload_commit(inbox, "t2", &json!({"upload_id": id3})).is_err());
+        // Abort removes the staging file.
+        let id4 = id_of(upload_begin(
+            inbox,
+            "t2",
+            100,
+            &json!({"name": "f", "size": 2}),
+        ));
+        assert!(inbox.join(".incoming").join(&id4).exists());
+        upload_abort("t2", &json!({"upload_id": id4})).unwrap();
+        assert!(!inbox.join(".incoming").join(&id4).exists());
+        upload_abort("t2", &json!({"upload_id": id})).unwrap();
+    }
 }
