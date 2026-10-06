@@ -20,6 +20,7 @@ usage:
   vibeke                          attach the TUI (spawns the server if needed)
   vibeke attach [--session s]
   vibeke ssh <host>               attach to a remote machine over SSH (installs vibeke there)
+  vibeke attach-file <path> [--pane [machine/]pane]   copy a file/dir into the pane's inbox and paste its path
   vibeke <noun> <verb> [args]     API commands (vibeke <noun> for help)
   vibeke notify <title> [body]    notification from a pane or script
   vibeke search <query>           search live and archived scrollback
@@ -271,7 +272,14 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("update") => commands::update(&g, &args[1..]).await,
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
-        Some("machine") => remote::machine_cmd(&g, &args[1..]),
+        Some("machine") => remote::machine(&g, &args[1..]).await,
+        Some("attach-file") => remote::attach_file(&g, &args[1..]).await,
+        Some("agent")
+            if args.get(1).map(String::as_str) == Some("list")
+                && args.iter().any(|a| a == "--all-machines") =>
+        {
+            remote::agent_list_all(&g, &args[2..]).await
+        }
         Some("mcp") => mcp(&g).await,
         Some("browser") if args.get(1).map(String::as_str) == Some("install") => {
             let params = match vk_cli::build_params(&[], &args[2..]) {

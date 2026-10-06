@@ -13,6 +13,13 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 sha2.workspace = true
+zstd.workspace = true
+base64.workspace = true
+# Minisign verification (09 §10): Ed25519 + BLAKE2b-512 for prehashed signatures.
+ed25519-dalek = "2"
+blake2 = "0.10"
+# Directory drops travel as tar streams (06 A11.2).
+tar = "0.4"
 
 [dev-dependencies]
 tempfile.workspace = true

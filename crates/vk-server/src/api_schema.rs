@@ -753,7 +753,10 @@ task.sync :: {task: Target, direction?: pull|push|both = pull, force?: bool = fa
 blob.abort :: {upload_id: string} => {aborted: bool}
 blob.append :: {upload_id: string, offset: int, data_b64: string} => {offset: int}
 blob.begin :: {name: string, size: int, sha256?: string} => {upload_id: string, max_chunk: int}
-blob.commit :: {upload_id: string, stage?: browser} => {hash: string, sha256: string, size: int, path_on_machine: string, path: string}
+# unpack: tar = a dropped directory sent as a tar stream; unpacked under the inbox (regular files and directories only) and path_on_machine is the directory
+blob.commit :: {upload_id: string, stage?: browser, unpack?: tar} => {hash: string, sha256: string, size: int, path_on_machine: string, path: string, unpacked?: bool}
+# user client only; local_name is reduced to a basename (no local paths in the event log)
+paste.translated :: {pane?: Target, files: [{blob: string, bytes?: int, local_name?: string, dir?: bool}], target_namespace?: string} => {recorded: int}
 browser.close :: {session?: string, browser_session?: string, target?: string} => {session: string, closed: bool}
 # session is required (any of session|browser_session|target); preview is a preview id/handle or URL; viewport is "WxH" or {width|w, height|h}
 browser.open :: {url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int} => BrowserSession
@@ -825,6 +828,7 @@ pane.cwd_changed :: {pane: string, tab?: string, workspace?: string} => {cwd: st
 pane.process_changed :: {pane: string, tab?: string, workspace?: string} => {fg_cmdline: [string]}
 pane.marked_unread :: {pane: string, tab?: string, workspace?: string} => {marked: bool}
 pane.seen :: {pane: string, tab?: string, workspace?: string} => {}
+paste.translated :: {pane: string, tab?: string, workspace?: string} => {files: [{blob: string, bytes: int, local_name: string, dir: bool}], target_namespace: string}
 pane.pinned :: {pane: string, tab?: string, workspace?: string} => {pinned: bool}
 pane.recovered :: {pane: string, tab?: string, workspace?: string} => {method: string}
 pane.moved :: {pane: string, tab?: string, workspace?: string} => {from_tab_id: string, to_tab_id: string}

@@ -76,6 +76,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::desk::start(&server);
     crate::sandbox::restore(&server).await;
     crate::compat::start(&server);
+    crate::inbox::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

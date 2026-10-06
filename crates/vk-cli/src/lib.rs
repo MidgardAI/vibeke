@@ -186,7 +186,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "list",
         "agent.list",
         &[],
-        "[--workspace w] [--harness h]",
+        "[--workspace w] [--harness h] [--all-machines]",
     ),
     ("agent", "get", "agent.get", &["target"], ""),
     (
@@ -721,6 +721,20 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "",
     ),
     ("machine", "status", "machine.status", &["machine"], ""),
+    (
+        "machine",
+        "show",
+        "machine.show",
+        &["machine"],
+        "[--offline] saved settings, remote version, link state, local artifact trust",
+    ),
+    (
+        "machine",
+        "upgrade",
+        "machine.upgrade",
+        &["machine"],
+        "[--from artifact [--version v]] [--stage-only] [--force] verified install/upgrade",
+    ),
     (
         "preview",
         "declare",

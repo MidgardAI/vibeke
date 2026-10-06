@@ -42,6 +42,7 @@ vibeke machine upgrade devbox        # install/upgrade remote vibeke to the loca
 vibeke machine doctor devbox
 ```
 
+- *As built (lane 1E):* `show`, `connect`, `disconnect` and `upgrade` exist next to `list|add|remove|status|doctor`. Because the client owns its links (A1 note), they are CLI verbs over the shared ControlMaster rather than server state: `show <m> [--offline] [--json]` prints the saved settings, the probed platform and installed version, a live link (state, RTT, compression), the remote server's version/panes and whether a *verified* local artifact for that platform exists (marked unsigned when it is a `VIBEKE_ALLOW_UNSIGNED=1` dev build, 09 §7); `connect <m>` brings the link up and starts the remote server (the ssh master persists 60 s, so a following attach is instant); `disconnect <m>` is `ssh -O exit` on the master, which ends every link through it (open clients show the machine offline and reconnect with backoff; `auto_connect = false` keeps it out of the unified view); `upgrade <m> [--from <artifact> [--version v]] [--stage-only] [--force]` installs a verified artifact in two steps, *stage* (upload into `versions/<v>/`, sha256 re-checked on the remote, `current` untouched) then *activate* (atomic switch, prune, `server restart`). `vibeke ssh --upgrade` uses the same two steps. Tests drive all of this through a fake `ssh` (`VIBEKE_SSH`) with a temporary `$HOME` (`crates/vibeke/tests/remote_machine.rs`).
 - Stored in `config.toml [[remote.machine]]` (label, address, options; schema in 08 §11) and mirrored as `machine.added` events.
 - SSH options come from the user's `~/.ssh/config`, because we invoke the system `ssh` binary. That keeps ProxyJump, ControlMaster, agent forwarding, 1Password/Secretive agents and Tailscale SSH all working with no reimplementation.
 - We pass `-o ServerAliveInterval=15 -o ServerAliveCountMax=3`, plus `-o ControlMaster=auto -o ControlPersist=60 -o ControlPath=$RUNTIME/ssh-%C` unless the user disables it.
@@ -72,6 +73,7 @@ local server                                         remote (via ssh)
   - Upgrading a remote never kills remote panes, because holders survive the server restart ([01](01-architecture.md) §1.2).
   - Old versions are pruned, keeping the last 2.
 - If the remote server isn't running, `vibeke bridge` spawns it (daemonized). The bridge is just a stdio↔unix-socket multiplexer and holds no state.
+- *As built (lane 1E): signatures.* `vk-remote::minisign` verifies real minisign signatures (Ed25519; `ED` = BLAKE2b-512 prehashed, legacy `Ed` unhashed; the global signature over the trusted comment is checked too). `bootstrap::verify_signature` checks `SHA256SUMS.minisig` against `TRUSTED_KEYS`, and `verify_manifest` checks a signed release manifest (`{version, artifacts: [{target, sha256, url}]}`) whose trusted comment must name the manifest's `version:<v>` (no replay under a new label) — the trust anchor for `remote-download`. **`TRUSTED_KEYS` is empty** until release keys exist (09 §10), so nothing verifies and the `VIBEKE_ALLOW_UNSIGNED=1` opt-in remains the only way to accept an artifact; tests sign with a deterministic test key that only `cfg(test)` builds trust. Not built: the CDN download and release cache, the libc-specific target names, and the `remote-download` code path itself (it needs hosting).
 
 ### A4. Bridge link protocol
 
@@ -89,6 +91,7 @@ One SSH stdio stream carries many logical channels.
 - **Priorities**: control/input > render > events > forwards > blobs. Implemented as a weighted scheduler on the writer task.
 - **Keepalive**: Ping every 5 s. RTT is measured continuously and feeds adaptive frame pacing (A7) and the status bar latency indicator.
 - **Compression**: zstd per frame for `render` and `blob` channels when the link is not loopback, with a dictionary trained on terminal frames.
+- *As built (lane 1E):* the mux protocol stays `PROTO = 1` and remains compatible both ways. Capabilities ride in the `Hello.role` string (`client;caps=prio,zstd:<dict-id>`), which older peers ignore. **Priorities:** every channel has a class (`control > render > events > forward > blob`); the writer is a weighted scheduler (quanta 16/8/4/2/1 frames per round under contention, a class alone gets the whole link; round-robin within a class; `Close` stays behind its channel's data) with a one-frame write buffer, so a keystroke never waits behind more than one queued bulk frame. A channel's class comes from its kind (`tcp:`/`egress:` = forward) or explicitly (`Link::open_class`): the TUI's render stream opens `socket` as `render` and its uploads as `blob`; the opener sends the class to peers that advertised `prio` as a `#<class>` suffix on `Open.kind`, so both directions are scheduled by it. The `blob_put`/`blob_get` kinds are not separate: uploads run `blob.begin/append/commit` over a blob-class `socket` channel. **zstd:** a `DataZ` frame (appended variant) carries zstd data with a shared *raw-content* dictionary built deterministically from representative render frames (`vk-remote::dict`); its id is advertised and compression is used only when both ends report the same id. A side compresses render/blob data only when it has compression enabled *and* the peer advertised it: the client enables it unless the ssh host is loopback (`VIBEKE_MUX_ZSTD=0|1` overrides), the bridge always offers it, so the client decides. Frames under 64 B or that shrink by less than 1/8 go uncompressed; decompression is capped at one 16 KiB chunk and an undecodable frame closes its channel. Credit counts decompressed bytes. `Stats.payload_out`/`zstd_frames_out` expose the saving. Not built: a dictionary trained by `zstd --train` on recorded traffic (the raw dictionary halves small spinner frames already).
 
 ### A5. Unified multi-machine view
 
@@ -97,6 +100,7 @@ One SSH stdio stream carries many logical channels.
 - **Combined agent list** (`prefix+a` popup / `vibeke agent list --all-machines`): every run across machines, sorted by attention: needs_approval > needs_answer > error > done > working > idle.
 - **Notifications** from remote agents are delivered on the laptop with a machine badge.
 - **Handles**: fully qualified `devbox/w3:p5`. The short form `w3:p5` resolves against the focused machine in the TUI and against `--machine` or the local machine in the CLI.
+- *As built (lane 1E):* `vibeke agent list --all-machines [--json]` queries this machine and every saved machine concurrently (`agent.list` + open `interaction.list`), sorts by attention (`needs_approval > needs_answer > error > done > working > idle`, then exited/unknown), prints fully qualified handles, and lists unreachable machines as `offline` (never silently skipped, never a fallback). In the TUI, `prefix+a` stays `next_attention` (08 §10.2); the cross-machine attention surface is the inbox (`prefix+i`), which already merges every machine. Remote notifications carry the `[machine]` badge.
 
 ### A6. CLI forwarding
 
@@ -118,6 +122,12 @@ One SSH stdio stream carries many logical channels.
   - Target refresh rate is `min(client_hz, 1000 / (RTT/2 + 8ms))`.
   - Unfocused remote panes update at ≤ 4 Hz. Spinner-only damage (a single-cell change matching the harness spinner manifest) is rate-limited to 1 Hz on unfocused panes and 8 Hz on focused ones.
   - The scroll region and erase operations are encoded as ops (`ScrollUp{n}`, `Clear{rect}`), not raw cell rewrites.
+- *As built (lane 1E):*
+  - **Link states** come from `vk-remote::Link::status()`: `connected`; `degraded` when the last RTT exceeds 400 ms or a ping has gone unanswered for 12 s (pings every 5 s, the first right after `Hello`); `reconnecting` while a connect runs; `offline` otherwise, with the last-frame wall clock kept across drops. The sidebar shows `● devbox 23ms`, `◐ devbox degraded 512ms` and `○ devbox offline · last seen 4m ago`.
+  - **Reconnect** backoff is 0.5 s doubling to 30 s with ±20% jitter.
+  - **Pacing is client-driven, no server change:** the render stream allows two unacked frames per pane, so the TUI acks frames of an *unfocused pane on a remote machine* at most every 250 ms (owed acks are released by a client deadline, and all at once when the pane gains focus). That caps such a pane at 4 Hz in steady state without dropping state (frames are state-sync; the server coalesces). The focused pane is acked immediately and the render stream attaches with `caps.max_fps = min(60, 1000 / (RTT/2 + 8))` from the link's RTT, re-evaluated at every reconnect (a running stream keeps its cap; the two-frame window already bounds it by RTT). The server's 1 Hz spinner throttle for remote clients is unchanged.
+  - **Replay:** the client remembers the remote's event head (`server.status` at connect, advanced by pushed events) and after a reconnect reads the `agent.state_changed`/`interaction.opened` events it missed, collapsed to the latest state per pane, as one notification: `[devbox] While you were away: 1 needs approval, 2 agents finished` (still-working agents are not news).
+  - Not built: bandwidth budgets asserted in CI (needs a netem link), and a runtime (mid-stream) `max_fps` change.
 - **Bandwidth budgets** (CI-enforced with a fixture of 10 panes running, one being an agent with a spinner):
 
 | Scenario | Budget |
@@ -159,6 +169,7 @@ remote server: path = <pane inbox>/<blake3-12>/clipboard-<ts>.png   (pane inbox:
 emit agent.item{kind:user_message, attachments:[blob]}
 ```
 - Keybinding `remote_image_paste = "ctrl+v"` is active only when the clipboard holds an image and the focused pane cannot see local files (remote, container, VM, or a sandbox that denies the source); otherwise ctrl+v passes through. Also available as `vibeke attach-file <path> --pane devbox/w3:p5`, which accepts any file type and uploads it. Both use the A11 pipeline.
+  *As built (lane 1E):* `vibeke attach-file <path> [--pane [machine/]pane] [--machine m] [--no-paste] [--json]` uploads a file or a directory (tar, A11.2) over a blob-class channel to the pane's machine inbox, records `paste.translated`, and pastes the backslash-escaped path into the pane as a bracketed paste; without `--pane` it only uploads and prints the path. Size is capped by `paste.max_auto_bytes`.
 
 **Remote → local (show an image produced remotely):**
 - **Kitty graphics** emitted by a remote program are parsed by the remote VT engine (libghostty-vt parses kitty graphics natively, 03 §2). Images are stored as blobs and placements are sent in render frames by hash. The local client fetches each blob once (cached) and re-emits kitty graphics to the host terminal, or falls back to a `[image 1280×720 — prefix+i to open]` placeholder.
@@ -183,6 +194,7 @@ emit agent.item{kind:user_message, attachments:[blob]}
 - Files are hashed (blake3) locally and sent with `blob_put` over the link's **bulk channel** (separate flow-controlled stream; render and input never wait behind it, A4). Content-addressed: re-dropping the same screenshot costs nothing. Chunked and resumable across reconnects.
 - Size policy: ≤ `paste.max_auto_bytes` (default 50 MiB total) uploads immediately; larger, or any directory, asks first in the status line (`↵ upload 312 MB · esc paste original`). Directories are sent as a tar stream and unpacked on arrival (symlinks not followed; special files skipped).
 - Non-ASCII and spaces in names are preserved.
+- *As built (lane 1E):* a dropped directory is packed by the client (`vk-remote::inbox::pack_dir`: regular files and directories, symlinks not followed and special files skipped, both reported in a toast; bounded by `paste.max_auto_bytes`), always confirmed in the paste popup, uploaded as `<dir>.tar` and committed with `blob.commit {unpack: "tar"}`. The server unpacks it under `<inbox>/<blake3-12>/<dir>` (files 0600, directories 0700; absolute paths, `..`, links and any entry escaping the destination abort the unpack) and returns the directory as `path_on_machine`; the same drop again reuses that copy. An older server that cannot unpack makes the client fail the transfer and paste the original text. Resume across reconnects is not built (a transfer that loses its connection fails and pastes the original).
 
 #### A11.3 Rewrite and delivery
 - The paste is held (status line: `⇡ uploading Screenshot…png 2.1 MB`) and delivered as one bracketed paste once all files have arrived; `esc` cancels and sends the original text instead. Small files feel instant.
@@ -190,6 +202,7 @@ emit agent.item{kind:user_message, attachments:[blob]}
   `/Users/demo/Desktop/Screenshot\ 2026-10-05\ at\ 20.49.03.png` → `/home/demo/.local/state/vibeke/inbox/3f9a1c0b2e7d/Screenshot\ 2026-10-05\ at\ 20.49.03.png`
 - TUI harnesses (Claude Code, Codex, pi, omp) recognise image paths in pasted text and attach the image. For headless runs (pi/omp RPC, Codex app-server, ACP), images are additionally offered as native image content in the next prompt (A10).
 - Event: `paste.translated {pane, files:[{blob, bytes, local_name}], target_namespace}` (no local paths in the event — only basenames; 09 §9).
+  *As built (lane 1E):* the client's transfer task calls the new `paste.translated` API method after the last file landed (full-scope only; pane-scoped callers are refused); the server reduces every `local_name` to a basename and commits the event with the pane subject, `files[].dir` for directories and `target_namespace` = `ssh:<machine>` (or `local` for a contained local pane). Browser-page drops (B3.2) are not pastes and record nothing.
 
 #### A11.4 Pane inbox (where files land)
 | Namespace | Inbox path seen by the agent | Notes |
@@ -200,6 +213,7 @@ emit agent.item{kind:user_message, attachments:[blob]}
 | `host` (local) | — (no translation) | |
 
 - Never inside the repo/worktree (no accidental commits). Retention: `paste.inbox_retention = "14d"`, plus cleanup when the task is archived.
+  *As built (lane 1E):* a server-side sweeper (`vk-server::inbox`) runs a minute after start and then hourly, removing inbox entries (and abandoned `.incoming` staging files) whose mtime is older than `paste.inbox_retention`; `0` keeps everything. Task-archive cleanup is not built: inbox entries are content-addressed per machine, not per task, so there is nothing task-scoped to remove yet.
 - Files are written 0600 in a 0700 directory.
 
 #### A11.5 Security
@@ -613,6 +627,9 @@ keep_days            = 30      # unreferenced screenshots older than this are de
 max_per_task         = 200     # per-task cap, oldest unreferenced first (0 = none)
 referenced_keep_days = 365     # screenshots referenced by a review acceptance
 probe_build          = true    # probe /__vibeke_build on preview ports for the running-build identity
+```
+
+*As built (lane 1E):* every `[preview]` key above (plus `pane_browser`) has one type and default in `vk-config` (`vk_config::Preview`, `Config::preview()`): choice enums for `auto_discover`, `mode`, `pane_split`, `pane_location`, `profile_scope`, `profile_route`, `local_browser`, `browser_external`, `screenshot_format`; `pane_fps` 1..=240; `proxy_port` a port; `browser_idle` a duration; `default_viewport` `WxH` (100..=10000 each); `profile_browser` a known name or an absolute path. `[preview]` stays an external section (the preview fabric in `vk-server` reads it too), but `Config::parse` now validates it: a bad value or an unknown key is a located warning and only that key falls back to its default. `pane_fps`, `pane_location`, `inline_thumbnails` and `screenshot_format` are typed but not yet consumed by the server.
 
 ## Part D — Acceptance criteria
 

@@ -479,6 +479,9 @@ class Api:
     async def pane_zoom(self, params: "Optional[t.PaneZoomParams]" = None) -> "t.PaneZoomResult":
         return await self.call("pane.zoom", params or {})  # type: ignore[arg-type, return-value]
 
+    async def paste_translated(self, params: "t.PasteTranslatedParams") -> "t.PasteTranslatedResult":
+        return await self.call("paste.translated", params)  # type: ignore[arg-type, return-value]
+
     async def plugin_action_list(self, params: "Optional[t.PluginActionListParams]" = None) -> "t.PluginActionListResult":
         return await self.call("plugin.action.list", params or {})  # type: ignore[arg-type, return-value]
 

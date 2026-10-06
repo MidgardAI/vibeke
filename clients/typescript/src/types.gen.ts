@@ -981,6 +981,7 @@ export type BlobBeginResult = {
 export type BlobCommitParams = {
   upload_id: string;
   stage?: "browser";
+  unpack?: "tar";
 };
 
 export type BlobCommitResult = {
@@ -989,6 +990,7 @@ export type BlobCommitResult = {
   size: number;
   path_on_machine: string;
   path: string;
+  unpacked?: boolean;
   cursor?: Cursor;
 };
 
@@ -2798,6 +2800,22 @@ export type PaneZoomResult = {
   cursor?: Cursor;
 };
 
+export type PasteTranslatedParams = {
+  pane?: Target;
+  files: {
+    blob: string;
+    bytes?: number;
+    local_name?: string;
+    dir?: boolean;
+  }[];
+  target_namespace?: string;
+};
+
+export type PasteTranslatedResult = {
+  recorded: number;
+  cursor?: Cursor;
+};
+
 export type PluginActionListParams = {
   plugin?: string;
 };
@@ -4383,6 +4401,7 @@ export interface Methods {
   "pane.wait_idle": { params: PaneWaitIdleParams; result: PaneWaitIdleResult };
   "pane.wait_output": { params: PaneWaitOutputParams; result: PaneWaitOutputResult };
   "pane.zoom": { params: PaneZoomParams; result: PaneZoomResult };
+  "paste.translated": { params: PasteTranslatedParams; result: PasteTranslatedResult };
   "plugin.action.list": { params: PluginActionListParams; result: PluginActionListResult };
   "plugin.action.run": { params: PluginActionRunParams; result: PluginActionRunResult };
   "plugin.link.open": { params: PluginLinkOpenParams; result: PluginLinkOpenResult };
@@ -4631,6 +4650,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "pane.wait_idle": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.wait_output": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.zoom": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "paste.translated": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.action.list": { mutating: false, scope: "pane", paneScope: "open" },
   "plugin.action.run": { mutating: true, scope: "pane", paneScope: "open" },
   "plugin.link.open": { mutating: true, scope: "pane", paneScope: "open" },
@@ -5372,6 +5392,22 @@ export type PaneTitleChangedData = {
   title: string | null;
 };
 
+export type PasteTranslatedSubject = {
+  pane: string;
+  tab?: string;
+  workspace?: string;
+};
+
+export type PasteTranslatedData = {
+  files: {
+    blob: string;
+    bytes: number;
+    local_name: string;
+    dir: boolean;
+  }[];
+  target_namespace: string;
+};
+
 export type PolicyRepoTrustedSubject = Record<string, unknown>;
 
 export type PolicyRepoTrustedData = {
@@ -6057,6 +6093,7 @@ export interface EventMap {
   "pane.scroll_changed": { subject: PaneScrollChangedSubject; data: PaneScrollChangedData };
   "pane.seen": { subject: PaneSeenSubject; data: PaneSeenData };
   "pane.title_changed": { subject: PaneTitleChangedSubject; data: PaneTitleChangedData };
+  "paste.translated": { subject: PasteTranslatedSubject; data: PasteTranslatedData };
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
   "policy.rule_matched": { subject: PolicyRuleMatchedSubject; data: PolicyRuleMatchedData };
   "preview.console_error": { subject: PreviewConsoleErrorSubject; data: PreviewConsoleErrorData };

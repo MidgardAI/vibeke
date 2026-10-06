@@ -71,7 +71,7 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `list` | - | `agent.list` | [--workspace w] [--harness h] |
+| `list` | - | `agent.list` | [--workspace w] [--harness h] [--all-machines] |
 | `get` | `<target>` | `agent.get` |  |
 | `start` | `<name>` | `agent.start` | --harness claude\|codex [--pane p] [--args a,b] [--yolo] [--isolate host\|sandbox] [--network p] |
 | `spawn` | `<name>` | `agent.spawn` | --harness h [--split-of p] [--prompt text] [--focus] |
@@ -243,6 +243,8 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `connect` | `<machine>` | `machine.connect` |  |
 | `disconnect` | `<machine>` | `machine.disconnect` |  |
 | `status` | `<machine>` | `machine.status` |  |
+| `show` | `<machine>` | `machine.show` | [--offline] saved settings, remote version, link state, local artifact trust |
+| `upgrade` | `<machine>` | `machine.upgrade` | [--from artifact [--version v]] [--stage-only] [--force] verified install/upgrade |
 
 ## `vibeke preview`
 

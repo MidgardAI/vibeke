@@ -3354,6 +3354,7 @@ name = "vibeke"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "crossterm",
  "jsonschema",
  "libc",
@@ -3638,13 +3639,18 @@ name = "vk-remote"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "blake2",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "tempfile",
  "tokio",
  "tracing",
  "vk-proto",
+ "zstd",
 ]
 
 [[package]]
@@ -3778,6 +3784,7 @@ dependencies = [
  "vk-compat",
  "vk-config",
  "vk-proto",
+ "vk-remote",
  "vk-term",
 ]
 

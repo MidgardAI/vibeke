@@ -1040,6 +1040,7 @@ BlobBeginResult = TypedDict("BlobBeginResult", {
 BlobCommitParams = TypedDict("BlobCommitParams", {
     "upload_id": str,
     "stage": NotRequired[Literal["browser"]],
+    "unpack": NotRequired[Literal["tar"]],
 })
 
 BlobCommitResult = TypedDict("BlobCommitResult", {
@@ -1048,6 +1049,7 @@ BlobCommitResult = TypedDict("BlobCommitResult", {
     "size": int,
     "path_on_machine": str,
     "path": str,
+    "unpacked": NotRequired[bool],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -2993,6 +2995,24 @@ PaneZoomResult = TypedDict("PaneZoomResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PasteTranslatedParamsFilesItem = TypedDict("PasteTranslatedParamsFilesItem", {
+    "blob": str,
+    "bytes": NotRequired[int],
+    "local_name": NotRequired[str],
+    "dir": NotRequired[bool],
+})
+
+PasteTranslatedParams = TypedDict("PasteTranslatedParams", {
+    "pane": NotRequired["Target"],
+    "files": List["PasteTranslatedParamsFilesItem"],
+    "target_namespace": NotRequired[str],
+})
+
+PasteTranslatedResult = TypedDict("PasteTranslatedResult", {
+    "recorded": int,
+    "cursor": NotRequired["Cursor"],
+})
+
 PluginActionListParams = TypedDict("PluginActionListParams", {
     "plugin": NotRequired[str],
 })
@@ -4714,6 +4734,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.wait_idle": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "paste.translated": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "plugin.action.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "plugin.action.run": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "plugin.link.open": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -5457,6 +5478,24 @@ PaneTitleChangedData = TypedDict("PaneTitleChangedData", {
     "title": Optional[str],
 })
 
+PasteTranslatedSubject = TypedDict("PasteTranslatedSubject", {
+    "pane": str,
+    "tab": NotRequired[str],
+    "workspace": NotRequired[str],
+})
+
+PasteTranslatedDataFilesItem = TypedDict("PasteTranslatedDataFilesItem", {
+    "blob": str,
+    "bytes": int,
+    "local_name": str,
+    "dir": bool,
+})
+
+PasteTranslatedData = TypedDict("PasteTranslatedData", {
+    "files": List["PasteTranslatedDataFilesItem"],
+    "target_namespace": str,
+})
+
 PolicyRepoTrustedSubject: TypeAlias = Dict[str, Any]
 
 PolicyRepoTrustedData = TypedDict("PolicyRepoTrustedData", {
@@ -6146,6 +6185,7 @@ EVENT_TYPES = (
     "pane.scroll_changed",
     "pane.seen",
     "pane.title_changed",
+    "paste.translated",
     "policy.repo_trusted",
     "policy.rule_matched",
     "preview.console_error",

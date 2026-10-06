@@ -2,14 +2,18 @@
 //! bootstrap that installs/upgrades the matching binary on the remote, and the remote side
 //! (`vibeke bridge`).
 
+pub mod agents;
 pub mod bootstrap;
 pub mod boxlink;
+pub mod dict;
+pub mod inbox;
 pub mod link;
+pub mod minisign;
 pub mod mux;
 pub mod ssh;
 
-pub use link::Link;
-pub use mux::Mux;
+pub use link::{Link, LinkState, LinkStatus};
+pub use mux::{Class, Mux, MuxOpts};
 pub use ssh::Target;
 
 use anyhow::{Context, Result, bail};
@@ -167,11 +171,13 @@ where
     Fut: std::future::Future<Output = Result<()>> + Send + 'static,
 {
     let acceptor = bridge_acceptor(socket, ensure_server, opts);
-    let m = Mux::start(
+    // Willing to compress: the client decides (it advertises zstd only off loopback).
+    let m = Mux::start_with(
         tokio::io::stdin(),
         tokio::io::stdout(),
         "bridge",
         Some(acceptor),
+        MuxOpts { compress: true },
     );
     m.closed().await;
     Ok(())

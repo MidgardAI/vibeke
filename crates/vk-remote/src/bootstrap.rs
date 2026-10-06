@@ -96,14 +96,29 @@ pub fn verify(a: &Artifact) -> Result<()> {
     Ok(())
 }
 
-/// Minisign public keys (base64 key lines) trusted to sign `SHA256SUMS`. No release key
-/// exists yet, so this is empty and no signature can verify.
+/// Minisign public keys (base64 key lines, current + next for rotation, 09 §10) trusted to
+/// sign `SHA256SUMS` and the release manifest. No release key exists yet, so this is empty
+/// and no signature can verify; the user adds the keys when they are generated.
 pub const TRUSTED_KEYS: &[&str] = &[];
+
+/// The keys signatures are checked against: [`TRUSTED_KEYS`], plus the deterministic test
+/// key in `cfg(test)` builds only (`minisign::testing`), never in a shipped binary.
+pub fn trusted_keys() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut keys: Vec<String> = TRUSTED_KEYS.iter().map(|k| k.to_string()).collect();
+    #[cfg(test)]
+    keys.push(crate::minisign::testing::public_key_b64());
+    keys
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureError {
     /// This build embeds no release public keys, so nothing can be verified.
     NoTrustedKeys,
+    /// The signature or checksum file could not be read.
+    Io(String),
+    /// The signature is malformed, from an untrusted key, or does not verify.
+    Invalid(crate::minisign::MinisignError),
 }
 
 impl std::fmt::Display for SignatureError {
@@ -115,20 +130,111 @@ impl std::fmt::Display for SignatureError {
                     "this build embeds no release signing keys (none exist yet)"
                 )
             }
+            SignatureError::Io(e) => write!(f, "{e}"),
+            SignatureError::Invalid(e) => write!(f, "{e}"),
         }
     }
 }
 
 impl std::error::Error for SignatureError {}
 
-/// Verify the minisign signature `sig` over the checksum file `sums` against `TRUSTED_KEYS`.
-/// No Ed25519 implementation is available in the workspace and no release key exists yet,
-/// so this always refuses; the opt-in path is the only way to accept artifacts today.
-pub fn verify_signature(
-    _sums: &std::path::Path,
-    _sig: &std::path::Path,
+/// Verify minisign signature text `sig` over `data` against `keys`. Returns the verified
+/// trusted comment.
+pub fn verify_signature_bytes(
+    keys: &[String],
+    data: &[u8],
+    sig: &str,
+) -> Result<String, SignatureError> {
+    if keys.is_empty() {
+        return Err(SignatureError::NoTrustedKeys);
+    }
+    let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    crate::minisign::verify(&refs, data, sig).map_err(SignatureError::Invalid)
+}
+
+/// Verify the minisign signature `sig` over the checksum file `sums` with `keys`.
+pub fn verify_signature_with(
+    keys: &[String],
+    sums: &std::path::Path,
+    sig: &std::path::Path,
 ) -> Result<(), SignatureError> {
-    Err(SignatureError::NoTrustedKeys)
+    if keys.is_empty() {
+        return Err(SignatureError::NoTrustedKeys);
+    }
+    let data =
+        std::fs::read(sums).map_err(|e| SignatureError::Io(format!("{}: {e}", sums.display())))?;
+    let sig_text = std::fs::read_to_string(sig)
+        .map_err(|e| SignatureError::Io(format!("{}: {e}", sig.display())))?;
+    verify_signature_bytes(keys, &data, &sig_text).map(|_| ())
+}
+
+/// Verify the minisign signature `sig` over the checksum file `sums` against
+/// [`trusted_keys`]. With no embedded release key this always refuses, and the opt-in path
+/// (`VIBEKE_ALLOW_UNSIGNED=1`) is the only way to accept artifacts.
+pub fn verify_signature(
+    sums: &std::path::Path,
+    sig: &std::path::Path,
+) -> Result<(), SignatureError> {
+    verify_signature_with(&trusted_keys(), sums, sig)
+}
+
+/// One target's entry in the signed release manifest.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ManifestArtifact {
+    /// Release target (`linux-x86_64`, `linux-aarch64-musl`, …).
+    pub target: String,
+    pub sha256: String,
+    /// Download URL (`remote-download` mode); the remote checks `sha256` after `curl`.
+    #[serde(default)]
+    pub url: String,
+}
+
+/// The release manifest (`manifest.json` + `manifest.json.minisig`) that
+/// `bootstrap = "remote-download"` trusts (06 A3): verified on the laptop, the remote only
+/// gets the expected sha256.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ReleaseManifest {
+    pub version: String,
+    pub artifacts: Vec<ManifestArtifact>,
+}
+
+impl ReleaseManifest {
+    pub fn artifact(&self, target: &str) -> Option<&ManifestArtifact> {
+        self.artifacts.iter().find(|a| a.target == target)
+    }
+}
+
+/// Verify and parse a signed release manifest. The signature's trusted comment must name the
+/// manifest's version (`… version:<v> …`), so an old signed manifest cannot be replayed
+/// under a new version label.
+pub fn verify_manifest_with(
+    keys: &[String],
+    manifest: &[u8],
+    sig: &str,
+) -> Result<ReleaseManifest, String> {
+    let comment = verify_signature_bytes(keys, manifest, sig).map_err(|e| e.to_string())?;
+    let m: ReleaseManifest =
+        serde_json::from_slice(manifest).map_err(|e| format!("release manifest: {e}"))?;
+    if !comment
+        .split_whitespace()
+        .any(|w| w == format!("version:{}", m.version))
+    {
+        return Err(format!(
+            "release manifest signature is for {comment:?}, not version {}",
+            m.version
+        ));
+    }
+    for a in &m.artifacts {
+        if !valid_sha(&a.sha256) {
+            return Err(format!("release manifest: bad sha256 for {}", a.target));
+        }
+    }
+    Ok(m)
+}
+
+/// [`verify_manifest_with`] against [`trusted_keys`].
+pub fn verify_manifest(manifest: &[u8], sig: &str) -> Result<ReleaseManifest, String> {
+    verify_manifest_with(&trusted_keys(), manifest, sig)
 }
 
 /// `VIBEKE_ALLOW_UNSIGNED=1`: the user explicitly accepts unsigned development builds.
@@ -277,6 +383,16 @@ pub async fn ensure(
         _ => {}
     }
     let a = artifact.context("artifact")?;
+    stage(t, a).await?;
+    activate(t, a).await?;
+    Ok(if p.version.is_some() {
+        Outcome::Upgraded
+    } else {
+        Outcome::Installed
+    })
+}
+
+fn check_artifact(a: &Artifact) -> Result<()> {
     if !valid_sha(&a.sha256) {
         bail!("invalid sha256 for artifact");
     }
@@ -288,7 +404,15 @@ pub async fn ensure(
     {
         bail!("invalid artifact version {:?}", a.version);
     }
-    verify(a)?;
+    verify(a)
+}
+
+/// Stage `a` on the remote without switching to it: upload into
+/// `~/.local/share/vibeke/versions/<v>/vibeke.tmp`, re-check its sha256 there and only then
+/// rename it to `vibeke`. The running version (`current`) is untouched, so a failed or
+/// tampered transfer leaves the remote exactly as it was. Returns the staged path.
+pub async fn stage(t: &Target, a: &Artifact) -> Result<String> {
+    check_artifact(a)?;
     let data = std::fs::read(&a.path)?;
     let dir = format!("~/.local/share/vibeke/versions/{}", a.version);
     let upload = format!(
@@ -296,15 +420,38 @@ pub async fn ensure(
         d = sh_quote(&dir)
     );
     t.run(&upload, Some(&data)).await.context("upload")?;
-    // Re-check on the remote before the switch; the previous version stays on mismatch.
     // sha and version are validated above (hex / [A-Za-z0-9._+-]) and quoted anyway.
-    let activate = format!(
+    let check = format!(
         r#"set -e
-V={v}
 cd {d}
 if command -v sha256sum >/dev/null 2>&1; then echo "{sha}  vibeke.tmp" | sha256sum -c - >/dev/null
 else echo "{sha}  vibeke.tmp" | shasum -a 256 -c - >/dev/null; fi
 chmod 755 vibeke.tmp && mv vibeke.tmp vibeke
+echo staged"#,
+        d = sh_quote(&dir),
+        sha = a.sha256,
+    );
+    let out = t
+        .run("sh -s", Some(check.as_bytes()))
+        .await
+        .context("verify staged artifact on the remote")?;
+    if !out.contains("staged") {
+        bail!("staging check failed: {out}");
+    }
+    Ok(format!("{dir}/vibeke"))
+}
+
+/// Switch `current` to the staged version `a` (atomic where `mv -T` exists), link
+/// `~/.local/bin/vibeke`, prune all but the last 2 versions and check the new binary runs.
+pub async fn activate(t: &Target, a: &Artifact) -> Result<()> {
+    check_artifact(a)?;
+    let dir = format!("~/.local/share/vibeke/versions/{}", a.version);
+    let activate = format!(
+        r#"set -e
+V={v}
+cd {d}
+if command -v sha256sum >/dev/null 2>&1; then echo "{sha}  vibeke" | sha256sum -c - >/dev/null
+else echo "{sha}  vibeke" | shasum -a 256 -c - >/dev/null; fi
 cd ~/.local/share/vibeke
 rm -f current.new
 ln -s "versions/$V" current.new
@@ -330,11 +477,7 @@ ls -1t versions | tail -n +3 | while read old; do [ "$old" = "$V" ] || rm -rf "v
     if !out.contains(&a.version) {
         bail!("activation check failed: {out}");
     }
-    Ok(if p.version.is_some() {
-        Outcome::Upgraded
-    } else {
-        Outcome::Installed
-    })
+    Ok(())
 }
 
 #[cfg(test)]
@@ -443,13 +586,78 @@ mod tests {
             trust_artifact(&f, false).is_err(),
             "a signature file alone is not trust"
         );
+        // With no embedded keys (the shipped state today) nothing verifies, even a valid
+        // signature.
+        let sums = d.path().join("SHA256SUMS");
+        let good = crate::minisign::testing::sign(&std::fs::read(&sums).unwrap(), "x");
+        std::fs::write(d.path().join("SHA256SUMS.minisig"), good).unwrap();
         assert_eq!(
-            verify_signature(
-                &d.path().join("SHA256SUMS"),
-                &d.path().join("SHA256SUMS.minisig")
-            ),
+            verify_signature_with(&[], &sums, &d.path().join("SHA256SUMS.minisig")),
             Err(SignatureError::NoTrustedKeys)
         );
+        let prod: Vec<String> = TRUSTED_KEYS.iter().map(|k| k.to_string()).collect();
+        assert!(
+            !prod.contains(&crate::minisign::testing::public_key_b64()),
+            "the test key must never be a release key"
+        );
+    }
+
+    #[test]
+    fn signed_sums_are_trusted_and_tampering_is_not() {
+        let (d, f) = dist(false, true, true);
+        let sums = d.path().join("SHA256SUMS");
+        let sig = crate::minisign::testing::sign(
+            &std::fs::read(&sums).unwrap(),
+            "timestamp:1 file:SHA256SUMS",
+        );
+        std::fs::write(d.path().join("SHA256SUMS.minisig"), &sig).unwrap();
+        assert_eq!(trust_artifact(&f, false).unwrap().1, Trust::Signed);
+        // Editing SHA256SUMS after signing (e.g. to bless another binary) breaks trust.
+        let mut text = std::fs::read_to_string(&sums).unwrap();
+        text.push_str(&format!("{}  extra\n", "ef".repeat(32)));
+        std::fs::write(&sums, text).unwrap();
+        let e = trust_artifact(&f, false).unwrap_err();
+        assert!(format!("{e:#}").contains("does not verify"), "{e:#}");
+        // A signature by another key is refused.
+        let other = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        let forged = crate::minisign::testing::sign_with(
+            &other,
+            *b"someone!",
+            &std::fs::read(&sums).unwrap(),
+            "x",
+        );
+        std::fs::write(d.path().join("SHA256SUMS.minisig"), forged).unwrap();
+        let e = trust_artifact(&f, false).unwrap_err();
+        assert!(format!("{e:#}").contains("untrusted key"), "{e:#}");
+    }
+
+    #[test]
+    fn release_manifest_verification() {
+        let m = ReleaseManifest {
+            version: "0.2.0".into(),
+            artifacts: vec![ManifestArtifact {
+                target: "linux-x86_64".into(),
+                sha256: "ab".repeat(32),
+                url: "https://example.invalid/vibeke-linux-x86_64".into(),
+            }],
+        };
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let sig = crate::minisign::testing::sign(&bytes, "timestamp:1 version:0.2.0");
+        let got = verify_manifest(&bytes, &sig).unwrap();
+        assert_eq!(got, m);
+        assert_eq!(
+            got.artifact("linux-x86_64").unwrap().sha256,
+            "ab".repeat(32)
+        );
+        // Signed for another version: refused (no replay under a new label).
+        let old = crate::minisign::testing::sign(&bytes, "timestamp:1 version:0.1.0");
+        assert!(verify_manifest(&bytes, &old).is_err());
+        // No keys: refused.
+        assert!(verify_manifest_with(&[], &bytes, &sig).is_err());
+        // Tampered manifest: refused.
+        let mut evil = m.clone();
+        evil.artifacts[0].sha256 = "cd".repeat(32);
+        assert!(verify_manifest(&serde_json::to_vec(&evil).unwrap(), &sig).is_err());
     }
 
     #[test]

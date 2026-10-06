@@ -16,6 +16,7 @@ pub mod drafts;
 pub mod fs_api;
 pub mod gateway_api;
 pub mod git_api;
+pub mod inbox;
 pub mod layouts;
 pub mod notify;
 pub mod pane;

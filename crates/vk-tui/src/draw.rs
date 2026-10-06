@@ -320,15 +320,14 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
     let multi = app.machines.len() > 1;
     for (mi, m) in app.machines.iter().enumerate() {
         if multi || !m.connected() {
-            let dot = if m.connected() {
+            // `● devbox 23ms`, `◐ devbox degraded 512ms`, `○ devbox offline · last seen 4m ago`.
+            let (status, degraded) = crate::remote_view::status_suffix(app, mi);
+            let dot = if degraded {
+                ("◐ ", t.yellow)
+            } else if m.connected() {
                 ("● ", t.green)
             } else {
                 ("○ ", t.muted)
-            };
-            let status = if m.connected() {
-                String::new()
-            } else {
-                format!(" {}", m.status)
             };
             rows.push(SideRow {
                 segs: vec![
