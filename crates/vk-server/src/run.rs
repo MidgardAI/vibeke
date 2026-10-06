@@ -337,9 +337,99 @@ fn task_cfg(p: &Value) -> vk_tasks::WorktreeConfig {
     cfg
 }
 
+/// blake3 over the `.vibeke/` tree (relative paths + contents, sorted; logs excluded).
+pub fn vibeke_dir_digest(root: &std::path::Path) -> Option<String> {
+    let dir = root.join(".vibeke");
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut files = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let path = e.path();
+            let ft = e.file_type().ok()?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if !path.extension().is_some_and(|x| x == "log") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut h = blake3::Hasher::new();
+    for f in files {
+        h.update(f.strip_prefix(&dir).ok()?.to_string_lossy().as_bytes());
+        h.update(&[0]);
+        h.update(&std::fs::read(&f).ok()?);
+        h.update(&[0]);
+    }
+    Some(h.finalize().to_hex().to_string())
+}
+
+fn trust_map(server: &Server) -> std::collections::HashMap<String, String> {
+    server.with_core(|c| {
+        c.store
+            .kv_get("security", "repo_trust")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    })
+}
+
+fn repo_trusted(server: &Server, repo: &std::path::Path, digest: &str) -> bool {
+    let key = repo
+        .canonicalize()
+        .unwrap_or_else(|_| repo.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    trust_map(server).get(&key).is_some_and(|d| d == digest)
+}
+
+/// `policy.trust {path}` (full scope only): record the digest of the repo's `.vibeke/` tree and
+/// return what was trusted, including the setup script's content.
+pub fn policy_trust(server: &Server, p: &Value) -> R {
+    let path = std::path::PathBuf::from(s(p, "path").unwrap_or("."));
+    let repo = vk_tasks::repo_root(&path).map(|i| i.root).unwrap_or(path);
+    let repo = repo
+        .canonicalize()
+        .map_err(|e| invalid(format!("{}: {e}", repo.display())))?;
+    let Some(digest) = vibeke_dir_digest(&repo) else {
+        return Err(invalid(format!(
+            "{} has no .vibeke/ directory",
+            repo.display()
+        )));
+    };
+    if let Some(want) = s(p, "digest").filter(|d| *d != digest) {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!(".vibeke/ changed since review (expected {want}, now {digest})"),
+        ));
+    }
+    let mut map = trust_map(server);
+    map.insert(repo.to_string_lossy().into_owned(), digest.clone());
+    let script = std::fs::read_to_string(repo.join(".vibeke/setup.sh")).ok();
+    let mut c = server.core.lock().unwrap();
+    let mut tx = Tx::new();
+    tx.m.kv(
+        "security",
+        "repo_trust",
+        Some(serde_json::to_string(&map).unwrap_or_default()),
+    );
+    tx.event(
+        "policy.repo_trusted",
+        json!({}),
+        json!({"repo": repo, "digest": digest}),
+    );
+    server.commit(&mut c, tx).map_err(internal)?;
+    Ok(json!({"repo": repo, "digest": digest, "setup_script": script}))
+}
+
 pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "task.create" => task_create(server, ctx, p).await,
+        "policy.trust" => policy_trust(server, p),
         "task.list" => Ok(json!({"tasks": server.with_core(|c| c.model.tasks.clone())})),
         "task.get" => {
             let t = match req(p, "task") {
@@ -510,7 +600,27 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let script = checkout
         .path
         .join(s(p, "setup_script").unwrap_or(".vibeke/setup.sh"));
-    if p.get("setup").and_then(Value::as_bool).unwrap_or(true) && script.exists() {
+    // Repo automation runs only after trust (09 §4): (canonical repo path, digest of `.vibeke/`).
+    let digest = vibeke_dir_digest(&checkout.path);
+    let trusted = digest
+        .as_ref()
+        .is_some_and(|d| repo_trusted(server, &info.root, d));
+    let wants_setup = p.get("setup").and_then(Value::as_bool).unwrap_or(true) && script.exists();
+    if wants_setup && !trusted {
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        if let Some(mut t) = c.model.tasks.iter().find(|t| t.id == id).cloned() {
+            t.setup_status = Some("untrusted".into());
+            tx.task(t);
+        }
+        tx.event(
+            "task.setup_untrusted",
+            json!({"task": id}),
+            json!({"repo": info.root, "digest": digest, "script": script, "hint": format!("review {} then run: vibeke policy trust {}", script.display(), info.root.display())}),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
+    if wants_setup && trusted {
         let srv = server.clone();
         let task_id = id.clone();
         let wt = checkout.path.clone();

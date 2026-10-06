@@ -319,6 +319,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "[--repo .] [--agent claude:name] [--base ref] [--root sibling]",
     ),
     ("task", "list", "task.list", &[], ""),
+    (
+        "policy",
+        "trust",
+        "policy.trust",
+        &["path"],
+        "trust a repo's .vibeke/ automation (setup scripts) at its current digest; prints the script",
+    ),
     ("task", "get", "task.get", &["task"], ""),
     (
         "task",

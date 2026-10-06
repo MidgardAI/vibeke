@@ -262,6 +262,9 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         "task.finish",
         "worktree.remove",
         "render.attach",
+        "policy.trust",
+        "integration.install",
+        "integration.uninstall",
     ];
     if FORBIDDEN.contains(&method) {
         if method == "interaction.answer" {
@@ -293,6 +296,25 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         }
         if p.get("focus").and_then(Value::as_bool) == Some(true) {
             return deny("agents can't move the user's focus");
+        }
+        // 09 §5.1 rule 4: no pane-scoped input into a pane with an open interaction.
+        let writes_input = matches!(
+            method,
+            "pane.send_text" | "pane.send_keys" | "pane.send_bytes" | "pane.run"
+        );
+        if writes_input
+            && server.with_core(|c| {
+                c.model
+                    .interactions
+                    .iter()
+                    .any(|i| i.pane == pane.id && i.status == InteractionStatus::Open)
+            })
+        {
+            return Err(err(
+                ErrorKind::PermissionDenied,
+                "input_locked_open_interaction: the pane has an open interaction",
+            )
+            .details(json!({"scope": "pane"})));
         }
     }
     let run_targeted = matches!(
