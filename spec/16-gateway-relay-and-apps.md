@@ -29,7 +29,7 @@ When the gateway proves itself, `vibeke-gateway` and `vibeke-relay` fold into th
 | **G1 relay** | `vibeke-relay`: host registration by key, client→host splice, limits, health, optional static app hosting. **No accounts.** | build now |
 | **G2 gateway** | `vibeke-gateway`: host keys, QR pairing with host confirmation, Noise channel, device registry/revocation, app API, events, Web Push; server additions §7.7 | build now |
 | **G3 PWA** | React PWA with interaction inbox, quick actions, batch approvals, push | build now |
-| G4 desktop | Electron shell over the same packages; local transport | next |
+| **G4 desktop** | §16: Electron app over the shared packages; local transport, menu-bar quick approvals, native notifications, shortcuts, deep links | build now |
 | **G6 share + handoff** | §15: scoped expiring share invitations; turn-boundary handoff via the app between hosts or to a teammate | build now |
 | G5, G7, G8 | accounts/SaaS, zero-knowledge services, direct paths | design notes only (Appendix A) |
 | — | Hosted runners, Slack/Teams integrations | **not built**; design notes only (A.6) |
@@ -589,6 +589,34 @@ Moves an agent's work to another host at a **turn boundary**. The app is the cou
 **Import is hardened against a hostile bundle:** resume arguments are rebuilt locally from the harness and a validated session id (`[A-Za-z0-9_-]{1,128}`), never taken from the manifest; Claude transcripts are written as `<session>.jsonl` under the computed project dir, Codex transcripts only under `sessions/…/*.jsonl`; the manifest cwd must be a relative path inside the worktree; untracked files are created with `create_new` and no symlink in any path component (the patch may have created symlinks); tar entries must be regular files with safe relative paths and bounded total size; manifest text shown to people or agents is stripped of control characters and truncated.
 
 **Move to self:** the same with two of your own paired hosts; the app lists every paired host whose scope is `full` or whose device kind is `handoff` as a destination.
+
+## 16. Desktop app (G4, build now)
+
+`web/apps/desktop` (`@vibeke/desktop`): an Electron shell over `@vibeke/core` + `@vibeke/ui`. It must feel native on macOS first (Linux and Windows build and run; polish follows), and it adds what a phone can't do well.
+
+### 16.1 Shell and platform
+
+- **Main / preload / renderer split.** The renderer is the shared UI with a `Platform` implemented over a narrow preload bridge (`contextBridge`). The main process owns keys, sockets, notifications, tray, shortcuts, deep links, windows and updates. `contextIsolation`, `sandbox`, no `nodeIntegration`, strict CSP, all navigation and `window.open` denied except the bundled app, every IPC handler validates `event.senderFrame` against the app's own origin and validates arguments.
+- **Keys:** device keys and host records encrypted with `safeStorage` in the app's user-data dir (0600); on Linux the `basic_text` backend is refused (the app asks the user to set up a keyring). Atomic get-or-create (§14.1).
+- **Transports:** `RelayTransport` (WebSocket from the main process, so connections survive a closed window) and `LocalTransport` (WebSocket over the gateway's Unix socket `<gateway state dir>/gateway.sock`, same Noise channel, §9.3). "Connect to this Mac" runs `vibeke gateway pair --local` (or the state dir's socket when the CLI isn't on `PATH`) and pairs over the local socket in one click.
+- **Background:** closing the window keeps the app (and its connections) running in the menu bar / tray; quitting is explicit. Optional start at login.
+
+### 16.2 Desktop-native features
+
+- **Menu-bar quick approvals:** a tray/menu-bar icon with the open-interaction count (template icon on macOS, dock badge too) opens a compact popover window: the inbox cards with Allow / Deny / Allow always, batch groups, keyboard navigation, without opening the main window.
+- **Native notifications** from the main process for new interactions and finished agents (privacy level as on the phone, §7.8), grouped per host. Clicking opens the card; on macOS, actions *Approve…* / *Open* (approve still shows a confirm for high/unknown risk; low/medium approve in place with the app's confirm sheet in the popover). Suppressed while the main window is focused. DND respected.
+- **Global shortcut** (default `⌥⌘V`, configurable) toggles the quick-approval popover; in-app **command palette** (`⌘K`): jump to any host/workspace/pane, run actions (new agent, share, hand off, pair, settings).
+- **Keyboard-first:** `j`/`k` move through inbox cards and pane lists, `a` allow, `d` deny, `A` allow always, `Enter` open, `Esc` back, `⌘1–4` switch tabs, `/` find; shown in a `?` cheat sheet.
+- **Multi-window:** pop a pane out into its own window (terminal mirror + composer + keys); window positions persisted.
+- **Deep links:** `vibeke://pair?d=…` (also `https://<app origin>/#/pair?d=…` opened from the OS) routes to the pairing screen; single-instance lock forwards links to the running app.
+- **Native menus:** standard app/edit/view/window menus with accelerators; macOS vibrancy sidebar, traffic-light inset title bar, system accent colour and dark/light following the OS.
+- **Updates:** `electron-updater` wired to a release feed, off unless a feed is configured; code signing / notarization configuration in `electron-builder` with secrets from the environment.
+
+### 16.3 Quality bar
+
+- Cold start to interactive < 1 s on Apple silicon; memory with three hosts connected < 250 MB; no work while hidden beyond open sockets and the event stream.
+- Accessibility: full keyboard reachability, focus rings, VoiceOver labels on all controls, reduced-motion respected.
+- Tests: unit tests for the platform layer (IPC validation, key storage, transports), a Playwright-for-Electron smoke test (launch → pair over the local socket against a real gateway → inbox → approve) and `electron-builder --dir` packaging in CI.
 
 ## Appendix A — Design notes (non-binding)
 
