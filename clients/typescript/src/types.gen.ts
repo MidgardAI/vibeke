@@ -696,6 +696,21 @@ export type AdapterSignalResult = {
   cursor?: Cursor;
 };
 
+export type AgentDriftParams = Record<string, unknown>;
+
+export type AgentDriftResult = {
+  versions: {
+    harness: string;
+    version: string;
+    observations: number;
+    disagreements: number;
+    unknown_resolutions: number;
+    answer_failures: number;
+    rate: number;
+    drifting: boolean;
+  }[];
+};
+
 export type AgentGetParams = {
   target: Target;
 };
@@ -728,6 +743,20 @@ export type AgentInterruptResult = {
   cursor?: Cursor;
 };
 
+export type AgentLimitsParams = Record<string, unknown>;
+
+export type AgentLimitsResult = {
+  limits: {
+    harness: string;
+    scope: string | null;
+    limited: boolean;
+    used_percent: number | null;
+    resets_at_ms: number | null;
+    message: string | null;
+    observed_at_ms: number;
+  }[];
+};
+
 export type AgentListParams = {
   workspace?: Target;
   state?: AgentState[];
@@ -736,6 +765,20 @@ export type AgentListParams = {
 
 export type AgentListResult = {
   runs: AgentRun[];
+};
+
+export type AgentManifestPinParams = {
+  id: string;
+  version?: string;
+  unpin?: boolean;
+};
+
+export type AgentManifestPinResult = {
+  id: string;
+  version?: string;
+  pinned_at_ms?: number;
+  unpinned?: boolean;
+  cursor?: Cursor;
 };
 
 export type AgentManifestsParams = Record<string, unknown>;
@@ -755,6 +798,22 @@ export type AgentManifestsResult = {
     warnings: string[];
   }[];
   warnings: string[];
+};
+
+export type AgentManifestsCheckParams = {
+  url?: string;
+};
+
+export type AgentManifestsCheckResult = {
+  serial: number;
+  applied: string[];
+  skipped?: string[];
+  unsigned?: boolean;
+  warnings?: string[];
+  announced?: number;
+  unchanged?: boolean;
+  index_serial?: number;
+  cursor?: Cursor;
 };
 
 export type AgentManifestsReloadParams = Record<string, unknown>;
@@ -893,6 +952,42 @@ export type AgentStartParams = {
 export type AgentStartResult = {
   run: AgentRun;
   cursor?: Cursor;
+};
+
+export type AgentTurnUsageParams = {
+  run?: Target;
+  target?: Target;
+  limit?: number;
+};
+
+export type AgentTurnUsageResult = {
+  run: string;
+  turns: {
+    id: string;
+    run: string;
+    harness: string;
+    n: number;
+    native_id: string;
+    model: string | null;
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    cost_usd: number | null;
+    cost_source: string;
+    stop: string | null;
+    ended_at_ms: number | null;
+    source: string;
+  }[];
+  turn_count: number;
+  totals: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    cost_usd: number | null;
+  };
+  usage: unknown;
 };
 
 export type AgentWaitParams = {
@@ -3650,6 +3745,35 @@ export type PolicyRemoveResult = {
   cursor?: Cursor;
 };
 
+export type PolicySuggestParams = {
+  min_count?: number;
+  max_denials?: number;
+  limit?: number;
+  harness?: string;
+  include_covered?: boolean;
+};
+
+export type PolicySuggestResult = {
+  suggestions: {
+    fingerprint: string;
+    harness: string;
+    tool: string;
+    subject: string;
+    workspace: string;
+    approvals: number;
+    denials: number;
+    last_at_ms: number;
+    risk: "low" | "medium" | "high" | "unknown";
+    rule: Record<string, unknown> | null;
+    toml: string | null;
+    blocked: string | null;
+    covered: boolean;
+  }[];
+  min_count: number;
+  max_denials: number;
+  samples: number;
+};
+
 export type PolicyTestParams = {
   action: {
     tool: string;
@@ -5420,11 +5544,15 @@ export interface Methods {
   "adapter.gate": { params: AdapterGateParams; result: AdapterGateResult };
   "adapter.report_self": { params: AdapterReportSelfParams; result: AdapterReportSelfResult };
   "adapter.signal": { params: AdapterSignalParams; result: AdapterSignalResult };
+  "agent.drift": { params: AgentDriftParams; result: AgentDriftResult };
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   "agent.harnesses": { params: AgentHarnessesParams; result: AgentHarnessesResult };
   "agent.interrupt": { params: AgentInterruptParams; result: AgentInterruptResult };
+  "agent.limits": { params: AgentLimitsParams; result: AgentLimitsResult };
   "agent.list": { params: AgentListParams; result: AgentListResult };
+  "agent.manifest_pin": { params: AgentManifestPinParams; result: AgentManifestPinResult };
   "agent.manifests": { params: AgentManifestsParams; result: AgentManifestsResult };
+  "agent.manifests_check": { params: AgentManifestsCheckParams; result: AgentManifestsCheckResult };
   "agent.manifests_reload": { params: AgentManifestsReloadParams; result: AgentManifestsReloadResult };
   "agent.prompt": { params: AgentPromptParams; result: AgentPromptResult };
   "agent.read": { params: AgentReadParams; result: AgentReadResult };
@@ -5436,6 +5564,7 @@ export interface Methods {
   "agent.send_keys": { params: AgentSendKeysParams; result: AgentSendKeysResult };
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
+  "agent.turn_usage": { params: AgentTurnUsageParams; result: AgentTurnUsageResult };
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
   "api.methods": { params: ApiMethodsParams; result: ApiMethodsResult };
   "api.schema": { params: ApiSchemaParams; result: ApiSchemaResult };
@@ -5605,6 +5734,7 @@ export interface Methods {
   "policy.add": { params: PolicyAddParams; result: PolicyAddResult };
   "policy.list": { params: PolicyListParams; result: PolicyListResult };
   "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
+  "policy.suggest": { params: PolicySuggestParams; result: PolicySuggestResult };
   "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
   "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
@@ -5724,11 +5854,15 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "adapter.gate": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.report_self": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.signal": { mutating: true, scope: "pane", paneScope: "open" },
+  "agent.drift": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.get": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.interrupt": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.limits": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.manifest_pin": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.manifests_check": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.read": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5740,6 +5874,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
   "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5909,6 +6044,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.suggest": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
@@ -6030,6 +6166,7 @@ export type AdapterDisagreementData = {
   facet: string;
   structured: string;
   other: string;
+  source?: string;
 };
 
 export type AdapterHealthChangedSubject = {
@@ -6040,6 +6177,17 @@ export type AdapterHealthChangedData = {
   to: string;
   from?: string;
   transport?: string;
+  reason?: string;
+};
+
+export type AgentCwdChangedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentCwdChangedData = {
+  cwd: string;
+  old_cwd: string | null;
 };
 
 export type AgentDetectedSubject = {
@@ -6051,6 +6199,21 @@ export type AgentDetectedData = {
   harness: string;
   via: string;
   argv0?: string | null;
+};
+
+export type AgentDriftDetectedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentDriftDetectedData = {
+  harness: string;
+  version: string;
+  observations: number;
+  disagreements: number;
+  unknown_resolutions: number;
+  answer_failures: number;
+  rate: number;
 };
 
 export type AgentExitedSubject = {
@@ -6163,6 +6326,7 @@ export type AgentStateChangedData = {
   to: string;
   source?: string;
   confidence?: number;
+  inferred?: boolean;
 };
 
 export type AgentSubagentFinishedSubject = {
@@ -6185,6 +6349,18 @@ export type AgentSubagentStartedData = {
   agent_type: string;
 };
 
+export type AgentToolBlockedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentToolBlockedData = {
+  tool: string;
+  effect: string;
+  rule: string | null;
+  command: string | null;
+};
+
 export type AgentTurnCompletedSubject = {
   run: string;
   pane: string;
@@ -6201,6 +6377,24 @@ export type AgentTurnStartedSubject = {
 };
 
 export type AgentTurnStartedData = unknown;
+
+export type AgentTurnUsageSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentTurnUsageData = {
+  turn: number;
+  native_id: string;
+  model: string | null;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
+  cost_source: string;
+  source: string;
+};
 
 export type AgentUsageSubject = {
   run: string;
@@ -6558,6 +6752,18 @@ export type GroupRenamedSubject = {
 
 export type GroupRenamedData = {
   name: string;
+};
+
+export type HarnessManifestLoadedSubject = {
+  manifest: string;
+};
+
+export type HarnessManifestLoadedData = {
+  id: string;
+  version: string;
+  source: string;
+  serial: number;
+  verified: string;
 };
 
 export type IntegrationTamperedSubject = {
@@ -7852,7 +8058,9 @@ export type WorktreeRemovedData = {
 export interface EventMap {
   "adapter.disagreement": { subject: AdapterDisagreementSubject; data: AdapterDisagreementData };
   "adapter.health_changed": { subject: AdapterHealthChangedSubject; data: AdapterHealthChangedData };
+  "agent.cwd_changed": { subject: AgentCwdChangedSubject; data: AgentCwdChangedData };
   "agent.detected": { subject: AgentDetectedSubject; data: AgentDetectedData };
+  "agent.drift_detected": { subject: AgentDriftDetectedSubject; data: AgentDriftDetectedData };
   "agent.exited": { subject: AgentExitedSubject; data: AgentExitedData };
   "agent.file_changed": { subject: AgentFileChangedSubject; data: AgentFileChangedData };
   "agent.harness_version_unvalidated": { subject: AgentHarnessVersionUnvalidatedSubject; data: AgentHarnessVersionUnvalidatedData };
@@ -7866,8 +8074,10 @@ export interface EventMap {
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
   "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
   "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
+  "agent.tool_blocked": { subject: AgentToolBlockedSubject; data: AgentToolBlockedData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
+  "agent.turn_usage": { subject: AgentTurnUsageSubject; data: AgentTurnUsageData };
   "agent.usage": { subject: AgentUsageSubject; data: AgentUsageData };
   "assistant.consent_granted": { subject: AssistantConsentGrantedSubject; data: AssistantConsentGrantedData };
   "assistant.consent_revoked": { subject: AssistantConsentRevokedSubject; data: AssistantConsentRevokedData };
@@ -7909,6 +8119,7 @@ export interface EventMap {
   "group.created": { subject: GroupCreatedSubject; data: GroupCreatedData };
   "group.moved": { subject: GroupMovedSubject; data: GroupMovedData };
   "group.renamed": { subject: GroupRenamedSubject; data: GroupRenamedData };
+  "harness.manifest_loaded": { subject: HarnessManifestLoadedSubject; data: HarnessManifestLoadedData };
   "integration.tampered": { subject: IntegrationTamperedSubject; data: IntegrationTamperedData };
   "interaction.cancelled": { subject: InteractionCancelledSubject; data: InteractionCancelledData };
   "interaction.decided": { subject: InteractionDecidedSubject; data: InteractionDecidedData };

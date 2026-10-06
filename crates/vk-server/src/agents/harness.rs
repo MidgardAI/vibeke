@@ -592,7 +592,7 @@ fn elicitation_interaction(p: &Value) -> Interaction {
         .unwrap_or_else(|| {
             format!(
                 "{ELICIT_PREFIX}{}",
-                blake3::hash(format!("{server}\n{message}").as_bytes()).to_hex()[..16].to_string()
+                &blake3::hash(format!("{server}\n{message}").as_bytes()).to_hex()[..16]
             )
         });
     let mut it = blank_interaction(

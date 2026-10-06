@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 298,
+  "method_count": 304,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -67,6 +67,20 @@
       "result": "{}"
     },
     {
+      "name": "agent.drift",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{versions: [{harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number, drifting: bool}]}"
+    },
+    {
       "name": "agent.get",
       "mutating": false,
       "scope": "pane",
@@ -109,6 +123,20 @@
       "result": "{run: AgentRun}"
     },
     {
+      "name": "agent.limits",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{limits: [{harness: string, scope: string|null, limited: bool, used_percent: number|null, resets_at_ms: int|null, message: string|null, observed_at_ms: int}]}"
+    },
+    {
       "name": "agent.list",
       "mutating": false,
       "scope": "pane",
@@ -123,6 +151,20 @@
       "result": "{runs: [AgentRun]}"
     },
     {
+      "name": "agent.manifest_pin",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, version?: string, unpin?: bool = false}",
+      "result": "{id: string, version?: string, pinned_at_ms?: int, unpinned?: bool}"
+    },
+    {
       "name": "agent.manifests",
       "mutating": false,
       "scope": "pane",
@@ -135,6 +177,20 @@
       "spec": null,
       "params": "{}",
       "result": "{manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}], warnings: [string]}"
+    },
+    {
+      "name": "agent.manifests_check",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{url?: string}",
+      "result": "{serial: int, applied: [string], skipped?: [string], unsigned?: bool, warnings?: [string], announced?: int, unchanged?: bool, index_serial?: int}"
     },
     {
       "name": "agent.manifests_reload",
@@ -289,6 +345,20 @@
       "spec": "`{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise). Returns once the adapter (or detector) reports `idle`",
       "params": "{pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000}",
       "result": "{run: AgentRun}"
+    },
+    {
+      "name": "agent.turn_usage",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: Target, target?: Target, limit?: int = 200}",
+      "result": "{run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}"
     },
     {
       "name": "agent.wait",
@@ -2662,6 +2732,20 @@
       "spec": "`{rule_id}` → `{}`",
       "params": "{rule_id: string}",
       "result": "{removed: bool, rule: PolicyRuleInfo}"
+    },
+    {
+      "name": "policy.suggest",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{min_count?: int = 3, max_denials?: int = 0, limit?: int = 50, harness?: string, include_covered?: bool = false}",
+      "result": "{suggestions: [{fingerprint: string, harness: string, tool: string, subject: string, workspace: string, approvals: int, denials: int, last_at_ms: int, risk: low|medium|high|unknown, rule: object|null, toml: string|null, blocked: string|null, covered: bool}], min_count: int, max_denials: int, samples: int}"
     },
     {
       "name": "policy.test",

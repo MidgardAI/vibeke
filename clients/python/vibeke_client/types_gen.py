@@ -727,6 +727,23 @@ AdapterSignalResult = TypedDict("AdapterSignalResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentDriftParams: TypeAlias = Dict[str, Any]
+
+AgentDriftResultVersionsItem = TypedDict("AgentDriftResultVersionsItem", {
+    "harness": str,
+    "version": str,
+    "observations": int,
+    "disagreements": int,
+    "unknown_resolutions": int,
+    "answer_failures": int,
+    "rate": float,
+    "drifting": bool,
+})
+
+AgentDriftResult = TypedDict("AgentDriftResult", {
+    "versions": List["AgentDriftResultVersionsItem"],
+})
+
 AgentGetParams = TypedDict("AgentGetParams", {
     "target": "Target",
 })
@@ -761,6 +778,22 @@ AgentInterruptResult = TypedDict("AgentInterruptResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentLimitsParams: TypeAlias = Dict[str, Any]
+
+AgentLimitsResultLimitsItem = TypedDict("AgentLimitsResultLimitsItem", {
+    "harness": str,
+    "scope": Optional[str],
+    "limited": bool,
+    "used_percent": Optional[float],
+    "resets_at_ms": Optional[int],
+    "message": Optional[str],
+    "observed_at_ms": int,
+})
+
+AgentLimitsResult = TypedDict("AgentLimitsResult", {
+    "limits": List["AgentLimitsResultLimitsItem"],
+})
+
 AgentListParams = TypedDict("AgentListParams", {
     "workspace": NotRequired["Target"],
     "state": NotRequired[List["AgentState"]],
@@ -769,6 +802,20 @@ AgentListParams = TypedDict("AgentListParams", {
 
 AgentListResult = TypedDict("AgentListResult", {
     "runs": List["AgentRun"],
+})
+
+AgentManifestPinParams = TypedDict("AgentManifestPinParams", {
+    "id": str,
+    "version": NotRequired[str],
+    "unpin": NotRequired[bool],
+})
+
+AgentManifestPinResult = TypedDict("AgentManifestPinResult", {
+    "id": str,
+    "version": NotRequired[str],
+    "pinned_at_ms": NotRequired[int],
+    "unpinned": NotRequired[bool],
+    "cursor": NotRequired["Cursor"],
 })
 
 AgentManifestsParams: TypeAlias = Dict[str, Any]
@@ -790,6 +837,22 @@ AgentManifestsResultManifestsItem = TypedDict("AgentManifestsResultManifestsItem
 AgentManifestsResult = TypedDict("AgentManifestsResult", {
     "manifests": List["AgentManifestsResultManifestsItem"],
     "warnings": List[str],
+})
+
+AgentManifestsCheckParams = TypedDict("AgentManifestsCheckParams", {
+    "url": NotRequired[str],
+})
+
+AgentManifestsCheckResult = TypedDict("AgentManifestsCheckResult", {
+    "serial": int,
+    "applied": List[str],
+    "skipped": NotRequired[List[str]],
+    "unsigned": NotRequired[bool],
+    "warnings": NotRequired[List[str]],
+    "announced": NotRequired[int],
+    "unchanged": NotRequired[bool],
+    "index_serial": NotRequired[int],
+    "cursor": NotRequired["Cursor"],
 })
 
 AgentManifestsReloadParams: TypeAlias = Dict[str, Any]
@@ -930,6 +993,46 @@ AgentStartParams = TypedDict("AgentStartParams", {
 AgentStartResult = TypedDict("AgentStartResult", {
     "run": "AgentRun",
     "cursor": NotRequired["Cursor"],
+})
+
+AgentTurnUsageParams = TypedDict("AgentTurnUsageParams", {
+    "run": NotRequired["Target"],
+    "target": NotRequired["Target"],
+    "limit": NotRequired[int],
+})
+
+AgentTurnUsageResultTurnsItem = TypedDict("AgentTurnUsageResultTurnsItem", {
+    "id": str,
+    "run": str,
+    "harness": str,
+    "n": int,
+    "native_id": str,
+    "model": Optional[str],
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+    "cost_source": str,
+    "stop": Optional[str],
+    "ended_at_ms": Optional[int],
+    "source": str,
+})
+
+AgentTurnUsageResultTotals = TypedDict("AgentTurnUsageResultTotals", {
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+})
+
+AgentTurnUsageResult = TypedDict("AgentTurnUsageResult", {
+    "run": str,
+    "turns": List["AgentTurnUsageResultTurnsItem"],
+    "turn_count": int,
+    "totals": "AgentTurnUsageResultTotals",
+    "usage": Any,
 })
 
 AgentWaitParams = TypedDict("AgentWaitParams", {
@@ -3921,6 +4024,37 @@ PolicyRemoveResult = TypedDict("PolicyRemoveResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PolicySuggestParams = TypedDict("PolicySuggestParams", {
+    "min_count": NotRequired[int],
+    "max_denials": NotRequired[int],
+    "limit": NotRequired[int],
+    "harness": NotRequired[str],
+    "include_covered": NotRequired[bool],
+})
+
+PolicySuggestResultSuggestionsItem = TypedDict("PolicySuggestResultSuggestionsItem", {
+    "fingerprint": str,
+    "harness": str,
+    "tool": str,
+    "subject": str,
+    "workspace": str,
+    "approvals": int,
+    "denials": int,
+    "last_at_ms": int,
+    "risk": Literal["low", "medium", "high", "unknown"],
+    "rule": Optional[Dict[str, Any]],
+    "toml": Optional[str],
+    "blocked": Optional[str],
+    "covered": bool,
+})
+
+PolicySuggestResult = TypedDict("PolicySuggestResult", {
+    "suggestions": List["PolicySuggestResultSuggestionsItem"],
+    "min_count": int,
+    "max_denials": int,
+    "samples": int,
+})
+
 PolicyTestParamsAction = TypedDict("PolicyTestParamsAction", {
     "tool": str,
     "command": NotRequired[str],
@@ -5849,11 +5983,15 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "adapter.gate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.report_self": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.signal": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "agent.drift": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.interrupt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.limits": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.manifest_pin": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.manifests_check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -5865,6 +6003,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6034,6 +6173,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.suggest": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -6155,6 +6295,7 @@ AdapterDisagreementData = TypedDict("AdapterDisagreementData", {
     "facet": str,
     "structured": str,
     "other": str,
+    "source": NotRequired[str],
 })
 
 AdapterHealthChangedSubject = TypedDict("AdapterHealthChangedSubject", {
@@ -6165,6 +6306,17 @@ AdapterHealthChangedData = TypedDict("AdapterHealthChangedData", {
     "to": str,
     "from": NotRequired[str],
     "transport": NotRequired[str],
+    "reason": NotRequired[str],
+})
+
+AgentCwdChangedSubject = TypedDict("AgentCwdChangedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentCwdChangedData = TypedDict("AgentCwdChangedData", {
+    "cwd": str,
+    "old_cwd": Optional[str],
 })
 
 AgentDetectedSubject = TypedDict("AgentDetectedSubject", {
@@ -6176,6 +6328,21 @@ AgentDetectedData = TypedDict("AgentDetectedData", {
     "harness": str,
     "via": str,
     "argv0": NotRequired[Optional[str]],
+})
+
+AgentDriftDetectedSubject = TypedDict("AgentDriftDetectedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentDriftDetectedData = TypedDict("AgentDriftDetectedData", {
+    "harness": str,
+    "version": str,
+    "observations": int,
+    "disagreements": int,
+    "unknown_resolutions": int,
+    "answer_failures": int,
+    "rate": float,
 })
 
 AgentExitedSubject = TypedDict("AgentExitedSubject", {
@@ -6288,6 +6455,7 @@ AgentStateChangedData = TypedDict("AgentStateChangedData", {
     "to": str,
     "source": NotRequired[str],
     "confidence": NotRequired[float],
+    "inferred": NotRequired[bool],
 })
 
 AgentSubagentFinishedSubject = TypedDict("AgentSubagentFinishedSubject", {
@@ -6310,6 +6478,18 @@ AgentSubagentStartedData = TypedDict("AgentSubagentStartedData", {
     "agent_type": str,
 })
 
+AgentToolBlockedSubject = TypedDict("AgentToolBlockedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentToolBlockedData = TypedDict("AgentToolBlockedData", {
+    "tool": str,
+    "effect": str,
+    "rule": Optional[str],
+    "command": Optional[str],
+})
+
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {
     "run": str,
     "pane": str,
@@ -6326,6 +6506,24 @@ AgentTurnStartedSubject = TypedDict("AgentTurnStartedSubject", {
 })
 
 AgentTurnStartedData: TypeAlias = Any
+
+AgentTurnUsageSubject = TypedDict("AgentTurnUsageSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentTurnUsageData = TypedDict("AgentTurnUsageData", {
+    "turn": int,
+    "native_id": str,
+    "model": Optional[str],
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+    "cost_source": str,
+    "source": str,
+})
 
 AgentUsageSubject = TypedDict("AgentUsageSubject", {
     "run": str,
@@ -6685,6 +6883,18 @@ GroupRenamedSubject = TypedDict("GroupRenamedSubject", {
 
 GroupRenamedData = TypedDict("GroupRenamedData", {
     "name": str,
+})
+
+HarnessManifestLoadedSubject = TypedDict("HarnessManifestLoadedSubject", {
+    "manifest": str,
+})
+
+HarnessManifestLoadedData = TypedDict("HarnessManifestLoadedData", {
+    "id": str,
+    "version": str,
+    "source": str,
+    "serial": int,
+    "verified": str,
 })
 
 IntegrationTamperedSubject = TypedDict("IntegrationTamperedSubject", {
@@ -7987,7 +8197,9 @@ WorktreeRemovedData = TypedDict("WorktreeRemovedData", {
 EVENT_TYPES = (
     "adapter.disagreement",
     "adapter.health_changed",
+    "agent.cwd_changed",
     "agent.detected",
+    "agent.drift_detected",
     "agent.exited",
     "agent.file_changed",
     "agent.harness_version_unvalidated",
@@ -8001,8 +8213,10 @@ EVENT_TYPES = (
     "agent.state_changed",
     "agent.subagent_finished",
     "agent.subagent_started",
+    "agent.tool_blocked",
     "agent.turn_completed",
     "agent.turn_started",
+    "agent.turn_usage",
     "agent.usage",
     "assistant.consent_granted",
     "assistant.consent_revoked",
@@ -8044,6 +8258,7 @@ EVENT_TYPES = (
     "group.created",
     "group.moved",
     "group.renamed",
+    "harness.manifest_loaded",
     "integration.tampered",
     "interaction.cancelled",
     "interaction.decided",

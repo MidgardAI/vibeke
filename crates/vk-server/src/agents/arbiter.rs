@@ -324,7 +324,7 @@ pub fn note(server: &Server, run: &AgentRun, kind: Kind) {
         if spike {
             e.notified = true;
         }
-        let persist = (spike || e.observations % 10 == 0 || kind != Kind::Observation)
+        let persist = (spike || e.observations.is_multiple_of(10) || kind != Kind::Observation)
             .then(|| serde_json::to_string(e).unwrap_or_default());
         (spike.then(|| e.clone()), persist)
     };

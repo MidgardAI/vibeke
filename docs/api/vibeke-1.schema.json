@@ -3220,6 +3220,64 @@
         }
       }
     },
+    "agent.drift": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "harness": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "observations": {
+                  "type": "integer"
+                },
+                "disagreements": {
+                  "type": "integer"
+                },
+                "unknown_resolutions": {
+                  "type": "integer"
+                },
+                "answer_failures": {
+                  "type": "integer"
+                },
+                "rate": {
+                  "type": "number"
+                },
+                "drifting": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "harness",
+                "version",
+                "observations",
+                "disagreements",
+                "unknown_resolutions",
+                "answer_failures",
+                "rate",
+                "drifting"
+              ]
+            }
+          }
+        },
+        "required": [
+          "versions"
+        ]
+      }
+    },
     "agent.get": {
       "mutating": false,
       "scope": "pane",
@@ -3341,6 +3399,88 @@
         ]
       }
     },
+    "agent.limits": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "limits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "harness": {
+                  "type": "string"
+                },
+                "scope": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limited": {
+                  "type": "boolean"
+                },
+                "used_percent": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "resets_at_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "observed_at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "harness",
+                "scope",
+                "limited",
+                "used_percent",
+                "resets_at_ms",
+                "message",
+                "observed_at_ms"
+              ]
+            }
+          }
+        },
+        "required": [
+          "limits"
+        ]
+      }
+    },
     "agent.list": {
       "mutating": false,
       "scope": "pane",
@@ -3374,6 +3514,52 @@
         },
         "required": [
           "runs"
+        ]
+      }
+    },
+    "agent.manifest_pin": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "unpin": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "pinned_at_ms": {
+            "type": "integer"
+          },
+          "unpinned": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "id"
         ]
       }
     },
@@ -3451,6 +3637,64 @@
         "required": [
           "manifests",
           "warnings"
+        ]
+      }
+    },
+    "agent.manifests_check": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "serial": {
+            "type": "integer"
+          },
+          "applied": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unsigned": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "announced": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "boolean"
+          },
+          "index_serial": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "serial",
+          "applied"
         ]
       }
     },
@@ -3957,6 +4201,177 @@
         },
         "required": [
           "run"
+        ]
+      }
+    },
+    "agent.turn_usage": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "target": {
+            "$ref": "#/$defs/Target"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 200
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "run": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "n": {
+                  "type": "integer"
+                },
+                "native_id": {
+                  "type": "string"
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "input": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "integer"
+                },
+                "cache_read": {
+                  "type": "integer"
+                },
+                "cache_write": {
+                  "type": "integer"
+                },
+                "cost_usd": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "cost_source": {
+                  "type": "string"
+                },
+                "stop": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ended_at_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "run",
+                "harness",
+                "n",
+                "native_id",
+                "model",
+                "input",
+                "output",
+                "cache_read",
+                "cache_write",
+                "cost_usd",
+                "cost_source",
+                "stop",
+                "ended_at_ms",
+                "source"
+              ]
+            }
+          },
+          "turn_count": {
+            "type": "integer"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "integer"
+              },
+              "output": {
+                "type": "integer"
+              },
+              "cache_read": {
+                "type": "integer"
+              },
+              "cache_write": {
+                "type": "integer"
+              },
+              "cost_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "input",
+              "output",
+              "cache_read",
+              "cache_write",
+              "cost_usd"
+            ]
+          },
+          "usage": {}
+        },
+        "required": [
+          "run",
+          "turns",
+          "turn_count",
+          "totals",
+          "usage"
         ]
       }
     },
@@ -14691,6 +15106,144 @@
         ]
       }
     },
+    "policy.suggest": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "min_count": {
+            "type": "integer",
+            "default": 3
+          },
+          "max_denials": {
+            "type": "integer",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50
+          },
+          "harness": {
+            "type": "string"
+          },
+          "include_covered": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "fingerprint": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "workspace": {
+                  "type": "string"
+                },
+                "approvals": {
+                  "type": "integer"
+                },
+                "denials": {
+                  "type": "integer"
+                },
+                "last_at_ms": {
+                  "type": "integer"
+                },
+                "risk": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "unknown"
+                  ]
+                },
+                "rule": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "toml": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "blocked": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "covered": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "fingerprint",
+                "harness",
+                "tool",
+                "subject",
+                "workspace",
+                "approvals",
+                "denials",
+                "last_at_ms",
+                "risk",
+                "rule",
+                "toml",
+                "blocked",
+                "covered"
+              ]
+            }
+          },
+          "min_count": {
+            "type": "integer"
+          },
+          "max_denials": {
+            "type": "integer"
+          },
+          "samples": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "suggestions",
+          "min_count",
+          "max_denials",
+          "samples"
+        ]
+      }
+    },
     "policy.test": {
       "mutating": false,
       "scope": "full",
@@ -21783,6 +22336,9 @@
           },
           "other": {
             "type": "string"
+          },
+          "source": {
+            "type": "string"
           }
         },
         "required": [
@@ -21815,10 +22371,52 @@
           },
           "transport": {
             "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
           "to"
+        ]
+      }
+    },
+    "agent.cwd_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "old_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cwd",
+          "old_cwd"
         ]
       }
     },
@@ -21861,6 +22459,58 @@
         "required": [
           "harness",
           "via"
+        ]
+      }
+    },
+    "agent.drift_detected": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "observations": {
+            "type": "integer"
+          },
+          "disagreements": {
+            "type": "integer"
+          },
+          "unknown_resolutions": {
+            "type": "integer"
+          },
+          "answer_failures": {
+            "type": "integer"
+          },
+          "rate": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "harness",
+          "version",
+          "observations",
+          "disagreements",
+          "unknown_resolutions",
+          "answer_failures",
+          "rate"
         ]
       }
     },
@@ -22233,6 +22883,9 @@
           },
           "confidence": {
             "type": "number"
+          },
+          "inferred": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -22319,6 +22972,60 @@
         ]
       }
     },
+    "agent.tool_blocked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "effect",
+          "rule",
+          "command"
+        ]
+      }
+    },
     "agent.turn_completed": {
       "subject": {
         "type": "object",
@@ -22360,6 +23067,84 @@
         ]
       },
       "data": {}
+    },
+    "agent.turn_usage": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "integer"
+          },
+          "native_id": {
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          },
+          "cache_read": {
+            "type": "integer"
+          },
+          "cache_write": {
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_source": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn",
+          "native_id",
+          "model",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "cost_usd",
+          "cost_source",
+          "source"
+        ]
+      }
     },
     "agent.usage": {
       "subject": {
@@ -23453,6 +24238,46 @@
         },
         "required": [
           "name"
+        ]
+      }
+    },
+    "harness.manifest_loaded": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "manifest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "serial": {
+            "type": "integer"
+          },
+          "verified": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "source",
+          "serial",
+          "verified"
         ]
       }
     },
