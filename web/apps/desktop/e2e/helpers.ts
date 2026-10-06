@@ -104,8 +104,6 @@ export class TestHost {
       CLAUDE_CONFIG_DIR: join(home, '.claude'),
       CODEX_HOME: join(home, '.codex'),
       TMPDIR: d('tmp'),
-      // Debug builds can need deeper worker stacks than the 2 MiB default (git.status dispatch).
-      RUST_MIN_STACK: process.env.RUST_MIN_STACK ?? String(16 * 1024 * 1024),
     };
   }
 

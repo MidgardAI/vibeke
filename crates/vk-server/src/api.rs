@@ -419,10 +419,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::agent_browser::api(server, ctx, method, p).await {
         return r;
     }
-    if let Some(r) = crate::git_api::api(server, ctx, method, p).await {
+    // Boxed: these futures are large and would overflow a worker stack in debug builds.
+    if let Some(r) = Box::pin(crate::git_api::api(server, ctx, method, p)).await {
         return r;
     }
-    if let Some(r) = crate::fs_api::api(server, ctx, method, p).await {
+    // Boxed: these futures are large and would overflow a worker stack in debug builds.
+    if let Some(r) = Box::pin(crate::fs_api::api(server, ctx, method, p)).await {
         return r;
     }
     if let Some(r) = crate::desk::api(server, ctx, method, p).await {
