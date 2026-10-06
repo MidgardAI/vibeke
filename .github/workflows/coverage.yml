@@ -5,8 +5,7 @@ name: coverage
 # repository variable COVERAGE_ENFORCE is "true", so the gate can be switched on once the
 # numbers are there.
 on:
-  push:
-    branches: [main]
+  # Nightly only: pushes run just the `ci` workflow (speed, Actions minutes).
   schedule:
     - cron: "11 5 * * *"
   workflow_dispatch:

@@ -4,26 +4,7 @@ name: repro
 # --remap-path-prefix and --locked, and the sha256 digests must match (scripts/repro-check.sh).
 # ci.yml only runs the script's stubbed self-test; this runs the real thing. Publishes nothing.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "mise.toml"
-      - "scripts/repro-check.sh"
-      - "scripts/dist.sh"
-      - "**/build.rs"
-      - ".cargo/**"
-      - ".github/workflows/repro.yml"
-  pull_request:
-    paths:
-      - "Cargo.lock"
-      - "mise.toml"
-      - "scripts/repro-check.sh"
-      - "scripts/dist.sh"
-      - "**/build.rs"
-      - ".cargo/**"
-      - ".github/workflows/repro.yml"
+  # Nightly only: pushes run just the `ci` workflow (speed, Actions minutes).
   schedule:
     - cron: "37 1 * * *"
   workflow_dispatch:
