@@ -297,6 +297,15 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
         "attention.update",
         "integration.install",
         "integration.uninstall",
+        // Research R2/R3: agents can keep drafts/notes in their own workspace and search its
+        // desk, but sending, resuming, focusing and purging are user actions.
+        "draft.send",
+        "draft.reconcile",
+        "desk.open",
+        "desk.resume",
+        "desk.forget",
+        "desk.index",
+        "desk.status",
     ];
     if FORBIDDEN.contains(&method) {
         if method == "interaction.answer" {
@@ -404,6 +413,12 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
     if let Some(r) = crate::git_api::api(server, ctx, method, p).await {
         return r;
     }
+    if let Some(r) = crate::desk::api(server, ctx, method, p).await {
+        return r;
+    }
+    if let Some(r) = crate::drafts::api(server, ctx, method, p).await {
+        return r;
+    }
     match method {
         "client.hello" => Ok(json!({
             "server_version": vk_proto::VERSION,
@@ -434,6 +449,8 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                     .chain(crate::browser_pane::METHODS)
                     .chain(crate::parity::METHODS)
                     .chain(crate::screenshots::METHODS)
+                    .chain(crate::desk::METHODS)
+                    .chain(crate::drafts::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

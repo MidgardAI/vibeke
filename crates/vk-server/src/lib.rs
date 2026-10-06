@@ -8,6 +8,8 @@ pub mod agents;
 pub mod api;
 pub mod browser_pane;
 pub mod core;
+pub mod desk;
+pub mod drafts;
 pub mod gateway_api;
 pub mod git_api;
 pub mod layouts;
@@ -109,6 +111,10 @@ pub struct Server {
     pub notifier: notify::State,
     /// Host appearance reports and the effective theme (08 §11 `[theme]`).
     pub theme: theme::State,
+    /// Session desk conversation index (research R2).
+    pub desk: desk::State,
+    /// Drafts composer in-flight sends (research R3).
+    pub drafts: drafts::State,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -184,6 +190,8 @@ impl Server {
             browser: browser_pane::Host::default(),
             notifier: notify::State::default(),
             theme: theme::State::default(),
+            desk: Default::default(),
+            drafts: Default::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),

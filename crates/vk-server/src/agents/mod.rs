@@ -2090,6 +2090,12 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
     let run: AgentRun = server
         .with_core(|c| c.store.find::<AgentRun>("run", run_id).ok().flatten())
         .ok_or_else(|| not_found("run", run_id))?;
+    resume_from(server, run, pane).await
+}
+
+/// Resume a native session described by `run` (a stored run, or a template the session desk
+/// builds from an indexed transcript: harness, session id, resume argv, cwd).
+pub(crate) async fn resume_from(server: &Arc<Server>, run: AgentRun, pane: Option<String>) -> R {
     if run.resume_argv.is_empty() {
         return Err(err(ErrorKind::Unsupported, "no resume handle for this run"));
     }

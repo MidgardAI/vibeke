@@ -7,6 +7,7 @@
 //! migrations additive while the model is young.
 
 pub mod archive;
+pub mod conv;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};

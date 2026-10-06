@@ -101,6 +101,7 @@ pub const EXTERNAL_SECTIONS: &[&str] = &[
     "screenshots",
     "security",
     "plugins",
+    "desk",
 ];
 
 const BUILTIN_SEGMENTS: &[&str] = &[

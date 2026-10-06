@@ -59,6 +59,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::agents::start(&server);
     crate::preview::start(&server);
     crate::screenshots::start(&server);
+    crate::desk::start(&server);
     crate::sandbox::restore(&server).await;
     let sd = server.clone();
     tokio::spawn(async move {
