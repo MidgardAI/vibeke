@@ -313,6 +313,7 @@ const TERMINAL: &str = "terminal";
 const REMOTE: &str = "remote";
 const TOPOLOGY: &str = "topology";
 const ISOLATION: &str = "isolation";
+const TASKS: &str = "tasks";
 
 /// Which execution isolation levels work here (13 §11, acceptance 7). Never starts anything.
 fn check_isolation(r: &mut Report) {
@@ -959,6 +960,34 @@ async fn check_remote(r: &mut Report) {
     }
 }
 
+/// Port pool findings (05 §6): one line per problem, so exhaustion and range conflicts show up
+/// as warnings instead of as tasks silently starting without ports.
+fn port_findings(r: &mut Report, h: &vk_tasks::PoolHealth) {
+    r.add(
+        TASKS,
+        Level::Pass,
+        format!(
+            "port pool: {} of {} blocks free, {} leased",
+            h.free, h.capacity, h.leased
+        ),
+    );
+    for w in &h.warnings {
+        r.add_hint(
+            TASKS,
+            Level::Warn,
+            w.clone(),
+            "adjust `tasks.port_pool` / `tasks.port_block` in config.toml, or finish tasks you no longer need",
+        );
+    }
+}
+
+fn check_tasks(r: &mut Report) {
+    match vk_server::task_workspace::port_health() {
+        Ok(h) => port_findings(r, &h),
+        Err(e) => r.add(TASKS, Level::Info, format!("port leases unreadable: {e}")),
+    }
+}
+
 fn check_topology(r: &mut Report) {
     let over_ssh =
         std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
@@ -1119,6 +1148,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
     }
     check_topology(&mut r);
     check_isolation(&mut r);
+    check_tasks(&mut r);
     if g.json == Some(true) {
         println!(
             "{}",
@@ -1532,6 +1562,39 @@ async fn finish_restart(g: &Global, layout: &Layout) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn port_pool_problems_are_warnings_and_a_healthy_pool_is_not() {
+        let pool = vk_tasks::PortPool::parse("20000-20029", 10).unwrap();
+        let lease = |s: u16, id: &str| vk_tasks::Lease {
+            start: s,
+            end: s + 9,
+            task_id: id.into(),
+            session: "s".into(),
+            owner_pid: None,
+            created_at: 0,
+        };
+        let healthy = vk_tasks::pool_health(pool, &[], Some((32768, 60999)));
+        let mut r = Report::default();
+        port_findings(&mut r, &healthy);
+        assert_eq!(r.checks.len(), 1);
+        assert_eq!(r.checks[0].level, Level::Pass);
+        assert!(r.checks[0].message.contains("3 of 3 blocks free"));
+
+        let full = [lease(20000, "a"), lease(20010, "b"), lease(20020, "c")];
+        let exhausted = vk_tasks::pool_health(pool, &full, Some((20015, 60999)));
+        let mut r = Report::default();
+        port_findings(&mut r, &exhausted);
+        let warns: Vec<_> = r
+            .checks
+            .iter()
+            .filter(|c| c.level == Level::Warn)
+            .map(|c| c.message.as_str())
+            .collect();
+        assert!(warns.iter().any(|w| w.contains("exhausted")), "{warns:?}");
+        assert!(warns.iter().any(|w| w.contains("ephemeral")), "{warns:?}");
+        assert!(!r.failed(), "warnings never fail the doctor");
+    }
+
     use super::*;
 
     #[test]

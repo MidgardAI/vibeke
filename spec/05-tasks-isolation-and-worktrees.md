@@ -87,9 +87,13 @@ Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal a
 
 **Reconciliation**: on start and every 60 s per repo with tasks, `list()` is compared with stored tasks. A checkout removed outside Vibeke marks the task `missing` (UI offers recreate or forget). A worktree created outside Vibeke inside the root can be adopted with `vibeke task adopt --path`.
 
+**Implemented (2026-10-06):** `vk_tasks::reconcile(repo, root, tracked)` compares the owned worktree tasks of a repo with `git worktree list` and the task root (read-only), and `vk-server/src/task_workspace.rs` runs it on start and every 60 s while tasks exist (`task.reconcile {repo?}` runs it now; `vibeke task reconcile`). Findings: a task whose directory is gone, or is no longer a registered worktree, gets `status = missing` and a `task.missing {path, reason: directory_gone|not_a_registered_worktree|prunable}` event (back to `active` with `task.recovered` if the checkout reappears); a task whose worktree switched branches gets `task.branch_changed {expected, actual}` once; worktrees of the repo inside the task root that no task owns, and directories there that are not worktrees (leftovers of a failed creation or removal; `.trash` is the reaper's and skipped), get `worktree.orphan_found {path, kind: worktree|directory, branch, hint}` once per path. **Nothing is ever deleted, pruned or removed automatically:** no directory, branch or worktree. `task adopt` and the recreate/forget UI are not built yet.
+
 ## 5. Materializing untracked files (env, config, deps)
 
 New worktrees lack untracked/ignored files that make a repo runnable. These are configured per repo in `.vibeke/task.toml`, committed; untrusted repos need a one-time trust prompt, like Claude/pi project trust. User-level overrides go in `config.toml [tasks.repos."<remote or path>"]`.
+
+**Implemented (2026-10-06)** in `vk_tasks::{taskfile, files, clone, deps}` and `vk-server/src/task_workspace.rs`. `.vibeke/task.toml` is read from the **new worktree** (the tree the trust digest covers; an uncommitted file in the source checkout is not read). Parsing is lenient: unknown tables such as `[previews]` (read by the preview fabric, 06 B2) are ignored, and problems (a bad `setup.timeout`, an env name that is not a shell identifier, a `[ports] env` offset outside `count`) come back as `warnings` in the `task.create` result. All paths are repo-relative; absolute paths and `..` are rejected. Nothing is overwritten, ever: an existing destination is reported as `exists`.
 
 ```toml
 # .vibeke/task.toml
@@ -135,6 +139,15 @@ DATABASE_URL = "postgres://localhost:5432/app_{slug_underscored}"   # templated
 
 Templating variables available in `env`, `install`, `setup`: `{slug}`, `{slug_underscored}`, `{branch}`, `{task}`, `{port}`, `{port_base}`, `{port_end}`, `{repo_root}`, `{worktree}`, `{source_root}`.
 
+**As built:**
+
+- **Files.** `copy` entries are real files with their mode (the destination is created `create_new`; a symlink is never made for a secret), reported with a blake3 hash; `link` makes a symlink to the source path; `clone` is a copy-on-write clone of a file or a whole tree (`clonefile(2)` with `CLONE_NOFOLLOW` on macOS, `ioctl(FICLONE)` per file on Linux, a plain copy elsewhere or on a filesystem without reflinks; the result says `copy_on_write`, `mixed` or `copy`). Entries may be globs (`*`, `?` per path segment, never descending into `.git`, hidden entries only when the segment starts with `.`), expanded against the source; a wildcard that matches nothing yields nothing. A missing literal source is `missing`, or a `failed` entry with `ignore_missing = false` (default `true`). `tasks.copy_files` from config and `files.copy` are merged (the `task.create {copy_files}` param replaces both). The `task.files_materialized {files: [{path, outcome: copied|linked|cloned|missing|exists|rejected|failed, method?, hash?}], deps}` event and the `files` array of the `task.create` result carry names, outcomes and hashes only, never contents.
+- **Deps.** The strategy applies only when the repo file or the user's override has a `[deps]` table (a repo without one keeps today's behaviour: no automatic install). `none` does nothing; `install` runs `deps.install` or the detected manager's command (pnpm `install --frozen-lockfile --prefer-offline`, bun `install --frozen-lockfile`, yarn `install --frozen-lockfile`, npm `ci --prefer-offline`, uv `sync`, poetry `install`; cargo and go need none); `clone` clones every `node_modules` of the source (the root one and `*/*/node_modules`, never nested ones) and falls back to install when the source has none; `auto` clones only when the lockfile in the worktree is byte-identical to the source's **and** the filesystem can clone (probed by cloning the lockfile into the worktree and removing the copy), otherwise installs. An install is a setup step (below), so it is subject to trust. Cross-device or ext4 therefore installs, as the table says. The plan and the reason are in the `task.create` result (`deps`).
+- **Env.** `[env]` values are templated and exported to setup and **every pane of the task**, along with `VIBEKE_TASK_SLUG` and the `[ports] env` names (`PORT` etc., offsets into the lease; names that are not shell identifiers or offsets outside the lease are dropped). The env is saved with the task (state kv `task_env`) so panes created after a server restart still get it. Variables unknown to the template (and a `{` after a `$`) are left as written, so shell `${VAR}` survives; in commands (`install`, `run`) the substituted values are shell-quoted, so a branch name like `$(cmd)` is data.
+- **Ports.** `[ports] count` (or `task.create {ports}`) sizes the lease: a block of that many ports aligned to its own size, from `tasks.port_pool`; `tasks.port_block` is the default size. A task that cannot get a block is still created, with a `no ports leased` warning (the old code swallowed this). `VIBEKE_TASK_SLUG` and `PORT` (offset 0 unless mapped) are injected.
+- **Repo overrides.** `config.toml [tasks.repos."<key>"]` takes the same tables (`files`, `deps`, `setup`, `ports`, `env`). The key is the repo path (`~/` expanded, canonical comparison) or the `origin` URL (compared ignoring scheme, user, trailing `.git`, case and `host:path` vs `host/path`). Lists and scalars set there replace the repo file's, `env` and `ports.env` merge per key with the user's value winning; unknown keys warn, and `ports.count` / `setup.timeout` are validated. The shipped default config carries a commented example.
+- **Trust (09 §4).** What runs repo code is gated on `vibeke policy trust <repo>` for the exact `.vibeke/` tree (which includes `task.toml`): `setup.script`, `setup.run`, `deps.install` (including the auto-detected install, because package lifecycle scripts are repo code), and the repo's own `[env]`. Commands the user wrote in `[tasks.repos]` are theirs and run without the prompt; a script file is always repo content. Cloning, linking, copying and ports need no trust (no code runs). Until trusted, `task.setup_untrusted {repo, digest, script, commands: [{source, command}], hint}` lists every command that would run (so they are shown before anything runs), `setup_status = untrusted`, nothing runs, and the repo's `[env]` is withheld (the user's own `env` still applies). `policy.trust` prints the same list as `task_file` (commands, env, warnings). After trusting, `vibeke task setup <task>` (`task.setup`) runs the setup; a changed tree is untrusted again.
+
 ## 6. Port range allocator
 
 Goal: N tasks of the same repo can all run `pnpm dev` without fighting over 3000/5173.
@@ -157,6 +170,8 @@ Goal: N tasks of the same repo can all run `pnpm dev` without fighting over 3000
 - `VIBEKE_PORT_BASE`, `VIBEKE_PORT_END`, `VIBEKE_TASK`, `VIBEKE_TASK_SLUG`, `VIBEKE_WORKTREE`
 - `PORT = base + offset` (configurable mapping, as above)
 
+**Doctor (implemented 2026-10-06).** `vibeke doctor` has a `tasks` section: the pool's free and leased blocks, and a warning for each of: the pool overlapping the OS ephemeral port range (read from `/proc/sys/net/ipv4/ip_local_port_range` or `sysctl net.inet.ip.portrange.*`), the pool exhausted (no free block; new tasks then start without ports) or nearly (a tenth left), no aligned block fitting the pool, a lease outside the pool (the pool was changed), and overlapping leases. Warnings never fail the doctor. `task doctor` and `task ports --re-lease` after `EADDRINUSE` are not built.
+
 Framework helpers (documented, not magic): Vite reads `PORT` only when the config uses `process.env.PORT`; Next uses `PORT` natively. Ports from the lease are pre-declared as previews when `[previews]` names them (06 §B2). `vibeke task ports k7` prints the mapping.
 
 ## 7. Setup scripts
@@ -167,6 +182,7 @@ Framework helpers (documented, not magic): Vite reads `PORT` only when the confi
 - `--no-setup` skips the whole step. `task setup rerun` reruns it.
 - Agent start waits for setup by default. With `setup.parallel_agent = true` the agent starts immediately with a note in its prompt: "Setup is still running in pane X."
 
+- **As built (2026-10-06):** the steps run on a background thread (`vk_tasks::run_setup`) in this order: `deps.install` (when the plan installs), each `setup.run` command (`sh -c`, one after the other, the first failure ends setup), then `setup.script` if the file exists; one log file (`<worktree>/.vibeke/setup.log`, with a `$ <command>` line per step) and one overall `setup.timeout` (default 10 min; the process group gets SIGTERM, then SIGKILL after 2 s). The **`setup` pane** is a split below the task's first pane showing the live log (`tail -F`): it is read-only, not an interactive shell running the steps, and it stays open after a failure. Events: `task.setup_started {commands, pane}`, `task.setup_finished {status, exit_code, duration_ms, log, pane}`, and on failure also `task.setup_failed` plus a `high` notification. `setup_status` is `running`, then the final status (`Succeeded`, `Failed { exit_code: Some(n) }`, `TimedOut`, ...). Agents wait for setup: with agents in the request, `task.create` returns at once with `setup.agents_pending = true` and the agents start when setup succeeds. **`setup.start_agents_on_failure = true`** starts them anyway; otherwise a failed setup emits `task.agents_withheld`. **`setup.parallel_agent = true`** starts them immediately and appends "(Setup is still running in pane wN:pM.)" to each agent's prompt (when it has one). `--no-setup` (`setup: false`) skips the step; container tasks run theirs in the box (13 §9). `task setup <task>` reruns it (after trust or a fix), reading the task file again; agents are not touched.
 - **Trust first (09 §4, implemented):** setup runs only when `(canonical repo path, blake3 of the .vibeke/ tree)` is recorded by `vibeke policy trust <repo>` (which prints the script). An untrusted or changed tree marks the task `setup_status = untrusted` and emits `task.setup_untrusted` with the digest and a hint; nothing runs.
 
 ## 7a. Attached (tracked) tasks — spec 15 §4.3
@@ -250,6 +266,7 @@ Per task/workspace, refreshed on fs events (debounced 500 ms) and at most every 
 
 - branch name, `↑ahead ↓behind` vs upstream or base, `●` dirty count, `✗` conflicts;
 - PR: if `gh` is installed and authenticated, `gh pr view --json number,state,isDraft,reviewDecision,statusCheckRollup,url` is cached for 60 s. It shows `#123 ✓` / `#123 ✗ checks` / `draft`. Clicking opens the URL locally (works for remote tasks too: the URL is opened on the client machine).
+- **PR status as built (2026-10-06):** `task.pr {task, refresh?}` (`vibeke task pr <task>`) runs `gh pr view --json number,state,isDraft,reviewDecision,statusCheckRollup,url` in the task's worktree, but only after `gh auth status` succeeds (`gh` missing or logged out gives `{kind: unavailable, reason}` and nothing else runs; "no pull requests found" gives `{kind: no_pr}`). It never prompts (stdin null, `GH_PROMPT_DISABLED=1`, `GIT_TERMINAL_PROMPT=0`), each call has a 5 s timeout, and every answer, including unavailable and no-PR, is cached for 60 s per worktree (`refresh` bypasses it). `task.get` returns the cached `pr` (null when none is cached) and never runs `gh`. The label is `#123 ✓`, `#123 ✗ checks`, `#123 …` (checks pending), `#123 draft`, `#123 merged`/`closed`, or `#123`. Sandboxed checkouts are skipped (a box can rewrite their git config, and `gh` runs git). Tests use a fake `gh` through `VIBEKE_GH_BIN=<absolute path>`, honoured only under `VIBEKE_TEST_HOOKS=1`. The sidebar display and click-to-open are not built; the "merged via gh" cleanup suggestion is not wired.
 - All status calls run with a 2 s timeout in a bounded worker pool (max 4 concurrent git processes per machine), so a huge repo can never stall the server.
 
 ## 14. Runner abstraction
@@ -293,6 +310,13 @@ port_pool = "20000-29999"
 port_block = 10
 setup_script = ".vibeke/setup.sh"
 copy_files = [".env", ".env.local"]
+
+# Per-repo overrides of .vibeke/task.toml (§5), keyed by origin URL or repo path:
+# [tasks.repos."github.com/acme/app"]
+# files = { clone = ["node_modules"] }
+# deps  = { strategy = "auto" }
+# setup = { run = ["pnpm db:migrate"], timeout = "10m" }
+# env   = { DATABASE_URL = "postgres://localhost:5432/app_{slug_underscored}" }
 
 [tasks.cleanup]
 on_finish = "keep"

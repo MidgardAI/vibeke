@@ -70,6 +70,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         }
     });
     crate::agents::start(&server);
+    crate::task_workspace::start(&server);
     crate::preview::start(&server);
     crate::screenshots::start(&server);
     crate::desk::start(&server);
@@ -627,7 +628,7 @@ pub fn policy_trust(server: &Server, p: &Value) -> R {
     // Repo harness manifests (04 §5) are re-evaluated on the next detection.
     crate::agents::manifests::forget_repo_trust();
     Ok(
-        json!({"repo": repo, "digest": digest, "setup_script": script, "devcontainer": devcontainer, "harness_manifests": repo_manifest_argv(&repo)}),
+        json!({"repo": repo, "digest": digest, "setup_script": script, "task_file": crate::task_workspace::trust_summary(&repo), "devcontainer": devcontainer, "harness_manifests": repo_manifest_argv(&repo)}),
     )
 }
 
@@ -688,14 +689,18 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
                     let status = task.worktree_path.as_ref().and_then(|w| {
                         vk_tasks::branch_status(Path::new(w), task.base_ref.as_deref()).ok()
                     });
+                    let pr = crate::task_workspace::pr_peek(&task);
                     Ok(
-                        json!({"task": task, "branch_status": status.map(|s| json!({"branch": s.branch, "ahead": s.ahead, "behind": s.behind, "dirty_files": s.dirty_files, "upstream": s.upstream, "compared_to": s.compared_to}))}),
+                        json!({"task": task, "branch_status": status.map(|s| json!({"branch": s.branch, "ahead": s.ahead, "behind": s.behind, "dirty_files": s.dirty_files, "upstream": s.upstream, "compared_to": s.compared_to})), "pr": pr}),
                     )
                 }
                 None => Err(not_found("task", t)),
             }
         }
         "task.finish" => task_finish(server, p).await,
+        "task.setup" => crate::task_workspace::task_setup(server, p).await,
+        "task.pr" => crate::task_workspace::task_pr(server, p).await,
+        "task.reconcile" => crate::task_workspace::task_reconcile(server, p).await,
         "worktree.list" => {
             let cwd = s(p, "cwd")
                 .or(s(p, "repo"))
@@ -963,31 +968,101 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .await
             .map_err(internal)?
             .map_err(|e| err(ErrorKind::Conflict, e.to_string()))?;
-    let copy = p
-        .get("copy_files")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_else(vk_tasks::default_copy_files);
-    let copied = vk_tasks::copy_files(&info.root, &checkout.path, &copy).unwrap_or_default();
+    // `.vibeke/task.toml` of the new checkout plus the user's per-repo override (05 §5).
+    let tcfg = crate::task_workspace::load_tasks_cfg();
+    let resolved = crate::task_workspace::resolve(&info.root, &checkout.path, &tcfg);
+    let mut files = resolved.file.files.clone();
+    files.copy = match p.get("copy_files").and_then(Value::as_array) {
+        Some(a) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        None => {
+            let mut v = tcfg.copy_files.clone();
+            for c in &files.copy {
+                if !v.contains(c) {
+                    v.push(c.clone());
+                }
+            }
+            v
+        }
+    };
+    let shared_cwd = info.kind == "none";
+    let deps_spec = resolved.file.deps.clone();
+    let (src_root, dst_root) = (info.root.clone(), checkout.path.clone());
+    let (copied, deps_plan) = tokio::task::spawn_blocking(move || {
+        let mut res = vk_tasks::materialize_files(&src_root, &dst_root, &files);
+        // The dependency strategy only applies when the repo or the user configured `[deps]`;
+        // a shared checkout already has its own.
+        let plan = (!shared_cwd && (deps_spec.strategy.is_some() || deps_spec.install.is_some()))
+            .then(|| vk_tasks::plan_deps(&deps_spec, &src_root, &dst_root));
+        if let Some(pl) = &plan {
+            res.extend(vk_tasks::run_deps_clone(pl, &src_root, &dst_root));
+        }
+        (res, plan)
+    })
+    .await
+    .map_err(internal)?;
     let id = ulid();
     let handle = server.with_core(|c| c.next_task_handle());
-    // Port lease (machine-wide).
-    let leases = vk_tasks::PortLeases::new(
-        crate::paths::state_root(),
-        vk_tasks::PortPool::parse(s(p, "port_pool").unwrap_or("20000-29999"), 10)
-            .map_err(|e| invalid(e.to_string()))?,
-    );
-    let lease = leases
-        .lease(&vk_tasks::LeaseRequest {
+    let mut warnings: Vec<String> = checkout.warnings.clone();
+    warnings.extend(resolved.warnings.iter().cloned());
+    // Port lease (machine-wide): `tasks.port_pool`/`port_block`, `task.create {ports}`, then
+    // the task file's `[ports] count`.
+    let pool = match s(p, "port_pool") {
+        Some(r) => {
+            vk_tasks::PortPool::parse(r, tcfg.port_block).map_err(|e| invalid(e.to_string()))?
+        }
+        None => vk_tasks::PortPool {
+            start: tcfg.port_pool.start,
+            end: tcfg.port_pool.end,
+            block: tcfg.port_block,
+        },
+    };
+    let count = p
+        .get("ports")
+        .and_then(Value::as_u64)
+        .and_then(|n| u16::try_from(n).ok())
+        .or(resolved.file.ports.count)
+        .unwrap_or(pool.block);
+    let leases = vk_tasks::PortLeases::new(crate::paths::state_root(), pool);
+    let lease = match leases.lease_sized(
+        &vk_tasks::LeaseRequest {
             task_id: id.clone(),
             session: server.opts.session.clone(),
             owner_pid: None,
-        })
-        .ok();
+        },
+        count,
+    ) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            warnings.push(format!("no ports leased: {e} (see `vibeke doctor`)"));
+            None
+        }
+    };
+    // Repo automation runs only after trust (09 §4): (canonical repo path, digest of `.vibeke/`).
+    let digest = vibeke_dir_digest(&checkout.path);
+    let trusted = digest
+        .as_ref()
+        .is_some_and(|d| repo_trusted(server, &info.root, d));
+    let vars = crate::task_workspace::vars_for(
+        &id,
+        &checkout.slug,
+        checkout.branch.as_deref(),
+        lease.as_ref(),
+        &info.root,
+        &checkout.path,
+    );
+    let mut setup_plan = crate::task_workspace::plan_setup(
+        &resolved,
+        deps_plan.as_ref(),
+        &vars,
+        &checkout.path,
+        s(p, "setup_script"),
+        &tcfg.setup_script,
+        trusted,
+    );
+    setup_plan.digest = digest.clone();
     let cwd = checkout.path.to_string_lossy().into_owned();
     let mut isolation = vk_proto::model::Isolation {
         yolo: iso_req.yolo,
@@ -1022,11 +1097,16 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         worktree_path: Some(cwd.clone()),
         ..Default::default()
     };
+    let mut pane_env = crate::preview_fabric::task_port_env(&pre_task);
+    for (k, v) in &setup_plan.env {
+        pane_env.retain(|(n, _)| n != k);
+        pane_env.push((k.clone(), v.clone()));
+    }
     server
         .pending_task_env
         .lock()
         .unwrap()
-        .insert(id.clone(), crate::preview_fabric::task_port_env(&pre_task));
+        .insert(id.clone(), pane_env);
     let created = server.create_workspace_for(
         &cwd,
         Some(checkout.slug.clone()),
@@ -1080,6 +1160,15 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 json!({"path": cwd, "branch": checkout.branch, "base_ref": checkout.base_ref, "repo_root": info.root, "created_branch": checkout.created_branch}),
             );
         }
+        // The env every later pane of the task gets (saved: it survives a server restart).
+        tx.m.kv("task_env", &id, serde_json::to_string(&setup_plan.env).ok());
+        // Names and hashes only, never contents.
+        tx.event(
+            "task.files_materialized",
+            json!({"task": id}),
+            json!({"files": copied.iter().map(crate::task_workspace::file_json).collect::<Vec<_>>(),
+                   "deps": deps_plan}),
+        );
         server.commit(&mut c, tx).map_err(internal)?;
     }
     // Task `[previews]` with ports from the lease (06 B2): declared before anything starts.
@@ -1092,105 +1181,129 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         lease.as_ref(),
         p,
     );
-    // Setup script in the background (05 §7).
-    let script = checkout
-        .path
-        .join(s(p, "setup_script").unwrap_or(".vibeke/setup.sh"));
-    // Repo automation runs only after trust (09 §4): (canonical repo path, digest of `.vibeke/`).
-    let digest = vibeke_dir_digest(&checkout.path);
-    let trusted = digest
-        .as_ref()
-        .is_some_and(|d| repo_trusted(server, &info.root, d));
-    // A container task runs its setup inside the box after trust (13 §9, sandbox_container.rs).
-    let wants_setup = p.get("setup").and_then(Value::as_bool).unwrap_or(true)
-        && script.exists()
+    // Setup (05 §7): a visible `setup` pane, after trust; agents wait for it unless
+    // `setup.parallel_agent`.
+    let want_setup = p.get("setup").and_then(Value::as_bool).unwrap_or(true)
         && iso_req.level != vk_proto::model::IsolationLevel::Container;
-    if wants_setup && !trusted {
-        let mut c = server.core.lock().unwrap();
-        let mut tx = Tx::new();
-        if let Some(mut t) = c.model.tasks.iter().find(|t| t.id == id).cloned() {
-            t.setup_status = Some("untrusted".into());
-            tx.task(t);
+    let launch = if want_setup {
+        crate::task_workspace::launch_setup(
+            server,
+            &id,
+            &info.root,
+            &checkout.path,
+            &setup_plan,
+            lease.clone(),
+            &pane.id,
+        )
+    } else {
+        crate::task_workspace::SetupLaunch {
+            done: None,
+            pane: None,
         }
-        tx.event(
-            "task.setup_untrusted",
-            json!({"task": id}),
-            json!({"repo": info.root, "digest": digest, "script": script, "hint": format!("review {} then run: vibeke policy trust {}", script.display(), info.root.display())}),
-        );
-        let _ = server.commit(&mut c, tx);
-    }
-    if wants_setup && trusted {
-        let srv = server.clone();
-        let task_id = id.clone();
-        let wt = checkout.path.clone();
-        let lease2 = lease.clone();
-        std::thread::spawn(move || {
-            let log = wt.join(".vibeke/setup.log");
-            let opts = vk_tasks::SetupOptions {
-                worktree: wt.clone(),
-                script,
-                task_id: task_id.clone(),
-                lease: lease2,
-                extra_env: vec![],
-                log_path: log,
-                timeout: Some(std::time::Duration::from_secs(600)),
-            };
-            let out = vk_tasks::run_setup(&opts, &vk_tasks::CancelToken::default());
-            let status = match out {
-                Ok(o) => format!("{:?}", o.status),
-                Err(e) => format!("failed: {e}"),
-            };
-            let mut c = srv.core.lock().unwrap();
-            if let Some(mut t) = c.task(&task_id).cloned() {
-                t.setup_status = Some(status.clone());
-                let mut tx = Tx::new();
-                tx.event(
-                    "task.setup_finished",
-                    json!({"task": task_id}),
-                    json!({"status": status}),
-                );
-                tx.task(t);
-                let _ = srv.commit(&mut c, tx);
-            }
-        });
-    }
-    // Agents (`--agent claude:impl`).
+    };
+    let agents: Vec<Value> = p
+        .get("agents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let agent_opts = (iso_req.yolo, iso_req.level);
     let mut runs = Vec::new();
-    if let Some(agents) = p.get("agents").and_then(Value::as_array) {
-        for a in agents {
-            let harness = a.get("harness").and_then(Value::as_str).unwrap_or("claude");
-            let name = a.get("name").and_then(Value::as_str);
-            let prompt = a.get("prompt").and_then(Value::as_str);
-            let opts = crate::sandbox::LaunchOpts {
-                yolo: iso_req.yolo,
-                isolate: Some(iso_req.level),
-                network: None,
-            };
-            match crate::agents::start_in_pane_opts(
-                server,
-                &pane.id,
-                harness,
-                name,
-                prompt,
-                &[],
-                Some(&id),
-                &opts,
-            )
-            .await
-            {
-                Ok(r) => runs.push(r),
-                Err(e) => return Err(e),
-            }
+    let mut agents_pending = false;
+    match launch.done {
+        Some(done) if !setup_plan.parallel_agent && !agents.is_empty() => {
+            agents_pending = true;
+            let (srv, pane_id, task_id) = (server.clone(), pane.id.clone(), id.clone());
+            let start_on_failure = setup_plan.start_agents_on_failure;
+            tokio::spawn(async move {
+                let ok = done.await.unwrap_or(false);
+                if ok || start_on_failure {
+                    if let Err(e) =
+                        start_agents(&srv, &pane_id, &task_id, &agents, agent_opts, None).await
+                    {
+                        tracing::warn!(task = %task_id, error = %e.message, "agent start after setup failed");
+                    }
+                } else {
+                    let mut c = srv.core.lock().unwrap();
+                    let mut tx = Tx::new();
+                    tx.event(
+                        "task.agents_withheld",
+                        json!({"task": task_id}),
+                        json!({"reason": "setup failed", "hint": "fix it and run `vibeke task setup`, or set setup.start_agents_on_failure = true"}),
+                    );
+                    let _ = srv.commit(&mut c, tx);
+                }
+            });
+        }
+        running => {
+            let note = (running.is_some() && !agents.is_empty())
+                .then(|| {
+                    launch
+                        .pane
+                        .as_ref()
+                        .and_then(|sp| server.with_core(|c| c.pane(sp).map(|x| x.handle.clone())))
+                })
+                .flatten()
+                .map(|h| format!("Setup is still running in pane {h}."));
+            runs =
+                start_agents(server, &pane.id, &id, &agents, agent_opts, note.as_deref()).await?;
         }
     }
+    let files: Vec<Value> = copied
+        .iter()
+        .map(crate::task_workspace::file_json)
+        .collect();
     let copied: Vec<String> = copied
         .iter()
         .filter(|c| matches!(c.outcome, vk_tasks::CopyOutcome::Copied))
         .map(|c| c.rel.clone())
         .collect();
+    let task = server.with_core(|c| c.task(&id).cloned()).unwrap_or(task);
     Ok(
-        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings, "previews": task_previews["previews"], "preview_warnings": task_previews["warnings"]}),
+        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "files": files, "deps": deps_plan, "setup": {"pane": launch.pane, "status": task.setup_status, "agents_pending": agents_pending, "commands": crate::task_workspace::commands_json(&setup_plan)}, "warnings": warnings, "previews": task_previews["previews"], "preview_warnings": task_previews["warnings"]}),
     )
+}
+
+/// Start the task's agents in its first pane (`--agent claude:impl`); `note` is appended to
+/// each prompt (setup still running).
+async fn start_agents(
+    server: &Arc<Server>,
+    pane: &str,
+    task: &str,
+    agents: &[Value],
+    (yolo, level): (bool, vk_proto::model::IsolationLevel),
+    note: Option<&str>,
+) -> Result<Vec<Value>, vk_proto::rpc::RpcError> {
+    let mut runs = Vec::new();
+    for a in agents {
+        let harness = a.get("harness").and_then(Value::as_str).unwrap_or("claude");
+        let name = a.get("name").and_then(Value::as_str);
+        let prompt = a
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(|pr| match note {
+                Some(n) => format!("{pr}\n\n({n})"),
+                None => pr.to_string(),
+            });
+        let opts = crate::sandbox::LaunchOpts {
+            yolo,
+            isolate: Some(level),
+            network: None,
+        };
+        runs.push(
+            crate::agents::start_in_pane_opts(
+                server,
+                pane,
+                harness,
+                name,
+                prompt.as_deref(),
+                &[],
+                Some(task),
+                &opts,
+            )
+            .await?,
+        );
+    }
+    Ok(runs)
 }
 
 async fn task_finish(server: &Arc<Server>, p: &Value) -> R {

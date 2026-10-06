@@ -269,6 +269,14 @@ The file is `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). It r
 # [tasks.best_of_n]
 # suffix = ""
 
+# Per-repo overrides of the repo's .vibeke/task.toml, keyed by origin URL or repo path.
+# The same tables as task.toml; commands set here run without the repo-trust prompt.
+# [tasks.repos."github.com/acme/app"]
+# files = { clone = ["node_modules"] }
+# deps  = { strategy = "auto" }
+# setup = { run = ["pnpm db:migrate"], timeout = "10m" }
+# env   = { DATABASE_URL = "postgres://localhost:5432/app_{slug_underscored}" }
+
 # [remote]
 # input_when_offline = "drop"           # drop | ask
 # predictive_echo    = "auto"           # auto | always | never

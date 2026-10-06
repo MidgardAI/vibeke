@@ -231,6 +231,14 @@ export type LayoutNode = {
 
 export type LayoutSpec = Record<string, unknown>;
 
+export type MaterializedFile = {
+  path: string;
+  outcome: "copied" | "linked" | "cloned" | "missing" | "exists" | "rejected" | "failed";
+  method?: string | null;
+  hash?: string | null;
+  error?: string | null;
+};
+
 export type Notification = {
   id: string;
   kind: string;
@@ -267,6 +275,20 @@ export type Pane = {
 };
 
 export type PolicyRule = Record<string, unknown>;
+
+export type PrLookup = {
+  kind: "pr" | "no_pr" | "unavailable";
+  pr?: {
+    number: number;
+    state: string;
+    is_draft: boolean;
+    review_decision: string | null;
+    checks: "none" | "pending" | "passing" | "failing";
+    url: string;
+    label: string;
+  };
+  reason?: string;
+};
 
 export type Preview = {
   id: string;
@@ -3615,6 +3637,19 @@ export type TaskCreateResult = {
   workspace: Workspace;
   panes: Pane[];
   runs: AgentRun[];
+  copied?: string[];
+  files?: MaterializedFile[];
+  deps?: unknown;
+  setup?: {
+    pane: string | null;
+    status: string | null;
+    agents_pending: boolean;
+    commands: {
+      source: string;
+      command: string;
+    }[];
+  };
+  warnings?: string[];
   cursor?: Cursor;
 };
 
@@ -3726,6 +3761,7 @@ export type TaskGetResult = {
     upstream: string | null;
     compared_to: string | null;
   } | null;
+  pr?: PrLookup | null;
 };
 
 export type TaskListParams = {
@@ -3735,6 +3771,43 @@ export type TaskListParams = {
 
 export type TaskListResult = {
   tasks: Task[];
+};
+
+export type TaskPrParams = {
+  task: Target;
+  refresh?: boolean;
+};
+
+export type TaskPrResult = {
+  task: string;
+  pr: PrLookup;
+};
+
+export type TaskReconcileParams = {
+  repo?: string;
+};
+
+export type TaskReconcileResult = {
+  reports: {
+    repo: string;
+    missing: {
+      task_id: string;
+      path: string;
+      reason: string;
+    }[];
+    branch_moved: {
+      task_id: string;
+      path: string;
+      expected: string | null;
+      actual: string | null;
+    }[];
+    orphans: {
+      path: string;
+      kind: string;
+      branch: string | null;
+    }[];
+  }[];
+  cursor?: Cursor;
 };
 
 export type TaskReviewAcceptParams = {
@@ -3959,6 +4032,24 @@ export type TaskReviewStartReviewerResult = {
   binding: Record<string, unknown>;
   note?: string;
   replayed?: boolean;
+  cursor?: Cursor;
+};
+
+export type TaskSetupParams = {
+  task: Target;
+  setup_script?: string;
+};
+
+export type TaskSetupResult = {
+  task: string;
+  started: boolean;
+  pane: string | null;
+  setup_status: string | null;
+  commands: {
+    source: string;
+    command: string;
+  }[];
+  needs_trust: boolean;
   cursor?: Cursor;
 };
 
@@ -4351,6 +4442,8 @@ export interface Methods {
   "task.finish": { params: TaskFinishParams; result: TaskFinishResult };
   "task.get": { params: TaskGetParams; result: TaskGetResult };
   "task.list": { params: TaskListParams; result: TaskListResult };
+  "task.pr": { params: TaskPrParams; result: TaskPrResult };
+  "task.reconcile": { params: TaskReconcileParams; result: TaskReconcileResult };
   "task.review.accept": { params: TaskReviewAcceptParams; result: TaskReviewAcceptResult };
   "task.review.candidates": { params: TaskReviewCandidatesParams; result: TaskReviewCandidatesResult };
   "task.review.diff": { params: TaskReviewDiffParams; result: TaskReviewDiffResult };
@@ -4361,6 +4454,7 @@ export interface Methods {
   "task.review.snapshot": { params: TaskReviewSnapshotParams; result: TaskReviewSnapshotResult };
   "task.review.snapshot.gc": { params: TaskReviewSnapshotGcParams; result: TaskReviewSnapshotGcResult };
   "task.review.start_reviewer": { params: TaskReviewStartReviewerParams; result: TaskReviewStartReviewerResult };
+  "task.setup": { params: TaskSetupParams; result: TaskSetupResult };
   "task.sync": { params: TaskSyncParams; result: TaskSyncResult };
   "theme.get": { params: ThemeGetParams; result: ThemeGetResult };
   "theme.set_mode": { params: ThemeSetModeParams; result: ThemeSetModeResult };
@@ -4596,6 +4690,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.finish": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.get": { mutating: false, scope: "pane", paneScope: "open" },
   "task.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
   "task.review.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.candidates": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.diff": { mutating: false, scope: "pane", paneScope: "open" },
@@ -4606,6 +4702,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.snapshot": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.snapshot.gc": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.start_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.setup": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.sync": { mutating: true, scope: "full", paneScope: "forbidden" },
   "theme.get": { mutating: false, scope: "pane", paneScope: "open" },
   "theme.set_mode": { mutating: true, scope: "pane", paneScope: "open" },
@@ -5613,6 +5710,15 @@ export type TabRenamedData = {
   title: string | null;
 };
 
+export type TaskAgentsWithheldSubject = {
+  task: string;
+};
+
+export type TaskAgentsWithheldData = {
+  reason: string;
+  hint: string;
+};
+
 export type TaskBindingChangedSubject = {
   task: string;
   run: string;
@@ -5623,6 +5729,16 @@ export type TaskBindingChangedData = {
   state: string;
   reason?: string;
   offers?: string[];
+};
+
+export type TaskBranchChangedSubject = {
+  task: string;
+};
+
+export type TaskBranchChangedData = {
+  path: string;
+  expected: string | null;
+  actual: string | null;
 };
 
 export type TaskCreatedSubject = {
@@ -5645,6 +5761,15 @@ export type TaskDependencyChangedSubject = {
 export type TaskDependencyChangedData = {
   action: "added" | "removed";
   kind: string;
+};
+
+export type TaskFilesMaterializedSubject = {
+  task: string;
+};
+
+export type TaskFilesMaterializedData = {
+  files: MaterializedFile[];
+  deps: unknown;
 };
 
 export type TaskFinishedSubject = {
@@ -5691,12 +5816,58 @@ export type TaskMessageSendingSubject = {
 
 export type TaskMessageSendingData = Record<string, unknown>;
 
+export type TaskMissingSubject = {
+  task: string;
+};
+
+export type TaskMissingData = {
+  path: string;
+  reason: string;
+  hint: string;
+};
+
+export type TaskRecoveredSubject = {
+  task: string;
+};
+
+export type TaskRecoveredData = {
+  path: string | null;
+};
+
+export type TaskSetupFailedSubject = {
+  task: string;
+};
+
+export type TaskSetupFailedData = {
+  status: string;
+  exit_code?: number | null;
+  duration_ms?: number;
+  log?: string;
+  pane?: string | null;
+};
+
 export type TaskSetupFinishedSubject = {
   task: string;
 };
 
 export type TaskSetupFinishedData = {
   status: string;
+  exit_code?: number | null;
+  duration_ms?: number;
+  log?: string;
+  pane?: string | null;
+};
+
+export type TaskSetupStartedSubject = {
+  task: string;
+};
+
+export type TaskSetupStartedData = {
+  commands: {
+    source: string;
+    command: string;
+  }[];
+  pane: string | null;
 };
 
 export type TaskSetupUntrustedSubject = {
@@ -5708,6 +5879,10 @@ export type TaskSetupUntrustedData = {
   digest: string;
   script: string;
   hint: string;
+  commands?: {
+    source: string;
+    command: string;
+  }[];
 };
 
 export type TaskStatusChangedSubject = {
@@ -5788,6 +5963,17 @@ export type WorktreeOpenedData = {
   branch: string | null;
   repo_root: string;
   created_workspace?: unknown;
+};
+
+export type WorktreeOrphanFoundSubject = {
+  repo: string;
+};
+
+export type WorktreeOrphanFoundData = {
+  path: string;
+  kind: string;
+  branch: string | null;
+  hint: string;
 };
 
 export type WorktreeRemovedSubject = {
@@ -5904,15 +6090,22 @@ export interface EventMap {
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };
   "tab.moved": { subject: TabMovedSubject; data: TabMovedData };
   "tab.renamed": { subject: TabRenamedSubject; data: TabRenamedData };
+  "task.agents_withheld": { subject: TaskAgentsWithheldSubject; data: TaskAgentsWithheldData };
   "task.binding_changed": { subject: TaskBindingChangedSubject; data: TaskBindingChangedData };
+  "task.branch_changed": { subject: TaskBranchChangedSubject; data: TaskBranchChangedData };
   "task.created": { subject: TaskCreatedSubject; data: TaskCreatedData };
   "task.dependency_changed": { subject: TaskDependencyChangedSubject; data: TaskDependencyChangedData };
+  "task.files_materialized": { subject: TaskFilesMaterializedSubject; data: TaskFilesMaterializedData };
   "task.finished": { subject: TaskFinishedSubject; data: TaskFinishedData };
   "task.intent_updated": { subject: TaskIntentUpdatedSubject; data: TaskIntentUpdatedData };
   "task.message_delivery_unknown": { subject: TaskMessageDeliveryUnknownSubject; data: TaskMessageDeliveryUnknownData };
   "task.message_prepared": { subject: TaskMessagePreparedSubject; data: TaskMessagePreparedData };
   "task.message_sending": { subject: TaskMessageSendingSubject; data: TaskMessageSendingData };
+  "task.missing": { subject: TaskMissingSubject; data: TaskMissingData };
+  "task.recovered": { subject: TaskRecoveredSubject; data: TaskRecoveredData };
+  "task.setup_failed": { subject: TaskSetupFailedSubject; data: TaskSetupFailedData };
   "task.setup_finished": { subject: TaskSetupFinishedSubject; data: TaskSetupFinishedData };
+  "task.setup_started": { subject: TaskSetupStartedSubject; data: TaskSetupStartedData };
   "task.setup_untrusted": { subject: TaskSetupUntrustedSubject; data: TaskSetupUntrustedData };
   "task.status_changed": { subject: TaskStatusChangedSubject; data: TaskStatusChangedData };
   "task.tracked": { subject: TaskTrackedSubject; data: TaskTrackedData };
@@ -5924,6 +6117,7 @@ export interface EventMap {
   "workspace.renamed": { subject: WorkspaceRenamedSubject; data: WorkspaceRenamedData };
   "worktree.created": { subject: WorktreeCreatedSubject; data: WorktreeCreatedData };
   "worktree.opened": { subject: WorktreeOpenedSubject; data: WorktreeOpenedData };
+  "worktree.orphan_found": { subject: WorktreeOrphanFoundSubject; data: WorktreeOrphanFoundData };
   "worktree.removed": { subject: WorktreeRemovedSubject; data: WorktreeRemovedData };
 }
 

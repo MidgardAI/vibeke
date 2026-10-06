@@ -32,6 +32,7 @@ pub mod sandbox;
 pub mod screenshots;
 pub mod search;
 pub mod shape;
+pub mod task_workspace;
 pub mod theme;
 pub mod timers;
 pub mod tracking;
@@ -578,9 +579,23 @@ impl Server {
         if let Some(e) = self.pending_task_env.lock().unwrap().get(id) {
             return e.clone();
         }
-        c.task(id)
+        let mut env = c
+            .task(id)
             .map(preview_fabric::task_port_env)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // `VIBEKE_TASK_SLUG`, `[env]` and `[ports] env` of the task file, saved at creation.
+        let saved: Vec<(String, String)> = c
+            .store
+            .kv_get("task_env", id)
+            .ok()
+            .flatten()
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        for (k, v) in saved {
+            env.retain(|(n, _)| n != &k);
+            env.push((k, v));
+        }
+        env
     }
 
     /// Must not lock `core`: callers hold it while spawning.

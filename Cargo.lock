@@ -3348,6 +3348,7 @@ dependencies = [
  "vk-sandbox",
  "vk-server",
  "vk-store",
+ "vk-tasks",
  "vk-term",
  "vk-tui",
 ]
@@ -3702,11 +3703,13 @@ dependencies = [
 name = "vk-tasks"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "libc",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
  "ulid",
 ]
 
