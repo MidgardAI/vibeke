@@ -355,9 +355,9 @@ fn vttest_controls_inside_csi_and_leading_zeros() {
     v.s("\r\n\r\n");
     let got = run(&v.0);
     let s = show(&got);
-    for r in 3..=6 {
+    for (r, row) in got.iter().enumerate().take(7).skip(3) {
         assert_eq!(
-            got[r].iter().collect::<String>().trim_end(),
+            row.iter().collect::<String>().trim_end(),
             "A B C D E F G H I",
             "line {r}\n{s}"
         );

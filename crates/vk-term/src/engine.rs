@@ -12,7 +12,7 @@ use crate::ghostty_sys as sys;
 use crate::tracker::{Tracked, Tracker};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
 use vk_proto::render::{Color, Cursor, CursorShape, Link, PaneModes, Row, Span, Style, attr, mark};
 
@@ -77,6 +77,41 @@ pub const USER_VAR_NAME_MAX: usize = 64;
 pub const USER_VAR_VALUE_MAX: usize = 4096;
 /// Longest OSC 8 URI kept on a row; longer links render as plain text.
 pub const LINK_URI_MAX: usize = 2048;
+/// Largest decoded image a pane may store (03 §9 `graphics.max_image_bytes`): bigger kitty
+/// transmissions and PNGs are refused by the engine.
+pub const MAX_IMAGE_BYTES: usize = 32 << 20;
+/// Kitty image storage per pane screen (03 §9 `graphics.max_total_per_pane`); the engine
+/// evicts the oldest images beyond it.
+pub const MAX_IMAGES_PER_PANE: u64 = 256 << 20;
+/// Largest PNG side accepted by the decoder.
+const PNG_MAX_SIDE: u32 = 10_000;
+
+/// Content hashes of cropped images by (image id, generation, source rect).
+type ImageHashes = std::collections::HashMap<(u32, u64, [u32; 4]), [u8; 16]>;
+
+/// A visible kitty-graphics placement on the pane screen (03 §9), ready to forward: which
+/// pixels (the image cropped to the placement's source rectangle) go into which cells.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImagePlacement {
+    pub image_id: u32,
+    pub placement_id: u32,
+    /// Content hash of the cropped RGBA pixels and their size (16 bytes of blake3).
+    pub hash: [u8; 16],
+    /// Pixel size of the cropped image.
+    pub width: u32,
+    pub height: u32,
+    /// Top-left cell relative to the visible screen; negative when partly scrolled off.
+    pub col: i32,
+    pub row: i32,
+    /// Cells covered.
+    pub cols: u32,
+    pub rows: u32,
+    /// Kitty z-index (negative = below text).
+    pub z: i32,
+    /// Source rectangle in the stored image and its generation (to fetch the pixels).
+    src: (u32, u32, u32, u32),
+    generation: u64,
+}
 
 /// The output of the last command, from OSC 133 marks (`pane.read --source last-command`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +218,8 @@ pub struct Engine {
     /// Exit code of the last finished command (`OSC 133 ; D ; code`); cleared when the next
     /// command's output starts. Not part of snapshots.
     last_exit: Option<i32>,
+    /// Content hashes of cropped images by (image id, generation, source rect).
+    image_hashes: RefCell<ImageHashes>,
 }
 
 // SAFETY: the libghostty-vt handles are plain heap objects without thread affinity; `Engine`
@@ -581,7 +618,9 @@ impl Engine {
             scrollback,
             write_chunk: usize::MAX,
             last_exit: None,
+            image_hashes: RefCell::new(std::collections::HashMap::new()),
         };
+        e.configure_graphics();
         e.set_line_limit();
         e.set_palette(Palette::default());
         e
@@ -608,6 +647,206 @@ impl Engine {
                 self.scrollback + margin,
             )
         };
+    }
+
+    /// Kitty graphics limits and media (03 §9): direct, shared-memory and temp-file (in the
+    /// temp directory only) transmissions; arbitrary file paths (`t=f`) stay off, since the
+    /// server would read them on the program's behalf. PNG payloads are decoded by
+    /// [`decode_png`].
+    fn configure_graphics(&mut self) {
+        install_png_decoder();
+        let limit: u64 = MAX_IMAGES_PER_PANE;
+        let apc: usize = MAX_IMAGE_BYTES / 3 * 4 + (1 << 16);
+        let yes = true;
+        let no = false;
+        let tmp = std::env::temp_dir().to_string_lossy().into_owned();
+        let tmp_s = sys::GhosttyString {
+            ptr: tmp.as_ptr(),
+            len: tmp.len(),
+        };
+        unsafe {
+            let t = self.term;
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                (&raw const limit).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY,
+                (&raw const apc).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+                (&raw const no).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+                (&raw const yes).cast(),
+            );
+            sys::ghostty_terminal_set(
+                t,
+                sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+                (&raw const tmp_s).cast(),
+            );
+        }
+    }
+
+    /// Stamp that changes on any kitty transmit, placement or delete on the active screen.
+    pub fn images_generation(&self) -> u64 {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        if g.is_null() {
+            return 0;
+        }
+        let mut gen_ = 0u64;
+        unsafe {
+            sys::ghostty_kitty_graphics_get(
+                g,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,
+                (&raw mut gen_).cast(),
+            )
+        };
+        gen_
+    }
+
+    /// Visible, non-virtual kitty placements of the active screen, bottom z first.
+    pub fn image_placements(&self) -> Vec<ImagePlacement> {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        let mut out = Vec::new();
+        if g.is_null() {
+            return out;
+        }
+        unsafe {
+            let mut it: sys::GhosttyKittyGraphicsPlacementIterator = ptr::null_mut();
+            if sys::ghostty_kitty_graphics_placement_iterator_new(ptr::null(), &mut it)
+                != sys::GHOSTTY_SUCCESS
+            {
+                return out;
+            }
+            if sys::ghostty_kitty_graphics_get(
+                g,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+                (&raw mut it).cast(),
+            ) == sys::GHOSTTY_SUCCESS
+            {
+                while sys::ghostty_kitty_graphics_placement_next(it) {
+                    if let Some(p) = self.placement(g, it) {
+                        out.push(p);
+                    }
+                }
+            }
+            sys::ghostty_kitty_graphics_placement_iterator_free(it);
+        }
+        out.sort_by_key(|p| (p.z, p.row, p.col));
+        out
+    }
+
+    unsafe fn placement(
+        &self,
+        g: sys::GhosttyKittyGraphics,
+        it: sys::GhosttyKittyGraphicsPlacementIterator,
+    ) -> Option<ImagePlacement> {
+        let (mut id, mut pid, mut virt, mut z) = (0u32, 0u32, false, 0i32);
+        unsafe {
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+                (&raw mut id).cast(),
+            );
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID,
+                (&raw mut pid).cast(),
+            );
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+                (&raw mut virt).cast(),
+            );
+            sys::ghostty_kitty_graphics_placement_get(
+                it,
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
+                (&raw mut z).cast(),
+            );
+        }
+        if virt {
+            return None;
+        }
+        let img = unsafe { sys::ghostty_kitty_graphics_image(g, id) };
+        if img.is_null() {
+            return None;
+        }
+        let mut info = sys::GhosttyKittyGraphicsPlacementRenderInfo {
+            size: size_of::<sys::GhosttyKittyGraphicsPlacementRenderInfo>(),
+            ..Default::default()
+        };
+        if unsafe {
+            sys::ghostty_kitty_graphics_placement_render_info(it, img, self.term, &mut info)
+        } != sys::GHOSTTY_SUCCESS
+            || !info.viewport_visible
+            || info.source_width == 0
+            || info.source_height == 0
+        {
+            return None;
+        }
+        let generation = image_u64(img, sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION);
+        let src = (
+            info.source_x,
+            info.source_y,
+            info.source_width,
+            info.source_height,
+        );
+        let key = (id, generation, [src.0, src.1, src.2, src.3]);
+        let cached = self.image_hashes.borrow().get(&key).copied();
+        let hash = match cached {
+            Some(h) => h,
+            None => {
+                let px = crop_rgba(img, src)?;
+                let mut hs = blake3::Hasher::new();
+                hs.update(&src.2.to_le_bytes());
+                hs.update(&src.3.to_le_bytes());
+                hs.update(&px);
+                let mut h = [0u8; 16];
+                h.copy_from_slice(&hs.finalize().as_bytes()[..16]);
+                let mut c = self.image_hashes.borrow_mut();
+                if c.len() > 256 {
+                    c.clear();
+                }
+                c.insert(key, h);
+                h
+            }
+        };
+        Some(ImagePlacement {
+            image_id: id,
+            placement_id: pid,
+            hash,
+            width: src.2,
+            height: src.3,
+            col: info.viewport_col,
+            row: info.viewport_row,
+            cols: info.grid_cols,
+            rows: info.grid_rows,
+            z,
+            src,
+            generation,
+        })
+    }
+
+    /// The RGBA pixels of a placement (its image cropped to the source rectangle), if the
+    /// image is still stored unchanged.
+    pub fn image_rgba(&self, p: &ImagePlacement) -> Option<Vec<u8>> {
+        let g: sys::GhosttyKittyGraphics = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
+        if g.is_null() {
+            return None;
+        }
+        let img = unsafe { sys::ghostty_kitty_graphics_image(g, p.image_id) };
+        if img.is_null() || image_u64(img, sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION) != p.generation
+        {
+            return None;
+        }
+        crop_rgba(img, p.src)
     }
 
     fn cb(&mut self) -> &mut CbState {
@@ -1519,6 +1758,138 @@ fn cwd_from_pwd(raw: &str) -> String {
     percent_decode(path)
 }
 
+fn image_u32(img: sys::GhosttyKittyGraphicsImage, key: c_int) -> u32 {
+    let mut v = 0u32;
+    unsafe { sys::ghostty_kitty_graphics_image_get(img, key, (&raw mut v).cast()) };
+    v
+}
+
+fn image_u64(img: sys::GhosttyKittyGraphicsImage, key: c_int) -> u64 {
+    let mut v = 0u64;
+    unsafe { sys::ghostty_kitty_graphics_image_get(img, key, (&raw mut v).cast()) };
+    v
+}
+
+/// An image's stored pixels (any kitty format) as RGBA, cropped to `src`.
+fn crop_rgba(img: sys::GhosttyKittyGraphicsImage, src: (u32, u32, u32, u32)) -> Option<Vec<u8>> {
+    let (w, h) = (
+        image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH),
+        image_u32(img, sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT),
+    );
+    let mut fmt = 0i32;
+    let mut data: *const u8 = ptr::null();
+    let mut len = 0usize;
+    unsafe {
+        sys::ghostty_kitty_graphics_image_get(
+            img,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_FORMAT,
+            (&raw mut fmt).cast(),
+        );
+        if sys::ghostty_kitty_graphics_image_get(
+            img,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+            (&raw mut data).cast(),
+        ) != sys::GHOSTTY_SUCCESS
+        {
+            return None;
+        }
+        sys::ghostty_kitty_graphics_image_get(
+            img,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+            (&raw mut len).cast(),
+        );
+    }
+    let bpp = match fmt {
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_RGB => 3,
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_RGBA => 4,
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA => 2,
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_GRAY => 1,
+        _ => return None,
+    };
+    if data.is_null() || len < w as usize * h as usize * bpp {
+        return None;
+    }
+    let px = unsafe { std::slice::from_raw_parts(data, len) };
+    let (sx, sy, sw, sh) = src;
+    if sx.checked_add(sw)? > w || sy.checked_add(sh)? > h {
+        return None;
+    }
+    if sw as usize * sh as usize * 4 > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let mut out = Vec::with_capacity(sw as usize * sh as usize * 4);
+    for y in sy..sy + sh {
+        let row = &px[(y as usize * w as usize + sx as usize) * bpp..][..sw as usize * bpp];
+        for p in row.chunks_exact(bpp) {
+            match bpp {
+                4 => out.extend_from_slice(p),
+                3 => out.extend_from_slice(&[p[0], p[1], p[2], 255]),
+                2 => out.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
+                _ => out.extend_from_slice(&[p[0], p[0], p[0], 255]),
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Install the PNG decoder for kitty `f=100` transmissions (process-wide, once).
+fn install_png_decoder() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        sys::ghostty_sys_set(
+            sys::GHOSTTY_SYS_OPT_DECODE_PNG,
+            decode_png as sys::GhosttySysDecodePngFn as *const c_void,
+        );
+    });
+}
+
+/// Decode a PNG into RGBA bytes owned by the engine's allocator. Bounded by
+/// [`MAX_IMAGE_BYTES`] and [`PNG_MAX_SIDE`]; never panics across the FFI boundary.
+unsafe extern "C" fn decode_png(
+    _ud: *mut c_void,
+    alloc: *const sys::GhosttyAllocator,
+    data: *const u8,
+    len: usize,
+    out: *mut sys::GhosttySysImage,
+) -> bool {
+    let input = unsafe { bytes(sys::GhosttyString { ptr: data, len }) };
+    let decoded = std::panic::catch_unwind(|| decode_png_rgba(input))
+        .ok()
+        .flatten();
+    let Some((w, h, px)) = decoded else {
+        return false;
+    };
+    let buf = unsafe { sys::ghostty_alloc(alloc, px.len()) };
+    if buf.is_null() {
+        return false;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(px.as_ptr(), buf, px.len());
+        *out = sys::GhosttySysImage {
+            width: w,
+            height: h,
+            data: buf,
+            data_len: px.len(),
+        };
+    }
+    true
+}
+
+/// PNG bytes -> (width, height, RGBA), within the image limits.
+pub fn decode_png_rgba(input: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut r =
+        image::ImageReader::with_format(std::io::Cursor::new(input), image::ImageFormat::Png);
+    let mut lim = image::Limits::default();
+    lim.max_image_width = Some(PNG_MAX_SIDE);
+    lim.max_image_height = Some(PNG_MAX_SIDE);
+    lim.max_alloc = Some(2 * MAX_IMAGE_BYTES as u64);
+    r.limits(lim);
+    let img = r.decode().ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    let px = img.into_raw();
+    (px.len() <= MAX_IMAGE_BYTES).then_some((w, h, px))
+}
+
 fn mark_of(sem: i32) -> u8 {
     match sem {
         sys::GHOSTTY_ROW_SEMANTIC_PROMPT => mark::PROMPT,
@@ -1828,6 +2199,110 @@ mod tests {
         fx(&mut e, long.as_bytes());
         assert_eq!(e.row(0).text(), "L");
         assert!(e.row(0).links.is_empty());
+    }
+
+    /// Kitty transmit+place of raw pixels: `w`×`h` RGBA at the cursor, `cols`×`rows` cells.
+    fn kitty_rgba(id: u32, w: u32, h: u32, px: &[u8], extra: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(px);
+        format!("\x1b_Ga=T,i={id},f=32,s={w},v={h},q=2{extra};{b64}\x1b\\").into_bytes()
+    }
+
+    #[test]
+    fn kitty_placements_and_pixels() {
+        let mut e = Engine::new(20, 6, 10);
+        assert!(e.image_placements().is_empty());
+        let g0 = e.images_generation();
+        // 4x2 pixels, red then green rows; placed over 3x2 cells at (2,1).
+        let mut px = Vec::new();
+        for y in 0..2 {
+            for _ in 0..4 {
+                px.extend_from_slice(if y == 0 {
+                    &[255, 0, 0, 255]
+                } else {
+                    &[0, 255, 0, 255]
+                });
+            }
+        }
+        let mut b = b"\x1b[2;3H".to_vec();
+        b.extend(kitty_rgba(7, 4, 2, &px, ",c=3,r=2"));
+        fx(&mut e, &b);
+        assert_ne!(e.images_generation(), g0);
+        let ps = e.image_placements();
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        let p = &ps[0];
+        assert_eq!((p.image_id, p.col, p.row, p.cols, p.rows), (7, 2, 1, 3, 2));
+        assert_eq!((p.width, p.height), (4, 2));
+        assert_eq!(e.image_rgba(p).unwrap(), px);
+        // A source rectangle crops: the bottom row only, a different content hash.
+        let mut b = b"\x1b[5;1H".to_vec();
+        b.extend_from_slice(b"\x1b_Ga=p,i=7,p=2,x=0,y=1,w=4,h=1,c=2,r=1,q=2\x1b\\");
+        fx(&mut e, &b);
+        let ps = e.image_placements();
+        assert_eq!(ps.len(), 2, "{ps:?}");
+        let crop = ps.iter().find(|p| p.placement_id == 2).unwrap();
+        assert_eq!((crop.width, crop.height, crop.row), (4, 1, 4));
+        assert_eq!(e.image_rgba(crop).unwrap(), px[16..].to_vec());
+        assert_ne!(crop.hash, p.hash);
+        // Scrolling moves placements up; off the top they are gone.
+        fx(&mut e, b"\x1b[6;1H\r\n");
+        let moved: Vec<i32> = e.image_placements().iter().map(|p| p.row).collect();
+        assert!(moved.contains(&0) && moved.contains(&3), "{moved:?}");
+        fx(&mut e, b"\r\n\r\n\r\n\r\n\r\n\r\n");
+        assert!(e.image_placements().is_empty());
+        // Delete.
+        let mut e = Engine::new(20, 6, 10);
+        fx(&mut e, &kitty_rgba(9, 4, 2, &px, ",c=2,r=1"));
+        assert_eq!(e.image_placements().len(), 1);
+        fx(&mut e, b"\x1b_Ga=d,d=I,i=9,q=2\x1b\\");
+        assert!(e.image_placements().is_empty());
+    }
+
+    #[test]
+    fn kitty_png_is_decoded_and_oversized_images_refused() {
+        // A 2x1 PNG (red, blue) made with the image crate.
+        let mut png = Vec::new();
+        image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255])
+            .unwrap()
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let mut e = Engine::new(20, 6, 10);
+        let out = fx(
+            &mut e,
+            format!("\x1b_Ga=T,i=3,f=100,c=2,r=1;{b64}\x1b\\").as_bytes(),
+        );
+        assert!(
+            out.contains(&Effect::Reply(b"\x1b_Gi=3;OK\x1b\\".to_vec())),
+            "{out:?}"
+        );
+        let p = &e.image_placements()[0];
+        assert_eq!((p.width, p.height), (2, 1));
+        assert_eq!(
+            e.image_rgba(p).unwrap(),
+            vec![255, 0, 0, 255, 0, 0, 255, 255]
+        );
+        assert!(decode_png_rgba(b"not a png").is_none());
+        // More pixels than the per-image limit: refused, nothing placed.
+        let side = 3000u32; // 3000*3000*4 > 32 MiB
+        let big = format!("\x1b_Ga=T,i=4,f=32,s={side},v={side},t=d,q=1;AAAA\x1b\\");
+        let mut e = Engine::new(20, 6, 10);
+        fx(&mut e, big.as_bytes());
+        assert!(e.image_placements().is_empty());
+        // Arbitrary file paths (t=f) are not read on the program's behalf.
+        let path = base64::engine::general_purpose::STANDARD.encode("/etc/hosts");
+        let out = fx(
+            &mut e,
+            format!("\x1b_Ga=T,i=5,f=100,t=f;{path}\x1b\\").as_bytes(),
+        );
+        assert!(e.image_placements().is_empty());
+        assert!(
+            out.iter().any(
+                |f| matches!(f, Effect::Reply(r) if String::from_utf8_lossy(r).contains("i=5;E"))
+            ),
+            "{out:?}"
+        );
     }
 
     #[test]

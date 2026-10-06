@@ -880,6 +880,7 @@ fn draw_pane_at(
         return;
     };
     draw_pane(g, buf, r);
+    crate::pane_images::draw(app, g, app.cur, pid, r);
     crate::osc::draw_hover(app, g, app.cur, pid, r);
     // A failed command's exit code for 5 s (03 §8): in the corner of unfocused panes; the
     // focused pane's shows in the tab bar instead (the focused pane is the agent's, 08 §0).

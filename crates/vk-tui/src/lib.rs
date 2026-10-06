@@ -25,6 +25,7 @@ pub mod layouts;
 pub mod nav;
 pub mod notifications;
 pub mod osc;
+pub mod pane_images;
 pub mod parity;
 #[cfg(test)]
 mod parity_tests;

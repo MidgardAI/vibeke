@@ -313,6 +313,38 @@ pub enum ServerFrame {
         pane: String,
         selection: ClipSel,
     },
+    /// Inbound kitty graphics (03 §9): an image's pixels, sent once per client per content
+    /// hash before the first `PaneImages` that places it. `rgba_z` is zlib-deflated RGBA of
+    /// `width × height`. Appended (render protocol 4).
+    Image {
+        hash: String,
+        width: u32,
+        height: u32,
+        rgba_z: Vec<u8>,
+    },
+    /// The visible kitty placements of a terminal pane (replaces the previous set; empty =
+    /// none). Sent after the cell frame whenever the set or a position changed. Appended
+    /// (render protocol 4).
+    PaneImages {
+        pane: String,
+        epoch: u32,
+        places: Vec<ImagePlace>,
+    },
+}
+
+/// One kitty image placement on a terminal pane (03 §9): image `hash` scaled into `cols ×
+/// rows` cells whose top-left is (`col`, `row`) of the pane screen (negative when partly
+/// scrolled off; the client clips).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImagePlace {
+    pub hash: String,
+    pub width: u32,
+    pub height: u32,
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
+    pub z: i32,
 }
 
 /// One pushed event: its sequence number and type for cheap routing, and the full event as
@@ -725,6 +757,30 @@ mod tests {
         };
         assert_eq!(rt_client(&r), r);
         assert_eq!(encode(&r).unwrap()[4], 17);
+        let img = ServerFrame::Image {
+            hash: "ab".into(),
+            width: 2,
+            height: 1,
+            rgba_z: vec![1, 2, 3],
+        };
+        assert_eq!(rt_server(&img), img);
+        assert_eq!(encode(&img).unwrap()[4], 16);
+        let pi = ServerFrame::PaneImages {
+            pane: "P".into(),
+            epoch: 3,
+            places: vec![ImagePlace {
+                hash: "ab".into(),
+                width: 2,
+                height: 1,
+                col: -1,
+                row: 4,
+                cols: 3,
+                rows: 2,
+                z: 0,
+            }],
+        };
+        assert_eq!(rt_server(&pi), pi);
+        assert_eq!(encode(&pi).unwrap()[4], 17);
         let row = Row {
             spans: vec![Span {
                 style: Style::default(),

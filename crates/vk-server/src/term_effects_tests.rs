@@ -324,6 +324,121 @@ async fn clipboard_read_round_trip() {
     assert_eq!(osc52_reply(b"hi", true), b"\x1b]52;p;aGk=\x1b\\");
 }
 
+/// Inbound kitty graphics over a real render stream (03 §9): the pixels go once per hash,
+/// placements after the cell frame, and an unchanged image is not resent when it moves.
+#[tokio::test(flavor = "multi_thread")]
+async fn kitty_images_reach_the_client_once_per_hash() {
+    use base64::Engine as _;
+    let e = env();
+    let (rt, _rx) = e.pane("P1");
+    let (client, server_side) = tokio::io::duplex(1 << 22);
+    let (srd, swr) = tokio::io::split(server_side);
+    let s2 = e.server.clone();
+    tokio::spawn(async move {
+        let _ = crate::render::serve(s2, srd, swr, "tui-a".into(), false, 60).await;
+    });
+    let (mut crd, mut cwr) = tokio::io::split(client);
+    asyncio::write_frame(
+        &mut cwr,
+        &ClientFrame::ViewHint {
+            panes: vec![PaneRect {
+                pane: "P1".into(),
+                cols: 40,
+                rows: 10,
+            }],
+            active: true,
+        },
+    )
+    .await
+    .unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut cwr).await.unwrap();
+    let px = vec![200u8; 4 * 2 * 4];
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&px);
+    let img = format!("\x1b[3;5H\x1b_Ga=T,i=1,f=32,s=4,v=2,c=3,r=2,q=2;{b64}\x1b\\");
+    e.output(&rt, img.as_bytes());
+    rt.rev_tx.send_modify(|r| *r += 1);
+    e.server.screen_dirty.notify_waiters();
+    let mut images = Vec::new();
+    let mut places = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while places.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no PaneImages");
+        let f = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            asyncio::read_frame::<_, ServerFrame>(&mut crd),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        match f {
+            ServerFrame::Image {
+                hash,
+                width,
+                height,
+                rgba_z,
+            } => {
+                assert_eq!((width, height), (4, 2));
+                assert_eq!(vk_browser::kitty::unzlib(&rgba_z).unwrap(), px);
+                images.push(hash);
+            }
+            ServerFrame::PaneImages {
+                pane, places: p, ..
+            } => {
+                assert_eq!(pane, "P1");
+                places = Some(p);
+            }
+            ServerFrame::PaneFull {
+                pane, epoch, rev, ..
+            } => {
+                asyncio::write_frame(&mut cwr, &ClientFrame::Ack { pane, epoch, rev })
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::flush(&mut cwr).await.unwrap();
+            }
+            _ => {}
+        }
+    }
+    let places = places.unwrap();
+    assert_eq!(images.len(), 1);
+    assert_eq!(places.len(), 1);
+    let p = &places[0];
+    assert_eq!(
+        (p.hash.as_str(), p.col, p.row, p.cols, p.rows),
+        (images[0].as_str(), 4, 2, 3, 2)
+    );
+    // Scroll: the placement moves up; no second Image frame.
+    e.output(&rt, b"\x1b[10;1H\r\n");
+    rt.rev_tx.send_modify(|r| *r += 1);
+    e.server.screen_dirty.notify_waiters();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "no moved placement");
+        let f = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            asyncio::read_frame::<_, ServerFrame>(&mut crd),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        match f {
+            ServerFrame::Image { .. } => panic!("image resent"),
+            ServerFrame::PaneImages { places, .. } => {
+                assert_eq!(places[0].row, 1);
+                break;
+            }
+            ServerFrame::PaneDiff {
+                pane, epoch, rev, ..
+            } => {
+                asyncio::write_frame(&mut cwr, &ClientFrame::Ack { pane, epoch, rev })
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::flush(&mut cwr).await.unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
 #[test]
 fn pane_cwd_falls_back_to_the_process_cwd() {
     let e = env();

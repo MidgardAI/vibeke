@@ -362,6 +362,86 @@ pub const GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES: GhosttyTerminalOption = 3
 pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ: GhosttyTerminalOption = 38;
 pub const GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT: GhosttyTerminalOption = 42;
 pub const GHOSTTY_TERMINAL_OPT_RESET: GhosttyTerminalOption = 43;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT: GhosttyTerminalOption = 15;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE: GhosttyTerminalOption = 16;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE: GhosttyTerminalOption = 17;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM: GhosttyTerminalOption = 18;
+pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY: GhosttyTerminalOption = 20;
+
+// ---- kitty_graphics.h ----
+#[repr(C)]
+pub struct GhosttyKittyGraphicsImpl {
+    _p: [u8; 0],
+}
+pub type GhosttyKittyGraphics = *mut GhosttyKittyGraphicsImpl;
+#[repr(C)]
+pub struct GhosttyKittyGraphicsImageImpl {
+    _p: [u8; 0],
+}
+pub type GhosttyKittyGraphicsImage = *const GhosttyKittyGraphicsImageImpl;
+#[repr(C)]
+pub struct GhosttyKittyGraphicsPlacementIteratorImpl {
+    _p: [u8; 0],
+}
+pub type GhosttyKittyGraphicsPlacementIterator = *mut GhosttyKittyGraphicsPlacementIteratorImpl;
+
+pub const GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR: c_int = 1;
+pub const GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION: c_int = 2;
+
+pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID: c_int = 1;
+pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID: c_int = 2;
+pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL: c_int = 3;
+pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z: c_int = 12;
+
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_RGB: c_int = 0;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: c_int = 1;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_PNG: c_int = 2;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA: c_int = 3;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_GRAY: c_int = 4;
+
+pub const GHOSTTY_KITTY_IMAGE_DATA_WIDTH: c_int = 3;
+pub const GHOSTTY_KITTY_IMAGE_DATA_HEIGHT: c_int = 4;
+pub const GHOSTTY_KITTY_IMAGE_DATA_FORMAT: c_int = 5;
+pub const GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR: c_int = 7;
+pub const GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN: c_int = 8;
+pub const GHOSTTY_KITTY_IMAGE_DATA_GENERATION: c_int = 9;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GhosttyKittyGraphicsPlacementRenderInfo {
+    pub size: usize,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub grid_cols: u32,
+    pub grid_rows: u32,
+    pub viewport_col: i32,
+    pub viewport_row: i32,
+    pub viewport_visible: bool,
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+}
+
+// ---- sys.h ----
+pub const GHOSTTY_SYS_OPT_DECODE_PNG: c_int = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttySysImage {
+    pub width: u32,
+    pub height: u32,
+    pub data: *mut u8,
+    pub data_len: usize,
+}
+
+pub type GhosttySysDecodePngFn = unsafe extern "C" fn(
+    *mut c_void,
+    *const GhosttyAllocator,
+    *const u8,
+    usize,
+    *mut GhosttySysImage,
+) -> bool;
 
 pub const GHOSTTY_TERMINAL_SCREEN_PRIMARY: c_int = 0;
 pub const GHOSTTY_TERMINAL_SCREEN_ALTERNATE: c_int = 1;
@@ -380,6 +460,7 @@ pub const GHOSTTY_TERMINAL_DATA_PWD: GhosttyTerminalData = 13;
 pub const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS: GhosttyTerminalData = 15;
 pub const GHOSTTY_TERMINAL_DATA_MODE: GhosttyTerminalData = 37;
 pub const GHOSTTY_TERMINAL_DATA_VT_GROUND: GhosttyTerminalData = 38;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS: GhosttyTerminalData = 30;
 
 // ---- snapshot.h ----
 pub const GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES: c_int = 0;
@@ -559,6 +640,45 @@ unsafe extern "C" {
     ) -> bool;
 
     pub fn ghostty_type_json() -> *const c_char;
+
+    pub fn ghostty_kitty_graphics_get(
+        graphics: GhosttyKittyGraphics,
+        data: c_int,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_kitty_graphics_image(
+        graphics: GhosttyKittyGraphics,
+        image_id: u32,
+    ) -> GhosttyKittyGraphicsImage;
+    pub fn ghostty_kitty_graphics_image_get(
+        image: GhosttyKittyGraphicsImage,
+        data: c_int,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_kitty_graphics_placement_iterator_new(
+        allocator: *const GhosttyAllocator,
+        out_iterator: *mut GhosttyKittyGraphicsPlacementIterator,
+    ) -> GhosttyResult;
+    pub fn ghostty_kitty_graphics_placement_iterator_free(
+        iterator: GhosttyKittyGraphicsPlacementIterator,
+    );
+    pub fn ghostty_kitty_graphics_placement_next(
+        iterator: GhosttyKittyGraphicsPlacementIterator,
+    ) -> bool;
+    pub fn ghostty_kitty_graphics_placement_get(
+        iterator: GhosttyKittyGraphicsPlacementIterator,
+        data: c_int,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_kitty_graphics_placement_render_info(
+        iterator: GhosttyKittyGraphicsPlacementIterator,
+        image: GhosttyKittyGraphicsImage,
+        terminal: GhosttyTerminal,
+        out_info: *mut GhosttyKittyGraphicsPlacementRenderInfo,
+    ) -> GhosttyResult;
+
+    pub fn ghostty_sys_set(option: c_int, value: *const c_void) -> GhosttyResult;
+    pub fn ghostty_alloc(allocator: *const GhosttyAllocator, len: usize) -> *mut u8;
 }
 
 #[cfg(test)]
@@ -676,6 +796,26 @@ mod tests {
             command,
             error
         });
+        layout!(GhosttyKittyGraphicsPlacementRenderInfo {
+            size,
+            pixel_width,
+            pixel_height,
+            grid_cols,
+            grid_rows,
+            viewport_col,
+            viewport_row,
+            viewport_visible,
+            source_x,
+            source_y,
+            source_width,
+            source_height
+        });
+        layout!(GhosttySysImage {
+            width,
+            height,
+            data,
+            data_len
+        });
         layout!(GhosttyRenderStateCursor {
             size,
             viewport_has_value,
@@ -741,7 +881,26 @@ mod tests {
             GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
             GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
             GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
-            GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, GHOSTTY_TERMINAL_OPT_RESET);
+            GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, GHOSTTY_TERMINAL_OPT_RESET,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+            GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY);
+        enums!("GhosttyKittyGraphicsData": GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+            GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION);
+        enums!("GhosttyKittyGraphicsPlacementData": GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z);
+        enums!("GhosttyKittyImageFormat": GHOSTTY_KITTY_IMAGE_FORMAT_RGB,
+            GHOSTTY_KITTY_IMAGE_FORMAT_RGBA, GHOSTTY_KITTY_IMAGE_FORMAT_PNG,
+            GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA, GHOSTTY_KITTY_IMAGE_FORMAT_GRAY);
+        enums!("GhosttyKittyGraphicsImageData": GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
+            GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, GHOSTTY_KITTY_IMAGE_DATA_FORMAT,
+            GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+            GHOSTTY_KITTY_IMAGE_DATA_GENERATION);
+        enums!("GhosttySysOption": GHOSTTY_SYS_OPT_DECODE_PNG);
         enums!("GhosttyTerminalScreen": GHOSTTY_TERMINAL_SCREEN_PRIMARY,
             GHOSTTY_TERMINAL_SCREEN_ALTERNATE);
         enums!("GhosttyTerminalData": GHOSTTY_TERMINAL_DATA_COLS, GHOSTTY_TERMINAL_DATA_ROWS,
@@ -750,7 +909,7 @@ mod tests {
             GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
             GHOSTTY_TERMINAL_DATA_TITLE, GHOSTTY_TERMINAL_DATA_PWD,
             GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, GHOSTTY_TERMINAL_DATA_MODE,
-            GHOSTTY_TERMINAL_DATA_VT_GROUND);
+            GHOSTTY_TERMINAL_DATA_VT_GROUND, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS);
         enums!("GhosttySnapshotDecoderOption": GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
             GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION);
         enums!("GhosttyRenderStateDirty": GHOSTTY_RENDER_STATE_DIRTY_FALSE,

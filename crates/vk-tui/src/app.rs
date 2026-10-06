@@ -380,6 +380,8 @@ pub struct App {
     pub clip: ClipGate,
     /// Terminal effects on this client: OSC 52 reads, link hover, exit badges (03 §8).
     pub osc: crate::osc::State,
+    /// Inbound kitty graphics of terminal panes (03 §9).
+    pub images: crate::pane_images::State,
     /// Tests only: capture clipboard writes instead of touching the host terminal/clipboard.
     pub clipboard_sink: Option<Vec<(Vec<u8>, bool)>>,
     /// How copies reach the user's clipboard (OSC 52, platform tool, iTerm2 hint).
@@ -761,6 +763,7 @@ impl App {
             uploads: Default::default(),
             clip: Default::default(),
             osc: crate::osc::State::from_env(),
+            images: Default::default(),
             clipboard_sink: None,
             copyout: crate::copyout::Delivery::from_env(),
             last_copy: None,
@@ -1183,6 +1186,7 @@ impl App {
                 modes,
                 title,
             } => {
+                crate::pane_images::on_pane_full(self, i, &pane);
                 self.machines[i].panes.insert(
                     pane.clone(),
                     PaneBuf {
@@ -1311,6 +1315,15 @@ impl App {
                 pane,
                 selection,
             } => crate::osc::on_query(self, i, req, pane, selection),
+            ServerFrame::Image {
+                hash,
+                width,
+                height,
+                rgba_z,
+            } => crate::pane_images::on_image(self, i, hash, width, height, rgba_z),
+            ServerFrame::PaneImages { pane, places, .. } => {
+                crate::pane_images::on_places(self, i, pane, places)
+            }
             ServerFrame::Goodbye { reason } => {
                 self.machines[i].status = if reason.contains("stop") {
                     "stopped".into()
@@ -2673,6 +2686,7 @@ impl App {
         crate::browser::update_views(self);
         crate::gallery::before_draw(self);
         crate::preview_ui::before_draw(self);
+        crate::pane_images::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);
         let (cols, rows) = self.size;
@@ -2680,6 +2694,7 @@ impl App {
         let cursor = draw::compose(self, &mut grid);
         // Browser tile images first; their placeholder cells follow in the grid diff.
         let mut out = crate::browser::take_output(self);
+        out.extend(crate::pane_images::take_output(self));
         if let Some(title) = crate::nav::title_update(self) {
             out.extend_from_slice(&title);
         }

@@ -3717,6 +3717,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "blake3",
+ "image",
  "postcard",
  "serde",
  "serde_json",
