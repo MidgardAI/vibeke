@@ -271,7 +271,6 @@ fn put_pane(e: &Env, id: &str, ws: &str) {
         recovered: None,
         isolation: Default::default(),
         browser: None,
-        jj: None,
     };
     let mut c = e.server.core.lock().unwrap();
     let mut tx = crate::core::Tx::new();
