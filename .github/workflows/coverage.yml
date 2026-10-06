@@ -1,0 +1,51 @@
+name: coverage
+# Line coverage with cargo-llvm-cov over the same nextest run as `mise run test` (spec 10 3:
+# target >= 80% on vk-proto, vk-hold, vk-store, vk-agents, vk-compat). The per-crate table goes
+# to the job summary and the lcov file is uploaded. The run only fails below the target when the
+# repository variable COVERAGE_ENFORCE is "true", so the gate can be switched on once the
+# numbers are there.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "11 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - run: rustup component add llvm-tools-preview
+      - name: Tests under coverage
+        run: >
+          cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+          --ignore-filename-regex '(/tests/|_tests?\.rs$|/build\.rs$|/vendor/)'
+      - name: Per-crate gate
+        env:
+          ENFORCE: ${{ vars.COVERAGE_ENFORCE }}
+        run: |
+          if [ "$ENFORCE" = "true" ]; then
+            python3 scripts/coverage-check.py lcov.info --enforce
+          else
+            python3 scripts/coverage-check.py lcov.info
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: ignore

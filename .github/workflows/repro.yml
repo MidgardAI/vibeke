@@ -1,0 +1,48 @@
+name: repro
+# Reproducible-build double build (spec 09 10, spec 10 M6): the Linux musl release is built
+# twice from the same commit into separate target directories with SOURCE_DATE_EPOCH,
+# --remap-path-prefix and --locked, and the sha256 digests must match (scripts/repro-check.sh).
+# ci.yml only runs the script's stubbed self-test; this runs the real thing. Publishes nothing.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "mise.toml"
+      - "scripts/repro-check.sh"
+      - "scripts/dist.sh"
+      - "**/build.rs"
+      - ".cargo/**"
+      - ".github/workflows/repro.yml"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "mise.toml"
+      - "scripts/repro-check.sh"
+      - "scripts/dist.sh"
+      - "**/build.rs"
+      - ".cargo/**"
+      - ".github/workflows/repro.yml"
+  schedule:
+    - cron: "37 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repro-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Script self-test (stubs)
+        run: sh scripts/tests/repro-check-test.sh
+      - name: Build twice and compare
+        run: sh scripts/repro-check.sh

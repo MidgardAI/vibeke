@@ -1,0 +1,12 @@
+{
+  "platforms": {
+    "darwin-arm64": {
+      "attach": 0.002021,
+      "cold_start": 0.164335,
+      "reboot_restore_30_panes": 3.290787,
+      "restart_30_panes": 0.21333,
+      "vt_throughput_mb_s": 21703.265
+    }
+  },
+  "tolerance": 1.0
+}

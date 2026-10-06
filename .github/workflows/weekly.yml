@@ -1,0 +1,109 @@
+name: weekly
+# The expensive runs (spec 10 sections 5.2, 6, 7): chaos with ten times the nightly iteration
+# count, fuzzing for longer per target, corpus minimization and a multi-hour soak. Needs no
+# secrets and pushes nothing: the minimized corpus is an artifact to review and commit by hand.
+on:
+  schedule:
+    - cron: "43 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      chaos_iterations:
+        description: "Kill-server iterations"
+        default: "2000"
+      fuzz_seconds:
+        description: "Seconds per fuzz target"
+        default: "7200"
+      soak_seconds:
+        description: "Soak duration in seconds (a GitHub job is capped at 6 h)"
+        default: "19800"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CHAOS_ITER: ${{ inputs.chaos_iterations || '2000' }}
+  FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '7200' }}
+  SOAK_SECONDS: ${{ inputs.soak_seconds || '19800' }}
+
+jobs:
+  chaos-long:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: VIBEKE_CHAOS_ITER="$CHAOS_ITER" cargo test --release -p vibeke --test chaos kill_server_mid_output_loses_nothing -- --nocapture
+      - run: VIBEKE_CHAOS_ITER=100 cargo test --release -p vibeke --test chaos_gaps -- --include-ignored --skip restore_rotates --skip stalled_client_is_disconnected --nocapture
+
+  fuzz-long:
+    # Targets that are fastest to saturate share a job each; matrix keeps jobs under the cap.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: vt_parse, sanitizer: none }
+          - { target: vt_resize_interleave, sanitizer: none }
+          - { target: osc_image, sanitizer: none }
+          - { target: render_frame_decode, sanitizer: address }
+          - { target: holder_proto_decode, sanitizer: address }
+          - { target: jsonrpc_decode, sanitizer: address }
+          - { target: compat_socket, sanitizer: address }
+          - { target: hook_payloads, sanitizer: address }
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\nfuzz -> fuzz/target"
+      - run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_SANITIZER: ${{ matrix.sanitizer }}
+          FUZZ_TIME: ${{ env.FUZZ_SECONDS }}
+        run: sh scripts/fuzz.sh
+      - name: Minimize the corpus (spec 10 section 6, weekly)
+        if: always()
+        env:
+          TARGET: ${{ matrix.target }}
+          SANITIZER: ${{ matrix.sanitizer }}
+        run: cargo +nightly fuzz cmin --fuzz-dir fuzz --sanitizer "$SANITIZER" "$TARGET" fuzz/corpus/"$TARGET"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus-min-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30
+
+  soak:
+    # Long soak scaffold (see nightly.yml); the release-gate 24 h run needs a dedicated host.
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p vibeke
+      - run: python3 scripts/soak.py --bin target/release/vibeke --panes 50 --seconds "$SOAK_SECONDS" --report soak-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-report
+          path: soak-report.json
+          if-no-files-found: ignore

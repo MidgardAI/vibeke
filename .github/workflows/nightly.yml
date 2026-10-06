@@ -1,0 +1,169 @@
+name: nightly
+# Long-running checks that are too slow or too noisy for every PR (spec 10 sections 3, 5.2, 6,
+# 7): the full chaos iteration count, libFuzzer on every target, deeper property runs, the
+# VT suite on every OS, a beta-toolchain build and a short soak. Needs no secrets, pushes
+# nothing; failing runs upload their artifacts (fuzz crashes) for triage.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      chaos_iterations:
+        description: "Kill-server iterations (spec 10 5.2: 500 nightly)"
+        default: "500"
+      fuzz_seconds:
+        description: "Seconds per fuzz target (spec 10 6: 3600 nightly)"
+        default: "3600"
+      soak_seconds:
+        description: "Soak duration in seconds (smoke default 900)"
+        default: "900"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CHAOS_ITER: ${{ inputs.chaos_iterations || '500' }}
+  FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '3600' }}
+  SOAK_SECONDS: ${{ inputs.soak_seconds || '900' }}
+
+jobs:
+  chaos:
+    # Full matrix with randomized kill points; hard assertions (0 lost processes, 0 duplicated
+    # input) must hold in every iteration. Release builds: the VT replay is slow in debug.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Chaos suite (kill -9 mid-output, input dedupe, holder reconnect)
+        run: VIBEKE_CHAOS_ITER="$CHAOS_ITER" cargo test --release -p vibeke --test chaos -- --nocapture
+      - name: Chaos gaps (holder crash, cursor identity, stalled client)
+        run: VIBEKE_CHAOS_ITER=20 cargo test --release -p vibeke --test chaos_gaps -- --nocapture
+      - name: Ring overflow (ring_only) in release
+        run: VIBEKE_CHAOS_ITER=3 cargo test --release -p vibeke --test chaos_gaps -- --ignored ring_overflow --nocapture
+      - name: Startup and recovery timings (generous bounds)
+        run: cargo test --release -p vibeke --test timing -- --nocapture --test-threads=1
+
+  vt:
+    # The VT engine and its conformance corpus on every OS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release -p vk-term
+
+  props:
+    # Stable-toolchain random and property runs at much higher counts than the PR gate.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: VK_FUZZ_CASES=100000 cargo test --release -p vk-fuzz --test random
+      - run: PROPTEST_CASES=20000 cargo test --release -p vk-fuzz --test props
+
+  fuzz:
+    # libFuzzer (cargo-fuzz, nightly) on every target; spec 10 6 asks for one CPU-hour each.
+    # The native VT engine is not built with ASan, so the targets that drive it run without it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: holder_proto_decode, sanitizer: address }
+          - { target: render_frame_decode, sanitizer: address }
+          - { target: jsonrpc_decode, sanitizer: address }
+          - { target: key_grammar, sanitizer: address }
+          - { target: vt_parse, sanitizer: none }
+          - { target: vt_resize_interleave, sanitizer: none }
+          - { target: osc_image, sanitizer: none }
+          - { target: socks5_handshake, sanitizer: address }
+          - { target: mux_frame_decode, sanitizer: address }
+          - { target: hook_payloads, sanitizer: address }
+          - { target: policy_match, sanitizer: address }
+          - { target: kitty_probe, sanitizer: address }
+          - { target: compat_import, sanitizer: address }
+          - { target: compat_socket, sanitizer: address }
+          - { target: transcript_parse, sanitizer: address }
+          - { target: manifest_toml, sanitizer: address }
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\nfuzz -> fuzz/target"
+      - name: Nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_SANITIZER: ${{ matrix.sanitizer }}
+          FUZZ_TIME: ${{ env.FUZZ_SECONDS }}
+        run: sh scripts/fuzz.sh
+      - name: Keep the crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+      - name: Keep the grown corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  beta:
+    # Early warning for the next stable (spec 10 3): build, lint and test-build on beta.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: beta
+      - run: rustup toolchain install beta --profile minimal --component clippy
+      - run: cargo +beta build --workspace --all-targets
+      - run: cargo +beta clippy --workspace --all-targets -- -D warnings
+      - run: cargo +beta test --workspace --no-run
+
+  soak:
+    # Scaffold of the spec 10 7 soak (RSS/fd/seq/liveness over time). The 24 h, 50-agent run
+    # with recorded harness sessions needs a dedicated host; this is the part that runs here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p vibeke
+      - run: python3 scripts/soak.py --bin target/release/vibeke --panes 50 --seconds "$SOAK_SECONDS" --report soak-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-report
+          path: soak-report.json
+          if-no-files-found: ignore

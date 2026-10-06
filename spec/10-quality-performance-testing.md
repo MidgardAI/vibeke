@@ -84,6 +84,8 @@ Not measured: disk write rate, `state.db` growth, spinner CPU scenarios, 10k-lin
 | Server upgrade (`vibeke update`) → back to interactive | ≤ 2 s | M1 |
 | Reboot → layout restored + resumable agents offered | ≤ 3 s after login (excluding agent startup) | M1 |
 
+> **As built.** `crates/vibeke/tests/timing.rs` times four of these against a real server through the CLI: cold start to the first answered call (≤ 300 ms), `render.attach` to its reply (median of five, ≤ 50 ms), `kill -9` restart with 30 panes until the full pane list returns (≤ 1 s), and a simulated reboot (server and all 30 holders killed) until every slot has a fresh live process (≤ 3 s). The bounds are generous by default (5 s / 2 s / 30 s / 60 s) so a shared runner or a debug build never flakes; `VIBEKE_PERF_STRICT=1` switches to the budgets above. Each run prints its measurement and, with `VIBEKE_TIMING_REPORT=<file>`, appends `name<TAB>ms` for the perf gate (§2.2). Not timed yet: first frame of the TUI, "all shells at prompt", repaint after the nudge, `vibeke update`.
+
 ### 1.5 Remote bandwidth
 
 | Metric | Budget | Gate |
@@ -141,6 +143,8 @@ If these don't improve materially over the baseline, the release does not gradua
 - **Recovery timing**: chaos harness (§5) timestamps `kill -9` → all panes `recovered`.
 - Results are written as JSON and pushed to a benchmark dashboard (static site from `gh-pages`, `github-action-benchmark`). **PR gate**: fail if any budget is exceeded, or if a metric regresses > 10% vs. `main` median of last 5 runs (with a re-run to rule out noise).
 
+> **As built.** `vk-bench` and the dashboard do not exist; the interim gate is `scripts/perf-gate.sh` (workflow `perf.yml`, PRs touching `crates/**` plus nightly). It is built for shared runners, where absolute numbers are meaningless: five samples of the startup/recovery timings (§1.4) and the VT throughput test, each normalized by a machine calibration (a fixed hashing workload and a fixed process-spawn workload) taken in the same sample, reduced to a median, and compared with the ratios in `tests/perf/baseline.json` by `scripts/perf_compare.py`. A metric fails only when the median ratio is worse than the baseline by more than 100% (`PERF_TOLERANCE`), never when the samples disagree by more than 3x (reported as noisy), and a platform with no baseline entry is report-only; every run uploads a `candidate.json` to adopt (`PERF_UPDATE=1 sh scripts/perf-gate.sh` on a quiet machine). The checked-in baseline is darwin-arm64 only; Linux runners report until a Linux candidate is committed. The ">10% vs main" rule and the absolute-budget checks stay with `scripts/perf-budgets.sh` (report-only) until a quiet reference machine exists (§2.1). The gate's own logic is covered by `scripts/tests/perf-compare-test.sh`.
+
 ---
 
 ## 3. Test strategy overview
@@ -164,6 +168,8 @@ If these don't improve materially over the baseline, the release does not gradua
 **Toolchain**: CI builds and tests with the latest stable Rust pinned in `mise.toml` (01 §2), bumped within a week of each stable release by an automated PR that must pass the full PR gate; a nightly job also builds with the upcoming beta to catch breakage early. No MSRV older than the pinned stable is tested or supported.
 
 Coverage target: ≥ 80% line coverage on `vk-proto`, `vk-hold`, `vk-store`, `vk-agents` (adapter logic), `vk-compat`; the TUI is covered by snapshot and e2e tests instead.
+
+> **As built.** `proptest` (dev-dependency of `vk-fuzz`, `crates/vk-fuzz/tests/props.rs`, 64 cases per property on a PR, `PROPTEST_CASES` for the nightly) covers layout math (one rect per pane, inside the area, no overlap; non-empty with room), key grammar (parse ⇄ print round trip, modifier order irrelevant, no panics), redaction (idempotent, planted credentials removed, assignments keep their key) and the destination policy (metadata/link-local never allowed without a rule, IPv4-mapped forms included). ID mapping and `insta` snapshots are not adopted. Tight areas can produce empty layout rects (a documented property of `rects`). Workflows added next to `ci.yml`: `nightly.yml` (full chaos, libFuzzer on every target, high-count property runs, VT on every OS, beta toolchain build, soak smoke), `weekly.yml` (long chaos, long fuzz, corpus minimization, multi-hour soak), `perf.yml` (§2.2), `coverage.yml` (`cargo llvm-cov nextest`; `scripts/coverage-check.py` prints the per-crate table and fails below the target only when the repository variable `COVERAGE_ENFORCE` is `true`), `repro.yml` (the real double build of `scripts/repro-check.sh`) and `api-schema.yml` (§8.2). None needs a secret or publishes anything. Not built: remote netem runs, the automated Rust-bump PR, self-hosted and Windows runners.
 
 ---
 
@@ -201,6 +207,8 @@ The goal: every key and chord the user presses reaches the program in the pane e
 - Subscription tests: `include_snapshot` atomicity under concurrent mutations (property test: snapshot + subsequent events reproduce final projections), overflow → resubscribe, truncated cursors.
 - CLI tests: golden `--json` outputs and exit codes (0/1/2/3/4/5) for representative commands; `vibeke <noun>` with no verb never mutates (asserted by event count).
 - TS client e2e: the generated `@vibeke/client` runs a subset to catch schema/codegen drift.
+
+> **As built.** The per-method rule is enforced by `crates/vibeke/tests/api_method_coverage.rs`: every method in the schema catalog must appear in an integration test (`crates/*/tests`, plus vk-server's in-process `*_tests.rs`), either as the quoted name (`"pane.list"`) or as the CLI spelling that maps to it in `vk_cli::COMMANDS`. The exceptions are listed with a reason in `crates/vibeke/tests/api_method_allowlist.txt` (42 methods at the time of writing); the test also fails when a listed method becomes covered or no longer exists, so the list only shrinks. The check is textual and does not yet require both a success and an error test per method. `vk-fixture`, event-contract tests, the subscription-atomicity property test, the "noun with no verb" check and exit-code goldens are not built.
 
 ### 4.4 Harness golden tests [M1+]
 
@@ -279,6 +287,8 @@ Failpoints via the `fail` crate compiled in under `--features chaos` (never in r
 - Release gate: zero failures of hard assertions over the last 7 nightlies.
 - **Raw-shell visual fidelity** (tracked, not gated): % of raw-shell panes whose post-recovery screen equals the reference cell-for-cell. Target ≥ 95% without ring overflow; regressions > 2 points between nightlies open a P2.
 
+> **As built.** `crates/vibeke/tests/chaos.rs` (`VIBEKE_CHAOS_ITER`, default 10 on a PR, 500 nightly via `nightly.yml`, 2000 weekly) and `crates/vibeke/tests/chaos_gaps.rs` drive a real server and holders. Built: ring overflow (the server is down while a pane emits 20 MB over the 16 MiB ring: `pane.recovered {method: ring_only}` once, process alive, pane usable; slow in a debug build, so `#[ignore]`d and run in release by the nightly: `cargo test --release -p vibeke --test chaos_gaps -- --ignored ring_overflow`); holder crash (`kill -9` a holder: the slot gets a fresh shell, the run ends `holder_lost`, a neighbouring pane keeps its process, holder and input path; in this build the pane is respawned rather than left `exited`); event-log identity (`session_uuid`/`log_epoch` survive `kill -9`, a cursor from another epoch is refused with `truncated` plus the current cursor); a render client that stops reading cannot slow the server or other panes. Not built, kept as ignored tests that state the gap: restoring `state.db` from a backup does not rotate `log_epoch` (`restore_rotates_log_epoch`), and a stalled client is not disconnected after 30 s (`stalled_client_is_disconnected_after_30_seconds`). The `fail`-crate failpoints, pending-approval, pipe-mode, SQLite-failure, adapter-panic, clock-jump and protocol-skew scenarios are not built.
+
 ---
 
 ## 6. Fuzzing [M1+, continuous]
@@ -301,6 +311,8 @@ Failpoints via the `fail` crate compiled in under `--features chaos` (never in r
 
 Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submit to OSS-Fuzz.
 
+> **As built.** 16 targets share one set of functions in `crates/vk-fuzz/src/targets.rs` and `targets_extra.rs`: every target in the table above, plus `socks5_handshake`, `mux_frame_decode`, `kitty_probe`, `compat_import` and `manifest_toml`. Added by lane 1D: `vt_resize_interleave` (cursor inside the grid, requested dimensions, visible row count after every feed and resize, snapshot → restore equality), `compat_socket` (first line parsed as one request; the reply is exactly one valid JSON line carrying the request id), `transcript_parse` (bounded rows on huge lines, `consumed` ends on a newline, a parse split at any cut resumes without losing a line) and `osc_image` (kitty APC, sixel DCS and iTerm2 OSC 1337 payloads with hostile sizes into the engine, the bounded tile inflater, the placeholder codec). `osc_image` exercises the engine's decoders and Vibeke's own limits, not a separate decoder crate. Each has a seed corpus in `fuzz/corpus/` and a `fuzz/fuzz_targets` entry; on stable they run in `mise run fuzz-smoke` and `cargo test -p vk-fuzz` (a few hundred cases each), under libFuzzer in `nightly.yml` (default 3600 s per target, one matrix job each; `fuzz/artifacts` uploaded on failure) and `weekly.yml` (longer, plus `cargo fuzz cmin`; the minimized corpus is an artifact, never pushed). Crashes are not auto-filed as issues, and OSS-Fuzz is not set up.
+
 ---
 
 ## 7. Soak test [weekly from late M1, release gate]
@@ -309,6 +321,8 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 - **Duration**: 24 h.
 - **Assertions**: RSS growth of server ≤ 10% after hour 2 (no leaks); fd count stable; CPU within §1.3 budgets (scaled); no Interaction decision delivered twice, `delivery_unknown` rate ≤ 0.5%; event log `seq` gapless; subscriber saw every event; no `overflow` without recovery; scrollback archive and retention compaction run without blocking (p99 input latency during compaction ≤ 5 ms); `state.db` size within §1.3; zero panics in logs.
 - Variant (nightly, 2 h): same over the `wifi` netem remote profile.
+
+> **As built.** `scripts/soak.py` is the scaffold: an isolated server with N panes (output, idle, burst, shell mix), a poller (`pane list` every 2 s plus an event reader that records any hole in `seq`), and RSS/fd sampling every 5 s. It asserts RSS growth ≤ 10% after warm-up (median of the first three against the last three post-warm-up samples), a stable fd count, gapless `seq`, every pane process alive and the pane list complete, and no `panicked at` in the logs, and prints a JSON summary (exit 1 on a failed assertion). `nightly.yml` runs it for 15 minutes with 50 panes and `weekly.yml` for 5.5 hours (the job cap). Not built: fixture agents through hook shims, scripted interaction answers, real build loops, htop/vim panes, Vite previews, the TUI client, `delivery_unknown` and compaction-latency assertions, the 24 h release-gate run (needs a dedicated host) and the netem variant.
 
 ---
 
@@ -327,7 +341,7 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 2. Keyboard matrix tier-1 green; real-terminal latency gate on the Mac mini.
 3. Harness golden replay green for all supported versions; no open "harness drift" PR older than 7 days for a built-in harness.
 4. From M5: full Herdr conformance inventory green for every advertised baseline/platform, unchanged plugin fixtures and fixture replay/smoke green; native plugin scopes and legacy trust/revocation tests green (§4.8). Windows joins at M6.
-5. Schema diff: no breaking API changes within major.
+5. Schema diff: no breaking API changes within major. *(As built: `scripts/schema-diff.py`, run by `api-schema.yml`. It compares the generated `docs/api/vibeke-1.schema.json` with the base revision's (the pull request's base branch, or the last `v*` tag on pushes and nightly; before the first tag only the in-tree `vibeke-1.frozen.json` is checked) and fails on a removed method or event, a changed `mutating`/`scope`/`pane_scope` flag, a params shape that stopped accepting something (removed property, type change, removed enum value, newly required property) or a result/event shape that stopped producing something. Label a PR `api-break-approved` for an intended pre-1.0 break. The checker is self-tested by `scripts/tests/schema-diff-test.sh`; `api_docs.rs` keeps enforcing the in-tree freeze. The rest of this checklist belongs to the unbuilt `release` workflow.)*
 6. Changelog generated from conventional commits + hand-written highlights; `release-notes.json` embedded for the TUI "what's new".
 7. Build artifacts (macOS arm64/x64 universal + notarized helper app bundle, Linux x64/arm64 musl, Windows x64 from M6), minisign signatures, Sigstore provenance, sha256 sums.
 8. Smoke-install on clean VMs (macOS, Ubuntu, Fedora, Arch, NixOS, Windows M6) via `install.sh`, Homebrew tap, Nix flake; run `vibeke doctor` and a 2-minute e2e.

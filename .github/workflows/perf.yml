@@ -1,0 +1,52 @@
+name: perf
+# Relative performance gate (spec 10 2.2). Shared runners are noisy, so nothing here compares
+# absolute numbers: every metric is divided by a calibration taken in the same sample, five
+# samples are reduced to a median, and the run only fails when that median is worse than the
+# stored baseline ratio by more than 100 percent (and not when the samples disagree by more
+# than 3x). Platforms without an entry in tests/perf/baseline.json are reported only; the run
+# always uploads a candidate baseline to adopt (PERF_UPDATE=1 sh scripts/perf-gate.sh).
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.lock"
+      - "scripts/perf-gate.sh"
+      - "scripts/perf_compare.py"
+      - "tests/perf/**"
+      - ".github/workflows/perf.yml"
+  schedule:
+    - cron: "31 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Gate logic self-test
+        run: sh scripts/tests/perf-compare-test.sh
+      - name: Perf gate (5 samples, release)
+        run: sh scripts/perf-gate.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-${{ matrix.os }}
+          path: |
+            target/perf-gate/candidate.json
+            target/perf-gate/s*/timing.tsv
+            target/perf-gate/s*/cal.json
+          if-no-files-found: ignore
