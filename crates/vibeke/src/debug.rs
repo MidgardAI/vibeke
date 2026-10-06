@@ -123,6 +123,67 @@ pub fn ptyshot(args: &[String]) -> i32 {
     0
 }
 
+/// `vibeke debug fake-chromium [chromium args…]`: a fake Chromium speaking CDP on fds 3/4
+/// (`--remote-debugging-pipe`), for browser-pane tests without a browser
+/// (`VIBEKE_CHROMIUM=<script exec'ing this>`). `VIBEKE_FAKE_CHROMIUM_LOG` receives one JSON
+/// line per CDP command.
+pub fn fake_chromium(args: &[String]) -> i32 {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    // SAFETY: the launcher hands us fds 3 (commands) and 4 (responses) for our lifetime.
+    let (r, w) = unsafe { (std::fs::File::from_raw_fd(3), std::fs::File::from_raw_fd(4)) };
+    let state = std::sync::Arc::new(std::sync::Mutex::new(vk_browser::fake::State::default()));
+    let log = std::env::var_os("VIBEKE_FAKE_CHROMIUM_LOG");
+    let st = state.clone();
+    let args_line = serde_json::json!({"argv": args}).to_string();
+    if let Some(p) = &log
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+    {
+        let _ = writeln!(f, "{args_line}");
+    }
+    let logger = log.map(|p| {
+        std::thread::spawn(move || {
+            let mut seen = 0;
+            loop {
+                std::thread::sleep(Duration::from_millis(20));
+                let (lines, closed): (Vec<String>, bool) = {
+                    let s = st.lock().unwrap();
+                    let v = s.log[seen..]
+                        .iter()
+                        .map(|(m, p, sid)| {
+                            serde_json::json!({"method": m, "params": p, "session": sid})
+                                .to_string()
+                        })
+                        .collect();
+                    seen = s.log.len();
+                    (v, s.closed)
+                };
+                if !lines.is_empty()
+                    && let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&p)
+                {
+                    for l in lines {
+                        let _ = writeln!(f, "{l}");
+                    }
+                }
+                if closed {
+                    return;
+                }
+            }
+        })
+    });
+    vk_browser::fake::serve(r, w, vk_browser::fake::dpr_from_args(args), state);
+    if let Some(h) = logger {
+        let _ = h.join();
+    }
+    0
+}
+
 /// `vibeke debug latency [--n 500]`: added keystroke→screen latency of the render path vs a bare
 /// PTY echo (10 §1.1). Uses an isolated pane running `cat` in the current session.
 pub async fn latency(g: &vk_cli::Global, args: &[String]) -> i32 {

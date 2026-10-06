@@ -100,6 +100,11 @@ fn main() {
     {
         std::process::exit(debug::ptyshot(&args[2..]));
     }
+    if args.first().map(String::as_str) == Some("debug")
+        && args.get(1).map(String::as_str) == Some("fake-chromium")
+    {
+        std::process::exit(debug::fake_chromium(&args[2..]));
+    }
     if args.first().map(String::as_str) == Some("hook") {
         // Sync, no runtime: must stay within the hook latency budget (04 §7.5).
         std::process::exit(commands::hook(&args[1..]));

@@ -244,9 +244,10 @@ fn discovery_lifecycle_and_declare() {
     // Stop the server: up → down (declared previews stay, down).
     let _ = s.cmd(&["pane", "send-keys", &pane, "ctrl+c"]).output();
     s.wait_preview("down", |p| p["port"] == port && p["status"] == "down");
-    // Pane mode is Stage 2.
-    let e = s.try_json(&["preview", "open", &handle]).unwrap_err();
-    assert!(e.contains("unsupported"), "{e}");
+    // Pane mode (Stage 2): a browser pane next to the preview's pane.
+    let o = s.json(&["preview", "open", &handle]);
+    assert_eq!(o["opened_in"], "pane", "{o}");
+    assert_eq!(o["source_pane"], json!(pane));
     // Forget removes it.
     s.json(&["preview", "forget", &handle]);
     assert!(!s.previews().iter().any(|p| p["port"] == port));

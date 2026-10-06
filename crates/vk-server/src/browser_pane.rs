@@ -108,6 +108,7 @@ impl Launcher for ChromiumLauncher {
             .clone()
             .or_else(|| find_pane_browser(None))
             .ok_or_else(|| anyhow!("no Chromium found for the browser pane (install Playwright's chromium-headless-shell or set VIBEKE_CHROMIUM)"))?;
+        tracing::info!(bin = %bin.display(), profile = %req.profile, "browser pane: launching");
         let mut o = vk_browser::cdp::LaunchOptions::new(&bin, &req.profile_dir);
         let name = bin
             .file_name()
