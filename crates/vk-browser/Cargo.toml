@@ -1,0 +1,20 @@
+[package]
+name = "vk-browser"
+description = "Browser pane groundwork: CDP over --remote-debugging-pipe, frame tiling, kitty graphics output, host probes, key mapping (06 B3.2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vk-proto = { workspace = true }
+anyhow.workspace = true
+base64.workspace = true
+blake3.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+flate2 = "1"
+
+[dev-dependencies]
+vk-term = { workspace = true }
+tempfile.workspace = true
