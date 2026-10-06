@@ -4,25 +4,32 @@
 //! - **Console split** (`browser_console`, `prefix+alt+c`): `browser.pane.console` on the
 //!   pane's machine opens (or closes) a split under the browser pane running
 //!   `vibeke browser console --pane <id> --follow`.
-//! - **Page clipboard**: the media host sends `ServerFrame::Clipboard` for a browser pane; it is
-//!   judged as a write from the pane's *owner* machine (`clipboard.osc52_write` for local
-//!   panes, `clipboard.remote_write` ask-once for a remote machine's page) with the usual size
-//!   limit. The host clipboard is never read into the page except by an explicit paste.
-//! - **Files**: a bracketed paste that is only local file paths (a terminal drop) asks first;
-//!   confirmed readable regular files ≤ 50 MiB go to the page (`BrowserCmd::DropFiles`): by
-//!   path when the media host is this machine, else uploaded to its inbox first.
-//! - **Clipboard image** (`browser_paste_image`, `prefix+shift+v`): read the host clipboard's
-//!   PNG with the kitty clipboard protocol (OSC 5522), or the platform clipboard when the host
-//!   terminal is on this machine, and hand it to the page the same way. Nothing is read
-//!   without that key.
+//! - **Page clipboard**: only the machine that renders the page (the pane's media host) may send
+//!   `ServerFrame::Clipboard` for a browser pane; a frame naming a browser pane from any other
+//!   machine is dropped. It is judged as a write from a remote machine when the sender or the
+//!   pane's owner is remote (`clipboard.remote_write`, ask once for that machine), else under
+//!   `clipboard.osc52_write`, with the usual size limit. The host clipboard is never read into
+//!   the page except by an explicit paste.
+//! - **Files**: a bracketed paste that is only local file paths (a terminal drop) asks first,
+//!   recording each file's identity (device, inode, size). On confirm each file is opened with
+//!   `O_NOFOLLOW` and must still be that file, a regular file ≤ 50 MiB; the bytes are read from
+//!   that descriptor and uploaded to the media host (`blob.* {stage: "browser"}`, also when it
+//!   is this machine), which keeps the copy in its private drop directory and hands the page
+//!   that copy (`BrowserCmd::DropFiles`). A file that is swapped, grows or shrinks after the
+//!   prompt is refused.
+//! - **Clipboard image** (`browser_paste_image`, `prefix+shift+v`): the platform clipboard's
+//!   PNG when the host terminal is on this machine, handed to the page the same way. Nothing is
+//!   read without that key. The kitty clipboard protocol (OSC 5522) is not used: its reply
+//!   arrives on stdin, which crossterm owns, and a reply after a timeout (kitty may ask the
+//!   user first) would be parsed as keystrokes for the focused pane; filtering it needs a raw
+//!   input layer in front of crossterm, which the TUI doesn't have.
 
 use crate::app::{App, Mode, Pending, Popup};
 use crate::upload::{Item, Source};
-use base64::Engine as _;
 use serde_json::json;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::render::{BrowserCmd, ClientFrame};
 
@@ -30,14 +37,47 @@ use vk_proto::render::{BrowserCmd, ClientFrame};
 pub const DROP_MAX: u64 = 50 << 20;
 pub const DROP_FILES_MAX: usize = 16;
 
+/// A file the drop prompt shows: its path (symlinks resolved when asked) and identity then.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropFile {
+    pub path: PathBuf,
+    pub size: u64,
+    pub dev: u64,
+    pub ino: u64,
+}
+
+impl DropFile {
+    /// The file at `path` now (following links), if it is a regular file.
+    pub fn at(path: &Path) -> std::io::Result<DropFile> {
+        let canon = std::fs::canonicalize(path)?;
+        let m = std::fs::metadata(&canon)?;
+        if !m.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        Ok(DropFile {
+            path: canon,
+            size: m.len(),
+            dev: m.dev(),
+            ino: m.ino(),
+        })
+    }
+
+    fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into())
+    }
+}
+
 /// The drop confirmation (`Popup::BrowserDrop`).
 #[derive(Debug, Clone)]
 pub struct DropAsk {
     pub pane: String,
     /// The text as pasted (sent as text with `t`).
     pub original: String,
-    /// Resolved local files and their sizes.
-    pub files: Vec<(PathBuf, u64)>,
+    /// The local files, as they were when the prompt opened.
+    pub files: Vec<DropFile>,
 }
 
 /// The machine whose server renders `pane` (where `BrowserCmd`s go).
@@ -85,24 +125,28 @@ pub fn on_console_reply(app: &mut App, v: &serde_json::Value) {
 
 // ---- page clipboard ---------------------------------------------------------------------------
 
-/// A clipboard write for `pane` from machine `i`. Browser panes are judged as writes from the
-/// machine that owns the pane (its page); returns the data back when `pane` is not a browser
-/// pane (the caller handles it as an ordinary OSC 52 write).
+/// A clipboard write for `pane` from machine `i`. For a browser pane it is accepted only from
+/// the pane's media host (the machine rendering its page, which is where page clipboard frames
+/// come from) and judged as a write from a remote machine — the sender, else the pane's owner —
+/// when either is remote. Returns the data back when `pane` is not a browser pane (the caller
+/// handles it as machine `i`'s ordinary OSC 52 write).
 pub fn on_clipboard(app: &mut App, i: usize, pane: &str, data: Vec<u8>) -> Option<Vec<u8>> {
-    let owner = app.machines.iter().position(|m| {
+    let Some(owner) = app.machines.iter().position(|m| {
         m.model
             .panes
             .iter()
             .any(|p| p.id == pane && p.browser.is_some())
-    });
-    match owner {
-        Some(owner) => {
-            let _ = i;
-            app.on_clipboard(owner, pane.to_string(), false, data);
-            None
-        }
-        None => Some(data),
+    }) else {
+        return Some(data);
+    };
+    if !crate::browser::renders(app, i, pane) {
+        // Another machine naming a browser pane it doesn't render: not its page's write.
+        app.clip.dropped += 1;
+        return None;
     }
+    let judge = if !app.machines[i].local { i } else { owner };
+    app.on_clipboard(judge, pane.to_string(), false, data);
+    None
 }
 
 // ---- files into the page ----------------------------------------------------------------------
@@ -117,6 +161,34 @@ pub fn drop_problem(p: &Path) -> Option<String> {
             .err()
             .map(|e| format!("not readable: {e}")),
     }
+}
+
+/// Open a confirmed file for delivery: the last component must not be a link (`O_NOFOLLOW`),
+/// and the descriptor must be the very file the prompt showed (device, inode and size), a
+/// regular file ≤ 50 MiB. The upload then reads only from this descriptor.
+pub fn open_snapshot(f: &DropFile) -> Result<std::fs::File, String> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&f.path)
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ELOOP) => "replaced by a link since you confirmed it".to_string(),
+            _ => e.to_string(),
+        })?;
+    let m = file.metadata().map_err(|e| e.to_string())?;
+    if !m.is_file() {
+        return Err("not a regular file".into());
+    }
+    if m.len() > DROP_MAX {
+        return Err(format!("larger than {} MiB", DROP_MAX >> 20));
+    }
+    if (m.dev(), m.ino()) != (f.dev, f.ino) {
+        return Err("replaced since you confirmed it".into());
+    }
+    if m.len() != f.size {
+        return Err("changed size since you confirmed it".into());
+    }
+    Ok(file)
 }
 
 /// A paste into a focused browser pane: only local file paths → ask before handing the files
@@ -145,7 +217,10 @@ pub fn maybe_drop(app: &mut App, pane: &str, text: &str) -> bool {
             ));
             return false;
         }
-        files.push((std::fs::canonicalize(&p).unwrap_or(p), m.len()));
+        match DropFile::at(&p) {
+            Ok(f) => files.push(f),
+            Err(_) => return false,
+        }
     }
     if files.len() > DROP_FILES_MAX {
         app.toast(format!(
@@ -161,34 +236,25 @@ pub fn maybe_drop(app: &mut App, pane: &str, text: &str) -> bool {
     true
 }
 
-/// Hand confirmed files to the page: by path to a media host on this machine, else uploaded
-/// to the media host's inbox first (the transfer then sends the inbox paths).
-pub fn drop_files(app: &mut App, pane: &str, files: Vec<(PathBuf, u64)>) {
+/// Hand confirmed files to the page: each opened and checked ([`open_snapshot`]), its bytes
+/// uploaded from that descriptor to the media host's drop directory (this machine's server
+/// too), then dropped from there. Nothing is sent when any file fails the check.
+pub fn drop_files(app: &mut App, pane: &str, files: Vec<DropFile>) {
     let host = host_of(app, pane);
-    if app.machines[host].local {
-        let paths = files
-            .iter()
-            .map(|(p, _)| p.to_string_lossy().into_owned())
-            .collect();
-        if !send(app, host, pane, BrowserCmd::DropFiles(paths)) {
-            app.toast(format!(
-                "{} offline — not dropped",
-                app.machines[host].label
-            ));
+    let mut items = Vec::new();
+    for f in &files {
+        match open_snapshot(f) {
+            Ok(file) => items.push(Item {
+                name: f.name(),
+                size: f.size,
+                src: Source::File(Arc::new(file)),
+            }),
+            Err(why) => {
+                app.toast(format!("{}: {why} — not dropped", f.name()));
+                return;
+            }
         }
-        return;
     }
-    let items = files
-        .into_iter()
-        .map(|(p, size)| Item {
-            name: p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "file".into()),
-            size,
-            src: Source::Path(p),
-        })
-        .collect();
     crate::upload::begin_browser(app, host, pane, items);
 }
 
@@ -213,7 +279,7 @@ pub fn draw_drop(app: &App, g: &mut crate::screen::Grid, ask: &DropAsk) {
     let t = &app.theme;
     let shown = ask.files.len().min(6);
     let mut b = crate::popups::frame(app, g, 72, (shown + 6) as u16, "files into the page");
-    let total: u64 = ask.files.iter().map(|(_, s)| s).sum();
+    let total: u64 = ask.files.iter().map(|f| f.size).sum();
     b.line(
         &format!(
             "Give {} file(s) ({}) to the page in this browser pane?",
@@ -222,15 +288,9 @@ pub fn draw_drop(app: &App, g: &mut crate::screen::Grid, ask: &DropAsk) {
         ),
         t.text(),
     );
-    for (p, s) in ask.files.iter().take(6) {
+    for f in ask.files.iter().take(6) {
         b.line(
-            &format!(
-                "  {}  {}",
-                p.file_name()
-                    .map(|n| n.to_string_lossy())
-                    .unwrap_or_default(),
-                crate::upload::human(*s)
-            ),
+            &format!("  {}  {}", f.name(), crate::upload::human(f.size)),
             t.dim(),
         );
     }
@@ -249,30 +309,26 @@ pub fn draw_drop(app: &App, g: &mut crate::screen::Grid, ask: &DropAsk) {
 
 // ---- clipboard image (prefix+shift+v) ---------------------------------------------------------
 
-/// `browser_paste_image`: read the host clipboard image after this frame (the event reader is
-/// stopped while the terminal answers).
+/// `browser_paste_image`: the platform clipboard's image, only when the host terminal is on
+/// this machine (its clipboard is this machine's); see the module docs for why OSC 5522 isn't
+/// used.
 pub fn request_image_paste(app: &mut App, pane: &str) {
-    app.browser.clip_read = Some(pane.to_string());
-    app.dirty = true;
-}
-
-/// The main loop's turn: a pending clipboard-image read, if any.
-pub fn take_clip_read(app: &mut App) -> Option<String> {
-    app.browser.clip_read.take()
+    let img = if app.caps.host_remote || cfg!(test) {
+        None
+    } else {
+        crate::clipboard::os_clipboard_image().ok().flatten()
+    };
+    on_clip_image(app, pane, img);
 }
 
 /// The image the read produced (`None` = nothing usable): hand it to the page.
 pub fn on_clip_image(app: &mut App, pane: &str, img: Option<(String, Vec<u8>)>) {
-    let img = img.or_else(|| {
-        // The platform clipboard is this machine's: only right when the host terminal is too.
-        if app.caps.host_remote || cfg!(test) {
-            None
-        } else {
-            crate::clipboard::os_clipboard_image().ok().flatten()
-        }
-    });
     let Some((mime, data)) = img else {
-        app.toast("no image on the clipboard (or the terminal doesn't share it) — drop a file path instead");
+        if app.caps.host_remote {
+            app.toast("the terminal is on another machine and its clipboard can't be read here — drop a file path instead");
+        } else {
+            app.toast("no image on the clipboard — drop a file path instead");
+        }
         return;
     };
     if data.len() as u64 > DROP_MAX {
@@ -307,147 +363,6 @@ pub fn on_clip_image(app: &mut App, pane: &str, img: Option<(String, Vec<u8>)>) 
             src: Source::Bytes(Arc::new(data)),
         }],
     );
-}
-
-/// OSC 5522 read request for `mime` (kitty clipboard protocol). With `sentinel`, DA1 follows
-/// so a terminal that ignores the request is noticed at once.
-pub fn osc5522_request(mime: &str, sentinel: bool) -> Vec<u8> {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(mime);
-    let mut v = format!("\x1b]5522;type=read;{b64}\x1b\\").into_bytes();
-    if sentinel {
-        v.extend_from_slice(b"\x1b[c");
-    }
-    v
-}
-
-/// kitty speaks OSC 5522 and may ask the user before answering (no DA1 sentinel then).
-pub fn host_is_kitty() -> bool {
-    std::env::var("TERM").is_ok_and(|t| t.contains("kitty"))
-        || std::env::var_os("KITTY_WINDOW_ID").is_some()
-        || std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "kitty")
-}
-
-/// What the terminal said so far.
-#[derive(Debug, PartialEq)]
-pub enum Clip5522 {
-    /// Still waiting; `seen` = at least one 5522 reply arrived (the terminal speaks it).
-    Pending { seen: bool },
-    /// Finished: data per MIME type.
-    Done(Vec<(String, Vec<u8>)>),
-    /// The terminal refused (`EPERM`, `ENOSYS`, …) or doesn't speak 5522 (DA1 came first).
-    Failed(String),
-}
-
-/// Parse replies in `buf`: `ESC ] 5522 ; type=read:status=OK|DATA|DONE|E… [:mime=<b64>] ;
-/// <b64 payload> ST` messages (BEL or ST terminated), and a DA1 reply (`ESC [ ? … c`).
-pub fn parse_5522(buf: &[u8]) -> Clip5522 {
-    let s = String::from_utf8_lossy(buf);
-    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut seen = false;
-    let mut rest: &str = &s;
-    let da1_at = s.find("\x1b[?").filter(|i| s[*i..].find('c').is_some());
-    while let Some(i) = rest.find("\x1b]5522;") {
-        let body_start = i + "\x1b]5522;".len();
-        let tail = &rest[body_start..];
-        let end = match (tail.find("\x1b\\"), tail.find('\x07')) {
-            (Some(a), Some(b)) => a.min(b),
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
-            (None, None) => break, // incomplete message
-        };
-        seen = true;
-        let msg = &tail[..end];
-        let (meta, payload) = msg.split_once(';').unwrap_or((msg, ""));
-        let mut status = "";
-        let mut mime = String::new();
-        for kv in meta.split(':') {
-            match kv.split_once('=') {
-                Some(("status", v)) => status = v,
-                Some(("mime", v)) => {
-                    mime = base64::engine::general_purpose::STANDARD
-                        .decode(v)
-                        .ok()
-                        .and_then(|b| String::from_utf8(b).ok())
-                        .filter(|m| m.contains('/') || m == ".")
-                        .unwrap_or_else(|| v.to_string());
-                }
-                _ => {}
-            }
-        }
-        match status {
-            "OK" => {}
-            "DATA" => {
-                let clean: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(clean.as_bytes())
-                    .unwrap_or_default();
-                match out.iter_mut().find(|(m, _)| *m == mime) {
-                    Some((_, d)) => d.extend_from_slice(&bytes),
-                    None => out.push((mime, bytes)),
-                }
-            }
-            "DONE" => return Clip5522::Done(out),
-            e if e.starts_with('E') => return Clip5522::Failed(e.to_string()),
-            _ => {}
-        }
-        rest = &tail[end..];
-    }
-    if !seen && da1_at.is_some() {
-        return Clip5522::Failed("the terminal does not support OSC 5522".into());
-    }
-    Clip5522::Pending { seen }
-}
-
-/// Ask the host terminal for its clipboard PNG over OSC 5522 (the TUI's event reader must be
-/// stopped). Gives up quickly when the terminal answers DA1 without a 5522 reply; a terminal
-/// that speaks it may ask the user first, so it gets longer.
-pub fn osc5522_read() -> Option<(String, Vec<u8>)> {
-    use std::io::{Read, Write};
-    if cfg!(test) {
-        return None;
-    }
-    let mut out = std::io::stdout();
-    let kitty = host_is_kitty();
-    out.write_all(&osc5522_request("image/png", !kitty)).ok()?;
-    out.flush().ok()?;
-    let started = Instant::now();
-    let mut buf = Vec::new();
-    let mut stdin = std::io::stdin();
-    loop {
-        let limit = match parse_5522(&buf) {
-            Clip5522::Done(v) => {
-                return v
-                    .into_iter()
-                    .find(|(m, d)| m.starts_with("image/") && !d.is_empty());
-            }
-            Clip5522::Failed(_) => return None,
-            Clip5522::Pending { seen: true } => Duration::from_secs(20),
-            Clip5522::Pending { seen: false } if kitty => Duration::from_secs(20),
-            Clip5522::Pending { seen: false } => Duration::from_secs(2),
-        };
-        let left = limit.saturating_sub(started.elapsed());
-        if left.is_zero() || buf.len() > 80 << 20 {
-            return None;
-        }
-        let mut pfd = libc::pollfd {
-            fd: 0,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: polling stdin with a valid pollfd.
-        let n = unsafe { libc::poll(&mut pfd, 1, left.as_millis().min(500) as i32) };
-        if n < 0 {
-            return None;
-        }
-        if n == 0 {
-            continue;
-        }
-        let mut chunk = [0u8; 64 * 1024];
-        match stdin.read(&mut chunk) {
-            Ok(0) | Err(_) => return None,
-            Ok(k) => buf.extend_from_slice(&chunk[..k]),
-        }
-    }
 }
 
 #[cfg(test)]

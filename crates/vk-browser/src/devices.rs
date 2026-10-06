@@ -182,6 +182,50 @@ impl From<Device> for Pin {
     }
 }
 
+/// What a screencast frame shows (`Page.screencastFrame` `metadata`): the device area in DIP
+/// and the page scale. A mobile page without a `width=device-width` meta viewport is laid out
+/// 980 CSS px wide and shown at page scale `deviceWidth / 980`; `Input.dispatchMouseEvent`
+/// takes CSS px of that layout (Chromium multiplies them by the page scale), so a position in
+/// the frame is `DIP / pageScaleFactor`, not the DIP itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameMeta {
+    pub page_scale: f64,
+    /// Device (screen) size in DIP.
+    pub device_width: f64,
+    pub device_height: f64,
+    /// Top offset of the page content in DIP (top controls; 0 headless).
+    pub offset_top: f64,
+}
+
+impl FrameMeta {
+    /// From a screencast frame's `metadata` (`None` when it lacks the device size).
+    pub fn from_json(m: &Value) -> Option<FrameMeta> {
+        let pos = |k: &str| m[k].as_f64().filter(|v| v.is_finite() && *v > 0.0);
+        Some(FrameMeta {
+            page_scale: pos("pageScaleFactor").unwrap_or(1.0),
+            device_width: pos("deviceWidth")?,
+            device_height: pos("deviceHeight")?,
+            offset_top: m["offsetTop"]
+                .as_f64()
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .unwrap_or(0.0),
+        })
+    }
+
+    /// A point given as a fraction of the frame (0..1 across, 0..1 down) → the CSS px
+    /// `Input.dispatchMouseEvent` wants.
+    pub fn to_css(&self, fx: f64, fy: f64) -> (f64, f64) {
+        let s = if self.page_scale > 0.0 {
+            self.page_scale
+        } else {
+            1.0
+        };
+        let x = fx * self.device_width;
+        let y = (fy * self.device_height - self.offset_top).max(0.0);
+        (x / s, y / s)
+    }
+}
+
 /// Neutral fill around a letterboxed viewport (a dark grey that reads as "not the page" on
 /// light and dark pages alike).
 pub const FILL: [u8; 4] = [38, 38, 40, 255];
@@ -240,6 +284,37 @@ impl Letterbox {
         let lx = (x - rx as f64).clamp(0.0, (rw.max(1) - 1) as f64);
         let ly = (y - ry as f64).clamp(0.0, (rh.max(1) - 1) as f64);
         (lx / self.scale, ly / self.scale)
+    }
+
+    /// A content-area device pixel → where it is in the page rectangle, as fractions (0..1);
+    /// `None` outside it, or clamped to its edge with `clamp`.
+    pub fn fraction(&self, x: f64, y: f64, clamp: bool) -> Option<(f64, f64)> {
+        let (rx, ry, rw, rh) = self.rect;
+        let (rw, rh) = (rw.max(1) as f64, rh.max(1) as f64);
+        let (lx, ly) = (x - rx as f64, y - ry as f64);
+        if clamp {
+            return Some((lx.clamp(0.0, rw - 1.0) / rw, ly.clamp(0.0, rh - 1.0) / rh));
+        }
+        if lx < 0.0 || ly < 0.0 || lx >= rw || ly >= rh {
+            return None;
+        }
+        Some((lx / rw, ly / rh))
+    }
+
+    /// A content-area device pixel → the CSS px Chromium's input wants, using what the last
+    /// screencast frame showed (page scale, device size); without one, the pinned viewport.
+    pub fn to_input(
+        &self,
+        x: f64,
+        y: f64,
+        clamp: bool,
+        meta: Option<&FrameMeta>,
+    ) -> Option<(f64, f64)> {
+        let (fx, fy) = self.fraction(x, y, clamp)?;
+        Some(match meta {
+            Some(m) => m.to_css(fx, fy),
+            None => (fx * self.css.0 as f64, fy * self.css.1 as f64),
+        })
     }
 
     /// The frame placed in the content area: scaled to the page rectangle (whatever size the
@@ -330,6 +405,58 @@ mod tests {
         assert_eq!(lb.rect, ((4000 - 2560) / 2, (3000 - 1600) / 2, 2560, 1600));
         // Exact fit: nothing to letterbox.
         assert!(Letterbox::fit((780, 1688), (390, 844), 2.0).is_full());
+    }
+
+    /// Mobile emulation without a meta viewport: the page is laid out 980 CSS px wide at page
+    /// scale 393/980 (what Chromium reports in the frame metadata); the visual middle of the
+    /// phone is CSS x = 490, not 196.5.
+    #[test]
+    fn input_maps_through_the_frames_page_scale() {
+        let lb = Letterbox::fit((1600, 800), (393, 852), 2.0);
+        let w = lb.rect.2 as f64;
+        let mid = (lb.rect.0 as f64 + w / 2.0, 400.0);
+        let meta = FrameMeta::from_json(
+            &json!({"offsetTop": 0, "pageScaleFactor": 0.4010204076766968,
+            "deviceWidth": 393, "deviceHeight": 852, "scrollOffsetX": 0, "scrollOffsetY": 0}),
+        )
+        .unwrap();
+        let (x, y) = lb.to_input(mid.0, mid.1, false, Some(&meta)).unwrap();
+        assert!(
+            (x - 490.0).abs() < 2.0 && (y - 1062.0).abs() < 3.0,
+            "{x},{y}"
+        );
+        // Page scale 1 (a `width=device-width` page): the device's CSS px, as before.
+        let one = FrameMeta::from_json(
+            &json!({"pageScaleFactor": 1.0, "deviceWidth": 393, "deviceHeight": 852}),
+        )
+        .unwrap();
+        let (x, y) = lb.to_input(mid.0, mid.1, false, Some(&one)).unwrap();
+        assert!(
+            (x - 196.5).abs() < 1.0 && (y - 426.0).abs() < 1.0,
+            "{x},{y}"
+        );
+        // Zoomed in (page scale 2): half the CSS distance.
+        let two = FrameMeta::from_json(
+            &json!({"pageScaleFactor": 2.0, "deviceWidth": 393, "deviceHeight": 852}),
+        )
+        .unwrap();
+        let (x, _) = lb.to_input(mid.0, mid.1, false, Some(&two)).unwrap();
+        assert!((x - 98.25).abs() < 1.0, "{x}");
+        // Top controls offset the content.
+        let top = FrameMeta::from_json(&json!({"pageScaleFactor": 1.0, "deviceWidth": 393, "deviceHeight": 852, "offsetTop": 52})).unwrap();
+        assert!((top.to_css(0.0, 0.5).1 - 374.0).abs() < 1e-9);
+        // No metadata yet: the pinned viewport. Margins map to nothing; clamped to the edge.
+        let (x, _) = lb.to_input(mid.0, mid.1, false, None).unwrap();
+        assert!((x - 196.5).abs() < 1.0);
+        assert!(lb.to_input(5.0, 400.0, false, Some(&meta)).is_none());
+        assert_eq!(lb.to_input(5.0, 400.0, true, Some(&meta)).unwrap().0, 0.0);
+        // Metadata without a device size is ignored; junk scale counts as 1.
+        assert!(FrameMeta::from_json(&json!({"pageScaleFactor": 0.5})).is_none());
+        let junk = FrameMeta::from_json(
+            &json!({"pageScaleFactor": -3, "deviceWidth": 10, "deviceHeight": 10}),
+        )
+        .unwrap();
+        assert_eq!(junk.page_scale, 1.0);
     }
 
     #[test]

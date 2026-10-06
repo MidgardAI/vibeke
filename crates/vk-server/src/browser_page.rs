@@ -2,22 +2,31 @@
 //!
 //! - **Console/network split**: each page's `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`,
 //!   `Log.entryAdded` and `Network.*` events go into the agent browser's ring shapes
-//!   ([`vk_browser::capture`]), redacted. `browser.console {pane}` / `browser.network {pane}`
-//!   read them (`vibeke browser console --pane p --follow`); `browser.pane.console` toggles a
-//!   split under the browser pane running that follower. When the page is rendered by another
-//!   machine's server (the laptop renders devbox's pane), that media host relays new entries to
-//!   the owner (`browser.pane.console_push`, at most once a second, only while the page is on a
-//!   loopback URL) so the follower in the owner's layout sees them.
-//! - **Page clipboard → OSC 52**: `navigator.clipboard.writeText`/`write` and `copy`/`cut`
-//!   events reach a per-page CDP binding; writes within a few seconds of user input to the pane
-//!   go to the pane's viewers as `ServerFrame::Clipboard` (the TUI applies the `clipboard`
-//!   config). The host clipboard is never read into the page.
-//! - **Files into the page**: `BrowserCmd::DropFiles` (paths the user confirmed) go to an open
-//!   file chooser (`DOM.setFileInputFiles`), else are dropped at the last pointer position
-//!   (`Input.dispatchDragEvent`). Readable regular files ≤ 50 MiB only.
+//!   ([`vk_browser::capture`]), redacted and with control characters escaped, each tagged with
+//!   the frame origin and document it came from. `browser.console {pane}` /
+//!   `browser.network {pane}` read them (`vibeke browser console --pane p --follow`);
+//!   `browser.pane.console` toggles a split under the browser pane running that follower. The
+//!   split's output is not archived or indexed and only the readers `browser.console` allows may
+//!   read it. When the page is rendered by another machine's server (the laptop renders devbox's
+//!   pane), that media host relays entries to the owner (`browser.pane.console_push`, at most
+//!   once a second) so the follower in the owner's layout sees them: only entries whose own
+//!   frame is loopback, captured while the top-level document was loopback, in the same
+//!   navigation (decided when each entry is captured).
+//! - **Page clipboard → OSC 52**: `navigator.clipboard.writeText`/`write` (after the native
+//!   call succeeded) and trusted, user-activated `copy`/`cut` events reach a per-page CDP
+//!   binding; a call from the current top-level document's main world within a few seconds of
+//!   a click or key press in the pane (not text, not API input; cleared by navigation) goes to
+//!   the pane's viewers as `ServerFrame::Clipboard` (the TUI applies the `clipboard` config).
+//!   The host clipboard is never read into the page.
+//! - **Files into the page**: `BrowserCmd::DropFiles` names copies the TUI made from the files
+//!   the user confirmed (uploaded with `blob.* {stage: "browser"}` into this server's private
+//!   drop directory); they go to an open file chooser (`DOM.setFileInputFiles`), else are
+//!   dropped at the last pointer position (`Input.dispatchDragEvent`). Nothing outside the drop
+//!   directory is handed to Chromium; staged copies are removed 10 minutes after delivery.
 //! - **Pinned viewports**: `BrowserPane.device`/`viewport` pin the CSS viewport (and DPR, mobile,
 //!   touch, user agent for presets); frames are fitted into a centred rectangle on a neutral
-//!   fill ([`vk_browser::devices::Letterbox`]) and pointer input is mapped back.
+//!   fill ([`vk_browser::devices::Letterbox`]) and pointer input is mapped back through the
+//!   frame's page scale ([`vk_browser::devices::FrameMeta`]).
 
 use super::{Geom, TState, Target};
 use crate::Server;
@@ -26,13 +35,13 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vk_browser::capture::{Capture, Filter, Kind};
+use vk_browser::capture::{Capture, Captured, Filter, Kind};
 use vk_browser::cdp::{Event, Page};
-use vk_browser::devices::{Letterbox, Pin};
+use vk_browser::devices::{FrameMeta, Letterbox, Pin};
 use vk_browser::frame::Rgba;
 use vk_proto::layout::Direction;
-use vk_proto::model::BrowserPane;
-use vk_proto::rpc::ErrorKind;
+use vk_proto::model::{BrowserPane, Pane};
+use vk_proto::rpc::{ErrorKind, RpcError};
 
 /// Page clipboard writes are forwarded only this soon after user input to the pane.
 pub const CLIP_WINDOW: Duration = Duration::from_secs(5);
@@ -43,6 +52,9 @@ pub const DROP_MAX: u64 = 50 << 20;
 pub const DROP_FILES_MAX: usize = 16;
 /// A file chooser the page opened takes the next drop for this long.
 const CHOOSER_TTL: Duration = Duration::from_secs(600);
+/// Staged drop copies live this long after their upload or delivery (Chromium reads a dropped
+/// file when the page does, not when it is dropped).
+pub const DROP_TTL: Duration = Duration::from_secs(600);
 /// Entries per relay batch, and per entry text.
 const RELAY_BATCH: usize = 200;
 const TEXT_MAX: usize = 8 * 1024;
@@ -65,6 +77,8 @@ pub struct PageIo {
     pub pin: Option<Pin>,
     /// Letterbox of the applied pinned viewport.
     pub letterbox: Option<Letterbox>,
+    /// What the last screencast frame showed (page scale, device size).
+    pub meta: Option<FrameMeta>,
     /// The user agent was overridden on the current page (restored when unpinned).
     ua_overridden: bool,
     touch: bool,
@@ -87,6 +101,7 @@ impl Default for PageIo {
             last_mouse: None,
             pin: None,
             letterbox: None,
+            meta: None,
             ua_overridden: false,
             touch: false,
             clips: 0,
@@ -108,8 +123,9 @@ pub fn pin_of(spec: &BrowserPane) -> Option<Pin> {
     Pin::from_spec(spec.device.as_deref(), spec.viewport.as_deref())
 }
 
+/// Redacted, control characters escaped (page text is untrusted terminal input), bounded.
 fn redact(s: &str) -> String {
-    let r = vk_redact::redact(s).into_owned();
+    let r = vk_browser::capture::escape_controls(&vk_redact::redact(s));
     if r.len() > TEXT_MAX {
         let mut cut = TEXT_MAX;
         while !r.is_char_boundary(cut) {
@@ -124,8 +140,11 @@ fn redact(s: &str) -> String {
 // ---- page setup and events ------------------------------------------------------------------
 
 /// The clipboard hook, run in every document before page scripts. It captures the binding
-/// and removes it from the global object, wraps `navigator.clipboard.writeText`/`write`
-/// (text only; the page still gets its promise), and reports `copy`/`cut` selections.
+/// and removes it from the global object, wraps `navigator.clipboard.writeText`/`write` (text
+/// only) so the text is reported only after Chromium's own call succeeded (its permission and
+/// activation checks; a rejection reaches the page unchanged), and reports `copy`/`cut`
+/// selections of trusted, user-activated events only. The server still checks where the call
+/// came from (the top-level document's main world) and that the user just clicked or typed.
 fn clipboard_script(binding: &str) -> String {
     format!(
         r#"(() => {{
@@ -133,22 +152,25 @@ fn clipboard_script(binding: &str) -> String {
   if (typeof b !== 'function') return;
   try {{ delete globalThis[{name}]; }} catch (_) {{}}
   const post = (t) => {{ try {{ if (typeof t === 'string' && t.length) b(t); }} catch (_) {{}} }};
+  const active = () => {{ try {{ return !!(navigator.userActivation && navigator.userActivation.isActive); }} catch (_) {{ return false; }} }};
   const c = globalThis.navigator && navigator.clipboard;
   if (c) {{
     const wt = c.writeText && c.writeText.bind(c);
-    if (wt) c.writeText = function (t) {{ post(String(t)); return wt(t).catch(() => undefined); }};
+    if (wt) c.writeText = function (t) {{ const s = String(t); return wt(t).then((v) => {{ post(s); return v; }}); }};
     const w = c.write && c.write.bind(c);
-    if (w) c.write = async function (items) {{
+    if (w) c.write = function (items) {{
+      let text = null;
       try {{
         for (const it of items || []) {{
-          if (it && it.types && it.types.includes('text/plain')) {{ post(await (await it.getType('text/plain')).text()); break; }}
+          if (it && it.types && it.types.includes('text/plain')) {{ text = it.getType('text/plain').then((x) => x.text()); break; }}
         }}
       }} catch (_) {{}}
-      return w(items).catch(() => undefined);
+      return w(items).then(async (v) => {{ try {{ if (text) post(await text); }} catch (_) {{}} return v; }});
     }};
   }}
   for (const ev of ['copy', 'cut']) {{
     globalThis.addEventListener(ev, (e) => {{
+      if (!e.isTrusted || !active()) return;
       let t = '';
       try {{ if (e.clipboardData) t = e.clipboardData.getData('text/plain'); }} catch (_) {{}}
       if (!t) {{ try {{ const s = document.getSelection(); t = s ? String(s) : ''; }} catch (_) {{}} }}
@@ -176,6 +198,13 @@ pub fn setup_page(page: &Page, t: &Target) {
     let _ = page.send("Log.enable", json!({}));
     let _ = page.send("Network.enable", json!({}));
     let _ = page.send("Runtime.addBinding", json!({"name": binding}));
+    // Headless Chromium denies `clipboard-write` by default; a desktop browser grants it to
+    // the focused page (sanitized text, user activation still required), and the hook only
+    // reports writes Chromium accepted.
+    let _ = page.send(
+        "Browser.setPermission",
+        json!({"permission": {"name": "clipboard-write"}, "setting": "granted"}),
+    );
     let _ = page.send(
         "Page.addScriptToEvaluateOnNewDocument",
         json!({"source": clipboard_script(&binding)}),
@@ -204,18 +233,25 @@ pub fn on_event(t: &Arc<Target>, ev: &Event) {
             }
         }
         "Page.frameNavigated" => {
-            if ev.params["frame"]
-                .get("parentId")
-                .is_none_or(|p| p.is_null())
-            {
-                t.st.lock().unwrap().io.chooser = None;
+            let mut st = t.st.lock().unwrap();
+            if st.io.capture.on_page_event("Page.frameNavigated", p) {
+                // A new top-level document: no file chooser, and the previous document's user
+                // activation does not carry over to it.
+                st.io.chooser = None;
+                st.io.last_input = None;
             }
+        }
+        m @ ("Runtime.executionContextCreated"
+        | "Runtime.executionContextDestroyed"
+        | "Runtime.executionContextsCleared") => {
+            t.st.lock().unwrap().io.capture.on_page_event(m, p);
         }
         m if m.starts_with("Runtime.") || m.starts_with("Log.") || m.starts_with("Network.") => {
             let mut st = t.st.lock().unwrap();
-            if let Some((kind, e)) = st.io.capture.on_event(m, p, vk_store::now_ms(), &redact) {
-                let e = st.io.capture.push(kind, e);
-                if !t.owner.is_empty() {
+            if let Some(c) = st.io.capture.on_event(m, p, vk_store::now_ms(), &redact) {
+                let relay = !t.owner.is_empty() && relay_eligible(&st.io.capture, &c);
+                let e = st.io.capture.push(c.kind, c.entry);
+                if relay {
                     st.io.relay.push(e);
                     let n = st.io.relay.len();
                     if n > RELAY_KEEP {
@@ -231,6 +267,22 @@ pub fn on_event(t: &Arc<Target>, ev: &Event) {
 /// Pending relay entries kept at most (older ones are dropped when the owner is unreachable).
 pub const RELAY_KEEP: usize = 500;
 
+fn is_loopback(url: &str) -> bool {
+    vk_browser::policy::parse_open_url(url).is_some_and(|u| vk_browser::policy::is_loopback_url(&u))
+}
+
+/// May a captured entry go to a remote owner (decided once, when it is captured)? Only the
+/// owner's own app: the frame that produced it is loopback, the top-level document is
+/// loopback, and the entry belongs to the current top-level navigation (a request started on
+/// an earlier document, or a context of one, does not).
+pub(super) fn relay_eligible(cap: &Capture, c: &Captured) -> bool {
+    c.nav > 0
+        && c.nav == cap.nav
+        && !c.origin.is_empty()
+        && is_loopback(&c.origin)
+        && is_loopback(&cap.top_url)
+}
+
 fn on_binding(t: &Arc<Target>, p: &Value) {
     let mut st = t.st.lock().unwrap();
     if st.io.binding.is_empty() || p["name"].as_str() != Some(st.io.binding.as_str()) {
@@ -239,13 +291,18 @@ fn on_binding(t: &Arc<Target>, p: &Value) {
     let Some(text) = p["payload"].as_str().filter(|x| !x.is_empty()) else {
         return;
     };
+    // The binding is installed in every context (iframes, isolated worlds); only the current
+    // top-level document's main world may write.
+    let top = p["executionContextId"]
+        .as_i64()
+        .is_some_and(|c| st.io.capture.is_top_main_world(c));
     let recent = st
         .io
         .last_input
         .is_some_and(|at| at.elapsed() <= CLIP_WINDOW);
-    if !recent || text.len() > CLIP_MAX || st.subs.is_empty() {
+    if !top || !recent || text.len() > CLIP_MAX || st.subs.is_empty() {
         st.io.clips_blocked += 1;
-        tracing::debug!(pane = %t.pane, recent, len = text.len(), "browser pane: page clipboard write not forwarded");
+        tracing::debug!(pane = %t.pane, top, recent, len = text.len(), "browser pane: page clipboard write not forwarded");
         return;
     }
     st.io.clips += 1;
@@ -261,9 +318,17 @@ pub fn take_clip(t: &Target, sub: u64) -> Option<Vec<u8>> {
     t.st.lock().unwrap().subs.get_mut(&sub)?.clip.take()
 }
 
-/// User input reached the pane (keys, text, clicks): clipboard writes may follow.
+/// The user pressed a key or a mouse button in the pane (forwarded from a client): clipboard
+/// writes may follow. Text (pastes, `browser.command text`), drops and API input never arm it.
 pub(super) fn note_input(st: &mut TState) {
     st.io.last_input = Some(Instant::now());
+}
+
+/// A screencast frame's metadata (page scale, device size) for input mapping.
+pub(super) fn on_frame_meta(t: &Target, m: &Value) {
+    if let Some(meta) = FrameMeta::from_json(m) {
+        t.st.lock().unwrap().io.meta = Some(meta);
+    }
 }
 
 // ---- pinned viewports -------------------------------------------------------------------------
@@ -382,38 +447,134 @@ pub fn fit_frame(t: &Target, img: Rgba) -> Rgba {
 /// Map a pointer position (CSS px of the pane's content area, as the TUI computes it from
 /// device px / host DPR) to page CSS px. `None` = outside a letterboxed page (`clamp` keeps
 /// drags and releases that left it on the page edge).
+///
+/// Chromium takes input in CSS px of the page's layout and applies the page scale itself, so
+/// the frame position goes through the last frame's metadata ([`FrameMeta`]): a mobile page
+/// without a meta viewport is 980 px wide at page scale ~0.4. Metadata of another viewport
+/// (a frame from before a pin change) is ignored.
 pub(super) fn map_point(st: &TState, x: f32, y: f32, clamp: bool) -> Option<(f64, f64)> {
     let lb = st.io.letterbox.filter(|_| st.io.pin.is_some());
+    let same = |w: u32| move |m: &&FrameMeta| (m.device_width - w as f64).abs() < 1.0;
     let Some(lb) = lb else {
-        return Some((x as f64, y as f64));
+        let s = st
+            .io
+            .meta
+            .as_ref()
+            .filter(same(st.css.0))
+            .map_or(1.0, |m| m.page_scale);
+        return Some((x as f64 / s, y as f64 / s));
     };
     let dpr = st.applied.or(st.want).map(|g| g.dpr as f64).unwrap_or(1.0);
-    let (dx, dy) = (x as f64 * dpr, y as f64 * dpr);
-    if clamp {
-        Some(lb.to_page_clamped(dx, dy))
-    } else {
-        lb.to_page(dx, dy)
-    }
+    let meta = st.io.meta.as_ref().filter(same(lb.css.0));
+    lb.to_input(x as f64 * dpr, y as f64 * dpr, clamp, meta)
 }
 
 // ---- files into the page ---------------------------------------------------------------------
 
-/// A path the page may get: absolute, a readable regular file (symlinks resolved), ≤ 50 MiB.
-pub fn check_drop_path(p: &str) -> Result<PathBuf, String> {
+/// This server's private drop directory (`<state>/browser-drops`, 0700): `blob.commit
+/// {stage: "browser"}` puts the TUI's copies of confirmed files there, content-addressed
+/// (`<12 hex>/<name>`), and only files there are handed to Chromium.
+pub fn drops_root(server: &Server) -> PathBuf {
+    server.browser.drops_root()
+}
+
+/// Create the drop directory (0700) and return it.
+pub fn ensure_drops_root(server: &Server) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = drops_root(server);
+    std::fs::create_dir_all(&root)?;
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+    Ok(root)
+}
+
+/// A path the page may get: a staged copy inside `root` (`<root>/<12 hex>/<name>`, no links
+/// at either level, directories owned by us), a regular file ≤ 50 MiB. Anything else — a path
+/// the user's file system names, a link, a file swapped in — is refused.
+pub fn check_drop_path(root: &Path, p: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::path::Component;
     let path = Path::new(p);
     if !path.is_absolute() {
         return Err("not an absolute path".into());
     }
-    let canon = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-    let md = std::fs::metadata(&canon).map_err(|e| e.to_string())?;
+    let staged =
+        || "not a staged copy (files reach a page only through the drop prompt)".to_string();
+    let rel = path.strip_prefix(root).map_err(|_| staged())?;
+    let parts: Vec<Component> = rel.components().collect();
+    let hash = match parts.as_slice() {
+        [Component::Normal(h), Component::Normal(_)]
+            if h.len() == 12
+                && h.to_str()
+                    .is_some_and(|h| h.bytes().all(|c| c.is_ascii_hexdigit())) =>
+        {
+            *h
+        }
+        _ => return Err(staged()),
+    };
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    for dir in [root.to_path_buf(), root.join(hash)] {
+        let md = std::fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
+        if !md.file_type().is_dir() || md.uid() != uid {
+            return Err(staged());
+        }
+    }
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("not readable: {e}"))?;
+    let md = f.metadata().map_err(|e| e.to_string())?;
     if !md.is_file() {
         return Err("not a regular file".into());
     }
     if md.len() > DROP_MAX {
         return Err(format!("larger than {} MiB", DROP_MAX >> 20));
     }
-    std::fs::File::open(&canon).map_err(|e| format!("not readable: {e}"))?;
-    Ok(canon)
+    Ok(path.to_path_buf())
+}
+
+/// Remove staged drop copies older than [`DROP_TTL`] (by the directory's mtime, which a
+/// delivery refreshes). Called from the once-a-second gc.
+pub fn sweep_drops(server: &Server) {
+    let root = drops_root(server);
+    let Ok(rd) = std::fs::read_dir(&root) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let Ok(md) = e.path().symlink_metadata() else {
+            continue;
+        };
+        let old = md
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age > DROP_TTL);
+        if old {
+            if md.is_dir() {
+                let _ = std::fs::remove_dir_all(e.path());
+            } else {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// A staged copy was handed to the page: keep it [`DROP_TTL`] from now (or remove it at once
+/// when the page did not get it).
+fn after_delivery(files: &[String], delivered: bool) {
+    for f in files {
+        let Some(dir) = Path::new(f).parent() else {
+            continue;
+        };
+        if delivered {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.set_modified(std::time::SystemTime::now());
+            }
+        } else {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 fn notice(t: &Target, msg: String) {
@@ -422,9 +583,11 @@ fn notice(t: &Target, msg: String) {
     Target::mark_state(&mut st);
 }
 
-/// `BrowserCmd::DropFiles`: validate, then the open file chooser or a drop at the pointer.
-pub fn drop_files(t: &Arc<Target>, paths: Vec<String>) {
+/// `BrowserCmd::DropFiles`: validate (staged copies only), then the open file chooser or a
+/// drop at the pointer.
+pub fn drop_files(server: &Server, t: &Arc<Target>, paths: Vec<String>) {
     let t = t.clone();
+    let root = drops_root(server);
     let run = move || {
         if paths.is_empty() {
             return;
@@ -438,7 +601,7 @@ pub fn drop_files(t: &Arc<Target>, paths: Vec<String>) {
         }
         let mut files = Vec::new();
         for p in &paths {
-            match check_drop_path(p) {
+            match check_drop_path(&root, p) {
                 Ok(c) => files.push(c.to_string_lossy().into_owned()),
                 Err(e) => {
                     let name = Path::new(p)
@@ -452,7 +615,6 @@ pub fn drop_files(t: &Arc<Target>, paths: Vec<String>) {
         }
         let (page, chooser, pos, css) = {
             let mut st = t.st.lock().unwrap();
-            note_input(&mut st);
             let chooser = st
                 .io
                 .chooser
@@ -461,6 +623,7 @@ pub fn drop_files(t: &Arc<Target>, paths: Vec<String>) {
             (st.page.clone(), chooser, st.io.last_mouse, st.css)
         };
         let Some(page) = page else {
+            after_delivery(&files, false);
             notice(&t, "not dropped: the page is not running".into());
             return;
         };
@@ -487,6 +650,7 @@ pub fn drop_files(t: &Arc<Target>, paths: Vec<String>) {
                     .map(|_| format!("dropped {n} file(s) on the page"))
             }
         };
+        after_delivery(&files, res.is_ok());
         notice(&t, res.unwrap_or_else(|e| format!("not dropped: {e:#}")));
     };
     match tokio::runtime::Handle::try_current() {
@@ -514,6 +678,56 @@ fn may_read(server: &Server, ctx: &Ctx, id: &str) -> bool {
             .is_some_and(|p| p.browser.is_some() && p.created_by == format!("agent:{scope}"));
         caller_is_split || opened_it
     })
+}
+
+/// The browser pane a console split belongs to (`created_by = "browser-console:<id>"`, set only
+/// by the server).
+pub fn split_of(p: &Pane) -> Option<&str> {
+    p.created_by.strip_prefix("browser-console:")
+}
+
+/// A console split's output is neither archived nor indexed (it is the page's in-memory
+/// capture, printed): the pane is `no_archive`.
+pub fn no_archive(server: &Server, pane: &str) -> bool {
+    server.with_core(|c| c.pane(pane).is_some_and(|p| split_of(p).is_some()))
+}
+
+/// May this caller read pane `pane`'s output (`pane.read`, `pane.wait_output`, search)? For a
+/// console split the `browser.console` rule applies: full scope, the split itself, or the agent
+/// that opened its browser pane. Other panes: yes (the ordinary read scope applies).
+pub fn may_read_output(server: &Server, ctx: &Ctx, pane: &str) -> bool {
+    let Some(scope) = &ctx.pane_scope else {
+        return true;
+    };
+    let bp = server.with_core(|c| c.pane(pane).and_then(|p| split_of(p).map(str::to_string)));
+    match bp {
+        None => true,
+        Some(bp) => scope == pane || may_read(server, ctx, &bp),
+    }
+}
+
+/// `pane.read` / `pane.wait_output` of a console split from a pane (called from
+/// `api::dispatch` next to the read-scope check).
+pub fn authorize_output_read(
+    server: &Server,
+    ctx: &Ctx,
+    method: &str,
+    p: &Value,
+) -> Result<(), RpcError> {
+    if ctx.pane_scope.is_none() || !matches!(method, "pane.read" | "pane.wait_output") {
+        return Ok(());
+    }
+    let Ok(pane) = resolve_pane(server, ctx, Some(s(p, "pane").unwrap_or("@current"))) else {
+        return Ok(()); // not a live pane: splits keep no archive to read
+    };
+    if may_read_output(server, ctx, &pane.id) {
+        return Ok(());
+    }
+    Err(err(
+        ErrorKind::PermissionDenied,
+        format!("{method}: a browser console split is readable only by itself, the agent that opened its browser pane, or full scope"),
+    )
+    .details(json!({"scope": "pane"})))
 }
 
 fn filter_of(method: &str, p: &Value) -> Filter {
@@ -581,7 +795,13 @@ pub fn console_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> 
     } else {
         return Err(not_found("browser pane", raw));
     };
-    let url = url.or_else(|| model.and_then(|m| m.browser.map(|b| b.url)));
+    // Everything in the response is redacted and terminal-safe: the entries (captured that
+    // way; relayed or older copies again) and the page's current URL.
+    let url = url
+        .or_else(|| model.and_then(|m| m.browser.map(|b| b.url)))
+        .map(|u| redact(&u));
+    let mut entries = Value::Array(entries);
+    vk_browser::capture::escape_value(&mut entries);
     Ok(json!({"pane": id, "entries": entries, "last_seq": last, "source": source, "url": url}))
 }
 
@@ -611,7 +831,9 @@ pub fn push_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         };
         // Keep the known fields only, re-redacted and bounded (relayed input is untrusted).
         let keep: &[&str] = match kind {
-            Kind::Console => &["ts", "level", "text", "source", "url", "line"],
+            Kind::Console => &[
+                "ts", "level", "text", "source", "url", "line", "origin", "document",
+            ],
             Kind::Network => &[
                 "ts",
                 "method",
@@ -623,6 +845,8 @@ pub fn push_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 "blocked_reason",
                 "duration_ms",
                 "canceled",
+                "origin",
+                "document",
             ],
         };
         let mut clean = serde_json::Map::new();
@@ -642,8 +866,9 @@ pub fn push_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(json!({"pane": pane.id, "stored": n}))
 }
 
-/// Relay new entries of pages rendered here for remote owners (called once a second). Only
-/// while the page is on a loopback URL: the owner's app, not wherever the user browsed to.
+/// Relay queued entries of pages rendered here to their remote owners (called once a second).
+/// Only entries [`relay_eligible`] judged to be the owner's app when they were captured are
+/// queued; nothing captured elsewhere is ever in the queue.
 pub fn relay(server: &Arc<Server>) {
     let targets: Vec<Arc<Target>> = server
         .browser
@@ -659,12 +884,6 @@ pub fn relay(server: &Arc<Server>) {
         let batch: Vec<Value> = {
             let mut st = t.st.lock().unwrap();
             if st.io.relay.is_empty() {
-                continue;
-            }
-            let loopback = st.url == "about:blank"
-                || crate::preview::canonical_open_url(&st.url).is_some_and(|(_, lb)| lb);
-            if !loopback {
-                st.io.relay.clear();
                 continue;
             }
             let n = st.io.relay.len().min(RELAY_BATCH);
@@ -766,6 +985,7 @@ pub fn gc_splits(server: &Arc<Server>) {
     for o in orphans {
         server.close_pane(&o);
     }
+    sweep_drops(server);
     server
         .browser
         .relayed

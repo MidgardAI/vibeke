@@ -45,6 +45,10 @@ struct Page {
     bindings: Vec<String>,
     /// `Page.addScriptToEvaluateOnNewDocument` sources.
     scripts: Vec<String>,
+    /// The current document's main-world execution context id (new per navigation).
+    ctx: i64,
+    /// `pageScaleFactor` reported in frame metadata.
+    page_scale: f64,
 }
 
 impl Page {
@@ -143,6 +147,17 @@ impl State {
             .get(session)
             .map(|p| (p.emu_dpr, p.mobile, p.ua.clone()))
     }
+    /// The main-world execution context id of a page's current document.
+    pub fn context(&self, session: &str) -> i64 {
+        self.pages.get(session).map_or(0, |p| p.ctx)
+    }
+    /// The page scale the page's frames report (a mobile page without a meta viewport).
+    pub fn set_page_scale(&mut self, session: &str, scale: f64) {
+        if let Some(p) = self.pages.get_mut(session) {
+            p.page_scale = scale;
+            p.dirty = true;
+        }
+    }
     /// Commands received for a method (params, session).
     pub fn calls(&self, method: &str) -> Vec<(Value, Option<String>)> {
         self.log
@@ -237,15 +252,27 @@ impl<W: Write> Out<W> {
     }
 }
 
-fn navigated<W: Write>(out: &Out<W>, session: &str, url: &str) {
+/// A top-level navigation as Chromium reports it: contexts cleared, `frameNavigated`, then the
+/// new document's main world (`ctx`, its origin) before load.
+fn navigated<W: Write>(out: &Out<W>, session: &str, url: &str, ctx: i64) {
     out.event(
         "Page.frameStartedLoading",
         json!({"frameId": "F"}),
         Some(session),
     );
+    out.event("Runtime.executionContextsCleared", json!({}), Some(session));
     out.event(
         "Page.frameNavigated",
-        json!({"frame": {"id": "F", "url": url, "loaderId": "L"}, "type": "Navigation"}),
+        json!({"frame": {"id": "F", "url": url, "loaderId": format!("L{ctx}")}, "type": "Navigation"}),
+        Some(session),
+    );
+    let origin = url::Url::parse(url)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_default();
+    out.event(
+        "Runtime.executionContextCreated",
+        json!({"context": {"id": ctx, "origin": origin, "name": "", "uniqueId": format!("u{ctx}"),
+                           "auxData": {"isDefault": true, "type": "default", "frameId": "F"}}}),
         Some(session),
     );
     out.event(
@@ -312,7 +339,8 @@ pub fn serve(
                             "Page.screencastFrame",
                             json!({"data": data, "sessionId": p.frame_seq,
                                    "metadata": {"timestamp": p.frame_seq as f64 / 100.0,
-                                                "deviceWidth": p.css.0, "deviceHeight": p.css.1}}),
+                                                "deviceWidth": p.css.0, "deviceHeight": p.css.1,
+                                                "pageScaleFactor": p.page_scale, "offsetTop": 0}}),
                             Some(&sess),
                         );
                     }
@@ -394,6 +422,8 @@ fn handle<W: Write>(
                     ua: None,
                     bindings: Vec::new(),
                     scripts: Vec::new(),
+                    ctx: 0,
+                    page_scale: 1.0,
                 },
             );
             json!({"targetId": format!("T{n}")})
@@ -485,6 +515,7 @@ fn handle<W: Write>(
         }
         "Page.navigate" => {
             let url = params["url"].as_str().unwrap_or("about:blank").to_string();
+            let mut ctx = 0;
             if let Some(p) = st.pages.get_mut(&sess) {
                 p.history.truncate(p.index + 1);
                 p.history.push(url.clone());
@@ -493,16 +524,19 @@ fn handle<W: Write>(
                 p.generation += 1;
                 p.nav_seq += 1;
                 p.dirty = true;
+                p.ctx += 1;
+                ctx = p.ctx;
             }
             drop(st);
-            navigated(out, &sess, &url);
-            // The document's request and a console line, as a page would produce them.
+            // The document's request (it starts before the navigation commits) and a console
+            // line, as a page would produce them.
             out.event(
                 "Network.requestWillBeSent",
-                json!({"requestId": format!("R{url}"), "type": "Document",
-                       "request": {"method": "GET", "url": url}}),
+                json!({"requestId": format!("R{url}"), "type": "Document", "loaderId": format!("L{ctx}"),
+                       "documentURL": url, "request": {"method": "GET", "url": url}}),
                 Some(&sess),
             );
+            navigated(out, &sess, &url, ctx);
             out.event(
                 "Network.responseReceived",
                 json!({"requestId": format!("R{url}"), "response": {"status": 200, "mimeType": "text/html"}}),
@@ -515,10 +549,11 @@ fn handle<W: Write>(
             );
             out.event(
                 "Runtime.consoleAPICalled",
-                json!({"type": "log", "args": [{"type": "string", "value": format!("loaded {url}")}]}),
+                json!({"type": "log", "executionContextId": ctx,
+                       "args": [{"type": "string", "value": format!("loaded {url}")}]}),
                 Some(&sess),
             );
-            json!({"frameId": "F", "loaderId": "L"})
+            json!({"frameId": "F", "loaderId": format!("L{ctx}")})
         }
         "Page.getNavigationHistory" => match st.pages.get(&sess) {
             Some(p) => json!({
@@ -540,11 +575,12 @@ fn handle<W: Write>(
                 p.generation += 1;
                 p.nav_seq += 1;
                 p.dirty = true;
-                url = Some(p.url.clone());
+                p.ctx += 1;
+                url = Some((p.url.clone(), p.ctx));
             }
             drop(st);
-            if let Some(u) = url {
-                navigated(out, &sess, &u);
+            if let Some((u, ctx)) = url {
+                navigated(out, &sess, &u, ctx);
             }
             json!({})
         }
@@ -554,11 +590,12 @@ fn handle<W: Write>(
                 p.generation += 1;
                 p.nav_seq += 1;
                 p.dirty = true;
-                url = Some(p.url.clone());
+                p.ctx += 1;
+                url = Some((p.url.clone(), p.ctx));
             }
             drop(st);
-            if let Some(u) = url {
-                navigated(out, &sess, &u);
+            if let Some((u, ctx)) = url {
+                navigated(out, &sess, &u, ctx);
             }
             json!({})
         }
@@ -614,6 +651,7 @@ fn handle<W: Write>(
 /// page's binding (as the injected clipboard hook would), `chooser` opens a file chooser.
 fn page_script(st: &mut State, sess: &str, text: &str) {
     let s = Some(sess);
+    let ctx = st.context(sess);
     if let Some(t) = text
         .strip_prefix("log:")
         .or_else(|| text.strip_prefix("warn:"))
@@ -625,19 +663,26 @@ fn page_script(st: &mut State, sess: &str, text: &str) {
         };
         st.inject(
             "Runtime.consoleAPICalled",
-            json!({"type": ty, "args": [{"type": "string", "value": t}]}),
+            json!({"type": ty, "executionContextId": ctx, "args": [{"type": "string", "value": t}]}),
             s,
         );
     } else if let Some(t) = text.strip_prefix("error:") {
         st.inject(
             "Runtime.exceptionThrown",
-            json!({"exceptionDetails": {"text": "Uncaught", "exception": {"description": format!("Error: {t}")}}}),
+            json!({"exceptionDetails": {"text": "Uncaught", "executionContextId": ctx,
+                                        "exception": {"description": format!("Error: {t}")}}}),
             s,
         );
     } else if let Some(u) = text.strip_prefix("fail:") {
+        let doc = st
+            .pages
+            .get(sess)
+            .map(|p| p.url.clone())
+            .unwrap_or_default();
         st.inject(
             "Network.requestWillBeSent",
-            json!({"requestId": format!("F{u}"), "type": "Fetch", "request": {"method": "GET", "url": u}}),
+            json!({"requestId": format!("F{u}"), "type": "Fetch", "documentURL": doc,
+                   "loaderId": format!("L{ctx}"), "request": {"method": "GET", "url": u}}),
             s,
         );
         st.inject(
@@ -649,7 +694,7 @@ fn page_script(st: &mut State, sess: &str, text: &str) {
         if let Some(b) = st.pages.get(sess).and_then(|p| p.bindings.last().cloned()) {
             st.inject(
                 "Runtime.bindingCalled",
-                json!({"name": b, "payload": t, "executionContextId": 1}),
+                json!({"name": b, "payload": t, "executionContextId": ctx}),
                 s,
             );
         }

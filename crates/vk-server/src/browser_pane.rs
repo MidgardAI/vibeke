@@ -440,6 +440,7 @@ pub struct Host {
     launch_lock: Mutex<()>,
     launcher: Mutex<Option<Arc<dyn Launcher>>>,
     profiles_root: Mutex<Option<PathBuf>>,
+    drops_root: Mutex<Option<PathBuf>>,
     next_sub: AtomicU64,
     gc_started: AtomicBool,
     /// Idle timeouts (tests shorten them).
@@ -459,6 +460,7 @@ impl Default for Host {
             launch_lock: Mutex::new(()),
             launcher: Mutex::new(None),
             profiles_root: Mutex::new(None),
+            drops_root: Mutex::new(None),
             next_sub: AtomicU64::new(1),
             gc_started: AtomicBool::new(false),
             idle_target: Mutex::new(Duration::from_secs(120)),
@@ -479,6 +481,19 @@ impl Host {
     /// Test hook: where profiles live (default `<state>/browser-profiles`).
     pub fn set_profiles_root(&self, p: PathBuf) {
         *self.profiles_root.lock().unwrap() = Some(p);
+    }
+
+    /// Test hook: the drop directory (default `<state>/browser-drops`).
+    pub fn set_drops_root(&self, p: PathBuf) {
+        *self.drops_root.lock().unwrap() = Some(p);
+    }
+
+    pub fn drops_root(&self) -> PathBuf {
+        self.drops_root
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| crate::paths::state_root().join("browser-drops"))
     }
 
     fn profiles_root(&self) -> PathBuf {
@@ -1175,6 +1190,7 @@ fn on_event(server: &Weak<Server>, proc: &Arc<Proc>, t: &Arc<Target>, ev: Event)
             let Ok(f) = ScreencastFrame::from_event(&ev) else {
                 return;
             };
+            page_io::on_frame_meta(t, &ev.params["metadata"]);
             // Ack on receipt (Stage 0: best latency), then decode.
             let _ = proc.cdp.send(
                 ev.session_id.as_deref(),
@@ -1422,8 +1438,8 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
             let _ = page.dispatch(&cmds);
         }
         BrowserCmd::Text(text) => {
+            // Text (a paste, `browser.command text`) is not a user gesture for the clipboard.
             if let Some(page) = page {
-                page_io::note_input(&mut t.st.lock().unwrap());
                 let (m, p) = input::map_paste(&text).to_command();
                 let _ = page.send(m, p);
             }
@@ -1445,7 +1461,7 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
                     return;
                 };
                 st.io.last_mouse = Some(pt);
-                if matches!(kind, MouseKind::Press | MouseKind::Release) {
+                if kind == MouseKind::Press {
                     page_io::note_input(&mut st);
                 }
                 pt
@@ -1549,7 +1565,7 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
             st.notice = Some("not watching an agent browser session".into());
             Target::mark_state(&mut st);
         }
-        BrowserCmd::DropFiles(paths) => page_io::drop_files(&t, paths),
+        BrowserCmd::DropFiles(paths) => page_io::drop_files(server, &t, paths),
         BrowserCmd::Screenshot => {
             let server = server.clone();
             tokio::spawn(async move {
