@@ -35,7 +35,7 @@ export function useCardContext(item: InboxItem) {
   };
 }
 
-export function CardHeader({ item, showHost }: { item: InboxItem; showHost: boolean }) {
+export function CardHeader({ item, showHost, hideOpen }: { item: InboxItem; showHost: boolean; hideOpen?: boolean }) {
   const ctx = useCardContext(item);
   const now = useNow(10_000);
   const it = item.interaction;
@@ -48,7 +48,7 @@ export function CardHeader({ item, showHost }: { item: InboxItem; showHost: bool
       <span className="min-w-0 flex-1 truncate">{parts.join(' · ')}</span>
       <span className="shrink-0 tabular-nums">{t.inbox.waiting(shortDuration(now - it.opened_at_ms))}</span>
       {it.kind === 'approval' && <RiskBadge risk={interactionRisk(it)} />}
-      {item.pane && (
+      {item.pane && !hideOpen && (
         <button
           type="button"
           data-act="open"
@@ -170,12 +170,16 @@ export function InteractionCard({
   showHost = false,
   preselect = null,
   leaving = false,
+  variant = 'default',
 }: {
   item: InboxItem;
   showHost?: boolean;
   preselect?: 'allow' | 'deny' | null;
   leaving?: boolean;
+  /** `compact`: inline in a conversation (smaller type, no "open pane" link: it is open). */
+  variant?: 'default' | 'compact';
 }) {
+  const compact = variant === 'compact';
   const app = useApp();
   useAnswers();
   const ctx = useCardContext(item);
@@ -249,7 +253,7 @@ export function InteractionCard({
           {dx > 0 ? t.inbox.allow : t.inbox.deny}
         </div>
       )}
-      <Card className={cx('relative animate-in touch-pan-y p-3.5', it.kind === 'approval' && interactionRisk(it) === 'high' && 'border-danger/40')}>
+      <Card className={cx('relative animate-in touch-pan-y', compact ? 'rounded-xl p-3' : 'p-3.5', it.kind === 'approval' && interactionRisk(it) === 'high' && 'border-danger/40')}>
         <div
           onPointerDown={onDown}
           onPointerMove={onMove}
@@ -258,8 +262,8 @@ export function InteractionCard({
           style={dx ? { transform: `translateX(${dx}px)`, transition: 'none' } : { transition: 'transform .15s' }}
           className="space-y-2.5"
         >
-          <CardHeader item={item} showHost={showHost} />
-          <div className="text-base font-medium leading-snug">{it.title}</div>
+          <CardHeader item={item} showHost={showHost} hideOpen={compact} />
+          <div className={cx('font-medium leading-snug', compact ? 'text-sm' : 'text-base')}>{it.title}</div>
           {it.kind === 'approval' && <ActionPreview it={it} />}
           {it.kind === 'question' && <QuestionBody it={it} disabled={disabled} locked={locked} onSubmit={(c, tx) => send({ ...(c ? { choices: c } : {}), ...(tx ? { text: tx } : {}) }, 'answer')} />}
           {it.kind === 'plan_review' && <PlanBody it={it} disabled={disabled} locked={locked} onApprove={() => send({ decision: 'allow' }, 'approve')} onChanges={(tx) => send({ decision: 'deny', text: tx }, 'changes')} />}
@@ -271,7 +275,7 @@ export function InteractionCard({
           {it.answerable && ctx.scope === 'view' && <Notice>{t.inbox.readOnly}</Notice>}
 
           {it.kind === 'approval' && !locked && it.answerable && ctx.scope !== 'view' && (
-            <div className="flex gap-2 pt-0.5">
+            <div className={cx('flex gap-2 pt-0.5', compact && '[&>button]:h-7 [&>button]:text-xs')}>
               <Button
                 variant="outline"
                 className={cx('flex-1', preselect === 'deny' && 'border-danger! text-danger!')}

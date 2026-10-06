@@ -641,6 +641,13 @@ export const en = {
     previewStatus: { up: 'Running', down: 'Not responding', declared: 'Declared', suggested: 'Detected', gone: 'Gone' } as Record<string, string>,
     previewGone: 'This preview is no longer available',
     workspaceMenu: 'Workspace options',
+    share: 'Share',
+    handoff: 'Hand off',
+    renamePane: 'Rename…',
+    closePane: 'Close pane',
+    closePaneConfirm: 'Close this pane? Whatever runs in it is stopped.',
+    closeTabConfirm: 'Close this tab? Its panes are closed and whatever runs in them is stopped.',
+    findInTerminal: 'Find in terminal',
     previews: 'Previews',
   },
 

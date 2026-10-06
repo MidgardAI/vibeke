@@ -4,20 +4,14 @@
 // <960px: the sidebar is a drawer (menu button) and the panel covers the screen.
 
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { FileDiff, Plus, Server } from 'lucide-react';
 import { Dialog } from '../components/dialog';
-import { Button, Empty, HarnessIcon, IconButton, Spinner, StatusDot, cx } from '../components/ui';
+import { Spinner } from '../components/ui';
 import { t } from '../i18n';
 import { PANEL_MAX, PANEL_MIN } from '../lib/prefs';
-import { keyLabel } from '../lib/shortcuts';
-import type { PaneRow } from '../lib/tree';
-import type { WorkspaceRow } from '../lib/workspaces';
-import { navigate, type PaneView, type PanelKind, type Route, type WorkspaceRoute } from '../router';
-import { PaneScreen } from '../screens/pane/pane-screen';
-import { useApp, useHost, usePrefs } from './hooks';
-import { emitUi, isMacLike } from './keyboard';
-import { currentLayoutMode, drawerOpen, effectivePanel, rememberTab, selectedPane, togglePanelRoute, useDrawer, useWorkspaceRows, type LayoutMode } from './selection';
-import { MenuButton, WideContext, useMediaQuery, useWide } from './shell';
+import { navigate, type PanelKind, type Route, type WorkspaceRoute } from '../router';
+import { useApp, usePrefs } from './hooks';
+import { currentLayoutMode, drawerOpen, effectivePanel, togglePanelRoute, useDrawer, type LayoutMode } from './selection';
+import { WideContext, useMediaQuery } from './shell';
 import { Sidebar } from './sidebar';
 
 const LazyRightPanel = lazy(() => import('../screens/workspace/panel/right-panel'));
@@ -164,123 +158,4 @@ function RightPanel({ route, kind, sheet }: { route: WorkspaceRoute; kind: Panel
 
 // ---- centre: a workspace ---------------------------------------------------------------------
 
-export function WorkspaceScreen({ route }: { route: WorkspaceRoute }) {
-  const rows = useWorkspaceRows();
-  const host = useHost(route.host);
-  const row = rows.find((r) => r.host === route.host && r.workspace.id === route.workspace);
-  const pane = selectedPane(route, row);
-
-  useEffect(() => {
-    if (row && pane && row.panes.some((p) => p.pane.id === pane)) rememberTab(route.host, route.workspace, pane);
-  }, [row?.key, pane]);
-
-  if (!row) {
-    if (!host || !host.dashboard)
-      return (
-        <Centre>
-          <div className="flex flex-1 items-center justify-center">
-            <Spinner />
-          </div>
-        </Centre>
-      );
-    return (
-      <Centre title={t.workspace.notFound}>
-        <Empty icon={<Server />} title={t.workspace.notFound} hint={t.workspace.notFoundHint} action={<Button onClick={() => navigate({ name: 'inbox' })}>{t.tabs.inbox}</Button>} />
-      </Centre>
-    );
-  }
-  const current = row.panes.find((p) => p.pane.id === pane);
-  if (!current) {
-    return (
-      <Centre title={row.title} sub={row.hostName}>
-        <Empty
-          title={t.workspace.noPanes}
-          action={
-            <Button variant="primary" icon={<Plus />} onClick={() => emitUi('new-agent')}>
-              {t.panes.newAgent}
-            </Button>
-          }
-        />
-      </Centre>
-    );
-  }
-  return <WorkspacePane key={`${row.key}/${current.pane.id}`} route={route} row={row} current={current} />;
-}
-
-function WorkspacePane({ route, row, current }: { route: WorkspaceRoute; row: WorkspaceRow; current: PaneRow }) {
-  const app = useApp();
-  const prefs = usePrefs();
-  const wide = useWide();
-  const mode = useLayoutMode();
-  const toggle = useTogglePanel();
-  const mac = isMacLike(app.platform.mac);
-  // Phase 1: the agent view is the existing terminal/history pair; the panel holds Changes.
-  const [view, setView] = useState<PaneView>('term');
-  const panelOpen = !!effectivePanel(route, prefs, mode);
-  const repo = row.workspace.root_path.split('/').filter(Boolean).pop() ?? '';
-  const sub = [repo !== row.title ? repo : null, row.hostName].filter(Boolean).join(' · ');
-  return (
-    <PaneScreen
-      host={row.host}
-      pane={current.pane.id}
-      view={view}
-      embed={{
-        title: row.title,
-        sub,
-        onView: setView,
-        onChanges: () => !panelOpen && toggle(route, 'changes'),
-        leading: wide ? undefined : <MenuButton />,
-        trailing: (
-          <IconButton label={`${t.sidebar.togglePanel} (${keyLabel(mac, 'mod+3')})`} active={panelOpen} onClick={() => toggle(route, 'changes')}>
-            <FileDiff />
-          </IconButton>
-        ),
-        tabs: <PaneTabs route={route} row={row} current={current.pane.id} />,
-      }}
-    />
-  );
-}
-
-/** One tab per pane of the workspace (agents first by layout order); Phase 2 replaces it. */
-function PaneTabs({ route, row, current }: { route: WorkspaceRoute; row: WorkspaceRow; current: string }) {
-  return (
-    <div role="tablist" aria-label={t.workspace.tabs} className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-      {row.panes.map((p) => {
-        const on = p.pane.id === current;
-        const label = p.pane.title ?? p.run?.name ?? (p.run ? p.run.harness : p.pane.auto_title);
-        const status = p.attention === 'interaction' || p.run?.execution.value === 'error' ? 'need' : p.attention === 'working' ? 'working' : null;
-        return (
-          <button
-            key={p.key}
-            type="button"
-            role="tab"
-            aria-selected={on}
-            title={label}
-            onClick={() => navigate({ ...route, pane: p.pane.id }, { replace: true })}
-            className={cx('vk-focus inline-flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm', on ? 'bg-selected text-fg' : 'text-muted hover:bg-hover hover:text-fg')}
-          >
-            <HarnessIcon harness={p.run?.harness ?? null} />
-            <span className="truncate">{label}</span>
-            {status && <StatusDot status={status} />}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function Centre({ title, sub, children }: { title?: string; sub?: string; children: ReactNode }) {
-  const wide = useWide();
-  return (
-    <div className="flex h-full min-h-0 flex-col pt-safe">
-      <header className={cx('titlebar flex h-11 shrink-0 items-center gap-2 border-b border-border px-3', !wide && 'titlebar-inset pl-1.5')}>
-        {!wide && <MenuButton />}
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          {title && <h1 className="truncate text-base font-semibold">{title}</h1>}
-          {sub && <span className="truncate text-sm text-muted">{sub}</span>}
-        </div>
-      </header>
-      {children}
-    </div>
-  );
-}
+export { WorkspaceScreen } from '../screens/workspace/workspace-screen';

@@ -6,12 +6,11 @@ import { Empty, Spinner, cx } from '../components/ui';
 import { t } from '../i18n';
 import { useStore } from '../lib/store';
 import type { UiPlatform } from '../platform';
-import { mostUrgent } from '../lib/workspaces';
+import { mostUrgent, workspaceOfPane } from '../lib/workspaces';
 import { formatRoute, hashFromUrl, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { InboxScreen } from '../screens/inbox';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
-import { PaneScreen } from '../screens/pane/pane-screen';
 import { SettingsScreen } from '../screens/settings';
 import { QuickScreen } from '../screens/quick';
 import { AppContext, useApp, useHosts, useInboxItems, usePrefs } from './hooks';
@@ -70,13 +69,15 @@ function Quick() {
 
 /**
  * A popped-out pane window is bound to the one pane it was opened for (the main process keys the
- * window, its bounds and "pop out again" by that pane). Its own views (terminal, history,
- * changes) stay here; any other route, including a different pane, opens in the main window.
+ * window, its bounds and "pop out again" by that pane): the workspace screen locked to that
+ * pane's tabs (conversation, terminal). Any other route, including a different pane, opens in
+ * the main window.
  */
 function PaneWindow() {
   const app = useApp();
   const prefs = usePrefs();
   const route = useRoute();
+  const rows = useWorkspaceRows();
   const bound = useRef<{ host: string; pane: string } | null>(null);
   const home = useRef<string | null>(null);
   useThemeEffect(prefs.theme, prefs.termFont);
@@ -93,11 +94,25 @@ function PaneWindow() {
   }, [route, app, own]);
   return (
     <div className="flex h-full flex-col">
-      {own && route.name === 'pane' ? <PaneScreen host={route.host} pane={route.pane} view={route.view} /> : <Spinner />}
+      {own && route.name === 'pane' ? <PaneWindowBody host={route.host} pane={route.pane} rows={rows} /> : <Spinner />}
       <Toasts />
       <KeyboardLayer surface="pane" />
     </div>
   );
+}
+
+function PaneWindowBody({ host, pane, rows }: { host: string; pane: string; rows: ReturnType<typeof useWorkspaceRows> }) {
+  const ws = workspaceOfPane(rows, host, pane);
+  const hostState = useHosts().find((h) => h.record.host_id === host);
+  if (!ws) {
+    if (hostState?.dashboard) return <Empty title={t.pane.notFound} />;
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <Spinner />
+      </div>
+    );
+  }
+  return <WorkspaceScreen route={workspaceRoute(host, ws.workspace.id, { pane })} locked />;
 }
 
 function Main() {
@@ -162,8 +177,8 @@ function Screen({ route }: { route: Route }) {
     case 'workspace':
       return <WorkspaceScreen route={route} />;
     case 'pane':
-      // Not (yet) resolvable to a workspace: the pane on its own.
-      return <PaneScreen host={route.host} pane={route.pane} view={route.view} />;
+      // Resolved to its workspace once the dashboard is known (resolveLegacy); unknown panes end here.
+      return <PaneRouteFallback host={route.host} />;
     case 'interaction':
       return <InteractionRoute host={route.host} id={route.id} preselect={route.preselect} />;
     case 'run':
@@ -208,6 +223,21 @@ function Screen({ route }: { route: Route }) {
         </Framed>
       );
   }
+}
+
+function PaneRouteFallback({ host }: { host: string }) {
+  const h = useHosts().find((x) => x.record.host_id === host);
+  if (!h?.dashboard)
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Spinner />
+      </div>
+    );
+  return (
+    <Framed title={t.pane.notFound}>
+      <Empty title={t.pane.notFound} />
+    </Framed>
+  );
 }
 
 function InboxSub() {
