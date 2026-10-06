@@ -276,6 +276,27 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        Some("preview") if args.get(1).map(String::as_str) == Some("show") => {
+            let params = match vk_cli::build_params(&["preview"], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::noun_help("preview"));
+                    return EXIT_USAGE;
+                }
+            };
+            // `devbox/v4`: the screenshots live on that machine.
+            let mut g = g;
+            if g.machine.is_none()
+                && let Some((m, _)) = params["preview"].as_str().and_then(|h| h.split_once('/'))
+            {
+                g.machine = Some(m.to_string());
+            }
+            let gr = &g;
+            with_client(gr, |mut c| async move {
+                vk_cli::preview_show(&mut c, gr, params).await
+            })
+            .await
+        }
         Some("screenshot") if args.get(1).map(String::as_str) == Some("code-state") => {
             vk_cli::code_state(&args[2..])
         }

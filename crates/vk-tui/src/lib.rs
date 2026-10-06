@@ -29,6 +29,7 @@ pub mod paste;
 pub mod pending;
 pub mod plugins;
 pub mod popups;
+pub mod preview_ui;
 pub mod push;
 pub mod screen;
 pub mod scrollback;

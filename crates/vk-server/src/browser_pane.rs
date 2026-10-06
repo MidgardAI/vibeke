@@ -926,6 +926,8 @@ fn ensure_blocking(server: &Arc<Server>, t: &Arc<Target>, socks: Option<u16>) ->
         .insert(session.clone(), Arc::downgrade(t));
     let page = Page::attached(proc.cdp.clone(), session, target_id);
     page.call("Page.enable", json!({}))?;
+    // Console errors feed `preview.console_error` (06 B5).
+    let _ = page.call("Runtime.enable", json!({}));
     if let Some(g) = geom
         && g.valid()
     {
@@ -1208,6 +1210,11 @@ fn on_event(server: &Weak<Server>, proc: &Arc<Proc>, t: &Arc<Target>, ev: Event)
             if ev.method == "Page.loadEventFired" {
                 drop(st);
                 refresh_title(t);
+            }
+        }
+        "Runtime.exceptionThrown" | "Runtime.consoleAPICalled" => {
+            if let Some(srv) = server.upgrade() {
+                crate::preview_console::from_pane_event(&srv, &t.pane, &ev.method, &ev.params);
             }
         }
         "Inspector.targetCrashed" => {

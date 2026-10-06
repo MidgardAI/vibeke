@@ -26,6 +26,7 @@ pub const TYPES: &[&str] = &[
     "browser.taken_over",
     "browser.released",
     "screenshot.*",
+    "preview.console_error",
     "draft.*",
     "notes.updated",
     "assistant.*",
@@ -114,6 +115,9 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
                     .to_string(),
             );
             crate::gallery::on_captured(app, i, &v);
+            crate::preview_ui::on_captured(app, i, &v);
+        } else if k == "preview.console_error" {
+            crate::preview_ui::on_console_error(app, i, &v);
         } else if k == "screenshot.deleted" {
             crate::gallery::on_deleted(app, i);
         } else if k.starts_with("draft.") || k == "notes.updated" {
