@@ -1,6 +1,8 @@
 //! Previews and the browser route, server side (06 B2, B3.1, B3.3, B3.4).
 //!
-//! - **Discovery** (every server): every 2 s (and on `pane.process_changed`) the LISTEN
+//! - **Discovery** (every server): every 2 s while panes are active or previews live, backing
+//!   off to 30 s when idle (and at once on `pane.process_changed`, or on output after a
+//!   back-off), the LISTEN
 //!   sockets of panes whose foreground process is not a shell; loopback/wildcard binds that
 //!   answer HTTP become suggestions. Pane output is split into lines on the feed path and
 //!   lines containing `://` are parsed here, off that path.
@@ -175,6 +177,8 @@ pub struct Previews {
     link_factory: Mutex<Option<LinkFactory>>,
     clock: Mutex<Clock>,
     test_hooks: bool,
+    /// Pane activity pacing the discovery poll (fast while recent, backing off when idle).
+    pub(crate) pace: crate::timers::Activity,
     pub accepted: AtomicU64,
     pub rejected: AtomicU64,
     /// The B4 reverse proxy (started on the first proxy open).
@@ -198,6 +202,7 @@ impl Default for Previews {
             link_factory: Mutex::new(None),
             clock: Mutex::new(Arc::new(vk_store::now_ms)),
             test_hooks: std::env::var("VIBEKE_TEST_HOOKS").is_ok_and(|v| v == "1"),
+            pace: Default::default(),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             proxy: tokio::sync::Mutex::new(None),
@@ -232,6 +237,7 @@ impl Previews {
 
     /// Hot path (pane feed): split into lines, queue the ones with `://`.
     pub fn on_output(&self, pane: &str, data: &[u8]) {
+        self.pace.touch();
         let mut lines = Vec::new();
         {
             let mut sc = self.scanners.lock().unwrap();
@@ -543,19 +549,40 @@ fn significant(a: &Preview, b: &Preview) -> bool {
 
 // ---- discovery ------------------------------------------------------------------------------
 
+/// Discovery stays on the [`TICK`] period this long after the last pane output / foreground
+/// change, then backs off (doubling) to [`DISCOVERY_SLOW_MAX`] while nothing happens.
+const DISCOVERY_FAST_WINDOW: Duration = Duration::from_secs(30);
+const DISCOVERY_SLOW_MAX: Duration = Duration::from_secs(30);
+
 async fn discovery_loop(server: Arc<Server>) {
     let mut events = server.events.subscribe();
-    let mut tick = tokio::time::interval(TICK);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut cfg = PreviewConfig::load();
     let mut cfg_at = Instant::now();
     let mut last = Instant::now() - TICK;
+    // Paced by activity (spec 10 §1.3 wakeup budget): pane output, foreground changes and pane
+    // lifecycle keep the 2 s period (and output wakes a backed-off loop at once); with no
+    // activity and no live previews the period doubles up to 30 s.
+    let window = std::env::var("VIBEKE_PREVIEW_FAST_WINDOW_MS")
+        .ok()
+        .filter(|_| server.previews.test_hooks)
+        .and_then(|v| v.parse().ok())
+        .map_or(DISCOVERY_FAST_WINDOW, Duration::from_millis);
+    let mut pace = crate::timers::Backoff::new(TICK, window, DISCOVERY_SLOW_MAX);
+    let act = &server.previews.pace;
+    let mut every = TICK;
     loop {
+        if every > TICK {
+            act.park();
+        }
         tokio::select! {
-            _ = tick.tick() => {}
+            _ = tokio::time::sleep(every.saturating_sub(last.elapsed())) => {}
+            // Output while backed off: scan now.
+            _ = act.woken(), if every > TICK => {}
             ev = events.recv() => match ev {
-                Ok(e) if e.kind == "pane.process_changed" || e.kind == "pane.closed" => {
-                    // Foreground change: rescan now (debounced).
+                Ok(e) if matches!(e.kind.as_str(), "pane.process_changed" | "pane.closed" | "pane.created") => {
+                    // Foreground change: rescan now (debounced) and stay fast for a while.
+                    act.note();
+                    every = pace.reset();
                     if last.elapsed() < Duration::from_millis(300) { continue }
                 }
                 Ok(_) => continue,
@@ -563,12 +590,22 @@ async fn discovery_loop(server: Arc<Server>) {
                 Err(_) => return,
             }
         }
+        act.unpark();
         if cfg_at.elapsed() > Duration::from_secs(10) {
             cfg = PreviewConfig::load();
             cfg_at = Instant::now();
         }
         last = Instant::now();
         discover(&server, &cfg).await;
+        // Live previews need presence checks on the fast period (lifecycle timing).
+        let busy = server.with_core(|c| {
+            c.model
+                .previews
+                .iter()
+                .any(|p| p.status != PreviewStatus::Gone)
+        });
+        every = pace.next(act.since_touch(), busy);
+        act.pass_done(every);
     }
 }
 

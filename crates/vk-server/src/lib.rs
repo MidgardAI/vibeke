@@ -28,6 +28,7 @@ pub mod sandbox;
 pub mod screenshots;
 pub mod search;
 pub mod theme;
+pub mod timers;
 pub mod tracking;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
@@ -123,6 +124,11 @@ pub struct Server {
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
+    /// Coalesced pane deadlines (spec 10 §1.3 wakeup budget).
+    pub timers: Arc<timers::Scheduler>,
+    /// Wakes the housekeeping task: archive rows to flush, or storage degraded.
+    pub housekeeping_wake: Notify,
+    pub housekeeping_runs: AtomicU64,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -201,6 +207,9 @@ impl Server {
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
+            timers: Arc::default(),
+            housekeeping_wake: Notify::new(),
+            housekeeping_runs: AtomicU64::new(0),
         }))
     }
 
@@ -223,6 +232,8 @@ impl Server {
             Err(e) => {
                 let msg = format!("storage unavailable: {e:#}");
                 *self.degraded.lock().unwrap() = Some(msg.clone());
+                // Housekeeping probes storage until it recovers.
+                self.housekeeping_wake.notify_one();
                 core.model.degraded = Some(msg);
                 self.bump_model();
                 Err(e)
@@ -1289,14 +1300,17 @@ impl Server {
             );
         }
         let _ = self.archive.lock().unwrap().append(pane, &rows);
+        self.housekeeping_wake.notify_one();
     }
 
     pub fn archive_last_line(&self, pane: &str) -> Option<u64> {
         self.archive.lock().unwrap().last_line(pane).ok().flatten()
     }
 
-    /// 1 Hz housekeeping: flush archive + FTS, probe storage when degraded, prune events.
+    /// Housekeeping: flush archive + FTS, probe storage when degraded. Runs at most once a
+    /// second while there is something to do ([`Server::housekeeping_wake`]), never when idle.
     pub fn housekeeping(&self) {
+        self.housekeeping_runs.fetch_add(1, Ordering::Relaxed);
         let _ = self.archive.lock().unwrap().flush();
         let rows = std::mem::take(&mut *self.fts_buf.lock().unwrap());
         if !rows.is_empty() {
