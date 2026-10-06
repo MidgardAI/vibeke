@@ -2,6 +2,7 @@
 //! snapshots and scrollback archiving.
 
 use crate::Server;
+use crate::agents::headless::{Act, Session};
 use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -16,6 +17,19 @@ use vk_store::archive::ArchivedRow;
 use vk_term::{Effect, Engine};
 
 pub const SCROLLBACK: usize = 10_000;
+
+/// First argv word that asks [`crate::Server`]'s pane spawn for a pipe-mode holder (01 §1.2):
+/// headless harnesses get stdio pipes instead of a PTY. Stripped before the spawn, so it never
+/// reaches the child, a sandbox wrapper or the stored pane command.
+pub const PIPE_ARGV0: &str = "vibeke:pipe";
+
+/// Split a pane command into its holder mode and the argv to run.
+pub fn holder_mode(argv: &[String]) -> (Mode, &[String]) {
+    match argv.split_first() {
+        Some((first, rest)) if first == PIPE_ARGV0 => (Mode::Pipe, rest),
+        _ => (Mode::Pty, argv),
+    }
+}
 
 /// A fresh VT engine whose colour-query answers follow the session appearance (theme auto).
 fn new_engine(cols: u16, rows: u16) -> Engine {
@@ -64,6 +78,8 @@ pub enum PaneCmd {
     /// The pane's snapshot deadline (armed in the server-wide [`crate::timers::Scheduler`])
     /// came due: snapshot if the output is idle enough, otherwise re-arm.
     SnapshotDue,
+    /// Pipe-mode panes: a command for the headless adapter (01 §3.3).
+    Headless(crate::agents::headless::Cmd),
 }
 
 pub struct PaneRt {
@@ -75,6 +91,8 @@ pub struct PaneRt {
     /// Size most recently requested from the holder.
     pub want_size: Mutex<(u16, u16)>,
     pub last_input: Mutex<Option<Instant>>,
+    /// The holder runs in pipe mode (headless harness; learned from `HelloOk`).
+    pipe: std::sync::atomic::AtomicBool,
 }
 
 impl PaneRt {
@@ -97,8 +115,15 @@ impl PaneRt {
             status: Mutex::new(None),
             want_size: Mutex::new((cols, rows)),
             last_input: Mutex::new(None),
+            pipe: std::sync::atomic::AtomicBool::new(false),
         });
         (rt, cmd_rx)
+    }
+
+    /// A pipe-mode pane: its screen is Vibeke's transcript of a headless harness, and typed
+    /// input goes to the adapter's line editor, never raw to the harness's stdin.
+    pub fn is_pipe(&self) -> bool {
+        self.pipe.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn send(&self, cmd: PaneCmd) {
@@ -127,8 +152,9 @@ impl PaneRt {
             .await
             .ok()
             .and_then(|r| r.ok())
-            // No ack in time: the input may still be pending in the holder; not "exited".
-            .unwrap_or(InputStatus::Failed)
+            // No ack in time (or the pane task is gone): the input may or may not reach the
+            // program, reported as `input_unconfirmed` (01 §1.2); not "exited".
+            .unwrap_or(InputStatus::Unconfirmed)
     }
 
     pub fn rev(&self) -> u64 {
@@ -191,6 +217,19 @@ impl Ledger {
         }
     }
 
+    /// The holder is gone: every pending input ends `status`; returns their ids.
+    fn fail_all(&mut self, status: InputStatus) -> Vec<u64> {
+        let ids: Vec<u64> = self.order.drain(..).collect();
+        for id in &ids {
+            if let Some((_, waiters)) = self.entries.remove(id) {
+                for w in waiters {
+                    let _ = w.send(status);
+                }
+            }
+        }
+        ids
+    }
+
     fn pending(&self) -> Vec<(u64, Vec<u8>)> {
         self.order
             .iter()
@@ -222,12 +261,23 @@ pub async fn run(
     let id = rt.id.clone();
     let mut ledger = Ledger::default();
     let mut attempt = Attempt::default();
+    // Pipe mode: the headless adapter, kept across reconnects like the ledger.
+    let mut session: Option<Session> = None;
     let mut failures: u32 = 0;
     // Set once this task held the lease; only then can a newer epoch mean "superseded".
     let mut had_lease = false;
     loop {
         attempt.acquired = None;
-        let res = run_inner(&server, &rt, &mut cmd_rx, &conn, &mut ledger, &mut attempt).await;
+        let res = run_inner(
+            &server,
+            &rt,
+            &mut cmd_rx,
+            &conn,
+            &mut ledger,
+            &mut attempt,
+            &mut session,
+        )
+        .await;
         let e = match res {
             Ok(reason) => {
                 tracing::info!(pane = %id, reason, "pane ended");
@@ -267,9 +317,30 @@ pub async fn run(
         // The holder died without reporting a child exit (crash, kill, reboot): keep the
         // layout slot with a fresh shell and offer the agent for resume (10 §5.1).
         tracing::warn!(pane = %id, error = %format!("{e:#}"), "holder lost");
+        // Inputs in flight may or may not have reached the program (01 §1.2).
+        let lost = ledger.fail_all(InputStatus::Unconfirmed);
+        report_unconfirmed(&server, &id, &lost, "holder_lost");
         server.holder_lost(&id);
         return;
     }
+}
+
+/// `pane.input_unconfirmed` (01 §1.2): inputs that may or may not have reached the program.
+/// They are never replayed automatically.
+pub(crate) fn report_unconfirmed(server: &Server, pane: &str, ids: &[u64], reason: &str) {
+    if ids.is_empty() {
+        return;
+    }
+    let mut c = server.core.lock().unwrap();
+    let mut tx = crate::core::Tx::new();
+    for id in ids {
+        tx.event(
+            "pane.input_unconfirmed",
+            serde_json::json!({"pane": pane}),
+            serde_json::json!({"input_id": id.to_string(), "reason": reason}),
+        );
+    }
+    let _ = server.commit(&mut c, tx);
 }
 
 async fn run_inner(
@@ -279,6 +350,7 @@ async fn run_inner(
     conn: &HolderConn,
     ledger: &mut Ledger,
     attempt: &mut Attempt,
+    session: &mut Option<Session>,
 ) -> Result<String> {
     let stream = connect_retry(&conn.socket)
         .await
@@ -304,11 +376,14 @@ async fn run_inner(
         ring,
         child_pid,
         started_at_ms,
+        mode,
         ..
     } = hello
     else {
         bail!("unexpected hello reply: {hello:?}")
     };
+    let pipe = mode == Mode::Pipe;
+    rt.pipe.store(pipe, std::sync::atomic::Ordering::Relaxed);
     let epoch = conn.epoch.max(holder_epoch) + 1;
     asyncio::write_frame(
         &mut wr,
@@ -335,7 +410,41 @@ async fn run_inner(
     let mut from = 0;
     let mut method = "fresh";
     let fed = rt.screen.lock().unwrap().fed_offset;
-    if !conn.fresh && same_holder && in_ring(fed) {
+    if pipe {
+        // Pipe mode (01 §1.2): the screen is a transcript the adapter derives from the
+        // journal, so recovery is a journal replay through the adapter, never a VT snapshot.
+        let resume_at = session
+            .as_ref()
+            .map(|s| s.seen())
+            .filter(|a| same_holder && in_ring(*a));
+        if conn.fresh {
+            // Bound to its record by `Cmd::Attach` from the launcher.
+        } else if let Some(at) = resume_at {
+            method = "reconnect";
+            from = at;
+            if let Some(s) = session.as_mut() {
+                s.begin_reconnect();
+            }
+        } else {
+            method = "journal";
+            {
+                let mut sc = rt.screen.lock().unwrap();
+                let (c, r) = (sc.engine.cols(), sc.engine.rows());
+                sc.engine = new_engine(c, r);
+                sc.fed_offset = 0;
+            }
+            if session.is_none() {
+                *session = Session::load(server, &rt.id);
+            }
+            if let Some(s) = session.as_mut() {
+                s.begin_replay();
+            }
+            from = ring.start_offset;
+        }
+        if !conn.fresh {
+            rt.screen.lock().unwrap().recovering = true;
+        }
+    } else if !conn.fresh && same_holder && in_ring(fed) {
         // Reconnect to the holder we were attached to: our screen is exact up to `fed`, so
         // only the bytes we missed are replayed.
         method = "reconnect";
@@ -427,6 +536,10 @@ async fn run_inner(
         method: method.to_string(),
         child_pid,
         effects: Vec::new(),
+        pipe,
+        session: session.take(),
+        prebuf: Vec::new(),
+        awaiting_attach: pipe && conn.fresh,
     };
     if conn.fresh {
         server.mark_recovered(&rt.id, None);
@@ -451,6 +564,7 @@ async fn run_inner(
     reader.abort();
     // Unacknowledged inputs survive into the next connection attempt.
     *ledger = std::mem::take(&mut p.ledger);
+    *session = p.session.take();
     result
 }
 
@@ -488,6 +602,35 @@ struct PaneLoop {
     method: String,
     child_pid: u32,
     effects: Vec<Effect>,
+    /// Pipe mode: the holder journals stdio and the screen is the adapter's transcript.
+    pipe: bool,
+    session: Option<Session>,
+    /// Pipe output that arrived before `Cmd::Attach` bound a fresh pane to its record.
+    prebuf: Vec<(Stream, u64, Vec<u8>)>,
+    awaiting_attach: bool,
+}
+
+/// Cap on pipe output buffered before `Cmd::Attach` (a harness speaks only when spoken to).
+const PREBUF_MAX: usize = 4 << 20;
+
+/// Rows that entered the engine's history since the last call, for the archive (03 §11.2).
+fn take_archive(sc: &mut Screen) -> Vec<ArchivedRow> {
+    let mut archive = Vec::new();
+    let total = sc.engine.scrolled_total();
+    let hist = sc.engine.history_len() as u64;
+    let first_in_mem = total.saturating_sub(hist);
+    let from = sc.archived_upto.max(first_in_mem);
+    for abs in from..total {
+        if let Some(row) = sc.engine.history_row((abs - first_in_mem) as usize) {
+            archive.push(ArchivedRow {
+                n: abs,
+                t: row.text().trim_end().to_string(),
+                w: row.wrapped,
+            });
+        }
+    }
+    sc.archived_upto = sc.archived_upto.max(total);
+    archive
 }
 
 impl PaneLoop {
@@ -498,6 +641,11 @@ impl PaneLoop {
     }
 
     async fn on_frame(&mut self, f: FromHolder) -> Result<Option<String>> {
+        if self.pipe
+            && let Some(r) = self.on_pipe_frame(&f).await?
+        {
+            return Ok(r);
+        }
         match f {
             FromHolder::Output {
                 offset,
@@ -604,6 +752,148 @@ impl PaneLoop {
         Ok(None)
     }
 
+    /// Pipe-mode frames (01 §1.2): journal bytes go to the headless adapter. Returns `None` for
+    /// frames the generic handler takes (status, exit, pings).
+    async fn on_pipe_frame(&mut self, f: &FromHolder) -> Result<Option<Option<String>>> {
+        let server = self.server.clone();
+        match f {
+            FromHolder::Output {
+                offset,
+                stream,
+                bytes,
+                ..
+            } => {
+                if self.awaiting_attach && self.session.is_none() {
+                    let held: usize = self.prebuf.iter().map(|(_, _, b)| b.len()).sum();
+                    if held + bytes.len() <= PREBUF_MAX {
+                        self.prebuf.push((*stream, *offset, bytes.clone()));
+                    }
+                    return Ok(Some(None));
+                }
+                let acts = match self.session.as_mut() {
+                    Some(s) => s.on_output(&server, *stream, *offset, bytes),
+                    // No record (e.g. a pipe pane without an adapter): show the raw streams.
+                    None if *stream != Stream::Stdin => {
+                        vec![Act::Render(String::from_utf8_lossy(bytes).into_owned())]
+                    }
+                    None => vec![],
+                };
+                self.pipe_acts(acts).await?;
+                Ok(Some(None))
+            }
+            FromHolder::Marker {
+                kind: MarkerKind::InputWritten { input_id },
+                ..
+            } => {
+                if let Some(s) = self.session.as_mut() {
+                    s.on_input_written(*input_id);
+                }
+                Ok(Some(None))
+            }
+            FromHolder::Marker { .. } | FromHolder::CheckpointWanted { .. } => Ok(Some(None)),
+            FromHolder::Gap { available_from, .. } => {
+                if let Some(s) = self.session.as_mut() {
+                    s.on_gap(*available_from);
+                }
+                self.method = "journal_gap".into();
+                Ok(Some(None))
+            }
+            FromHolder::ReplayDone { .. } => {
+                if self.replaying {
+                    self.replaying = false;
+                    {
+                        let mut sc = self.rt.screen.lock().unwrap();
+                        sc.recovering = false;
+                        sc.epoch += 1;
+                        sc.rev += 1;
+                    }
+                    let acts = match self.session.as_mut() {
+                        Some(s) => s.replay_done(&server),
+                        None => vec![],
+                    };
+                    self.pipe_acts(acts).await?;
+                    self.server.mark_recovered(&self.rt.id, Some(&self.method));
+                    let rev = self.rt.screen.lock().unwrap().rev;
+                    self.rt.rev_tx.send_replace(rev);
+                    self.server.screen_dirty.notify_waiters();
+                }
+                let _ = self.send(&ToHolder::StatusQuery).await;
+                Ok(Some(None))
+            }
+            FromHolder::InputAck {
+                input_id, status, ..
+            } => {
+                self.ledger.complete(*input_id, *status);
+                let acts = match self.session.as_mut() {
+                    Some(s) => s.on_ack(&server, *input_id, *status),
+                    None => vec![],
+                };
+                self.pipe_acts(acts).await?;
+                Ok(Some(None))
+            }
+            FromHolder::ChildExited { exit_code, signal } => {
+                if let Some(s) = self.session.as_mut() {
+                    s.on_exit(&server, *exit_code, *signal);
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Carry out what the headless adapter asked for.
+    async fn pipe_acts(&mut self, acts: Vec<Act>) -> Result<()> {
+        for a in acts {
+            match a {
+                Act::Render(t) => self.render_view(&t),
+                Act::Write { id, bytes } => {
+                    if self.exited.is_some() {
+                        continue;
+                    }
+                    if self.ledger.add(id, &bytes, None) {
+                        self.send(&ToHolder::Input {
+                            epoch: self.epoch,
+                            input_id: id,
+                            bytes,
+                        })
+                        .await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pipe mode: show transcript text in the pane (the engine renders it; nothing here is a
+    /// terminal query, so effects are dropped).
+    fn render_view(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let bytes = text
+            .replace("\r\n", "\n")
+            .replace('\n', "\r\n")
+            .into_bytes();
+        let (rev, archive) = {
+            let mut sc = self.rt.screen.lock().unwrap();
+            self.effects.clear();
+            sc.engine.feed(&bytes, &mut self.effects);
+            self.effects.clear();
+            sc.last_output = Instant::now();
+            let _ = sc.engine.take_damage();
+            sc.rev += 1;
+            (sc.rev, take_archive(&mut sc))
+        };
+        if !archive.is_empty() {
+            self.server.archive_rows(&self.rt.id, archive);
+        }
+        if !self.replaying {
+            self.rt.rev_tx.send_replace(rev);
+            self.server.screen_dirty.notify_waiters();
+            self.server.pane_output(&self.rt.id);
+        }
+    }
+
     async fn feed(&mut self, offset: u64, bytes: &[u8], replay: bool) -> Result<()> {
         let mut replies = Vec::new();
         let mut archive = Vec::new();
@@ -625,21 +915,7 @@ impl PaneLoop {
             let _ = sc.engine.take_damage();
             sc.rev += 1;
             rev = sc.rev;
-            // Archive rows that entered history (03 §11.2).
-            let total = sc.engine.scrolled_total();
-            let hist = sc.engine.history_len() as u64;
-            let first_in_mem = total.saturating_sub(hist);
-            let from = sc.archived_upto.max(first_in_mem);
-            for abs in from..total {
-                if let Some(row) = sc.engine.history_row((abs - first_in_mem) as usize) {
-                    archive.push(ArchivedRow {
-                        n: abs,
-                        t: row.text().trim_end().to_string(),
-                        w: row.wrapped,
-                    });
-                }
-            }
-            sc.archived_upto = sc.archived_upto.max(total);
+            archive.extend(take_archive(&mut sc));
             effects = std::mem::take(&mut self.effects);
         }
         self.snapshot_dirty = true;
@@ -712,8 +988,89 @@ impl PaneLoop {
         Ok(())
     }
 
-    async fn on_cmd(&mut self, c: PaneCmd) -> Result<()> {
+    /// Pipe mode: typed input goes to the adapter's line editor and resizes are local (there
+    /// is no terminal on the holder side). Returns the command when the generic path owns it.
+    async fn on_pipe_cmd(&mut self, c: PaneCmd) -> Result<Option<PaneCmd>> {
+        let server = self.server.clone();
         match c {
+            PaneCmd::Input { bytes, ack, .. } => {
+                // Consumed by the line editor, not written to the harness.
+                let acts = match self.session.as_mut() {
+                    Some(s) if self.exited.is_none() => s.on_keys(&server, &bytes),
+                    _ => vec![],
+                };
+                if let Some(a) = ack {
+                    let _ = a.send(if self.exited.is_some() {
+                        InputStatus::ChildExited
+                    } else {
+                        InputStatus::Written
+                    });
+                }
+                self.pipe_acts(acts).await?;
+                Ok(None)
+            }
+            PaneCmd::Resize { cols, rows } => {
+                let mut sc = self.rt.screen.lock().unwrap();
+                if (sc.engine.cols(), sc.engine.rows()) != (cols, rows) {
+                    sc.engine.resize(cols, rows);
+                    sc.epoch += 1;
+                    sc.rev += 1;
+                    let rev = sc.rev;
+                    drop(sc);
+                    self.rt.rev_tx.send_replace(rev);
+                    self.server.screen_dirty.notify_waiters();
+                    self.server.pane_resized(&self.rt.id, cols, rows);
+                }
+                Ok(None)
+            }
+            PaneCmd::Snapshot | PaneCmd::SnapshotDue => {
+                // No VT snapshots: recovery replays the journal through the adapter.
+                self.snapshot_armed = false;
+                self.snapshot_dirty = false;
+                Ok(None)
+            }
+            PaneCmd::Headless(cmd) => {
+                let acts = match (cmd, self.session.as_mut()) {
+                    (crate::agents::headless::Cmd::Attach(rec), None) => {
+                        let mut s = Session::new(&self.rt.id, *rec);
+                        let mut acts = s.start(&server);
+                        for (stream, off, b) in std::mem::take(&mut self.prebuf) {
+                            acts.extend(s.on_output(&server, stream, off, &b));
+                        }
+                        self.session = Some(s);
+                        self.awaiting_attach = false;
+                        acts
+                    }
+                    (crate::agents::headless::Cmd::Prompt { ack: Some(a), .. }, None) => {
+                        let _ = a.send(Err("the headless adapter is not attached".into()));
+                        vec![]
+                    }
+                    (cmd, Some(s)) => s.on_cmd(&server, cmd),
+                    (_, None) => vec![],
+                };
+                self.pipe_acts(acts).await?;
+                Ok(None)
+            }
+            other => Ok(Some(other)),
+        }
+    }
+
+    async fn on_cmd(&mut self, c: PaneCmd) -> Result<()> {
+        let c = if self.pipe {
+            match self.on_pipe_cmd(c).await? {
+                Some(c) => c,
+                None => return Ok(()),
+            }
+        } else {
+            c
+        };
+        match c {
+            PaneCmd::Headless(cmd) => {
+                // Not a pipe pane: nothing to drive.
+                if let crate::agents::headless::Cmd::Prompt { ack: Some(a), .. } = cmd {
+                    let _ = a.send(Err("not a headless pane".into()));
+                }
+            }
             PaneCmd::Input { id, bytes, ack } => {
                 if self.exited.is_some() {
                     if let Some(a) = ack {

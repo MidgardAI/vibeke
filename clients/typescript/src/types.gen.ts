@@ -5290,6 +5290,17 @@ export type PaneFocusedData = {
   client?: string;
 };
 
+export type PaneInputUnconfirmedSubject = {
+  pane: string;
+  run?: string;
+};
+
+export type PaneInputUnconfirmedData = {
+  input_id: string;
+  reason?: string;
+  preview_chars?: number;
+};
+
 export type PaneIsolationChangedSubject = {
   pane: string;
 };
@@ -6083,6 +6094,7 @@ export interface EventMap {
   "pane.cwd_changed": { subject: PaneCwdChangedSubject; data: PaneCwdChangedData };
   "pane.exited": { subject: PaneExitedSubject; data: PaneExitedData };
   "pane.focused": { subject: PaneFocusedSubject; data: PaneFocusedData };
+  "pane.input_unconfirmed": { subject: PaneInputUnconfirmedSubject; data: PaneInputUnconfirmedData };
   "pane.isolation_changed": { subject: PaneIsolationChangedSubject; data: PaneIsolationChangedData };
   "pane.marked_unread": { subject: PaneMarkedUnreadSubject; data: PaneMarkedUnreadData };
   "pane.moved": { subject: PaneMovedSubject; data: PaneMovedData };

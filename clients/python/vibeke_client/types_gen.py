@@ -5376,6 +5376,17 @@ PaneFocusedData = TypedDict("PaneFocusedData", {
     "client": NotRequired[str],
 })
 
+PaneInputUnconfirmedSubject = TypedDict("PaneInputUnconfirmedSubject", {
+    "pane": str,
+    "run": NotRequired[str],
+})
+
+PaneInputUnconfirmedData = TypedDict("PaneInputUnconfirmedData", {
+    "input_id": str,
+    "reason": NotRequired[str],
+    "preview_chars": NotRequired[int],
+})
+
 PaneIsolationChangedSubject = TypedDict("PaneIsolationChangedSubject", {
     "pane": str,
 })
@@ -6175,6 +6186,7 @@ EVENT_TYPES = (
     "pane.cwd_changed",
     "pane.exited",
     "pane.focused",
+    "pane.input_unconfirmed",
     "pane.isolation_changed",
     "pane.marked_unread",
     "pane.moved",

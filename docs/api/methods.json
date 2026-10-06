@@ -5,7 +5,7 @@
   "shape_language": "{field, field?: type = default, ...}; [T]; A|B (bare lowercase words are string literals); {*: T} maps; CamelCase names are shared definitions in the schema's $defs",
   "render_protocol": 3,
   "holder_protocol": {
-    "proto": 1,
+    "proto": 2,
     "min": 1
   },
   "method_count": 242,

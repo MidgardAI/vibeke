@@ -835,6 +835,7 @@ pane.moved :: {pane: string, tab?: string, workspace?: string} => {from_tab_id: 
 pane.scroll_changed :: {pane: string, tab?: string, workspace?: string} => {offset: int, total: int, client?: string}
 pane.output_matched :: {pane: string, tab?: string, workspace?: string} => {matched: any, revision: any}
 pane.isolation_changed :: {pane: string} => {level: string, scope: string, network: string}
+pane.input_unconfirmed :: {pane: string, run?: string} => {input_id: string, reason?: string, preview_chars?: int}
 adapter.health_changed :: {run: string} => {to: string, from?: string, transport?: string}
 adapter.disagreement :: {run: string} => {facet: string, structured: string, other: string}
 agent.detected :: {run: string, pane: string} => {harness: string, via: string, argv0?: string|null}

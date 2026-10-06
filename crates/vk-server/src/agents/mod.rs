@@ -8,6 +8,7 @@ mod gemini;
 #[cfg(test)]
 mod golden;
 pub mod harness;
+pub mod headless;
 pub mod hook;
 pub mod manifests;
 mod opencode;
@@ -109,11 +110,14 @@ pub fn start(server: &Arc<Server>) {
     }
     // Interactions left `delivering` by a crashed server: the shim reconnect is the reconcile
     // path for Claude/Codex; anything else is unknowable → delivery_unknown (04 §7.3 rule 2).
+    // Headless runs are exempt: their journal records whether the response was written, and
+    // the pane's adapter settles delivery after its replay (headless::Session::replay_done).
     let stale: Vec<Interaction> = server.with_core(|c| {
         c.model
             .interactions
             .iter()
             .filter(|i| i.delivery == DeliveryState::Delivering)
+            .filter(|i| !c.run(&i.run).is_some_and(headless::is_headless))
             .cloned()
             .collect()
     });
@@ -291,6 +295,10 @@ impl Agents {
 
     /// Process detection (04 §5.2): foreground process tree → harness.
     pub fn on_process(&self, server: &Arc<Server>, pane: &str, st: &ProcStatus) {
+        // A pipe pane's process is its headless harness: the adapter owns the run.
+        if server.pane_rt(pane).is_some_and(|rt| rt.is_pipe()) {
+            return;
+        }
         let detected = st
             .fg_pgid
             .and_then(|pg| manifests::detect_pane(server, pane, pg));
@@ -411,6 +419,10 @@ impl Agents {
         let Some(run) = server.with_core(|c| c.run_for_pane(pane).cloned()) else {
             return;
         };
+        // A headless pane shows Vibeke's own transcript, not the harness's screen.
+        if headless::is_headless(&run) {
+            return;
+        }
         let Some(h) = Harness::from_id(&run.harness) else {
             return;
         };
@@ -775,15 +787,21 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
             } else {
                 AdapterHealth::Healthy
             };
-            if r.integration != h.transport() || r.health != want {
+            // A headless run keeps its protocol transport (its signals come from the adapter).
+            let transport = if headless::is_headless(&r) {
+                r.integration.clone()
+            } else {
+                h.transport().to_string()
+            };
+            if r.integration != transport || r.health != want {
                 let mut r2 = r.clone();
-                r2.integration = h.transport().into();
+                r2.integration = transport;
                 r2.health = want;
                 let mut tx = Tx::new();
                 tx.event(
                     "adapter.health_changed",
                     json!({"run": r2.id}),
-                    json!({"to": "healthy", "transport": h.transport()}),
+                    json!({"to": "healthy", "transport": r2.integration}),
                 );
                 tx.run(r2.clone());
                 let _ = server.commit(&mut c, tx);
@@ -1664,7 +1682,20 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     let gate = server.agents.inner.lock().unwrap().gates.remove(&it.id);
     let channel;
-    if let Some(g) = gate {
+    let headless = server.pane_rt(&it.pane).is_some_and(|rt| rt.is_pipe());
+    if headless {
+        // Native over the harness protocol: the pane's adapter writes the response and the
+        // holder ack confirms delivery.
+        channel = "native";
+        if !headless::deliver_answer(server, &it, &key) {
+            set_delivery(
+                server,
+                &it.id,
+                DeliveryState::DeliveryUnknown,
+                Some("headless pane not running".into()),
+            );
+        }
+    } else if let Some(g) = gate {
         channel = "native";
         set_delivery(server, &it.id, DeliveryState::Delivering, None);
         if g.tx
@@ -1865,6 +1896,20 @@ fn resolve_run(
         .ok_or_else(|| not_found("run", target.unwrap_or("@current")))
 }
 
+fn validate_name(server: &Server, n: &str) -> Result<(), vk_proto::rpc::RpcError> {
+    let valid = n.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && n.len() <= 32
+        && n.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if !valid {
+        return Err(invalid("agent names: [a-z][a-z0-9_-]{0,31}"));
+    }
+    if server.with_core(|c| c.model.runs.iter().any(|r| r.name.as_deref() == Some(n))) {
+        return Err(err(ErrorKind::Conflict, "name_taken"));
+    }
+    Ok(())
+}
+
 pub async fn start_in_pane(
     server: &Arc<Server>,
     pane: &str,
@@ -1893,16 +1938,7 @@ pub async fn start_in_pane_opts(
     let h =
         Harness::from_id(harness).ok_or_else(|| invalid(format!("unknown harness {harness}")))?;
     if let Some(n) = name {
-        let valid = n.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-            && n.len() <= 32
-            && n.chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-        if !valid {
-            return Err(invalid("agent names: [a-z][a-z0-9_-]{0,31}"));
-        }
-        if server.with_core(|c| c.model.runs.iter().any(|r| r.name.as_deref() == Some(n))) {
-            return Err(err(ErrorKind::Conflict, "name_taken"));
-        }
+        validate_name(server, n)?;
     }
     if server.with_core(|c| c.run_for_pane(pane).is_some()) {
         return Err(err(ErrorKind::Conflict, "pane_busy")
@@ -1963,6 +1999,35 @@ pub async fn start_in_pane_opts(
 async fn prompt(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let run = resolve_run(server, ctx, s(p, "target"))?;
     let text = crate::api::req(p, "text")?;
+    if headless::is_headless(&run) {
+        let rev0 = run.turns_completed;
+        headless::prompt(
+            server,
+            &run,
+            text,
+            headless::PromptMode::parse(s(p, "mode")),
+        )
+        .await?;
+        if p.get("wait").and_then(Value::as_bool).unwrap_or(false) {
+            let until = vec![
+                "idle".to_string(),
+                "needs_approval".into(),
+                "needs_answer".into(),
+                "error".into(),
+                "exited".into(),
+            ];
+            return wait(
+                server,
+                &run,
+                &until,
+                u(p, "timeout_ms").unwrap_or(600_000),
+                Some(rev0),
+            )
+            .await;
+        }
+        let r = server.with_core(|c| c.run(&run.id).map(|r| run_json(c, r)));
+        return Ok(json!({"run": r}));
+    }
     let modes = crate::render::input_modes(server, &run.pane);
     let mut m = modes;
     m.bracketed_paste = modes.bracketed_paste;
@@ -2096,6 +2161,10 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
 /// Resume a native session described by `run` (a stored run, or a template the session desk
 /// builds from an indexed transcript: harness, session id, resume argv, cwd).
 pub(crate) async fn resume_from(server: &Arc<Server>, run: AgentRun, pane: Option<String>) -> R {
+    if headless::is_headless(&run) {
+        // A new headless process continuing the session (thread/resume, --resume, session/load).
+        return headless::resume(server, &run).await;
+    }
     if run.resume_argv.is_empty() {
         return Err(err(ErrorKind::Unsupported, "no resume handle for this run"));
     }
@@ -2322,6 +2391,13 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             Err(e) => Err(e),
         },
         "agent.interrupt" => match resolve_run(server, ctx, s(p, "target")) {
+            Ok(r) if headless::is_headless(&r) => {
+                if headless::interrupt(server, &r) {
+                    Ok(json!({"run": r}))
+                } else {
+                    Err(err(ErrorKind::Conflict, "the headless pane is not running"))
+                }
+            }
             Ok(r) => {
                 crate::render::write_and_ack(
                     server,
