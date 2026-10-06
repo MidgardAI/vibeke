@@ -53,6 +53,10 @@ pub const METHODS: &[(&str, bool)] = &[
     ("plugin.log.list", false),
     ("compat.herdr.call", true),
     ("compat.status", false),
+    ("plugin.link_handler.list", false),
+    ("plugin.link.open", true),
+    ("plugin.surface.close", true),
+    ("compat.ui.state", false),
 ];
 
 /// Log records kept per server (oldest dropped first) and bytes kept per stream.
@@ -487,10 +491,19 @@ struct Snap {
 }
 
 fn snap(server: &Server) -> Snap {
-    let focus = crate::notify::recent_client(server)
+    let mut focus = crate::notify::recent_client(server)
         .map(|c| server.client_focus(&c))
         .unwrap_or_default();
     let meta = state(server).meta.lock().unwrap().clone();
+    // Popups keep the focus context underneath them (07 §7.7).
+    if let Some(p) = focus.pane.clone()
+        && is_popup_pane(server, &meta, &p)
+    {
+        focus.pane = meta
+            .plugin_panes
+            .get(&p)
+            .and_then(|pp| pp.prev_focus.clone());
+    }
     server.with_core(|c| {
         let mut ws = c.model.workspaces.clone();
         ws.sort_by(|a, b| a.order.total_cmp(&b.order));
@@ -512,13 +525,59 @@ fn snap(server: &Server) -> Snap {
         Snap {
             ws,
             tabs,
-            panes: c.model.panes.clone(),
+            panes: c
+                .model
+                .panes
+                .iter()
+                .filter(|p| !p.plugin_surface().is_some_and(|s| s.is_popup()))
+                .cloned()
+                .collect(),
             pane_run,
             blocked,
             focus,
             meta,
         }
     })
+}
+
+/// A plugin popup's pane (live, by its tag, or one that already closed).
+fn is_popup_pane(server: &Server, meta: &ext::Meta, pane: &str) -> bool {
+    meta.popups.contains(pane)
+        || server.with_core(|c| {
+            c.pane(pane)
+                .and_then(|p| p.plugin_surface())
+                .is_some_and(|s| s.is_popup())
+        })
+}
+
+/// A client's viewport of `pane` moved in its scrollback (`ClientFrame::ScrollView`): remember
+/// the offset (`scroll` in pane records) and emit `pane.scroll_changed` when it changed.
+pub fn scroll_changed(server: &Server, client: &str, pane: &str, offset: u32, total: u32) {
+    let Some(p) = server.with_core(|c| c.pane(pane).cloned()) else {
+        return;
+    };
+    {
+        let st = state(server);
+        let mut meta = st.meta.lock().unwrap();
+        if meta.scroll.get(pane) == Some(&offset)
+            || (offset == 0 && !meta.scroll.contains_key(pane))
+        {
+            return;
+        }
+        if offset == 0 {
+            meta.scroll.remove(pane);
+        } else {
+            meta.scroll.insert(pane.to_string(), offset);
+        }
+    }
+    let mut c = server.core.lock().unwrap();
+    let mut tx = crate::core::Tx::new();
+    tx.event(
+        "pane.scroll_changed",
+        crate::core::subject_pane(&p),
+        json!({"offset": offset, "total": total, "client": client}),
+    );
+    let _ = server.commit(&mut c, tx);
 }
 
 impl Snap {
@@ -616,7 +675,7 @@ impl Snap {
             "agent_status": run.map(|r| self.run_status(r)),
             "agent_session": session,
             "revision": rev,
-            "scroll": 0,
+            "scroll": self.meta.scroll.get(&p.id).copied().unwrap_or(0),
         });
         if let Some(t) = &p.title {
             v["label"] = json!(t);
@@ -677,6 +736,12 @@ fn project_event(
     let subj = &ev.subject;
     let sn = snap(server);
     let sid = |k: &str| subj.get(k).and_then(Value::as_str);
+    // Popups have no pane lifecycle in the compat API (07 §7.7).
+    if let Some(p) = sid("pane")
+        && is_popup_pane(server, &sn.meta, p)
+    {
+        return vec![];
+    }
     // Subject ids are ULIDs; translate to Herdr ids (handles), falling back to the handle the
     // subject carries for objects already gone.
     let pane = sid("pane")
@@ -767,6 +832,11 @@ fn project_event(
                 "layout.updated" => {
                     if let Some(t) = sid("tab").and_then(|t| sn.tab(t)) {
                         d.insert("layout".into(), ext::tab_snapshot(&sn, t));
+                    }
+                }
+                "pane.scroll_changed" => {
+                    if let Some(v) = ev.data.get("offset") {
+                        d.insert("scroll".into(), v.clone());
                     }
                 }
                 "pane.output_matched" => {
@@ -1550,6 +1620,91 @@ fn action_list(plugin: Option<&str>) -> Result<Vec<Value>, WireError> {
     Ok(out)
 }
 
+/// Link handlers of every registered plugin in matching order (registry order, then manifest
+/// order; the baseline order is unverified). Inactive plugins are listed with
+/// `available: false` so a client can explain why a handler can't run.
+fn link_handler_list() -> Result<Vec<Value>, WireError> {
+    let reg = Registry::load(&plugin_dirs())
+        .map_err(|e| WireError::new("internal_error", e.to_string()))?;
+    let pf = herdr::current_platform();
+    let mut out = Vec::new();
+    for e in reg.plugins.values() {
+        let (st, m) = registry::entry_status(e);
+        let Some(m) = m else { continue };
+        for l in m
+            .link_handlers
+            .iter()
+            .filter(|l| m.entry_on(l.platforms.as_ref(), pf))
+        {
+            let action = m.resolve_action(&l.action).map(|a| a.id.clone());
+            out.push(json!({
+                "plugin_id": e.id,
+                "handler_id": l.id,
+                "title": l.title,
+                "pattern": l.pattern,
+                "action_id": action,
+                "available": st == Status::Active && action.is_some(),
+                "status": st.as_str(),
+            }));
+        }
+    }
+    Ok(out)
+}
+
+/// Run a plugin's link handler for `url`: the handler must exist and match; its action gets
+/// `HERDR_PLUGIN_CLICKED_URL` and `HERDR_PLUGIN_LINK_HANDLER_ID` (07 §7.7).
+fn open_link(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> Result<Value, WireError> {
+    let s = |k: &str| p.get(k).and_then(Value::as_str);
+    let (Some(plugin), Some(handler), Some(url)) = (s("plugin"), s("handler"), s("url")) else {
+        return Err(WireError::new(
+            "invalid_params",
+            "plugin, handler and url are required",
+        ));
+    };
+    let reg = Registry::load(&plugin_dirs())
+        .map_err(|e| WireError::new("internal_error", e.to_string()))?;
+    let entry = reg
+        .get(plugin)
+        .map_err(|_| WireError::new("plugin_not_found", format!("plugin not found: {plugin}")))?;
+    let (_, m) = registry::entry_status(entry);
+    let m = m.ok_or_else(|| WireError::new("invalid_manifest", "manifest missing"))?;
+    let pf = herdr::current_platform();
+    let l = m
+        .link_handlers
+        .iter()
+        .find(|l| l.id == handler && m.entry_on(l.platforms.as_ref(), pf))
+        .ok_or_else(|| {
+            WireError::new(
+                "link_handler_not_found",
+                format!("{plugin} has no link handler `{handler}`"),
+            )
+        })?;
+    let re = regex::Regex::new(&l.pattern)
+        .map_err(|e| WireError::new("invalid_manifest", e.to_string()))?;
+    if !re.is_match(url) {
+        return Err(WireError::new(
+            "invalid_params",
+            format!("{url} does not match link handler `{handler}`"),
+        ));
+    }
+    let action = m
+        .resolve_action(&l.action)
+        .map(|a| a.id.clone())
+        .ok_or_else(|| WireError::new("plugin_action_not_found", l.action.clone()))?;
+    let sn = snap(server);
+    let mut ictx = InvokeContext::from_params(&sn, p, &Caller::user(ctx.clone()));
+    ictx.clicked_url = Some(url.to_string());
+    ictx.link_handler_id = Some(l.id.clone());
+    invoke_action(
+        server,
+        ctx.pane_scope.as_deref(),
+        plugin,
+        &action,
+        ictx,
+        "link_handler",
+    )
+}
+
 fn split_qualified(q: &str) -> Result<(String, String), WireError> {
     // Plugin ids contain dots; the longest registered prefix wins.
     let reg = Registry::load(&plugin_dirs())
@@ -1573,6 +1728,9 @@ pub struct InvokeContext {
     pub workspace: Option<String>,
     pub tab: Option<String>,
     pub pane: Option<String>,
+    /// Link handler invocations (07 §7.7): the activated URL and the handler's id.
+    pub clicked_url: Option<String>,
+    pub link_handler_id: Option<String>,
 }
 
 impl InvokeContext {
@@ -1606,6 +1764,7 @@ impl InvokeContext {
             workspace: ws,
             tab,
             pane: pane.map(|x| x.handle.clone()),
+            ..Default::default()
         }
     }
 }
@@ -1988,6 +2147,11 @@ fn spawn_invocation(
         "pane_id": sp_.ctx.pane,
         "plugin_version": m.version,
     });
+    let mut context = context;
+    if let Some(u) = &sp_.ctx.clicked_url {
+        context["clicked_url"] = json!(u);
+        context["link_handler_id"] = json!(sp_.ctx.link_handler_id);
+    }
     let mut rec = json!({
         "log_id": log_id,
         "plugin_id": entry.id,
@@ -2058,8 +2222,8 @@ fn spawn_invocation(
         action_id: sp_.action.clone(),
         event: sp_.event.clone(),
         entrypoint_id: sp_.entrypoint.clone(),
-        clicked_url: None,
-        link_handler_id: None,
+        clicked_url: sp_.ctx.clicked_url.clone(),
+        link_handler_id: sp_.ctx.link_handler_id.clone(),
     };
     let env = launch::runtime_env(&inv, std::env::vars());
     let argv = launch::resolve_argv(&entry.root, command);
@@ -2235,6 +2399,7 @@ async fn hook_dispatcher(server: Arc<Server>) {
                             .get("pane_id")
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                        ..Default::default()
                     };
                     spawn_invocation(
                         &server,
@@ -2295,19 +2460,59 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             };
             let sn = snap(server);
             let ictx = InvokeContext::from_params(&sn, p, &Caller::user(ctx.clone()));
+            // Where the user started it (TUI palette, key binding); anything else is `cli`.
+            let source = s("source")
+                .filter(|x| matches!(*x, "palette" | "keybinding"))
+                .unwrap_or("cli");
             invoke_action(
                 server,
                 ctx.pane_scope.as_deref(),
                 &plugin,
                 &action,
                 ictx,
-                "cli",
+                source,
             )
             .map(|log| json!({"log": log}))
         })()
         .map_err(wire_to_rpc),
         "plugin.log.list" => {
             Ok(json!({"logs": logs(server, s("plugin"), p.get("limit").and_then(Value::as_u64))}))
+        }
+        "plugin.link_handler.list" => link_handler_list()
+            .map(|h| json!({"handlers": h}))
+            .map_err(wire_to_rpc),
+        "plugin.link.open" => open_link(server, ctx, p)
+            .map(|log| json!({"log": log}))
+            .map_err(wire_to_rpc),
+        // The TUI dismisses a popup/overlay (esc after exit, prefix+x): close and give the
+        // focus back as the compat `popup.close` does.
+        "plugin.surface.close" => {
+            if ctx.pane_scope.is_some() {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "plugin surfaces cannot be closed from a pane",
+                )));
+            }
+            let Some(pane) = s("pane") else {
+                return Some(Err(invalid("pane is required")));
+            };
+            // Idempotent: the surface may already be gone (its command exited).
+            match server.with_core(|c| c.pane(pane).map(|x| x.plugin_surface().is_some())) {
+                None => Ok(json!({"closed": null})),
+                Some(false) => Err(invalid("not a plugin popup or overlay")),
+                Some(true) => {
+                    ext::close_surface(server, pane);
+                    Ok(json!({"closed": pane}))
+                }
+            }
+        }
+        // Plugin-set UI state a client shows (window title override, open popup).
+        "compat.ui.state" => {
+            let title = state(server).meta.lock().unwrap().window_title.clone();
+            let popup = ext::open_popup(server).map(|(id, pp)| {
+                json!({"pane": id, "plugin_id": pp.plugin, "entrypoint_id": pp.entrypoint})
+            });
+            Ok(json!({"window_title": title, "popup": popup}))
         }
         "compat.herdr.call" => {
             let Some(m) = s("method") else {
@@ -2661,6 +2866,162 @@ mod tests {
         assert_eq!(calls[0].actor["id"], "acme.audit");
         assert_eq!(calls[0].data["method"], "pane.rename");
         assert_eq!(calls[0].data["error_code"], "pane_not_found");
+    }
+
+    fn model_pane(id: &str, handle: &str, created_by: &str) -> Pane {
+        serde_json::from_value(json!({
+            "id": id, "handle": handle, "tab": "T", "workspace": "W", "title": null,
+            "auto_title": "sh", "cwd": null, "cols": 80, "rows": 24, "child_pid": null,
+            "fg_cmdline": [], "exited": false, "exit_code": null, "unread": false,
+            "marked_unread": false, "pinned": false, "created_by": created_by, "recovered": null
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn popups_are_hidden_and_keep_the_focus_underneath() {
+        let (srv, _d) = server();
+        let tag = "plugin-surface:popup:80%:20:acme.demo/pick";
+        srv.with_core(|c| {
+            c.model.panes.push(model_pane("P1", "w1:p1", "user"));
+            c.model.panes.push(model_pane("POP", "w1:p2", tag));
+            c.model.panes.push(model_pane(
+                "OV",
+                "w1:p3",
+                "plugin-surface:overlay:::acme.demo/b",
+            ));
+        });
+        state(&srv).meta.lock().unwrap().plugin_panes.insert(
+            "POP".into(),
+            ext::PluginPane {
+                plugin: "acme.demo".into(),
+                entrypoint: "pick".into(),
+                placement: "popup".into(),
+                prev_focus: Some("P1".into()),
+            },
+        );
+        srv.clients
+            .lock()
+            .unwrap()
+            .insert("c-tui".into(), Default::default());
+        if let Some(st) = srv.clients.lock().unwrap().get_mut("c-tui") {
+            st.kind = "tui".into();
+            st.focus.pane = Some("POP".into());
+        }
+        let sn = snap(&srv);
+        let ids: Vec<&str> = sn.panes.iter().map(|p| p.handle.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["w1:p1", "w1:p3"],
+            "the popup is no pane; the overlay is"
+        );
+        assert_eq!(sn.focus.pane.as_deref(), Some("P1"), "focus underneath");
+        // Its lifecycle events project to nothing, even after it is gone from the model.
+        state(&srv).meta.lock().unwrap().popups.insert("POP".into());
+        srv.with_core(|c| c.model.panes.retain(|p| p.id != "POP"));
+        let mut proj = Projector::new();
+        for kind in ["pane.created", "pane.closed", "pane.focused", "pane.exited"] {
+            let ev = vk_store::Event {
+                seq: 1,
+                ts: 0,
+                v: 1,
+                tier: "sync".into(),
+                kind: kind.into(),
+                subject: json!({"pane": "POP", "pane_handle": "w1:p2"}),
+                actor: json!({}),
+                data: json!({}),
+            };
+            assert!(project_event(&srv, &mut proj, &ev).is_empty(), "{kind}");
+        }
+        // A scroll report is remembered and projected for ordinary panes.
+        scroll_changed(&srv, "c-tui", "P1", 12, 300);
+        scroll_changed(&srv, "c-tui", "P1", 12, 300);
+        scroll_changed(&srv, "c-tui", "nope", 3, 3);
+        let evs = srv.with_core(|c| c.store.events_after(0, 100, &[]).unwrap());
+        let sc: Vec<_> = evs
+            .iter()
+            .filter(|e| e.kind == "pane.scroll_changed")
+            .collect();
+        assert_eq!(sc.len(), 1, "deduplicated; unknown panes ignored");
+        assert_eq!(sc[0].data["offset"], 12);
+        let out = project_event(&srv, &mut proj, sc[0]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "pane.scroll_changed");
+        assert_eq!(out[0].1.as_deref(), Some("w1:p1"));
+        assert_eq!(out[0].2["scroll"], 12);
+        let sn = snap(&srv);
+        let p1 = sn.pane("P1").unwrap();
+        assert_eq!(sn.pane_json(&srv, p1)["scroll"], 12);
+        scroll_changed(&srv, "c-tui", "P1", 0, 300);
+        assert_eq!(state(&srv).meta.lock().unwrap().scroll.get("P1"), None);
+    }
+
+    #[tokio::test]
+    async fn popup_close_link_handlers_and_ui_state() {
+        let (srv, _d) = server();
+        let e = call(&srv, &user(), "popup.close", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "popup_not_found");
+        let pane = Caller::user(Ctx {
+            pane_scope: Some("P".into()),
+            ..user().ctx
+        });
+        let e = call(&srv, &pane, "popup.close", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "permission_denied");
+        let ctx = user().ctx;
+        let r = api::dispatch(&srv, &ctx, "plugin.surface.close", &json!({"pane": "nope"}))
+            .await
+            .unwrap();
+        assert!(r["closed"].is_null(), "already gone is fine");
+        srv.with_core(|c| c.model.panes.push(model_pane("PL", "w1:p9", "user")));
+        let e = api::dispatch(&srv, &ctx, "plugin.surface.close", &json!({"pane": "PL"}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e.data.kind, "invalid_params",
+            "ordinary panes close with pane.close"
+        );
+        let e = api::dispatch(&srv, &ctx, "plugin.link.open", &json!({"url": "x"}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.data.kind, "invalid_params");
+        let e = api::dispatch(
+            &srv,
+            &ctx,
+            "plugin.link.open",
+            &json!({"plugin": "acme.none", "handler": "h", "url": "x"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.data.kind, "not_found");
+        let h = api::dispatch(&srv, &ctx, "plugin.link_handler.list", &json!({}))
+            .await
+            .unwrap();
+        assert!(h["handlers"].is_array());
+        // The window title a plugin sets is what clients read on attach.
+        call(
+            &srv,
+            &user(),
+            "client.window_title.set",
+            &json!({"title": "deploy"}),
+        )
+        .await
+        .unwrap();
+        let st = api::dispatch(&srv, &ctx, "compat.ui.state", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(st["window_title"], "deploy");
+        assert!(st["popup"].is_null());
+        call(&srv, &user(), "client.window_title.clear", &json!({}))
+            .await
+            .unwrap();
+        let st = api::dispatch(&srv, &ctx, "compat.ui.state", &json!({}))
+            .await
+            .unwrap();
+        assert!(st["window_title"].is_null());
     }
 
     #[test]

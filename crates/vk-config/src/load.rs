@@ -616,7 +616,16 @@ fn is_free_table(path: &str) -> bool {
 fn element_schema(path: &str) -> Option<&'static [&'static str]> {
     Some(match path {
         "keys.command" => &[
-            "key", "type", "command", "width", "height", "cwd", "env", "title", "when",
+            "key",
+            "type",
+            "command",
+            "width",
+            "height",
+            "cwd",
+            "env",
+            "title",
+            "when",
+            "description",
         ],
         "ui.sidebar.token" => &["match", "label", "color", "hide"],
         "ui.sidebar.token.match" => &["harness", "state", "regex"],

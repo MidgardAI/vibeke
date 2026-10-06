@@ -486,6 +486,15 @@ pub enum ClientFrame {
         types: Vec<String>,
         after: Option<i64>,
     },
+    /// The client's viewport of `pane` moved in its scrollback (copy mode): `offset` rows above
+    /// the live screen (0 = back at the bottom) of `total` scrollback rows the client knows.
+    /// Feeds Herdr's `pane.scroll_changed` (07 §8.3). Only sent to servers whose
+    /// `render.attach` result lists the `scroll_report` feature. Appended (postcard).
+    ScrollView {
+        pane: String,
+        offset: u32,
+        total: u32,
+    },
 }
 
 #[cfg(test)]
@@ -621,6 +630,14 @@ mod tests {
         // Appended variants: Events after BrowserState, Subscribe after Browser.
         assert_eq!(encode(&ev).unwrap()[4], 14);
         assert_eq!(encode(&sub).unwrap()[4], 15);
+        // ScrollView after Subscribe.
+        let sv = ClientFrame::ScrollView {
+            pane: "P".into(),
+            offset: 12,
+            total: 300,
+        };
+        assert_eq!(rt_client(&sv), sv);
+        assert_eq!(encode(&sv).unwrap()[4], 16);
     }
 
     /// New variants are appended, so existing postcard discriminants are unchanged.

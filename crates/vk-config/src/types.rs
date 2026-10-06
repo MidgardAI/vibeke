@@ -65,7 +65,7 @@ choice_enum!(PasteTranslate { PathsOnly = "paths_only", Embedded = "embedded", A
 choice_enum!(AltgrMode { Auto = "auto", Text = "text", Chord = "chord" } default Auto);
 choice_enum!(ShiftEnterLegacy { Cr = "cr", Lf = "lf" } default Cr);
 choice_enum!(CopyModeKind { Vi = "vi", Emacs = "emacs" } default Vi);
-choice_enum!(CommandType { Shell = "shell", Pane = "pane", Popup = "popup", Float = "float" } default Shell);
+choice_enum!(CommandType { Shell = "shell", Pane = "pane", Popup = "popup", Float = "float", PluginAction = "plugin_action" } default Shell);
 choice_enum!(InteractionOverlay { Off = "off", Unfocused = "unfocused", Always = "always" } default Unfocused);
 choice_enum!(ConfirmClose { Running = "running", Always = "always", Never = "never" } default Running);
 choice_enum!(SidebarPosition { Left = "left", Right = "right" } default Left);
@@ -313,6 +313,9 @@ pub struct KeyCommand {
     pub title: Option<String>,
     /// e.g. `agent:claude`.
     pub when: Option<String>,
+    /// Herdr's label for the binding (`type = "plugin_action"` entries carry one; shown in the
+    /// palette). Appended.
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

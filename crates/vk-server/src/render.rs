@@ -48,7 +48,7 @@ pub struct Session {
 }
 
 /// The `render.attach` features this server supports (listed in the attach result).
-pub const FEATURES: &[&str] = &["event_push"];
+pub const FEATURES: &[&str] = &["event_push", "scroll_report"];
 
 /// Most events replayed for a `Subscribe { after }` (older ones: `events.read`).
 const PUSH_BACKLOG: usize = 1000;
@@ -556,6 +556,11 @@ impl Session {
             ClientFrame::Subscribe { types, after } => {
                 self.pending_sub = Some((types.into_iter().take(64).collect(), after));
             }
+            ClientFrame::ScrollView {
+                pane,
+                offset,
+                total,
+            } => crate::compat::scroll_changed(&self.server, &self.client_id, &pane, offset, total),
             ClientFrame::MediaView {
                 panes,
                 shm,

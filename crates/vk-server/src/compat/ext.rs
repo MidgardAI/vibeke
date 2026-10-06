@@ -13,12 +13,12 @@ use super::{
 use crate::Server;
 use crate::core::{Tx, subject_pane};
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use vk_compat::herdr::registry::{self, Registry, RegistryError, Status};
 use vk_compat::herdr::{self, launch, status};
 use vk_proto::layout::{self, Direction};
-use vk_proto::model::{LayoutNode, Pane, SplitDir, Tab};
+use vk_proto::model::{FloatingPane, LayoutNode, Pane, PluginSurface, SplitDir, SurfaceKind, Tab};
 
 /// Methods handled here.
 pub const METHODS: &[&str] = &[
@@ -45,6 +45,7 @@ pub const METHODS: &[&str] = &[
     "plugin.pane.open",
     "plugin.pane.focus",
     "plugin.pane.close",
+    "popup.close",
 ];
 
 /// A pane opened by `plugin.pane.open`.
@@ -64,6 +65,11 @@ pub struct Meta {
     pub workspaces: HashMap<String, Map<String, Value>>,
     pub window_title: Option<String>,
     pub plugin_panes: HashMap<String, PluginPane>,
+    /// Popup panes ever opened (Vibeke ids): hidden from every compat projection, including
+    /// the `pane.closed` that follows their removal from the model (07 §7.7).
+    pub popups: HashSet<String>,
+    /// Last scroll offset a client reported per pane (`pane.scroll_changed`, `scroll`).
+    pub scroll: HashMap<String, u32>,
 }
 
 fn invalid(msg: impl Into<String>) -> WireError {
@@ -573,16 +579,20 @@ async fn plugin_pane_open(
         })?;
     let placement = sp(p, "placement").unwrap_or(&decl.placement).to_string();
     match placement.as_str() {
-        "split" | "tab" | "zoomed" | "overlay" => {}
-        "popup" => {
-            return Err(WireError::new(
-                "unsupported",
-                "popup placement needs Vibeke's TUI popup layer, which is not built yet",
-            ));
-        }
+        "split" | "tab" | "zoomed" | "overlay" | "popup" => {}
         other => return Err(invalid(format!("unknown placement `{other}`"))),
     }
-    let transient = matches!(placement.as_str(), "zoomed" | "overlay");
+    let popup = placement == "popup";
+    if popup && let Some(open) = open_popup(server) {
+        return Err(WireError::new(
+            "popup_busy",
+            format!(
+                "a popup is already open ({}); close it first (`popup.close`)",
+                open.1.plugin
+            ),
+        ));
+    }
+    let transient = matches!(placement.as_str(), "zoomed" | "overlay" | "popup");
     let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(transient);
     let target = pane_target(caller, sn, p).ok();
     let cwd = sp(p, "cwd")
@@ -640,7 +650,7 @@ async fn plugin_pane_open(
     let mut argv = vec![
         "/bin/sh".to_string(),
         "-c".into(),
-        PANE_WRAP.into(),
+        if popup { POPUP_WRAP } else { PANE_WRAP }.into(),
         "herdr-plugin-pane".into(),
         launcher_dir,
         "/usr/bin/env".into(),
@@ -661,6 +671,44 @@ async fn plugin_pane_open(
     argv.extend(launch::resolve_argv(&entry.root, &decl.command));
     let prev_focus = sn.focus.pane.clone();
     let result = match placement.as_str() {
+        "popup" | "overlay" => {
+            let tab = target
+                .as_deref()
+                .and_then(|t| sn.pane(t))
+                .map(|x| x.tab.clone())
+                .or_else(|| sn.focus.tab.clone())
+                .ok_or_else(|| invalid("pane_id is required (no focused pane)"));
+            let dim = |k: &str, d: &Option<Value>| -> String {
+                match p.get(k).or(d.as_ref()) {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Number(n)) => n.to_string(),
+                    _ => String::new(),
+                }
+            };
+            let surface = PluginSurface {
+                kind: if popup {
+                    SurfaceKind::Popup
+                } else {
+                    SurfaceKind::Overlay
+                },
+                width: dim("width", &decl.width),
+                height: dim("height", &decl.height),
+                plugin: entry.id.clone(),
+                entrypoint: decl.id.clone(),
+            };
+            match tab {
+                Ok(tab) => open_surface(
+                    server,
+                    &tab,
+                    &cwd,
+                    argv,
+                    &decl.title,
+                    &surface,
+                    focus.then_some(caller.ctx.client_id.as_str()),
+                ),
+                Err(e) => Err(e),
+            }
+        }
         "tab" => {
             let ws = match sp(p, "workspace_id") {
                 Some(_) => ws_target(sn, p)?.id,
@@ -681,7 +729,9 @@ async fn plugin_pane_open(
             .map(|r| r["root_pane"]["id"].as_str().unwrap_or_default().to_string())
         }
         _ => {
-            let t = target.ok_or_else(|| invalid("pane_id is required (no focused pane)"))?;
+            let t = target
+                .clone()
+                .ok_or_else(|| invalid("pane_id is required (no focused pane)"))?;
             let r = native(
                 server,
                 caller,
@@ -715,8 +765,25 @@ async fn plugin_pane_open(
             return Err(e);
         }
     };
+    if popup {
+        state(server)
+            .meta
+            .lock()
+            .unwrap()
+            .popups
+            .insert(new_id.clone());
+    }
     let sn = snap(server);
-    let handle = sn.pane(&new_id).map(|x| x.handle.clone());
+    // A popup has no pane identity of its own: its callbacks act on the pane underneath.
+    let handle = if popup {
+        target
+            .as_deref()
+            .or(prev_focus.as_deref())
+            .and_then(|t| sn.pane(t))
+            .map(|x| x.handle.clone())
+    } else {
+        sn.pane(&new_id).map(|x| x.handle.clone())
+    };
     brokers::set_life(
         server,
         &broker,
@@ -747,9 +814,108 @@ async fn plugin_pane_open(
             "plugin_id": entry.id,
             "entrypoint_id": decl.id,
             "placement": placement,
-            "pane": sn.pane(&new_id).map(|x| sn.pane_json(server, x)),
+            // Popups are not panes (07 §7.7): no pane id or record.
+            "pane": if popup { None } else { sn.pane(&new_id).map(|x| sn.pane_json(server, x)) },
         }),
     ))
+}
+
+/// Like [`PANE_WRAP`] for a popup: no `HERDR_PANE_ID` (07 §7.7), the tab/workspace of the
+/// context it opened over.
+const POPUP_WRAP: &str = "PATH=\"$1:$PATH\"; unset HERDR_PANE_ID; \
+HERDR_TAB_ID=\"$VIBEKE_TAB_ID\"; HERDR_WORKSPACE_ID=\"$VIBEKE_WORKSPACE_ID\"; \
+export PATH HERDR_TAB_ID HERDR_WORKSPACE_ID; shift; exec \"$@\"";
+
+/// The open popup of this session (at most one: popups are session-modal), if its pane is
+/// still alive.
+pub fn open_popup(server: &Server) -> Option<(String, PluginPane)> {
+    let meta = state(server).meta.lock().unwrap().clone();
+    meta.plugin_panes
+        .into_iter()
+        .filter(|(_, pp)| pp.placement == "popup")
+        .find(|(id, _)| server.with_core(|c| c.pane(id).is_some_and(|p| !p.exited)))
+}
+
+/// Start a plugin popup/overlay as a floating pane of `tab`, tagged through `created_by`
+/// ([`PluginSurface`]) so clients draw it as a popup or full-area overlay and the compat
+/// projection hides popups. No `tab.layout_changed`: surfaces don't change the layout.
+fn open_surface(
+    server: &Arc<Server>,
+    tab: &str,
+    cwd: &str,
+    argv: Vec<String>,
+    title: &str,
+    surface: &PluginSurface,
+    focus_client: Option<&str>,
+) -> Result<String, WireError> {
+    let mut c = server.core.lock().unwrap();
+    let mut t = c
+        .tab(tab)
+        .cloned()
+        .ok_or_else(|| WireError::new("tab_not_found", tab.to_string()))?;
+    let ws = c
+        .ws(&t.workspace)
+        .cloned()
+        .ok_or_else(|| WireError::new("workspace_not_found", t.workspace.clone()))?;
+    let mut tx = Tx::new();
+    let handle = t.handle.clone();
+    let pane = server
+        .new_pane(
+            &mut c,
+            &mut tx,
+            &ws,
+            &t.id,
+            &handle,
+            cwd,
+            Some(argv),
+            Some(title.to_string()),
+            &surface.tag(),
+        )
+        .map_err(internal)?;
+    let pct = |spec: &str| {
+        spec.strip_suffix('%')
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .unwrap_or(80.0)
+            .clamp(10.0, 100.0)
+    };
+    let (w, h) = match surface.kind {
+        SurfaceKind::Overlay => (100.0, 100.0),
+        SurfaceKind::Popup => (pct(&surface.width), pct(&surface.height)),
+    };
+    let z = t.floating.iter().map(|f| f.z).max().unwrap_or(0) + 1;
+    t.floating.push(FloatingPane {
+        pane: pane.id.clone(),
+        x: (100.0 - w) / 2.0,
+        y: (100.0 - h) / 2.0,
+        w,
+        h,
+        z,
+    });
+    t.floats_hidden = false;
+    tx.tab(t);
+    server.commit(&mut c, tx).map_err(internal)?;
+    drop(c);
+    if let Some(client) = focus_client {
+        server.focus_pane(client, &pane.id);
+    }
+    Ok(pane.id)
+}
+
+/// Close a plugin popup/overlay/zoomed pane and give focus back to what had it before
+/// (07 §7.7). Focus moves first, so the pane's removal doesn't pick another pane.
+pub fn close_surface(server: &Arc<Server>, pane: &str) {
+    let pp = state(server).meta.lock().unwrap().plugin_panes.remove(pane);
+    let prev = pp.and_then(|pp| pp.prev_focus);
+    if let (Some(prev), Some(client)) = (prev, crate::notify::recent_client(server))
+        && prev != pane
+        && server.with_core(|c| c.pane(&prev).is_some())
+        && server.client_focus(&client).pane.as_deref() == Some(pane)
+    {
+        server.focus_pane(&client, &prev);
+    }
+    if server.with_core(|c| c.pane(pane).is_some()) {
+        server.close_pane(pane);
+    }
 }
 
 /// The most recently opened live pane of `(plugin, entrypoint)`.
@@ -789,17 +955,19 @@ fn find_plugin_pane(server: &Server, sn: &Snap, p: &Value) -> Result<String, Wir
 /// A plugin pane's broker closed because the pane is gone or its process exited: forget it;
 /// a transient (overlay/zoomed) pane is closed and the prior focus restored (07 §7.7).
 pub fn plugin_pane_gone(server: &Arc<Server>, pane: &str) {
-    let pp = state(server).meta.lock().unwrap().plugin_panes.remove(pane);
-    let Some(pp) = pp else { return };
-    if matches!(pp.placement.as_str(), "overlay" | "zoomed") {
-        if server.with_core(|c| c.pane(pane).is_some()) {
-            server.close_pane(pane);
+    let placement = state(server)
+        .meta
+        .lock()
+        .unwrap()
+        .plugin_panes
+        .get(pane)
+        .map(|pp| pp.placement.clone());
+    match placement.as_deref() {
+        Some("overlay" | "zoomed" | "popup") => close_surface(server, pane),
+        Some(_) => {
+            state(server).meta.lock().unwrap().plugin_panes.remove(pane);
         }
-        if let (Some(prev), Some(client)) = (pp.prev_focus, crate::notify::recent_client(server))
-            && server.with_core(|c| c.pane(&prev).is_some())
-        {
-            server.focus_pane(&client, &prev);
-        }
+        None => {}
     }
 }
 
@@ -1237,6 +1405,20 @@ pub async fn call(
             }
             let id = find_plugin_pane(server, sn, p)?;
             native(server, caller, "pane.close", json!({"pane": id})).await?;
+            Ok(ok())
+        }
+        "popup.close" => {
+            if caller.ctx.pane_scope.is_some() {
+                return Err(denied("popups cannot be closed from a pane"));
+            }
+            // A plugin closes its own popup; the user (or CLI) closes whichever is open.
+            let mine = caller.plugin.as_ref().map(|(id, _)| id.clone());
+            let open =
+                open_popup(server).filter(|(_, pp)| mine.as_deref().is_none_or(|m| pp.plugin == m));
+            let Some((id, _)) = open else {
+                return Err(WireError::new("popup_not_found", "no popup is open"));
+            };
+            close_surface(server, &id);
             Ok(ok())
         }
         other => Err(WireError::new(

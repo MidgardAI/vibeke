@@ -67,6 +67,7 @@ pub const PROJECTED: &[&str] = &[
     "pane.agent_detected",
     "pane.agent_status_changed",
     "pane.output_matched",
+    "pane.scroll_changed",
     "layout.updated",
     "worktree.created",
     "worktree.opened",
@@ -151,6 +152,8 @@ impl Projector {
             "pane.moved" => out.push("pane.moved"),
             // Emitted by the compat `pane.wait_for_output` matcher (07 §8.3).
             "pane.output_matched" => out.push("pane.output_matched"),
+            // A client's scrollback viewport moved (TUI `ClientFrame::ScrollView`).
+            "pane.scroll_changed" => out.push("pane.scroll_changed"),
             "pane.focused" => {
                 if e.workspace.is_some() && self.focused_ws.as_deref() != e.workspace {
                     self.focused_ws = e.workspace.map(str::to_string);

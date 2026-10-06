@@ -215,8 +215,14 @@ fn herdr_cli_shim_and_wire_protocol() {
         (1, "pane_not_found".to_string()),
         "{e}"
     );
-    let (_, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
+    let (_, e) = s_.fail(&["compat", "herdr", "server", "stop"]);
     assert_eq!(e["error"]["code"], "unsupported", "{e}");
+    let (code, e) = s_.fail(&["compat", "herdr", "popup", "close"]);
+    assert_eq!(
+        (code, s(&e["error"]["code"])),
+        (1, "popup_not_found".to_string()),
+        "no popup open: {e}"
+    );
     let (code, _) = s_.fail(&["compat", "herdr", "pane", "teleport"]);
     assert_eq!(code, 2, "usage error");
     let (_, e) = s_.fail(&["compat", "herdr", "integration", "install", "claude"]);

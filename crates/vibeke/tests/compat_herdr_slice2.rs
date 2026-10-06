@@ -759,7 +759,9 @@ fn plugin_panes_audit_events_and_redacted_logs() {
     wait_for("plugin pane gone with its broker", 15000, || {
         s_.json(&["compat", "status"])["brokers"] == 0
     });
-    let (_, e) = s_.herdr_fail(&[
+    // Popups open (without a pane identity) and close with `popup.close`; the TUI side is
+    // covered in compat_herdr_surfaces.rs.
+    let opened = s_.herdr(&[
         "plugin",
         "pane",
         "open",
@@ -770,10 +772,12 @@ fn plugin_panes_audit_events_and_redacted_logs() {
         "--pane-id",
         &pane,
     ]);
-    assert_eq!(
-        e["error"]["code"], "unsupported",
-        "popups need the TUI: {e}"
-    );
+    assert_eq!(opened["placement"], "popup", "{opened}");
+    assert!(opened["pane"].is_null(), "{opened}");
+    s_.herdr(&["popup", "close"]);
+    wait_for("popup broker gone", 15000, || {
+        s_.json(&["compat", "status"])["brokers"] == 0
+    });
     let (_, e) = s_.herdr_fail(&[
         "plugin",
         "pane",
