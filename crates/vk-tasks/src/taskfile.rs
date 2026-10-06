@@ -198,17 +198,99 @@ impl TaskFile {
                 w.push(format!("env name {k:?} is not a valid shell identifier"));
             }
         }
+        for k in self.ports.env.keys() {
+            if valid_env_name(k) && !trusted_port_env_name(k) {
+                w.push(format!(
+                    "ports.env.{k} is ignored: port env names must contain PORT and not be a shell or loader variable"
+                ));
+            }
+        }
         w
     }
 }
 
-fn shell_quote(v: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c);
-    if !v.is_empty() && v.chars().all(safe) {
-        v.to_string()
-    } else {
-        format!("'{}'", v.replace('\'', "'\\''"))
-    }
+/// Names a repo's `[ports] env` may never set, trusted or not: they change how
+/// a shell, loader or interpreter starts (and the value is a number the repo
+/// can name a directory after).
+const DENIED_ENV: &[&str] = &[
+    "ZDOTDIR",
+    "BASH_ENV",
+    "ENV",
+    "PATH",
+    "PROMPT_COMMAND",
+    "PS1",
+    "PS2",
+    "PS4",
+    "IFS",
+    "HOME",
+    "SHELL",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "CDPATH",
+    "FPATH",
+    "TMPDIR",
+    "XDG_CONFIG_HOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONHOME",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PERL5LIB",
+    "PERL5OPT",
+    "RUBYOPT",
+    "RUBYLIB",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "INPUTRC",
+    "TERMINFO",
+];
+const DENIED_ENV_PREFIXES: &[&str] = &["LD_", "DYLD_", "BASH_FUNC_", "GIT_", "VIBEKE_", "ZSH_"];
+
+/// Never allowed in `[ports] env` (see [`DENIED_ENV`]).
+pub fn denied_port_env_name(k: &str) -> bool {
+    let u = k.to_ascii_uppercase();
+    DENIED_ENV.contains(&u.as_str()) || DENIED_ENV_PREFIXES.iter().any(|p| u.starts_with(p))
+}
+
+fn upper_ident(k: &str) -> bool {
+    k.starts_with(|c: char| c.is_ascii_uppercase())
+        && k.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// May a **trusted** `[ports] env` (or the user's own) set `k`? An upper-case
+/// name containing `PORT` (`^[A-Z][A-Z0-9_]*PORT[A-Z0-9_]*$`), never a denied one.
+pub fn trusted_port_env_name(k: &str) -> bool {
+    upper_ident(k) && k.contains("PORT") && !denied_port_env_name(k)
+}
+
+/// May an **untrusted** repo's `[ports] env` set `k`? Only `PORT` and `*_PORT`.
+pub fn untrusted_port_env_name(k: &str) -> bool {
+    (k == "PORT" || (upper_ident(k) && k.ends_with("_PORT") && k.len() > 5))
+        && !denied_port_env_name(k)
+}
+
+/// `ports.env` reduced to what may be exported: names `declared` by the user
+/// (their own override) pass unless denied; the rest must pass
+/// [`trusted_port_env_name`], or [`untrusted_port_env_name`] when the repo is
+/// not trusted.
+pub fn filter_port_env(
+    env: &BTreeMap<String, u16>,
+    declared: &BTreeMap<String, u16>,
+    trusted: bool,
+) -> BTreeMap<String, u16> {
+    env.iter()
+        .filter(|(k, off)| {
+            if declared.get(*k) == Some(off) {
+                valid_env_name(k) && !denied_port_env_name(k)
+            } else if trusted {
+                trusted_port_env_name(k)
+            } else {
+                untrusted_port_env_name(k)
+            }
+        })
+        .map(|(k, v)| (k.clone(), *v))
+        .collect()
 }
 
 pub fn valid_env_name(k: &str) -> bool {
@@ -235,7 +317,10 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
 /// Does a `[tasks.repos."<key>"]` key name this repo? The key is either a
 /// path (matched against the canonical repo root; a leading `~/` is
 /// expanded with `home`) or a remote URL (matched against `origin`, ignoring
-/// scheme, user, a trailing `.git` and the `host:path` vs `host/path` form).
+/// scheme, user, port, a trailing `.git` and the `host:path` vs `host/path`
+/// form). URLs are parsed, not pattern-matched: userinfo is only what precedes
+/// the host, so `https://evil.example/x@github.com/org/repo` is host
+/// `evil.example` and never matches `github.com/org/repo`.
 pub fn repo_key_matches(
     key: &str,
     repo_root: &Path,
@@ -254,15 +339,61 @@ pub fn repo_key_matches(
         let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         return canon(&p) == canon(repo_root);
     }
-    remote.is_some_and(|r| normalize_remote(r) == normalize_remote(key))
+    let Some(k) = parse_remote(key) else {
+        return false;
+    };
+    remote.and_then(parse_remote).is_some_and(|r| r == k)
 }
 
-fn normalize_remote(u: &str) -> String {
+/// `(host, path)` of a remote URL, lowercased, without userinfo, port, slashes
+/// at either end of the path or a trailing `.git`. Forms: `scheme://[user@]host[:port]/path`,
+/// scp-like `[user@]host:path`, and `host/path`. `None` when there is no host
+/// or no path, or when the host is not a plain hostname (so a stray `@`, `/`
+/// or `:` can never shift which part is the host).
+pub fn parse_remote(u: &str) -> Option<(String, String)> {
     let u = u.trim();
-    let u = u.split_once("://").map_or(u, |(_, rest)| rest);
-    let u = u.split_once('@').map_or(u, |(_, rest)| rest);
-    let u = u.trim_end_matches('/').trim_end_matches(".git");
-    u.replacen(':', "/", 1).to_ascii_lowercase()
+    let (authority, path) = if let Some((scheme, rest)) = u.split_once("://") {
+        if scheme.is_empty()
+            || !scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+        {
+            return None;
+        }
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        (&rest[..end], &rest[end..])
+    } else {
+        // scp-like when a `:` comes before any `/`; else `host/path`.
+        match (u.find(':'), u.find('/')) {
+            (Some(c), s) if s.is_none_or(|s| c < s) => (&u[..c], &u[c + 1..]),
+            (_, Some(s)) => (&u[..s], &u[s..]),
+            _ => return None,
+        }
+    };
+    // Userinfo is everything up to the last `@` of the authority only.
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match hostport.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+        Some((h, "")) => h,
+        _ => hostport,
+    };
+    let host_ok = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
+    if !host_ok {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let path = path.trim_matches('/');
+    let path = path
+        .strip_suffix(".git")
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    Some((host.to_ascii_lowercase(), path.to_ascii_lowercase()))
 }
 
 /// Values for `{variable}` templating in `env`, `install` and `setup`.
@@ -298,17 +429,125 @@ impl TemplateVars {
     /// are left as written, and a `{` right after a `$` is never a variable,
     /// so shell `${VAR}` survives.
     pub fn render(&self, input: &str) -> String {
-        self.render_with(input, false)
+        self.render_plain(input)
     }
 
-    /// [`render`](Self::render) for text a shell will parse: every substituted value that
-    /// contains anything but `[A-Za-z0-9_./:@%+=,-]` is single-quoted, so a branch name
-    /// like `$(cmd)` stays data.
+    /// The environment variable carrying `{name}` in shell commands.
+    fn env_name(name: &str) -> Option<&'static str> {
+        Some(match name {
+            "slug" => "VIBEKE_TASK_SLUG",
+            "slug_underscored" => "VIBEKE_TASK_SLUG_UNDERSCORED",
+            "branch" => "VIBEKE_BRANCH",
+            "task" => "VIBEKE_TASK_ID",
+            "port" | "port_base" => "VIBEKE_PORT_BASE",
+            "port_end" => "VIBEKE_PORT_END",
+            "repo_root" => "VIBEKE_REPO_ROOT",
+            "worktree" => "VIBEKE_WORKTREE",
+            "source_root" => "VIBEKE_SOURCE_ROOT",
+            _ => return None,
+        })
+    }
+
+    /// The variables [`render_shell`](Self::render_shell) references, to export to the
+    /// shell that runs the rendered commands (only the ones with a value).
+    pub fn shell_env(&self) -> Vec<(String, String)> {
+        [
+            "slug",
+            "slug_underscored",
+            "branch",
+            "task",
+            "port_base",
+            "port_end",
+            "repo_root",
+            "worktree",
+            "source_root",
+        ]
+        .iter()
+        .filter_map(|n| Some((Self::env_name(n)?.to_string(), self.get(n)?)))
+        .collect()
+    }
+
+    /// [`render`](Self::render) for text a shell will parse. Values are **never** pasted
+    /// into the command: `{branch}` becomes a reference to `$VIBEKE_BRANCH` (see
+    /// [`shell_env`](Self::shell_env)), written for the quoting context it appears in:
+    /// `"${V}"` unquoted, `${V}` inside double quotes, and `'"${V}"'` inside single quotes
+    /// (close, expand, reopen). The shell expands a variable once and never re-parses the
+    /// result, so a branch named `$(cmd)` or `'; cmd; '` stays data in every context.
     pub fn render_shell(&self, input: &str) -> String {
-        self.render_with(input, true)
+        #[derive(Clone, Copy, PartialEq)]
+        enum Q {
+            None,
+            Single,
+            AnsiC,
+            Double,
+        }
+        let mut out = String::with_capacity(input.len());
+        let mut q = Q::None;
+        // Command substitutions (`$(…)`, backticks) start a fresh quoting context; the stack
+        // holds the enclosing one with its paren depth and whether a backtick opened it.
+        let mut stack: Vec<(Q, u32, bool)> = Vec::new();
+        let mut depth = 0u32;
+        let b = input.as_bytes();
+        let mut i = 0;
+        while i < input.len() {
+            let c = b[i];
+            if c == b'{'
+                && !out.ends_with('$')
+                && let Some(j) = input[i + 1..].find('}')
+                && let Some(var) = Self::env_name(&input[i + 1..i + 1 + j])
+                && self.get(&input[i + 1..i + 1 + j]).is_some()
+            {
+                match q {
+                    Q::None => out.push_str(&format!("\"${{{var}}}\"")),
+                    Q::Double => out.push_str(&format!("${{{var}}}")),
+                    Q::Single => out.push_str(&format!("'\"${{{var}}}\"'")),
+                    Q::AnsiC => out.push_str(&format!("'\"${{{var}}}\"$'")),
+                }
+                i += j + 2;
+                continue;
+            }
+            // Track quoting (POSIX quotes, backslash escapes and bash `$'...'`).
+            let ch = input[i..].chars().next().unwrap_or('\0');
+            let len = ch.len_utf8();
+            match (q, c) {
+                (Q::None, b'\\') | (Q::Double, b'\\') | (Q::AnsiC, b'\\') => {
+                    let next = input[i + 1..].chars().next().map_or(0, char::len_utf8);
+                    out.push_str(&input[i..i + 1 + next]);
+                    i += 1 + next;
+                    continue;
+                }
+                (Q::None | Q::Double, b'(') if out.ends_with('$') => {
+                    stack.push((q, depth, false));
+                    (q, depth) = (Q::None, 0);
+                }
+                (Q::None, b'(') => depth += 1,
+                (Q::None, b')') if depth > 0 => depth -= 1,
+                (Q::None, b')') if stack.last().is_some_and(|t| !t.2) => {
+                    let (pq, pd, _) = stack.pop().unwrap_or((Q::None, 0, false));
+                    (q, depth) = (pq, pd);
+                }
+                (Q::None, b'`') if stack.last().is_some_and(|t| t.2) => {
+                    let (pq, pd, _) = stack.pop().unwrap_or((Q::None, 0, false));
+                    (q, depth) = (pq, pd);
+                }
+                (Q::None | Q::Double, b'`') => {
+                    stack.push((q, depth, true));
+                    (q, depth) = (Q::None, 0);
+                }
+                (Q::None, b'\'') if out.ends_with('$') => q = Q::AnsiC,
+                (Q::None, b'\'') => q = Q::Single,
+                (Q::Single, b'\'') | (Q::AnsiC, b'\'') => q = Q::None,
+                (Q::None, b'"') => q = Q::Double,
+                (Q::Double, b'"') => q = Q::None,
+                _ => {}
+            }
+            out.push_str(&input[i..i + len]);
+            i += len;
+        }
+        out
     }
 
-    fn render_with(&self, input: &str, shell: bool) -> String {
+    fn render_plain(&self, input: &str) -> String {
         let mut out = String::with_capacity(input.len());
         let mut rest = input;
         while let Some(i) = rest.find('{') {
@@ -318,11 +557,7 @@ impl TemplateVars {
                 && let Some(j) = after.find('}')
                 && let Some(v) = self.get(&after[..j])
             {
-                if shell {
-                    out.push_str(&shell_quote(&v));
-                } else {
-                    out.push_str(&v);
-                }
+                out.push_str(&v);
                 rest = &after[j + 1..];
                 continue;
             }
@@ -334,14 +569,16 @@ impl TemplateVars {
     }
 
     /// `[ports] env` plus `[env]` as ready-to-export pairs: templated values,
-    /// invalid names dropped, port offsets outside the lease dropped.
+    /// invalid names dropped, port offsets outside the lease dropped. Port env
+    /// names that are denied ([`denied_port_env_name`]) are always dropped;
+    /// callers narrow `tf.ports.env` with [`filter_port_env`] first.
     pub fn env_pairs(&self, tf: &TaskFile) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = Vec::new();
         if let Some(base) = self.port_base {
             let end = self.port_end.unwrap_or(base);
             for (k, off) in &tf.ports.env {
                 let p = u32::from(base) + u32::from(*off);
-                if valid_env_name(k) && p <= u32::from(end) {
+                if valid_env_name(k) && !denied_port_env_name(k) && p <= u32::from(end) {
                     v.push((k.clone(), p.to_string()));
                 }
             }
@@ -392,14 +629,170 @@ mod tests {
     }
 
     #[test]
-    fn shell_rendering_quotes_values_not_the_template() {
+    fn shell_rendering_references_env_vars_per_quoting_context() {
         let mut v = vars();
         v.branch = "x$(touch pwned)'y".into();
         assert_eq!(
             v.render_shell("echo {branch} {slug} > {worktree}/out"),
-            "echo 'x$(touch pwned)'\\''y' fix-login > /w/out"
+            "echo \"${VIBEKE_BRANCH}\" \"${VIBEKE_TASK_SLUG}\" > \"${VIBEKE_WORKTREE}\"/out"
+        );
+        assert_eq!(
+            v.render_shell(r#"echo "b={branch}" 'b={branch}' $'b={branch}' \'{task}"#),
+            r#"echo "b=${VIBEKE_BRANCH}" 'b='"${VIBEKE_BRANCH}"'' $'b='"${VIBEKE_BRANCH}"$'' \'"${VIBEKE_TASK_ID}""#
+        );
+        // Shell `${VAR}`, unknown names and unset ports are left as written.
+        let mut none = vars();
+        none.port_base = None;
+        assert_eq!(
+            none.render_shell("${HOME} {nope} {port}"),
+            "${HOME} {nope} {port}"
+        );
+        assert!(
+            !none
+                .shell_env()
+                .iter()
+                .any(|(k, _)| k == "VIBEKE_PORT_BASE")
         );
         assert_eq!(v.render("{branch}"), "x$(touch pwned)'y");
+    }
+
+    /// Hostile (git-valid) branch names print literally from unquoted, single- and
+    /// double-quoted placeholders, run through a real `sh`.
+    #[test]
+    fn shell_templates_never_execute_branch_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let hostile = [
+            "feature/$(printf${IFS}P1_INJECTED)",
+            "x'$(touch pwned1)'y",
+            "a\"$(touch pwned2)\"b",
+            "c`touch pwned3`d",
+            "e';touch pwned4;'f",
+            "g\\\"$(touch pwned5)",
+            "h${IFS}$HOME",
+        ];
+        let templates = [
+            "printf '%s\\n' {branch}",
+            "printf '%s\\n' \"{branch}\"",
+            "printf '%s\\n' '{branch}'",
+            "printf '%s\\n' \"pre-{branch}-post\" | sed 's/^pre-//; s/-post$//'",
+            "printf '%s\\n' 'pre-{branch}-post' | sed 's/^pre-//; s/-post$//'",
+            "printf '%s\\n' \"$(printf '%s' \"{branch}\")\"",
+        ];
+        for b in hostile {
+            let mut v = vars();
+            v.branch = b.to_string();
+            for t in templates {
+                let cmd = v.render_shell(t);
+                let out = std::process::Command::new("sh")
+                    .args(["-c", &cmd])
+                    .current_dir(dir.path())
+                    .envs(v.shell_env())
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "{t} / {b}: {cmd}");
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout).trim_end_matches('\n'),
+                    b,
+                    "template {t:?} rendered as {cmd:?}"
+                );
+            }
+        }
+        let made: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(made.is_empty(), "a branch name ran a command: {made:?}");
+    }
+
+    #[test]
+    fn hostile_remote_urls_never_match() {
+        let root = Path::new("/nonexistent/repo");
+        let key = "https://github.com/org/repo.git";
+        for r in [
+            "https://evil.example/path@github.com/org/repo.git",
+            "https://evil.example/@github.com/org/repo",
+            "ssh://evil.example/x@github.com:org/repo.git",
+            "evil.example:x@github.com/org/repo.git",
+            "evil.example/x@github.com:org/repo.git",
+            "https://github.com.evil.example/org/repo.git",
+            "https://evil.example?@github.com/org/repo.git",
+            "https://evil.example#@github.com/org/repo.git",
+            "https://github.com/org/repo.git/../../evil/x",
+        ] {
+            assert!(!repo_key_matches(key, root, Some(r), None), "{r}");
+            assert!(!repo_key_matches(r, root, Some(key), None), "{r}");
+        }
+        // Real forms still match: userinfo before the host, ports, scp-like.
+        for r in [
+            "https://user:tok@github.com/org/repo.git",
+            "ssh://git@github.com:22/org/repo.git",
+            "git@github.com:org/repo.git",
+            "github.com/Org/Repo/",
+        ] {
+            assert!(repo_key_matches(key, root, Some(r), None), "{r}");
+        }
+        assert_eq!(
+            parse_remote("https://evil.example/path@github.com/org/repo.git"),
+            Some(("evil.example".into(), "path@github.com/org/repo".into()))
+        );
+        assert_eq!(parse_remote("https://github.com"), None);
+        assert_eq!(parse_remote("https://bad host/x"), None);
+    }
+
+    #[test]
+    fn port_env_names_are_allowlisted() {
+        for k in [
+            "ZDOTDIR",
+            "BASH_ENV",
+            "ENV",
+            "PATH",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "PROMPT_COMMAND",
+            "LD_PORT",
+            "VIBEKE_PORT",
+        ] {
+            assert!(!trusted_port_env_name(k), "{k}");
+            assert!(!untrusted_port_env_name(k), "{k}");
+        }
+        assert!(untrusted_port_env_name("PORT"));
+        assert!(untrusted_port_env_name("API_PORT"));
+        assert!(!untrusted_port_env_name("_PORT"));
+        assert!(!untrusted_port_env_name("PORTS_DIR"));
+        assert!(trusted_port_env_name("VITE_PORT_HMR"));
+        assert!(!untrusted_port_env_name("VITE_PORT_HMR"));
+        assert!(!trusted_port_env_name("api_port"));
+        let env: BTreeMap<String, u16> = [
+            ("ZDOTDIR", 0),
+            ("PORT", 0),
+            ("API_PORT", 1),
+            ("HMR_PORT_WS", 2),
+            ("CUSTOM", 3),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let none = BTreeMap::new();
+        let keys = |m: BTreeMap<String, u16>| m.into_keys().collect::<Vec<_>>();
+        assert_eq!(
+            keys(filter_port_env(&env, &none, false)),
+            ["API_PORT", "PORT"]
+        );
+        assert_eq!(
+            keys(filter_port_env(&env, &none, true)),
+            ["API_PORT", "HMR_PORT_WS", "PORT"]
+        );
+        // A name the user declared passes; a denied one never does.
+        let declared: BTreeMap<String, u16> =
+            [("CUSTOM".to_string(), 3), ("ZDOTDIR".to_string(), 0)]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            keys(filter_port_env(&env, &declared, false)),
+            ["API_PORT", "CUSTOM", "PORT"]
+        );
+        // env_pairs drops denied names even if a caller forgot to filter.
+        let tf = TaskFile::parse("[ports]\nenv={ZDOTDIR=0, PORT=0}\n").unwrap();
+        let e = vars().env_pairs(&tf);
+        assert!(!e.iter().any(|(k, _)| k == "ZDOTDIR"));
+        assert!(tf.warnings().iter().any(|w| w.contains("ZDOTDIR")));
     }
 
     #[test]

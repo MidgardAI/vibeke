@@ -572,40 +572,91 @@ pub fn ensure(
             json!({"container": c.b().spec.name, "image": c.image, "created": true}),
         );
         if !c.lifecycle.is_empty() {
-            let srv = server.clone();
-            let (b, steps, log) = (c.b().clone(), c.lifecycle.clone(), c.root.join("setup.log"));
-            let (key, task) = (key.to_string(), task.map(str::to_string));
-            std::thread::spawn(move || {
-                let mut status = "ok".to_string();
-                let mut text = String::new();
-                for (name, script) in steps {
-                    text.push_str(&format!("$ {name}: {script}\n"));
-                    match b.exec_script(&script, None, Duration::from_secs(1800)) {
-                        Ok(o) => {
-                            text.push_str(&o.stdout);
-                            text.push_str(&o.stderr);
-                            if !o.ok {
-                                status = format!("failed: {name}");
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            status = format!("failed: {name}: {e}");
-                            break;
-                        }
-                    }
-                }
-                let _ = std::fs::write(&log, text);
-                emit(
-                    &srv,
-                    "sandbox.setup_finished",
-                    json!({"task": task, "sandbox": key}),
-                    json!({"status": status, "log": log}),
-                );
-            });
+            spawn_lifecycle(server, key, task, c, c.lifecycle.clone());
         }
     }
     Ok(created)
+}
+
+/// Run lifecycle steps in the box on a thread (log in the box root, then
+/// `sandbox.setup_finished`). Every step is an `exec` into the container: nothing runs on the
+/// host.
+fn spawn_lifecycle(
+    server: &Arc<Server>,
+    key: &str,
+    task: Option<&str>,
+    c: &CtrBox,
+    steps: Vec<(String, String)>,
+) {
+    let srv = server.clone();
+    let (b, log) = (c.b().clone(), c.root.join("setup.log"));
+    let (key, task) = (key.to_string(), task.map(str::to_string));
+    std::thread::spawn(move || {
+        let mut status = "ok".to_string();
+        let mut text = String::new();
+        for (name, script) in steps {
+            text.push_str(&format!("$ {name}: {script}\n"));
+            match b.exec_script(&script, None, Duration::from_secs(1800)) {
+                Ok(o) => {
+                    text.push_str(&o.stdout);
+                    text.push_str(&o.stderr);
+                    if !o.ok {
+                        status = format!("failed: {name}");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    status = format!("failed: {name}: {e}");
+                    break;
+                }
+            }
+        }
+        let _ = std::fs::write(&log, text);
+        emit(
+            &srv,
+            "sandbox.setup_finished",
+            json!({"task": task, "sandbox": key}),
+            json!({"status": status, "log": log}),
+        );
+    });
+}
+
+/// `task.setup` for a container task (blocking): the steps run **in the box** through the
+/// container runner, never on the host. They are the box's trusted lifecycle commands plus
+/// `.vibeke/setup.sh`, whose trust is checked again now (so a rerun after `policy trust`
+/// picks it up). Starts the box if it is stopped.
+pub fn rerun_setup(server: &Arc<Server>, tb: &TaskBox, c: &CtrBox) -> Result<Value, RpcError> {
+    let mut steps: Vec<(String, String)> = c
+        .lifecycle
+        .iter()
+        .filter(|(n, _)| n != "setup")
+        .cloned()
+        .collect();
+    let mut warnings = Vec::new();
+    if tb.checkout.join(".vibeke/setup.sh").is_file() {
+        let trusted = vk_tasks::repo_root(&tb.checkout).is_some_and(|r| {
+            crate::run::vibeke_dir_digest(&tb.checkout)
+                .is_some_and(|dg| crate::run::repo_trusted(server, &r.root, &dg))
+        });
+        if trusted {
+            steps.push(("setup".into(), "sh .vibeke/setup.sh".into()));
+        } else {
+            warnings.push("`.vibeke/setup.sh` skipped: repo not trusted".to_string());
+        }
+    }
+    let created = ensure(server, &tb.key, tb.task.as_deref(), c)?;
+    // A box created just now already ran its create-time lifecycle in `ensure`.
+    let started = !created && !steps.is_empty();
+    if started {
+        spawn_lifecycle(server, &tb.key, tb.task.as_deref(), c, steps.clone());
+    }
+    Ok(json!({
+        "started": started || (created && !c.lifecycle.is_empty()),
+        "container": c.b().spec.name,
+        "commands": steps.iter().map(|(n, s)| json!({"source": n, "command": s})).collect::<Vec<_>>(),
+        "log": c.root.join("setup.log"),
+        "warnings": warnings,
+    }))
 }
 
 fn remote_for(c: &CtrBox, cl: &CloneInfo) -> (BoxRemote, bool) {
