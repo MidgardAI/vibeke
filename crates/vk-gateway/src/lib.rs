@@ -358,16 +358,6 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
             "no relay configured: pass --relay (or enable local_socket for a desktop app on this machine)"
         );
     }
-    // Open the local socket first: a desktop app can then tell "server down" (calls answer
-    // `unavailable`) from "gateway down" (nothing listening).
-    if gw.cfg.local_socket {
-        let g = gw.clone();
-        tokio::spawn(async move {
-            if let Err(e) = local::run(g).await {
-                tracing::warn!("local transport: {e:#}");
-            }
-        });
-    }
     // The server must grant full scope; wait for it if it isn't running yet (later restarts are
     // fine too: calls reconnect lazily and the event stream resubscribes).
     let mut warned = false;
@@ -400,6 +390,14 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
             }
         }
     });
+    if gw.cfg.local_socket {
+        let g = gw.clone();
+        tokio::spawn(async move {
+            if let Err(e) = local::run(g).await {
+                tracing::warn!("local transport: {e:#}");
+            }
+        });
+    }
     match relay {
         Some(relay) => relay_client::run(gw, &relay).await,
         // Local-only (desktop on this machine): nothing else to do.

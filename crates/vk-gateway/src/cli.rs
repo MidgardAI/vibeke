@@ -166,10 +166,6 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
         } => {
             let cfg = state.config()?;
             if local {
-                let probe = crate::local::socket_path(&state.dir);
-                if std::os::unix::net::UnixStream::connect(&probe).is_err() {
-                    bail!("the gateway isn't running here (no {}); start it with `vibeke gateway run`", probe.display());
-                }
                 let host_name = cfg
                     .host_name
                     .clone()
