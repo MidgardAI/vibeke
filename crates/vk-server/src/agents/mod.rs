@@ -694,7 +694,11 @@ fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
     if let Some(r) = c.run_for_pane(pane).cloned() {
         if r.harness == h.id() {
             // A structured transport proves health, but never lifts version gating (04 §12.3).
-            let want = if r.health == AdapterHealth::UnvalidatedVersion { AdapterHealth::UnvalidatedVersion } else { AdapterHealth::Healthy };
+            let want = if r.health == AdapterHealth::UnvalidatedVersion {
+                AdapterHealth::UnvalidatedVersion
+            } else {
+                AdapterHealth::Healthy
+            };
             if r.integration != "hooks" || r.health != want {
                 let mut r2 = r.clone();
                 r2.integration = "hooks".into();
@@ -1022,7 +1026,11 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
             let prompt = p.get("prompt").and_then(Value::as_str).unwrap_or("");
             let meta = json!({"prompt_bytes": prompt.len(), "prompt_digest": blake3::hash(prompt.as_bytes()).to_hex()[..16].to_string()});
             update_run(server, &run.id, |r, tx| {
-                tx.event("agent.turn_started", json!({"run": r.id, "pane": r.pane}), meta.clone());
+                tx.event(
+                    "agent.turn_started",
+                    json!({"run": r.id, "pane": r.pane}),
+                    meta.clone(),
+                );
             });
         }
         "PreToolUse" => {

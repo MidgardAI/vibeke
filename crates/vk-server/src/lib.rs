@@ -6,6 +6,7 @@
 pub mod agents;
 pub mod api;
 pub mod core;
+pub mod gateway_api;
 pub mod pane;
 pub mod paths;
 pub mod preview;
@@ -13,7 +14,6 @@ pub mod render;
 pub mod review;
 pub mod run;
 pub mod tracking;
-pub mod gateway_api;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
