@@ -87,7 +87,6 @@ struct Inner {
     /// Panes whose input is locked while a verified keystroke sequence runs (04 §8).
     locks: HashMap<String, Instant>,
     screen_eval: HashMap<String, Instant>,
-    policy: Vec<vk_config::PolicyRule>,
     resume_mode: String,
 }
 
@@ -105,7 +104,6 @@ pub fn start(server: &Arc<Server>) {
         .unwrap_or_default();
     {
         let mut i = server.agents.inner.lock().unwrap();
-        i.policy = cfg.policy.rule.clone();
         i.resume_mode = format!("{:?}", cfg.agents.resume_on_restart).to_lowercase();
     }
     // Interactions left `delivering` by a crashed server: the shim reconnect is the reconcile
@@ -1485,28 +1483,8 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
 }
 
 fn match_policy(server: &Server, it: &Interaction) -> Option<(String, String)> {
-    let a = it.action.as_ref()?;
-    let rules = server.agents.inner.lock().unwrap().policy.clone();
-    for (i, r) in rules.iter().enumerate() {
-        if let Some(t) = &r.matcher.tool
-            && t != &a.tool
-        {
-            continue;
-        }
-        if let Some(re) = &r.matcher.command_regex {
-            let Some(cmd) = &a.command else { continue };
-            match regex::Regex::new(re) {
-                Ok(rx) if rx.is_match(cmd) => {}
-                _ => continue,
-            }
-        }
-        let effect = format!("{:?}", r.effect).to_lowercase();
-        if effect == "ask" {
-            return None;
-        }
-        return Some((effect, format!("r{}", i + 1)));
-    }
-    None
+    // Config, API-added and trusted repository rules (07 §2.9, 09 §4).
+    crate::policy_api::match_interaction(server, it)
 }
 
 /// Step 1 of the delivery transaction (02 §1.1): record the decision (first writer wins).
@@ -1583,8 +1561,10 @@ fn record_decision(
             json!({"effect": answer.decision.map(|d| format!("{d:?}").to_lowercase())}),
         );
     }
+    let audited = it.clone();
     tx.interaction(it);
     server.commit(&mut c, tx).map_err(|e| format!("{e:#}"))?;
+    crate::security::decision_recorded(server, &audited, by, actor);
     Ok(Some((native, key)))
 }
 

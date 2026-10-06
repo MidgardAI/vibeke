@@ -78,6 +78,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::compat::start(&server);
     crate::inbox::start(&server);
     crate::config_api::start(&server);
+    crate::security::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -243,17 +244,21 @@ where
                 match req.method.as_str() {
                     "client.hello" => {
                         if let Some(tok) = req.params.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                            // An approved elevation (09 §3.2): full scope, bound to the pane it was issued to.
+                            let elevated = crate::auth::elevated_hello(&server, tok, ancestry.as_deref());
+                            if let Some(k) = &elevated { ctx.pane_scope = None; ctx.kind = k.clone(); }
                             match server.pane_for_token(tok) {
+                                _ if elevated.is_some() => {}
                                 // A token can't widen or switch scope away from the caller's own pane.
                                 Some(p) if ancestry.as_ref().is_none_or(|a| *a == p) => ctx.pane_scope = Some(p),
                                 _ => {
-                                    let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, "unknown pane token"));
+                                    let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, crate::auth::unknown_token_message(&server, ancestry.as_deref())));
                                     let _ = out_tx.send(serde_json::to_string(&r)?);
                                     continue;
                                 }
                             }
                         }
-                        if let Some(k) = req.params.get("kind").and_then(Value::as_str) { ctx.kind = k.into(); }
+                        if let Some(k) = req.params.get("kind").and_then(Value::as_str).filter(|_| !ctx.kind.starts_with(crate::auth::ELEVATED_KIND)) { ctx.kind = k.into(); }
                         if let Some(c) = req.params.get("client_id").and_then(Value::as_str) {
                             ctx.client_id = c.into();
                             guard.client_ids.lock().unwrap().push(c.into());

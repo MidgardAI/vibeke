@@ -79,6 +79,17 @@ export type Appearance = {
   source: string;
 };
 
+export type AuditEntry = {
+  seq: number;
+  ts: number;
+  type: string;
+  actor: Record<string, unknown>;
+  subject: unknown;
+  data: unknown;
+  prev_hash: string;
+  hash: string;
+};
+
 export type BrowserPane = {
   url: string;
   machine: string;
@@ -152,6 +163,14 @@ export type Cursor = {
   session_uuid: string;
   log_epoch: string;
   seq: number;
+};
+
+export type ElevationRequest = {
+  request: string;
+  pane: string;
+  reason: string;
+  created_at_ms: number;
+  status: "pending" | "approved" | "denied";
 };
 
 export type VibekeEvent = {
@@ -300,7 +319,44 @@ export type PaneLive = {
   user_vars: string[][];
 };
 
+export type PolicyMatch = {
+  tool?: string;
+  command_regex?: string;
+  path_glob?: string;
+  url_glob?: string;
+};
+
+export type PolicyRepo = {
+  repo: string;
+  file: string;
+  exists: boolean;
+  trusted: boolean;
+  allow_policy_grants: boolean;
+  rules: number;
+  errors: string[];
+};
+
 export type PolicyRule = Record<string, unknown>;
+
+export type PolicyRuleInfo = {
+  id: string;
+  source: "config" | "user" | "repo";
+  repo?: string;
+  match: PolicyMatch;
+  effect: "allow" | "deny" | "ask";
+  scope?: string;
+  note?: string;
+  ignored?: string;
+  created_at_ms?: number;
+  created_by?: string;
+};
+
+export type PolicyScope = string | {
+  cwd?: string;
+  repo?: string;
+  pane?: Target;
+  run?: Target;
+};
 
 export type PrLookup = {
   kind: "pr" | "no_pr" | "unavailable";
@@ -978,6 +1034,97 @@ export type AttentionUpdateResult = {
   snoozed_until_ms: number | null;
   pinned: boolean;
   warning: string | null;
+  cursor?: Cursor;
+};
+
+export type AuditSearchParams = {
+  query?: string;
+  types?: string[] | string;
+  since_ms?: number;
+  limit?: number;
+};
+
+export type AuditSearchResult = {
+  entries: AuditEntry[];
+  path: string;
+};
+
+export type AuditTailParams = {
+  limit?: number;
+  types?: string[] | string;
+};
+
+export type AuditTailResult = {
+  entries: AuditEntry[];
+  path: string;
+};
+
+export type AuditVerifyParams = Record<string, unknown>;
+
+export type AuditVerifyResult = {
+  ok: boolean;
+  exists: boolean;
+  entries: number;
+  last_seq: number;
+  last_hash: string;
+  problems: string[];
+  discontinuities: number[];
+  head_seq: number | null;
+  path: string;
+};
+
+export type AuthElevateParams = {
+  reason?: string;
+  timeout_ms?: number;
+  request?: string;
+  wait?: boolean;
+};
+
+export type AuthElevateResult = {
+  request: string;
+  token: string;
+  expires_at_ms: number;
+  ttl_s: number;
+  env: string;
+  cursor?: Cursor;
+} | ElevationRequest;
+
+export type AuthElevateDecideParams = {
+  request: string;
+  decision: "approve" | "deny";
+};
+
+export type AuthElevateDecideResult = {
+  request: string;
+  pane: string;
+  decision: "approved" | "denied";
+  expires_at_ms: number | null;
+  cursor?: Cursor;
+};
+
+export type AuthListParams = Record<string, unknown>;
+
+export type AuthListResult = {
+  pending: ElevationRequest[];
+  elevated: {
+    pane: string;
+    request: string;
+    expires_at_ms: number;
+  }[];
+  revoked: {
+    pane: string;
+  }[];
+};
+
+export type AuthRevokeTokenParams = {
+  pane: Target;
+};
+
+export type AuthRevokeTokenResult = {
+  pane: string;
+  revoked: true;
+  tokens_removed: number;
+  elevations_removed: number;
   cursor?: Cursor;
 };
 
@@ -2443,6 +2590,23 @@ export type ImageUploadResult = {
   cursor?: Cursor;
 };
 
+export type IntegrationDoctorParams = {
+  harness?: "claude" | "codex" | "pi" | "omp" | "opencode" | "gemini";
+};
+
+export type IntegrationDoctorResult = {
+  checks: {
+    name: string;
+    harness: string;
+    ok: boolean;
+    status: "ok" | "changed" | "removed" | "unrecorded" | "not_installed";
+    detail: string;
+    file: string;
+    fingerprint: string | null;
+    recorded: string | null;
+  }[];
+};
+
 export type InteractionAnswerParams = {
   interaction: Target;
   decision?: "allow" | "allow_always" | "deny";
@@ -3143,6 +3307,89 @@ export type PluginSurfaceCloseParams = {
 
 export type PluginSurfaceCloseResult = {
   closed: Target | null;
+  cursor?: Cursor;
+};
+
+export type PolicyAddParams = {
+  rule?: {
+    match?: PolicyMatch;
+    tool?: string;
+    command_regex?: string;
+    path_glob?: string;
+    url_glob?: string;
+    effect: "allow" | "deny" | "ask";
+    scope?: string;
+    note?: string;
+  };
+  tool?: string;
+  command_regex?: string;
+  path_glob?: string;
+  url_glob?: string;
+  effect?: "allow" | "deny" | "ask";
+  scope?: string;
+  note?: string;
+};
+
+export type PolicyAddResult = {
+  rule: PolicyRuleInfo;
+  cursor?: Cursor;
+};
+
+export type PolicyListParams = {
+  scope?: PolicyScope;
+};
+
+export type PolicyListResult = {
+  rules: PolicyRuleInfo[];
+  repos: PolicyRepo[];
+};
+
+export type PolicyRemoveParams = {
+  rule_id: string;
+};
+
+export type PolicyRemoveResult = {
+  removed: boolean;
+  rule: PolicyRuleInfo;
+  cursor?: Cursor;
+};
+
+export type PolicyTestParams = {
+  action: {
+    tool: string;
+    command?: string;
+    paths?: string[];
+    url?: string;
+  };
+  scope?: PolicyScope;
+};
+
+export type PolicyTestResult = {
+  effect: "allow" | "deny" | "ask";
+  rule: PolicyRuleInfo | null;
+  user_rule: PolicyRuleInfo | null;
+  repo_rule: PolicyRuleInfo | null;
+  repo: string | null;
+  reason: string;
+};
+
+export type PolicyTrustParams = {
+  path?: string;
+  digest?: string;
+  devcontainer_digest?: string;
+  allow_policy_grants?: boolean;
+};
+
+export type PolicyTrustResult = {
+  repo: string;
+  digest: string | null;
+  setup_script: string | null;
+  task_file: unknown;
+  devcontainer: unknown;
+  harness_manifests: unknown[];
+  allow_policy_grants: boolean;
+  policy_rules: PolicyRuleInfo[];
+  policy_errors?: string[];
   cursor?: Cursor;
 };
 
@@ -4570,6 +4817,13 @@ export interface Methods {
   "assistant.status": { params: AssistantStatusParams; result: AssistantStatusResult };
   "attention.list": { params: AttentionListParams; result: AttentionListResult };
   "attention.update": { params: AttentionUpdateParams; result: AttentionUpdateResult };
+  "audit.search": { params: AuditSearchParams; result: AuditSearchResult };
+  "audit.tail": { params: AuditTailParams; result: AuditTailResult };
+  "audit.verify": { params: AuditVerifyParams; result: AuditVerifyResult };
+  "auth.elevate": { params: AuthElevateParams; result: AuthElevateResult };
+  "auth.elevate.decide": { params: AuthElevateDecideParams; result: AuthElevateDecideResult };
+  "auth.list": { params: AuthListParams; result: AuthListResult };
+  "auth.revoke_token": { params: AuthRevokeTokenParams; result: AuthRevokeTokenResult };
   "blob.abort": { params: BlobAbortParams; result: BlobAbortResult };
   "blob.append": { params: BlobAppendParams; result: BlobAppendResult };
   "blob.begin": { params: BlobBeginParams; result: BlobBeginResult };
@@ -4657,6 +4911,7 @@ export interface Methods {
   "group.remove": { params: GroupRemoveParams; result: GroupRemoveResult };
   "group.rename": { params: GroupRenameParams; result: GroupRenameResult };
   "image.upload": { params: ImageUploadParams; result: ImageUploadResult };
+  "integration.doctor": { params: IntegrationDoctorParams; result: IntegrationDoctorResult };
   "interaction.answer": { params: InteractionAnswerParams; result: InteractionAnswerResult };
   "interaction.cancel": { params: InteractionCancelParams; result: InteractionCancelResult };
   "interaction.get": { params: InteractionGetParams; result: InteractionGetResult };
@@ -4708,6 +4963,11 @@ export interface Methods {
   "plugin.log.list": { params: PluginLogListParams; result: PluginLogListResult };
   "plugin.registry.notify": { params: PluginRegistryNotifyParams; result: PluginRegistryNotifyResult };
   "plugin.surface.close": { params: PluginSurfaceCloseParams; result: PluginSurfaceCloseResult };
+  "policy.add": { params: PolicyAddParams; result: PolicyAddResult };
+  "policy.list": { params: PolicyListParams; result: PolicyListResult };
+  "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
+  "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
+  "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
   "preview.dismiss": { params: PreviewDismissParams; result: PreviewDismissResult };
   "preview.forget": { params: PreviewForgetParams; result: PreviewForgetResult };
@@ -4835,6 +5095,13 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden" },
   "attention.list": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.update": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "audit.tail": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "audit.verify": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "auth.elevate": { mutating: true, scope: "pane", paneScope: "open" },
+  "auth.elevate.decide": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "auth.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "auth.revoke_token": { mutating: true, scope: "full", paneScope: "forbidden" },
   "blob.abort": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.append": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.begin": { mutating: true, scope: "pane", paneScope: "open" },
@@ -4922,6 +5189,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "group.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
   "group.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
   "image.upload": { mutating: true, scope: "pane", paneScope: "open" },
+  "integration.doctor": { mutating: false, scope: "full", paneScope: "forbidden" },
   "interaction.answer": { mutating: true, scope: "full", paneScope: "forbidden" },
   "interaction.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "interaction.get": { mutating: false, scope: "pane", paneScope: "open" },
@@ -4973,6 +5241,11 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "plugin.log.list": { mutating: false, scope: "pane", paneScope: "open" },
   "plugin.registry.notify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "plugin.surface.close": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
   "preview.dismiss": { mutating: true, scope: "pane", paneScope: "open" },
   "preview.forget": { mutating: true, scope: "pane", paneScope: "open" },
@@ -5264,6 +5537,53 @@ export type AttentionPreferenceChangedData = {
   pinned: boolean;
 };
 
+export type AuditRecordedSubject = Record<string, unknown>;
+
+export type AuditRecordedData = {
+  seq: number;
+  type: string;
+  hash: string;
+};
+
+export type AuthElevateDeniedSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthElevateDeniedData = {
+  expires_at_ms: number | null;
+};
+
+export type AuthElevateGrantedSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthElevateGrantedData = {
+  expires_at_ms: number | null;
+};
+
+export type AuthElevateRequestedSubject = {
+  pane: string;
+  request: string;
+};
+
+export type AuthElevateRequestedData = {
+  reason: string;
+};
+
+export type AuthTokenRevokedSubject = {
+  pane: string;
+  pane_handle: string;
+  tab: string;
+  workspace: string;
+};
+
+export type AuthTokenRevokedData = {
+  tokens_removed: number;
+  elevations_removed: number;
+};
+
 export type BrowserNavigatedSubject = {
   pane: string;
   tab?: string;
@@ -5470,6 +5790,16 @@ export type GroupRenamedSubject = {
 
 export type GroupRenamedData = {
   name: string;
+};
+
+export type IntegrationTamperedSubject = {
+  run: string | null;
+};
+
+export type IntegrationTamperedData = {
+  harness: string;
+  reason: "changed" | "removed" | "changed_during_run";
+  file: string;
 };
 
 export type InteractionCancelledSubject = {
@@ -5760,12 +6090,28 @@ export type PolicyRepoTrustedData = {
   devcontainer_digest?: string | null;
 };
 
+export type PolicyRuleAddedSubject = {
+  rule: string;
+};
+
+export type PolicyRuleAddedData = {
+  rule: PolicyRuleInfo;
+};
+
 export type PolicyRuleMatchedSubject = {
   interaction: string;
 };
 
 export type PolicyRuleMatchedData = {
   effect: string | null;
+};
+
+export type PolicyRuleRemovedSubject = {
+  rule: string;
+};
+
+export type PolicyRuleRemovedData = {
+  rule: PolicyRuleInfo;
 };
 
 export type PreviewConsoleErrorSubject = {
@@ -6431,6 +6777,11 @@ export interface EventMap {
   "assistant.purged": { subject: AssistantPurgedSubject; data: AssistantPurgedData };
   "assistant.request_finished": { subject: AssistantRequestFinishedSubject; data: AssistantRequestFinishedData };
   "attention.preference_changed": { subject: AttentionPreferenceChangedSubject; data: AttentionPreferenceChangedData };
+  "audit.recorded": { subject: AuditRecordedSubject; data: AuditRecordedData };
+  "auth.elevate_denied": { subject: AuthElevateDeniedSubject; data: AuthElevateDeniedData };
+  "auth.elevate_granted": { subject: AuthElevateGrantedSubject; data: AuthElevateGrantedData };
+  "auth.elevate_requested": { subject: AuthElevateRequestedSubject; data: AuthElevateRequestedData };
+  "auth.token_revoked": { subject: AuthTokenRevokedSubject; data: AuthTokenRevokedData };
   "browser.navigated": { subject: BrowserNavigatedSubject; data: BrowserNavigatedData };
   "browser.viewport_changed": { subject: BrowserViewportChangedSubject; data: BrowserViewportChangedData };
   "check.authorized": { subject: CheckAuthorizedSubject; data: CheckAuthorizedData };
@@ -6455,6 +6806,7 @@ export interface EventMap {
   "group.created": { subject: GroupCreatedSubject; data: GroupCreatedData };
   "group.moved": { subject: GroupMovedSubject; data: GroupMovedData };
   "group.renamed": { subject: GroupRenamedSubject; data: GroupRenamedData };
+  "integration.tampered": { subject: IntegrationTamperedSubject; data: IntegrationTamperedData };
   "interaction.cancelled": { subject: InteractionCancelledSubject; data: InteractionCancelledData };
   "interaction.decided": { subject: InteractionDecidedSubject; data: InteractionDecidedData };
   "interaction.delivery_unknown": { subject: InteractionDeliveryUnknownSubject; data: InteractionDeliveryUnknownData };
@@ -6483,7 +6835,9 @@ export interface EventMap {
   "pane.title_changed": { subject: PaneTitleChangedSubject; data: PaneTitleChangedData };
   "paste.translated": { subject: PasteTranslatedSubject; data: PasteTranslatedData };
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
+  "policy.rule_added": { subject: PolicyRuleAddedSubject; data: PolicyRuleAddedData };
   "policy.rule_matched": { subject: PolicyRuleMatchedSubject; data: PolicyRuleMatchedData };
+  "policy.rule_removed": { subject: PolicyRuleRemovedSubject; data: PolicyRuleRemovedData };
   "preview.console_error": { subject: PreviewConsoleErrorSubject; data: PreviewConsoleErrorData };
   "preview.declared": { subject: PreviewDeclaredSubject; data: PreviewDeclaredData };
   "preview.discovered": { subject: PreviewDiscoveredSubject; data: PreviewDiscoveredData };

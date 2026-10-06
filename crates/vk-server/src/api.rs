@@ -412,6 +412,7 @@ impl PaneScope {
 /// The pane scope of `method` (see [`PaneScope`]).
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
+        || crate::security::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -527,7 +528,9 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
 }
 
 pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
-    authorize(server, ctx, method, p)?;
+    authorize(server, ctx, method, p)
+        .inspect_err(|e| crate::security::denied(server, ctx, method, e))?;
+    crate::security::authorize(server, ctx, method)?;
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
@@ -545,6 +548,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = Box::pin(crate::task_park::api(server, ctx, method, p)).await {
+        return r;
+    }
+    if let Some(r) = crate::security::api(server, ctx, method, p).await {
         return r;
     }
     if let Some(r) = crate::parity::api(server, ctx, method, p).await {
@@ -634,6 +640,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::blob_api::METHODS)
                     .chain(crate::pane_api::METHODS)
                     .chain(crate::task_park::METHODS)
+                    .chain(crate::security::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

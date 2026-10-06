@@ -194,6 +194,9 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                     }
                 };
                 if !plan.changed() {
+                    if !dry {
+                        record_integrity(verb, h, &dirs);
+                    }
                     println!(
                         "{}: already {}",
                         h.id(),
@@ -225,6 +228,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
                         for p in paths {
                             println!("wrote {}", p.display());
                         }
+                        record_integrity(verb, h, &dirs);
                     }
                     Err(e) => {
                         eprintln!("{}: {e:#}", h.id());
@@ -457,4 +461,19 @@ fn run_mcp(verb: &str, hs: Vec<Harness>, dirs: &Dirs, write: bool, dry: bool) ->
 
 fn hs_contains_codex(target: Option<&str>) -> bool {
     matches!(target, None | Some("all") | Some("codex"))
+}
+
+/// Tamper detection baseline (09 §5.3): remember what install wrote, forget it on uninstall.
+fn record_integrity(verb: &str, h: Harness, dirs: &Dirs) {
+    let r = if verb == "install" {
+        vk_server::integrity::record_install(h, dirs)
+    } else {
+        vk_server::integrity::forget(h)
+    };
+    if let Err(e) = r {
+        eprintln!(
+            "{}: could not record the integration fingerprint: {e}",
+            h.id()
+        );
+    }
 }

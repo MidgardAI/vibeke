@@ -15,9 +15,35 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use vk_proto::holder::SpawnSpec;
 
+/// The umask the pane's child gets (09 §3.1): the server and holder run with `umask 077`, but
+/// the user's shell keeps the user's own umask. `u32::MAX` = unset (leave the inherited one).
+static CHILD_UMASK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Env var carrying [`child_umask`] from the server to the holder it launches (octal).
+pub const CHILD_UMASK_ENV: &str = "VIBEKE_CHILD_UMASK";
+
+/// Set the umask for pane children: in the server, passed to every holder it launches; in the
+/// holder, applied to its child before `exec`.
+pub fn set_child_umask(mask: u32) {
+    CHILD_UMASK.store(mask & 0o777, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn child_umask() -> Option<u32> {
+    let m = CHILD_UMASK.load(std::sync::atomic::Ordering::Relaxed);
+    (m != u32::MAX).then_some(m)
+}
+
 /// Entry point for `vibeke hold --spec <file>`: double-fork, `setsid`, spawn the child,
 /// report `ready <holder_pid> <child_pid>` on stdout from the intermediate process, then run.
 pub fn main_daemon(spec_path: &Path, log_path: Option<&Path>) -> Result<()> {
+    if let Some(m) = std::env::var(CHILD_UMASK_ENV)
+        .ok()
+        .and_then(|v| u32::from_str_radix(&v, 8).ok())
+    {
+        set_child_umask(m);
+        // SAFETY: umask has no preconditions. The holder's own files stay private.
+        unsafe { libc::umask(0o077) };
+    }
     close_inherited_fds();
     let (rd, wr) = rustix::pipe::pipe()?;
     // SAFETY: called at process start before any threads exist.
@@ -136,6 +162,9 @@ pub fn launch(
     holder::write_spec(&spec_path, spec)?;
     let mut cmd = Command::new(bin);
     cmd.args(hold_args).arg("--spec").arg(&spec_path);
+    if let Some(m) = child_umask() {
+        cmd.env(CHILD_UMASK_ENV, format!("{m:o}"));
+    }
     if let Some(l) = log {
         cmd.arg("--log").arg(l);
     }

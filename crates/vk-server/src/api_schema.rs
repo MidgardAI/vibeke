@@ -46,6 +46,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("blob_api", blob_api::METHODS),
         ("pane_api", pane_api::METHODS),
         ("task_park", task_park::METHODS),
+        ("security", security::METHODS),
     ]
 }
 
@@ -443,11 +444,23 @@ ScreenshotMeta = {id: string, handle?: string, workspace?: string, task?: string
 AgentSummary = {working: int, needs_input: int, done: int, idle: int}
 RpcErrorData = {kind: string, details?: any, retryable: bool}
 RpcError = {code: int, message: string, data: RpcErrorData}
+PolicyMatch = {tool?: string, command_regex?: string, path_glob?: string, url_glob?: string}
+PolicyRuleInfo = {id: string, source: config|user|repo, repo?: string, match: PolicyMatch, effect: allow|deny|ask, scope?: string, note?: string, ignored?: string, created_at_ms?: int, created_by?: string}
+PolicyRepo = {repo: string, file: string, exists: bool, trusted: bool, allow_policy_grants: bool, rules: int, errors: [string]}
+PolicyScope = string | {cwd?: string, repo?: string, pane?: Target, run?: Target}
+ElevationRequest = {request: string, pane: string, reason: string, created_at_ms: int, status: pending|approved|denied}
+AuditEntry = {seq: int, ts: int, type: string, actor: object, subject: any, data: any, prev_hash: string, hash: string}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
 /// the handler. Optional (`?`) fields may be absent; only `|null` types may be null.
-pub const METHOD_SHAPES: &[&str] = &[CORE_SHAPES, MORE_SHAPES, INTERNAL_SHAPES, BATCH_2A_SHAPES];
+pub const METHOD_SHAPES: &[&str] = &[
+    CORE_SHAPES,
+    MORE_SHAPES,
+    INTERNAL_SHAPES,
+    BATCH_2A_SHAPES,
+    SECURITY_SHAPES,
+];
 
 const CORE_SHAPES: &str = r##"
 # --- client.*, api.*, server.*, status, theme ---
@@ -851,6 +864,39 @@ pane.screenshot :: {pane?: Target, format?: text|ansi|html|png|svg = ansi, sourc
 # --- task.park / resume (full scope only) ---
 task.park :: {task: Target} => {task: Task, stopped: [{run: string, handle: string, pane: string, harness: string, name: string|null, pane_closed: bool, resumable: bool}], note?: string}
 task.resume :: {task: Target} => {task: Task, resumed: [AgentRun], skipped: [{run: string, reason: string}]}
+/// Server security (09, `crate::security`): policy, auth, audit, integration integrity.
+const SECURITY_SHAPES: &str = r##"
+# --- policy.* (07 §2.9, 09 §4); full scope only ---
+# merged view: config.toml rules, policy.add rules, then trusted repositories' .vibeke/policy.toml
+# (every trusted repository without a scope; with one, the repository found from it)
+policy.list :: {scope?: PolicyScope} => {rules: [PolicyRuleInfo], repos: [PolicyRepo]}
+# a rule needs at least one matcher; given as `rule` or as top-level fields
+policy.add :: {rule?: {match?: PolicyMatch, tool?: string, command_regex?: string, path_glob?: string, url_glob?: string, effect: allow|deny|ask, scope?: string, note?: string}, tool?: string, command_regex?: string, path_glob?: string, url_glob?: string, effect?: allow|deny|ask, scope?: string, note?: string}
+  => {rule: PolicyRuleInfo}
+# only rules added with policy.add (`p-…`); config and repository rules live in their files
+policy.remove :: {rule_id: string} => {removed: bool, rule: PolicyRuleInfo}
+# dry run: what an approval of this action would get
+policy.test :: {action: {tool: string, command?: string, paths?: [string], url?: string}, scope?: PolicyScope}
+  => {effect: allow|deny|ask, rule: PolicyRuleInfo|null, user_rule: PolicyRuleInfo|null, repo_rule: PolicyRuleInfo|null, repo: string|null, reason: string}
+# trust a repository's .vibeke/ at its current digest (09 §4); allow_policy_grants lets its allow rules apply
+policy.trust :: {path?: string = ".", digest?: string, devcontainer_digest?: string, allow_policy_grants?: bool = false}
+  => {repo: string, digest: string|null, setup_script: string|null, task_file: any, devcontainer: any, harness_manifests: [any], allow_policy_grants: bool, policy_rules: [PolicyRuleInfo], policy_errors?: [string]}
+# --- auth.* (09 §3.2) ---
+# full scope only: the pane's agent keeps running without API access until the pane restarts
+auth.revoke_token :: {pane: Target} => {pane: string, revoked: true, tokens_removed: int, elevations_removed: int}
+# from inside a pane: waits for the user's decision outside the pane (auth.elevate.decide); `request` resumes waiting, `wait: false` returns the pending request
+auth.elevate :: {reason?: string, timeout_ms?: int = 120000, request?: string, wait?: bool = true}
+  => {request: string, token: string, expires_at_ms: int, ttl_s: int, env: string} | ElevationRequest
+# full scope only, never from a pane or an elevated connection
+auth.elevate.decide :: {request: string, decision: approve|deny} => {request: string, pane: string, decision: approved|denied, expires_at_ms: int|null}
+auth.list :: {} => {pending: [ElevationRequest], elevated: [{pane: string, request: string, expires_at_ms: int}], revoked: [{pane: string}]}
+# --- audit.* (09 §11); full scope only ---
+audit.tail :: {limit?: int = 50, types?: [string]|string} => {entries: [AuditEntry], path: string}
+audit.search :: {query?: string, types?: [string]|string, since_ms?: int, limit?: int = 200} => {entries: [AuditEntry], path: string}
+audit.verify :: {} => {ok: bool, exists: bool, entries: int, last_seq: int, last_hash: string, problems: [string], discontinuities: [int], head_seq: int|null, path: string}
+# --- integration.* (09 §5.3); full scope only ---
+integration.doctor :: {harness?: claude|codex|pi|omp|opencode|gemini}
+  => {checks: [{name: string, harness: string, ok: bool, status: ok|changed|removed|unrecorded|not_installed, detail: string, file: string, fingerprint: string|null, recorded: string|null}]}
 "##;
 
 /// `type :: subject => data` for every event type the server emits.
@@ -997,6 +1043,14 @@ client.window_title_changed :: {} => {title: string|null}
 theme.changed :: {} => any
 client.attached :: {client: string} => {kind: string, remote: bool}
 client.detached :: {client: string} => {kind: string, remote: bool}
+audit.recorded :: {} => {seq: int, type: string, hash: string}
+auth.token_revoked :: {pane: string, pane_handle: string, tab: string, workspace: string} => {tokens_removed: int, elevations_removed: int}
+auth.elevate_requested :: {pane: string, request: string} => {reason: string}
+auth.elevate_granted :: {pane: string, request: string} => {expires_at_ms: int|null}
+auth.elevate_denied :: {pane: string, request: string} => {expires_at_ms: int|null}
+policy.rule_added :: {rule: string} => {rule: PolicyRuleInfo}
+policy.rule_removed :: {rule: string} => {rule: PolicyRuleInfo}
+integration.tampered :: {run: string|null} => {harness: string, reason: changed|removed|changed_during_run, file: string}
 "##;
 
 /// JSON-RPC notifications the server pushes on a connection.

@@ -119,6 +119,27 @@ class Api:
     async def attention_update(self, params: "t.AttentionUpdateParams") -> "t.AttentionUpdateResult":
         return await self.call("attention.update", params)  # type: ignore[arg-type, return-value]
 
+    async def audit_search(self, params: "Optional[t.AuditSearchParams]" = None) -> "t.AuditSearchResult":
+        return await self.call("audit.search", params or {})  # type: ignore[arg-type, return-value]
+
+    async def audit_tail(self, params: "Optional[t.AuditTailParams]" = None) -> "t.AuditTailResult":
+        return await self.call("audit.tail", params or {})  # type: ignore[arg-type, return-value]
+
+    async def audit_verify(self, params: "Optional[t.AuditVerifyParams]" = None) -> "t.AuditVerifyResult":
+        return await self.call("audit.verify", params or {})  # type: ignore[arg-type, return-value]
+
+    async def auth_elevate(self, params: "Optional[t.AuthElevateParams]" = None) -> "t.AuthElevateResult":
+        return await self.call("auth.elevate", params or {})  # type: ignore[arg-type, return-value]
+
+    async def auth_elevate_decide(self, params: "t.AuthElevateDecideParams") -> "t.AuthElevateDecideResult":
+        return await self.call("auth.elevate.decide", params)  # type: ignore[arg-type, return-value]
+
+    async def auth_list(self, params: "Optional[t.AuthListParams]" = None) -> "t.AuthListResult":
+        return await self.call("auth.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def auth_revoke_token(self, params: "t.AuthRevokeTokenParams") -> "t.AuthRevokeTokenResult":
+        return await self.call("auth.revoke_token", params)  # type: ignore[arg-type, return-value]
+
     async def blob_abort(self, params: "t.BlobAbortParams") -> "t.BlobAbortResult":
         return await self.call("blob.abort", params)  # type: ignore[arg-type, return-value]
 
@@ -380,6 +401,9 @@ class Api:
     async def image_upload(self, params: "t.ImageUploadParams") -> "t.ImageUploadResult":
         return await self.call("image.upload", params)  # type: ignore[arg-type, return-value]
 
+    async def integration_doctor(self, params: "Optional[t.IntegrationDoctorParams]" = None) -> "t.IntegrationDoctorResult":
+        return await self.call("integration.doctor", params or {})  # type: ignore[arg-type, return-value]
+
     async def interaction_answer(self, params: "t.InteractionAnswerParams") -> "t.InteractionAnswerResult":
         return await self.call("interaction.answer", params)  # type: ignore[arg-type, return-value]
 
@@ -532,6 +556,21 @@ class Api:
 
     async def plugin_surface_close(self, params: "t.PluginSurfaceCloseParams") -> "t.PluginSurfaceCloseResult":
         return await self.call("plugin.surface.close", params)  # type: ignore[arg-type, return-value]
+
+    async def policy_add(self, params: "Optional[t.PolicyAddParams]" = None) -> "t.PolicyAddResult":
+        return await self.call("policy.add", params or {})  # type: ignore[arg-type, return-value]
+
+    async def policy_list(self, params: "Optional[t.PolicyListParams]" = None) -> "t.PolicyListResult":
+        return await self.call("policy.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def policy_remove(self, params: "t.PolicyRemoveParams") -> "t.PolicyRemoveResult":
+        return await self.call("policy.remove", params)  # type: ignore[arg-type, return-value]
+
+    async def policy_test(self, params: "t.PolicyTestParams") -> "t.PolicyTestResult":
+        return await self.call("policy.test", params)  # type: ignore[arg-type, return-value]
+
+    async def policy_trust(self, params: "Optional[t.PolicyTrustParams]" = None) -> "t.PolicyTrustResult":
+        return await self.call("policy.trust", params or {})  # type: ignore[arg-type, return-value]
 
     async def preview_declare(self, params: "t.PreviewDeclareParams") -> "t.PreviewDeclareResult":
         return await self.call("preview.declare", params)  # type: ignore[arg-type, return-value]

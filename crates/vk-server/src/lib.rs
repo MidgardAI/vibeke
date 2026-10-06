@@ -44,11 +44,20 @@ pub mod term_effects;
 pub mod theme;
 pub mod timers;
 pub mod tracking;
+// Server security (09): audit log, auth, policy, integration tamper detection, debug bundle.
+pub mod audit;
+pub mod auth;
+pub mod debug_bundle;
+pub mod integrity;
+pub mod policy_api;
+pub mod security;
 
 #[cfg(test)]
 mod scope_catalog_tests;
 #[cfg(test)]
 mod scrollback_tests;
+#[cfg(test)]
+mod security_tests;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
 use crate::pane::{HolderConn, PaneCmd, PaneRt};
@@ -165,6 +174,8 @@ pub struct Server {
     /// Wakes the housekeeping task: archive rows to flush, or storage degraded.
     pub housekeeping_wake: Notify,
     pub housekeeping_runs: AtomicU64,
+    /// Audit log, token revocation and elevation, integration tamper state (09).
+    pub security: security::State,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -258,6 +269,7 @@ impl Server {
             timers: Arc::default(),
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
+            security: Default::default(),
         }))
     }
 

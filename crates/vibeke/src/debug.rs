@@ -631,3 +631,129 @@ pub async fn bandwidth(g: &vk_cli::Global, args: &[String]) -> i32 {
     let _ = c.call("workspace.close", json!({"workspace": ws_id})).await;
     0
 }
+
+/// `vibeke debug bundle [--out FILE] [--include-scrollback] [--include-pane P]...`: a redacted
+/// diagnostics archive (09 §9.5, `vk_server::debug_bundle`). Works with or without a running
+/// server; never starts one. Prints the manifest (what is in it, what is deliberately not).
+pub async fn bundle(g: &vk_cli::Global, args: &[String]) -> i32 {
+    use serde_json::{Value, json};
+    const USAGE: &str =
+        "vibeke debug bundle [--out FILE] [--include-scrollback] [--include-pane <pane>]...";
+    let mut opts = vk_server::debug_bundle::Options::default();
+    let mut panes: Vec<String> = vec![];
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--out" | "-o" => {
+                let Some(p) = args.get(i + 1) else {
+                    eprintln!("{USAGE}");
+                    return 2;
+                };
+                opts.out = Some(std::path::PathBuf::from(p));
+                i += 1;
+            }
+            "--include-scrollback" => opts.include_scrollback = true,
+            "--include-pane" => {
+                let Some(p) = args.get(i + 1) else {
+                    eprintln!("{USAGE}");
+                    return 2;
+                };
+                panes.push(p.clone());
+                i += 1;
+            }
+            other => {
+                eprintln!("unknown argument {other}\n{USAGE}");
+                return 2;
+            }
+        }
+        i += 1;
+    }
+    let paths = vk_server::paths::Paths::new(&g.session);
+    // `vibeke doctor` of this binary, same session, no network.
+    if let Ok(exe) = std::env::current_exe() {
+        let out = tokio::process::Command::new(exe)
+            .args([
+                "--session",
+                &g.session,
+                "--no-spawn",
+                "doctor",
+                "--no-remote",
+            ])
+            .env("NO_COLOR", "1")
+            .stdin(std::process::Stdio::null())
+            .output();
+        if let Ok(Ok(o)) = tokio::time::timeout(Duration::from_secs(60), out).await {
+            opts.doctor = Some(format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
+    }
+    // The running server, if any: status, a pane summary and requested screens.
+    let socket = vk_cli::client::socket_path(&g.session, g.socket.as_deref());
+    if let Ok(Ok(s)) = tokio::time::timeout(
+        Duration::from_secs(5),
+        vk_cli::client::connect_or_spawn(&g.session, &socket, true),
+    )
+    .await
+    {
+        let mut c = vk_cli::client::Client::new(s);
+        let status = c.call("server.status", json!({})).await.ok();
+        let panes_json = c.call("pane.list", json!({})).await.ok();
+        let summary: Vec<Value> = panes_json
+            .as_ref()
+            .and_then(|v| v["panes"].as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|p| {
+                        json!({"id": p["id"], "handle": p["handle"], "workspace": p["workspace"],
+                               "child_pid": p["child_pid"], "status": p["status"]})
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        opts.server = Some(json!({"status": status, "panes": summary}));
+        for p in &panes {
+            match c
+                .call("pane.read", json!({"pane": p, "source": "visible"}))
+                .await
+            {
+                Ok(v) => opts.panes.push((
+                    p.replace(['/', ':'], "_"),
+                    v["text"].as_str().unwrap_or_default().to_string(),
+                )),
+                Err(e) => eprintln!("pane {p}: {e:?}"),
+            }
+        }
+    } else if !panes.is_empty() {
+        eprintln!("--include-pane needs a running server; no screens included");
+    }
+    match vk_server::debug_bundle::build(&paths, &opts) {
+        Ok(b) => {
+            if g.json == Some(true) {
+                println!(
+                    "{}",
+                    json!({"path": b.path, "files": b.files.iter().map(|(n, s, w)| json!({"name": n, "bytes": s, "what": w})).collect::<Vec<_>>(), "excluded": b.excluded})
+                );
+            } else {
+                println!("wrote {}", b.path.display());
+                for (n, s, w) in &b.files {
+                    println!("  {n:<28} {s:>9} B  {w}");
+                }
+                println!("not included:");
+                for e in &b.excluded {
+                    println!("  - {e}");
+                }
+                println!(
+                    "Everything was passed through redaction, which is best-effort: review before sharing."
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("debug bundle: {e:#}");
+            1
+        }
+    }
+}

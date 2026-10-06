@@ -1167,6 +1167,61 @@ async fn rebuild_index(g: &Global) -> i32 {
     EXIT_OK
 }
 
+const AUDIT: &str = "audit";
+
+/// The session's audit log hash chain (09 §11): intact, cut or edited. `all` lists every
+/// problem; otherwise the first few.
+fn check_audit(r: &mut Report, g: &Global, all: bool) {
+    let log = Paths::new(&g.session).audit_log();
+    let v = vk_server::audit::verify_file(&log);
+    if !v.exists && v.ok() {
+        r.add(
+            AUDIT,
+            Level::Info,
+            format!("no audit log yet ({})", log.display()),
+        );
+        return;
+    }
+    if v.ok() {
+        r.add(
+            AUDIT,
+            Level::Pass,
+            format!(
+                "hash chain intact: {} entries ({})",
+                v.entries,
+                log.display()
+            ),
+        );
+    } else {
+        let shown = if all { v.problems.len() } else { 3 };
+        for p in v.problems.iter().take(shown) {
+            r.add_hint(
+                AUDIT,
+                Level::Fail,
+                p.clone(),
+                "the audit log was edited or truncated outside Vibeke; keep a copy for inspection",
+            );
+        }
+        if v.problems.len() > shown {
+            r.add(
+                AUDIT,
+                Level::Fail,
+                format!(
+                    "{} more problems (vibeke doctor --audit)",
+                    v.problems.len() - shown
+                ),
+            );
+        }
+    }
+    for seq in &v.discontinuities {
+        r.add(
+            AUDIT,
+            Level::Warn,
+            format!("entry {seq}: a server found the log cut short and continued it"),
+        );
+    }
+}
+
 pub async fn run(g: &Global, args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--rebuild-index") {
         if let Some(bad) = args.iter().find(|a| a.as_str() != "--rebuild-index") {
@@ -1175,12 +1230,32 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         }
         return rebuild_index(g).await;
     }
-    if let Some(bad) = args.iter().find(|a| a.as_str() != "--no-remote") {
-        eprintln!("vibeke doctor [--json] [--no-remote] | --rebuild-index  (unexpected `{bad}`)");
+    if let Some(bad) = args
+        .iter()
+        .find(|a| !matches!(a.as_str(), "--no-remote" | "--audit"))
+    {
+        eprintln!(
+            "vibeke doctor [--json] [--no-remote] [--audit] | --rebuild-index  (unexpected `{bad}`)"
+        );
         return EXIT_USAGE;
+    }
+    if args.iter().any(|a| a == "--audit") {
+        // Only the audit log (09 §11), with every problem listed.
+        let mut r = Report::default();
+        check_audit(&mut r, g, true);
+        if g.json == Some(true) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&r.to_json()).unwrap_or_default()
+            );
+        } else {
+            print!("{}", r.render_text());
+        }
+        return if r.failed() { 1 } else { EXIT_OK };
     }
     let no_remote = args.iter().any(|a| a == "--no-remote");
     let mut r = Report::default();
+    check_audit(&mut r, g, false);
     check_install(&mut r);
     check_sockets(&mut r, g).await;
     check_integrations(&mut r).await;
