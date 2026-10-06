@@ -11,6 +11,7 @@ mod debug;
 mod doctor;
 mod idle;
 mod integration;
+mod keychain_cmd;
 mod remote;
 mod setup;
 mod state_backup;
@@ -35,7 +36,7 @@ usage:
   vibeke trust [path] [--yes] [--check]   review and trust a repo's .vibeke/ (repo-local config)
   vibeke plugin list|install|link|trust|enable|disable|action|logs   Herdr-compatible plugins (partial)
   vibeke compat herdr <args>      Herdr CLI shim against Vibeke (partial); compat install-shim|status
-  vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
+  vibeke integration install|status|uninstall|doctor|capabilities|update|pin|unpin <harness|all> [--mcp] [--sources]
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
   vibeke doctor [--rebuild-index|--list-backups|--restore-backup NAME] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index or restore a pre-migration state backup offline
@@ -317,6 +318,9 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("compat") => vk_cli::compat::compat_cmd(&g, &args[1..]).await,
         Some("integration") => commands::integration(&g, &args[1..]).await,
         Some("doctor") => commands::doctor(&g, &args[1..]).await,
+        Some("security") if args.get(1).map(String::as_str) == Some("keychain") => {
+            keychain_cmd::run(&args[2..])
+        }
         Some("forget") => {
             let params = match vk_cli::build_params(&[], &args[1..]) {
                 Ok(p) => p,

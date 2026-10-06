@@ -1883,6 +1883,53 @@
         }
       ]
     },
+    "PrClaim": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "identity": {
+          "type": "object"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "pasted_url",
+            "agent_statement"
+          ]
+        },
+        "claimed_by": {
+          "type": "object"
+        },
+        "claimed_at_ms": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "confirmed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "task",
+        "url",
+        "source",
+        "claimed_by",
+        "claimed_at_ms"
+      ]
+    },
     "PrLookup": {
       "type": "object",
       "properties": {
@@ -1948,6 +1995,57 @@
       },
       "required": [
         "kind"
+      ]
+    },
+    "PrObservation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "requested": {
+          "type": "string"
+        },
+        "lookup": {
+          "type": "object"
+        },
+        "observed_at_ms": {
+          "type": "integer"
+        },
+        "authorization_scope": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "observed_by": {
+          "type": "object"
+        },
+        "criterion_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "assessment": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "task",
+        "lookup",
+        "observed_at_ms",
+        "authorization_scope",
+        "provider",
+        "observed_by",
+        "criterion_ids"
       ]
     },
     "Preview": {
@@ -3220,6 +3318,64 @@
         }
       }
     },
+    "agent.drift": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "harness": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "observations": {
+                  "type": "integer"
+                },
+                "disagreements": {
+                  "type": "integer"
+                },
+                "unknown_resolutions": {
+                  "type": "integer"
+                },
+                "answer_failures": {
+                  "type": "integer"
+                },
+                "rate": {
+                  "type": "number"
+                },
+                "drifting": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "harness",
+                "version",
+                "observations",
+                "disagreements",
+                "unknown_resolutions",
+                "answer_failures",
+                "rate",
+                "drifting"
+              ]
+            }
+          }
+        },
+        "required": [
+          "versions"
+        ]
+      }
+    },
     "agent.get": {
       "mutating": false,
       "scope": "pane",
@@ -3341,6 +3497,88 @@
         ]
       }
     },
+    "agent.limits": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "limits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "harness": {
+                  "type": "string"
+                },
+                "scope": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "limited": {
+                  "type": "boolean"
+                },
+                "used_percent": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "resets_at_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "observed_at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "harness",
+                "scope",
+                "limited",
+                "used_percent",
+                "resets_at_ms",
+                "message",
+                "observed_at_ms"
+              ]
+            }
+          }
+        },
+        "required": [
+          "limits"
+        ]
+      }
+    },
     "agent.list": {
       "mutating": false,
       "scope": "pane",
@@ -3374,6 +3612,52 @@
         },
         "required": [
           "runs"
+        ]
+      }
+    },
+    "agent.manifest_pin": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "unpin": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "pinned_at_ms": {
+            "type": "integer"
+          },
+          "unpinned": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "id"
         ]
       }
     },
@@ -3451,6 +3735,64 @@
         "required": [
           "manifests",
           "warnings"
+        ]
+      }
+    },
+    "agent.manifests_check": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "serial": {
+            "type": "integer"
+          },
+          "applied": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unsigned": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "announced": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "boolean"
+          },
+          "index_serial": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "serial",
+          "applied"
         ]
       }
     },
@@ -3957,6 +4299,177 @@
         },
         "required": [
           "run"
+        ]
+      }
+    },
+    "agent.turn_usage": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "target": {
+            "$ref": "#/$defs/Target"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 200
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "run": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "n": {
+                  "type": "integer"
+                },
+                "native_id": {
+                  "type": "string"
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "input": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "integer"
+                },
+                "cache_read": {
+                  "type": "integer"
+                },
+                "cache_write": {
+                  "type": "integer"
+                },
+                "cost_usd": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "cost_source": {
+                  "type": "string"
+                },
+                "stop": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ended_at_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "run",
+                "harness",
+                "n",
+                "native_id",
+                "model",
+                "input",
+                "output",
+                "cache_read",
+                "cache_write",
+                "cost_usd",
+                "cost_source",
+                "stop",
+                "ended_at_ms",
+                "source"
+              ]
+            }
+          },
+          "turn_count": {
+            "type": "integer"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "integer"
+              },
+              "output": {
+                "type": "integer"
+              },
+              "cache_read": {
+                "type": "integer"
+              },
+              "cache_write": {
+                "type": "integer"
+              },
+              "cost_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "input",
+              "output",
+              "cache_read",
+              "cache_write",
+              "cost_usd"
+            ]
+          },
+          "usage": {}
+        },
+        "required": [
+          "run",
+          "turns",
+          "turn_count",
+          "totals",
+          "usage"
         ]
       }
     },
@@ -15266,6 +15779,144 @@
         ]
       }
     },
+    "policy.suggest": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "min_count": {
+            "type": "integer",
+            "default": 3
+          },
+          "max_denials": {
+            "type": "integer",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50
+          },
+          "harness": {
+            "type": "string"
+          },
+          "include_covered": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "fingerprint": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "workspace": {
+                  "type": "string"
+                },
+                "approvals": {
+                  "type": "integer"
+                },
+                "denials": {
+                  "type": "integer"
+                },
+                "last_at_ms": {
+                  "type": "integer"
+                },
+                "risk": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "unknown"
+                  ]
+                },
+                "rule": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "toml": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "blocked": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "covered": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "fingerprint",
+                "harness",
+                "tool",
+                "subject",
+                "workspace",
+                "approvals",
+                "denials",
+                "last_at_ms",
+                "risk",
+                "rule",
+                "toml",
+                "blocked",
+                "covered"
+              ]
+            }
+          },
+          "min_count": {
+            "type": "integer"
+          },
+          "max_denials": {
+            "type": "integer"
+          },
+          "samples": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "suggestions",
+          "min_count",
+          "max_denials",
+          "samples"
+        ]
+      }
+    },
     "policy.test": {
       "mutating": false,
       "scope": "full",
@@ -17795,6 +18446,9 @@
           "archive_panes_dropped": {
             "type": "integer"
           },
+          "assistant_purged": {
+            "type": "integer"
+          },
           "review": {
             "$ref": "#/$defs/ReviewPurge"
           },
@@ -17896,10 +18550,176 @@
                 "text"
               ]
             }
+          },
+          "redacted": {
+            "type": "boolean"
           }
         },
         "required": [
           "hits"
+        ]
+      }
+    },
+    "security.encryption.migrate": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "plain",
+              "encrypted",
+              "decrypted"
+            ],
+            "default": "sealed"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "plain"
+            ]
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "files": {
+            "type": "integer"
+          },
+          "changed": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "to",
+          "dry_run",
+          "files",
+          "changed",
+          "unchanged",
+          "failed"
+        ]
+      }
+    },
+    "security.encryption.status": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "encrypt_state": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "keychain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readable": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "files": {
+            "type": "object",
+            "properties": {
+              "sealed": {
+                "type": "integer"
+              },
+              "plain": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sealed",
+              "plain"
+            ]
+          },
+          "covers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "not_covered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "redact_scrollback_index": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "encrypt_state",
+          "active",
+          "key_id",
+          "keychain",
+          "readable",
+          "error",
+          "files",
+          "covers",
+          "not_covered",
+          "redact_scrollback_index",
+          "note"
         ]
       }
     },
@@ -18356,6 +19176,231 @@
         "required": [
           "session",
           "stopped"
+        ]
+      }
+    },
+    "state.forget": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "workspace": {
+            "$ref": "#/$defs/Target"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "all": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          },
+          "plan": {
+            "type": "string"
+          },
+          "scrollback_only": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "scope": {},
+          "pane_ids": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan": {},
+          "dry_run": {
+            "type": "boolean"
+          },
+          "panes": {
+            "type": "integer"
+          },
+          "segments_deleted": {
+            "type": "integer"
+          },
+          "bytes_deleted": {
+            "type": "integer"
+          },
+          "fts_rows_deleted": {
+            "type": "integer"
+          },
+          "archive_panes_dropped": {
+            "type": "integer"
+          },
+          "assistant_purged": {
+            "type": "integer"
+          },
+          "scrollback_only": {
+            "type": "boolean"
+          },
+          "review": {
+            "$ref": "#/$defs/ReviewPurge"
+          },
+          "also": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "integer"
+              },
+              "blobs": {
+                "type": "object",
+                "properties": {
+                  "screenshots": {
+                    "type": "integer"
+                  },
+                  "files": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "screenshots",
+                  "files"
+                ]
+              },
+              "uploads": {
+                "type": "object",
+                "properties": {
+                  "removed": {
+                    "type": "integer"
+                  },
+                  "kept_shared": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "removed",
+                  "kept_shared"
+                ]
+              },
+              "drafts": {
+                "type": "object",
+                "properties": {
+                  "drafts": {
+                    "type": "integer"
+                  },
+                  "notes": {
+                    "type": "integer"
+                  },
+                  "failed": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "drafts",
+                  "notes",
+                  "failed"
+                ]
+              },
+              "assistant": {
+                "type": "object",
+                "properties": {
+                  "purged": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "by": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "purged",
+                  "by"
+                ]
+              },
+              "desk": {
+                "type": "object",
+                "properties": {
+                  "calls": {
+                    "type": "integer"
+                  },
+                  "rows": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "errors": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "calls",
+                  "rows"
+                ]
+              },
+              "snapshots": {
+                "type": "integer"
+              },
+              "events_tombstoned": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "items",
+              "blobs",
+              "uploads",
+              "drafts",
+              "assistant",
+              "desk",
+              "snapshots",
+              "events_tombstoned"
+            ]
+          },
+          "not_covered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "scope",
+          "pane_ids",
+          "plan",
+          "dry_run"
         ]
       }
     },
@@ -20195,6 +21240,156 @@
         ]
       }
     },
+    "task.pr.claim": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "url": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "url"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "$ref": "#/$defs/PrClaim"
+          },
+          "label": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "claim",
+          "label",
+          "note"
+        ]
+      }
+    },
+    "task.pr.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PrObservation"
+            }
+          },
+          "claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PrClaim"
+            }
+          },
+          "provider": {
+            "type": "string"
+          },
+          "max_age_secs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task",
+          "observations",
+          "claims",
+          "provider",
+          "max_age_secs"
+        ]
+      }
+    },
+    "task.pr.observe": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "pr": {
+            "type": "string"
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "observation": {
+            "$ref": "#/$defs/PrObservation"
+          },
+          "label": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "observation",
+          "label",
+          "note"
+        ]
+      }
+    },
     "task.reconcile": {
       "mutating": true,
       "scope": "pane",
@@ -21090,6 +22285,92 @@
         "required": [
           "review",
           "note"
+        ]
+      }
+    },
+    "task.review.interval_status": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "watcher": {
+            "type": "string"
+          },
+          "settle_ms": {
+            "type": "integer"
+          },
+          "arm_delay_ms": {
+            "type": "integer"
+          },
+          "harnesses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "checkouts": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "watcher",
+          "settle_ms",
+          "arm_delay_ms",
+          "harnesses",
+          "checkouts",
+          "note"
+        ]
+      }
+    },
+    "task.review.intervals": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "intervals": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "task",
+          "intervals"
         ]
       }
     },
@@ -22483,6 +23764,9 @@
           },
           "other": {
             "type": "string"
+          },
+          "source": {
+            "type": "string"
           }
         },
         "required": [
@@ -22515,10 +23799,52 @@
           },
           "transport": {
             "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "required": [
           "to"
+        ]
+      }
+    },
+    "agent.cwd_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "old_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cwd",
+          "old_cwd"
         ]
       }
     },
@@ -22561,6 +23887,58 @@
         "required": [
           "harness",
           "via"
+        ]
+      }
+    },
+    "agent.drift_detected": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "observations": {
+            "type": "integer"
+          },
+          "disagreements": {
+            "type": "integer"
+          },
+          "unknown_resolutions": {
+            "type": "integer"
+          },
+          "answer_failures": {
+            "type": "integer"
+          },
+          "rate": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "harness",
+          "version",
+          "observations",
+          "disagreements",
+          "unknown_resolutions",
+          "answer_failures",
+          "rate"
         ]
       }
     },
@@ -22933,6 +24311,9 @@
           },
           "confidence": {
             "type": "number"
+          },
+          "inferred": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -23019,6 +24400,60 @@
         ]
       }
     },
+    "agent.tool_blocked": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "effect",
+          "rule",
+          "command"
+        ]
+      }
+    },
     "agent.turn_completed": {
       "subject": {
         "type": "object",
@@ -23060,6 +24495,84 @@
         ]
       },
       "data": {}
+    },
+    "agent.turn_usage": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "integer"
+          },
+          "native_id": {
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "input": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "integer"
+          },
+          "cache_read": {
+            "type": "integer"
+          },
+          "cache_write": {
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_source": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn",
+          "native_id",
+          "model",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "cost_usd",
+          "cost_source",
+          "source"
+        ]
+      }
     },
     "agent.usage": {
       "subject": {
@@ -24153,6 +25666,46 @@
         },
         "required": [
           "name"
+        ]
+      }
+    },
+    "harness.manifest_loaded": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "manifest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "serial": {
+            "type": "integer"
+          },
+          "verified": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "source",
+          "serial",
+          "verified"
         ]
       }
     },
@@ -26731,6 +28284,224 @@
         ]
       }
     },
+    "review.pr_claimed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "pr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "pasted_url",
+              "agent_statement"
+            ]
+          }
+        },
+        "required": [
+          "claim",
+          "url",
+          "pr",
+          "source"
+        ]
+      }
+    },
+    "review.pr_head_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "pr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pr",
+          "from",
+          "to",
+          "observation"
+        ]
+      }
+    },
+    "review.pr_observed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "observation": {
+            "type": "string"
+          },
+          "lookup": {
+            "type": "string",
+            "enum": [
+              "observed",
+              "no_pr",
+              "failed"
+            ]
+          },
+          "pr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "anyOf": [
+              {
+                "const": "open"
+              },
+              {
+                "const": "closed"
+              },
+              {
+                "const": "merged"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "const": "none"
+              },
+              {
+                "const": "pending"
+              },
+              {
+                "const": "passing"
+              },
+              {
+                "const": "failing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "observation",
+          "lookup",
+          "pr",
+          "head",
+          "state",
+          "draft",
+          "checks",
+          "reason"
+        ]
+      }
+    },
     "review.purged": {
       "subject": {
         "type": "object",
@@ -27613,6 +29384,34 @@
         ]
       }
     },
+    "security.encryption_migrated": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "plain"
+            ]
+          },
+          "files": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "to",
+          "files",
+          "failed"
+        ]
+      }
+    },
     "security.rate_limited": {
       "subject": {
         "type": "object",
@@ -27785,6 +29584,28 @@
         "required": [
           "pid",
           "reason"
+        ]
+      }
+    },
+    "state.forgotten": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "scope": {}
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "counts": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "counts"
         ]
       }
     },
@@ -28992,6 +30813,14 @@
         "type": "object"
       },
       "data": {}
+    },
+    "tombstone": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object"
+      }
     },
     "ui.contributions_changed": {
       "subject": {

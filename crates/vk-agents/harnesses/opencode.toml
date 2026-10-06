@@ -85,3 +85,10 @@ allow = ["api.anthropic.com", "api.openai.com", "openrouter.ai", "opencode.ai", 
 [auth]
 env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
 files = ["~/.local/share/opencode/auth.json"]
+
+[identity]
+sources = ["plugin"]
+
+[transcript]
+format = "none"
+usage = true

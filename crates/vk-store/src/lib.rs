@@ -14,8 +14,12 @@ mod plugin_kv;
 pub use plugin_kv::{
     DEFAULT_QUOTA as PLUGIN_KV_QUOTA, KvError, MAX_VALUE as PLUGIN_KV_MAX_VALUE, PluginCommand,
 };
+pub mod crypt;
+pub mod keychain;
 mod purge;
+mod tombstone;
 pub use purge::{PurgeRecovery, PurgeReport, RebuildReport};
+pub use tombstone::{EventScope, TombstoneReport};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};

@@ -25,8 +25,10 @@
 pub mod attention_ext;
 pub mod ext;
 pub mod human;
+pub mod interval;
 pub mod link;
 pub mod patch;
+pub mod pr;
 pub mod purge;
 pub mod receipts;
 pub mod scratch;
@@ -1191,6 +1193,8 @@ fn state_token(c: &Core, task_id: &str) -> Option<u64> {
     accs.sort();
     h.update(format!("acceptances {accs:?}\n").as_bytes());
     h.update(t4::token_part(c, task_id).as_bytes());
+    h.update(pr::token_part(c, task_id).as_bytes());
+    h.update(interval::token_part(c, task_id).as_bytes());
     h.update(human::token_part(c, task_id).as_bytes());
     let snap = live_snap(c);
     let (_, live) = live_from(&snap, task_id, &bs, checkout_of(&task).as_deref());
@@ -1655,13 +1659,20 @@ pub fn build_package(
         .map(|r| Evidence::from_check_run(&r.run))
         .collect();
     // Reviewer (role `review`) runs contribute notes, never evidence (T4).
-    let (observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
+    let (mut observed, claims) = observed_table(server, &t4::evidence_bindings(&bs));
+    // Execution-interval binding (3F): a command is bound to the selected subject only when its
+    // interval was proven stable for exactly that subject.
+    let intervals = interval::apply(server, &mut observed, selected.as_ref());
     for cmd in &observed {
-        let mapped = entries
+        let hit = entries
             .iter()
-            .find(|e| norm(&command_text(&e.def.command)) == norm(&cmd.command))
-            .map(|e| (e.def.id.as_str(), e.def.definition_digest.as_str()));
-        evidence.push(Evidence::from_observed(cmd, mapped));
+            .find(|e| norm(&command_text(&e.def.command)) == norm(&cmd.command));
+        let mapped = hit.map(|e| (e.def.id.as_str(), e.def.definition_digest.as_str()));
+        let mut ev = Evidence::from_observed(cmd, mapped);
+        if let Some(e) = hit {
+            ev.environment_digest = interval::environment_for(&intervals, cmd, &e.def.command);
+        }
+        evidence.push(ev);
     }
     for cl in &claims {
         evidence.push(Evidence::from_observed(cl, None));
@@ -1676,6 +1687,10 @@ pub fn build_package(
         intent.as_ref(),
     );
     evidence.extend(shot_evidence);
+    // PR observations and claims (3F, §6.4): external evidence bound to the exact PR head.
+    let (pr_evidence, pr_section) =
+        pr::review_evidence(server, &task.id, selected.as_ref(), intent.as_ref());
+    evidence.extend(pr_evidence);
     // Recorded human reviews of human criteria (lane 2C).
     evidence.extend(human::evidence(server, &task.id));
     // Evidence whose content `forget` purged counts as unknown (15 §11, lane 2C).
@@ -2034,6 +2049,8 @@ pub fn build_package(
         },
     });
 
+    interval::annotate(&mut json, &intervals);
+    json["pr"] = pr_section;
     // Lane 2C additions (kept out of the macro above: its recursion limit).
     json["human_reviews"] = json!(human::list_json(server, &task.id));
     json["purged"] = purge::package_json(server, &task.id);
@@ -2499,8 +2516,19 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "task.check.run" => check_run(server, ctx, p).await,
         "task.check.cancel" => check_cancel(server, ctx, p),
         "task.check.get" => check_get(server, ctx, p),
-        m => return t4::api(server, ctx, m, p).await,
+        m => return outcome_api(server, ctx, m, p).await,
     })
+}
+
+/// The methods of the later review stages: T4, then PR evidence and execution intervals (3F).
+async fn outcome_api(server: &Arc<Server>, ctx: &Ctx, m: &str, p: &Value) -> Option<R> {
+    if let Some(r) = t4::api(server, ctx, m, p).await {
+        return Some(r);
+    }
+    if let Some(r) = pr::api(server, ctx, m, p).await {
+        return Some(r);
+    }
+    interval::api(server, ctx, m, p)
 }
 
 async fn package(server: &Arc<Server>, task: &str, subject: Option<&str>) -> Result<Pkg, RpcError> {

@@ -26,6 +26,9 @@ class Api:
     async def adapter_signal(self, params: "t.AdapterSignalParams") -> "t.AdapterSignalResult":
         return await self.call("adapter.signal", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_drift(self, params: "Optional[t.AgentDriftParams]" = None) -> "t.AgentDriftResult":
+        return await self.call("agent.drift", params or {})  # type: ignore[arg-type, return-value]
+
     async def agent_get(self, params: "t.AgentGetParams") -> "t.AgentGetResult":
         return await self.call("agent.get", params)  # type: ignore[arg-type, return-value]
 
@@ -35,11 +38,20 @@ class Api:
     async def agent_interrupt(self, params: "t.AgentInterruptParams") -> "t.AgentInterruptResult":
         return await self.call("agent.interrupt", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_limits(self, params: "Optional[t.AgentLimitsParams]" = None) -> "t.AgentLimitsResult":
+        return await self.call("agent.limits", params or {})  # type: ignore[arg-type, return-value]
+
     async def agent_list(self, params: "Optional[t.AgentListParams]" = None) -> "t.AgentListResult":
         return await self.call("agent.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def agent_manifest_pin(self, params: "t.AgentManifestPinParams") -> "t.AgentManifestPinResult":
+        return await self.call("agent.manifest_pin", params)  # type: ignore[arg-type, return-value]
+
     async def agent_manifests(self, params: "Optional[t.AgentManifestsParams]" = None) -> "t.AgentManifestsResult":
         return await self.call("agent.manifests", params or {})  # type: ignore[arg-type, return-value]
+
+    async def agent_manifests_check(self, params: "Optional[t.AgentManifestsCheckParams]" = None) -> "t.AgentManifestsCheckResult":
+        return await self.call("agent.manifests_check", params or {})  # type: ignore[arg-type, return-value]
 
     async def agent_manifests_reload(self, params: "Optional[t.AgentManifestsReloadParams]" = None) -> "t.AgentManifestsReloadResult":
         return await self.call("agent.manifests_reload", params or {})  # type: ignore[arg-type, return-value]
@@ -73,6 +85,9 @@ class Api:
 
     async def agent_start(self, params: "t.AgentStartParams") -> "t.AgentStartResult":
         return await self.call("agent.start", params)  # type: ignore[arg-type, return-value]
+
+    async def agent_turn_usage(self, params: "Optional[t.AgentTurnUsageParams]" = None) -> "t.AgentTurnUsageResult":
+        return await self.call("agent.turn_usage", params or {})  # type: ignore[arg-type, return-value]
 
     async def agent_wait(self, params: "t.AgentWaitParams") -> "t.AgentWaitResult":
         return await self.call("agent.wait", params)  # type: ignore[arg-type, return-value]
@@ -617,6 +632,9 @@ class Api:
     async def policy_remove(self, params: "t.PolicyRemoveParams") -> "t.PolicyRemoveResult":
         return await self.call("policy.remove", params)  # type: ignore[arg-type, return-value]
 
+    async def policy_suggest(self, params: "Optional[t.PolicySuggestParams]" = None) -> "t.PolicySuggestResult":
+        return await self.call("policy.suggest", params or {})  # type: ignore[arg-type, return-value]
+
     async def policy_test(self, params: "t.PolicyTestParams") -> "t.PolicyTestResult":
         return await self.call("policy.test", params)  # type: ignore[arg-type, return-value]
 
@@ -731,6 +749,12 @@ class Api:
     async def search_query(self, params: "t.SearchQueryParams") -> "t.SearchQueryResult":
         return await self.call("search.query", params)  # type: ignore[arg-type, return-value]
 
+    async def security_encryption_migrate(self, params: "Optional[t.SecurityEncryptionMigrateParams]" = None) -> "t.SecurityEncryptionMigrateResult":
+        return await self.call("security.encryption.migrate", params or {})  # type: ignore[arg-type, return-value]
+
+    async def security_encryption_status(self, params: "Optional[t.SecurityEncryptionStatusParams]" = None) -> "t.SecurityEncryptionStatusResult":
+        return await self.call("security.encryption.status", params or {})  # type: ignore[arg-type, return-value]
+
     async def server_reload_config(self, params: "Optional[t.ServerReloadConfigParams]" = None) -> "t.ServerReloadConfigResult":
         return await self.call("server.reload_config", params or {})  # type: ignore[arg-type, return-value]
 
@@ -757,6 +781,9 @@ class Api:
 
     async def session_stop(self, params: "t.SessionStopParams") -> "t.SessionStopResult":
         return await self.call("session.stop", params)  # type: ignore[arg-type, return-value]
+
+    async def state_forget(self, params: "Optional[t.StateForgetParams]" = None) -> "t.StateForgetResult":
+        return await self.call("state.forget", params or {})  # type: ignore[arg-type, return-value]
 
     async def status_segments(self, params: "Optional[t.StatusSegmentsParams]" = None) -> "t.StatusSegmentsResult":
         return await self.call("status.segments", params or {})  # type: ignore[arg-type, return-value]
@@ -848,6 +875,15 @@ class Api:
     async def task_pr(self, params: "t.TaskPrParams") -> "t.TaskPrResult":
         return await self.call("task.pr", params)  # type: ignore[arg-type, return-value]
 
+    async def task_pr_claim(self, params: "t.TaskPrClaimParams") -> "t.TaskPrClaimResult":
+        return await self.call("task.pr.claim", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_list(self, params: "t.TaskPrListParams") -> "t.TaskPrListResult":
+        return await self.call("task.pr.list", params)  # type: ignore[arg-type, return-value]
+
+    async def task_pr_observe(self, params: "t.TaskPrObserveParams") -> "t.TaskPrObserveResult":
+        return await self.call("task.pr.observe", params)  # type: ignore[arg-type, return-value]
+
     async def task_reconcile(self, params: "Optional[t.TaskReconcileParams]" = None) -> "t.TaskReconcileResult":
         return await self.call("task.reconcile", params or {})  # type: ignore[arg-type, return-value]
 
@@ -874,6 +910,12 @@ class Api:
 
     async def task_review_human_review(self, params: "t.TaskReviewHumanReviewParams") -> "t.TaskReviewHumanReviewResult":
         return await self.call("task.review.human_review", params)  # type: ignore[arg-type, return-value]
+
+    async def task_review_interval_status(self, params: "Optional[t.TaskReviewIntervalStatusParams]" = None) -> "t.TaskReviewIntervalStatusResult":
+        return await self.call("task.review.interval_status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_review_intervals(self, params: "t.TaskReviewIntervalsParams") -> "t.TaskReviewIntervalsResult":
+        return await self.call("task.review.intervals", params)  # type: ignore[arg-type, return-value]
 
     async def task_review_note_classify(self, params: "t.TaskReviewNoteClassifyParams") -> "t.TaskReviewNoteClassifyResult":
         return await self.call("task.review.note.classify", params)  # type: ignore[arg-type, return-value]

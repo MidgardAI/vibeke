@@ -30,6 +30,44 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "generic-repl.toml",
         include_str!("../harnesses/generic-repl.toml"),
     ),
+    ("cursor.toml", include_str!("../harnesses/cursor.toml")),
+    ("copilot.toml", include_str!("../harnesses/copilot.toml")),
+    ("devin.toml", include_str!("../harnesses/devin.toml")),
+    ("droid.toml", include_str!("../harnesses/droid.toml")),
+    ("kimi.toml", include_str!("../harnesses/kimi.toml")),
+    ("qoder.toml", include_str!("../harnesses/qoder.toml")),
+    ("mastra.toml", include_str!("../harnesses/mastra.toml")),
+    (
+        "antigravity.toml",
+        include_str!("../harnesses/antigravity.toml"),
+    ),
+    ("grok.toml", include_str!("../harnesses/grok.toml")),
+    ("amp.toml", include_str!("../harnesses/amp.toml")),
+    ("aider.toml", include_str!("../harnesses/aider.toml")),
+    ("letta.toml", include_str!("../harnesses/letta.toml")),
+    ("muse.toml", include_str!("../harnesses/muse.toml")),
+    ("kilo.toml", include_str!("../harnesses/kilo.toml")),
+    ("qwen.toml", include_str!("../harnesses/qwen.toml")),
+];
+
+/// Screen-only built-ins for the other supported CLIs (04 §6.7): best-effort
+/// manifests without a validated range or recordings.
+pub const SCREEN_ONLY: &[&str] = &[
+    "cursor",
+    "copilot",
+    "devin",
+    "droid",
+    "kimi",
+    "qoder",
+    "mastra",
+    "antigravity",
+    "grok",
+    "amp",
+    "aider",
+    "letta",
+    "muse",
+    "kilo",
+    "qwen",
 ];
 
 /// Example user manifests from spec 04 §5.3 (not loaded by default; used by tests and docs).
@@ -83,11 +121,59 @@ pub struct Manifest {
     pub screen: Screen,
     pub yolo: Yolo,
     pub ui: Ui,
+    pub identity: Identity,
+    pub transcript: Transcript,
+    pub answer: Answer,
+    pub adapter: AdapterSpec,
     /// What the harness needs inside a sandbox/container (13 §5, §7). Built-in and user
     /// manifests only: stripped from repo and remote-channel manifests.
     pub sandbox: SandboxNeeds,
     /// Credential projection for a contained run (13 §8). Same sources as `sandbox`.
     pub auth: AuthDecl,
+}
+
+/// `[identity]` (04 §5.1): where a run's session id and transcript come from.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Identity {
+    /// In order of preference: `hook:SessionStart`, `preassigned`, `transcript_scan`,
+    /// `self_report`, `screen`.
+    pub sources: Vec<String>,
+    /// `~/.claude/projects/{cwd_slug}/{session_id}.jsonl`; `{cwd}`, `{cwd_slug}`, `{session_id}`
+    /// and a leading `~` are expanded. A `*` in the file name picks the newest match.
+    pub transcript_glob: String,
+    /// Path to slug transform: `replace:/,-;replace:.,-` (applied in order).
+    pub cwd_slug: String,
+}
+
+/// `[transcript]` (04 §5.1, §10): how the TranscriptTailer reads this harness's history.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Transcript {
+    /// `claude_jsonl` | `codex_rollout` | `pi_jsonl` | `omp_jsonl` | `none` | `external:<cmd>`.
+    pub format: String,
+    /// Extract usage (tokens, cost) from the transcript.
+    pub usage: bool,
+}
+
+/// `[answer]` (04 §5.1): the best-effort keystroke fallback.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Answer {
+    /// `screen:<manifest id>`: the screen manifest that provides dialog geometry.
+    pub keystrokes: String,
+}
+
+/// `[adapter]` (04 §3.4): `kind = "builtin"` (default) or `"external"` (a JSON-RPC process).
+/// Remote manifests may not set it (stripped on load).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct AdapterSpec {
+    pub kind: String,
+    /// argv of the external adapter process (`kind = "external"`).
+    pub command: Vec<String>,
+    /// Protocol version the adapter speaks (`adapter/1`).
+    pub protocol: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -146,6 +232,10 @@ pub struct ProcessRule {
     pub script_regex: String,
     pub argv_regex: String,
     pub exe_path_regex: String,
+    /// Environment markers on the process (`CLAUDECODE = "1"`): every pair must be present.
+    /// Needs the process environment (best effort); a rule with `env` never matches when the
+    /// caller could not read it.
+    pub env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -269,6 +359,13 @@ pub struct Screen {
     pub manifest: String,
     /// Bottom rows evaluated (negative-index region of 04 §9.1).
     pub rows: usize,
+    /// Text normalisers applied to the evaluated region (04 §9.1 `normalize`), in order:
+    /// `strip_sgr_except_fg` (drops stray escape sequences), `collapse_spaces`, `nfc`
+    /// (composes Latin base + combining marks), `lowercase`, `trim_lines`.
+    pub normalize: Vec<String>,
+    /// Open a provisional `question` (confidence 0.5) for a boxed, numbered, pointer-marked list
+    /// that matches no rule (04 §9.2 unknown-dialog heuristic).
+    pub unknown_dialog: bool,
     pub rules: Vec<ScreenRule>,
 }
 
@@ -277,9 +374,25 @@ impl Default for Screen {
         Screen {
             manifest: String::new(),
             rows: 40,
+            normalize: vec![],
+            unknown_dialog: true,
             rules: vec![],
         }
     }
+}
+
+/// `style = { fg = "#d97757", bold = true }` (04 §9.1): a colour/attribute test on the cells a
+/// rule's regexes matched (or on any cell of the region when the rule has no regex).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct StyleSpec {
+    /// `#rrggbb` or a palette index (`208`); empty: don't care.
+    pub fg: String,
+    pub bg: String,
+    pub bold: Option<bool>,
+    pub dim: Option<bool>,
+    pub inverse: Option<bool>,
+    pub underline: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -301,6 +414,21 @@ pub struct ScreenRule {
     /// Command capture (group 1).
     pub command_regex: String,
     pub dialog: Option<DialogSpec>,
+    /// The rule must hold continuously this long before it counts (debounces spinner gaps).
+    /// Needs a [`HoldTracker`]; without one the rule matches at once.
+    pub hold_ms: u64,
+    /// Colour/attribute matcher (needs cell styles in the [`Snapshot`]; without them the rule
+    /// does not match).
+    pub style: Option<StyleSpec>,
+    /// The terminal cursor must sit inside the rule's region (an input box with focus).
+    pub cursor_in_region: bool,
+    /// Last OSC 133 mark: `prompt` (A) | `command` (B) | `output` (C) | `done` (D).
+    pub osc_133: String,
+    /// Regex on the OSC 0/2 window title (the spec's `title_regex` matcher; named apart from
+    /// `title_regex`, which captures a dialog title from screen text).
+    pub window_title_regex: String,
+    /// `any` (default) | `alt_screen_only` | `primary_only`.
+    pub region: String,
 }
 
 impl Default for ScreenRule {
@@ -317,6 +445,12 @@ impl Default for ScreenRule {
             title_regex: String::new(),
             command_regex: String::new(),
             dialog: None,
+            hold_ms: 0,
+            style: None,
+            cursor_in_region: false,
+            osc_133: String::new(),
+            window_title_regex: String::new(),
+            region: String::new(),
         }
     }
 }
@@ -336,6 +470,8 @@ pub struct DialogSpec {
     pub confirm: String,
     /// decision (`allow`, `allow_always`, `deny`) → option number.
     pub map: BTreeMap<String, u8>,
+    /// Key that toggles an option in a multi-select (`space`).
+    pub multi_toggle: String,
 }
 
 impl Default for DialogSpec {
@@ -346,6 +482,7 @@ impl Default for DialogSpec {
             accelerators: "digits".into(),
             confirm: String::new(),
             map: BTreeMap::new(),
+            multi_toggle: String::new(),
         }
     }
 }
@@ -366,6 +503,8 @@ pub struct Yolo {
 pub struct Ui {
     pub interrupt_keys: Vec<String>,
     pub quit_keys: Vec<String>,
+    /// Phase 2 quick-actions source: `transcript` | `screen` | `none`.
+    pub slash_commands_from: String,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -402,6 +541,8 @@ struct CompiledScreenRule {
     title: Option<Regex>,
     command: Option<Regex>,
     options: Option<Regex>,
+    window_title: Option<Regex>,
+    style_cols: (Option<Col>, Option<Col>),
 }
 
 fn re(s: &str, what: &str) -> Result<Option<Regex>> {
@@ -445,8 +586,25 @@ impl Loaded {
         let mut screen = vec![];
         for r in &m.screen.rules {
             let what = format!("{} screen rule {}", m.id, r.id);
-            if r.any.is_empty() && r.all.is_empty() {
-                bail!("{what}: needs `any` or `all`");
+            let has_matcher = !r.any.is_empty()
+                || !r.all.is_empty()
+                || r.style.is_some()
+                || r.cursor_in_region
+                || !r.osc_133.is_empty()
+                || !r.window_title_regex.is_empty();
+            if !has_matcher {
+                bail!(
+                    "{what}: needs `any`, `all`, `style`, `cursor_in_region`, `osc_133` or `window_title_regex`"
+                );
+            }
+            if !r.opens.is_empty() && r.any.is_empty() && r.all.is_empty() {
+                bail!("{what}: a dialog rule needs `any` or `all`");
+            }
+            if !["", "any", "alt_screen_only", "primary_only"].contains(&r.region.as_str()) {
+                bail!("{what}: region must be any, alt_screen_only or primary_only");
+            }
+            if !["", "prompt", "command", "output", "done"].contains(&r.osc_133.as_str()) {
+                bail!("{what}: osc_133 must be prompt, command, output or done");
             }
             if r.state.is_empty() && r.opens.is_empty() {
                 bail!("{what}: needs `state` or `opens`");
@@ -462,7 +620,17 @@ impl Loaded {
                     Some(d) => re(&d.options_regex, &what)?,
                     None => None,
                 },
+                window_title: re(&r.window_title_regex, &what)?,
+                style_cols: match &r.style {
+                    Some(sp) => sp.compile().with_context(|| what.clone())?,
+                    None => (None, None),
+                },
             });
+        }
+        for n in &m.screen.normalize {
+            if !NORMALIZERS.contains(&n.as_str()) {
+                bail!("{} screen.normalize: unknown normalizer {n:?}", m.id);
+            }
         }
         for row in &m.capabilities {
             VersionReq::parse(&row.versions)
@@ -518,7 +686,22 @@ impl Loaded {
 
     /// Does this process match any `[[detect.process]]` rule?
     pub fn matches_process(&self, argv: &[String], exe: Option<&str>) -> bool {
-        self.detect.iter().any(|r| r.matches(argv, exe))
+        self.matches_process_env(argv, exe, None)
+    }
+
+    /// [`Loaded::matches_process`] with the process environment (for `env` markers).
+    pub fn matches_process_env(
+        &self,
+        argv: &[String],
+        exe: Option<&str>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> bool {
+        self.detect.iter().any(|r| r.matches(argv, exe, env))
+    }
+
+    /// Does any detection rule need the process environment?
+    pub fn uses_env(&self) -> bool {
+        self.m.detect.process.iter().any(|r| !r.env.is_empty())
     }
 
     /// Version from `[version] command` output (first capture `v`, group 1, or a version token).
@@ -619,7 +802,74 @@ impl Loaded {
 
     /// Evaluate the screen rules on the visible screen text (04 §9.2).
     pub fn evaluate(&self, screen: &str) -> ScreenResult {
-        evaluate_rules(&self.screen, self.m.screen.rows.max(1), screen)
+        self.evaluate_snapshot(&Snapshot::from_text(screen), 0, None)
+    }
+
+    /// Evaluate with the full terminal context (styles, title, cursor, alt screen, OSC 133) and
+    /// an optional [`HoldTracker`] that gives `hold_ms` rules their debounce.
+    pub fn evaluate_snapshot(
+        &self,
+        snap: &Snapshot,
+        now_ms: i64,
+        hold: Option<&mut HoldTracker>,
+    ) -> ScreenResult {
+        let cfg = EvalCfg {
+            rows: self.m.screen.rows.max(1),
+            normalize: &self.m.screen.normalize,
+            unknown_dialog: self.m.screen.unknown_dialog,
+        };
+        evaluate_rules(&self.screen, &cfg, snap, now_ms, hold)
+    }
+
+    /// Candidate transcript file for a session (04 §5.1 `[identity] transcript_glob`): `~`,
+    /// `{cwd}`, `{cwd_slug}` and `{session_id}` expanded; a `*` in the file name picks the
+    /// newest match. `None` without a glob or when nothing matches a wildcard.
+    pub fn transcript_path(
+        &self,
+        home: &Path,
+        cwd: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Option<PathBuf> {
+        let g = self.m.identity.transcript_glob.trim();
+        if g.is_empty() {
+            return None;
+        }
+        let mut t = g.to_string();
+        if t.contains("{session_id}") {
+            t = t.replace("{session_id}", session_id?);
+        }
+        if t.contains("{cwd_slug}") || t.contains("{cwd}") {
+            let cwd = cwd?;
+            t = t
+                .replace("{cwd_slug}", &cwd_slug(&self.m.identity.cwd_slug, cwd))
+                .replace("{cwd}", cwd);
+        }
+        let path = match t.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(&t),
+        };
+        if !path.to_string_lossy().contains('*') {
+            return Some(path);
+        }
+        glob_newest(&path)
+    }
+
+    /// The screen manifest that provides keystroke geometry (`[answer] keystrokes =
+    /// "screen:<id>"`), else the `[screen] manifest` reference.
+    pub fn answer_screen_id(&self) -> Option<&str> {
+        self.m
+            .answer
+            .keystrokes
+            .strip_prefix("screen:")
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                (!self.m.screen.manifest.is_empty()).then_some(self.m.screen.manifest.as_str())
+            })
+    }
+
+    /// Is this an external adapter (`[adapter] kind = "external"`, 04 §3.4)?
+    pub fn is_external_adapter(&self) -> bool {
+        self.m.adapter.kind == "external"
     }
 
     pub fn dialog_spec(&self, rule_id: &str) -> Option<&DialogSpec> {
@@ -628,6 +878,105 @@ impl Loaded {
             .find(|r| r.rule.id == rule_id)
             .and_then(|r| r.rule.dialog.as_ref())
     }
+}
+
+/// Newest file matching `pattern`, where `*` may appear in any path component (`prefix*suffix`
+/// within one component; directories are searched recursively through wildcard components).
+pub fn glob_newest(pattern: &Path) -> Option<PathBuf> {
+    fn star_match(comp: &str, name: &str) -> bool {
+        match comp.split_once('*') {
+            None => comp == name,
+            Some((pre, post)) => {
+                name.len() >= pre.len() + post.len()
+                    && name.starts_with(pre)
+                    && name.ends_with(post)
+            }
+        }
+    }
+    fn walk(base: PathBuf, comps: &[String], best: &mut Option<(std::time::SystemTime, PathBuf)>) {
+        let Some((first, rest)) = comps.split_first() else {
+            if let Ok(t) = std::fs::metadata(&base).and_then(|m| m.modified())
+                && base.is_file()
+                && best.as_ref().is_none_or(|(bt, _)| t > *bt)
+            {
+                *best = Some((t, base));
+            }
+            return;
+        };
+        if !first.contains('*') {
+            walk(base.join(first), rest, best);
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if star_match(first, &n) {
+                walk(e.path(), rest, best);
+            }
+        }
+    }
+    let mut comps: Vec<String> = vec![];
+    let mut base = PathBuf::new();
+    for c in pattern.components() {
+        let c = c.as_os_str().to_string_lossy().into_owned();
+        if comps.is_empty() && !c.contains('*') {
+            base.push(&c);
+        } else {
+            comps.push(c);
+        }
+    }
+    let mut best = None;
+    walk(base, &comps, &mut best);
+    best.map(|(_, p)| p)
+}
+
+/// Apply a `cwd_slug` transform (`replace:/,-;replace:.,-;trim:-`, applied in order). Empty: Claude's
+/// default (every `/` and `.` becomes `-`).
+pub fn cwd_slug(rule: &str, cwd: &str) -> String {
+    let rule = if rule.trim().is_empty() {
+        "replace:/,-;replace:.,-"
+    } else {
+        rule
+    };
+    let mut s = cwd.to_string();
+    for step in rule.split(';') {
+        let step = step.trim();
+        if let Some(arg) = step.strip_prefix("replace:")
+            && let Some((from, to)) = arg.split_once(',')
+            && !from.is_empty()
+        {
+            s = s.replace(from, to);
+        } else if let Some(chars) = step.strip_prefix("trim:") {
+            s = s.trim_matches(|c| chars.contains(c)).to_string();
+        }
+    }
+    s
+}
+
+/// Write the compiled-in manifests to `dir` (`<data>/harnesses/builtin`) for reference (04 §5).
+/// Files are rewritten only when their content differs; stale `*.toml` files that are no longer
+/// built-in are removed. Returns the number of files written.
+pub fn write_builtin(dir: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dir)?;
+    let mut written = 0;
+    for (name, text) in BUILTIN {
+        let p = dir.join(name);
+        if std::fs::read_to_string(&p).ok().as_deref() != Some(*text) {
+            let tmp = dir.join(format!(".{name}.tmp"));
+            std::fs::write(&tmp, text)?;
+            std::fs::rename(&tmp, &p)?;
+            written += 1;
+        }
+    }
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.ends_with(".toml") && !BUILTIN.iter().any(|(b, _)| *b == n) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    Ok(written)
 }
 
 pub fn expand(template: &[String], vars: &[(&str, &str)]) -> Vec<String> {
@@ -648,8 +997,19 @@ fn basename(s: &str) -> &str {
 }
 
 impl CompiledRule {
-    fn matches(&self, argv: &[String], exe: Option<&str>) -> bool {
+    fn matches(
+        &self,
+        argv: &[String],
+        exe: Option<&str>,
+        env: Option<&BTreeMap<String, String>>,
+    ) -> bool {
         let r = &self.rule;
+        if !r.env.is_empty() {
+            let Some(env) = env else { return false };
+            if !r.env.iter().all(|(k, v)| env.get(k) == Some(v)) {
+                return false;
+            }
+        }
         let a0 = argv.first().map(|s| basename(s)).unwrap_or("");
         let shells = ["sh", "bash", "zsh", "dash"];
         // Shell-script wrappers (`sh /path/opencode …`) count as the script's name.
@@ -847,6 +1207,9 @@ pub struct ScreenResult {
     /// `(state, confidence, rule id)`.
     pub state: Option<(String, f32, String)>,
     pub dialog: Option<DialogMatch>,
+    /// Smallest remaining `hold_ms` among rules that match but have not held long enough yet:
+    /// the caller should evaluate again after this many milliseconds.
+    pub hold_pending_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -862,20 +1225,304 @@ pub struct DialogMatch {
     pub confidence: f32,
 }
 
+/// Rule id of the provisional dialog opened by the unknown-dialog heuristic (04 §9.2).
+pub const UNKNOWN_DIALOG_RULE: &str = "unknown_dialog";
+
+/// A cell colour as the terminal engine stores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Col {
+    #[default]
+    Default,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+/// The style of one cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellStyle {
+    pub fg: Col,
+    pub bg: Col,
+    pub bold: bool,
+    pub dim: bool,
+    pub inverse: bool,
+    pub underline: bool,
+}
+
+/// Everything the screen engine may look at (04 §9.1): the visible rows, optional per-cell
+/// styles (`styles[row][char index]`, same indexing as `lines`), the alternate-screen flag, the
+/// OSC 0/2 title, the cursor and the last OSC 133 mark.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    pub lines: Vec<String>,
+    pub styles: Vec<Vec<CellStyle>>,
+    pub alt_screen: bool,
+    pub title: String,
+    /// `(row, col)` within `lines`.
+    pub cursor: Option<(usize, usize)>,
+    /// `A` prompt, `B` command, `C` output, `D` done.
+    pub osc133: Option<char>,
+}
+
+impl Snapshot {
+    pub fn from_text(screen: &str) -> Snapshot {
+        Snapshot {
+            lines: screen.lines().map(str::to_string).collect(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Remembers since when each `hold_ms` rule has matched continuously. One per pane.
+#[derive(Debug, Clone, Default)]
+pub struct HoldTracker {
+    since: BTreeMap<String, i64>,
+}
+
+impl HoldTracker {
+    pub fn clear(&mut self) {
+        self.since.clear();
+    }
+}
+
+fn parse_col(s: &str) -> Result<Option<Col>> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    if let Some(h) = s.strip_prefix('#') {
+        if h.len() == 6
+            && let Ok(v) = u32::from_str_radix(h, 16)
+        {
+            return Ok(Some(Col::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)));
+        }
+        bail!("bad colour {s:?} (want #rrggbb or a palette index)");
+    }
+    s.parse::<u8>()
+        .map(|i| Some(Col::Indexed(i)))
+        .map_err(|_| anyhow!("bad colour {s:?} (want #rrggbb or a palette index)"))
+}
+
+impl StyleSpec {
+    fn compile(&self) -> Result<(Option<Col>, Option<Col>)> {
+        Ok((parse_col(&self.fg)?, parse_col(&self.bg)?))
+    }
+
+    fn matches(&self, fg: Option<Col>, bg: Option<Col>, c: &CellStyle) -> bool {
+        fg.is_none_or(|f| f == c.fg)
+            && bg.is_none_or(|b| b == c.bg)
+            && self.bold.is_none_or(|b| b == c.bold)
+            && self.dim.is_none_or(|b| b == c.dim)
+            && self.inverse.is_none_or(|b| b == c.inverse)
+            && self.underline.is_none_or(|b| b == c.underline)
+    }
+}
+
+pub const NORMALIZERS: &[&str] = &[
+    "strip_sgr_except_fg",
+    "collapse_spaces",
+    "nfc",
+    "lowercase",
+    "trim_lines",
+];
+
+/// Apply `normalize` ops (04 §9.1) to one line.
+pub fn normalize_line(ops: &[String], line: &str) -> String {
+    let mut s = line.to_string();
+    for op in ops {
+        match op.as_str() {
+            "strip_sgr_except_fg" => s = strip_escapes(&s),
+            "collapse_spaces" => {
+                let mut out = String::with_capacity(s.len());
+                let mut prev_space = false;
+                for c in s.chars() {
+                    let sp = c == ' ' || c == '\t' || c == '\u{a0}';
+                    if sp {
+                        if !prev_space {
+                            out.push(' ');
+                        }
+                    } else {
+                        out.push(c);
+                    }
+                    prev_space = sp;
+                }
+                s = out;
+            }
+            "nfc" => s = nfc_latin(&s),
+            "lowercase" => s = s.to_lowercase(),
+            "trim_lines" => s = s.trim().to_string(),
+            _ => {}
+        }
+    }
+    s
+}
+
+fn strip_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.peek() {
+            Some('[') => {
+                it.next();
+                for n in it.by_ref() {
+                    if ('@'..='~').contains(&n) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                it.next();
+                while let Some(n) = it.next() {
+                    if n == '\u{7}' {
+                        break;
+                    }
+                    if n == '\u{1b}' {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) => {
+                it.next();
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+/// Compose Latin base letters with the common combining marks (grave, acute, circumflex,
+/// tilde, diaeresis, ring, cedilla, caron). Not full NFC: enough that `e` + U+0301 and `é`
+/// match the same regex.
+fn nfc_latin(s: &str) -> String {
+    if !s.chars().any(|c| ('\u{300}'..='\u{36f}').contains(&c)) {
+        return s.to_string();
+    }
+    // (mark, base letters, composed letters), position by position.
+    const TABLE: &[(char, &str, &str)] = &[
+        ('\u{300}', "AEIOUaeiou", "ÀÈÌÒÙàèìòù"),
+        ('\u{301}', "AEIOUYaeiouy", "ÁÉÍÓÚÝáéíóúý"),
+        ('\u{302}', "AEIOUaeiou", "ÂÊÎÔÛâêîôû"),
+        ('\u{303}', "ANOano", "ÃÑÕãñõ"),
+        ('\u{308}', "AEIOUaeiouy", "ÄËÏÖÜäëïöüÿ"),
+        ('\u{30a}', "Aa", "Åå"),
+        ('\u{327}', "Cc", "Çç"),
+        ('\u{30c}', "CcSsZz", "ČčŠšŽž"),
+    ];
+    let mut out: Vec<char> = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        if let Some((_, bases, composed)) = TABLE.iter().find(|(m, _, _)| *m == c)
+            && let Some(prev) = out.last().copied()
+            && let Some(i) = bases.chars().position(|b| b == prev)
+            && let Some(comp) = composed.chars().nth(i)
+        {
+            out.pop();
+            out.push(comp);
+            continue;
+        }
+        out.push(c);
+    }
+    out.into_iter().collect()
+}
+
+struct RegionCtx<'a> {
+    snap: &'a Snapshot,
+    /// Index of the region's first line in `snap.lines`.
+    start: usize,
+    /// Normalised region text.
+    text: String,
+}
+
 impl CompiledScreenRule {
-    fn region<'a>(&self, lines: &'a [&'a str], default_rows: usize) -> &'a [&'a str] {
+    fn region_start(&self, total: usize, default_rows: usize) -> usize {
         let rows = if self.rule.rows == 0 {
             default_rows
         } else {
             self.rule.rows
         };
-        &lines[lines.len().saturating_sub(rows)..]
+        total.saturating_sub(rows)
     }
 
-    fn matches(&self, text: &str) -> bool {
+    fn text_matches(&self, text: &str) -> bool {
         (self.any.is_empty() || self.any.iter().any(|r| r.is_match(text)))
             && self.all.iter().all(|r| r.is_match(text))
             && !self.not.iter().any(|r| r.is_match(text))
+    }
+
+    /// Every matcher of the rule against one region (no hold gating).
+    fn predicate(&self, cx: &RegionCtx) -> bool {
+        let snap = cx.snap;
+        match self.rule.region.as_str() {
+            "alt_screen_only" if !snap.alt_screen => return false,
+            "primary_only" if snap.alt_screen => return false,
+            _ => {}
+        }
+        if !self.rule.osc_133.is_empty() {
+            let want = match self.rule.osc_133.as_str() {
+                "prompt" => 'A',
+                "command" => 'B',
+                "output" => 'C',
+                _ => 'D',
+            };
+            if snap.osc133 != Some(want) {
+                return false;
+            }
+        }
+        if let Some(t) = &self.window_title
+            && !t.is_match(&snap.title)
+        {
+            return false;
+        }
+        if self.rule.cursor_in_region {
+            match snap.cursor {
+                Some((row, _)) if row >= cx.start && row < snap.lines.len() => {}
+                _ => return false,
+            }
+        }
+        if (!self.any.is_empty() || !self.all.is_empty() || !self.not.is_empty())
+            && !self.text_matches(&cx.text)
+        {
+            return false;
+        }
+        if let Some(spec) = &self.rule.style
+            && !self.style_hit(cx, spec)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn style_hit(&self, cx: &RegionCtx, spec: &StyleSpec) -> bool {
+        let snap = cx.snap;
+        if snap.styles.is_empty() {
+            return false;
+        }
+        let (fg, bg) = self.style_cols;
+        let regs: Vec<&Regex> = self.any.iter().chain(self.all.iter()).collect();
+        for (i, line) in snap.lines.iter().enumerate().skip(cx.start) {
+            let Some(cells) = snap.styles.get(i) else {
+                continue;
+            };
+            if regs.is_empty() {
+                if cells.iter().any(|c| spec.matches(fg, bg, c)) {
+                    return true;
+                }
+                continue;
+            }
+            for re in &regs {
+                for m in re.find_iter(line) {
+                    let a = line[..m.start()].chars().count();
+                    let n = m.as_str().chars().count().max(1);
+                    if (a..a + n).any(|ci| cells.get(ci).is_some_and(|c| spec.matches(fg, bg, c))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }
 
@@ -884,52 +1531,138 @@ static DEFAULT_OPTIONS_RE: std::sync::LazyLock<Regex> =
 static ACCEL_RE: std::sync::LazyLock<Regex> =
     std::sync::LazyLock::new(|| Regex::new(r"\((?P<k>[a-z])\)\s*$").expect("accel regex"));
 
-fn evaluate_rules(rules: &[CompiledScreenRule], default_rows: usize, screen: &str) -> ScreenResult {
-    let lines: Vec<&str> = screen.lines().collect();
+/// The last contiguous block of option rows in a region, with the pointed option.
+type OptionBlock = (Vec<(u8, String, Option<char>)>, Option<u8>);
+
+fn option_block(opt_re: &Regex, pointer_glyph: &str, region: &[&str]) -> OptionBlock {
+    let mut block: Vec<(u8, String, Option<char>, bool)> = vec![];
+    let mut gap = 0;
+    for l in region {
+        if let Some(c) = opt_re.captures(l) {
+            let n: u8 = c
+                .name("n")
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+            let label = c
+                .name("label")
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default();
+            let ptr = c.name("ptr").is_some_and(|m| !m.as_str().is_empty())
+                || (!pointer_glyph.is_empty() && l.contains(pointer_glyph));
+            let a = ACCEL_RE
+                .captures(&label)
+                .and_then(|a| a["k"].chars().next());
+            if gap > 1 {
+                block.clear();
+            }
+            gap = 0;
+            block.push((n, label, a, ptr));
+        } else if !block.is_empty() {
+            gap += 1;
+        }
+    }
+    let mut options = vec![];
+    let mut pointer = None;
+    for (n, label, a, ptr) in block {
+        if ptr {
+            pointer = Some(n);
+        }
+        options.push((n, label, a));
+    }
+    (options, pointer)
+}
+
+/// 04 §9.2 unknown-dialog heuristic: a boxed region with numbered options and a pointer glyph
+/// that matches no rule is a provisional `question` (confidence 0.5).
+pub fn unknown_dialog_in(region: &[&str]) -> Option<DialogMatch> {
+    let boxed = region
+        .iter()
+        .any(|l| l.contains(['│', '┃', '╭', '╰', '┌', '└', '┏', '┗']));
+    if !boxed {
+        return None;
+    }
+    let (options, pointer) = option_block(&DEFAULT_OPTIONS_RE, "❯", region);
+    pointer?;
+    if options.len() < 2 {
+        return None;
+    }
+    let first = region.iter().position(|l| DEFAULT_OPTIONS_RE.is_match(l))?;
+    let title = region[..first]
+        .iter()
+        .rev()
+        .map(|l| {
+            l.trim()
+                .trim_matches(|c: char| "│┃╭╮╰╯─ ".contains(c))
+                .trim()
+                .to_string()
+        })
+        .find(|l| !l.is_empty())
+        .unwrap_or_else(|| "Dialog".to_string());
+    Some(DialogMatch {
+        rule_id: UNKNOWN_DIALOG_RULE.into(),
+        kind: "question".into(),
+        title,
+        command: None,
+        options,
+        pointer,
+        confidence: 0.5,
+    })
+}
+
+struct EvalCfg<'a> {
+    rows: usize,
+    normalize: &'a [String],
+    unknown_dialog: bool,
+}
+
+fn evaluate_rules(
+    rules: &[CompiledScreenRule],
+    cfg: &EvalCfg,
+    snap: &Snapshot,
+    now_ms: i64,
+    mut hold: Option<&mut HoldTracker>,
+) -> ScreenResult {
+    let lines: Vec<&str> = snap.lines.iter().map(String::as_str).collect();
     let mut out = ScreenResult::default();
-    // Dialog rules first: an open dialog outranks any state rule.
-    for r in rules.iter().filter(|r| !r.rule.opens.is_empty()) {
-        let region = r.region(&lines, default_rows);
-        let text = region.join("\n");
-        if !r.matches(&text) {
+    // Per rule: matcher result after hold gating.
+    let mut ok = vec![false; rules.len()];
+    for (i, r) in rules.iter().enumerate() {
+        let start = r.region_start(lines.len(), cfg.rows);
+        let text = lines[start..]
+            .iter()
+            .map(|l| normalize_line(cfg.normalize, l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cx = RegionCtx { snap, start, text };
+        let pred = r.predicate(&cx);
+        let Some(tracker) = hold.as_deref_mut().filter(|_| r.rule.hold_ms > 0) else {
+            ok[i] = pred;
+            continue;
+        };
+        if !pred {
+            tracker.since.remove(&r.rule.id);
             continue;
         }
+        let since = *tracker.since.entry(r.rule.id.clone()).or_insert(now_ms);
+        let held = (now_ms - since).max(0) as u64;
+        if held >= r.rule.hold_ms {
+            ok[i] = true;
+        } else {
+            let left = r.rule.hold_ms - held;
+            out.hold_pending_ms = Some(out.hold_pending_ms.map_or(left, |x| x.min(left)));
+        }
+    }
+    // Dialog rules first: an open dialog outranks any state rule.
+    for (i, r) in rules.iter().enumerate() {
+        if r.rule.opens.is_empty() || !ok[i] {
+            continue;
+        }
+        let start = r.region_start(lines.len(), cfg.rows);
+        let region = &lines[start..];
+        let text = region.join("\n");
         let spec = r.rule.dialog.clone().unwrap_or_default();
         let opt_re = r.options.as_ref().unwrap_or(&DEFAULT_OPTIONS_RE);
-        let accel = &*ACCEL_RE;
-        // The last contiguous block of option rows.
-        let mut options: Vec<(u8, String, Option<char>)> = vec![];
-        let mut pointer = None;
-        let mut block: Vec<(u8, String, Option<char>, bool)> = vec![];
-        let mut gap = 0;
-        for l in region {
-            if let Some(c) = opt_re.captures(l) {
-                let n: u8 = c
-                    .name("n")
-                    .and_then(|m| m.as_str().parse().ok())
-                    .unwrap_or(0);
-                let label = c
-                    .name("label")
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default();
-                let ptr = c.name("ptr").is_some_and(|m| !m.as_str().is_empty())
-                    || (!spec.pointer.is_empty() && l.contains(spec.pointer.as_str()));
-                let a = accel.captures(&label).and_then(|a| a["k"].chars().next());
-                if gap > 1 {
-                    block.clear();
-                }
-                gap = 0;
-                block.push((n, label, a, ptr));
-            } else if !block.is_empty() {
-                gap += 1;
-            }
-        }
-        for (n, label, a, ptr) in block {
-            if ptr {
-                pointer = Some(n);
-            }
-            options.push((n, label, a));
-        }
+        let (options, pointer) = option_block(opt_re, &spec.pointer, region);
         if options.len() < 2 {
             continue;
         }
@@ -954,11 +1687,17 @@ fn evaluate_rules(rules: &[CompiledScreenRule], default_rows: usize, screen: &st
         });
         return out;
     }
-    for r in rules.iter().filter(|r| !r.rule.state.is_empty()) {
-        let text = r.region(&lines, default_rows).join("\n");
-        if r.matches(&text) {
+    for (i, r) in rules.iter().enumerate() {
+        if !r.rule.state.is_empty() && r.rule.opens.is_empty() && ok[i] {
             out.state = Some((r.rule.state.clone(), r.rule.confidence, r.rule.id.clone()));
             break;
+        }
+    }
+    if cfg.unknown_dialog && out.state.as_ref().is_none_or(|s| s.0 == "idle") && !lines.is_empty() {
+        let start = lines.len().saturating_sub(cfg.rows.max(1));
+        if let Some(d) = unknown_dialog_in(&lines[start..]) {
+            out.state = None;
+            out.dialog = Some(d);
         }
     }
     out
@@ -1053,6 +1792,8 @@ const REMOTE_FORBIDDEN: &[(&str, Option<&str>)] = &[
     // Credential projection and sandbox/network grants widen what a box gets (13 §8, 09).
     ("auth", None),
     ("sandbox", None),
+    // A transcript glob names files the tailer reads.
+    ("identity", Some("transcript_glob")),
 ];
 
 /// Repo manifests may add harnesses but never grant credentials, sandbox paths or network
@@ -1084,6 +1825,15 @@ pub fn sanitize_remote(t: &mut toml::Table) -> Vec<String> {
                 }
             }
         }
+    }
+    if let Some(toml::Value::Table(tr)) = t.get_mut("transcript")
+        && tr
+            .get("format")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|f| f.starts_with("external:"))
+    {
+        tr.remove("format");
+        w.push("remote manifest: stripped transcript.format external:<cmd>".to_string());
     }
     if let Some(toml::Value::Array(rows)) = t.get_mut("capabilities") {
         let n = rows.len();
@@ -1168,13 +1918,26 @@ impl Set {
         cwd: Option<&Path>,
         skip: &dyn Fn(&str) -> bool,
     ) -> Option<(&'a Loaded, usize)> {
+        self.detect_env(procs, &[], cwd, skip)
+    }
+
+    /// [`Set::detect`] with each process's environment (`envs[i]` belongs to `procs[i]`;
+    /// missing or `None` entries mean "unreadable").
+    pub fn detect_env<'a>(
+        &'a self,
+        procs: &[(Vec<String>, Option<String>)],
+        envs: &[Option<BTreeMap<String, String>>],
+        cwd: Option<&Path>,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> Option<(&'a Loaded, usize)> {
         let mut best: Option<(&Loaded, usize, i32)> = None;
         for m in &self.manifests {
             if skip(&m.m.id) || !m.applies_to(cwd) {
                 continue;
             }
             for (i, (argv, exe)) in procs.iter().enumerate() {
-                if m.matches_process(argv, exe.as_deref()) {
+                if m.matches_process_env(argv, exe.as_deref(), envs.get(i).and_then(Option::as_ref))
+                {
                     let p = m.m.detect.priority;
                     if best.is_none_or(|(_, bi, bp)| p > bp || (p == bp && i < bi)) {
                         best = Some((m, i, p));
@@ -1376,7 +2139,10 @@ mod tests {
             "hermes",
             "acp",
             "generic-repl",
-        ] {
+        ]
+        .iter()
+        .chain(SCREEN_ONLY)
+        {
             assert!(set.get(id).is_some(), "missing builtin {id}");
         }
         // New harnesses have no validated range: everything they document is ✓? (unverified).
@@ -1617,5 +2383,303 @@ mod tests {
                 .map(|s| s.0),
             Some("working".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod dsl_tests {
+    use super::*;
+
+    fn load_one(toml_text: &str) -> Loaded {
+        let raw = parse_raw(toml_text, Source::Builtin).unwrap();
+        let m: Manifest = toml::Value::Table(raw.table).try_into().unwrap();
+        let id = m.id.clone();
+        Loaded::new(m, Source::Builtin, id).unwrap()
+    }
+
+    fn snap(lines: &[&str]) -> Snapshot {
+        Snapshot {
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hold_ms_debounces_a_state_rule() {
+        let l = load_one(
+            "id = \"t\"\n[[screen.rules]]\nid = \"working\"\nstate = \"working\"\nany = ['busy']\nhold_ms = 400\n",
+        );
+        let s = snap(&["busy..."]);
+        let mut h = HoldTracker::default();
+        let r = l.evaluate_snapshot(&s, 1_000, Some(&mut h));
+        assert!(r.state.is_none());
+        assert_eq!(r.hold_pending_ms, Some(400));
+        let r = l.evaluate_snapshot(&s, 1_300, Some(&mut h));
+        assert!(r.state.is_none());
+        assert_eq!(r.hold_pending_ms, Some(100));
+        let r = l.evaluate_snapshot(&s, 1_450, Some(&mut h));
+        assert_eq!(r.state.unwrap().0, "working");
+        // A gap resets the clock.
+        let r = l.evaluate_snapshot(&snap(&["calm"]), 1_500, Some(&mut h));
+        assert!(r.state.is_none() && r.hold_pending_ms.is_none());
+        let r = l.evaluate_snapshot(&s, 1_600, Some(&mut h));
+        assert_eq!(r.hold_pending_ms, Some(400));
+        // Without a tracker the rule matches at once.
+        assert!(l.evaluate("busy").state.is_some());
+    }
+
+    #[test]
+    fn style_matcher_needs_the_styled_cells() {
+        let l = load_one(
+            "id = \"t\"\n[[screen.rules]]\nid = \"chip\"\nstate = \"working\"\nany = ['RUN']\nstyle = { fg = \"#d97757\", bold = true }\n",
+        );
+        let mut s = snap(&["x RUN y"]);
+        // No style information: never matches.
+        assert!(l.evaluate_snapshot(&s, 0, None).state.is_none());
+        let plain = CellStyle::default();
+        let hot = CellStyle {
+            fg: Col::Rgb(0xd9, 0x77, 0x57),
+            bold: true,
+            ..plain
+        };
+        s.styles = vec![vec![plain; 7]];
+        assert!(l.evaluate_snapshot(&s, 0, None).state.is_none());
+        s.styles = vec![vec![plain, plain, hot, hot, hot, plain, plain]];
+        assert_eq!(l.evaluate_snapshot(&s, 0, None).state.unwrap().0, "working");
+        // Right colour but not bold: no.
+        let mut s2 = s.clone();
+        for i in 2..5 {
+            s2.styles[0][i].bold = false;
+        }
+        assert!(l.evaluate_snapshot(&s2, 0, None).state.is_none());
+        let bad = Manifest {
+            id: "bad".into(),
+            screen: Screen {
+                rules: vec![ScreenRule {
+                    id: "r".into(),
+                    state: "idle".into(),
+                    style: Some(StyleSpec {
+                        fg: "nonsense".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(Loaded::new(bad, Source::Builtin, "bad".into()).is_err());
+    }
+
+    #[test]
+    fn cursor_osc133_title_and_alt_screen_matchers() {
+        let l = load_one(
+            "id = \"t\"
+[[screen.rules]]
+id = \"focused_input\"
+state = \"idle\"
+any = ['^> ']
+cursor_in_region = true
+rows = 3
+[[screen.rules]]
+id = \"at_prompt\"
+state = \"idle\"
+osc_133 = \"prompt\"
+[[screen.rules]]
+id = \"titled\"
+state = \"working\"
+window_title_regex = '^⠋ '
+[[screen.rules]]
+id = \"alt\"
+state = \"error\"
+any = ['crashed']
+region = \"alt_screen_only\"
+",
+        );
+        let mut s = snap(&["a", "b", "c", "d", "> typing"]);
+        assert!(l.evaluate_snapshot(&s, 0, None).state.is_none());
+        s.cursor = Some((4, 3));
+        assert_eq!(
+            l.evaluate_snapshot(&s, 0, None).state.unwrap().2,
+            "focused_input"
+        );
+        // Cursor above the 3-row region: no.
+        s.cursor = Some((0, 0));
+        assert!(l.evaluate_snapshot(&s, 0, None).state.is_none());
+        s.osc133 = Some('A');
+        assert_eq!(
+            l.evaluate_snapshot(&s, 0, None).state.unwrap().2,
+            "at_prompt"
+        );
+        s.osc133 = Some('C');
+        assert!(l.evaluate_snapshot(&s, 0, None).state.is_none());
+        s.title = "⠋ build".into();
+        assert_eq!(l.evaluate_snapshot(&s, 0, None).state.unwrap().2, "titled");
+        let mut a = snap(&["crashed"]);
+        assert!(l.evaluate_snapshot(&a, 0, None).state.is_none());
+        a.alt_screen = true;
+        assert_eq!(l.evaluate_snapshot(&a, 0, None).state.unwrap().0, "error");
+    }
+
+    #[test]
+    fn normalizers_compose_marks_and_collapse_spaces() {
+        let ops: Vec<String> = ["strip_sgr_except_fg", "collapse_spaces", "nfc"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            normalize_line(&ops, "\u{1b}[31mDo   you\u{1b}[0m  proceed"),
+            "Do you proceed"
+        );
+        assert_eq!(normalize_line(&ops, "cafe\u{301}"), "café");
+        assert_eq!(normalize_line(&ops, "Zu\u{308}rich"), "Zürich");
+        let l = load_one(
+            "id = \"t\"\n[screen]\nnormalize = [\"collapse_spaces\", \"lowercase\"]\n[[screen.rules]]\nid = \"w\"\nstate = \"working\"\nany = ['^esc to interrupt']\n",
+        );
+        assert!(l.evaluate("ESC   TO    INTERRUPT").state.is_some());
+        let bad: Manifest = toml::from_str("id = \"t\"\n[screen]\nnormalize = [\"nope\"]").unwrap();
+        assert!(Loaded::new(bad, Source::Builtin, "t".into()).is_err());
+    }
+
+    #[test]
+    fn unknown_dialog_heuristic_opens_a_provisional_question() {
+        let l = load_one(
+            "id = \"t\"\n[[screen.rules]]\nid = \"working\"\nstate = \"working\"\nany = ['esc to interrupt']\n",
+        );
+        let screen = "╭──────────────────────╮\n│ Pick a model         │\n│ ❯ 1. Fast            │\n│   2. Smart           │\n╰──────────────────────╯";
+        let d = l.evaluate(screen).dialog.expect("provisional dialog");
+        assert_eq!(d.rule_id, UNKNOWN_DIALOG_RULE);
+        assert_eq!(d.kind, "question");
+        assert_eq!(d.confidence, 0.5);
+        assert_eq!(d.title, "Pick a model");
+        assert_eq!(d.options.len(), 2);
+        assert_eq!(d.pointer, Some(1));
+        // No pointer glyph: an ordinary numbered list stays idle.
+        let list = "╭────────╮\n│ 1. a   │\n│ 2. b   │\n╰────────╯";
+        assert!(l.evaluate(list).dialog.is_none());
+        // Not boxed: no dialog.
+        assert!(l.evaluate("❯ 1. a\n  2. b").dialog.is_none());
+        // Opt out.
+        let off = load_one(
+            "id = \"t\"\n[screen]\nunknown_dialog = false\n[[screen.rules]]\nid = \"w\"\nstate = \"working\"\nany = ['x']\n",
+        );
+        assert!(off.evaluate(screen).dialog.is_none());
+        // A real rule wins.
+        let real = load_one(
+            "id = \"t\"\n[[screen.rules]]\nid = \"pick\"\nopens = \"question\"\nall = ['Pick a model']\nconfidence = 0.9\n",
+        );
+        assert_eq!(real.evaluate(screen).dialog.unwrap().rule_id, "pick");
+    }
+
+    #[test]
+    fn new_manifest_sections_parse_and_resolve_transcripts() {
+        let l = load_one(
+            "id = \"t\"
+[identity]
+sources = [\"hook:SessionStart\", \"preassigned\"]
+transcript_glob = \"~/.t/projects/{cwd_slug}/{session_id}.jsonl\"
+cwd_slug = \"replace:/,-;replace:.,-\"
+[transcript]
+format = \"claude_jsonl\"
+usage = true
+[answer]
+keystrokes = \"screen:claude\"
+[adapter]
+kind = \"external\"
+command = [\"t-adapter\", \"--stdio\"]
+protocol = \"adapter/1\"
+[sandbox]
+write = [\"~/.t\"]
+[sandbox.network]
+allow = [\"api.t.dev\"]
+[auth]
+env = [\"T_TOKEN\"]
+files = [\"~/.t/auth.json\"]
+home_env = \"T_HOME\"
+[ui]
+slash_commands_from = \"transcript\"
+[[detect.process]]
+exe_basename = [\"t\"]
+env = { T_ENV = \"1\" }
+",
+        );
+        assert_eq!(l.m.transcript.format, "claude_jsonl");
+        assert_eq!(l.answer_screen_id(), Some("claude"));
+        assert!(l.is_external_adapter());
+        assert_eq!(l.m.sandbox.write, vec!["~/.t".to_string()]);
+        assert_eq!(l.m.sandbox.network.allow, vec!["api.t.dev".to_string()]);
+        assert_eq!(l.m.auth.env, vec!["T_TOKEN".to_string()]);
+        assert_eq!(l.m.auth.home_env, "T_HOME");
+        assert_eq!(l.m.ui.slash_commands_from, "transcript");
+        assert_eq!(
+            l.transcript_path(Path::new("/h"), Some("/Users/e/my.repo"), Some("abc")),
+            Some(PathBuf::from("/h/.t/projects/-Users-e-my-repo/abc.jsonl"))
+        );
+        assert_eq!(l.transcript_path(Path::new("/h"), None, Some("abc")), None);
+        // env markers: only matches when the environment is supplied and holds the pair.
+        let argv = vec!["t".to_string()];
+        assert!(!l.matches_process(&argv, None));
+        let mut env = BTreeMap::new();
+        assert!(!l.matches_process_env(&argv, None, Some(&env)));
+        env.insert("T_ENV".to_string(), "1".to_string());
+        assert!(l.matches_process_env(&argv, None, Some(&env)));
+        assert!(l.uses_env());
+    }
+
+    #[test]
+    fn transcript_glob_wildcard_picks_the_newest_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("rollout-1-abc.jsonl"), "a").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.path().join("rollout-2-abc.jsonl"), "b").unwrap();
+        std::fs::write(dir.path().join("rollout-3-zzz.jsonl"), "c").unwrap();
+        let l = load_one(&format!(
+            "id = \"t\"\n[identity]\ntranscript_glob = \"{}/rollout-*-{{session_id}}.jsonl\"\n",
+            dir.path().display()
+        ));
+        assert_eq!(
+            l.transcript_path(Path::new("/h"), None, Some("abc")),
+            Some(dir.path().join("rollout-2-abc.jsonl"))
+        );
+        assert_eq!(l.transcript_path(Path::new("/h"), None, Some("nope")), None);
+    }
+
+    #[test]
+    fn remote_manifests_cannot_set_sandbox_auth_or_transcript_globs() {
+        let mut t: toml::Table = "id = \"claude\"
+[sandbox]
+write = [\"/\"]
+[auth]
+files = [\"~/.ssh/id_ed25519\"]
+[identity]
+transcript_glob = \"/etc/passwd\"
+sources = [\"hook:SessionStart\"]
+[transcript]
+format = \"external:evil\"
+"
+        .parse()
+        .unwrap();
+        let w = sanitize_remote(&mut t);
+        assert!(
+            !t.contains_key("sandbox") && !t.contains_key("auth"),
+            "{w:?}"
+        );
+        let id = t["identity"].as_table().unwrap();
+        assert!(id.get("transcript_glob").is_none());
+        assert!(id.get("sources").is_some());
+        assert!(t["transcript"].as_table().unwrap().get("format").is_none());
+    }
+
+    #[test]
+    fn builtins_are_written_for_reference_and_stale_files_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("harnesses/builtin");
+        let n = write_builtin(&out).unwrap();
+        assert_eq!(n, BUILTIN.len());
+        std::fs::write(out.join("old.toml"), "id = \"old\"").unwrap();
+        assert_eq!(write_builtin(&out).unwrap(), 0, "idempotent");
+        assert!(!out.join("old.toml").exists());
+        let claude = std::fs::read_to_string(out.join("claude.toml")).unwrap();
+        assert!(claude.contains("id = \"claude\""));
     }
 }

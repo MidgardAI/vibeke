@@ -2309,7 +2309,7 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         "id": meta.id,
         "handle": meta.handle,
         "blob": hash,
-        "path_on_machine": path,
+        "path_on_machine": crate::privacy::readable_path(server, &path),
         "width": width,
         "height": height,
         "bytes": png.len(),

@@ -69,9 +69,10 @@ pub struct AssistConfig {
     /// Cache completed results under scope-bound keys (14 §8). Off by default: with it off
     /// every request reaches the provider.
     pub result_cache: bool,
-    /// `off` (default: `{ keychain = ... }` credentials are reported unsupported), `os` (the
-    /// platform's credential store through its own CLI) or `fake` (tests; reads the JSON file
-    /// named by `VIBEKE_ASSISTANT_FAKE_KEYCHAIN`).
+    /// Deprecated override of `[security] keychain` for assistant credentials: empty (default:
+    /// inherit `[security] keychain`), `os`, `file:<path>`, `off` (keychain references are
+    /// reported unsupported) or `fake` (tests; the JSON file named by
+    /// `VIBEKE_ASSISTANT_FAKE_KEYCHAIN`).
     pub keychain_backend: String,
     /// Accept source data a client collected from other machines (`remote_sources` on
     /// `assistant.generate`). Off by default.
@@ -103,7 +104,7 @@ impl Default for AssistConfig {
             background_interval_seconds: 300,
             stall_repeat_threshold: 3,
             result_cache: false,
-            keychain_backend: "off".into(),
+            keychain_backend: String::new(),
             remote_sources: false,
             remote_stale_seconds: 300,
             connections: BTreeMap::new(),
@@ -164,7 +165,9 @@ pub struct Credential {
     pub env: Option<String>,
     /// A key file the user created for Vibeke (0600, owned by the user).
     pub file: Option<String>,
-    /// OS keychain item (needs `[assistant] keychain_backend = "os"`; reported unsupported while it is `off`).
+    /// OS keychain item (a keychain service name such as `vibeke/assistant/primary`), read through
+    /// the backend `[security] keychain` selects (09 §9.1); `[assistant] keychain_backend`
+    /// overrides it (deprecated).
     pub keychain: Option<String>,
 }
 
@@ -500,10 +503,10 @@ fn forbidden(path: &Path) -> bool {
     })
 }
 
-/// Resolve the API key for a connection. `Ok(None)` only for adapters without credentials
-/// (local Ollama) and no credential configured.
+/// Resolve the API key for a connection with the OS keychain backend (no override). `Ok(None)` only for
+/// adapters without credentials (local Ollama) and no credential configured.
 pub fn resolve_credential(c: &Connection) -> Result<Option<String>> {
-    resolve_credential_with(c, "off")
+    resolve_credential_with(c, "")
 }
 
 /// Like [`resolve_credential`], with the configured `keychain_backend`.
@@ -776,6 +779,41 @@ mod tests {
     }
 
     #[test]
+    fn keychain_credentials_resolve_through_the_configured_backend() {
+        use vk_store::keychain::Keychain;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("kc.json");
+        let kc = Keychain::File(path.clone());
+        let backend = kc.setting();
+        let c = |r: &str| Connection {
+            adapter: Adapter::Anthropic,
+            endpoint: None,
+            credential: Some(Credential {
+                keychain: Some(r.into()),
+                ..Default::default()
+            }),
+        };
+        // Missing item: an authentication failure that names neither the item nor a value.
+        let e = resolve_credential_with(&c("anthropic-SENTINEL"), &backend).unwrap_err();
+        assert_eq!(e.category, Category::AuthenticationFailed);
+        assert!(!e.message.contains("SENTINEL"));
+        kc.set_item("vibeke/assistant/primary", "sk-ant-test-123")
+            .unwrap();
+        assert_eq!(
+            resolve_credential_with(&c("vibeke/assistant/primary"), &backend)
+                .unwrap()
+                .as_deref(),
+            Some("sk-ant-test-123")
+        );
+        let e = resolve_credential_with(&c("bad name"), &backend).unwrap_err();
+        assert_eq!(e.category, Category::NotConfigured);
+        assert_eq!(
+            credential_source(&c("vibeke/assistant/primary")),
+            "keychain:vibeke/assistant/primary"
+        );
+    }
+
+    #[test]
     fn harness_credential_stores_refused() {
         let c = Connection {
             adapter: Adapter::Anthropic,
@@ -954,7 +992,7 @@ mod tests {
         let d = AssistConfig::default();
         assert!(!d.background_enabled && !d.background_summaries && !d.stall_notices);
         assert!(!d.result_cache && !d.remote_sources);
-        assert_eq!(d.keychain_backend, "off");
+        assert_eq!(d.keychain_backend, "");
         assert_eq!(d.background_interval_seconds, 300);
         assert_eq!(d.stall_repeat_threshold, 3);
         assert!(AssistConfig::from_json(json!({"background_enabled": "yes"})).is_err());

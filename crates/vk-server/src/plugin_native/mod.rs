@@ -112,12 +112,15 @@ pub struct State {
     pub crashes: Mutex<HashMap<String, Vec<Instant>>>,
     pub crash_disabled: Mutex<HashSet<String>>,
     /// Registry cache: (mtime, len) of plugins.json and the parsed registry.
-    pub reg_cache: Mutex<Option<((Option<std::time::SystemTime>, u64), Registry)>>,
+    pub reg_cache: Mutex<Option<(RegKey, Registry)>>,
     /// Last observed registry snapshot (for event diffs).
     pub observed: Mutex<Option<observe::Snapshot>>,
     /// Dev-link fingerprints by plugin.
     pub fingerprints: Mutex<HashMap<String, u64>>,
 }
+
+/// `(mtime, size)` of `plugins.json`.
+type RegKey = (Option<std::time::SystemTime>, u64);
 
 static STATES: LazyLock<Mutex<HashMap<String, Arc<State>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -512,9 +515,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             })
         }
         "plugin.link.open" => {
-            let Some(plugin) = s("plugin") else {
-                return None;
-            };
+            let plugin = s("plugin")?;
             if !is_native(server, plugin) {
                 return None;
             }

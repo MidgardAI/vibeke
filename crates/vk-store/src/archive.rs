@@ -2,12 +2,19 @@
 //! zstd segment files `scrollback/<pane>/<first-line>.zst` (one JSON object per row, frames
 //! appended on each flush), rotated at ~1 MiB uncompressed. Text is also indexed in FTS5 by
 //! the caller.
+//!
+//! With `security.encrypt_state` (09 §9.1) the archive holds a cipher: a segment created while
+//! it is set is sealed ([`crate::crypt`]), one record per flush. A segment keeps the mode it was
+//! created with; readers handle both.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::crypt::{self, StateCipher};
 
 const SEGMENT_BYTES: usize = 1 << 20;
 
@@ -26,11 +33,14 @@ struct PaneSeg {
     path: PathBuf,
     written: usize,
     buf: Vec<u8>,
+    /// Sealed segment: each flush appends one encrypted record.
+    cipher: Option<Arc<StateCipher>>,
 }
 
 pub struct Archive {
     root: PathBuf,
     open: HashMap<String, PaneSeg>,
+    cipher: Option<Arc<StateCipher>>,
 }
 
 impl Archive {
@@ -38,7 +48,33 @@ impl Archive {
         Archive {
             root: root.to_path_buf(),
             open: HashMap::new(),
+            cipher: None,
         }
+    }
+
+    /// Seal segments created from now on (`None`: write plain). Open segments are flushed and
+    /// closed so the next rows start a segment in the new mode.
+    pub fn set_cipher(&mut self, cipher: Option<Arc<StateCipher>>) -> Result<()> {
+        let same = match (&self.cipher, &cipher) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.id() == b.id(),
+            _ => false,
+        };
+        if same {
+            return Ok(());
+        }
+        self.flush()?;
+        self.open.clear();
+        if let Some(c) = &cipher {
+            crypt::register(c.clone());
+        }
+        self.cipher = cipher;
+        Ok(())
+    }
+
+    /// The cipher new segments are sealed with.
+    pub fn cipher(&self) -> Option<&Arc<StateCipher>> {
+        self.cipher.as_ref()
     }
 
     /// The `scrollback/` directory.
@@ -63,10 +99,27 @@ impl Archive {
                 }
                 std::fs::create_dir_all(&dir)?;
                 let path = dir.join(format!("{:016}.zst", rows[0].n));
+                // An existing file (same first line after a restart) keeps its own mode.
+                let cipher = if path.exists() {
+                    if crypt::file_is_sealed(&path) {
+                        match &self.cipher {
+                            Some(c) => Some(c.clone()),
+                            None => anyhow::bail!(
+                                "segment {} is sealed and encryption is off",
+                                path.display()
+                            ),
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    self.cipher.clone()
+                };
                 self.open.entry(pane.to_string()).or_insert(PaneSeg {
                     path,
                     written: 0,
                     buf: Vec::new(),
+                    cipher,
                 })
             }
         };
@@ -279,8 +332,16 @@ pub struct SegRead {
 pub fn read_seg_lossy(p: &Path) -> std::io::Result<SegRead> {
     use std::io::Read;
     let raw = std::fs::read(p)?;
-    let mut text = Vec::new();
     let mut damaged = false;
+    // A sealed segment: decrypt the good records (a missing key is an error, not damage).
+    let raw = if crypt::is_sealed(&raw) {
+        let o = crypt::open_lossy(&raw)?;
+        damaged |= o.damaged;
+        o.data
+    } else {
+        raw
+    };
+    let mut text = Vec::new();
     match zstd::stream::read::Decoder::new(&raw[..]) {
         Ok(mut d) => {
             let mut chunk = [0u8; 16 * 1024];
@@ -323,7 +384,10 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
     if s.buf.is_empty() {
         return Ok(());
     }
-    let frame = zstd::encode_all(&s.buf[..], 3)?;
+    let mut frame = zstd::encode_all(&s.buf[..], 3)?;
+    if let Some(c) = &s.cipher {
+        frame = c.seal(&frame);
+    }
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -339,7 +403,7 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
 }
 
 fn read_seg(p: &Path) -> Result<Vec<ArchivedRow>> {
-    let raw = std::fs::read(p)?;
+    let raw = crypt::read_file(p)?;
     let text = zstd::decode_all(&raw[..])?;
     Ok(text
         .split(|&b| b == b'\n')
@@ -378,5 +442,51 @@ mod tests {
         assert!(!sel.is_empty());
         Archive::remove_segments(&sel).unwrap();
         assert!(a.read("p1", 0, 10).unwrap().is_empty());
+    }
+
+    fn rows(from: u64, n: u64, word: &str) -> Vec<ArchivedRow> {
+        (from..from + n)
+            .map(|i| ArchivedRow {
+                n: i,
+                t: format!("{word} {i}"),
+                w: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sealed_segments_hide_text_and_read_back() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = Archive::new(d.path());
+        // A plain segment first, then encryption turns on: the next rows start a sealed one.
+        a.append("p1", &rows(0, 10, "plainword")).unwrap();
+        a.flush().unwrap();
+        let (c, _) = StateCipher::generate();
+        a.set_cipher(Some(Arc::new(c))).unwrap();
+        a.append("p1", &rows(10, 10, "SECRETWORD")).unwrap();
+        a.flush().unwrap();
+        a.append("p1", &rows(20, 5, "SECRETWORD")).unwrap();
+        a.flush().unwrap();
+        let segs = a.segment_infos("p1");
+        assert_eq!(segs.len(), 2);
+        assert!(!crypt::file_is_sealed(&segs[0].path));
+        assert!(crypt::file_is_sealed(&segs[1].path));
+        let raw = std::fs::read(&segs[1].path).unwrap();
+        assert!(!raw.windows(10).any(|w| w == b"SECRETWORD"));
+        // Both modes read back, in order, through every reader.
+        let all = a.read("p1", 0, u64::MAX).unwrap();
+        assert_eq!(all.len(), 25);
+        assert_eq!(all[15].t, "SECRETWORD 15");
+        let lossy = read_seg_lossy(&segs[1].path).unwrap();
+        assert_eq!(lossy.rows.len(), 15);
+        assert!(!lossy.damaged);
+        assert_eq!(a.last_line("p1").unwrap(), Some(24));
+        // A torn last record: the earlier flush survives a lossy read.
+        let mut torn = raw.clone();
+        torn.truncate(raw.len() - 5);
+        std::fs::write(&segs[1].path, &torn).unwrap();
+        let lossy = read_seg_lossy(&segs[1].path).unwrap();
+        assert!(lossy.damaged);
+        assert_eq!(lossy.rows.len(), 10);
     }
 }

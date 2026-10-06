@@ -1,0 +1,6 @@
+# SYNTHETIC golden fixtures (spec 04 §12.1, §6.7): hand-written from the CLI's public behaviour,
+# NOT live recordings. Every layout here is a guess [verify M2].
+synthetic = true
+harness = "muse"
+recorded_version = ""
+source = "spec 04 §6.7 (unverified)"

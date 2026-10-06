@@ -431,6 +431,19 @@ PolicyScopeXV1 = TypedDict("PolicyScopeXV1", {
 
 PolicyScope: TypeAlias = Union[str, "PolicyScopeXV1"]
 
+PrClaim = TypedDict("PrClaim", {
+    "id": str,
+    "task": str,
+    "url": str,
+    "identity": NotRequired[Dict[str, Any]],
+    "source": Literal["pasted_url", "agent_statement"],
+    "claimed_by": Dict[str, Any],
+    "claimed_at_ms": int,
+    "text": NotRequired[str],
+    "label": NotRequired[str],
+    "confirmed": NotRequired[bool],
+})
+
 PrLookupPr = TypedDict("PrLookupPr", {
     "number": int,
     "state": str,
@@ -445,6 +458,20 @@ PrLookup = TypedDict("PrLookup", {
     "kind": Literal["pr", "no_pr", "unavailable"],
     "pr": NotRequired["PrLookupPr"],
     "reason": NotRequired[str],
+})
+
+PrObservation = TypedDict("PrObservation", {
+    "id": str,
+    "task": str,
+    "requested": NotRequired[str],
+    "lookup": Dict[str, Any],
+    "observed_at_ms": int,
+    "authorization_scope": str,
+    "provider": str,
+    "observed_by": Dict[str, Any],
+    "criterion_ids": List[str],
+    "current": NotRequired[bool],
+    "assessment": NotRequired[Dict[str, Any]],
 })
 
 Preview = TypedDict("Preview", {
@@ -727,6 +754,23 @@ AdapterSignalResult = TypedDict("AdapterSignalResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentDriftParams: TypeAlias = Dict[str, Any]
+
+AgentDriftResultVersionsItem = TypedDict("AgentDriftResultVersionsItem", {
+    "harness": str,
+    "version": str,
+    "observations": int,
+    "disagreements": int,
+    "unknown_resolutions": int,
+    "answer_failures": int,
+    "rate": float,
+    "drifting": bool,
+})
+
+AgentDriftResult = TypedDict("AgentDriftResult", {
+    "versions": List["AgentDriftResultVersionsItem"],
+})
+
 AgentGetParams = TypedDict("AgentGetParams", {
     "target": "Target",
 })
@@ -761,6 +805,22 @@ AgentInterruptResult = TypedDict("AgentInterruptResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentLimitsParams: TypeAlias = Dict[str, Any]
+
+AgentLimitsResultLimitsItem = TypedDict("AgentLimitsResultLimitsItem", {
+    "harness": str,
+    "scope": Optional[str],
+    "limited": bool,
+    "used_percent": Optional[float],
+    "resets_at_ms": Optional[int],
+    "message": Optional[str],
+    "observed_at_ms": int,
+})
+
+AgentLimitsResult = TypedDict("AgentLimitsResult", {
+    "limits": List["AgentLimitsResultLimitsItem"],
+})
+
 AgentListParams = TypedDict("AgentListParams", {
     "workspace": NotRequired["Target"],
     "state": NotRequired[List["AgentState"]],
@@ -769,6 +829,20 @@ AgentListParams = TypedDict("AgentListParams", {
 
 AgentListResult = TypedDict("AgentListResult", {
     "runs": List["AgentRun"],
+})
+
+AgentManifestPinParams = TypedDict("AgentManifestPinParams", {
+    "id": str,
+    "version": NotRequired[str],
+    "unpin": NotRequired[bool],
+})
+
+AgentManifestPinResult = TypedDict("AgentManifestPinResult", {
+    "id": str,
+    "version": NotRequired[str],
+    "pinned_at_ms": NotRequired[int],
+    "unpinned": NotRequired[bool],
+    "cursor": NotRequired["Cursor"],
 })
 
 AgentManifestsParams: TypeAlias = Dict[str, Any]
@@ -790,6 +864,22 @@ AgentManifestsResultManifestsItem = TypedDict("AgentManifestsResultManifestsItem
 AgentManifestsResult = TypedDict("AgentManifestsResult", {
     "manifests": List["AgentManifestsResultManifestsItem"],
     "warnings": List[str],
+})
+
+AgentManifestsCheckParams = TypedDict("AgentManifestsCheckParams", {
+    "url": NotRequired[str],
+})
+
+AgentManifestsCheckResult = TypedDict("AgentManifestsCheckResult", {
+    "serial": int,
+    "applied": List[str],
+    "skipped": NotRequired[List[str]],
+    "unsigned": NotRequired[bool],
+    "warnings": NotRequired[List[str]],
+    "announced": NotRequired[int],
+    "unchanged": NotRequired[bool],
+    "index_serial": NotRequired[int],
+    "cursor": NotRequired["Cursor"],
 })
 
 AgentManifestsReloadParams: TypeAlias = Dict[str, Any]
@@ -930,6 +1020,46 @@ AgentStartParams = TypedDict("AgentStartParams", {
 AgentStartResult = TypedDict("AgentStartResult", {
     "run": "AgentRun",
     "cursor": NotRequired["Cursor"],
+})
+
+AgentTurnUsageParams = TypedDict("AgentTurnUsageParams", {
+    "run": NotRequired["Target"],
+    "target": NotRequired["Target"],
+    "limit": NotRequired[int],
+})
+
+AgentTurnUsageResultTurnsItem = TypedDict("AgentTurnUsageResultTurnsItem", {
+    "id": str,
+    "run": str,
+    "harness": str,
+    "n": int,
+    "native_id": str,
+    "model": Optional[str],
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+    "cost_source": str,
+    "stop": Optional[str],
+    "ended_at_ms": Optional[int],
+    "source": str,
+})
+
+AgentTurnUsageResultTotals = TypedDict("AgentTurnUsageResultTotals", {
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+})
+
+AgentTurnUsageResult = TypedDict("AgentTurnUsageResult", {
+    "run": str,
+    "turns": List["AgentTurnUsageResultTurnsItem"],
+    "turn_count": int,
+    "totals": "AgentTurnUsageResultTotals",
+    "usage": Any,
 })
 
 AgentWaitParams = TypedDict("AgentWaitParams", {
@@ -4077,6 +4207,37 @@ PolicyRemoveResult = TypedDict("PolicyRemoveResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PolicySuggestParams = TypedDict("PolicySuggestParams", {
+    "min_count": NotRequired[int],
+    "max_denials": NotRequired[int],
+    "limit": NotRequired[int],
+    "harness": NotRequired[str],
+    "include_covered": NotRequired[bool],
+})
+
+PolicySuggestResultSuggestionsItem = TypedDict("PolicySuggestResultSuggestionsItem", {
+    "fingerprint": str,
+    "harness": str,
+    "tool": str,
+    "subject": str,
+    "workspace": str,
+    "approvals": int,
+    "denials": int,
+    "last_at_ms": int,
+    "risk": Literal["low", "medium", "high", "unknown"],
+    "rule": Optional[Dict[str, Any]],
+    "toml": Optional[str],
+    "blocked": Optional[str],
+    "covered": bool,
+})
+
+PolicySuggestResult = TypedDict("PolicySuggestResult", {
+    "suggestions": List["PolicySuggestResultSuggestionsItem"],
+    "min_count": int,
+    "max_denials": int,
+    "samples": int,
+})
+
 PolicyTestParamsAction = TypedDict("PolicyTestParamsAction", {
     "tool": str,
     "command": NotRequired[str],
@@ -4763,6 +4924,7 @@ ScrollbackForgetResult = TypedDict("ScrollbackForgetResult", {
     "bytes_deleted": NotRequired[int],
     "fts_rows_deleted": NotRequired[int],
     "archive_panes_dropped": NotRequired[int],
+    "assistant_purged": NotRequired[int],
     "review": NotRequired["ReviewPurge"],
     "cursor": NotRequired["Cursor"],
 })
@@ -4793,6 +4955,43 @@ SearchQueryResultHitsItem = TypedDict("SearchQueryResultHitsItem", {
 
 SearchQueryResult = TypedDict("SearchQueryResult", {
     "hits": List["SearchQueryResultHitsItem"],
+    "redacted": NotRequired[bool],
+})
+
+SecurityEncryptionMigrateParams = TypedDict("SecurityEncryptionMigrateParams", {
+    "to": NotRequired[Literal["sealed", "plain", "encrypted", "decrypted"]],
+    "dry_run": NotRequired[bool],
+})
+
+SecurityEncryptionMigrateResult = TypedDict("SecurityEncryptionMigrateResult", {
+    "to": Literal["sealed", "plain"],
+    "dry_run": bool,
+    "files": int,
+    "changed": int,
+    "unchanged": int,
+    "failed": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+SecurityEncryptionStatusParams: TypeAlias = Dict[str, Any]
+
+SecurityEncryptionStatusResultFiles = TypedDict("SecurityEncryptionStatusResultFiles", {
+    "sealed": int,
+    "plain": int,
+})
+
+SecurityEncryptionStatusResult = TypedDict("SecurityEncryptionStatusResult", {
+    "encrypt_state": bool,
+    "active": bool,
+    "key_id": Optional[str],
+    "keychain": Optional[str],
+    "readable": bool,
+    "error": Optional[str],
+    "files": "SecurityEncryptionStatusResultFiles",
+    "covers": List[str],
+    "not_covered": List[str],
+    "redact_scrollback_index": bool,
+    "note": str,
 })
 
 ServerReloadConfigParams: TypeAlias = Dict[str, Any]
@@ -4906,6 +5105,72 @@ SessionStopParams = TypedDict("SessionStopParams", {
 SessionStopResult = TypedDict("SessionStopResult", {
     "session": Dict[str, Any],
     "stopped": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+StateForgetParams = TypedDict("StateForgetParams", {
+    "pane": NotRequired["Target"],
+    "workspace": NotRequired["Target"],
+    "before": NotRequired[Union[str, int]],
+    "all": NotRequired[bool],
+    "dry_run": NotRequired[bool],
+    "plan": NotRequired[str],
+    "scrollback_only": NotRequired[bool],
+})
+
+StateForgetResultAlsoBlobs = TypedDict("StateForgetResultAlsoBlobs", {
+    "screenshots": int,
+    "files": int,
+})
+
+StateForgetResultAlsoUploads = TypedDict("StateForgetResultAlsoUploads", {
+    "removed": int,
+    "kept_shared": int,
+})
+
+StateForgetResultAlsoDrafts = TypedDict("StateForgetResultAlsoDrafts", {
+    "drafts": int,
+    "notes": int,
+    "failed": int,
+})
+
+StateForgetResultAlsoAssistant = TypedDict("StateForgetResultAlsoAssistant", {
+    "purged": Optional[int],
+    "by": str,
+})
+
+StateForgetResultAlsoDesk = TypedDict("StateForgetResultAlsoDesk", {
+    "calls": int,
+    "rows": Optional[int],
+    "errors": NotRequired[List[str]],
+})
+
+StateForgetResultAlso = TypedDict("StateForgetResultAlso", {
+    "items": int,
+    "blobs": "StateForgetResultAlsoBlobs",
+    "uploads": "StateForgetResultAlsoUploads",
+    "drafts": "StateForgetResultAlsoDrafts",
+    "assistant": "StateForgetResultAlsoAssistant",
+    "desk": "StateForgetResultAlsoDesk",
+    "snapshots": int,
+    "events_tombstoned": int,
+})
+
+StateForgetResult = TypedDict("StateForgetResult", {
+    "scope": Any,
+    "pane_ids": Optional[List[str]],
+    "plan": Any,
+    "dry_run": bool,
+    "panes": NotRequired[int],
+    "segments_deleted": NotRequired[int],
+    "bytes_deleted": NotRequired[int],
+    "fts_rows_deleted": NotRequired[int],
+    "archive_panes_dropped": NotRequired[int],
+    "assistant_purged": NotRequired[int],
+    "scrollback_only": NotRequired[bool],
+    "review": NotRequired["ReviewPurge"],
+    "also": NotRequired["StateForgetResultAlso"],
+    "not_covered": NotRequired[List[str]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -5425,6 +5690,47 @@ TaskPrResult = TypedDict("TaskPrResult", {
     "pr": "PrLookup",
 })
 
+TaskPrClaimParams = TypedDict("TaskPrClaimParams", {
+    "task": "Target",
+    "url": str,
+    "text": NotRequired[str],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskPrClaimResult = TypedDict("TaskPrClaimResult", {
+    "claim": "PrClaim",
+    "label": str,
+    "note": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskPrListParams = TypedDict("TaskPrListParams", {
+    "task": "Target",
+    "subject": NotRequired[str],
+})
+
+TaskPrListResult = TypedDict("TaskPrListResult", {
+    "task": str,
+    "observations": List["PrObservation"],
+    "claims": List["PrClaim"],
+    "provider": str,
+    "max_age_secs": int,
+})
+
+TaskPrObserveParams = TypedDict("TaskPrObserveParams", {
+    "task": "Target",
+    "pr": NotRequired[str],
+    "criteria": NotRequired[List[str]],
+    "idempotency_key": NotRequired[str],
+})
+
+TaskPrObserveResult = TypedDict("TaskPrObserveResult", {
+    "observation": "PrObservation",
+    "label": str,
+    "note": str,
+    "cursor": NotRequired["Cursor"],
+})
+
 TaskReconcileParams = TypedDict("TaskReconcileParams", {
     "repo": NotRequired[str],
 })
@@ -5657,6 +5963,28 @@ TaskReviewHumanReviewResult = TypedDict("TaskReviewHumanReviewResult", {
     "review": Dict[str, Any],
     "note": str,
     "cursor": NotRequired["Cursor"],
+})
+
+TaskReviewIntervalStatusParams: TypeAlias = Dict[str, Any]
+
+TaskReviewIntervalStatusResult = TypedDict("TaskReviewIntervalStatusResult", {
+    "enabled": bool,
+    "watcher": str,
+    "settle_ms": int,
+    "arm_delay_ms": int,
+    "harnesses": List[str],
+    "checkouts": List[Dict[str, Any]],
+    "note": str,
+})
+
+TaskReviewIntervalsParams = TypedDict("TaskReviewIntervalsParams", {
+    "task": "Target",
+    "limit": NotRequired[int],
+})
+
+TaskReviewIntervalsResult = TypedDict("TaskReviewIntervalsResult", {
+    "task": str,
+    "intervals": List[Dict[str, Any]],
 })
 
 TaskReviewNoteClassifyParams = TypedDict("TaskReviewNoteClassifyParams", {
@@ -6040,11 +6368,15 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "adapter.gate": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.report_self": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "adapter.signal": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "agent.drift": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.interrupt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.limits": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.manifest_pin": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.manifests_check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6056,6 +6388,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6237,6 +6570,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "policy.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "policy.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "policy.suggest": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.test": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "policy.trust": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "preview.declare": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -6275,6 +6609,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "screenshot.open": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "scrollback.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "search.query": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "security.encryption.migrate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "security.encryption.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "server.reload_config": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.restart": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6284,6 +6620,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "state.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -6314,6 +6651,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.ports": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.ports.re_lease": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.pr.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.pr.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.pr.observe": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "task.recreate": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -6323,6 +6663,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.review.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.human_review": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.review.interval_status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.review.intervals": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.note.classify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.notes": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.request_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -6361,6 +6703,7 @@ AdapterDisagreementData = TypedDict("AdapterDisagreementData", {
     "facet": str,
     "structured": str,
     "other": str,
+    "source": NotRequired[str],
 })
 
 AdapterHealthChangedSubject = TypedDict("AdapterHealthChangedSubject", {
@@ -6371,6 +6714,17 @@ AdapterHealthChangedData = TypedDict("AdapterHealthChangedData", {
     "to": str,
     "from": NotRequired[str],
     "transport": NotRequired[str],
+    "reason": NotRequired[str],
+})
+
+AgentCwdChangedSubject = TypedDict("AgentCwdChangedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentCwdChangedData = TypedDict("AgentCwdChangedData", {
+    "cwd": str,
+    "old_cwd": Optional[str],
 })
 
 AgentDetectedSubject = TypedDict("AgentDetectedSubject", {
@@ -6382,6 +6736,21 @@ AgentDetectedData = TypedDict("AgentDetectedData", {
     "harness": str,
     "via": str,
     "argv0": NotRequired[Optional[str]],
+})
+
+AgentDriftDetectedSubject = TypedDict("AgentDriftDetectedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentDriftDetectedData = TypedDict("AgentDriftDetectedData", {
+    "harness": str,
+    "version": str,
+    "observations": int,
+    "disagreements": int,
+    "unknown_resolutions": int,
+    "answer_failures": int,
+    "rate": float,
 })
 
 AgentExitedSubject = TypedDict("AgentExitedSubject", {
@@ -6494,6 +6863,7 @@ AgentStateChangedData = TypedDict("AgentStateChangedData", {
     "to": str,
     "source": NotRequired[str],
     "confidence": NotRequired[float],
+    "inferred": NotRequired[bool],
 })
 
 AgentSubagentFinishedSubject = TypedDict("AgentSubagentFinishedSubject", {
@@ -6516,6 +6886,18 @@ AgentSubagentStartedData = TypedDict("AgentSubagentStartedData", {
     "agent_type": str,
 })
 
+AgentToolBlockedSubject = TypedDict("AgentToolBlockedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentToolBlockedData = TypedDict("AgentToolBlockedData", {
+    "tool": str,
+    "effect": str,
+    "rule": Optional[str],
+    "command": Optional[str],
+})
+
 AgentTurnCompletedSubject = TypedDict("AgentTurnCompletedSubject", {
     "run": str,
     "pane": str,
@@ -6532,6 +6914,24 @@ AgentTurnStartedSubject = TypedDict("AgentTurnStartedSubject", {
 })
 
 AgentTurnStartedData: TypeAlias = Any
+
+AgentTurnUsageSubject = TypedDict("AgentTurnUsageSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentTurnUsageData = TypedDict("AgentTurnUsageData", {
+    "turn": int,
+    "native_id": str,
+    "model": Optional[str],
+    "input": int,
+    "output": int,
+    "cache_read": int,
+    "cache_write": int,
+    "cost_usd": Optional[float],
+    "cost_source": str,
+    "source": str,
+})
 
 AgentUsageSubject = TypedDict("AgentUsageSubject", {
     "run": str,
@@ -6891,6 +7291,18 @@ GroupRenamedSubject = TypedDict("GroupRenamedSubject", {
 
 GroupRenamedData = TypedDict("GroupRenamedData", {
     "name": str,
+})
+
+HarnessManifestLoadedSubject = TypedDict("HarnessManifestLoadedSubject", {
+    "manifest": str,
+})
+
+HarnessManifestLoadedData = TypedDict("HarnessManifestLoadedData", {
+    "id": str,
+    "version": str,
+    "source": str,
+    "serial": int,
+    "verified": str,
 })
 
 IntegrationTamperedSubject = TypedDict("IntegrationTamperedSubject", {
@@ -7636,6 +8048,43 @@ ReviewNotesRecordedData = TypedDict("ReviewNotesRecordedData", {
     "open_concerns": Any,
 })
 
+ReviewPrClaimedSubject = TypedDict("ReviewPrClaimedSubject", {
+    "task": str,
+})
+
+ReviewPrClaimedData = TypedDict("ReviewPrClaimedData", {
+    "claim": str,
+    "url": str,
+    "pr": Optional[str],
+    "source": Literal["pasted_url", "agent_statement"],
+})
+
+ReviewPrHeadChangedSubject = TypedDict("ReviewPrHeadChangedSubject", {
+    "task": str,
+})
+
+ReviewPrHeadChangedData = TypedDict("ReviewPrHeadChangedData", {
+    "pr": Optional[str],
+    "from": Optional[str],
+    "to": Optional[str],
+    "observation": str,
+})
+
+ReviewPrObservedSubject = TypedDict("ReviewPrObservedSubject", {
+    "task": str,
+})
+
+ReviewPrObservedData = TypedDict("ReviewPrObservedData", {
+    "observation": str,
+    "lookup": Literal["observed", "no_pr", "failed"],
+    "pr": Optional[str],
+    "head": Optional[str],
+    "state": Optional[Union[Literal["open"], Literal["closed"], Literal["merged"]]],
+    "draft": Optional[bool],
+    "checks": Optional[Union[Literal["none"], Literal["pending"], Literal["passing"], Literal["failing"]]],
+    "reason": Optional[str],
+})
+
 ReviewPurgedSubject = TypedDict("ReviewPurgedSubject", {
     "scope": Any,
 })
@@ -7890,6 +8339,14 @@ ScrollbackForgottenData = TypedDict("ScrollbackForgottenData", {
     "panes_dropped": int,
 })
 
+SecurityEncryptionMigratedSubject: TypeAlias = Dict[str, Any]
+
+SecurityEncryptionMigratedData = TypedDict("SecurityEncryptionMigratedData", {
+    "to": Literal["sealed", "plain"],
+    "files": int,
+    "failed": int,
+})
+
 SecurityRateLimitedSubject = TypedDict("SecurityRateLimitedSubject", {
     "pane": str,
 })
@@ -7938,6 +8395,14 @@ SessionStoppedSubject: TypeAlias = Dict[str, Any]
 SessionStoppedData = TypedDict("SessionStoppedData", {
     "pid": int,
     "reason": str,
+})
+
+StateForgottenSubject = TypedDict("StateForgottenSubject", {
+    "scope": Any,
+})
+
+StateForgottenData = TypedDict("StateForgottenData", {
+    "counts": Dict[str, Any],
 })
 
 TabClosedSubject = TypedDict("TabClosedSubject", {
@@ -8290,6 +8755,10 @@ ThemeChangedSubject: TypeAlias = Dict[str, Any]
 
 ThemeChangedData: TypeAlias = Any
 
+TombstoneSubject: TypeAlias = Dict[str, Any]
+
+TombstoneData: TypeAlias = Dict[str, Any]
+
 UiContributionsChangedSubject = TypedDict("UiContributionsChangedSubject", {
     "plugin": str,
 })
@@ -8370,7 +8839,9 @@ WorktreeRemovedData = TypedDict("WorktreeRemovedData", {
 EVENT_TYPES = (
     "adapter.disagreement",
     "adapter.health_changed",
+    "agent.cwd_changed",
     "agent.detected",
+    "agent.drift_detected",
     "agent.exited",
     "agent.file_changed",
     "agent.harness_version_unvalidated",
@@ -8384,8 +8855,10 @@ EVENT_TYPES = (
     "agent.state_changed",
     "agent.subagent_finished",
     "agent.subagent_started",
+    "agent.tool_blocked",
     "agent.turn_completed",
     "agent.turn_started",
+    "agent.turn_usage",
     "agent.usage",
     "assistant.consent_granted",
     "assistant.consent_revoked",
@@ -8427,6 +8900,7 @@ EVENT_TYPES = (
     "group.created",
     "group.moved",
     "group.renamed",
+    "harness.manifest_loaded",
     "integration.tampered",
     "interaction.cancelled",
     "interaction.decided",
@@ -8500,6 +8974,9 @@ EVENT_TYPES = (
     "review.label_changed",
     "review.note_classified",
     "review.notes_recorded",
+    "review.pr_claimed",
+    "review.pr_head_changed",
+    "review.pr_observed",
     "review.purged",
     "review.reviewer_checkout_removed",
     "review.reviewer_requested",
@@ -8526,12 +9003,14 @@ EVENT_TYPES = (
     "screenshot.captured",
     "screenshot.deleted",
     "scrollback.forgotten",
+    "security.encryption_migrated",
     "security.rate_limited",
     "session.config_rejected",
     "session.config_reloaded",
     "session.server_restarted",
     "session.started",
     "session.stopped",
+    "state.forgotten",
     "tab.closed",
     "tab.created",
     "tab.layout_changed",
@@ -8567,6 +9046,7 @@ EVENT_TYPES = (
     "task.tracked",
     "task.updated",
     "theme.changed",
+    "tombstone",
     "ui.contributions_changed",
     "workspace.closed",
     "workspace.created",

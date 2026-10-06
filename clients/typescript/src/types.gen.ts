@@ -406,6 +406,19 @@ export type PolicyScope = string | {
   run?: Target;
 };
 
+export type PrClaim = {
+  id: string;
+  task: string;
+  url: string;
+  identity?: Record<string, unknown>;
+  source: "pasted_url" | "agent_statement";
+  claimed_by: Record<string, unknown>;
+  claimed_at_ms: number;
+  text?: string;
+  label?: string;
+  confirmed?: boolean;
+};
+
 export type PrLookup = {
   kind: "pr" | "no_pr" | "unavailable";
   pr?: {
@@ -418,6 +431,20 @@ export type PrLookup = {
     label: string;
   };
   reason?: string;
+};
+
+export type PrObservation = {
+  id: string;
+  task: string;
+  requested?: string;
+  lookup: Record<string, unknown>;
+  observed_at_ms: number;
+  authorization_scope: string;
+  provider: string;
+  observed_by: Record<string, unknown>;
+  criterion_ids: string[];
+  current?: boolean;
+  assessment?: Record<string, unknown>;
 };
 
 export type Preview = {
@@ -696,6 +723,21 @@ export type AdapterSignalResult = {
   cursor?: Cursor;
 };
 
+export type AgentDriftParams = Record<string, unknown>;
+
+export type AgentDriftResult = {
+  versions: {
+    harness: string;
+    version: string;
+    observations: number;
+    disagreements: number;
+    unknown_resolutions: number;
+    answer_failures: number;
+    rate: number;
+    drifting: boolean;
+  }[];
+};
+
 export type AgentGetParams = {
   target: Target;
 };
@@ -728,6 +770,20 @@ export type AgentInterruptResult = {
   cursor?: Cursor;
 };
 
+export type AgentLimitsParams = Record<string, unknown>;
+
+export type AgentLimitsResult = {
+  limits: {
+    harness: string;
+    scope: string | null;
+    limited: boolean;
+    used_percent: number | null;
+    resets_at_ms: number | null;
+    message: string | null;
+    observed_at_ms: number;
+  }[];
+};
+
 export type AgentListParams = {
   workspace?: Target;
   state?: AgentState[];
@@ -736,6 +792,20 @@ export type AgentListParams = {
 
 export type AgentListResult = {
   runs: AgentRun[];
+};
+
+export type AgentManifestPinParams = {
+  id: string;
+  version?: string;
+  unpin?: boolean;
+};
+
+export type AgentManifestPinResult = {
+  id: string;
+  version?: string;
+  pinned_at_ms?: number;
+  unpinned?: boolean;
+  cursor?: Cursor;
 };
 
 export type AgentManifestsParams = Record<string, unknown>;
@@ -755,6 +825,22 @@ export type AgentManifestsResult = {
     warnings: string[];
   }[];
   warnings: string[];
+};
+
+export type AgentManifestsCheckParams = {
+  url?: string;
+};
+
+export type AgentManifestsCheckResult = {
+  serial: number;
+  applied: string[];
+  skipped?: string[];
+  unsigned?: boolean;
+  warnings?: string[];
+  announced?: number;
+  unchanged?: boolean;
+  index_serial?: number;
+  cursor?: Cursor;
 };
 
 export type AgentManifestsReloadParams = Record<string, unknown>;
@@ -893,6 +979,42 @@ export type AgentStartParams = {
 export type AgentStartResult = {
   run: AgentRun;
   cursor?: Cursor;
+};
+
+export type AgentTurnUsageParams = {
+  run?: Target;
+  target?: Target;
+  limit?: number;
+};
+
+export type AgentTurnUsageResult = {
+  run: string;
+  turns: {
+    id: string;
+    run: string;
+    harness: string;
+    n: number;
+    native_id: string;
+    model: string | null;
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    cost_usd: number | null;
+    cost_source: string;
+    stop: string | null;
+    ended_at_ms: number | null;
+    source: string;
+  }[];
+  turn_count: number;
+  totals: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    cost_usd: number | null;
+  };
+  usage: unknown;
 };
 
 export type AgentWaitParams = {
@@ -3802,6 +3924,35 @@ export type PolicyRemoveResult = {
   cursor?: Cursor;
 };
 
+export type PolicySuggestParams = {
+  min_count?: number;
+  max_denials?: number;
+  limit?: number;
+  harness?: string;
+  include_covered?: boolean;
+};
+
+export type PolicySuggestResult = {
+  suggestions: {
+    fingerprint: string;
+    harness: string;
+    tool: string;
+    subject: string;
+    workspace: string;
+    approvals: number;
+    denials: number;
+    last_at_ms: number;
+    risk: "low" | "medium" | "high" | "unknown";
+    rule: Record<string, unknown> | null;
+    toml: string | null;
+    blocked: string | null;
+    covered: boolean;
+  }[];
+  min_count: number;
+  max_denials: number;
+  samples: number;
+};
+
 export type PolicyTestParams = {
   action: {
     tool: string;
@@ -4428,6 +4579,7 @@ export type ScrollbackForgetResult = {
   bytes_deleted?: number;
   fts_rows_deleted?: number;
   archive_panes_dropped?: number;
+  assistant_purged?: number;
   review?: ReviewPurge;
   cursor?: Cursor;
 };
@@ -4454,6 +4606,41 @@ export type SearchQueryResult = {
     ts?: number;
     context?: unknown;
   }[];
+  redacted?: boolean;
+};
+
+export type SecurityEncryptionMigrateParams = {
+  to?: "sealed" | "plain" | "encrypted" | "decrypted";
+  dry_run?: boolean;
+};
+
+export type SecurityEncryptionMigrateResult = {
+  to: "sealed" | "plain";
+  dry_run: boolean;
+  files: number;
+  changed: number;
+  unchanged: number;
+  failed: string[];
+  cursor?: Cursor;
+};
+
+export type SecurityEncryptionStatusParams = Record<string, unknown>;
+
+export type SecurityEncryptionStatusResult = {
+  encrypt_state: boolean;
+  active: boolean;
+  key_id: string | null;
+  keychain: string | null;
+  readable: boolean;
+  error: string | null;
+  files: {
+    sealed: number;
+    plain: number;
+  };
+  covers: string[];
+  not_covered: string[];
+  redact_scrollback_index: boolean;
+  note: string;
 };
 
 export type ServerReloadConfigParams = Record<string, unknown>;
@@ -4563,6 +4750,60 @@ export type SessionStopParams = {
 export type SessionStopResult = {
   session: Record<string, unknown>;
   stopped: boolean;
+  cursor?: Cursor;
+};
+
+export type StateForgetParams = {
+  pane?: Target;
+  workspace?: Target;
+  before?: string | number;
+  all?: boolean;
+  dry_run?: boolean;
+  plan?: string;
+  scrollback_only?: boolean;
+};
+
+export type StateForgetResult = {
+  scope: unknown;
+  pane_ids: string[] | null;
+  plan: unknown;
+  dry_run: boolean;
+  panes?: number;
+  segments_deleted?: number;
+  bytes_deleted?: number;
+  fts_rows_deleted?: number;
+  archive_panes_dropped?: number;
+  assistant_purged?: number;
+  scrollback_only?: boolean;
+  review?: ReviewPurge;
+  also?: {
+    items: number;
+    blobs: {
+      screenshots: number;
+      files: number;
+    };
+    uploads: {
+      removed: number;
+      kept_shared: number;
+    };
+    drafts: {
+      drafts: number;
+      notes: number;
+      failed: number;
+    };
+    assistant: {
+      purged: number | null;
+      by: string;
+    };
+    desk: {
+      calls: number;
+      rows: number | null;
+      errors?: string[];
+    };
+    snapshots: number;
+    events_tombstoned: number;
+  };
+  not_covered?: string[];
   cursor?: Cursor;
 };
 
@@ -5032,6 +5273,47 @@ export type TaskPrResult = {
   pr: PrLookup;
 };
 
+export type TaskPrClaimParams = {
+  task: Target;
+  url: string;
+  text?: string;
+  idempotency_key?: string;
+};
+
+export type TaskPrClaimResult = {
+  claim: PrClaim;
+  label: string;
+  note: string;
+  cursor?: Cursor;
+};
+
+export type TaskPrListParams = {
+  task: Target;
+  subject?: string;
+};
+
+export type TaskPrListResult = {
+  task: string;
+  observations: PrObservation[];
+  claims: PrClaim[];
+  provider: string;
+  max_age_secs: number;
+};
+
+export type TaskPrObserveParams = {
+  task: Target;
+  pr?: string;
+  criteria?: string[];
+  idempotency_key?: string;
+};
+
+export type TaskPrObserveResult = {
+  observation: PrObservation;
+  label: string;
+  note: string;
+  cursor?: Cursor;
+};
+
 export type TaskReconcileParams = {
   repo?: string;
 };
@@ -5242,6 +5524,28 @@ export type TaskReviewHumanReviewResult = {
   review: Record<string, unknown>;
   note: string;
   cursor?: Cursor;
+};
+
+export type TaskReviewIntervalStatusParams = Record<string, unknown>;
+
+export type TaskReviewIntervalStatusResult = {
+  enabled: boolean;
+  watcher: string;
+  settle_ms: number;
+  arm_delay_ms: number;
+  harnesses: string[];
+  checkouts: Record<string, unknown>[];
+  note: string;
+};
+
+export type TaskReviewIntervalsParams = {
+  task: Target;
+  limit?: number;
+};
+
+export type TaskReviewIntervalsResult = {
+  task: string;
+  intervals: Record<string, unknown>[];
 };
 
 export type TaskReviewNoteClassifyParams = {
@@ -5605,11 +5909,15 @@ export interface Methods {
   "adapter.gate": { params: AdapterGateParams; result: AdapterGateResult };
   "adapter.report_self": { params: AdapterReportSelfParams; result: AdapterReportSelfResult };
   "adapter.signal": { params: AdapterSignalParams; result: AdapterSignalResult };
+  "agent.drift": { params: AgentDriftParams; result: AgentDriftResult };
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   "agent.harnesses": { params: AgentHarnessesParams; result: AgentHarnessesResult };
   "agent.interrupt": { params: AgentInterruptParams; result: AgentInterruptResult };
+  "agent.limits": { params: AgentLimitsParams; result: AgentLimitsResult };
   "agent.list": { params: AgentListParams; result: AgentListResult };
+  "agent.manifest_pin": { params: AgentManifestPinParams; result: AgentManifestPinResult };
   "agent.manifests": { params: AgentManifestsParams; result: AgentManifestsResult };
+  "agent.manifests_check": { params: AgentManifestsCheckParams; result: AgentManifestsCheckResult };
   "agent.manifests_reload": { params: AgentManifestsReloadParams; result: AgentManifestsReloadResult };
   "agent.prompt": { params: AgentPromptParams; result: AgentPromptResult };
   "agent.read": { params: AgentReadParams; result: AgentReadResult };
@@ -5621,6 +5929,7 @@ export interface Methods {
   "agent.send_keys": { params: AgentSendKeysParams; result: AgentSendKeysResult };
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
+  "agent.turn_usage": { params: AgentTurnUsageParams; result: AgentTurnUsageResult };
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
   "api.methods": { params: ApiMethodsParams; result: ApiMethodsResult };
   "api.schema": { params: ApiSchemaParams; result: ApiSchemaResult };
@@ -5802,6 +6111,7 @@ export interface Methods {
   "policy.add": { params: PolicyAddParams; result: PolicyAddResult };
   "policy.list": { params: PolicyListParams; result: PolicyListResult };
   "policy.remove": { params: PolicyRemoveParams; result: PolicyRemoveResult };
+  "policy.suggest": { params: PolicySuggestParams; result: PolicySuggestResult };
   "policy.test": { params: PolicyTestParams; result: PolicyTestResult };
   "policy.trust": { params: PolicyTrustParams; result: PolicyTrustResult };
   "preview.declare": { params: PreviewDeclareParams; result: PreviewDeclareResult };
@@ -5840,6 +6150,8 @@ export interface Methods {
   "screenshot.open": { params: ScreenshotOpenParams; result: ScreenshotOpenResult };
   "scrollback.forget": { params: ScrollbackForgetParams; result: ScrollbackForgetResult };
   "search.query": { params: SearchQueryParams; result: SearchQueryResult };
+  "security.encryption.migrate": { params: SecurityEncryptionMigrateParams; result: SecurityEncryptionMigrateResult };
+  "security.encryption.status": { params: SecurityEncryptionStatusParams; result: SecurityEncryptionStatusResult };
   "server.reload_config": { params: ServerReloadConfigParams; result: ServerReloadConfigResult };
   "server.restart": { params: ServerRestartParams; result: ServerRestartResult };
   "server.status": { params: ServerStatusParams; result: ServerStatusResult };
@@ -5849,6 +6161,7 @@ export interface Methods {
   "session.rename": { params: SessionRenameParams; result: SessionRenameResult };
   "session.snapshot": { params: SessionSnapshotParams; result: SessionSnapshotResult };
   "session.stop": { params: SessionStopParams; result: SessionStopResult };
+  "state.forget": { params: StateForgetParams; result: StateForgetResult };
   "status.segments": { params: StatusSegmentsParams; result: StatusSegmentsResult };
   "tab.close": { params: TabCloseParams; result: TabCloseResult };
   "tab.create": { params: TabCreateParams; result: TabCreateResult };
@@ -5879,6 +6192,9 @@ export interface Methods {
   "task.ports": { params: TaskPortsParams; result: TaskPortsResult };
   "task.ports.re_lease": { params: TaskPortsReLeaseParams; result: TaskPortsReLeaseResult };
   "task.pr": { params: TaskPrParams; result: TaskPrResult };
+  "task.pr.claim": { params: TaskPrClaimParams; result: TaskPrClaimResult };
+  "task.pr.list": { params: TaskPrListParams; result: TaskPrListResult };
+  "task.pr.observe": { params: TaskPrObserveParams; result: TaskPrObserveResult };
   "task.reconcile": { params: TaskReconcileParams; result: TaskReconcileResult };
   "task.recreate": { params: TaskRecreateParams; result: TaskRecreateResult };
   "task.resume": { params: TaskResumeParams; result: TaskResumeResult };
@@ -5888,6 +6204,8 @@ export interface Methods {
   "task.review.forget": { params: TaskReviewForgetParams; result: TaskReviewForgetResult };
   "task.review.get": { params: TaskReviewGetParams; result: TaskReviewGetResult };
   "task.review.human_review": { params: TaskReviewHumanReviewParams; result: TaskReviewHumanReviewResult };
+  "task.review.interval_status": { params: TaskReviewIntervalStatusParams; result: TaskReviewIntervalStatusResult };
+  "task.review.intervals": { params: TaskReviewIntervalsParams; result: TaskReviewIntervalsResult };
   "task.review.note.classify": { params: TaskReviewNoteClassifyParams; result: TaskReviewNoteClassifyResult };
   "task.review.notes": { params: TaskReviewNotesParams; result: TaskReviewNotesResult };
   "task.review.request_reviewer": { params: TaskReviewRequestReviewerParams; result: TaskReviewRequestReviewerResult };
@@ -5924,11 +6242,15 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "adapter.gate": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.report_self": { mutating: true, scope: "pane", paneScope: "open" },
   "adapter.signal": { mutating: true, scope: "pane", paneScope: "open" },
+  "agent.drift": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.get": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.interrupt": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.limits": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.manifest_pin": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.manifests_check": { mutating: true, scope: "full", paneScope: "forbidden" },
   "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.read": { mutating: false, scope: "pane", paneScope: "open" },
@@ -5940,6 +6262,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
   "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
@@ -6121,6 +6444,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "policy.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "policy.list": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "policy.suggest": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.test": { mutating: false, scope: "full", paneScope: "forbidden" },
   "policy.trust": { mutating: true, scope: "full", paneScope: "forbidden" },
   "preview.declare": { mutating: true, scope: "pane", paneScope: "open" },
@@ -6159,6 +6483,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "screenshot.open": { mutating: false, scope: "pane", paneScope: "open" },
   "scrollback.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "search.query": { mutating: false, scope: "pane", paneScope: "open" },
+  "security.encryption.migrate": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "security.encryption.status": { mutating: false, scope: "full", paneScope: "forbidden" },
   "server.reload_config": { mutating: true, scope: "full", paneScope: "forbidden" },
   "server.restart": { mutating: true, scope: "full", paneScope: "forbidden" },
   "server.status": { mutating: false, scope: "pane", paneScope: "open" },
@@ -6168,6 +6494,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "session.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
   "session.snapshot": { mutating: false, scope: "pane", paneScope: "open" },
   "session.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "state.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "status.segments": { mutating: false, scope: "pane", paneScope: "open" },
   "tab.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "tab.create": { mutating: true, scope: "pane", paneScope: "open" },
@@ -6198,6 +6525,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.ports": { mutating: false, scope: "pane", paneScope: "open" },
   "task.ports.re_lease": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.pr": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr.claim": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.pr.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.pr.observe": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.reconcile": { mutating: true, scope: "pane", paneScope: "open" },
   "task.recreate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -6207,6 +6537,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.review.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.get": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.human_review": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.review.interval_status": { mutating: false, scope: "pane", paneScope: "open" },
+  "task.review.intervals": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.note.classify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.review.notes": { mutating: false, scope: "pane", paneScope: "open" },
   "task.review.request_reviewer": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -6245,6 +6577,7 @@ export type AdapterDisagreementData = {
   facet: string;
   structured: string;
   other: string;
+  source?: string;
 };
 
 export type AdapterHealthChangedSubject = {
@@ -6255,6 +6588,17 @@ export type AdapterHealthChangedData = {
   to: string;
   from?: string;
   transport?: string;
+  reason?: string;
+};
+
+export type AgentCwdChangedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentCwdChangedData = {
+  cwd: string;
+  old_cwd: string | null;
 };
 
 export type AgentDetectedSubject = {
@@ -6266,6 +6610,21 @@ export type AgentDetectedData = {
   harness: string;
   via: string;
   argv0?: string | null;
+};
+
+export type AgentDriftDetectedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentDriftDetectedData = {
+  harness: string;
+  version: string;
+  observations: number;
+  disagreements: number;
+  unknown_resolutions: number;
+  answer_failures: number;
+  rate: number;
 };
 
 export type AgentExitedSubject = {
@@ -6378,6 +6737,7 @@ export type AgentStateChangedData = {
   to: string;
   source?: string;
   confidence?: number;
+  inferred?: boolean;
 };
 
 export type AgentSubagentFinishedSubject = {
@@ -6400,6 +6760,18 @@ export type AgentSubagentStartedData = {
   agent_type: string;
 };
 
+export type AgentToolBlockedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentToolBlockedData = {
+  tool: string;
+  effect: string;
+  rule: string | null;
+  command: string | null;
+};
+
 export type AgentTurnCompletedSubject = {
   run: string;
   pane: string;
@@ -6416,6 +6788,24 @@ export type AgentTurnStartedSubject = {
 };
 
 export type AgentTurnStartedData = unknown;
+
+export type AgentTurnUsageSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentTurnUsageData = {
+  turn: number;
+  native_id: string;
+  model: string | null;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cost_usd: number | null;
+  cost_source: string;
+  source: string;
+};
 
 export type AgentUsageSubject = {
   run: string;
@@ -6773,6 +7163,18 @@ export type GroupRenamedSubject = {
 
 export type GroupRenamedData = {
   name: string;
+};
+
+export type HarnessManifestLoadedSubject = {
+  manifest: string;
+};
+
+export type HarnessManifestLoadedData = {
+  id: string;
+  version: string;
+  source: string;
+  serial: number;
+  verified: string;
 };
 
 export type IntegrationTamperedSubject = {
@@ -7516,6 +7918,43 @@ export type ReviewNotesRecordedData = {
   open_concerns: unknown;
 };
 
+export type ReviewPrClaimedSubject = {
+  task: string;
+};
+
+export type ReviewPrClaimedData = {
+  claim: string;
+  url: string;
+  pr: string | null;
+  source: "pasted_url" | "agent_statement";
+};
+
+export type ReviewPrHeadChangedSubject = {
+  task: string;
+};
+
+export type ReviewPrHeadChangedData = {
+  pr: string | null;
+  from: string | null;
+  to: string | null;
+  observation: string;
+};
+
+export type ReviewPrObservedSubject = {
+  task: string;
+};
+
+export type ReviewPrObservedData = {
+  observation: string;
+  lookup: "observed" | "no_pr" | "failed";
+  pr: string | null;
+  head: string | null;
+  state: "open" | "closed" | "merged" | null;
+  draft: boolean | null;
+  checks: "none" | "pending" | "passing" | "failing" | null;
+  reason: string | null;
+};
+
 export type ReviewPurgedSubject = {
   scope: unknown;
 };
@@ -7770,6 +8209,14 @@ export type ScrollbackForgottenData = {
   panes_dropped: number;
 };
 
+export type SecurityEncryptionMigratedSubject = Record<string, unknown>;
+
+export type SecurityEncryptionMigratedData = {
+  to: "sealed" | "plain";
+  files: number;
+  failed: number;
+};
+
 export type SecurityRateLimitedSubject = {
   pane: string;
 };
@@ -7818,6 +8265,14 @@ export type SessionStoppedSubject = Record<string, unknown>;
 export type SessionStoppedData = {
   pid: number;
   reason: string;
+};
+
+export type StateForgottenSubject = {
+  scope: unknown;
+};
+
+export type StateForgottenData = {
+  counts: Record<string, unknown>;
 };
 
 export type TabClosedSubject = {
@@ -8164,6 +8619,10 @@ export type ThemeChangedSubject = Record<string, unknown>;
 
 export type ThemeChangedData = unknown;
 
+export type TombstoneSubject = Record<string, unknown>;
+
+export type TombstoneData = Record<string, unknown>;
+
 export type UiContributionsChangedSubject = {
   plugin: string;
 };
@@ -8244,7 +8703,9 @@ export type WorktreeRemovedData = {
 export interface EventMap {
   "adapter.disagreement": { subject: AdapterDisagreementSubject; data: AdapterDisagreementData };
   "adapter.health_changed": { subject: AdapterHealthChangedSubject; data: AdapterHealthChangedData };
+  "agent.cwd_changed": { subject: AgentCwdChangedSubject; data: AgentCwdChangedData };
   "agent.detected": { subject: AgentDetectedSubject; data: AgentDetectedData };
+  "agent.drift_detected": { subject: AgentDriftDetectedSubject; data: AgentDriftDetectedData };
   "agent.exited": { subject: AgentExitedSubject; data: AgentExitedData };
   "agent.file_changed": { subject: AgentFileChangedSubject; data: AgentFileChangedData };
   "agent.harness_version_unvalidated": { subject: AgentHarnessVersionUnvalidatedSubject; data: AgentHarnessVersionUnvalidatedData };
@@ -8258,8 +8719,10 @@ export interface EventMap {
   "agent.state_changed": { subject: AgentStateChangedSubject; data: AgentStateChangedData };
   "agent.subagent_finished": { subject: AgentSubagentFinishedSubject; data: AgentSubagentFinishedData };
   "agent.subagent_started": { subject: AgentSubagentStartedSubject; data: AgentSubagentStartedData };
+  "agent.tool_blocked": { subject: AgentToolBlockedSubject; data: AgentToolBlockedData };
   "agent.turn_completed": { subject: AgentTurnCompletedSubject; data: AgentTurnCompletedData };
   "agent.turn_started": { subject: AgentTurnStartedSubject; data: AgentTurnStartedData };
+  "agent.turn_usage": { subject: AgentTurnUsageSubject; data: AgentTurnUsageData };
   "agent.usage": { subject: AgentUsageSubject; data: AgentUsageData };
   "assistant.consent_granted": { subject: AssistantConsentGrantedSubject; data: AssistantConsentGrantedData };
   "assistant.consent_revoked": { subject: AssistantConsentRevokedSubject; data: AssistantConsentRevokedData };
@@ -8301,6 +8764,7 @@ export interface EventMap {
   "group.created": { subject: GroupCreatedSubject; data: GroupCreatedData };
   "group.moved": { subject: GroupMovedSubject; data: GroupMovedData };
   "group.renamed": { subject: GroupRenamedSubject; data: GroupRenamedData };
+  "harness.manifest_loaded": { subject: HarnessManifestLoadedSubject; data: HarnessManifestLoadedData };
   "integration.tampered": { subject: IntegrationTamperedSubject; data: IntegrationTamperedData };
   "interaction.cancelled": { subject: InteractionCancelledSubject; data: InteractionCancelledData };
   "interaction.decided": { subject: InteractionDecidedSubject; data: InteractionDecidedData };
@@ -8374,6 +8838,9 @@ export interface EventMap {
   "review.label_changed": { subject: ReviewLabelChangedSubject; data: ReviewLabelChangedData };
   "review.note_classified": { subject: ReviewNoteClassifiedSubject; data: ReviewNoteClassifiedData };
   "review.notes_recorded": { subject: ReviewNotesRecordedSubject; data: ReviewNotesRecordedData };
+  "review.pr_claimed": { subject: ReviewPrClaimedSubject; data: ReviewPrClaimedData };
+  "review.pr_head_changed": { subject: ReviewPrHeadChangedSubject; data: ReviewPrHeadChangedData };
+  "review.pr_observed": { subject: ReviewPrObservedSubject; data: ReviewPrObservedData };
   "review.purged": { subject: ReviewPurgedSubject; data: ReviewPurgedData };
   "review.reviewer_checkout_removed": { subject: ReviewReviewerCheckoutRemovedSubject; data: ReviewReviewerCheckoutRemovedData };
   "review.reviewer_requested": { subject: ReviewReviewerRequestedSubject; data: ReviewReviewerRequestedData };
@@ -8400,12 +8867,14 @@ export interface EventMap {
   "screenshot.captured": { subject: ScreenshotCapturedSubject; data: ScreenshotCapturedData };
   "screenshot.deleted": { subject: ScreenshotDeletedSubject; data: ScreenshotDeletedData };
   "scrollback.forgotten": { subject: ScrollbackForgottenSubject; data: ScrollbackForgottenData };
+  "security.encryption_migrated": { subject: SecurityEncryptionMigratedSubject; data: SecurityEncryptionMigratedData };
   "security.rate_limited": { subject: SecurityRateLimitedSubject; data: SecurityRateLimitedData };
   "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
   "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
   "session.started": { subject: SessionStartedSubject; data: SessionStartedData };
   "session.stopped": { subject: SessionStoppedSubject; data: SessionStoppedData };
+  "state.forgotten": { subject: StateForgottenSubject; data: StateForgottenData };
   "tab.closed": { subject: TabClosedSubject; data: TabClosedData };
   "tab.created": { subject: TabCreatedSubject; data: TabCreatedData };
   "tab.layout_changed": { subject: TabLayoutChangedSubject; data: TabLayoutChangedData };
@@ -8441,6 +8910,7 @@ export interface EventMap {
   "task.tracked": { subject: TaskTrackedSubject; data: TaskTrackedData };
   "task.updated": { subject: TaskUpdatedSubject; data: TaskUpdatedData };
   "theme.changed": { subject: ThemeChangedSubject; data: ThemeChangedData };
+  "tombstone": { subject: TombstoneSubject; data: TombstoneData };
   "ui.contributions_changed": { subject: UiContributionsChangedSubject; data: UiContributionsChangedData };
   "workspace.closed": { subject: WorkspaceClosedSubject; data: WorkspaceClosedData };
   "workspace.created": { subject: WorkspaceCreatedSubject; data: WorkspaceCreatedData };

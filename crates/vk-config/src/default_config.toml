@@ -239,6 +239,11 @@ auto_detect       = true
 shims             = true
 resume_on_restart = "ask"             # ask | always | never
 name_from_task    = true
+fail_closed       = true               # policy deny rules on yolo runs fail closed when the server is unreachable
+
+[agents.approvals.claude]
+persist_always      = false           # "allow always" edits Claude's settings (off: session-scoped rule)
+persist_destination = "localSettings" # localSettings | projectSettings | userSettings
 
 [agents.harness.claude]
 enabled     = true
@@ -328,6 +333,17 @@ enabled = false
 # blob_retention    = "30d"         # unreferenced uploads and tool-output payloads in the blob store
 # max_rows          = 2000000       # hard cap on event rows; oldest `sync` rows go first; 0 = no cap
 
+# Review evidence (15 §6.3, §6.4). Read by the running server.
+# [review.pr]                       # `vibeke api call task.pr.observe`: an explicit lookup through your `gh` login
+# provider     = "gh"               # gh | off
+# max_age_secs = 900                # an observation older than this is unknown (0 = never stale)
+# [review.interval]                 # binds an observed agent command to the subject only when it provably ran on a stable checkout
+# enabled       = true
+# watcher       = "os"              # os | none (none binds nothing)
+# settle_ms     = 400               # late file events still count this long after a command ends
+# arm_delay_ms  = 500               # a freshly started watcher counts as armed after this delay
+# harnesses     = ["claude"]        # only harnesses whose pre-tool hook runs before the tool
+
 [update]
 channel        = "stable"             # stable | preview
 version_check  = true
@@ -340,6 +356,13 @@ manifest_check = true
 # title = "edit"
 # pane = { split = "right", children = [{ run = "nvim ." }, { run = "npm run dev" }] }
 
+# Secrets and privacy (09 §9.1-9.2; read by the server, shown here with their defaults):
+# [security]
+# encrypt_state           = false     # seal scrollback segments and session blobs with a key kept in the OS keychain
+# keychain                = "os"      # "os" (macOS Keychain or Secret Service via secret-tool) | "file:<path>" (0600 file; tests, headless hosts)
+# redact_scrollback_index = true      # the search index and search.query results hold redacted text; segments stay as shown
+# [security.redact]
+# patterns = []                       # extra regular expressions redacted in logs, events, bundles, index and assistant payloads
 # AI assistance (spec 14). Off by default: nothing is sent anywhere until you enable it, choose a
 # connection and a profile, and grant consent per workspace (`vibeke assist consent`). User config
 # only: a repository's own config cannot redirect assistant traffic. Requests run on the machine
@@ -358,7 +381,7 @@ manifest_check = true
 # preview_ttl_seconds         = 600
 # auto_send                   = []          # operations that skip the preview; the workspace consent must list them too
 # result_cache                = false       # reuse a stored result for identical context under the same grants
-# keychain_backend            = "off"       # off | os (the system credential store through its own CLI) | fake (tests)
+# keychain_backend            = ""          # deprecated override of [security] keychain for assistant credentials: "" (inherit) | off | os | "file:<path>" | fake (tests)
 # remote_sources              = false       # accept source data a client collected from other machines
 # remote_stale_seconds        = 300
 # background_enabled          = false       # opt-in: background features (each also needs its own switch below)

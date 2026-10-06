@@ -309,6 +309,11 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "worktree.remove",
     "render.attach",
     "policy.trust",
+    // 2F: the approval history behind `policy.suggest`, and the manifest channel (network fetch,
+    // pins), are the user's.
+    "policy.suggest",
+    "agent.manifests_check",
+    "agent.manifest_pin",
     // 15 §11: agents can report observations but not confirm intent, bind, send, accept,
     // authorize verification or change priorities.
     "task.track",
@@ -433,10 +438,12 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
         || crate::plugin_native::PANE_FORBIDDEN.contains(&method)
+        || crate::privacy::PANE_FORBIDDEN.contains(&method)
         || crate::blob_store::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
         || crate::machines::PANE_FORBIDDEN.contains(&method)
         || crate::items::PANE_FORBIDDEN.contains(&method)
+        || crate::review::pr::PANE_FORBIDDEN.contains(&method)
         || crate::review::ext::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
@@ -560,6 +567,10 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
     crate::limits::check(server, ctx, method, p)?;
+    // Lane 3E: search result redaction, state.forget, encryption status/migrate.
+    if let Some(r) = crate::privacy::api(server, ctx, method, p).await {
+        return r;
+    }
     // Batch 2A API surface: one hook per module.
     if let Some(r) = crate::config_api::api(server, method, p).await {
         return r;
@@ -702,6 +713,8 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::task_park::METHODS)
                     .chain(crate::security::METHODS)
                     .chain(crate::plugin_native::METHODS)
+                    .chain(crate::review::pr::METHODS)
+                    .chain(crate::review::interval::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
