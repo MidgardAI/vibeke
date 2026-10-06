@@ -1,4 +1,6 @@
 //! Read-only git methods for a pane's working tree (16 §7.7): `git.status` and `git.diff`.
+//! The hardened runner and the no-follow file helpers are shared with `fs_api` (`git.log`,
+//! `fs.list`, `fs.read`).
 //!
 //! Git can run configured programs (fsmonitor, external diff, textconv), so every call disables
 //! them, runs with a timeout and an output cap, and untracked files are read without following
@@ -16,7 +18,7 @@ use vk_proto::rpc::{ErrorKind, RpcError};
 use crate::Server;
 use crate::api::{Ctx, R, err, invalid, req, resolve_pane, s};
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_DIFF: usize = 512 * 1024;
 const MAX_UNTRACKED: u64 = 1024 * 1024;
@@ -44,6 +46,9 @@ const SAFE_CONFIG: &[&str] = &[
     "status.submoduleSummary=false",
     "-c",
     "diff.noprefix=false",
+    // Signature checks run the configured gpg program.
+    "-c",
+    "log.showSignature=false",
 ];
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
@@ -54,12 +59,12 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     }
 }
 
-fn not_a_repo() -> RpcError {
+pub(crate) fn not_a_repo() -> RpcError {
     err(ErrorKind::NotFound, "not_a_repo")
 }
 
 /// The directory to inspect: a pane's cwd, or an explicit `path` for full-scope callers.
-fn target_dir(server: &Server, ctx: &Ctx, p: &Value) -> Result<PathBuf, RpcError> {
+pub(crate) fn target_dir(server: &Server, ctx: &Ctx, p: &Value) -> Result<PathBuf, RpcError> {
     if let Some(path) = s(p, "path") {
         if ctx.pane_scope.is_some() {
             return Err(err(
@@ -128,10 +133,26 @@ async fn filter_overrides(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-async fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, RpcError> {
+pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, RpcError> {
+    match git_raw(dir, args, None, true).await? {
+        (Some(0), out) => Ok(out),
+        (_, out) if out.len() >= MAX_OUTPUT => Ok(out),
+        _ => Err(not_a_repo()),
+    }
+}
+
+/// The hardened runner: returns the exit code (None when killed by a signal) and capped stdout.
+/// `input` is written to stdin (otherwise stdin is closed). `literal_pathspecs` is only off for
+/// commands that reject it (`check-ignore`).
+pub(crate) async fn git_raw(
+    dir: &Path,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+    literal_pathspecs: bool,
+) -> Result<(Option<i32>, Vec<u8>), RpcError> {
     let filters = filter_overrides(dir).await;
     let mut child = tokio::process::Command::new("git")
-        .arg("--literal-pathspecs")
+        .args(literal_pathspecs.then_some("--literal-pathspecs"))
         .args(SAFE_CONFIG)
         .args(&filters)
         .args(args)
@@ -142,12 +163,23 @@ async fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, RpcError> {
         .env_remove("GIT_EXTERNAL_DIFF")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| err(ErrorKind::Unsupported, format!("git: {e}")))?;
+    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Written concurrently so a full stdout pipe can't deadlock the writer.
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&data).await;
+        });
+    }
     let mut out = Vec::new();
     let mut stdout = child.stdout.take().expect("piped");
     let read = async {
@@ -162,14 +194,13 @@ async fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, RpcError> {
         child.wait().await
     };
     match tokio::time::timeout(TIMEOUT, read).await {
-        Ok(Ok(st)) if st.success() || out.len() >= MAX_OUTPUT => Ok(out),
-        Ok(Ok(_)) => Err(not_a_repo()),
+        Ok(Ok(st)) => Ok((st.code(), out)),
         Ok(Err(e)) => Err(err(ErrorKind::Internal, format!("git: {e}"))),
         Err(_) => Err(err(ErrorKind::Timeout, "git timed out")),
     }
 }
 
-async fn repo_root(dir: &Path) -> Result<PathBuf, RpcError> {
+pub(crate) async fn repo_root(dir: &Path) -> Result<PathBuf, RpcError> {
     let out = git(dir, &["rev-parse", "--show-toplevel"]).await?;
     let root = String::from_utf8_lossy(&out).trim().to_string();
     if root.is_empty() {
@@ -270,7 +301,7 @@ fn push(st: &mut Status, xy: &str, path: &str, orig: Option<String>) {
 }
 
 /// Parse `git diff --numstat -z`: path → (adds, dels) or binary.
-fn parse_numstat(out: &[u8]) -> Vec<(String, Option<(u64, u64)>)> {
+pub(crate) fn parse_numstat(out: &[u8]) -> Vec<(String, Option<(u64, u64)>)> {
     let mut res = Vec::new();
     let mut it = out
         .split(|&b| b == 0)
@@ -315,7 +346,7 @@ pub fn is_secret_path(path: &str) -> bool {
 }
 
 /// A relative path with only normal components.
-fn safe_relative(path: &str) -> bool {
+pub(crate) fn safe_relative(path: &str) -> bool {
     !path.is_empty()
         && !path.contains('\0')
         && path
@@ -379,50 +410,71 @@ async fn status(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     )
 }
 
-/// Read an untracked file without following symlinks at any component.
-fn read_untracked(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, RpcError> {
-    use std::ffi::CString;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+fn denied() -> RpcError {
+    err(
+        ErrorKind::PermissionDenied,
+        "not a regular file inside the repository",
+    )
+}
+
+fn open_at(
+    dir: libc::c_int,
+    name: &[u8],
+    flags: libc::c_int,
+) -> Result<std::os::fd::OwnedFd, RpcError> {
+    use std::os::fd::FromRawFd;
+    let c = std::ffi::CString::new(name).map_err(|_| denied())?;
+    // SAFETY: `c` is a valid NUL-terminated string; the returned fd is owned below.
+    let fd = unsafe { libc::openat(dir, c.as_ptr(), flags | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(denied());
+    }
+    // SAFETY: openat returned a fresh descriptor we own.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+/// Open the directory `rel` under `root` ("" = `root` itself), walking with directory
+/// descriptors and `O_NOFOLLOW` at every component, so a directory swapped for a symlink
+/// mid-walk cannot redirect access outside the repository.
+pub(crate) fn open_dir_nofollow(root: &Path, rel: &str) -> Result<std::os::fd::OwnedFd, RpcError> {
+    use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
-    // Walk with directory descriptors and O_NOFOLLOW at every component, so a directory swapped
-    // for a symlink mid-walk cannot redirect the read outside the repository.
-    let denied = || {
-        err(
-            ErrorKind::PermissionDenied,
-            "not a regular file inside the repository",
-        )
-    };
-    let open_at =
-        |dir: libc::c_int, name: &[u8], flags: libc::c_int| -> Result<OwnedFd, RpcError> {
-            let c = CString::new(name).map_err(|_| denied())?;
-            // SAFETY: `c` is a valid NUL-terminated string; the returned fd is owned below.
-            let fd = unsafe { libc::openat(dir, c.as_ptr(), flags | libc::O_CLOEXEC) };
-            if fd < 0 {
-                return Err(denied());
-            }
-            // SAFETY: openat returned a fresh descriptor we own.
-            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-        };
     let mut dir = open_at(
         libc::AT_FDCWD,
         root.as_os_str().as_bytes(),
         libc::O_RDONLY | libc::O_DIRECTORY,
     )?;
-    let parts: Vec<&str> = rel.split('/').collect();
-    let (leaf, dirs) = parts.split_last().ok_or_else(|| invalid("empty path"))?;
-    for d in dirs {
+    for d in rel.split('/').filter(|d| !d.is_empty()) {
         dir = open_at(
             dir.as_raw_fd(),
             d.as_bytes(),
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
         )?;
     }
+    Ok(dir)
+}
+
+/// Open `rel` under `root` without following symlinks at any component (the leaf may be any
+/// non-symlink type; callers check it with `fstat`).
+pub(crate) fn open_nofollow(root: &Path, rel: &str) -> Result<std::fs::File, RpcError> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let (dirs, leaf) = rel.rsplit_once('/').unwrap_or(("", rel));
+    if leaf.is_empty() {
+        return Err(invalid("empty path"));
+    }
+    let dir = open_dir_nofollow(root, dirs)?;
     let fd = open_at(
         dir.as_raw_fd(),
-        leaf.as_bytes(),
+        std::ffi::OsStr::new(leaf).as_bytes(),
         libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
     )?;
-    let f = std::fs::File::from(fd);
+    Ok(std::fs::File::from(fd))
+}
+
+/// Read an untracked file without following symlinks at any component.
+fn read_untracked(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, RpcError> {
+    let f = open_nofollow(root, rel)?;
     let md = f.metadata().map_err(|_| denied())?;
     if !md.is_file() || md.len() > MAX_UNTRACKED {
         return Ok(None);
@@ -434,6 +486,9 @@ fn read_untracked(root: &Path, rel: &str) -> Result<Option<Vec<u8>>, RpcError> {
 }
 
 async fn diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    if p.get("base").is_some() || p.get("range").is_some() {
+        return crate::fs_api::diff_revs(server, ctx, p).await;
+    }
     let file = req(p, "file")?;
     if !safe_relative(file) {
         return Err(invalid(
@@ -506,7 +561,7 @@ async fn diff(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     )
 }
 
-fn floor_char(s: &str, max: usize) -> usize {
+pub(crate) fn floor_char(s: &str, max: usize) -> usize {
     if s.len() <= max {
         return s.len();
     }

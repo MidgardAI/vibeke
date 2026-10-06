@@ -227,6 +227,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("image.upload", true),
     ("git.status", false),
     ("git.diff", false),
+    ("git.log", false),
+    ("fs.list", false),
+    ("fs.read", false),
     ("layout.export", false),
     ("task.create", true),
     ("task.list", false),
@@ -415,6 +418,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = crate::git_api::api(server, ctx, method, p).await {
+        return r;
+    }
+    if let Some(r) = crate::fs_api::api(server, ctx, method, p).await {
         return r;
     }
     if let Some(r) = crate::desk::api(server, ctx, method, p).await {

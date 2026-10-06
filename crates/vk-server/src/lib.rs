@@ -12,6 +12,7 @@ pub mod compat;
 pub mod core;
 pub mod desk;
 pub mod drafts;
+pub mod fs_api;
 pub mod gateway_api;
 pub mod git_api;
 pub mod layouts;
