@@ -15,6 +15,7 @@ jobs:
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
       - run: mise run ci
+      - run: sh scripts/tests/repro-check-test.sh
   web:
     strategy:
       fail-fast: false
