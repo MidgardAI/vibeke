@@ -27,6 +27,8 @@ export class FakeServer {
   conns: net.Socket[] = [];
   closedConns = new Set<number>();
   gates: { conn: number; id: number; params: any }[] = [];
+  /** Methods the fake leaves unanswered (to exercise client-side retries). */
+  noReply = new Set<string>();
   private server: net.Server | null = null;
 
   async listen(): Promise<void> {
@@ -34,6 +36,7 @@ export class FakeServer {
     this.server = net.createServer((sock) => {
       const conn = this.conns.push(sock) - 1;
       let buf = "";
+      sock.setEncoding("utf8"); // decode across chunk boundaries (multi-byte prompts)
       sock.on("error", () => {});
       sock.on("close", () => this.closedConns.add(conn));
       sock.on("data", (d) => {
@@ -45,7 +48,8 @@ export class FakeServer {
           const msg = JSON.parse(line);
           this.msgs.push({ conn, msg });
           if (msg.method === "adapter.gate") this.gates.push({ conn, id: msg.id, params: msg.params });
-          else sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");
+          else if (!this.noReply.has(msg.method))
+            sock.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");
         }
       });
     });
@@ -59,9 +63,24 @@ export class FakeServer {
     this.server = null;
   }
 
-  respondGate(index: number, decision: { value: unknown } | null): void {
+  respondGate(index: number, decision: { value: unknown } | null, extra: Record<string, unknown> = {}): void {
     const g = this.gates[index];
-    this.conns[g.conn].write(JSON.stringify({ jsonrpc: "2.0", id: g.id, result: { decision } }) + "\n");
+    this.conns[g.conn].write(JSON.stringify({ jsonrpc: "2.0", id: g.id, result: { decision, ...extra } }) + "\n");
+  }
+
+  /** Drop one gate's connection (as a server restart or network blip would). */
+  dropGate(index: number): void {
+    this.conns[this.gates[index].conn].destroy();
+  }
+
+  /** Messages of `method`, with the connection they arrived on. */
+  calls(method: string): Msg[] {
+    return this.msgs.filter((m) => m.msg.method === method);
+  }
+
+  /** The connection's `client.hello` params (token etc.). */
+  hello(conn: number): any {
+    return this.msgs.find((m) => m.conn === conn && m.msg.method === "client.hello")?.msg.params;
   }
 
   signals(conn?: number): { event: string; payload: any; harness: string }[] {

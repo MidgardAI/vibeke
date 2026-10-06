@@ -2,8 +2,8 @@
 // See DESIGN.md (normative) and PROTOCOL.md (wire contract).
 // Runtime imports: node:* only. Host types are declared locally (types.ts).
 import { randomUUID } from "node:crypto";
-import { fileChangePath, preview, RATE_LIMIT_RE, redactInput } from "./describe.js";
-import { VibekeClient } from "./protocol.js";
+import { boundedPrompt, fileChangePath, preview, RATE_LIMIT_RE, redactInput } from "./describe.js";
+import { type GateAnswer, VibekeClient } from "./protocol.js";
 import type { HostApi, HostContext, UiContext } from "./types.js";
 import { EXTENSION_VERSION } from "./version.js";
 
@@ -66,6 +66,8 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   let lastEnd: { stop_reason?: string; last_message?: string } = {};
   const calls = new Map<string, CachedCall>();
   const approvals = new Map<string, { tool: string; reason: unknown }>();
+  /** Wrapper dialogs whose native dialog is still open (reported in snapshots). */
+  const dialogs = new Map<string, Record<string, unknown>>();
 
   const sessionId = () => safe(() => lastCtx?.sessionManager?.getSessionId?.()) ?? null;
   const sessionFile = () => safe(() => lastCtx?.sessionManager?.getSessionFile?.()) ?? null;
@@ -92,6 +94,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
         tool: a.tool,
         reason: a.reason,
       })),
+      pending_dialogs: [...dialogs.values()],
     }),
     ...opts.clientOverrides,
   });
@@ -178,8 +181,10 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       if (m === "confirm") payload.message = preview(String(args[1] ?? ""), 2000);
       if (m === "select" && Array.isArray(args[1])) payload.options = args[1].map(String);
       if (m === "input" && typeof args[1] === "string") payload.message = preview(args[1], 2000);
+      dialogs.set(dialogId, payload);
       gate = client.gate("Dialog", payload);
     } catch {
+      dialogs.delete(dialogId);
       return native;
     }
     const g = gate;
@@ -195,11 +200,22 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       (v) => ({ by: "native" as const, v }),
       (e) => ({ by: "native-error" as const, e }),
     );
-    return Promise.race([nativeFirst, vibekeFirst.then((a) => ({ by: "vibeke" as const, v: a.value }))]).then((w) => {
+    return Promise.race([nativeFirst, vibekeFirst.then((a) => ({ by: "vibeke" as const, v: a.value, a }))]).then((w) => {
+      dialogs.delete(dialogId);
       if (w.by === "vibeke") {
         ac.abort(); // dismiss pi's native dialog exactly once
         native.catch(() => {});
         g.close();
+        // The dialog resolves with Vibeke's value right here (nothing can fail after this
+        // point): confirm delivery so the server's interaction leaves Delivering.
+        const { interaction, idempotencyKey } = (w as { a: GateAnswer }).a;
+        if (interaction && idempotencyKey) {
+          try {
+            client.deliveryAck(interaction, idempotencyKey);
+          } catch {
+            /* never affect the host */
+          }
+        }
         return w.v;
       }
       g.close();
@@ -293,7 +309,14 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     if (endTimer) endTurn();
     turnOpen = true;
     promptSent = true;
-    emit("TurnStarted", { prompt_preview: preview(e?.text ?? e?.prompt, 200) });
+    // The full request (bounded at 8 KiB, flagged when cut) is what tracking records as the
+    // source; the 200-char preview stays for older servers.
+    const raw = e?.text ?? e?.prompt;
+    const { prompt, truncated } = boundedPrompt(raw);
+    emit("TurnStarted", {
+      prompt_preview: preview(raw, 200),
+      ...(prompt !== undefined ? { prompt, prompt_truncated: truncated } : {}),
+    });
   });
 
   on("agent_start", () => {
