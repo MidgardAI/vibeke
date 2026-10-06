@@ -18,6 +18,8 @@ pub struct State {
     /// Host-wide last input per TUI client (ms since epoch), reported by `client.activity`.
     activity: Mutex<HashMap<String, i64>>,
     confirms: Mutex<HashMap<String, oneshot::Sender<Option<String>>>>,
+    /// Devices a gateway reports as connected (`client.devices`), by reporting client id.
+    devices: Mutex<HashMap<String, Vec<Value>>>,
 }
 
 fn state(server: &Server) -> &State {
@@ -51,6 +53,29 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 .lock()
                 .unwrap()
                 .insert(ctx.client_id.clone(), at);
+            Ok(json!({}))
+        }
+        "client.devices" => {
+            // A gateway reports the phones/desktops connected through it (replaces its list).
+            if ctx.kind != "gateway" {
+                return Some(Err(err(
+                    ErrorKind::PermissionDenied,
+                    "client.devices is reported by gateway clients",
+                )));
+            }
+            let list: Vec<Value> = p
+                .get("devices")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .take(64)
+                .collect();
+            state(server)
+                .devices
+                .lock()
+                .unwrap()
+                .insert(ctx.client_id.clone(), list);
             Ok(json!({}))
         }
         "client.confirm" => confirm(server, ctx, p).await,
@@ -298,13 +323,27 @@ fn client_list(server: &Server) -> Value {
         .collect();
     // Activity reported for TUIs attached to other machines (host-wide "user at desk").
     let elsewhere: Vec<Value> = activity.iter().filter(|(id, _)| !clients.contains_key(*id)).map(|(id, at)| json!({"id": id, "kind": "tui", "remote_activity": true, "last_input_ms": at})).collect();
+    // Devices reported by gateways that are still connected (stale reporters dropped).
+    let mut dev = state(server).devices.lock().unwrap();
+    dev.retain(|id, _| clients.contains_key(id));
+    let devices: Vec<Value> = dev
+        .iter()
+        .flat_map(|(gw, l)| {
+            l.iter().map(move |d| {
+                let mut d = d.clone();
+                d["via"] = json!(gw);
+                d
+            })
+        })
+        .collect();
+    drop(dev);
     let user_last = list
         .iter()
         .chain(elsewhere.iter())
         .filter(|c| c["kind"] == "tui")
         .filter_map(|c| c["last_input_ms"].as_i64())
         .max();
-    json!({"clients": list, "other_activity": elsewhere, "user_last_input_ms": user_last})
+    json!({"clients": list, "other_activity": elsewhere, "user_last_input_ms": user_last, "devices": devices})
 }
 
 // ---- X5: out-of-band confirm ----------------------------------------------------------------

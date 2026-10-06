@@ -337,10 +337,9 @@ pub fn on_reply(app: &mut App, i: usize, reply: Reply, res: Result<Value, RpcErr
             p.list_sent = None;
             match res {
                 Ok(v) => {
-                    p.devices = v["clients"]
-                        .as_array()
-                        .map(|a| a.iter().filter(|c| c["kind"] == "gateway").count() as u32)
-                        .unwrap_or(0);
+                    // Devices (phones/desktops) that gateways report via `client.devices`; a
+                    // gateway process itself is not a device.
+                    p.devices = v["devices"].as_array().map(|a| a.len() as u32).unwrap_or(0);
                     app.dirty = true;
                 }
                 // Older server: stop asking for a while.
@@ -759,9 +758,10 @@ mod tests {
     fn devices_indicator_counts_and_renders() {
         let (mut app, _rxs) = test_app(2);
         assert_eq!(devices_label(&app), None);
+        // Two gateway connections but the devices list decides (a gateway is not a device).
         let list = json!({"clients": [
             {"id": "a", "kind": "tui"}, {"id": "b", "kind": "gateway"}, {"id": "c", "kind": "gateway"}
-        ]});
+        ], "devices": [{"name": "the maintainer's iPhone"}, {"name": "iPad"}]});
         on_reply(&mut app, 0, Reply::List, Ok(list));
         assert_eq!(app.gateway.devices(0), 2);
         assert_eq!(devices_label(&app).as_deref(), Some("📱2"));
@@ -769,7 +769,7 @@ mod tests {
             &mut app,
             1,
             Reply::List,
-            Ok(json!({"clients": [{"kind": "gateway"}]})),
+            Ok(json!({"clients": [{"kind": "gateway"}], "devices": [{"name": "phone"}]})),
         );
         assert_eq!(devices_label(&app).as_deref(), Some("📱2 📱1@m1"));
         let mut g = Grid::new(120, 40);
