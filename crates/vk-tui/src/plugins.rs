@@ -39,6 +39,8 @@ use vk_proto::render::{ClientFrame, Style};
 pub const SCROLL_FEATURE: &str = "scroll_report";
 /// Scroll reports are coalesced to at most one per interval (the tick sends the last one).
 const SCROLL_MIN_INTERVAL: Duration = Duration::from_millis(150);
+/// At most one pull of focus back to an open popup per this interval.
+const REFOCUS_EVERY: Duration = Duration::from_millis(500);
 /// Popup size when the manifest and the request give none.
 const POPUP_DEFAULT_PCT: f32 = 80.0;
 
@@ -526,7 +528,7 @@ pub fn observe(app: &mut App) {
         && app
             .plugins
             .refocus_at
-            .is_none_or(|t| t.elapsed() > Duration::from_millis(500))
+            .is_none_or(|t| t.elapsed() > REFOCUS_EVERY)
     {
         app.plugins.refocus_at = Some(Instant::now());
         app.focus_pane(cur, &p);
@@ -549,30 +551,10 @@ fn scroll_view(app: &App) -> Option<(String, u32, u32)> {
 
 /// Send `ScrollView` when the viewport moved (coalesced; the tick flushes the last change).
 pub fn report_scroll(app: &mut App, now: Instant) {
+    let Some((pane, offset, total)) = scroll_unsent(app) else {
+        return;
+    };
     let mi = app.cur;
-    if !app.machines[mi]
-        .features
-        .iter()
-        .any(|f| f == SCROLL_FEATURE)
-    {
-        return;
-    }
-    let want = match scroll_view(app) {
-        Some(v) => Some(v),
-        // Left copy mode: back at the bottom.
-        None => app
-            .plugins
-            .scroll_sent
-            .get(&mi)
-            .filter(|(_, off)| *off != 0)
-            .map(|(p, _)| (p.clone(), 0, 0)),
-    };
-    let Some((pane, offset, total)) = want else {
-        return;
-    };
-    if app.plugins.scroll_sent.get(&mi) == Some(&(pane.clone(), offset)) {
-        return;
-    }
     if app
         .plugins
         .scroll_at
@@ -587,6 +569,63 @@ pub fn report_scroll(app: &mut App, now: Instant) {
         offset,
         total,
     });
+}
+
+/// A copy-mode position change in a frame-driven state where a frame may not follow: the
+/// coalesced `ScrollView` still waiting out its interval, and the throttled pull of focus back
+/// to an open plugin popup (both normally flushed by the next frame/draw).
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if scroll_unsent(app).is_some() {
+        d.at(
+            "plugins.scroll",
+            app.plugins
+                .scroll_at
+                .map_or(now, |t| t + SCROLL_MIN_INTERVAL),
+        );
+    }
+    if let Some(t) = app.plugins.refocus_at
+        && matches!(app.mode, Mode::Normal | Mode::Prefix(_))
+        && let Some(p) = session_popup(app)
+        && app.focused_pane().as_deref() != Some(p.as_str())
+        && t + REFOCUS_EVERY > now
+    {
+        d.redraw("plugins.refocus", t + REFOCUS_EVERY);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_pending_scroll(app: &mut App, at: Instant) {
+    app.plugins
+        .scroll_sent
+        .insert(app.cur, ("p1".to_string(), 5));
+    app.plugins.scroll_at = Some(at);
+}
+
+/// The scroll position to report for the focused machine, when it differs from the last sent.
+fn scroll_unsent(app: &App) -> Option<(String, u32, u32)> {
+    let mi = app.cur;
+    if !app.machines[mi]
+        .features
+        .iter()
+        .any(|f| f == SCROLL_FEATURE)
+    {
+        return None;
+    }
+    let want = match scroll_view(app) {
+        Some(v) => Some(v),
+        // Left copy mode: back at the bottom.
+        None => app
+            .plugins
+            .scroll_sent
+            .get(&mi)
+            .filter(|(_, off)| *off != 0)
+            .map(|(p, _)| (p.clone(), 0, 0)),
+    };
+    let (pane, offset, total) = want?;
+    if app.plugins.scroll_sent.get(&mi) == Some(&(pane.clone(), offset)) {
+        return None;
+    }
+    Some((pane, offset, total))
 }
 
 // ---- palette and key bindings ----------------------------------------------------------------

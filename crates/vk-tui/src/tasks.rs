@@ -2216,6 +2216,19 @@ pub fn on_model(app: &mut App, mi: usize) {
     }
 }
 
+/// The next poll of messages still sending (only while the task view is open).
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if let Some(v) = &app.task_view
+        && matches!(app.mode, Mode::Popup(Popup::Task))
+        && !v.watch.is_empty()
+    {
+        d.at(
+            "tasks",
+            v.last_poll.map_or(now, |t| t + Duration::from_secs(1)),
+        );
+    }
+}
+
 /// Poll messages that are still sending (about once a second while the view is open).
 pub fn tick(app: &mut App) {
     let Some(v) = &mut app.task_view else {

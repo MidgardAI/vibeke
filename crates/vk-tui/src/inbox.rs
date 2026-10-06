@@ -594,6 +594,16 @@ pub fn invalidate(app: &mut App) {
     app.inbox.stale = true;
 }
 
+/// While the inbox is open and stale: the next refresh (at most every `REFRESH_MIN`).
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if matches!(app.mode, Mode::Popup(Popup::Inbox)) && app.inbox.stale {
+        d.at(
+            "inbox",
+            app.inbox.last_fetch.map_or(now, |t| t + REFRESH_MIN),
+        );
+    }
+}
+
 pub fn tick(app: &mut App) {
     let open = matches!(app.mode, Mode::Popup(Popup::Inbox));
     if open

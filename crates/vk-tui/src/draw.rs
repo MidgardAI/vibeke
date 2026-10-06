@@ -33,6 +33,33 @@ pub fn harness_icon(h: &str) -> &'static str {
     }
 }
 
+/// Repaint when an age on screen changes: a working agent's `working · 12s` (sidebar, peek,
+/// tiles) and, while one is open, the inbox / desk / gallery / pending-operations ages. Idle,
+/// done and waiting agents show static labels and arm nothing (spec 10 §1.3.1).
+pub(crate) fn deadlines(app: &App, now: std::time::Instant, d: &mut crate::deadline::Deadlines) {
+    use crate::app::Popup;
+    let wall = vk_now();
+    let mut next: Option<u64> = None;
+    for m in &app.machines {
+        for r in &m.model.runs {
+            if matches!(r.execution.value, Execution::Working) {
+                let ms = crate::deadline::age_change_in(wall - r.execution.since_ms);
+                next = Some(next.map_or(ms, |n| n.min(ms)));
+            }
+        }
+    }
+    if matches!(
+        app.mode,
+        Mode::Popup(Popup::Inbox | Popup::Desk | Popup::Gallery | Popup::PendingOps { .. })
+    ) {
+        let ms = crate::deadline::age_change_in(wall.rem_euclid(1_000));
+        next = Some(next.map_or(ms, |n| n.min(ms)));
+    }
+    if let Some(ms) = next {
+        d.redraw("ages", now + std::time::Duration::from_millis(ms));
+    }
+}
+
 /// (glyph, label, colour, inferred)
 pub fn run_state(
     app: &App,

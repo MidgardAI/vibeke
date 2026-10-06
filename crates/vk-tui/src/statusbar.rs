@@ -70,6 +70,37 @@ pub fn on_model(app: &mut App) {
     app.parity.status.stale = true;
 }
 
+/// Only while the bar is enabled: the clock's next minute (when a `clock` segment is shown)
+/// and the next `status.segments` request `tick` would make.
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if !enabled(app) {
+        return;
+    }
+    let bar = &app.config.ui.status_bar;
+    if [&bar.left, &bar.center, &bar.right]
+        .iter()
+        .any(|side| side.iter().any(|s| s == "clock"))
+    {
+        let into = now_ms().rem_euclid(60_000) as u64;
+        d.redraw(
+            "statusbar.clock",
+            now + Duration::from_millis(60_000 - into),
+        );
+    }
+    let mi = app.cur;
+    let st = &app.parity.status;
+    if st.inflight || st.unsupported.contains(&mi) || !app.machines[mi].connected() {
+        return;
+    }
+    let at = match st.last_req {
+        None => now,
+        Some(_) if st.data.as_ref().is_some_and(|(m, _)| *m != mi) => now,
+        Some(t) if st.stale => t + MIN_INTERVAL,
+        Some(t) => t + REFRESH,
+    };
+    d.at("statusbar", at);
+}
+
 /// Cheap refresh: one request in flight at most, after model changes (≥ 1 s apart) or every
 /// 10 s; a clock redraw when the minute turns.
 pub fn tick(app: &mut App) {

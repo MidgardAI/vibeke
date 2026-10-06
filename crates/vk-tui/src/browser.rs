@@ -1676,6 +1676,44 @@ pub fn on_reply(
 
 /// Keep the mirror badge honest about mirrors made elsewhere (CLI): while remote previews or
 /// mirrors exist, ask the local server for its mirror list every 10 s.
+/// The mirror poll (only with mirrors or live remote previews, every 10 s) and, on the iTerm2
+/// path, the repaint that writes a canvas update the inline-image rate limit held back.
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    let remote_previews = app.machines.iter().any(|m| {
+        !m.local
+            && m.model
+                .previews
+                .iter()
+                .any(|p| p.status != PreviewStatus::Gone)
+    });
+    if (remote_previews || !app.browser.mirrors.is_empty())
+        && app.machines.iter().any(|m| m.local && m.connected())
+    {
+        d.at(
+            "browser.mirrors",
+            app.browser
+                .mirrors_polled
+                .map_or(now, |t| t + Duration::from_secs(10)),
+        );
+    }
+    if gfx(app) == Gfx::Iterm && matches!(app.mode, Mode::Normal | Mode::Prefix(_)) {
+        let interval = if app.caps.host_remote {
+            INLINE_INTERVAL * 2
+        } else {
+            INLINE_INTERVAL
+        };
+        for pm in app.browser.panes.values() {
+            if let Some(t) = pm.last_inline
+                && pm.canvas_dirty
+                && pm.canvas.is_some()
+                && t + interval > now
+            {
+                d.redraw("browser.inline", t + interval);
+            }
+        }
+    }
+}
+
 pub fn tick(app: &mut App) {
     let remote_previews = app.machines.iter().any(|m| {
         !m.local

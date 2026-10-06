@@ -9,6 +9,7 @@ pub mod chrome;
 pub mod clipboard;
 pub mod copy;
 pub mod copykeys;
+pub mod deadline;
 pub mod desk;
 pub mod drafts;
 pub mod draw;

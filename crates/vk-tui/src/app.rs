@@ -589,8 +589,6 @@ async fn run_inner(
     // Host appearance from the startup probe (OSC 11 / `CSI ? 996 n`, theme auto).
     crate::appearance::on_detect(&mut app, crate::appearance::startup());
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         if app.dirty {
@@ -630,6 +628,16 @@ async fn run_inner(
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
         } else {
             Duration::from_secs(3600)
+        };
+        // No fixed tick (spec 10 §1.3.1): sleep until the earliest armed deadline, or until
+        // input / a server frame when nothing needs time.
+        let now = Instant::now();
+        let wake = crate::deadline::wake_at(app.next_deadline(now), now);
+        let timer = async move {
+            match wake {
+                Some(t) => tokio::time::sleep_until(tokio::time::Instant::from_std(t)).await,
+                None => std::future::pending::<()>().await,
+            }
         };
         tokio::select! {
             ev = events.next() => {
@@ -682,9 +690,12 @@ async fn run_inner(
                 }
                 app.dirty = true;
             }
-            _ = tick.tick() => app.on_tick(),
+            _ = timer => app.on_deadline(Instant::now()),
             _ = tokio::time::sleep(redraw_in) => {}
         }
+        // Housekeeping after every wakeup: whatever became due (by time or because of what
+        // just arrived) is handled now; the next deadline is computed from the result.
+        app.on_tick();
     }
 }
 
@@ -1519,7 +1530,7 @@ impl App {
         }
     }
 
-    fn on_tick(&mut self) {
+    pub(crate) fn on_tick(&mut self) {
         let now = Instant::now();
         let before = self.toasts.len();
         self.toasts.retain(|t| t.until > now);
@@ -1539,10 +1550,43 @@ impl App {
         crate::assist::tick(self);
         crate::browser::tick(self);
         crate::plugins::report_scroll(self, now);
-        // Keep spinners/ages in the sidebar fresh once a second.
-        if self.machines.iter().any(|m| !m.model.runs.is_empty()) {
+    }
+
+    /// A deadline woke the loop: repaint when a redraw-only one passed (an age label, the
+    /// confirm countdown, the clock); `on_tick` follows and handles the rest.
+    fn on_deadline(&mut self, now: Instant) {
+        if self.deadlines(now).redraw_due(now) {
             self.dirty = true;
         }
+    }
+
+    /// Everything that needs time in the current state (spec 10 §1.3.1). An idle client (no
+    /// toast, no countdown, no working agent, no open poller, push-capable servers) arms none.
+    pub fn deadlines(&self, now: Instant) -> crate::deadline::Deadlines {
+        let mut d = crate::deadline::Deadlines::default();
+        if let Some(t) = self.toasts.iter().map(|t| t.until).min() {
+            d.at("toast", t);
+        }
+        if let Mode::Prefix(at) = self.mode {
+            d.at(
+                "prefix",
+                at + Duration::from_millis(self.keymap.prefix_timeout_ms),
+            );
+        }
+        crate::draw::deadlines(self, now, &mut d);
+        crate::inbox::deadlines(self, now, &mut d);
+        crate::tasks::deadlines(self, now, &mut d);
+        crate::gateway::deadlines(self, now, &mut d);
+        crate::statusbar::deadlines(self, now, &mut d);
+        crate::assist::deadlines(self, now, &mut d);
+        crate::browser::deadlines(self, now, &mut d);
+        crate::plugins::deadlines(self, now, &mut d);
+        d
+    }
+
+    /// The earliest of [`App::deadlines`]; `None` = sleep until input or a server frame.
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        self.deadlines(now).next()
     }
 
     // ---- host events --------------------------------------------------------------------

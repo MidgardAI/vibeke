@@ -852,6 +852,15 @@ pub fn on_reply(app: &mut App, _mi: usize, r: Reply, res: Result<Value, RpcErr>)
 }
 
 /// Poll a confirmed request about once a second (events make it faster).
+/// While a request is being waited on: the next `assistant.get` poll.
+pub(crate) fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if let Some(f) = &app.assist
+        && matches!(f.phase, Phase::Waiting { .. })
+    {
+        d.at("assist", f.last_poll.map_or(now, |t| t + POLL));
+    }
+}
+
 pub fn tick(app: &mut App) {
     let Some(f) = &mut app.assist else {
         return;
