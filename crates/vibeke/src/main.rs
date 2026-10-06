@@ -26,6 +26,8 @@ usage:
   vibeke doctor                   diagnose install, sockets, integrations, terminal, remote
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart]
+  vibeke gateway run|pair|share|devices|revoke|status   reach this host from phone/desktop apps (E2E via a relay)
+  vibeke relay --public-url URL [--app-dir DIR]         run a self-hosted relay
   vibeke api call <method> [json]
   vibeke --skill | --default-config | --version
 
@@ -103,6 +105,26 @@ fn main() {
     if args.first().map(String::as_str) == Some("hook") {
         // Sync, no runtime: must stay within the hook latency budget (04 §7.5).
         std::process::exit(commands::hook(&args[1..]));
+    }
+    // Phone/desktop gateway and relay (spec 16): their own CLIs, own flags, own runtime.
+    if matches!(args.first().map(String::as_str), Some("gateway" | "relay")) {
+        let which = args.remove(0);
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let r = rt.block_on(async {
+            if which == "gateway" {
+                vk_gateway::cli::run_as("vibeke gateway", args).await
+            } else {
+                vk_relay::cli::run_as("vibeke relay", args).await
+            }
+        });
+        if let Err(e) = r {
+            eprintln!("vibeke {which}: {e:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
     }
     let g = match parse_global(&mut args) {
         Ok(g) => g,

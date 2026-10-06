@@ -3,6 +3,7 @@
 //! Web Push.
 
 pub mod api;
+pub mod cli;
 pub mod events;
 pub mod handoff;
 pub mod notify;

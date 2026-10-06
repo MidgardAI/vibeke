@@ -1,12 +1,12 @@
-//! `vibeke-gateway` (spec 16 §7.1).
+//! Command line for `vibeke-gateway` / `vibeke gateway`.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::state::{Scope, StateDir};
+use crate::{Gateway, pair, relay_client, server};
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use vk_gateway::state::{Scope, StateDir};
-use vk_gateway::{Gateway, pair, relay_client, server};
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +58,25 @@ enum Cmd {
         #[arg(long)]
         no_qr: bool,
     },
+    /// Share a pane or workspace with someone: an expiring, scoped invitation link (spec 16 §15.1).
+    /// With --handoff, an invitation that lets a teammate hand work to this host instead.
+    Share {
+        #[arg(long, default_value = "view", value_parser = ["view", "approve"])]
+        scope: String,
+        /// Duration, e.g. 30m, 2h, 1d.
+        #[arg(long, default_value = "2h")]
+        ttl: String,
+        #[arg(long, conflicts_with = "pane")]
+        workspace: Option<String>,
+        #[arg(long)]
+        pane: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, conflicts_with_all = ["workspace", "pane", "scope"])]
+        handoff: bool,
+        #[arg(long)]
+        no_qr: bool,
+    },
     /// List paired devices.
     Devices,
     /// Revoke a device by id or name.
@@ -66,16 +85,28 @@ enum Cmd {
     Status,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Run the CLI with `args` (without the program name). Used by the standalone binary and by
+/// `vibeke gateway`.
+pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<()> {
+    run_as("vibeke-gateway", args).await
+}
+
+/// Like [`run`], showing `prog` (e.g. `vibeke gateway`) in usage and errors.
+pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
-        .init();
-    let a = Args::parse();
-    let state = StateDir::open(a.dir.unwrap_or_else(vk_gateway::state::default_dir))?;
+        .try_init()
+        .ok();
+    use clap::{CommandFactory, FromArgMatches};
+    let m = Args::command()
+        .bin_name(prog)
+        .name(prog)
+        .get_matches_from(std::iter::once(prog.to_string()).chain(args));
+    let a = Args::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
+    let state = StateDir::open(a.dir.unwrap_or_else(crate::state::default_dir))?;
     match a.cmd {
         Cmd::Run {
             relay,
@@ -120,7 +151,7 @@ async fn main() -> Result<()> {
                 cfg.session.as_deref().unwrap_or("default"),
             );
             let gw = Gateway::new(state, server::Server::new(path))?;
-            vk_gateway::run(gw).await
+            crate::run(gw).await
         }
         Cmd::Pair {
             scope,
@@ -163,6 +194,102 @@ async fn main() -> Result<()> {
                 );
             }
             pair::wait_and_confirm(&state, &p.pid, p.exp).await
+        }
+        Cmd::Share {
+            scope,
+            ttl,
+            workspace,
+            pane,
+            label,
+            handoff,
+            no_qr,
+        } => {
+            let cfg = state.config()?;
+            let Some(relay) = cfg.relay.clone() else {
+                bail!("run `vibeke gateway run --relay <url>` once first")
+            };
+            let Some(app) = cfg.app_url.clone() else {
+                bail!("no app origin set (vibeke gateway run --app-url …)")
+            };
+            let ttl_s = parse_duration(&ttl)?;
+            let limit = if handoff {
+                None
+            } else {
+                // Resolve handles (w1, w1:p2) to ids through the server.
+                let srv = server::Server::new(server::socket_path(
+                    cfg.socket.clone(),
+                    cfg.session.as_deref().unwrap_or("default"),
+                ));
+                let call = |m: &'static str, p: serde_json::Value| {
+                    let srv = srv.clone();
+                    async move {
+                        srv.call(m, p)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{}: {}", e.kind, e.message))
+                    }
+                };
+                match (workspace, pane) {
+                    (_, Some(p)) => {
+                        let r = call("pane.get", serde_json::json!({"pane": p})).await?;
+                        let id = r
+                            .pointer("/pane/id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&p)
+                            .to_string();
+                        Some(crate::state::Limit {
+                            workspace: None,
+                            pane: Some(id),
+                        })
+                    }
+                    (Some(w), None) => {
+                        let r = call("workspace.get", serde_json::json!({"workspace": w})).await?;
+                        let id = r
+                            .pointer("/workspace/id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&w)
+                            .to_string();
+                        Some(crate::state::Limit {
+                            workspace: Some(id),
+                            pane: None,
+                        })
+                    }
+                    (None, None) => bail!("share --workspace W or --pane P (or --handoff)"),
+                }
+            };
+            let scope: Scope = if handoff { Scope::Full } else { scope.parse()? };
+            let kind = if handoff { "handoff" } else { "share" };
+            let host_name = cfg.host_name.clone().unwrap_or_else(|| "this host".into());
+            let until = crate::state::now_s() + ttl_s;
+            let spec = crate::state::ShareSpec {
+                kind: kind.into(),
+                ttl_s,
+                until,
+                limit,
+                label,
+            };
+            let (_, link) = pair::create_with(
+                &state,
+                &relay,
+                &host_name,
+                scope,
+                true,
+                Duration::from_secs(15 * 60),
+                Some(spec),
+            )?;
+            let url = link.to_url(&app);
+            if !no_qr {
+                println!("{}", pair::render_qr(&url));
+            }
+            let what = if handoff {
+                "Handoff invitation".to_string()
+            } else {
+                format!("Share ({})", scope.as_str())
+            };
+            println!("{what}, open within 15 min, access for {ttl}:\n{url}\n");
+            println!(
+                "Anyone with this link can join until it's used. Revoke later with `vibeke gateway revoke <device>`."
+            );
+            Ok(())
         }
         Cmd::Devices => {
             let devices = state.devices()?;
@@ -217,4 +344,19 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `30m`, `2h`, `1d`, `90s` or plain seconds.
+fn parse_duration(s: &str) -> Result<u64> {
+    let s = s.trim();
+    let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: u64 = n.parse().map_err(|_| anyhow::anyhow!("bad duration {s}"))?;
+    let secs = match unit {
+        "" | "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86400,
+        _ => bail!("bad duration {s} (use 30m, 2h, 1d)"),
+    };
+    Ok(secs.clamp(60, 7 * 86400))
 }

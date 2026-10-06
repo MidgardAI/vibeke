@@ -4,6 +4,7 @@
 //! relay announces them to the host, which opens a data socket (`/v1/accept`) that the relay splices
 //! with the device. The relay forwards WebSocket messages verbatim and never sees plaintext.
 
+pub mod cli;
 mod limits;
 mod splice;
 

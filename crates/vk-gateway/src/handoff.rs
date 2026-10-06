@@ -1118,7 +1118,10 @@ async fn find_repo(gw: &Gateway, m: &Manifest) -> Option<PathBuf> {
 fn remote_parts(u: &str) -> Option<(String, String)> {
     let u = u.trim();
     // Local repositories: an absolute path or file:// URL, compared exactly.
-    if let Some(path) = u.strip_prefix("file://").or(u.starts_with('/').then_some(u)) {
+    if let Some(path) = u
+        .strip_prefix("file://")
+        .or(u.starts_with('/').then_some(u))
+    {
         let path = path.trim_end_matches('/').trim_end_matches(".git");
         return (!path.is_empty()).then(|| (String::new(), path.to_string()));
     }
@@ -1428,8 +1431,17 @@ mod remote_tests {
     fn remote_matching() {
         assert!(same_remote("/srv/git/repo.git", "file:///srv/git/repo"));
         assert!(!same_remote("/srv/git/repo", "/srv/git/other"));
-        assert!(!same_remote("https://github.com/the maintainer/vibeke", "https://github.com/MidgardAI/vibeke"));
-        assert!(same_remote("https://GitHub.com/demo/vibeke/", "git@github.com:demo/vibeke.git"));
-        assert!(!same_remote("https://evil.example/path@github.com/org/repo", "git@github.com:org/repo.git"));
+        assert!(!same_remote(
+            "https://github.com/the maintainer/vibeke",
+            "https://github.com/MidgardAI/vibeke"
+        ));
+        assert!(same_remote(
+            "https://GitHub.com/demo/vibeke/",
+            "git@github.com:demo/vibeke.git"
+        ));
+        assert!(!same_remote(
+            "https://evil.example/path@github.com/org/repo",
+            "git@github.com:org/repo.git"
+        ));
     }
 }

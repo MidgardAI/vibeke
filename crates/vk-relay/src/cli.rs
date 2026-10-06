@@ -1,11 +1,11 @@
-//! `vibeke-relay`: the self-hostable relay (spec 16 §6.7).
+//! Command line for `vibeke-relay` / `vibeke relay`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::{Config, Limits, Open, Relay, StaticTokens};
 use clap::Parser;
-use vk_relay::{Config, Limits, Open, Relay, StaticTokens};
 
 #[derive(Parser)]
 #[command(
@@ -50,21 +50,36 @@ struct Args {
     max_conns: usize,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// Run the CLI with `args` (without the program name). Used by the standalone binary and by
+/// `vibeke relay`.
+pub async fn run<I: IntoIterator<Item = String>>(args: I) -> anyhow::Result<()> {
+    run_as("vibeke-relay", args).await
+}
+
+/// Like [`run`], showing `prog` (e.g. `vibeke relay`) in usage and errors.
+pub async fn run_as<I: IntoIterator<Item = String>>(
+    prog: &'static str,
+    args: I,
+) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
-        .init();
-    let a = Args::parse();
+        .try_init()
+        .ok();
+    use clap::{CommandFactory, FromArgMatches};
+    let m = Args::command()
+        .bin_name(prog)
+        .name(prog)
+        .get_matches_from(std::iter::once(prog.to_string()).chain(args));
+    let a = Args::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
     let limits = Limits {
         conn_bytes_per_sec: a.conn_bytes_per_sec,
         max_hosts: a.max_hosts,
         max_conns: a.max_conns,
         ..Limits::default()
     };
-    let auth: Box<dyn vk_relay::Authorizer> = if a.host_tokens.is_empty() {
+    let auth: Box<dyn crate::Authorizer> = if a.host_tokens.is_empty() {
         Box::new(Open)
     } else {
         Box::new(StaticTokens(a.host_tokens))
