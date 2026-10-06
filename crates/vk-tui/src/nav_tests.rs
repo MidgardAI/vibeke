@@ -630,3 +630,120 @@ fn palette_and_goto_draw_with_highlights() {
     assert!(text.contains("api ⎇ feature/login"));
     assert!(text.contains("workspace"));
 }
+
+// ---- goto secondary action (ctrl+enter / alt+enter) and jj display -------------------------------
+
+fn goto_with(app: &mut App, q: &str) {
+    app.mode = Mode::Popup(Popup::Goto {
+        filter: String::new(),
+        sel: 0,
+    });
+    for c in q.chars() {
+        app.on_key(ch(c));
+    }
+}
+
+fn enter_with(mods: Mods) -> KeyEvent {
+    KeyEvent::new(Key::Named(NamedKey::Enter), mods)
+}
+
+#[test]
+fn goto_ctrl_enter_and_alt_enter_split_next_to_the_current_pane() {
+    for mods in [Mods::CTRL, Mods::ALT] {
+        let (mut app, mut rxs) = fleet();
+        goto_with(&mut app, "~web");
+        drain(&mut rxs[0]);
+        app.on_key(enter_with(mods));
+        let cmds = commands(&mut rxs[0]);
+        assert_eq!(cmds.len(), 1, "{cmds:?}");
+        assert_eq!(cmds[0].0, "pane.split");
+        assert_eq!(cmds[0].1["pane"], "p1");
+        assert_eq!(cmds[0].1["cwd"], "/src/web");
+        assert_eq!(cmds[0].1["focus"], true);
+        assert!(matches!(app.mode, Mode::Normal), "popup closed");
+        // A pane target splits in that pane's cwd.
+        goto_with(&mut app, "vite");
+        drain(&mut rxs[0]);
+        app.on_key(enter_with(mods));
+        let cmds = commands(&mut rxs[0]);
+        assert_eq!(cmds[0].0, "pane.split");
+        assert_eq!(cmds[0].1["cwd"], "/src/api");
+    }
+}
+
+#[test]
+fn goto_plain_enter_still_only_jumps() {
+    let (mut app, mut rxs) = fleet();
+    goto_with(&mut app, "~web");
+    drain(&mut rxs[0]);
+    app.on_key(enter_with(Mods::empty()));
+    assert!(
+        commands(&mut rxs[0])
+            .iter()
+            .all(|(m, _)| m != "pane.split" && m != "workspace.create")
+    );
+}
+
+#[test]
+fn goto_alt_enter_on_a_path_creates_a_workspace() {
+    for mods in [Mods::CTRL, Mods::ALT] {
+        let (mut app, mut rxs) = fleet();
+        goto_with(&mut app, "/src/new");
+        drain(&mut rxs[0]);
+        app.on_key(enter_with(mods));
+        let cmds = commands(&mut rxs[0]);
+        assert_eq!(cmds.len(), 1, "{cmds:?}");
+        assert_eq!(cmds[0].0, "workspace.create");
+        assert_eq!(cmds[0].1["cwd"], "/src/new");
+        assert_eq!(cmds[0].1["focus"], true);
+    }
+    assert_eq!(goto_path("~"), None);
+    assert_eq!(goto_path("login"), None);
+}
+
+#[test]
+fn goto_hint_and_path_row_draw() {
+    let (mut app, _rx) = fleet();
+    goto_with(&mut app, "/src/new");
+    let mut g = Grid::new(120, 40);
+    crate::draw::compose(&app, &mut g);
+    let text = grid_text(&g);
+    assert!(text.contains("alt+enter split"), "{text}");
+    assert!(
+        text.contains("ctrl+enter / alt+enter: new workspace at /src/new"),
+        "{text}"
+    );
+}
+
+#[test]
+fn jj_label_replaces_branch_in_sidebar_goto_and_status_bar() {
+    let (mut app, _rx) = fleet();
+    app.machines[0].model.panes[0].jj = Some("main,dev".into());
+    app.machines[0].model.panes[1].jj = Some("kxyzabcd".into());
+    app.config.ui.sidebar.show_shell_panes = true;
+    app.config.ui.status_bar.enabled = true;
+    app.config.ui.status_bar.left = vec!["branch".into()];
+    let mut g = Grid::new(140, 40);
+    crate::draw::compose(&app, &mut g);
+    let text = grid_text(&g);
+    // Workspace row: the focused pane's bookmarks instead of the recorded branch.
+    assert!(text.contains("api ⎇ main,dev"), "{text}");
+    assert!(!text.contains("feature/login"), "{text}");
+    // Shell pane row: its own change id.
+    assert!(text.contains("shell ⎇ kxyzabcd"), "{text}");
+    // Status bar segment follows the focused pane.
+    assert!(
+        text.lines()
+            .any(|l| l.contains("⎇ main,dev") && !l.contains("api")),
+        "{text}"
+    );
+    // Goto labels use it too.
+    let r = goto_ranked(&app, "~api");
+    assert!(r[0].0.label.contains("⎇ main,dev"), "{}", r[0].0.label);
+    // Without jj the git branch shows as before; other workspaces are unaffected.
+    app.machines[0].model.panes[0].jj = None;
+    let mut g = Grid::new(140, 40);
+    crate::draw::compose(&app, &mut g);
+    assert!(grid_text(&g).contains("api ⎇ feature/login"));
+    assert!(grid_text(&g).contains("web ⎇ main"));
+}

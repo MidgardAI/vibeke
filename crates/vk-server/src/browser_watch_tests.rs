@@ -187,6 +187,7 @@ impl Env {
             recovered: None,
             isolation: Default::default(),
             browser: None,
+            jj: None,
         });
         self.server.commit(&mut c, tx).unwrap();
         drop(c);
