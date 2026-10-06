@@ -1,0 +1,19 @@
+[package]
+name = "vk-sandbox"
+description = "Execution isolation (spec 13): runners, Seatbelt/bubblewrap profiles, egress proxy, credential projection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vk-proto = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

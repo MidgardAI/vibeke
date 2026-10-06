@@ -25,6 +25,7 @@ vk-cli = { path = "crates/vk-cli" }
 vk-compat = { path = "crates/vk-compat" }
 vk-redact = { path = "crates/vk-redact" }
 vk-config = { path = "crates/vk-config" }
+vk-sandbox = { path = "crates/vk-sandbox" }
 
 anyhow = "1"
 base64 = "0.22"

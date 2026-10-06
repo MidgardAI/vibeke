@@ -1442,8 +1442,18 @@ impl App {
         let Some(pane) = self.focused_pane() else {
             return;
         };
-        // Dropped/pasted local paths into panes that can't see them (06 A11).
-        if !self.m().local && !matches!(self.config.paste.translate, vk_config::PasteTranslate::Off)
+        // Dropped/pasted local paths into panes that can't see them (06 A11): remote panes,
+        // and local sandboxed/container panes for paths outside what the box can read (13 §5).
+        let contained_roots = self
+            .m()
+            .model
+            .panes
+            .iter()
+            .find(|p| p.id == pane && p.isolation.is_contained())
+            .map(|p| p.isolation.visible_roots.clone());
+        let local = self.m().local;
+        if (!local || contained_roots.is_some())
+            && !matches!(self.config.paste.translate, vk_config::PasteTranslate::Off)
         {
             let parsed = match self.config.paste.translate {
                 vk_config::PasteTranslate::Embedded => paste::parse_embedded(&text),
@@ -1453,7 +1463,11 @@ impl App {
                 let home = std::env::var_os("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_default();
-                if paste::existing_local_paths(&parsed, &home) {
+                let visible_in_box = local
+                    && contained_roots
+                        .as_ref()
+                        .is_some_and(|roots| paste::all_under(&parsed, &home, roots));
+                if paste::existing_local_paths(&parsed, &home) && !visible_in_box {
                     crate::upload::translate_paste(self, &pane, text, parsed, &home);
                     return;
                 }
@@ -2602,5 +2616,81 @@ mod pending_tests {
         assert!(!app.mutate(0, "task.track", json!({"run": "r1"}), Pending::Ignore));
         assert!(app.pending_ops.ops.is_empty());
         assert!(commands(&mut rxs[0]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+
+    fn pane(id: &str, iso: Value) -> Pane {
+        serde_json::from_value(json!({
+            "id": id, "handle": "w1:p1", "tab": "t", "workspace": "w", "title": null,
+            "auto_title": "zsh", "cwd": null, "cols": 80, "rows": 24, "child_pid": null,
+            "fg_cmdline": [], "exited": false, "exit_code": null, "unread": false,
+            "marked_unread": false, "pinned": false, "created_by": "user", "recovered": null,
+            "isolation": iso
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn yolo_badge_and_isolation_glyph() {
+        let (mut app, _rxs) = test_app(1);
+        let mut r = test_run("r1", "p1", "claude");
+        r.yolo = true;
+        app.machines[0].model.runs.push(r);
+        app.machines[0].model.panes.push(pane("p1", json!({})));
+        let row = crate::draw::agent_row_text(&app, 0, "r1");
+        assert!(row.contains("YOLO·HOST"), "{row}");
+        app.machines[0].model.panes[0] = pane(
+            "p1",
+            json!({"level": "sandbox", "provider": "seatbelt", "network": "none", "yolo": true, "scope": "pane", "visible_roots": []}),
+        );
+        let row = crate::draw::agent_row_text(&app, 0, "r1");
+        assert!(row.contains("sb·none "), "{row}");
+        assert!(row.contains("YOLO ") && !row.contains("YOLO·HOST"), "{row}");
+    }
+
+    #[test]
+    fn local_sandbox_paste_translates_only_outside_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("co")).unwrap();
+        std::fs::create_dir_all(root.join("Desktop")).unwrap();
+        std::fs::write(root.join("co/a.rs"), "x").unwrap();
+        std::fs::write(root.join("Desktop/shot.png"), "x").unwrap();
+        let (mut app, mut rxs) = test_app(1);
+        assert!(app.machines[0].local);
+        app.machines[0].model.panes.push(pane(
+            "p1",
+            json!({"level": "sandbox", "provider": "seatbelt", "network": "dev", "yolo": false, "scope": "pane", "visible_roots": [root.join("co")]}),
+        ));
+        app.machines[0].focus.pane = Some("p1".into());
+        // Inside the checkout: pasted untouched.
+        let inside = root.join("co/a.rs").to_string_lossy().into_owned();
+        app.on_paste(inside.clone());
+        let mut sent = None;
+        while let Ok(f) = rxs[0].try_recv() {
+            if let ClientFrame::Paste { text, .. } = f {
+                sent = Some(text);
+            }
+        }
+        assert_eq!(sent.as_deref(), Some(inside.as_str()));
+        // Outside (Desktop): goes through the A11 translation path (Ask mode in tests).
+        app.on_paste(root.join("Desktop/shot.png").to_string_lossy().into_owned());
+        assert!(matches!(app.mode, Mode::Popup(Popup::PasteAsk { .. })));
+    }
+
+    #[test]
+    fn local_host_paste_is_never_translated() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("shot.png");
+        std::fs::write(&f, "x").unwrap();
+        let (mut app, _rxs) = test_app(1);
+        app.machines[0].model.panes.push(pane("p1", json!({})));
+        app.machines[0].focus.pane = Some("p1".into());
+        app.on_paste(f.to_string_lossy().into_owned());
+        assert!(matches!(app.mode, Mode::Normal));
     }
 }

@@ -406,6 +406,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
             v.extend(
                 crate::agents::METHODS
                     .iter()
+                    .chain(crate::sandbox::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
@@ -988,9 +989,19 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            // A sandboxed pane sees only its allowlist (13 §5, 06 A11.4).
+            let pane = s(p, "pane").and_then(|t| resolve_pane(server, ctx, Some(t)).ok());
             let visible: Vec<bool> = paths
                 .iter()
-                .map(|x| x.as_str().is_some_and(|s| std::path::Path::new(s).exists()))
+                .map(|x| {
+                    x.as_str().is_some_and(|path| {
+                        std::path::Path::new(path).exists()
+                            && pane
+                                .as_ref()
+                                .and_then(|pn| crate::sandbox::can_see(server, &pn.id, path))
+                                .unwrap_or(true)
+                    })
+                })
                 .collect();
             Ok(json!({"visible": visible}))
         }

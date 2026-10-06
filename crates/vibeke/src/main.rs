@@ -100,6 +100,15 @@ fn main() {
     {
         std::process::exit(debug::ptyshot(&args[2..]));
     }
+    // Sandbox launch helpers (13): exec-only, no runtime, must not spawn threads first.
+    if args.first().map(String::as_str) == Some("sandbox")
+        && matches!(
+            args.get(1).map(String::as_str),
+            Some("exec" | "bwrap" | "inner")
+        )
+    {
+        std::process::exit(vk_sandbox::exec::main(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("hook") {
         // Sync, no runtime: must stay within the hook latency budget (04 §7.5).
         std::process::exit(commands::hook(&args[1..]));

@@ -274,6 +274,16 @@ pub fn existing_local_paths(p: &ParsedPaste, home: &Path) -> bool {
             .all(|t| std::fs::metadata(t.local_path(home)).is_ok_and(|m| m.is_file() || m.is_dir()))
 }
 
+/// True if every token resolves under one of `roots` (06 A11.4: a local sandboxed pane can
+/// already read its checkout and the inbox, so those pastes go through untouched).
+pub fn all_under(p: &ParsedPaste, home: &Path, roots: &[String]) -> bool {
+    p.tokens.iter().all(|t| {
+        let f = t.local_path(home);
+        let f = f.canonicalize().unwrap_or(f);
+        roots.iter().any(|r| f.starts_with(r))
+    })
+}
+
 fn shell_safe(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphanumeric() || "/._-+@%:,=~".contains(c)
@@ -728,6 +738,28 @@ mod tests {
             tokens: vec![],
         };
         assert!(!existing_local_paths(&empty, home));
+    }
+
+    #[test]
+    fn sandbox_visible_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("co/src")).unwrap();
+        std::fs::create_dir_all(root.join("Desktop")).unwrap();
+        std::fs::write(root.join("co/src/a.rs"), b"x").unwrap();
+        std::fs::write(root.join("Desktop/shot.png"), b"x").unwrap();
+        let roots = vec![root.join("co").to_string_lossy().into_owned()];
+        let inside = parse_paste(root.join("co/src/a.rs").to_str().unwrap()).unwrap();
+        assert!(all_under(&inside, &root, &roots));
+        let outside = parse_paste(root.join("Desktop/shot.png").to_str().unwrap()).unwrap();
+        assert!(!all_under(&outside, &root, &roots));
+        let mixed = parse_paste(&format!(
+            "{} {}",
+            root.join("co/src/a.rs").display(),
+            root.join("Desktop/shot.png").display()
+        ))
+        .unwrap();
+        assert!(!all_under(&mixed, &root, &roots));
     }
 
     #[test]

@@ -57,6 +57,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         }
     });
     crate::agents::start(&server);
+    crate::sandbox::restore(&server).await;
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -439,6 +440,11 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
             r
         }
         "task.create" => task_create(server, ctx, p).await,
+        m if m.starts_with("sandbox.")
+            && let Some(r) = crate::sandbox::api(server, ctx, m, p).await =>
+        {
+            r
+        }
         "policy.trust" => policy_trust(server, p),
         "task.list" => Ok(json!({"tasks": server.with_core(|c| c.model.tasks.clone())})),
         "task.get" => {
@@ -526,6 +532,14 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .unwrap_or_else(|| ".".into());
     let info = vk_tasks::repo_root(Path::new(&repo))
         .ok_or_else(|| invalid(format!("{repo} is not inside a git repository")))?;
+    // Execution isolation (13 §3): validate before creating anything.
+    let mut iso_req = crate::sandbox::IsoRequest::from_params(p, &crate::sandbox::load_cfg())?;
+    if iso_req.level == vk_proto::model::IsolationLevel::Vm {
+        return Err(err(
+            ErrorKind::Unsupported,
+            "the vm isolation level ships in M4; use --isolate sandbox",
+        ));
+    }
     let cfg = task_cfg(p);
     let creq = vk_tasks::CreateRequest {
         repo: info.root.clone(),
@@ -564,6 +578,33 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         })
         .ok();
     let cwd = checkout.path.to_string_lossy().into_owned();
+    let mut isolation = vk_proto::model::Isolation {
+        yolo: iso_req.yolo,
+        ..Default::default()
+    };
+    if iso_req.level != vk_proto::model::IsolationLevel::Host {
+        iso_req.harnesses = p
+            .get("agents")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|x| {
+                        x.get("harness")
+                            .and_then(Value::as_str)
+                            .unwrap_or("claude")
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(l) = &lease {
+            iso_req.local_ports.extend(l.start..=l.end);
+        }
+        let b =
+            crate::sandbox::prepare_box(server, &id, Some(&id), &checkout.path, iso_req.clone())
+                .await?;
+        isolation = b.isolation.clone();
+    }
     let (ws, _tab, pane) = server
         .create_workspace(
             &cwd,
@@ -590,6 +631,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         setup_status: None,
         created_at_ms: vk_store::now_ms(),
         owner_machine: server.opts.machine.clone(),
+        isolation,
         ..Default::default()
     };
     {
@@ -674,7 +716,12 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             let harness = a.get("harness").and_then(Value::as_str).unwrap_or("claude");
             let name = a.get("name").and_then(Value::as_str);
             let prompt = a.get("prompt").and_then(Value::as_str);
-            match crate::agents::start_in_pane(
+            let opts = crate::sandbox::LaunchOpts {
+                yolo: iso_req.yolo,
+                isolate: Some(iso_req.level),
+                network: None,
+            };
+            match crate::agents::start_in_pane_opts(
                 server,
                 &pane.id,
                 harness,
@@ -682,6 +729,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 prompt,
                 &[],
                 Some(&id),
+                &opts,
             )
             .await
             {
@@ -737,6 +785,7 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
         vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?,
     );
     let _ = leases.release(&task.id);
+    crate::sandbox::teardown(server, &task.id);
     let mut job = None;
     if remove && let Some(path) = task.worktree_path.clone() {
         let srv = server.clone();
