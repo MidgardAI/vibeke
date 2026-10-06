@@ -2968,6 +2968,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vk-fuzz"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "vk-agents",
+ "vk-browser",
+ "vk-compat",
+ "vk-preview",
+ "vk-proto",
+ "vk-remote",
+ "vk-server",
+ "vk-term",
+]
+
+[[package]]
 name = "vk-gateway"
 version = "0.1.0"
 dependencies = [

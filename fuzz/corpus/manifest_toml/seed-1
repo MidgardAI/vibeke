@@ -1,0 +1,70 @@
+# Built-in manifest: Codex CLI (spec 04 §6.2). Code-backed like claude.toml.
+schema = 1
+id = "codex"
+name = "Codex CLI"
+
+[detect]
+priority = 100
+remote_loop = "codex_daemon"
+[[detect.process]]
+exe_basename = ["codex", ".codex-wrapped", "codex-aarch64-apple-darwin", "codex-x86_64-unknown-linux-musl", "codex-aarch64-unknown-linux-musl"]
+[[detect.process]]
+interpreter = ["node", "bun", "deno"]
+script_regex = '(@openai/codex|/codex$|/codex\.js$)'
+
+[version]
+command = ["codex", "--version"]
+validated = ">=0.157.0, <0.161.0"
+
+[launch]
+argv = ["codex"]
+session_id_format = "none"
+prompt_arg = "trailing"
+
+[resume]
+argv = ["codex", "resume", "{resume_id}"]
+
+[integration]
+transports = ["hooks", "transcript", "screen"]
+install = "builtin:codex"
+headless = "app_server"
+
+[[capabilities]]
+versions = ">=0.157.0, <0.161.0"
+mode = "tui"
+observe = true
+gate = true
+answer_native = ["approval"]
+answer_keystroke = true
+resume = true
+survive_disconnect = true
+
+[yolo]
+flags = ["--dangerously-bypass-approvals-and-sandbox", "--yolo"]
+
+[screen]
+rows = 40
+[[screen.rules]]
+id = "approval"
+opens = "approval"
+all = ['(?i)(would you like to (run|make|apply|allow)[^?]*\?|allow (this|command|the following)[^?]*\?)']
+confidence = 0.95
+title_regex = '(?i)((would you like to|allow) [^?]*\?)'
+[screen.rules.dialog]
+pointer = "›"
+accelerators = "letters"
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['esc to interrupt', 'Esc to interrupt', '(?m)^\s*• Working', 'Working \(']
+confidence = 0.8
+
+[[screen.rules]]
+id = "input_box"
+state = "idle"
+any = ['(?m)^\s*›', '(?m)^\s*>']
+confidence = 0.6
+
+[ui]
+interrupt_keys = ["esc"]

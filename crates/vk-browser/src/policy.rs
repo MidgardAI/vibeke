@@ -245,7 +245,17 @@ impl AllowRule {
         match self {
             AllowRule::Cidr { net, bits, port: p } => {
                 let ok = match (canonical(*net), canonical(ip)) {
-                    (IpAddr::V4(n), IpAddr::V4(a)) => in_v4(a, n.octets(), u32::from(*bits)),
+                    (IpAddr::V4(n), IpAddr::V4(a)) => {
+                        // A v4-mapped v6 rule (`::ffff:10.0.0.0/104`) counts its prefix from
+                        // bit 96; one shorter than that cannot describe a v4 range (fuzz: this
+                        // used to overflow the shift).
+                        let bits = if net.is_ipv6() {
+                            u32::from(*bits).checked_sub(96)
+                        } else {
+                            Some(u32::from(*bits))
+                        };
+                        bits.is_some_and(|b| in_v4(a, n.octets(), b))
+                    }
                     (IpAddr::V6(n), IpAddr::V6(a)) => in_v6(a, n, u32::from(*bits)),
                     _ => false,
                 };
@@ -611,6 +621,25 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// Found by the vk-fuzz `policy_match` target: a v4-mapped v6 rule with a /128 prefix
+    /// shifted a u32 by a negative amount.
+    #[test]
+    fn mapped_v6_rule_prefix_is_relative_to_bit_96() {
+        let mut p = Policy::default();
+        p.allow
+            .push(AllowRule::parse("::ffff:10.0.0.7/128").unwrap());
+        assert!(p.decide_ip("x", ip("10.0.0.7"), 80, Kind::Unknown).allow);
+        assert!(!p.decide_ip("x", ip("10.0.0.8"), 80, Kind::Unknown).allow);
+        let mut p = Policy::default();
+        p.allow
+            .push(AllowRule::parse("::ffff:10.0.0.0/104").unwrap());
+        assert!(p.decide_ip("x", ip("10.9.9.9"), 80, Kind::Unknown).allow);
+        // A prefix shorter than 96 cannot describe a v4 range: no match, no panic.
+        let mut p = Policy::default();
+        p.allow.push(AllowRule::parse("::ffff:10.0.0.0/8").unwrap());
+        assert!(!p.decide_ip("x", ip("10.0.0.1"), 80, Kind::Unknown).allow);
     }
 
     #[test]

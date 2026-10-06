@@ -35,3 +35,15 @@ run = "sh scripts/dist.sh"
 [tasks.pi-extension]
 description = "Test and rebuild the pi/omp extension bundle (integrations/pi-extension/dist/vibeke.js is committed and embedded by vk-agents)"
 run = "cd integrations/pi-extension && bun install && bun test && bun run build"
+
+[tasks.fuzz]
+description = "Optional: run the cargo-fuzz targets (needs nightly + cargo-fuzz; not part of ci). FUZZ_TIME seconds per target (default 60), FUZZ_TARGET to pick one"
+run = "sh scripts/fuzz.sh"
+
+[tasks.fuzz-smoke]
+description = "Stable bounded property run of every fuzz target (same functions as fuzz/); VK_FUZZ_CASES / VK_FUZZ_SEED tune it"
+run = "cargo test --release -p vk-fuzz --test random"
+
+[tasks.perf-budgets]
+description = "Report-only: run the latency/throughput/bandwidth measurements and compare with spec 10 §1 budgets"
+run = "sh scripts/perf-budgets.sh"

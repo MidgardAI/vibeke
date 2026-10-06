@@ -1,0 +1,58 @@
+# Built-in manifest: generic ACP agent (spec 04 §6.6). Runs launched by Vibeke as
+# `vibeke acp-host --harness <id> -- <agent argv>`: the host speaks the Agent Client Protocol to
+# the agent over stdio and maps it onto Vibeke signals; permission requests are answered natively
+# through ACP. `acp:<name>` ids are synthesized from this manifest (`extends = "acp"`).
+# Capabilities are protocol-level and covered by the fake-agent tests (crates/vk-server
+# agents/acp.rs, crates/vibeke/tests/harnesses.rs), not by live third-party agents.
+schema = 1
+id = "acp"
+name = "ACP agent"
+
+[launch]
+transport = "acp"
+session_id_format = "none"
+prompt_arg = "none"
+
+[integration]
+transports = ["acp", "screen"]
+headless = "acp"
+
+[[capabilities]]
+versions = "*"
+mode = "tui"
+observe = true
+gate = true
+answer_native = ["approval"]
+answer_keystroke = true
+
+[screen]
+rows = 20
+# The host's own permission prompt (rendered in the pane; agents/acp.rs `render_permission`).
+[[screen.rules]]
+id = "permission"
+opens = "approval"
+# Only while the prompt is the last thing on screen (answered prompts stay in scrollback).
+all = ['(?s)⏵ permission: [^\n]*\n.*Choose 1-\d then Enter:[^\n]*\s*\z']
+confidence = 0.95
+title_regex = '(?s).*⏵ permission: ([^\n]+)'
+command_regex = '(?s).*⏵ permission: [^\n]*\n  \$ ([^\n]+)'
+[screen.rules.dialog]
+options_regex = '^\s*(?P<n>[1-9])\.\s+(?P<label>.+?)\s*$'
+pointer = ""
+accelerators = "digits"
+confirm = "enter"
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['(?m)^… working']
+confidence = 0.7
+
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?m)^acp› ']
+confidence = 0.6
+
+[ui]
+interrupt_keys = ["esc"]

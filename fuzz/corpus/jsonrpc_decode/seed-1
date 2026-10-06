@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":"x\u2028y","method":"pane.send_keys","params":{"keys":["ctrl+c"]}}

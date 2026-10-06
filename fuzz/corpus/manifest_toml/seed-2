@@ -1,0 +1,59 @@
+# Built-in manifest: pi (spec 04 §6.3). Code-backed like claude.toml.
+schema = 1
+id = "pi"
+name = "pi"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["pi"]
+[[detect.process]]
+interpreter = ["node", "bun"]
+script_regex = 'pi-coding-agent'
+
+[version]
+command = ["pi", "--version"]
+validated = ">=0.84.0, <0.91.0"
+
+[launch]
+argv = ["pi"]
+argv_with_session = ["pi", "--session-id", "{session_id}"]
+session_id_format = "uuid"
+prompt_arg = "trailing"
+
+[resume]
+argv = ["pi", "--session", "{resume_id}"]
+
+[integration]
+transports = ["extension", "transcript", "screen"]
+install = "builtin:pi"
+headless = "rpc"
+
+[[capabilities]]
+versions = ">=0.84.0, <0.91.0"
+mode = "tui"
+observe = true
+answer_native = ["extension_dialog"]
+reconcile = true
+resume = true
+survive_disconnect = true
+
+[yolo]
+always = true
+
+[screen]
+rows = 40
+[[screen.rules]]
+id = "dialog"
+opens = "approval"
+all = ['(?i)(do you want to|allow|approve|proceed)[^?]*\?']
+confidence = 0.8
+title_regex = '(?i)((do you want to|allow|approve|proceed)[^?]*\?)'
+[screen.rules.dialog]
+accelerators = "arrows"
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['esc to interrupt', 'Esc to interrupt', 'Working\.\.\.']
+confidence = 0.8
