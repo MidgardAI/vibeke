@@ -3,23 +3,24 @@
 // 960–1099px: inline sidebar, the panel overlays the centre.
 // <960px: the sidebar is a drawer (menu button) and the panel covers the screen.
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { FileDiff, FolderTree, PanelRightClose, Plus, Server } from 'lucide-react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { FileDiff, Plus, Server } from 'lucide-react';
 import { Dialog } from '../components/dialog';
-import { Button, Empty, HarnessIcon, IconButton, Spinner, StatusDot, Tabs, cx } from '../components/ui';
+import { Button, Empty, HarnessIcon, IconButton, Spinner, StatusDot, cx } from '../components/ui';
 import { t } from '../i18n';
 import { PANEL_MAX, PANEL_MIN } from '../lib/prefs';
 import { keyLabel } from '../lib/shortcuts';
 import type { PaneRow } from '../lib/tree';
 import type { WorkspaceRow } from '../lib/workspaces';
 import { navigate, type PaneView, type PanelKind, type Route, type WorkspaceRoute } from '../router';
-import { ChangesPanel } from '../screens/changes';
 import { PaneScreen } from '../screens/pane/pane-screen';
 import { useApp, useHost, usePrefs } from './hooks';
 import { emitUi, isMacLike } from './keyboard';
 import { currentLayoutMode, drawerOpen, effectivePanel, rememberTab, selectedPane, togglePanelRoute, useDrawer, useWorkspaceRows, type LayoutMode } from './selection';
 import { MenuButton, WideContext, useMediaQuery, useWide } from './shell';
 import { Sidebar } from './sidebar';
+
+const LazyRightPanel = lazy(() => import('../screens/workspace/panel/right-panel'));
 
 export function useLayoutMode(): LayoutMode {
   const wide = useMediaQuery('(min-width: 1100px)');
@@ -75,7 +76,7 @@ export function Layout({ route, children }: { route: Route; children: ReactNode 
             className="fixed inset-0 z-40 flex"
             panelClassName="app-panel animate-drawer-r flex h-full w-full flex-col bg-bg pt-safe outline-none"
           >
-            <RightPanel route={route} kind={panel} />
+            <RightPanel route={route} kind={panel} sheet />
           </Dialog>
         )}
         <Dialog
@@ -146,39 +147,18 @@ function DockedPanel({ route, kind }: { route: WorkspaceRoute; kind: PanelKind }
   );
 }
 
-/** Changes / Files panel of a workspace (Phase 1: the existing changes list for the selected pane). */
-function RightPanel({ route, kind }: { route: WorkspaceRoute; kind: PanelKind }) {
-  const app = useApp();
-  const rows = useWorkspaceRows();
-  const toggle = useTogglePanel();
-  const mac = isMacLike(app.platform.mac);
-  const row = rows.find((r) => r.host === route.host && r.workspace.id === route.workspace);
-  const pane = selectedPane(route, row);
+/** Changes / Files panel of a workspace (lazy: screens/workspace/panel). */
+function RightPanel({ route, kind, sheet }: { route: WorkspaceRoute; kind: PanelKind; sheet?: boolean }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="titlebar flex h-11 shrink-0 items-center gap-1 border-b border-border px-2">
-        <Tabs
-          label={t.workspace.panel}
-          value={kind}
-          onChange={(k) => k !== kind && toggle(route, k)}
-          items={[
-            { value: 'files', label: t.workspace.files, icon: <FolderTree /> },
-            { value: 'changes', label: t.workspace.changes, icon: <FileDiff /> },
-          ]}
-        />
-        <span className="flex-1" />
-        <IconButton label={`${t.workspace.closePanel} (${keyLabel(mac, 'mod+3')})`} onClick={() => toggle(route, kind)}>
-          <PanelRightClose />
-        </IconButton>
-      </div>
-      {kind === 'files' ? (
-        <Empty icon={<FolderTree />} title={t.workspace.filesUnsupported} hint={t.workspace.filesUnsupportedHint} />
-      ) : pane ? (
-        <ChangesPanel only={{ host: route.host, pane }} />
-      ) : (
-        <Empty icon={<FileDiff />} title={t.changes.noPane} />
-      )}
-    </div>
+    <Suspense
+      fallback={
+        <div className="flex flex-1 items-center justify-center">
+          <Spinner />
+        </div>
+      }
+    >
+      <LazyRightPanel route={route} kind={kind} sheet={sheet} />
+    </Suspense>
   );
 }
 
