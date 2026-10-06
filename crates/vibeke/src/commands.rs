@@ -21,6 +21,10 @@ pub fn load_config() -> vk_config::Config {
 // ---- attach ---------------------------------------------------------------------------------
 
 pub async fn attach(g: &Global, _args: &[String]) -> i32 {
+    if let Some(m) = &g.machine {
+        // `vibeke --machine host attach` attaches to that machine (with the remote focused).
+        return crate::remote::ssh(g, std::slice::from_ref(m)).await;
+    }
     if std::env::var("VIBEKE").as_deref() == Ok("1")
         && std::env::var("VIBEKE_SESSION").as_deref() == Ok(g.session.as_str())
     {
@@ -41,6 +45,7 @@ pub async fn attach(g: &Global, _args: &[String]) -> i32 {
     let opts = vk_tui::app::Opts {
         session: g.session.clone(),
         config,
+        initial_machine: 0,
     };
     match vk_tui::app::run(opts, specs).await {
         Ok(reason) => {
@@ -96,6 +101,18 @@ pub async fn server(g: &Global, args: &[String]) -> i32 {
                 vk_cli::run_api(&mut c, g, "server.stop", json!({})).await
             })
             .await;
+            if g.machine.is_some() {
+                // The remote bridge starts the remote server on the next connection.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                return crate::with_client(g, |mut c| async move {
+                    let code = vk_cli::run_api(&mut c, g, "server.status", json!({})).await;
+                    if code == EXIT_OK {
+                        eprintln!("remote server restarted");
+                    }
+                    code
+                })
+                .await;
+            }
             let socket = client::socket_path(&g.session, g.socket.as_deref());
             for _ in 0..50 {
                 if tokio::net::UnixStream::connect(&socket).await.is_err() {

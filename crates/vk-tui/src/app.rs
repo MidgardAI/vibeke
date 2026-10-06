@@ -199,6 +199,8 @@ pub struct App {
 pub struct Opts {
     pub session: String,
     pub config: vk_config::Config,
+    /// Machine to show first (e.g. the remote for `vibeke ssh host`).
+    pub initial_machine: usize,
 }
 
 /// A connection request for a machine (local socket or remote bridge stream).
@@ -304,7 +306,7 @@ async fn run_inner(
             .iter()
             .map(|s| Machine::new(&s.label, s.local))
             .collect(),
-        cur: 0,
+        cur: opts.initial_machine.min(specs.len().saturating_sub(1)),
         size: term::size(),
         caps: HostCaps {
             truecolor: probe.truecolor

@@ -98,16 +98,38 @@ pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
     vec![shell, "-l".into()]
 }
 
+fn token_hash(token: &str) -> String {
+    blake3::hash(token.as_bytes()).to_hex().to_string()
+}
+
 impl Server {
     pub fn new(paths: Paths, opts: ServerOpts) -> Result<Arc<Self>> {
         paths.ensure()?;
         let store = vk_store::Store::open(&paths.db())?;
-        let core = Core::load(store, &opts.session, &opts.machine)?;
-        let tokens: HashMap<String, String> = core
+        let mut core = Core::load(store, &opts.session, &opts.machine)?;
+        // Pane tokens are stored as blake3 hashes only (09 §3.2). Migrate the old raw record.
+        let mut tokens: HashMap<String, String> = core
             .store
-            .kv_get("server", "pane_tokens")?
+            .kv_get("server", "pane_token_hashes")?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        if let Some(raw) = core
+            .store
+            .kv_get("server", "pane_tokens")?
+            .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+        {
+            for (tok, pane) in raw {
+                tokens.insert(token_hash(&tok), pane);
+            }
+            let mut m = vk_store::Mutation::default();
+            m.kv(
+                "server",
+                "pane_token_hashes",
+                Some(serde_json::to_string(&tokens).unwrap_or_default()),
+            )
+            .kv("server", "pane_tokens", None);
+            core.store.commit(m)?;
+        }
         let (model_rev, _) = watch::channel(1);
         let (events, _) = broadcast::channel(4096);
         let (ui, _) = broadcast::channel(256);
@@ -173,27 +195,27 @@ impl Server {
         self.panes.lock().unwrap().get(id).cloned()
     }
 
+    /// Mint a token for a pane's (new) environment. Earlier tokens for the pane are revoked:
+    /// only the process tree started with this environment holds a valid one.
     pub fn token_for(&self, pane: &str) -> String {
         let mut t = self.tokens.lock().unwrap();
-        if let Some((tok, _)) = t.iter().find(|(_, p)| *p == pane) {
-            return tok.clone();
-        }
+        t.retain(|_, p| p != pane);
         let tok: String = (0..32)
             .map(|_| format!("{:02x}", rand::random::<u8>()))
             .collect();
-        t.insert(tok.clone(), pane.to_string());
+        t.insert(token_hash(&tok), pane.to_string());
         tok
     }
 
     pub fn pane_for_token(&self, token: &str) -> Option<String> {
-        self.tokens.lock().unwrap().get(token).cloned()
+        self.tokens.lock().unwrap().get(&token_hash(token)).cloned()
     }
 
     fn persist_tokens(&self, tx: &mut Tx) {
         let t = self.tokens.lock().unwrap();
         tx.m.kv(
             "server",
-            "pane_tokens",
+            "pane_token_hashes",
             Some(serde_json::to_string(&*t).unwrap_or_default()),
         );
     }

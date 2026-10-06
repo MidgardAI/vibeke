@@ -270,8 +270,8 @@ pub async fn ssh(g: &Global, args: &[String]) -> i32 {
     let opts = vk_tui::app::Opts {
         session: g.session.clone(),
         config: cfg,
+        initial_machine: remote_index,
     };
-    let _ = remote_index;
     match vk_tui::app::run(opts, specs).await {
         Ok(r) => {
             eprintln!("[{r}]");
