@@ -95,6 +95,8 @@ Item { id, turn_id, seq, kind: user_message|assistant_message|reasoning|tool_cal
 
 **Task** — a unit of work, typically one task workspace.
 
+  *Tracking additions (spec 15 T1, implemented):* `ownership: owned | attached` (attached = tracking work in an existing pane; lifecycle actions never stop processes, close the workspace, release ports or delete files — `task.finish` only changes the record and labels it `finished_without_review` unless accepted), `owner_machine`, `intent_revision`, `priority`, `effort` (`quick|minutes|deep|unknown`), `review_label` (independent of lifecycle `status`), `rev` (expected-revision checks). Stored alongside as their own entity kinds: **TaskIntent** (`task_intent`, immutable per revision, user-confirmed only; carries a bounded verbatim source excerpt ≤ 8 KiB), **TaskRunBinding** (`task_binding`: task, run, native conversation id, half-open turn range, `active|suspended|closed`, origin edge), **Turn** records (`turn`: run, n, native conversation id, exact prompt ≤ 8 KiB, start/end) and **tool items** (`tool_item`: command, cwd, exit code, start/end — the observed-command source), **TaskMessage** (`task_message`, §9 delivery states), mutation **receipts** (`op_receipt`, keyed by idempotency key, kept 30 days), communication coverage (`task_comm`) and the observation baseline (`task_baseline`). `AgentRun.task` stays a compatibility projection; the binding history is authoritative.
+
 Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) separates workspace ownership from attached task records, adds versioned intent and historical run bindings, and defines review/acceptance objects. Goal 01 needs no model change for this proposal. The model below remains its target; future task-history features will use the binding records specified in 15.
 
 ```
@@ -136,7 +138,9 @@ Proposed extension: [15 §4 and §10](15-task-outcomes-review-and-attention.md) 
 | `agent.*` | `detected {harness, via}`, `started`, `identified {harness_session_id, transcript_path}`, `state_changed {facet, from, to, source, confidence}`, `named`, `turn_started`, `turn_completed {usage}`, `item {kind, summary}` (sampled/compacted), `file_changed {path, op}`, `subagent_started/finished`, `resume_handle {argv}`, `exited`, `released` |
 | `interaction.*` | `opened`, `updated`, `decided {rev, by, answer, channel}`, `delivery_started`, `delivered`, `delivery_unknown`, `delivery_failed {reason}`, `resolved_elsewhere`, `expired`, `cancelled` (names per 04 §7.3) |
 | `policy.*` | `rule_added`, `rule_removed`, `rule_matched {interaction, effect}` |
-| `task.*` | `created`, `setup_started/finished/failed`, `run_attached`, `status_changed`, `archived`, `collision_detected {paths, runs}` |
+| `task.*` | `created`, `setup_started/finished/failed`, `setup_untrusted {repo, digest}`, `run_attached`, `status_changed`, `archived`, `collision_detected {paths, runs}`; tracking (15, **history** tier): `tracked {intent_revision, binding}`, `intent_updated {revision, previous}`, `binding_changed {state, reason?, from?}`, `message_prepared/sending/delivered/delivery_unknown/failed`, `finished {status, attached, reviewed}`, `updated {priority, effort}` |
+| `check.*` / `review.*` | (15 T2) `check.authorized/started/finished/cancelled/interrupted`, `review.candidate_created`, `review.accepted`, `review.invalidated` — IDs, revisions and metadata only, never prompts, logs or secrets |
+| `attention.*` | `preference_changed` (**sync** tier) |
 | `worktree.*` | `created`, `removed`, `branch_changed` |
 | `preview.*` | `discovered`, `declared`, `up`, `down`, `forwarded {local_url}`, `screenshot_captured {blob}`, `console_error` (sampled) |
 | `notification.*` | `created`, `delivered`, `read` |

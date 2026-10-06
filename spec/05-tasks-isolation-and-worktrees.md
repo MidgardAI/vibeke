@@ -167,6 +167,12 @@ Framework helpers (documented, not magic): Vite reads `PORT` only when the confi
 - `--no-setup` skips the whole step. `task setup rerun` reruns it.
 - Agent start waits for setup by default. With `setup.parallel_agent = true` the agent starts immediately with a note in its prompt: "Setup is still running in pane X."
 
+- **Trust first (09 §4, implemented):** setup runs only when `(canonical repo path, blake3 of the .vibeke/ tree)` is recorded by `vibeke policy trust <repo>` (which prints the script). An untrusted or changed tree marks the task `setup_status = untrusted` and emits `task.setup_untrusted` with the digest and a hint; nothing runs.
+
+## 7a. Attached (tracked) tasks — spec 15 §4.3
+
+`vibeke task track` records an **attached** task for work already running in an existing pane/checkout. It never creates a worktree, branch, port lease or setup run. Park/finish/archive of an attached task change only the record: no agent is stopped, no workspace closed, no files deleted, no ports released (`task.finish` returns a note saying so). The review base for an attached task is the merge-base with the selected target branch (else the default branch, else `HEAD`), and the observation baseline (head + staged/unstaged/untracked digest) is captured at tracking time, labelled "may include preexisting changes".
+
 ## 8. Archive and cleanup
 
 | Policy (config `tasks.cleanup`) | Default | Behavior |
