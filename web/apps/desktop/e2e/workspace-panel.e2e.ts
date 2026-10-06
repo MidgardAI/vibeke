@@ -132,6 +132,16 @@ test('right panel: changes tree, diff, commits, files, phone layout', async () =
   await expect(item(/^components/)).toBeFocused();
   await shoot(app, page, 'panel-tree');
 
+  // ⌥-click opens the diff in the centre as a transient view; the tree stays.
+  await item(/^mockup\.css/).click({ modifiers: ['Alt'] });
+  await expect(page).toHaveURL(/view=diff/);
+  const closeDiff = page.getByRole('button', { name: 'Close diff' });
+  await expect(closeDiff).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-diff-scroll]').filter({ hasText: 'display: grid;' })).toBeVisible({ timeout: 15_000 });
+  await expect(tree).toBeVisible();
+  await closeDiff.click();
+  await expect(page).not.toHaveURL(/view=diff/);
+
   // Open a diff inline: sticky header, highlighted lines, prev/next.
   await item(/^app\.ts/).click();
   await expect(page).toHaveURL(/file=src%2Fapp\.ts/);
