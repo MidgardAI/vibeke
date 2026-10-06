@@ -2,9 +2,9 @@
 
 A **task workspace** is the default way to give an agent somewhere to work. One command produces an isolated checkout, a branch, a collision-free port range, an env, a finished setup script and a running agent. Running several agents in one shared cwd stays possible, because people do it (the maintainer's samplehub workspace has 2 Claude + 1 Codex in one directory). In that case Vibeke watches for collisions and warns (advisory only); moving a running agent out of a shared cwd is a Phase 2 feature (§11).
 
-**Scope of the isolation a task gives you.** A worktree or jj workspace is **checkout isolation**: each agent edits its own files and branch. It is **not execution isolation** — every task still runs as you, on the same machine, sharing databases, caches, credentials, `~`, Docker, and anything else reachable from your user. Linked/cloned directories (§5) and shared services (a local Postgres) are shared too. For execution isolation (OS sandbox, container, VM — and safe "yolo") see [13](13-sandboxes-and-vms.md); a task combines one checkout mode with one execution level.
+**Scope of the isolation a task gives you.** A worktree is **checkout isolation**: each agent edits its own files and branch. It is **not execution isolation** — every task still runs as you, on the same machine, sharing databases, caches, credentials, `~`, Docker, and anything else reachable from your user. Linked/cloned directories (§5) and shared services (a local Postgres) are shared too. For execution isolation (OS sandbox, container, VM — and safe "yolo") see [13](13-sandboxes-and-vms.md); a task combines one checkout mode with one execution level.
 
-Implemented in crate `vk-tasks`. Data model: `Task` in [02](02-data-model-and-event-log.md) §1.1. Milestones (see [11](11-milestones.md)): git worktree tasks, env/setup, port leases, async removal and advisory collision warnings **M1**; jj workspaces **M4**; tasks on remote machines **M3**; best-of-N **post-1.0** (launch may land in M2 together with containers); split-into-task: Phase 2.
+Implemented in crate `vk-tasks`. Data model: `Task` in [02](02-data-model-and-event-log.md) §1.1. Milestones (see [11](11-milestones.md)): git worktree tasks, env/setup, port leases, async removal and advisory collision warnings **M1**; jj workspaces were dropped for v1 (2026-10-06); tasks on remote machines **M3**; best-of-N **post-1.0** (launch may land in M2 together with containers); split-into-task: Phase 2.
 
 Proposed next slice: [15](15-task-outcomes-review-and-attention.md) adds **Track this work** for an already-running CLI, without relocating or restarting it. Its `attached` task records have separate park/archive/remove semantics (§4.3 there); they must not inherit the owned-workspace cleanup below. This does not change Goal 01's current implementation scope.
 
@@ -12,7 +12,7 @@ Proposed next slice: [15](15-task-outcomes-review-and-attention.md) adds **Track
 
 ```
 vibeke task new "fix login redirect" [--agent claude] [--agents claude:2,codex:1]
-                [--base <ref>] [--branch <name>] [--checkout worktree|jj|clone|none]
+                [--base <ref>] [--branch <name>] [--checkout worktree|clone|none]
                 [--isolate host|sandbox|container|vm] [--yolo]          # execution level: 13
                 [--repo <path>] [--machine <m>] [--prompt <text>|--prompt-file <f>]
                 [--no-setup] [--no-focus] [--group <g>]
@@ -39,7 +39,7 @@ TUI equivalents: `prefix+shift+g` opens "New task" (title, agent(s), base, check
      ┌─────────▼──────────┐   failure → status=active, setup.status=failed,
      │ 1 resolve repo/base │             workspace opens with setup log pane
      │ 2 allocate slug     │
-     │ 3 create checkout   │  (worktree | jj workspace | none)
+     │ 3 create checkout   │  (worktree | none)
      │ 4 materialize files │  (§5 env & untracked config)
      │ 5 lease ports       │  (§6)
      │ 6 create workspace  │  (root = checkout, task_id set, group = repo group)
@@ -77,7 +77,7 @@ trait IsolationBackend {
 | Backend | Create | Notes |
 |---|---|---|
 | `worktree` (default for git) | `git worktree add -b <branch> <path> <base>` | `base` defaults to `origin/<default_branch>` after a `git fetch --quiet` (skippable with `tasks.fetch_before_create=false`, 5 s timeout, falls back to local). Sets `extensions.worktreeConfig` only if needed. Submodules: `git submodule update --init --recursive` if `.gitmodules` exists (configurable). |
-| `jj` (default when `.jj/` exists) | `jj workspace add --name <slug> -r <base> <path>` | Branch → jj bookmark `<branch>` created on first commit (`jj bookmark create`). Status via `jj log -r @ --no-graph -T …`. Co-located git repos keep working. **Implemented (M4):** `vk_tasks::Jj` and `task new --isolation jj_workspace`; also chosen by `auto`, `tasks.checkout = "jj"` or `tasks.vcs = "jj"`. `auto` needs both `.jj` and an installed `jj`; otherwise it falls back to a worktree. The base defaults to `trunk()` when that resolves to a real commit, else `@-`. The branch name from `branch_template` is recorded as the bookmark to create; `Jj::bookmark_set` points it at `@-` (no first-commit hook yet). Status runs `jj log -r '@ \| @-'` and reports change/commit ids, bookmarks, empty (dirty) and conflict. Removal runs `jj workspace forget <slug>`, then renames the directory aside and deletes it. There is no dirty check, because forgetting a workspace keeps its commits. `$VIBEKE_JJ` overrides the binary. Tests: a fake `jj` with argv assertions, plus a real-`jj` round trip that runs only when `jj` is installed (it was not when this was built). Not yet: reconciling the stored task list against `jj workspace list`, and the async trash reaper for jj (removal runs on a background thread). |
+| ~~`jj`~~ | removed | jj support was removed for v1 (2026-10-06); git worktrees only. `--isolation jj_workspace`, `tasks.checkout = "jj"` and `tasks.vcs = "jj"` are refused. |
 | `none` | Workspace rooted at the repo itself | Shared cwd. The collision tracker (§10) is active. **Implemented (M4)** as `task new --isolation none`; `task finish --remove-worktree` never deletes anything for it. |
 | `clone` | private repo inside a container/VM whose objects borrow the host's read-only (alternates), synced back by host-side fetch | Default code isolation for `container` execution (`--code clone`, `[isolation.container] code`) — see [13](13-sandboxes-and-vms.md) §6. **Implemented for containers (2026-10-06):** the task still gets its host worktree, which is the review surface and is never mounted. The box gets `/workspace` with the task branch at the worktree's HEAD. `vibeke task sync <task> [--direction pull\|push\|both] [--force]` fetches the box branch from the host side with in-box git services into `refs/vibeke/box/…`, then fast-forwards the task branch (in its worktree if it is checked out and clean). Push writes host commits to the box's `refs/vibeke/host/<branch>`, and the box fast-forwards itself. Events: `task.synced`. `task finish` syncs first and keeps (stops) a box whose work isn't on the host. Code: `vk_tasks::sync`. `vm` is M4. |
 
@@ -189,7 +189,7 @@ Removing a worktree of a large repo (node_modules, build dirs) can take ~10 s an
 
 1. Marks the task `removing`, closes its workspace immediately (UI returns at once), and kills agent processes via their holders (SIGTERM, then SIGKILL after 5 s).
 2. Renames the checkout directory to `<root>/.trash/<slug>-<ulid>`. This is atomic and instant on the same filesystem.
-3. Runs `git worktree prune` / `jj workspace forget`. These are now fast since the path is gone.
+3. Runs `git worktree prune`. These are now fast since the path is gone.
 4. A background reaper deletes `.trash` entries at low IO priority (`ionice`/`setiopolicy_np`), one at a time, resumable after a restart.
 5. Emits `worktree.removed`. A failure goes to `vibeke doctor` and leaves the entry in trash for manual inspection.
 
@@ -249,7 +249,7 @@ Outline for the Phase 2 design (requirements, not a spec):
 Per task/workspace, refreshed on fs events (debounced 500 ms) and at most every 10 s:
 
 - branch name, `↑ahead ↓behind` vs upstream or base, `●` dirty count, `✗` conflicts;
-- PR: if `gh` is installed and authenticated, `gh pr view --json number,state,isDraft,reviewDecision,statusCheckRollup,url` is cached for 60 s. It shows `#123 ✓` / `#123 ✗ checks` / `draft`. Clicking opens the URL locally (works for remote tasks too: the URL is opened on the client machine). jj: bookmark + `jj git` remote status.
+- PR: if `gh` is installed and authenticated, `gh pr view --json number,state,isDraft,reviewDecision,statusCheckRollup,url` is cached for 60 s. It shows `#123 ✓` / `#123 ✗ checks` / `draft`. Clicking opens the URL locally (works for remote tasks too: the URL is opened on the client machine).
 - All status calls run with a 2 s timeout in a bounded worker pool (max 4 concurrent git processes per machine), so a huge repo can never stall the server.
 
 ## 14. Runner abstraction
@@ -284,8 +284,8 @@ Canonical schema: [08](08-ux-config-and-keybindings.md) §11. Keys used here (`r
 ```toml
 [tasks]
 root = "~/.vibeke/worktrees"          # or "sibling"
-vcs = "auto"                          # auto | git | jj
-checkout = "auto"                     # auto (jj workspace if .jj, else worktree) | worktree | jj | clone | none
+vcs = "auto"                          # auto | git
+checkout = "auto"                     # auto (worktree) | worktree | clone | none
 branch_template = "{user}/{slug}"
 fetch_before_create = true
 default_agent = "claude"
@@ -320,7 +320,6 @@ enforce_claims = false                # courtesy guardrail for cooperating adapt
     - the agent starts after setup with `PORT` from its lease;
     - `vibeke task ports` matches the injected env.
   - Three tasks of the same repo run `pnpm dev` concurrently without port conflicts.
-  - (M4) jj repo: `task new` creates a jj workspace, and the sidebar shows the bookmark and status.
   - `task rm` on a 3 GB worktree returns control in < 200 ms, and the trash is reaped in the background. A server kill during reaping resumes on restart.
   - "Start a fresh task from here" on a collision creates a task from the shared `HEAD` and starts a new run with a hand-off prompt, without touching the shared checkout or the original run.
   - Two Vibeke sessions on one machine creating tasks concurrently never receive overlapping port blocks (stress test: 50 parallel `task new` across 2 sessions).

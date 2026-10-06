@@ -231,11 +231,9 @@ pub fn local_data(app: &App) -> Value {
         "session": {"name": m.model.session},
         "workspace": ws.as_ref().map(|w| json!({"name": w.display_name(), "handle": w.handle})),
         "task": task.map(|t| json!({"handle": t.handle, "title": t.title})),
-        "branch": focused
-            .as_deref()
-            .and_then(|p| m.model.panes.iter().find(|x| x.id == p))
-            .and_then(|p| p.jj.clone())
-            .or_else(|| ws.as_ref().and_then(|w| w.branch.clone()))
+        "branch": ws
+            .as_ref()
+            .and_then(|w| w.branch.clone())
             .map(|b| json!({"name": b})),
         "attention": {"count": unfocused},
         "agents_summary": {

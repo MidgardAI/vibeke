@@ -99,7 +99,6 @@ fn to_current(p: &PaneV1, browser: Option<BrowserPane>) -> Pane {
         recovered: p.recovered.clone(),
         isolation: p.isolation.clone(),
         browser,
-        jj: None,
     }
 }
 

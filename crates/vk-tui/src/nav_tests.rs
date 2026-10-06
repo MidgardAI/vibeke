@@ -631,7 +631,7 @@ fn palette_and_goto_draw_with_highlights() {
     assert!(text.contains("workspace"));
 }
 
-// ---- goto secondary action (ctrl+enter / alt+enter) and jj display -------------------------------
+// ---- goto secondary action (ctrl+enter / alt+enter) -------------------------------
 
 fn goto_with(app: &mut App, q: &str) {
     app.mode = Mode::Popup(Popup::Goto {
@@ -713,37 +713,4 @@ fn goto_hint_and_path_row_draw() {
         text.contains("ctrl+enter / alt+enter: new workspace at /src/new"),
         "{text}"
     );
-}
-
-#[test]
-fn jj_label_replaces_branch_in_sidebar_goto_and_status_bar() {
-    let (mut app, _rx) = fleet();
-    app.machines[0].model.panes[0].jj = Some("main,dev".into());
-    app.machines[0].model.panes[1].jj = Some("kxyzabcd".into());
-    app.config.ui.sidebar.show_shell_panes = true;
-    app.config.ui.status_bar.enabled = true;
-    app.config.ui.status_bar.left = vec!["branch".into()];
-    let mut g = Grid::new(140, 40);
-    crate::draw::compose(&app, &mut g);
-    let text = grid_text(&g);
-    // Workspace row: the focused pane's bookmarks instead of the recorded branch.
-    assert!(text.contains("api ⎇ main,dev"), "{text}");
-    assert!(!text.contains("feature/login"), "{text}");
-    // Shell pane row: its own change id.
-    assert!(text.contains("shell ⎇ kxyzabcd"), "{text}");
-    // Status bar segment follows the focused pane.
-    assert!(
-        text.lines()
-            .any(|l| l.contains("⎇ main,dev") && !l.contains("api")),
-        "{text}"
-    );
-    // Goto labels use it too.
-    let r = goto_ranked(&app, "~api");
-    assert!(r[0].0.label.contains("⎇ main,dev"), "{}", r[0].0.label);
-    // Without jj the git branch shows as before; other workspaces are unaffected.
-    app.machines[0].model.panes[0].jj = None;
-    let mut g = Grid::new(140, 40);
-    crate::draw::compose(&app, &mut g);
-    assert!(grid_text(&g).contains("api ⎇ feature/login"));
-    assert!(grid_text(&g).contains("web ⎇ main"));
 }

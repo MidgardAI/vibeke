@@ -249,8 +249,8 @@ The file is `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). It r
 
 # [tasks]
 # root                = "~/.vibeke/worktrees"   # or "sibling" -> ../<repo>-<slug>
-# vcs                 = "auto"                  # auto | git | jj
-# checkout            = "auto"                  # auto | worktree | jj | clone | none
+# vcs                 = "auto"                  # auto | git
+# checkout            = "auto"                  # auto | worktree | clone | none
 # branch_template     = "{user}/{slug}"
 # fetch_before_create = true
 # default_agent       = "claude"

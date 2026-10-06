@@ -2499,7 +2499,6 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             recovered: None,
             browser: Some(spec.clone()),
             isolation: Default::default(),
-            jj: None,
         };
         tx.counters = true;
         tx.pane(pane.clone());

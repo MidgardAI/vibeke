@@ -73,13 +73,13 @@ Tasks:
 ## M4 — VMs + polish/parity
 
 - `vm` level (Lima `vz`/Tart on macOS, Firecracker/Cloud Hypervisor on Linux), template snapshots, warm pools; previews and screenshots verified inside containers and VMs.
-- Parity polish: groups, floating panes, status bar (built-in segments), command palette, goto improvements, sidebar left/right, bottom tab bar, copy-on-select/PRIMARY, configurable copy-mode keys, archived-scrollback FTS search and edit-scrollback, native OS notifications with click-to-focus, theme auto light/dark + propagation, layout export/apply, jj workspaces.
+- Parity polish: groups, floating panes, status bar (built-in segments), command palette, goto improvements, sidebar left/right, bottom tab bar, copy-on-select/PRIMARY, configurable copy-mode keys, archived-scrollback FTS search and edit-scrollback, native OS notifications with click-to-focus, theme auto light/dark + propagation, layout export/apply.
   - *Status (2026-10-06), server/API/CLI side:*
     - **Layout export/apply: built.** `layout.export {tab | workspace, format: toml}` → `LayoutSpec` (07 §2.14); `layout.apply {name | doc | layout, workspace? | new_workspace?}`; `layout.list/get`; named layouts in `[layouts.<name>]`; `workspace.create {layout, group}`, `tab.create {layout}`; `vibeke layout export|apply|list|get`.
     - **Archived-scrollback search: built.** `search.query` covers live screens and scrollback plus the archive (FTS5, or a segment scan with `regex`). Hits carry context and an archive position. `pane.read {source: archive, from, to}` pages a pane's whole history, closed panes included. `vibeke search <q>`. Read scope is enforced (09 §5.1 rule 4).
     - **Native notifications: built, with one caveat.** The pipeline runs rules (`notifications.on`), presence suppression, quiet hours and coalescing, then delivers to `notifications.channels`. Notifiers: `terminal-notifier`/`osascript` on macOS, `notify-send` on Linux, and a `log:` fake. Click-to-focus goes through `vibeke focus <url>` / `client.focus`, which focuses the pane in the most recently active client and raises its terminal by bundle id. Caveat: native delivery is automatic only once a client reports `host` metadata. **No signed helper bundle yet**: plain `osascript` notifications can't be clicked.
     - **Theme: server side built.** `theme.mode`, `client.appearance {dark}`, the `theme.changed` event and `SessionModel.appearance`. New panes get `COLORFGBG` and `VIBEKE_THEME[_NAME]`.
-    - **jj workspaces: built.** `task new --isolation jj_workspace|worktree|none|auto`: `jj workspace add`, `jj workspace forget` plus directory removal, and bookmark/change status in `task.get`. Verified against a fake `jj` only; jj was not installed when this was written.
+    - **jj workspaces: dropped.** jj support was removed for v1 (2026-10-06); git worktrees only.
     - **Groups, floats and status segments: model/API built.** `group.*` (membership stored on `Group`), `Tab.floating`/`floats_hidden` with `pane.float`/`pane.embed`/`tab.floats` (floats are kept in layout export/apply), and `status.segments`.
   - *Status (2026-10-06), TUI side:*
     - **Groups: built.** Sidebar group level with aggregate badges, collapse/expand (`group.collapse`), navigate-mode keys (`enter`/`h`/`l`/`r`, `m` move picker, `G` new), drag a workspace onto a group, palette `group_new/move/rename/collapse` (08 §2.1).
@@ -93,7 +93,7 @@ Tasks:
     - **Notifications: built.** `host` in `render.attach` (local machine only), no OSC forward when `delivered` has `native`, coalesced `(×n)` toasts. The signed helper bundle is still open.
     - **Layout save/apply: built** as palette entries; save prints/copies a `[layouts.<name>]` snippet (no config-write API).
     - Server change for paging: `pane.read {source: archive}` also returns `mem_first`.
-    - **Goto `ctrl+enter` / `alt+enter` and jj bookmark display: built** (08 §6.2, §2.1): the secondary goto action opens a new split in the entry's directory (or a workspace at a typed path); `alt+enter` works on every terminal, `ctrl+enter` needs kitty/modifyOtherKeys. jj repos show the working-copy change's bookmarks (else change id) in place of the recorded branch via the event-driven, hardened `Pane.jj` refresh. Verified with fake machines, a fake `jj` and the unit/draw tests only — not yet driven in a real terminal against a live server (the editor hand-off in particular).
+    - **Goto `ctrl+enter` / `alt+enter`: built** (08 §6.2, §2.1): the secondary goto action opens a new split in the entry's directory (or a workspace at a typed path); `alt+enter` works on every terminal, `ctrl+enter` needs kitty/modifyOtherKeys. Verified with fake machines and the unit/draw tests only — not yet driven in a real terminal against a live server (the editor hand-off in particular).
 
 ## M5 — Full Herdr plugin/automation compatibility + plugins
 
@@ -151,7 +151,7 @@ For reconciling references in other sections written against the earlier plan:
 | M2 agents/harnesses | Claude, pi/omp, Codex adapters; interactions; cards; integrations; resume; policy basics | **M1** |
 | M2 agents/harnesses | OpenCode, Gemini, ACP, custom manifests, self-report, screen manifests + drift, signed manifest channel, usage extraction | **M2** |
 | M3 tasks + remote | git worktree tasks, ports, setup, async removal, advisory collisions | **M1** |
-| M3 tasks + remote | jj workspaces | **M4** |
+| M3 tasks + remote | jj workspaces | **dropped** (removed for v1, 2026-10-06; git worktrees only) |
 | M3 tasks + remote | best-of-N compare, split-into-task migration | **post-1.0** (best-of-N *launch* may land in M2 with containers) |
 | M3 tasks + remote | SSH machines, bridge, remote clipboard/images | **M3** |
 | M3 (13) sandbox + container levels | execution isolation | **M2** |

@@ -139,7 +139,6 @@ impl Env {
             recovered: None,
             isolation: Default::default(),
             browser: None,
-            jj: None,
         };
         {
             let mut c = server.core.lock().unwrap();

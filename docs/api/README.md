@@ -222,14 +222,14 @@ Within `vibeke/1` only additions are allowed: new methods, new optional params, 
 | `task.check.get` | no | pane | - | - |
 | `task.check.list` | no | pane | - | - |
 | `task.check.run` | yes | full | - | - |
-| `task.create` | yes | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{title, repo: path, base?: ref, isolation?: worktree\|jj_workspace\|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — *M4:* `isolation` also accepts `auto` (default from `tasks.checkout`/`tasks.vcs`: jj workspace when the repo has `.jj` and `jj` is installed, else worktree); the choice is recorded as `Task.checkout`; `task.get` of a jj task returns `branch_status {vcs: jj, branch, bookmark_exists, bookmarks, change_id, commit_id, dirty, conflict}` and `jj {workspace, colocated}`; `task.finish {remove_worktree}` runs `jj workspace forget` and deletes the directory (never for `none`) |
+| `task.create` | yes | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{title, repo: path, base?: ref, isolation?: worktree\|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree\|none\|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`) |
 | `task.dependency.add` | yes | full | - | - |
 | `task.dependency.list` | no | pane | - | - |
 | `task.dependency.remove` | yes | full | - | - |
 | `task.effort.estimate` | no | pane | - | - |
-| `task.finish` | yes | full | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{task, remove_worktree?: ask\|true\|false, delete_branch?: false}` → `{task}` |
-| `task.get` | no | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{task}` → `{task, workspace, runs, previews, collisions[]}` |
-| `task.list` | no | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{status?, repo?}` → `{tasks}` |
+| `task.finish` | yes | full | M1; remote tasks M3; tracking per 15 T1–T4 | `{task, remove_worktree?: ask\|true\|false, delete_branch?: false}` → `{task}` |
+| `task.get` | no | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{task}` → `{task, workspace, runs, previews, collisions[]}` |
+| `task.list` | no | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{status?, repo?}` → `{tasks}` |
 | `task.review.accept` | yes | full | - | - |
 | `task.review.candidates` | no | pane | - | - |
 | `task.review.diff` | no | pane | - | - |
@@ -250,8 +250,8 @@ Within `vibeke/1` only additions are allowed: new methods, new optional params, 
 | `workspace.list` | no | pane | M1 | `{group?}` → `{workspaces: [Workspace + {agent_summary: {working, needs_input, done, idle}, tab_count, pane_count}]}` |
 | `workspace.move` | yes | full | M1 | `{workspace, group?, index}` → `{workspaces}` |
 | `workspace.rename` | yes | full | M1 | `{workspace, name: string\|null}` → `{workspace}` (null clears to auto-name) |
-| `worktree.create` | yes | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{repo\|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}` |
-| `worktree.list` | no | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}` |
-| `worktree.open` | yes | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{path, focus?: false}` → `{workspace}` |
-| `worktree.remove` | yes | full | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event |
-| `worktree.repo_root` | no | pane | M1; remote tasks M3, jj M4; tracking per 15 T1–T4 | `{cwd}` → `{repo_root, vcs}` |
+| `worktree.create` | yes | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{repo\|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}` |
+| `worktree.list` | no | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}` |
+| `worktree.open` | yes | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{path, focus?: false}` → `{workspace}` |
+| `worktree.remove` | yes | full | M1; remote tasks M3; tracking per 15 T1–T4 | `{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event |
+| `worktree.repo_root` | no | pane | M1; remote tasks M3; tracking per 15 T1–T4 | `{cwd}` → `{repo_root, vcs}` |

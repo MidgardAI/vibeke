@@ -1,11 +1,10 @@
 //! M4 parity polish end to end via the CLI against isolated sessions (11 §M4): layout
 //! export/apply and named layouts, archived-scrollback search with read scope, native
 //! notifications (log fake) with click-to-focus, theme propagation, groups, floating panes,
-//! status segments and jj task workspaces (fake `jj`).
+//! status segments.
 
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -38,8 +37,7 @@ impl Session {
             .env(
                 "VIBEKE_NOTIFIER",
                 format!("log:{}", d.join("notes.jsonl").display()),
-            )
-            .env("VIBEKE_JJ", d.join("fakejj/jj"));
+            );
         for k in [
             "VIBEKE",
             "VIBEKE_SOCKET",
@@ -509,92 +507,26 @@ fn groups_and_floating_panes() {
     assert!(!s_.tab(&tab).is_null());
 }
 
-fn fake_jj(dir: &Path) {
-    std::fs::create_dir_all(dir).unwrap();
-    let log = dir.join("calls.log");
-    let script = format!(
-        r#"#!/bin/sh
-if [ "$1" = "--version" ]; then echo "jj 0.99.0-fake"; exit 0; fi
-echo "$@" >> '{log}'
-shift 4
-case "$1 $2" in
-  "workspace add") mkdir -p "$7"; echo "Created workspace" ;;
-  "workspace list") echo "default: aaa 111 (empty) (no description set)" ;;
-  "workspace forget") ;;
-  "log --no-graph")
-     case "$*" in
-       *trunk*) echo "deadbeef" ;;
-       *) printf 'kxyz\tab12\t\tchanged\tok\twip\nqpar\tcd34\tme/fix-login\tempty\tok\t\n' ;;
-     esac ;;
-  *) echo "unexpected: $*" >&2; exit 1 ;;
-esac
-"#,
-        log = log.display()
-    );
-    let bin = dir.join("jj");
-    std::fs::write(&bin, script).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 #[test]
-fn jj_workspace_tasks_with_fake_jj() {
-    let s_ = Session::new("[tasks]\nbranch_template = \"me/{slug}\"\n");
-    fake_jj(&s_.path("fakejj"));
+fn jj_isolation_is_refused() {
+    // jj support was removed for v1 (2026-10-06); git worktrees only.
+    let s_ = Session::new("");
     let repo = s_.path("repo");
     std::fs::create_dir_all(repo.join(".jj")).unwrap();
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let wt = s_.path("wt");
-    let r = s_.json(&[
-        "task",
-        "new",
-        "Fix login",
-        "--repo",
-        &repo.to_string_lossy(),
-        "--isolation",
-        "jj_workspace",
-        "--root",
-        &wt.to_string_lossy(),
-        "--branch-template",
-        "me/{slug}",
-    ]);
-    let task = &r["task"];
-    assert_eq!(task["checkout"], "jj_workspace");
-    assert_eq!(task["branch"], "me/fix-login");
-    assert_eq!(task["base_ref"], "trunk()");
-    let path = PathBuf::from(s(&task["worktree_path"]));
-    assert!(path.is_dir(), "{path:?}");
-    assert!(path.starts_with(&wt));
-    let calls = std::fs::read_to_string(s_.path("fakejj/calls.log")).unwrap();
-    assert!(
-        calls.contains("workspace add --name fix-login -r trunk()"),
-        "{calls}"
-    );
-    // The workspace's pane opens in the jj workspace.
-    assert_eq!(s(&r["panes"][0]["cwd"]), path.to_string_lossy());
-
-    let g = s_.json(&["task", "get", &s(&task["id"])]);
-    assert_eq!(g["branch_status"]["vcs"], "jj");
-    assert_eq!(g["branch_status"]["bookmark_exists"], true);
-    assert_eq!(g["branch_status"]["dirty"], true);
-    assert_eq!(g["jj"]["colocated"], true);
-
-    s_.json(&["task", "finish", &s(&task["id"]), "--remove-worktree"]);
-    assert!(
-        wait_for(|| !path.exists(), 8000),
-        "workspace dir not removed"
-    );
-    let calls = std::fs::read_to_string(s_.path("fakejj/calls.log")).unwrap();
-    assert!(calls.contains("workspace forget fix-login"), "{calls}");
-
-    // Not a jj repo → refused before anything is created.
-    let (_, e) = s_.fail(&[
-        "task",
-        "new",
-        "Nope",
-        "--repo",
-        "/tmp",
-        "--isolation",
-        "jj_workspace",
-    ]);
-    assert_eq!(e["error"]["kind"], "invalid_params");
+    for iso in ["jj_workspace", "jj"] {
+        let (_, e) = s_.fail(&[
+            "task",
+            "new",
+            "Nope",
+            "--repo",
+            &repo.to_string_lossy(),
+            "--isolation",
+            iso,
+        ]);
+        assert_eq!(e["error"]["kind"], "invalid_params", "{e}");
+        let msg = e["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("unknown isolation"), "{msg}");
+        assert!(msg.contains("jj support was removed"), "{msg}");
+    }
 }

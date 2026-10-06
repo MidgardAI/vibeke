@@ -231,13 +231,13 @@ Keystroke delivery (screen-only harnesses) is **verified**: the adapter sends na
 | `policy.test` | `{action: {tool, command?, paths?, url?}, scope}` → `{effect, rule?}` — dry-run |
 | `policy.trust` | `{path, digest?}` → `{repo, digest, setup_script}` — trust a repo-local `.vibeke/` directory at its current blake3 digest (09 §4); `digest` makes it conditional on the reviewed content (conflict if changed). Full scope only. |
 
-### 2.10 `task.*`, `worktree.*` [M1; remote tasks M3, jj M4; tracking per 15 T1–T4]
+### 2.10 `task.*`, `worktree.*` [M1; remote tasks M3; tracking per 15 T1–T4]
 
 Pane-scoped callers (agents) may read tasks but not `task.track`, `task.intent.update`, `task.bind/unbind`, `task.set`, `task.message.*` (except get), `task.review.accept`, `task.check.run/cancel`, `attention.update`, or the T4 mutations `task.review.snapshot`, `task.review.request_reviewer`, `task.review.start_reviewer`, `task.review.note.classify` and `task.dependency.add/remove` (15 §11). All tracking mutations accept `idempotency_key`; a repeat with the same key and payload returns the recorded result with `replayed: true`, a different payload is `conflict{reason: idempotency_key_reused}`.
 
 | Method | Params → Result |
 |---|---|
-| `task.create` | `{title, repo: path, base?: ref, isolation?: worktree|jj_workspace|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — *M4:* `isolation` also accepts `auto` (default from `tasks.checkout`/`tasks.vcs`: jj workspace when the repo has `.jj` and `jj` is installed, else worktree); the choice is recorded as `Task.checkout`; `task.get` of a jj task returns `branch_status {vcs: jj, branch, bookmark_exists, bookmarks, change_id, commit_id, dirty, conflict}` and `jj {workspace, colocated}`; `task.finish {remove_worktree}` runs `jj workspace forget` and deletes the directory (never for `none`) |
+| `task.create` | `{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`) |
 | `task.list` | `{status?, repo?}` → `{tasks}` |
 | `task.get` | `{task}` → `{task, workspace, runs, previews, collisions[]}` |
 | `task.park` / `task.resume` | `{task}` → `{task}` — park = stop agents gracefully, keep worktree |

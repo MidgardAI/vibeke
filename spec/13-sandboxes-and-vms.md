@@ -12,7 +12,7 @@ Vibeke's job is not to forbid yolo but to make **"yolo, but contained" a single 
 
 | Axis | Values | Defined in |
 |---|---|---|
-| **Code isolation** — which checkout the agent edits | `none` (shared repo), `worktree`, `jj`, `clone` (new: private clone inside the sandbox) | 05 §4 |
+| **Code isolation** — which checkout the agent edits | `none` (shared repo), `worktree`, `clone` (new: private clone inside the sandbox) | 05 §4 |
 | **Execution isolation** — where processes run and what they can touch | `host`, `sandbox`, `container`, `vm` (+ `ssh` = another machine, 06) | this file |
 
 Any combination is valid except `vm`/`container` + `none` (sandboxed agents never share the host repo directly; see §6).

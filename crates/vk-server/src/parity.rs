@@ -659,7 +659,7 @@ fn status_segments(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             "session": {"name": c.model.session},
             "workspace": ws.as_ref().map(|w| json!({"id": w.id, "handle": w.handle, "name": w.display_name()})),
             "task": task.as_ref().map(|t| json!({"id": t.id, "handle": t.handle, "title": t.title, "status": t.status, "review_label": t.review_label})),
-            "branch": focus.pane.as_deref().and_then(|p| c.pane(p)).and_then(|p| p.jj.clone()).or_else(|| ws.as_ref().and_then(|w| w.branch.clone())).or_else(|| task.as_ref().and_then(|t| t.branch.clone())).map(|b| json!({"name": b})),
+            "branch": ws.as_ref().and_then(|w| w.branch.clone()).or_else(|| task.as_ref().and_then(|t| t.branch.clone())).map(|b| json!({"name": b})),
             "ports": {"range": task.as_ref().and_then(|t| t.port_range), "previews": ports_previews},
             "attention": {
                 "count": unfocused.len(),
@@ -687,7 +687,7 @@ fn status_segments(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }))
 }
 
-// ---- task checkouts: worktree | jj_workspace | none (05 §4) ----------------------------------
+// ---- task checkouts: worktree | none (05 §4) --------------------------------------------------
 
 /// The chosen code-isolation backend and the repo root it works from.
 #[derive(Debug, Clone)]
@@ -696,8 +696,8 @@ pub struct CheckoutChoice {
     pub root: std::path::PathBuf,
 }
 
-/// `task.create {isolation | checkout}` (default `tasks.checkout`): `auto` picks a jj workspace
-/// when the repo has `.jj` and `jj` is installed, else a worktree.
+/// `task.create {isolation | checkout}` (default `tasks.checkout`): `auto` picks a git worktree.
+/// jj support was removed for v1 (2026-10-06); git worktrees only.
 pub fn resolve_checkout(repo: &str, p: &Value) -> Result<CheckoutChoice, vk_proto::rpc::RpcError> {
     let cfg = vk_config::Config::load(vk_config::config_path())
         .map(|(c, _)| c.tasks)
@@ -706,30 +706,13 @@ pub fn resolve_checkout(repo: &str, p: &Value) -> Result<CheckoutChoice, vk_prot
         .or_else(|| s(p, "checkout"))
         .map(str::to_string)
         .unwrap_or_else(|| match cfg.vcs {
-            vk_config::Vcs::Jj => "jj".into(),
             vk_config::Vcs::Git if cfg.checkout == vk_config::Checkout::Auto => "worktree".into(),
             _ => cfg.checkout.as_str().to_string(),
         });
     let path = std::path::Path::new(repo);
-    let jj_root = vk_tasks::jj_root(path);
     let vcs_root = vk_tasks::repo_root(path).map(|i| i.root);
-    let jj_ok = || vk_tasks::Jj::default().available();
     let no_repo = || invalid(format!("{repo} is not inside a repository"));
     Ok(match want.as_str() {
-        "jj_workspace" | "jj" => {
-            let root = jj_root
-                .ok_or_else(|| invalid(format!("{repo} is not inside a jj repository (no .jj)")))?;
-            if !jj_ok() {
-                return Err(err(
-                    ErrorKind::Unsupported,
-                    "jj is not installed (or not on PATH; set VIBEKE_JJ)",
-                ));
-            }
-            CheckoutChoice {
-                kind: "jj_workspace",
-                root,
-            }
-        }
         "worktree" => CheckoutChoice {
             kind: "worktree",
             root: vcs_root.ok_or_else(no_repo)?,
@@ -737,20 +720,12 @@ pub fn resolve_checkout(repo: &str, p: &Value) -> Result<CheckoutChoice, vk_prot
         "none" => CheckoutChoice {
             kind: "none",
             root: vcs_root
-                .or(jj_root)
                 .or_else(|| path.canonicalize().ok())
                 .ok_or_else(no_repo)?,
         },
-        "auto" => match (jj_root, vcs_root) {
-            (Some(root), _) if jj_ok() => CheckoutChoice {
-                kind: "jj_workspace",
-                root,
-            },
-            (_, Some(root)) => CheckoutChoice {
-                kind: "worktree",
-                root,
-            },
-            _ => return Err(no_repo()),
+        "auto" => CheckoutChoice {
+            kind: "worktree",
+            root: vcs_root.ok_or_else(no_repo)?,
         },
         "clone" => {
             return Err(err(
@@ -760,7 +735,7 @@ pub fn resolve_checkout(repo: &str, p: &Value) -> Result<CheckoutChoice, vk_prot
         }
         other => {
             return Err(invalid(format!(
-                "unknown isolation {other} (worktree|jj_workspace|none|auto)"
+                "unknown isolation {other} (worktree|none|auto); jj support was removed for v1"
             )));
         }
     })
@@ -773,7 +748,6 @@ pub fn create_checkout(
     cfg: &vk_tasks::WorktreeConfig,
 ) -> vk_tasks::Result<vk_tasks::Checkout> {
     match kind {
-        "jj_workspace" => vk_tasks::Jj::default().create_workspace(req, cfg),
         "none" => {
             let root = req.repo.canonicalize().unwrap_or_else(|_| req.repo.clone());
             let info = vk_tasks::repo_root(&root);
@@ -795,62 +769,4 @@ pub fn create_checkout(
         }
         _ => vk_tasks::create_worktree(req, cfg),
     }
-}
-
-/// `task.finish {remove_worktree}` for a jj task: forget the workspace, delete the directory.
-pub fn remove_jj_task(server: &Arc<Server>, task: &Task) -> Option<String> {
-    let path = task.worktree_path.clone()?;
-    let srv = server.clone();
-    let (id, root, name) = (task.id.clone(), task.repo_root.clone(), task.slug.clone());
-    let job = format!("j{}", &ulid()[20..]);
-    let jid = job.clone();
-    std::thread::spawn(move || {
-        let r = vk_tasks::Jj::default().remove_workspace(
-            std::path::Path::new(&root),
-            &name,
-            std::path::Path::new(&path),
-        );
-        let state = match &r {
-            Ok(()) => "Done".to_string(),
-            Err(e) => format!("Failed: {e}"),
-        };
-        let mut c = srv.core.lock().unwrap();
-        let mut tx = Tx::new();
-        tx.event(
-            "worktree.removed",
-            json!({"task": id, "path": path}),
-            json!({"job": jid, "vcs": "jj", "state": state}),
-        );
-        let _ = srv.commit(&mut c, tx);
-    });
-    Some(job)
-}
-
-/// `task.get` for a jj task: workspace, bookmark and change status (05 §13 "jj: bookmark").
-pub fn jj_task_status(task: &Task) -> Value {
-    let jj = vk_tasks::Jj::default();
-    let st = task
-        .worktree_path
-        .as_deref()
-        .map(|w| jj.status(std::path::Path::new(w)));
-    let (status, error) = match st {
-        Some(Ok(s)) => (Some(s), None),
-        Some(Err(e)) => (None, Some(e.to_string())),
-        None => (None, None),
-    };
-    json!({
-        "task": task,
-        "branch_status": status.as_ref().map(|s| json!({
-            "vcs": "jj",
-            "branch": task.branch,
-            "bookmark_exists": task.branch.as_ref().is_some_and(|b| s.bookmarks.contains(b)),
-            "bookmarks": s.bookmarks, "change_id": s.change_id, "commit_id": s.commit_id,
-            "dirty": !s.empty, "conflict": s.conflict, "description": s.description,
-        })),
-        "jj": {
-            "workspace": task.slug,
-            "colocated": vk_tasks::jj_colocated(std::path::Path::new(&task.repo_root)),
-            "error": error,
-        },
-    })
 }

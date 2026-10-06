@@ -20,7 +20,7 @@ Machine 1─* Session 1─* Group? 1─* Workspace 1─* Tab 1─* Pane ─? Age
 
 **Group** — optional hierarchy for workspaces. `{ id, name, parent_group_id?, collapsed, order }`. *Implemented (M4) as `{id, handle "g1", name, parent?, collapsed, order, workspaces: [workspace_id]}`: membership is the group's ordered list rather than `Workspace.group_id` (the `Workspace` struct is unchanged); events `group.created/renamed/moved/collapsed/closed`, `workspace.moved {group}`.*
 
-**Workspace** — `{ id, handle "w3", name?, root_path, repo: {vcs: git|jj|none, remote_url?, default_branch?}?, group_id?, task_id?, order, created_at }`. Name defaults to repo/folder name; identity is `root_path`.
+**Workspace** — `{ id, handle "w3", name?, root_path, repo: {vcs: git|none, remote_url?, default_branch?}?, group_id?, task_id?, order, created_at }`. Name defaults to repo/folder name; identity is `root_path`.
 
 **Tab** — `{ id, handle "w3:t2", workspace_id, title?, auto_title, number, layout: LayoutNode, focused_pane_id, zoomed_pane_id?, order }`. Tabs show `number` alongside custom titles.
 

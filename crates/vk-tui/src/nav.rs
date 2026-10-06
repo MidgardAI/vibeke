@@ -995,20 +995,9 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
             String::new()
         };
         for w in &m.model.workspaces {
-            let jj = m
-                .model
-                .tabs
-                .iter()
-                .find(|t| t.workspace == w.id)
-                .and_then(|t| {
-                    t.focused_pane
-                        .as_ref()
-                        .or(t.layout.panes().first())
-                        .and_then(|pid| m.model.panes.iter().find(|p| &p.id == pid))
-                })
-                .and_then(|p| p.jj.clone());
-            let branch = jj
-                .or_else(|| w.branch.clone())
+            let branch = w
+                .branch
+                .clone()
                 .map(|b| format!(" ⎇ {b}"))
                 .unwrap_or_default();
             out.push(GotoEntry {

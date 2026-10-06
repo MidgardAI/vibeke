@@ -167,11 +167,6 @@ pub struct Pane {
     /// viewport rendered on the viewing client's machine. Last field (postcard is positional).
     #[serde(default)]
     pub browser: Option<BrowserPane>,
-    /// Jujutsu state of the pane's cwd (08 §2.1, M4): the working-copy change's bookmarks
-    /// (comma-joined) or its short change id; `None` outside a jj repo or without `jj`.
-    /// Appended (postcard is positional).
-    #[serde(default)]
-    pub jj: Option<String>,
 }
 
 impl Pane {
@@ -613,7 +608,7 @@ pub struct Task {
     /// Execution isolation chosen at creation (13 §12); panes in the task inherit it.
     #[serde(default)]
     pub isolation: Isolation,
-    /// Code isolation backend (05 §4): `worktree` | `jj_workspace` | `none`. `None` on tasks
+    /// Code isolation backend (05 §4): `worktree` | `none`. `None` on tasks
     /// created before M4 means `worktree`. Appended (postcard).
     #[serde(default)]
     pub checkout: Option<String>,

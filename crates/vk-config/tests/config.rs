@@ -400,3 +400,14 @@ fn watcher_reloads_debounced_and_rejects_bad_config() {
         other => panic!("unexpected {other:?}"),
     }
 }
+
+#[test]
+fn jj_values_are_refused() {
+    // jj support was removed for v1 (2026-10-06); git worktrees only.
+    for src in ["[tasks]\nvcs = \"jj\"\n", "[tasks]\ncheckout = \"jj\"\n"] {
+        let err = parse(src).unwrap_err();
+        let d = err.first_diagnostic().unwrap();
+        assert_eq!(d.line, 2);
+        assert!(d.message.contains("jj"), "{}", d.message);
+    }
+}

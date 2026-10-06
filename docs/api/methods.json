@@ -2472,8 +2472,8 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
-      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|jj_workspace|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — *M4:* `isolation` also accepts `auto` (default from `tasks.checkout`/`tasks.vcs`: jj workspace when the repo has `.jj` and `jj` is installed, else worktree); the choice is recorded as `Task.checkout`; `task.get` of a jj task returns `branch_status {vcs: jj, branch, bookmark_exists, bookmarks, change_id, commit_id, dirty, conflict}` and `jj {workspace, colocated}`; `task.finish {remove_worktree}` runs `jj workspace forget` and deletes the directory (never for `none`)"
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
+      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`)"
     },
     {
       "name": "task.dependency.add",
@@ -2536,7 +2536,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{task, remove_worktree?: ask|true|false, delete_branch?: false}` → `{task}`"
     },
     {
@@ -2548,7 +2548,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{task}` → `{task, workspace, runs, previews, collisions[]}`"
     },
     {
@@ -2560,7 +2560,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{status?, repo?}` → `{tasks}`"
     },
     {
@@ -2820,7 +2820,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{repo|cwd, branch, path?, base?, open?: bool, focus?: false}` → `{worktree, workspace?}`"
     },
     {
@@ -2832,7 +2832,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{repo?: path, cwd?: path}` → `{worktrees: [{path, branch, head, task?, workspace?, locked, prunable}]}`"
     },
     {
@@ -2844,7 +2844,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{path, focus?: false}` → `{workspace}`"
     },
     {
@@ -2856,7 +2856,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event"
     },
     {
@@ -2868,7 +2868,7 @@
       "tables": [
         "api"
       ],
-      "milestone": "M1; remote tasks M3, jj M4; tracking per 15 T1–T4",
+      "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{cwd}` → `{repo_root, vcs}`"
     }
   ]

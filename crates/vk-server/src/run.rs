@@ -71,7 +71,6 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     });
     crate::agents::start(&server);
     crate::preview::start(&server);
-    crate::vcs::start(&server);
     crate::screenshots::start(&server);
     crate::desk::start(&server);
     crate::sandbox::restore(&server).await;
@@ -650,9 +649,6 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
             };
             match server.with_core(|c| c.task(t).cloned()) {
                 Some(task) => {
-                    if task.checkout.as_deref() == Some("jj_workspace") {
-                        return Some(Ok(crate::parity::jj_task_status(&task)));
-                    }
                     let status = task.worktree_path.as_ref().and_then(|w| {
                         vk_tasks::branch_status(Path::new(w), task.base_ref.as_deref()).ok()
                     });
@@ -1203,9 +1199,7 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
     crate::sandbox::teardown(server, &task.id);
     let mut job = None;
     let kind = task.checkout.clone().unwrap_or_else(|| "worktree".into());
-    if remove && kind == "jj_workspace" {
-        job = crate::parity::remove_jj_task(server, &task);
-    } else if remove
+    if remove
         && kind != "none"
         && let Some(path) = task.worktree_path.clone()
     {

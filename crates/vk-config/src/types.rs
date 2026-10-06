@@ -76,8 +76,8 @@ choice_enum!(TileView { Terminal = "terminal", Timeline = "timeline" } default T
 choice_enum!(NotifyChannel { Native = "native", Osc = "osc", Both = "both", None = "none" } default Native);
 choice_enum!(ResumeOnRestart { Ask = "ask", Always = "always", Never = "never" } default Ask);
 choice_enum!(PolicyEffect { Allow = "allow", Deny = "deny", Ask = "ask" } default Ask);
-choice_enum!(Vcs { Auto = "auto", Git = "git", Jj = "jj" } default Auto);
-choice_enum!(Checkout { Auto = "auto", Worktree = "worktree", Jj = "jj", Clone = "clone", None = "none" } default Auto);
+choice_enum!(Vcs { Auto = "auto", Git = "git" } default Auto);
+choice_enum!(Checkout { Auto = "auto", Worktree = "worktree", Clone = "clone", None = "none" } default Auto);
 choice_enum!(OnFinish { Keep = "keep", Archive = "archive", Remove = "remove" } default Keep);
 choice_enum!(Transport { Ssh = "ssh" } default Ssh);
 choice_enum!(MachineKeybindings { Local = "local", Server = "server" } default Local);
