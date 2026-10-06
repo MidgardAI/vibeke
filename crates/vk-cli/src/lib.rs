@@ -47,7 +47,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "stop",
         "server.stop",
         &[],
-        "stop the server (holders keep running unless --kill-panes)",
+        "Stop the server. Holders remain active unless you use --kill-panes.",
     ),
     (
         "server",
@@ -369,7 +369,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "stop",
         "sandbox.stop",
         &["task"],
-        "stop a container task's box (park; panes in it end)",
+        "Stop the task container. Its pane processes end.",
     ),
     (
         "sandbox",
@@ -383,7 +383,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "trust",
         "policy.trust",
         &["path"],
-        "trust a repo's .vibeke/ automation (setup scripts) at its current digest; prints the script",
+        "Trust repository automation at its current digest. Print the setup script.",
     ),
     ("task", "get", "task.get", &["task"], ""),
     (
@@ -449,7 +449,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "snapshot-gc",
         "task.review.snapshot.gc",
         &["task"],
-        "[task] | --repo path [--dry-run] [--include-unrecorded] — delete snapshot refs no candidate, acceptance, reviewer or running check references; prints what was removed",
+        "[task] | --repo path [--dry-run] [--include-unrecorded] — Delete unused snapshot refs. Preserve refs used by candidates, accepted reviews, review agents, or active checks. Print deleted refs.",
     ),
     (
         "task",
@@ -463,7 +463,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "reviewer",
         "task.review.request_reviewer",
         &["task"],
-        "<task> [--harness claude] [--subject s] [--prompt text] — show the reviewer prompt; nothing is launched",
+        "<task> [--harness claude] [--subject s] [--prompt text] — Show the review prompt. Do not start an agent.",
     ),
     (
         "task",
@@ -763,7 +763,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "mirror",
         "preview.mirror",
         &["preview"],
-        "<devbox/v4> bind the remote port number on this machine's loopback (unauthenticated; explicit)",
+        "<devbox/v4> Bind the remote port to this host's loopback address. This explicit connection is unauthenticated.",
     ),
     (
         "preview",
@@ -862,7 +862,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "screenshot",
         "browser.screenshot",
         &["session"],
-        "<session|preview|url> [--full-page] [--selector css] [--out f.png] — a preview handle or URL (or --preview/--url) is a one-shot capture in a fresh context, with [--device d] [--viewport WxH]",
+        "<session|preview|url> [--full-page] [--selector css] [--out f.png] — A preview or URL uses a new context for one capture. Options: [--device d] [--viewport WxH].",
     ),
     (
         "browser",
@@ -935,7 +935,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "watch",
         "browser.watch",
         &["session"],
-        "<session> [--pane p] [--split right|down|tab] — watch an agent's session in a browser pane (read-only; prefix+t takes over)",
+        "<session> [--pane p] [--split right|down|tab] — View an agent session in a read-only browser pane. Press prefix+t to take control.",
     ),
     (
         "browser",
@@ -1005,14 +1005,14 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "delete",
         "screenshot.delete",
         &["id"],
-        "<sN|id> [--force] (human only; --force for screenshots in an accepted review)",
+        "<sN|id> [--force] Human access only. Use --force for screenshots in an accepted review.",
     ),
     (
         "screenshot",
         "code-state",
         "screenshot.code_state",
         &["path"],
-        "[dir] — this checkout's code state as JSON (serve it at /__vibeke_build); runs locally",
+        "[dir] — Print local code state as JSON. Serve the result at /__vibeke_build.",
     ),
     (
         "desk",
@@ -1033,14 +1033,14 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "open",
         "desk.open",
         &["session"],
-        "<session> [--turn n] [--focus] — focus only with --focus; else shows resume options",
+        "<session> [--turn n] [--focus] — Change focus only with --focus. Otherwise, show resume options.",
     ),
     (
         "desk",
         "resume",
         "desk.resume",
         &["session"],
-        "<session> [--pane p] = Resume native session | --mode new_agent [--start --harness h] = Start new agent with context (a draft; never sent)",
+        "<session> [--pane p] = Resume native session | --mode new_agent [--start --harness h] = Start new agent with context (an unsent draft)",
     ),
     (
         "desk",
@@ -1175,7 +1175,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "generate",
         "assistant.generate",
         &["operation"],
-        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — shows the exact payload; nothing is sent",
+        "suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate [--run r] [--turns 3,4] [--pane p] [--task t] [--workspace w] [--include-screen] — Show the exact payload. Do not send it.",
     ),
     (
         "assist",

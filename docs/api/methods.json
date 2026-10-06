@@ -272,7 +272,7 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — convenience: split/tab + start + optional first prompt",
+      "spec": "`{harness, name?, where: {split_of: pane, direction?} | {new_tab_in: workspace} | {task: task} , prompt?, args?, focus?: false}` → `{pane, run}` — Creates a pane or tab, starts the agent, and optionally sends the first prompt.",
       "params": "{harness: string, name?: string, where?: object, prompt?: string, args?: [string], focus?: bool = false}",
       "result": "{pane: Pane, run: AgentRun}"
     },
@@ -286,7 +286,7 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise); returns once the adapter (or detector) reports `idle`",
+      "spec": "`{pane, harness, name?, mode?: tui|headless = tui, args?: [..], env?, model?, task?, ready_timeout_ms?: 30000}` → `{run}` — requires an available shell pane at its prompt (`conflict:pane_busy` otherwise). Returns once the adapter (or detector) reports `idle`",
       "params": "{pane?: Target, harness: string, name?: string, mode?: tui|headless = tui, args?: [string], env?: {*: string}, model?: string, task?: Target, ready_timeout_ms?: int = 30000}",
       "result": "{run: AgentRun}"
     },
@@ -300,7 +300,7 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{target, until?: [WaitCondition] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` — `WaitCondition` = an execution state (04 §2.4) or a derived condition: `needs_approval`/`needs_answer` = an open interaction of that kind, `done` = idle with a turn completed after the wait started (never read state)",
+      "spec": "`{target, until?: [WaitCondition] = [idle, done, needs_approval, needs_answer, error, exited], timeout_ms?}` → `{run, state, interaction?}` — `WaitCondition` is an execution state (04 §2.4) or a derived condition. `needs_approval`/`needs_answer` means an open interaction of that type. `done` means idle after a turn completes since the wait started. It does not mean that the user read the result.",
       "params": "{target: Target, until?: [string], timeout_ms?: int}",
       "result": "{run: AgentRun, state: string, interaction?: Interaction}"
     },
@@ -328,7 +328,7 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{method?}` → `{schema}` — the JSON Schema bundle (§1.5), or with `method` that method's `x-method` entry plus `$defs`; `not_found` for an unknown method",
+      "spec": "`{method?}` → `{schema}` — the JSON Schema bundle (§1.5), or with `method` that method's `x-method` entry plus `$defs`. `not_found` for an unknown method",
       "params": "{method?: string}",
       "result": "{schema: object}"
     },
@@ -342,7 +342,7 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}` → `{request}`; aborts the provider call; a cancelled running request still counts its reservation against the day's budget",
+      "spec": "`{request}` → `{request}`. Aborts the provider call. A canceled active request still counts its reservation against the day's budget",
       "params": "{request: string}",
       "result": "{request: object}"
     },
@@ -356,7 +356,7 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request, preview_digest}` → `{request}` (state `queued`); rechecks consent, endpoint, queue, rate and daily budget; sends exactly the previewed payload",
+      "spec": "`{request, preview_digest}` → `{request}` (state `queued`). Rechecks consent, endpoint, queue, rate and daily budget. Sends exactly the previewed payload",
       "params": "{request: string, preview_digest: string}",
       "result": "{request: object}"
     },
@@ -370,7 +370,7 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`; default classes exclude `screen`; the grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint",
+      "spec": "`{workspace?, connection?\\|profile?, classes?: [selected_text\\|structured_state\\|review_package\\|screen], operations?: [op], auto_send?: [op]}` → `{consent, notice}`. Default classes exclude `screen`. The grant binds the canonical workspace path to the connection's adapter+endpoint fingerprint",
       "params": "{workspace?: Target, connection?: string, profile?: string, classes?: [selected_text|structured_state|review_package|screen], operations?: [string], auto_send?: [string]}",
       "result": "{consent: object, notice: string}"
     },
@@ -384,7 +384,7 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate, profile?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved; nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`",
+      "spec": "`{operation: suggest_task_details\\|review_summary\\|pane_title\\|briefing\\|handoff\\|effort_estimate, profile?, idempotency_key?, retry_of?, inputs \\| top-level: {run?, turns?: [n], pane?, task?, workspace?, include_screen?}}` → `{request, preview: {digest, system, user, model, adapter, endpoint_host, execution_machine, max_output_tokens, bytes, estimated_input_tokens, estimated_max_cost_usd?, sources, omitted, redactions, notice}, requires_confirmation, confirm_with?}`. Consent is checked before content is retrieved. Nothing is sent unless the operation is in both `[assistant] auto_send` and the workspace consent's `auto_send`",
       "params": "{operation: suggest_task_details|review_summary|pane_title|briefing|handoff|effort_estimate, profile?: string, idempotency_key?: string, retry_of?: string, inputs?: object, run?: Target, turns?: [int], pane?: Target, task?: Target, workspace?: Target, include_screen?: bool}",
       "result": "{request: object, preview: {digest: string, system?: string, user?: string, model?: string, adapter?: string, endpoint_host?: string, execution_machine?: string, max_output_tokens?: int, bytes?: int, estimated_input_tokens?: int, estimated_max_cost_usd?: number|null, sources?: [object], omitted?: any, redactions?: any, notice?: string}, requires_confirmation: bool, confirm_with?: object}"
     },
@@ -440,7 +440,7 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{request}\\|{workspace}\\|{all: true}` → `{purged}`; deletes records and generated outputs (cancels unfinished ones first)",
+      "spec": "`{request}\\|{workspace}\\|{all: true}` → `{purged}`. Deletes records and generated outputs (cancels unfinished ones first)",
       "params": "{request?: string, workspace?: Target, all?: bool}",
       "result": "{purged: int}"
     },
@@ -454,7 +454,7 @@
         "assist"
       ],
       "milestone": "14; as built 2026-10-06",
-      "spec": "`{workspace?, connection?}` → `{revoked, cancelled_requests}`; cancels that workspace's unfinished requests",
+      "spec": "`{workspace?, connection?}` → `{revoked, cancelled_requests}`. Cancels that workspace's unfinished requests",
       "params": "{workspace?: Target, connection?: string}",
       "result": "{revoked: int, cancelled_requests: int}"
     },
@@ -580,7 +580,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process browser panes use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
       "params": "{session?: string, browser_session?: string, target?: string}",
       "result": "{session: string, delivery: string, width: int, height: int, poll: string}"
     },
@@ -622,7 +622,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?, hard?, text?}` → `{pane}` (`window` → the `preview.open` window result; `pane` → `{pane, profile}`) — for panes rendered by this server. Not from a pane.",
+      "spec": "`{pane, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?, hard?, text?}` → `{pane}` (`window` → the `preview.open` window result. `pane` → `{pane, profile}`) — for panes rendered by this server. Not from a pane.",
       "params": "{pane: Target, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?: string, hard?: bool, text?: string}",
       "result": "{pane: string} | {pane: string, profile: string} | {opened_in: window, url: string, machine: string, profile: string, profile_dir: string, browser: string, browser_kind: string, pid: int, reused: bool, socks_port: int|null, route: string} | {opened_in: default_browser, url: string} | object"
     },
@@ -650,7 +650,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process browser panes use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
       "params": "{session?: string, browser_session?: string, target?: string}",
       "result": "{session: string, detached: bool}"
     },
@@ -706,7 +706,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`; with `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only.",
+      "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`. With `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only.",
       "params": "{confirm?: bool, version?: string, url?: string, sha256?: string}",
       "result": "{plan: {version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool}, confirm_required: bool} | {installed: bool, binary: string, plan: object}"
     },
@@ -776,7 +776,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, toggle?: true, focus?: false}` → `{pane, pane_handle, browser_pane}` (opened) \\| `{closed, pane_handle, browser_pane}` (toggled off) \\| `{…, existing: true}` (`toggle: false`) — the console/network split: a pane under the browser pane (30 %) running `vibeke browser console --pane <id> --follow`, marked `created_by = \"browser-console:<browser pane id>\"`; closed by the server when its browser pane goes. Not from a pane.",
+      "spec": "`{pane, toggle?: true, focus?: false}` → `{pane, pane_handle, browser_pane}` (opened) \\| `{closed, pane_handle, browser_pane}` (toggled off) \\| `{…, existing: true}` (`toggle: false`) — the console/network split: a pane under the browser pane (30 %) running `vibeke browser console --pane <id> --follow`, marked `created_by = \"browser-console:<browser pane id>\"`. Closed by the server when its browser pane goes. Not from a pane.",
       "params": "{pane?: Target, toggle?: bool = true, focus?: bool = false}",
       "result": "{closed: string, pane_handle: string, browser_pane: string} | {pane: string, pane_handle: string, browser_pane: string, existing?: bool}"
     },
@@ -790,7 +790,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, entries: [console/network entry]}` → `{pane, stored}` — the media host relaying a page's capture to the owner of a browser pane it renders (≤ 1 batch/s, ≤ 200 entries, only while the page is on a loopback URL); the owner keeps known fields only, re-redacted (8 KiB text cap), in its own ring. Not from a pane.",
+      "spec": "`{pane, entries: [console/network entry]}` → `{pane, stored}` — The media host sends captured entries to the browser pane owner. The page must use a loopback URL. Limits: one batch per second and 200 entries per batch. The owner keeps only known fields in its ring buffer. It removes sensitive data again and limits text to 8 KiB. Pane tokens cannot call this method.",
       "params": "{pane: Target, entries: [object]}",
       "result": "{pane: string, stored: int}"
     },
@@ -804,7 +804,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane?, preview? | url?, split?, machine?, focus?: true, focus_client?}` → `{opened_in: \"pane\", pane, pane_handle, tab, url, machine, source_pane}` — on the owning server; `pane` defaults to the preview's pane, then the caller's pane / focused pane. URLs: `http(s)` (`localhost:5173/x` gets `http://`); from a pane only loopback, only next to the caller's own panes, never moving focus. Events `pane.created {kind: \"browser\"}`, `tab.layout_changed`.",
+      "spec": "`{pane?, preview? | url?, split?, machine?, focus?: true, focus_client?}` → `{opened_in: \"pane\", pane, pane_handle, tab, url, machine, source_pane}` — on the owning server. `pane` defaults to the preview's pane, then the caller's pane / focused pane. URLs: `http(s)` (`localhost:5173/x` gets `http://`). From a pane only loopback, only next to the caller's own panes, never moving focus. Events `pane.created {kind: \"browser\"}`, `tab.layout_changed`.",
       "params": "{preview?: Target, url?: string, split?: right|down|left|up|tab|float = right, pane?: Target, machine?: string, device?: string, viewport?: string|{width: int, height: int}, fit?: bool, focus?: bool = true, focus_client?: string}",
       "result": "{opened_in: pane, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
     },
@@ -846,7 +846,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{pane, url?, title?, history?, history_index?, device?, viewport?: \"WxH\" \\| \"fit\", fit?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. `device` (a `vk_browser::devices` preset: `iphone-15`, `pixel-8`, `ipad`, `desktop-1280/1440/1920`) or `viewport` (64..=8192 CSS px per edge) pins the page size (06 B3.2, letterboxed); `viewport: \"fit\"` / `fit: true` unpins; both at once or an unknown name → `invalid_params`; event `browser.viewport_changed {device, viewport}`. Not from a pane.",
+      "spec": "`{pane, url?, title?, history?, history_index?, device?, viewport?: \"WxH\" \\| \"fit\", fit?}` → `{pane}` — persists navigation reported by the viewing client (remote owners). Event `browser.navigated`. `device` (a `vk_browser::devices` preset: `iphone-15`, `pixel-8`, `ipad`, `desktop-1280/1440/1920`) or `viewport` (64..=8192 CSS px per edge) pins the page size (06 B3.2, letterboxed). `viewport: \"fit\"` / `fit: true` unpins. Both at once or an unknown name → `invalid_params`. Event `browser.viewport_changed {device, viewport}`. Not from a pane.",
       "params": "{pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string|{width: int, height: int}, fit?: bool}",
       "result": "{pane: string}"
     },
@@ -874,7 +874,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`.",
+      "spec": "`{session}` → `{session, human_control}` — full scope only. Events `browser.taken_over` / `browser.released {by}`.",
       "params": "{session?: string, browser_session?: string, target?: string}",
       "result": "{session: string, human_control: bool}"
     },
@@ -888,7 +888,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
+      "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process browser panes use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
       "params": "{session?: string, browser_session?: string, target?: string, after_seq?: int}",
       "result": "{session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}"
     },
@@ -902,7 +902,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6; file also written to `$TMPDIR/vibeke-shots/<hash>.png`",
+      "spec": "`{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6. File also written to `$TMPDIR/vibeke-shots/<hash>.png`",
       "params": "{session?: string, browser_session?: string, target?: string, url?: string, preview?: string, device?: string, viewport?: string|object, dpr?: number, color_scheme?: string, dark?: bool, full_page?: bool, selector?: string, timeout_ms?: int, inline?: bool}",
       "result": "{session: string|null, id: string, handle: string, blob: string, path_on_machine: string, width: int, height: int, bytes: int, binding: bound|illustrative, label: string, meta: ScreenshotMeta, data_b64?: string, mime?: string, inline_skipped?: string, one_shot?: bool, opened_session?: string, status?: int|null, final_url?: string|null, title?: string|null}"
     },
@@ -972,7 +972,7 @@
         "agent_browser"
       ],
       "milestone": "M3",
-      "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`.",
+      "spec": "`{session}` → `{session, human_control}` — full scope only. Events `browser.taken_over` / `browser.released {by}`.",
       "params": "{session?: string, browser_session?: string, target?: string}",
       "result": "{session: string, human_control: bool}"
     },
@@ -1014,7 +1014,7 @@
         "browser_pane"
       ],
       "milestone": "M3",
-      "spec": "`{session \\| agent_pane, pane?, split?: right\\|down\\|left\\|up\\|tab, focus?: true, focus_client?}` → `{opened_in: \"watch\", session, read_only: true, pane, pane_handle, tab, url, machine, source_pane}` — full scope only (`permission_denied` from a pane). `agent_pane` picks that pane's newest open session (`not_found` \"… has no open browser session\"). Creates a browser pane with `watch = <session>` in this server's layout next to `pane` (default: the session's owner pane). The pane is read-only until `BrowserCmd::TakeOver(true)` (render stream), which sets human control held by `pane:<id>` (events `browser.taken_over {by, via: \"watch_pane\"}`); `TakeOver(false)` or closing the pane releases it (`browser.released`). CLI: `vibeke browser watch <session> [--pane p] [--split …] [--machine m]`.",
+      "spec": "`{session \\| agent_pane, pane?, split?: right\\|down\\|left\\|up\\|tab, focus?: true, focus_client?}` → `{opened_in: \"watch\", session, read_only: true, pane, pane_handle, tab, url, machine, source_pane}` — full scope only (`permission_denied` from a pane). `agent_pane` picks that pane's newest open session (`not_found` \"… has no open browser session\"). Creates a browser pane with `watch = <session>` in this server's layout next to `pane` (default: the session's owner pane). The pane is read-only until `BrowserCmd::TakeOver(true)` (render stream), which sets human control held by `pane:<id>` (events `browser.taken_over {by, via: \"watch_pane\"}`). `TakeOver(false)` or closing the pane releases it (`browser.released`). CLI: `vibeke browser watch <session> [--pane p] [--split …] [--machine m]`.",
       "params": "{session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab|float = right, focus?: bool = true, focus_client?: string}",
       "result": "{opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
     },
@@ -1044,7 +1044,7 @@
         "notify"
       ],
       "milestone": "M1",
-      "spec": "`{pane \\| url: \"vibeke://focus?session=…&pane=…\", raise?: true}` → `{pane, client, focused, raised, host}` — focus in the most recently active attached client and raise its host terminal (08 §7.1 click-to-focus); full scope only [M4]",
+      "spec": "`{pane \\| url: \"vibeke://focus?session=…&pane=…\", raise?: true}` → `{pane, client, focused, raised, host}` — focus in the most recently active attached client and raise its host terminal (08 §7.1 click-to-focus). Full scope only [M4]",
       "params": "{pane?: Target, url?: string, raise?: bool = true}",
       "result": "{pane: string, client: string, focused: bool, raised: bool, host: any}"
     },
@@ -1142,7 +1142,7 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session, turns?: [n]\\|\"3-5,7\", path?, objective?}` → `{package: {objective, decisions, remaining_work, selected_turns: [{turn, user, assistant, tool_calls}], repository: {repo, cwd, revision: {revision, branch, uncommitted_files}}}, text}` — deterministic (no model call): the objective defaults to the first prompt, decisions/remaining work are labelled line extracts for the user to edit, default turns are the last three",
+      "spec": "`{session, turns?: [n]\\|\"3-5,7\", path?, objective?}` → `{package: {objective, decisions, remaining_work, selected_turns: [{turn, user, assistant, tool_calls}], repository: {repo, cwd, revision: {revision, branch, uncommitted_files}}}, text}` — The result is deterministic and does not use a model. The first prompt is the default objective. The user can edit labeled extracts for decisions and remaining work. The default selection is the last three turns.",
       "params": "{session: string, turns?: [int] | string, path?: string, objective?: string}",
       "result": "{package: object, text: string}"
     },
@@ -1156,7 +1156,7 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session}\\|{repo}\\|{workspace}\\|{before}` → `{rows_deleted, sessions_forgotten}` — deletes index rows; sessions are tombstoned so the indexer never re-adds them; `before` deletes older rows. Event `desk.forgotten {scope} {rows, sessions}` (no text)",
+      "spec": "`{session}\\|{repo}\\|{workspace}\\|{before}` → `{rows_deleted, sessions_forgotten}` — deletes index rows. Sessions are tombstoned so the indexer never re-adds them. `before` deletes older rows. Event `desk.forgotten {scope} {rows, sessions}` (no text)",
       "params": "{session?: string, repo?: string, workspace?: Target, before?: string|int}",
       "result": "{rows_deleted: int, sessions_forgotten: int}"
     },
@@ -1184,7 +1184,7 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session, turn?, path?, focus?: false}` → `{status, action: focus_live_pane\\|resume_native_session\\|start_new_agent_with_context, turn_items, focused, actions: [{id: focus, label: \"Focus live pane\"}, {id: resume_native, label: \"Resume native session\", command}, {id: new_agent, label: \"Start new agent with context\"}]}`. Focuses the live run's pane **only** with `focus: true` (an explicit user action); never resumes",
+      "spec": "`{session, turn?, path?, focus?: false}` → `{status, action: focus_live_pane\\|resume_native_session\\|start_new_agent_with_context, turn_items, focused, actions: [{id: focus, label: \"Focus live pane\"}, {id: resume_native, label: \"Resume native session\", command}, {id: new_agent, label: \"Start new agent with context\"}]}`. Focuses the live run's pane **only** with `focus: true` (an explicit user action). Never resumes",
       "params": "{session: string, turn?: int, path?: string, focus?: bool = false}",
       "result": "{status: string, action: string, turn_items?: any, focused?: bool, actions?: [object]}"
     },
@@ -1198,7 +1198,7 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{session, mode?: native, pane?, workspace?}` → **Resume native session**: `conflict:session_live` while it runs (focus it instead); `unsupported` without a resume handle; else types the resume argv into the given free pane (`conflict:pane_busy` if it has an agent) or a new tab in the session's workspace at its cwd (a stored run without `pane` keeps `agent.resume`'s behaviour) → `{mode, label, command, run}`. `{session, mode: new_agent, workspace?, start?: false, harness?, pane?, turns?, objective?}` → **Start new agent with context**: builds the `desk.context` package and saves it as a workspace draft; with `start` also starts the harness (no prompt) in a free pane → `{draft, package, sent: false, run?, pane?}`. Nothing is ever sent: the user edits and sends the draft (`draft.send`)",
+      "spec": "`{session, mode?: native, pane?, workspace?}` → **Resume native session**: `conflict:session_live` while it runs (focus it instead). `unsupported` without a resume handle. Otherwise, the method types the resume command into the given pane or a new tab in the session's workspace. The new tab uses the session's working directory. A pane with an agent returns `conflict:pane_busy`. A stored run without `pane` uses `agent.resume` behavior. The result is `{mode, label, command, run}`. `{session, mode: new_agent, workspace?, start?: false, harness?, pane?, turns?, objective?}` → **Start new agent with context**: builds the `desk.context` package and saves it as a workspace draft. With `start` also starts the harness (no prompt) in a free pane → `{draft, package, sent: false, run?, pane?}`. Nothing is ever sent: the user edits and sends the draft (`draft.send`)",
       "params": "{session: string, mode?: native, pane?: Target, workspace?: Target}",
       "result": "object"
     },
@@ -1212,7 +1212,7 @@
         "desk"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{text, repo?, harness?, since?, until?, session?, limit?: 20, sort?: relevance\\|recent, fresh?: true}` → `{hits: [{session, path, harness, machine, repo, cwd, turn, role, kind, ts, offset, snippet, status: live\\|resumable\\|none, live: {run, pane}, resume: {argv, command, run}}], index: {sources, rows, forgotten_sessions}}`. `repo` is a directory (matched as main repository root or cwd prefix); `since`/`until` take epoch ms, `7d`/`12h`/`30m` or `YYYY-MM-DD`. **live** = a current run is in that native session; **resumable** = a resume argv is known (a stored run's, else the harness's own)",
+      "spec": "`{text, repo?, harness?, since?, until?, session?, limit?: 20, sort?: relevance\\|recent, fresh?: true}` → `{hits: [{session, path, harness, machine, repo, cwd, turn, role, kind, ts, offset, snippet, status: live\\|resumable\\|none, live: {run, pane}, resume: {argv, command, run}}], index: {sources, rows, forgotten_sessions}}`. `repo` is a directory (matched as main repository root or cwd prefix). `since`/`until` take epoch ms, `7d`/`12h`/`30m` or `YYYY-MM-DD`. **live** = a current run is in that native session. **resumable** = a resume argv is known (a stored run's, else the harness's own)",
       "params": "{text: string, repo?: string, harness?: string, since?: string|int, until?: string|int, session?: string, limit?: int = 20, sort?: relevance|recent, fresh?: bool = true}",
       "result": "{hits: [object], index: object}"
     },
@@ -1282,7 +1282,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{scope?: workspace\\|task, id?, text, title?, attachments?: [{kind: file\\|screenshot, path\\|blob\\|data_b64, name?, label?}], idempotency_key?}` → `{draft}`. `id` defaults to the caller's workspace. `path` must be an existing absolute path on this server's machine; `blob` is a `blob.put` hash; `data_b64` is stored now in the pane inbox (06 A11.4) — remote clients use `blob`/`data_b64`",
+      "spec": "`{scope?: workspace\\|task, id?, text, title?, attachments?: [{kind: file\\|screenshot, path\\|blob\\|data_b64, name?, label?}], idempotency_key?}` → `{draft}`. `id` defaults to the caller's workspace. `path` must be an existing absolute path on this server's machine. `blob` is a `blob.put` hash. `data_b64` is stored now in the pane inbox (06 A11.4) — remote clients use `blob`/`data_b64`",
       "params": "{scope?: workspace|task, id?: string, text: string, title?: string, attachments?: [{kind: file|screenshot, path?: string, blob?: string, data_b64?: string, name?: string, label?: string}], idempotency_key?: string}",
       "result": "{draft: object}"
     },
@@ -1310,7 +1310,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`",
+      "spec": "`{draft}` → `{draft}`. `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`",
       "params": "{draft: Target}",
       "result": "{draft: object}"
     },
@@ -1324,7 +1324,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{draft}`; `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`",
+      "spec": "`{draft}` → `{draft}`. `{scope?, id?, all?}` → `{drafts}` in user order (archived drafts are not listed). A send left `sending` by a server restart is reported and persisted as `delivery_unknown`",
       "params": "{scope?: workspace|task, id?: string, all?: bool}",
       "result": "{drafts: [object]}"
     },
@@ -1338,7 +1338,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft}` → `{send, receipt: {known, …}, may_retry, note}` — a late matching turn upgrades the attempt to `delivered`; a still-uncertain attempt is marked reconciled, which is what allows a warned retry",
+      "spec": "`{draft}` → `{send, receipt: {known, …}, may_retry, note}` — a late matching turn upgrades the attempt to `delivered`. A still-uncertain attempt is marked reconciled, which is what allows a warned retry",
       "params": "{draft: Target}",
       "result": "{send: object, receipt: object, may_retry: bool, note: string}"
     },
@@ -1366,7 +1366,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{draft, target_run, idempotency_key, include_notes?: false, keep?: false, retry_despite_unknown?}` → `{draft, send, send_path}`. Uses task messages' guarded prompt-input path (15 §9) without a tracked task: the run and its native conversation are fixed when the send starts; it requires a known native conversation, an idle run, no open interaction, no attached TUI focused on the pane, a provably empty input box and every attachment visible to the pane (`sandbox::can_see`); otherwise `conflict:send_unsafe {fallback: open_pane_to_send, draft_kept: true}` with **zero bytes written** and no attempt recorded. Delivery holds the pane input lock, rechecks, submits and is `delivered` only when a turn at or after the baseline starts in that conversation with the text; otherwise `delivery_unknown` (or `failed`). The sent text is the draft, then `Attached files:` with one path per attachment, then `Notes:` only with `include_notes`. A delivered draft is archived unless `keep`. Receipts are owner-aware (`review::receipts`); the same key replays the current outcome. After `delivery_unknown`: `conflict:reconcile_first` until `draft.reconcile`, then `retry_despite_unknown`",
+      "spec": "`{draft, target_run, idempotency_key, include_notes?: false, keep?: false, retry_despite_unknown?}` → `{draft, send, send_path}`. Uses task messages' guarded prompt-input path (15 §9) without a tracked task: the run and its native conversation are fixed when the send starts. The run must be idle with a known native conversation and no open interaction. No attached TUI can focus the pane. The input box must be verifiably empty. Each attachment must be visible to the pane (`sandbox::can_see`). Otherwise `conflict:send_unsafe {fallback: open_pane_to_send, draft_kept: true}` with **zero bytes written** and no attempt recorded. Delivery holds the pane input lock while it repeats the checks and submits the text. The result is `delivered` only after a matching turn starts at or after the baseline in the same conversation. Otherwise `delivery_unknown` (or `failed`). The sent text is the draft, then `Attached files:` with one path per attachment, then `Notes:` only with `include_notes`. A delivered draft is archived unless `keep`. Receipts are owner-aware (`review::receipts`). The same key replays the current outcome. After `delivery_unknown`: `conflict:reconcile_first` until `draft.reconcile`, then `retry_despite_unknown`",
       "params": "{draft: Target, target_run: Target, idempotency_key: string, include_notes?: bool = false, keep?: bool = false, retry_despite_unknown?: bool}",
       "result": "{draft: object, send: object, send_path: string}"
     },
@@ -1450,7 +1450,7 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane, path?: \"\"}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd; directories first, then by name; ≤ 2000 entries. Symlinks are listed, never followed; `.git` is not listed; secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}`",
+      "spec": "`{pane, path?: \"\"}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd. Directories first, then by name. ≤ 2000 entries. Symlinks are listed, never followed. `.git` is not listed. Secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}`",
       "params": "{pane?: Target, path?: string = ''}",
       "result": "{path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}"
     },
@@ -1464,7 +1464,7 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary); `binary` (NUL in the first 8 KiB) returns no text; secret-looking files return `{secret: true}` without content",
+      "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary). `binary` (NUL in the first 8 KiB) returns no text. Secret-looking files return `{secret: true}` without content",
       "params": "{pane?: Target, path: string}",
       "result": "{path: string, text?: string, binary: bool, truncated: bool, size: int, secret: bool}"
     },
@@ -1478,7 +1478,7 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB",
+      "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`. `file` must be a relative path listed by `git.status`. Diff against `HEAD` (or the index with `staged`), capped at 512 KiB",
       "params": "{pane?: Target, path?: string, file: string, staged?: bool}",
       "result": "{file: string, diff: string, truncated: bool, binary: bool, untracked: bool, secret?: bool}"
     },
@@ -1492,7 +1492,7 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first; with `base`, only commits in `base..HEAD`",
+      "spec": "`{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first. With `base`, only commits in `base..HEAD`",
       "params": "{pane?: Target, path?: string, base?: string, limit?: int = 50}",
       "result": "{commits: [{sha: string, short: string, author: string, ts: int, subject: string}], truncated: bool}"
     },
@@ -1506,7 +1506,7 @@
         "api"
       ],
       "milestone": "16 G2",
-      "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`; `not_found:not_a_repo` outside a repository",
+      "spec": "`{pane}` (pane scope: own pane only) or `{path}` (full scope) → `{repo_root, branch?, upstream?, ahead, behind, clean, truncated, files: [{path, orig_path?, x, y, kind: modified|added|deleted|renamed|untracked|conflicted, staged, adds?, dels?, binary, secret}]}`. `not_found:not_a_repo` outside a repository",
       "params": "{pane?: Target, path?: string}",
       "result": "{repo_root: string, branch?: string|null, upstream?: string|null, ahead: int, behind: int, clean: bool, truncated: bool, files: [{path: string, orig_path?: string|null, x: string, y: string, kind: string, staged: bool, adds?: int|null, dels?: int|null, binary: bool, secret: bool}]}"
     },
@@ -1520,7 +1520,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`. `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
       "params": "{group: Target, workspace?: Target, index?: int}",
       "result": "{workspace: Workspace, group: string|null}"
     },
@@ -1576,7 +1576,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`. `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
       "params": "{}",
       "result": "{groups: [Group], ungrouped: [string]}"
     },
@@ -1604,7 +1604,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`; `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
+      "spec": "`{}` → `{groups: [Group + {agent_summary}], ungrouped}`. `{group, workspace, index?}` / `{workspace}` → `{workspace, group}`",
       "params": "{workspace?: Target, index?: int}",
       "result": "{workspace: Workspace, group: string|null}"
     },
@@ -1646,7 +1646,7 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04; repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again; a different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7); the key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). **Forbidden** (`permission_denied:self_answer_forbidden`) when the caller's token belongs to the run's own pane or any pane/run descended from it — this is *authorizing* (09 §5.1.1)",
+      "spec": "`{interaction, decision?: allow|allow_always|deny, choices?: {qid: [oid]}, text?, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?, actor?, expected_decision_rev?}` → `{interaction, delivery: {state, channel: native|keystrokes}}` — `state` per the delivery state machine in 02/04. Repeating the same `idempotency_key` with the same answer returns the recorded state (`duplicate: true`) and never delivers again. A different answer under that key is a `conflict`. `actor` (full-scope callers only) labels `answered_by`, e.g. `gateway:the maintainer's phone` (16 §7.7). The key is kept separately as `answer_key`. `expected_decision_rev` makes the answer a compare-and-set: if the interaction moved on, the call fails with `conflict` (`stale: …`). The server returns `permission_denied:self_answer_forbidden` for tokens from the run's own pane or any descendant pane or run. This call grants authorization (09 §5.1.1).",
       "params": "{interaction: Target, decision?: allow|allow_always|deny, choices?: {*: [string]}, text?: string, scope?: once|session|rule, rule?: PolicyRule, idempotency_key?: string, actor?: string, expected_decision_rev?: int}",
       "result": "{interaction: Interaction, delivery: {state: string, channel?: native|keystrokes|none|string}, duplicate?: bool}"
     },
@@ -1660,7 +1660,7 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{interaction}` → `{interaction}` (user dismisses; adapter delivers deny/escape)",
+      "spec": "`{interaction}` → `{interaction}` (user dismisses. Adapter delivers deny/escape)",
       "params": "{interaction: Target}",
       "result": "{interaction: Interaction}"
     },
@@ -1688,7 +1688,7 @@
         "agents"
       ],
       "milestone": "M1",
-      "spec": "`{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1; Phase 2 adds ranking",
+      "spec": "`{status?: open, run?, workspace?, kind?}` → `{interactions}` — sorted by `opened_at` in Phase 1. Phase 2 adds ranking",
       "params": "{status?: open|string, run?: Target, workspace?: Target, kind?: string}",
       "result": "{interactions: [Interaction]}"
     },
@@ -1733,7 +1733,7 @@
         "layouts"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
+      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`. `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
       "params": "{name?: string}",
       "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
     },
@@ -1748,7 +1748,7 @@
         "layouts"
       ],
       "milestone": "M1",
-      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`; `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
+      "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`. `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
       "params": "{name?: string}",
       "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
     },
@@ -1762,7 +1762,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`",
+      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`. `{workspace?, text, expected_rev?}` → `{notes}`",
       "params": "{workspace?: Target}",
       "result": "{notes: {workspace: string, text: string, rev: int}}"
     },
@@ -1776,7 +1776,7 @@
         "drafts"
       ],
       "milestone": "research R2/R3; server + CLI built; TUI built, 08 §6.7",
-      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`; `{workspace?, text, expected_rev?}` → `{notes}`",
+      "spec": "`{workspace?}` → `{notes: {workspace, text, rev}}`. `{workspace?, text, expected_rev?}` → `{notes}`",
       "params": "{workspace?: Target, text: string, expected_rev?: int}",
       "result": "{notes: {workspace: string, text: string, rev: int}}"
     },
@@ -1917,7 +1917,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centred); with `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout`",
+      "spec": "`{tab, rect?: {x%,y%,w%,h%}, cwd?, command?, focus?}` → `{pane}` [M4] — *implemented:* without `pane`, a new floating pane (default 70%×70% centered). With `pane`, floats a tiled pane (`conflict` for a tab's last tiled pane) or moves/resizes/raises a floating one. Floats live in `Tab.floating: [{pane, x, y, w, h, z}]` (percent), not in `layout`",
       "params": "{pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string], focus?: bool}",
       "result": "{pane: Pane}"
     },
@@ -2085,7 +2085,7 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, command: string, wait?: bool, timeout_ms?}` → `{}` or (with wait) `{exit_code?, output_tail}` — sends text + Enter; with `wait`, uses OSC 133 prompt marks when the shell integration is active, else falls back to \"foreground process returns to shell\"",
+      "spec": "`{pane, command: string, wait?: bool, timeout_ms?}` → `{}` or (with wait) `{exit_code?, output_tail}` — sends text + Enter. With `wait`, uses OSC 133 prompt marks when the shell integration is active, else falls back to \"foreground process returns to shell\"",
       "params": "{pane?: Target, command: string, wait?: bool, timeout_ms?: int}",
       "result": "{exit_code?: int|null, output_tail?: string}"
     },
@@ -2113,7 +2113,7 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{pane, keys: [string]}` → `{}` — key grammar §2.6.1; all keys validated before any byte is written",
+      "spec": "`{pane, keys: [string]}` → `{}` — key grammar §2.6.1. All keys validated before any byte is written",
       "params": "{pane?: Target, keys: [string]}",
       "result": "{}"
     },
@@ -2393,7 +2393,7 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only",
+      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4). Full scope only",
       "params": "{preview: Target, machine?: string}",
       "result": "{machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user, warning: string, url?: string, already?: bool}"
     },
@@ -2407,7 +2407,7 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`; proxy mode returns a tokenized `*.vibeke.localhost` URL",
+      "spec": "`{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`. Proxy mode returns a tokenized `*.vibeke.localhost` URL",
       "params": "{preview?: Target, url?: string, machine?: string, mode?: pane|window|proxy, window?: bool, proxy?: bool, split?: right|down|left|up|tab|float, pane?: Target, focus?: bool = true, device?: string, viewport?: string|{width: int, height: int}, profile?: string, no_open?: bool = false, open?: bool, tls_origin?: bool}",
       "result": "{opened_in: pane, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null} | {opened_in: window, url: string, machine: string, profile: string, profile_dir: string, browser: string, browser_kind: string, pid: int, reused: bool, socks_port: int|null, route: none|loopback|remote} | {opened_in: default_browser, url: string} | {opened_in: proxy, url: string, proxy_url: string, host: string, proxy_port: int, machine: string, preview: string, opened: bool, token_ttl_s: int, session_ttl_s: int, tls_origin: bool, remote_url: string, caveats: string, ca?: PreviewCa, open_url?: string}"
     },
@@ -2477,7 +2477,7 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`.",
+      "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`. `server.status` also carries `preview: {socks_port, browsers, previews}`.",
       "params": "{}",
       "result": "{socks_port: int|null, browsers: [{profile: string, machine: string, route: string, pid: int, running: bool}], links: [{machine: string, connected: bool, bytes_in: int|null, bytes_out: int|null, rtt_ms: int|null}], accepted: int, rejected: int, proxy: {port: int, tls: bool, routes: [{host: string, machine: string, preview: string, handle: string, port: int, scheme: http|https, tls: bool}], stats: {requests: int, denied: int, websockets: int}}|null, mirrors: [PreviewMirror]}"
     },
@@ -2491,7 +2491,7 @@
         "preview"
       ],
       "milestone": "M3",
-      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only",
+      "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4). Full scope only",
       "params": "{preview?: Target|int, port?: int, machine?: string}",
       "result": "{local_port: int, machine: string, preview: string}"
     },
@@ -2603,7 +2603,7 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes); a screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`.",
+      "spec": "`{id, force?}` → `{id, handle, deleted, blob_removed}` — human only (`permission_denied` for panes). A screenshot referenced by a review acceptance needs `force` (`conflict {reason: \"referenced_by_acceptance\"}`). The blob goes when no other record references it. Event `screenshot.deleted {ids, reason: deleted\\|retention}`.",
       "params": "{id: string, force?: bool}",
       "result": "{id: string, handle: string, deleted: bool, blob_removed: bool}"
     },
@@ -2645,7 +2645,7 @@
         "screenshots"
       ],
       "milestone": "M3",
-      "spec": "`{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`; `VIBEKE_NO_OPEN=1` only reports the path).",
+      "spec": "`{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`. `VIBEKE_NO_OPEN=1` only reports the path).",
       "params": "{id: string}",
       "result": "ScreenshotMeta"
     },
@@ -2659,7 +2659,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both; a call with `plan` is refused with `conflict` unless the scope still resolves to exactly that plan (the CLI confirms by sending the dry run's `scope` + `plan`, so a focus change or a relative cutoff can't redirect the deletion). Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`.",
+      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both. If the scope no longer matches `plan`, the server returns `conflict`. The CLI sends the dry run's `scope` + `plan` to confirm the deletion. This prevents a focus change or relative cutoff from changing the deletion target. Idempotent. `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`.",
       "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}",
       "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int}"
     },
@@ -2785,7 +2785,7 @@
         "parity"
       ],
       "milestone": "M1",
-      "spec": "`{tab?, visible?}` → `{tab}` — show/hide all floats (`Tab.floats_hidden`; toggles without `visible`) [M4]",
+      "spec": "`{tab?, visible?}` → `{tab}` — show/hide all floats (`Tab.floats_hidden`. Toggles without `visible`) [M4]",
       "params": "{tab?: Target, visible?: bool}",
       "result": "{tab: Tab}"
     },
@@ -2827,7 +2827,7 @@
         "api"
       ],
       "milestone": "M1",
-      "spec": "`{tab, index, workspace?}` → `{tabs}` (numbers are stable; order changes)",
+      "spec": "`{tab, index, workspace?}` → `{tabs}` (numbers are stable. Order changes)",
       "params": "{tab: Target, index: int, workspace?: Target}",
       "result": "{tabs: [Tab]}"
     },
@@ -2925,7 +2925,7 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`)",
+      "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`. `auto` is a worktree). The choice is recorded as `Task.checkout`. `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06). `task.finish {remove_worktree}` removes the worktree (never for `none`)",
       "params": "{title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool}",
       "result": "{task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun], copied?: [string], files?: [MaterializedFile], deps?: any, setup?: {pane: string|null, status: string|null, agents_pending: bool, commands: [{source: string, command: string}]}, warnings?: [string]}"
     },
@@ -3413,7 +3413,7 @@
         "api"
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
-      "spec": "`{path, force?: false}` → `{job}` — **async**; progress via `worktree.removed` event",
+      "spec": "`{path, force?: false}` → `{job}` — Runs asynchronously. Reports progress through the `worktree.removed` event",
       "params": "{path: string, force?: bool = false}",
       "result": "{job: any}"
     },

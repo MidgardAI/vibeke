@@ -1,239 +1,252 @@
-# Migrating from Herdr to Vibeke
+# Import from Herdr
 
-Vibeke runs next to Herdr. Nothing here touches `~/.config/herdr`, Herdr's sockets or sessions,
-or Herdr's hooks, so you can try Vibeke for as long as you like and keep Herdr as the fallback.
+Vibeke uses separate configuration, sockets, and state. The importer reads Herdr files. It does not modify Herdr configuration, hooks, or active sessions.
 
-## 1. Install
+## Install Vibeke
 
-From a release:
+Use the [installation guide](site/src/install.md) to build from source or install a release.
 
-```sh
-curl -fsSL https://github.com/MidgardAI/vibeke/releases/download/v0.1.0/install.sh | sh
-```
-
-Or from a local build (`mise run dist`, then):
+For a local release build, use:
 
 ```sh
 VIBEKE_INSTALL_FROM=dist/0.1.0 sh scripts/install.sh
 ```
 
-The installer verifies the checksum, puts the binary in `~/.local/share/vibeke/versions/<v>/`,
-points `~/.local/share/vibeke/current` at it, and links `~/.local/bin/vibeke`. It never uses sudo.
-Make sure `~/.local/bin` is on your `PATH`, then check the setup:
+The installer does not use `sudo`. It creates `~/.local/bin/vibeke`. Add that directory to `PATH` if necessary.
+
+Check the installation:
 
 ```sh
 vibeke doctor
 ```
 
-`doctor` reports install, sockets, integrations, terminal capabilities, remote machines and
-topology, with a fix line for everything that is not green. `vibeke doctor --json` is the
-machine-readable form, and `--no-remote` skips the SSH probes.
+Use `vibeke doctor --json` for JSON output. Use `--no-remote` to omit remote checks.
 
-## 2. Import your Herdr config and sessions
-
-Look first, change nothing:
+## Preview the import
 
 ```sh
 vibeke import herdr --dry-run
 ```
 
-Then import:
+Read the import report before the next step.
+
+## Import configuration and layout
 
 ```sh
-vibeke import herdr               # config and session
-vibeke import herdr --config      # only ~/.config/herdr/config.toml -> ~/.config/vibeke/config.toml
+vibeke import herdr
 ```
 
-Plain `vibeke import herdr` imports the config and recreates the workspaces from
-`~/.config/herdr/session.json` in a Vibeke session. To put them in a named session instead of
-`default`, set `VIBEKE_SESSION=herdr-import` for the command. The importer only reads Herdr's
-files.
+This imports configuration and recreates workspaces from `~/.config/herdr/session.json`. Use `VIBEKE_SESSION=herdr-import` to select a named Vibeke session.
 
-Known issue: the importer's `--session` flag (session only) collides with the global
-`--session NAME` flag, which swallows the next argument. `vibeke import herdr --session --dry-run`
-silently drops the `--dry-run`. Do not use it until this is fixed; use `--dry-run` alone or no
-flag, as above.
+For configuration only, use:
 
-### Mapped
+```sh
+vibeke import herdr --config
+```
 
-- Theme (`name`, `auto_switch`, `dark_name`, `light_name`, `[theme.custom]`), `[terminal]`
-  (`default_shell`, `shell_mode`, `new_cwd`), `onboarding`, `[update]`.
-- `[keys]`: the prefix and every action key under the same action name. Legacy `[keys.indexed]`
-  becomes the `switch_tab` / `switch_workspace` / `focus_agent` ranges. Bindings using `cmd` or
-  `super` get a warning, because they need a terminal with the kitty keyboard protocol.
-- `[[keys.command]]` custom commands, `[ui]` sidebar settings and sidebar token rules,
-  `remote_image_paste`.
-- `[worktrees] directory` becomes `tasks.root`.
-- `session.json`: workspaces, tabs, pane layout and working directories are recreated.
-- Agent sessions: the stored agent session ids (Claude/Codex) become resume candidates. Vibeke
-  prints the resume command for each; it does not start agents on its own.
+The importer's `--session` option conflicts with the global `--session NAME` option. It can consume the next argument, including `--dry-run`. Do not use the importer's `--session` option. Use plain import or `--dry-run` instead.
 
-### Not mapped
+### Supported settings
 
-- Anything the importer cannot place is listed as `skipped` in its report. Read the report.
-- Herdr plugins are not activated by the importer. See "Herdr plugins" below for the partial
-  plugin support and the separate, copy-only migration of plugin config and state.
-- Running agent processes in Herdr stay in Herdr. Vibeke recreates the layout and offers resume,
-  it does not take over live processes.
+- Theme names, automatic theme selection, and custom theme values.
+- Terminal shell, shell mode, and working directory settings.
+- Setup and update settings.
+- Prefix and action keys. Legacy indexed keys become tab, workspace, and agent key ranges.
+- Custom commands, sidebar settings, token rules, and `remote_image_paste`.
+- The worktree directory, which becomes `tasks.root`.
+- Workspace, tab, pane layout, and working directory records.
+- Stored Claude/Codex session IDs as resume candidates.
 
-If `~/.config/vibeke/config.toml` already exists the config import writes
-`config.imported.toml` next to it instead of overwriting; use `--force` to overwrite.
+Bindings with `cmd` or `super` require the Kitty keyboard protocol. The importer reports a warning for those bindings.
 
-### Herdr plugins (partial, M5)
+The importer prints agent resume commands. It does not start agents. Active processes remain in Herdr.
 
-Support is partial. [herdr-compat-inventory.md](herdr-compat-inventory.md) lists what works,
-item by item.
+Unsupported settings appear as `skipped` in the report. The importer does not activate plugins.
 
-1. Register the unchanged plugin in Vibeke's own registry, then review and trust it. Nothing it
-   ships runs before trust:
+If Vibeke configuration exists, the importer writes `config.imported.toml` beside it. Use `--force` only to replace existing configuration.
+
+## Herdr plugins
+
+Compatibility is partial. See the [compatibility inventory](herdr-compat-inventory.md).
+
+1. Register a local plugin:
 
    ```sh
-   vibeke plugin link ~/src/my-herdr-plugin      # or: vibeke plugin install <dir>
-   vibeke plugin trust <id> --legacy             # shows every entrypoint, then grants trust
+   vibeke plugin link ~/src/my-herdr-plugin
    ```
 
-2. Bring over the plugin's config and state. The source is always a directory you name. It can
-   be `~/.config/herdr` itself, but a copy works as well. Files are copied, never moved, and
-   existing Vibeke files are reported as conflicts and left alone:
+2. Review and trust its commands:
 
    ```sh
-   vibeke plugin migrate --from ~/herdr-backup --dry-run    # what would be copied
-   vibeke plugin migrate --from ~/herdr-backup --link       # copy; also link the registry's plugins
-   vibeke plugin migrate --rollback                         # remove what the last run created
+   vibeke plugin trust <id> --legacy
    ```
 
-   Herdr's on-disk layout for per-plugin data is not verified. The migration looks for
-   `plugins/<id>/config|state`, `plugins/config|state/<id>` and `plugin-config|state/<id>`, plus
-   explicit `config_dir`/`state_dir` entries in `plugins.json`. Its report shows which layout
-   matched. `--link` registers plugins untrusted.
+No plugin command runs before trust. `vibeke plugin install <dir>` also registers a local directory.
 
-What works once a plugin is trusted:
+### Copy plugin configuration and state
 
-- Actions (`vibeke plugin action run`), event hooks and startup hooks. Callbacks reach Vibeke
-  through a private `herdr` launcher and socket.
-- The worktree, layout, pane move/swap, agent and metadata calls.
-- Plugin panes in every placement. A popup is a modal window over the layout (sized by the
-  pane's `width`/`height`); an overlay covers the current tab. Both close when their command
-  exits, with `herdr popup close` (popups), or with `prefix+x`, and the focus goes back to where
-  it was.
-- Plugin actions in the command palette (`prefix+:`). Actions of untrusted or disabled plugins
-  are listed but disabled, with the command that enables them.
-- Your `[[keys.command]] type = "plugin_action"` bindings.
-- Link handlers: a hint label (`prefix+shift+u`) or Ctrl/Alt+click on a matching link offers the
-  plugin's handler next to the default action.
-- Window titles set by plugins (`ui.title_sync`, else shown in the tab bar).
+1. Preview the copy:
+
+   ```sh
+   vibeke plugin migrate --from ~/herdr-backup --dry-run
+   ```
+
+2. Copy the files and register the plugins:
+
+   ```sh
+   vibeke plugin migrate --from ~/herdr-backup --link
+   ```
+
+3. To remove files created by the last migration, use:
+
+   ```sh
+   vibeke plugin migrate --rollback
+   ```
+
+The source can be `~/.config/herdr` or a backup. Migration copies files. It does not move them. Existing destination files remain unchanged and appear as conflicts.
+
+Herdr plugin directory layouts are not verified. The migration checks these paths:
+
+- `plugins/<id>/config|state`.
+- `plugins/config|state/<id>`.
+- `plugin-config|state/<id>`.
+- Explicit `config_dir` and `state_dir` entries in `plugins.json`.
+
+The report identifies the matching layout. Plugins registered with `--link` still need explicit trust.
+
+### Supported plugin features
+
+- Actions, event hooks, and startup hooks through a private `herdr` launcher and socket.
+- Worktree, layout, pane move/swap, agent, and metadata calls.
+- Plugin panes in all placements.
+- Plugin actions in the command palette (`prefix+:`). Untrusted or disabled actions remain unavailable.
+- Configuration bindings with `[[keys.command]] type = "plugin_action"`.
+- URL handlers through `prefix+shift+u` or Ctrl/Alt+click.
+- Window titles through `ui.title_sync`, with tab-bar titles as the alternative.
 - `herdr --session NAME`.
 
-A startup hook's background processes keep their callback access while they run, including
-across a Vibeke server restart. Processes an action leaves behind lose it when the action ends.
-Credentials in plugin output are redacted in `vibeke plugin logs`.
+A popup covers part of the layout using its declared width and height. An overlay covers the current tab.
 
-Not supported yet: `agent.view.set/clear`, key bindings declared in a plugin's own manifest
-(add them to your config instead), and installs from git.
+A plugin pane closes when its command exits. Use `prefix+x` to close it manually. For popups, `herdr popup close` also works.
 
-With `[compat.herdr] enabled = true`, Vibeke also listens on Herdr's socket layout for tools
-that talk to Herdr directly. The default session uses `$RUNTIME/herdr-compat/herdr.sock`
-and a named session uses `$RUNTIME/herdr-compat/sessions/<name>/herdr.sock`. This is under
-Vibeke's runtime directory, never under `~/.config/herdr`.
+Startup-hook background processes retain callback access across server restarts. Background processes from an action lose access when that action ends. Plugin logs redact recognized credentials.
 
-## 3. Key differences
+Unsupported features are `agent.view.set/clear`, key bindings from plugin manifests, and Git installation. Put key bindings in your configuration instead.
 
-- **Prefix** is `ctrl+b` by default, and the action names and default bindings are the
-  same. Imported `[keys]` keep your own prefix.
-- **`prefix+a`** jumps to the next pane that needs attention (an agent waiting for you).
-- **`prefix+i`** opens the inbox: questions, approvals and notifications from all agents.
-- **Interaction cards** (an agent asking a question or requesting an approval) pop up only for
-  agents in panes you are *not* looking at; the focused agent asks in its own pane. Change this
-  with `ui.interaction_overlay` (`off | unfocused | always`).
-- **`prefix+[`** enters copy mode with vi keys; press `/` inside it to search the buffer.
-  `prefix+/` searches scrollback directly, `prefix+e` opens scrollback in your editor.
-- **Server and panes survive.** Each pane is held by a small holder process, so a server crash,
-  restart or upgrade keeps every shell and agent running.
-- **Multiple clients** can attach to one session with independent focus and viewport.
+### Compatibility socket
 
-`vibeke keys` lists the active bindings and `vibeke --default-config` prints the full default
-config with comments.
+Set `[compat.herdr] enabled = true` to expose a Herdr-compatible socket for existing socket clients.
 
-## 4. Running both side by side
+The default session uses `$RUNTIME/herdr-compat/herdr.sock`. Named sessions use `$RUNTIME/herdr-compat/sessions/<name>/herdr.sock`.
 
-- Separate sockets and state: Vibeke uses its own runtime dir and `~/.local/state/vibeke`;
-  Herdr keeps `~/.config/herdr` and its own sockets. There is no shared state.
-- Inside Vibeke panes, `HERDR_*` environment variables are stripped, so Herdr's hook scripts and
-  CLI do not talk to a Herdr server that is not the one hosting the pane. Do not start Vibeke
-  from inside a Herdr pane expecting nesting to be seamless; use a separate terminal tab.
-- Herdr's hooks (`~/.claude/hooks/herdr-*`, Herdr entries in `~/.codex/hooks.json`) are left
-  untouched. Vibeke's integration installs next to them.
+These paths are inside Vibeke's runtime directory. They do not use `~/.config/herdr`.
 
-### Agent integrations (consent first)
+## Terminal controls
 
-```sh
-vibeke integration status all
-vibeke integration install claude          # shows the diff, writes nothing
-vibeke integration install claude --yes    # writes ~/.claude/settings.json hooks
-vibeke integration install codex --yes
-```
+Vibeke uses the same `ctrl+b` prefix by default.
 
-Without `--yes` the command only shows what it would change. `--dry-run` is also available. To try
-it without touching your real configs, point `CLAUDE_CONFIG_DIR` / `CODEX_HOME` at a copy.
+| Action | Key |
+| --- | --- |
+| Open the inbox | `prefix+i` |
+| Open copy mode | `prefix+[` |
+| Search in copy mode | `/` |
+| Edit scrollback | `prefix+e` |
+| List active bindings | `vibeke keys` |
 
-Codex asks you to trust new hooks: start Codex once and run `/hooks`, review the Vibeke entries
-and trust them. `vibeke doctor` warns while any Codex hook is untrusted.
+Requests from other panes appear in the inbox. The focused agent can ask in its own pane. Holder processes preserve panes after a server restart. Multiple clients can connect with separate focus and viewport state.
 
-If you have a shell alias or function named `codex` (or `claude`), it can bypass the PATH shim
-Vibeke uses inside panes. `vibeke doctor` checks for this.
+Use `vibeke --default-config` to print the full configuration template.
 
-## 5. Remote machines
+## Use both applications
 
-Recommended: run the client on your laptop and let it manage the remote.
+Vibeke uses its runtime directory and `~/.local/state/vibeke`. Herdr uses its own sockets and configuration. They do not share state.
 
-```sh
-vibeke machine add devbox me@devbox.example.com
-vibeke ssh devbox
-```
+Vibeke removes `HERDR_*` environment variables inside its panes. This prevents inherited hooks from contacting the wrong server. Start Vibeke in a separate terminal tab instead of inside Herdr.
 
-`vibeke ssh` probes the host, installs or upgrades Vibeke under `~/.local` on the remote (no sudo,
-checksum re-verified on the remote), then attaches over an SSH-multiplexed link. Build the Linux
-artifacts first with `mise run dist` if you have not. After a Vibeke upgrade locally, run
-`vibeke ssh devbox --upgrade`; panes on the remote survive the upgrade.
+Vibeke preserves Herdr hook files and hook entries. Its integrations install beside them.
 
-`vibeke --machine devbox <noun> <verb>` forwards any CLI command to that machine and never falls
-back to local.
+### Configure agent integrations
 
-Plain `ssh devbox` and then `vibeke` works for terminal use, but **drop and paste translation and
-clipboard image paste need the local client**. Dropping a screenshot into a remote agent pane, or
-pasting an image, only works through `vibeke ssh <host>` from the laptop. `vibeke doctor` says so
-when it detects it is running over plain ssh.
+1. Check integration status:
 
-## 6. Terminal settings
+   ```sh
+   vibeke integration status all
+   ```
+
+2. Preview the changes:
+
+   ```sh
+   vibeke integration install claude
+   ```
+
+3. Apply the changes:
+
+   ```sh
+   vibeke integration install claude --yes
+   vibeke integration install codex --yes
+   ```
+
+Without `--yes`, the installer shows changes without applying them. `--dry-run` also previews changes.
+
+To use configuration copies, set `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to those copies.
+
+For Codex, open `/hooks` after installation. Review the Vibeke entries before you trust them. `vibeke doctor` reports untrusted hooks.
+
+Shell aliases or functions named `codex` or `claude` can bypass the command wrapper in `PATH`. `vibeke doctor` checks for this condition.
+
+## Remote hosts
+
+1. Build the remote release files with `mise run dist`.
+2. Read the [release verification requirements](releases.md).
+3. Add the host:
+
+   ```sh
+   vibeke machine add devbox me@devbox.example.com
+   ```
+
+4. Connect:
+
+   ```sh
+   vibeke ssh devbox
+   ```
+
+Vibeke installs under `~/.local` on the remote host without `sudo`. The remote host verifies the uploaded checksum.
+
+After a local upgrade, use `vibeke ssh devbox --upgrade`. Holder processes preserve remote panes during the server upgrade.
+
+`vibeke --machine devbox <noun> <verb>` sends a command to that host. It does not substitute the local host if the connection fails.
+
+Plain SSH supports terminal use. File-drop translation and clipboard image paste require the local Vibeke client. Use `vibeke ssh <host>` from your local computer for those features.
+
+## Terminal settings
 
 ### Ghostty
 
-- Kitty keyboard protocol and synchronized updates work out of the box.
-- For clipboard copy from Vibeke (and from remote Neovim) set `clipboard-write = allow`
-  in the Ghostty config. The default `ask` prompts on every copy.
+Ghostty supports the Kitty keyboard protocol and synchronized updates by default.
+
+For clipboard copy, set `clipboard-write = allow` in Ghostty configuration. The default `ask` value requests permission for each copy.
 
 ### iTerm2
 
-- Settings > General > Selection > enable **Applications in terminal may access clipboard**
-  (OSC 52 copy).
-- Profiles > Keys > General > enable **Report keys using CSI u** so modified keys such as
-  `ctrl+shift+…` reach Vibeke.
-- Truecolor is on by default; check that `COLORTERM=truecolor` survives your SSH hops if you use
-  plain `ssh`.
+1. Open **Settings → General → Selection**.
+2. Enable **Applications in terminal may access clipboard** for OSC 52 copy.
+3. Open **Profiles → Keys → General**.
+4. Enable **Report keys using CSI u** for modified keys.
 
-`vibeke doctor` runs a live capability probe in your terminal (kitty keyboard, synchronized
-updates, truecolor, background) and prints these hints for the host it detects.
+Truecolor is enabled by default. With plain SSH, check that `COLORTERM=truecolor` reaches the remote host.
 
-## 7. Rolling back
+`vibeke doctor` checks terminal features and prints the applicable settings.
 
-Vibeke never changed Herdr, so rolling back is mostly "keep using Herdr".
+## Restore or remove Vibeke
 
-- **Bad Vibeke upgrade:** `vibeke update --rollback` switches `current` to the previous version
-  and restarts the server; panes survive.
-- **Remove the hooks:** `vibeke integration uninstall claude --yes` and `... codex --yes` remove
-  only Vibeke's entries and leave Herdr's alone.
-- **Stop Vibeke:** `vibeke server stop` (this leaves the shells running in their
-  holders; `vibeke api call server.stop '{"kill_panes":true}'` stops them too).
-- **Remove it completely:** delete `~/.local/bin/vibeke`, `~/.local/share/vibeke`,
-  `~/.local/state/vibeke` and `~/.config/vibeke`. Herdr's files are not involved.
-- Your Herdr config and session are untouched, so `herdr` starts exactly where you left it.
+| Action | Command or path |
+| --- | --- |
+| Restore the previous version | `vibeke update --rollback`. Switches `current` and restarts the server. Holders preserve panes. |
+| Remove Claude hooks | `vibeke integration uninstall claude --yes`. Removes only Vibeke entries. |
+| Remove Codex hooks | `vibeke integration uninstall codex --yes`. Removes only Vibeke entries. |
+| Stop only the server | `vibeke server stop`. Holder processes remain active. |
+| Stop the server and panes | `vibeke api call server.stop '{"kill_panes":true}'` |
+
+To remove Vibeke completely, delete `~/.local/bin/vibeke`, `~/.local/share/vibeke`, `~/.local/state/vibeke`, and `~/.config/vibeke`.
+
+Herdr configuration and sessions remain unchanged.

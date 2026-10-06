@@ -32,6 +32,11 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
       - run: bun run build
+      - run: bun run build:site
+      - if: matrix.os == 'ubuntu-latest'
+        run: bun run --cwd apps/site e2e:install
+      - if: matrix.os == 'ubuntu-latest'
+        run: bun run e2e:site
       - run: bun run build:desktop
   desktop:
     # Real-gateway Electron tests and packaging (spec 16 §16.3); macOS runners have a display.

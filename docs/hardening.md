@@ -1,126 +1,183 @@
-# Hardening: fuzzing, performance budgets, reproducible builds
+# Fuzz tests, performance limits, and reproducible builds
 
-M6 groundwork (spec 11 M6, spec 10 §1, §6). Nothing here changes what `mise run ci` does on
-stable, except that the bounded fuzz property tests (`crates/vk-fuzz`) run with the normal test
-suite.
+This page describes the checks from spec 11 M6 and spec 10, sections 1 and 6.
+The bounded fuzz tests in `crates/vk-fuzz` run with the normal test suite.
+The other checks are separate from `mise run ci`.
 
-## Fuzzing
+## Fuzz tests
 
-All fuzz targets are plain functions in `crates/vk-fuzz/src/targets.rs`, `fn(&[u8])`, that must
-never panic, hang or allocate without bound. Two front ends share them:
+Each target is a function with the type `fn(&[u8])` in `crates/vk-fuzz/src/targets.rs`.
+The functions must not panic, stop responding, or allocate memory without a limit.
+Two test systems use these functions.
 
-| Front end | Where | Toolchain | Runs in CI |
+| Test system | Location | Toolchain | Runs in CI |
 |---|---|---|---|
-| Property tests: random bytes plus mutated seeds, deterministic | `crates/vk-fuzz/tests/random.rs` | stable | yes (300 cases per target by default, a tenth for `vt_parse` and `mux_frame_decode`) |
-| cargo-fuzz / libFuzzer binaries | `fuzz/` (own `[workspace]`, not a root member) | nightly + `cargo-fuzz` | no |
+| Deterministic tests with random bytes and modified seeds | `crates/vk-fuzz/tests/random.rs` | Stable Rust | Yes. Default: 300 cases per target. The `vt_parse` and `mux_frame_decode` targets run 30 cases each. |
+| cargo-fuzz with libFuzzer | `fuzz/` | Nightly Rust and cargo-fuzz | No |
 
-No fuzzing crates were added to the workspace (`proptest`, `arbitrary` and `bolero` are not in
-`Cargo.lock`); the property tests use a 40-line splitmix64 generator and mutator in
-`crates/vk-fuzz/src/rng.rs`, so `cargo deny check` is unaffected. The only new dependency is
-`libfuzzer-sys`, and it lives in `fuzz/Cargo.toml`, outside the workspace.
+The stable tests use the generator and mutator in `crates/vk-fuzz/src/rng.rs`.
+They do not add `proptest`, `arbitrary`, or `bolero` to `Cargo.lock`.
+The `libfuzzer-sys` dependency belongs to the separate workspace in `fuzz/Cargo.toml`.
+It does not change the results of `cargo deny check` for the root workspace.
 
 ### Targets
 
-| Target | Input | Oracle |
+| Target | Input | Required result |
 |---|---|---|
-| `holder_proto_decode` | `FrameBuf` chunked stream and raw postcard as `ToHolder` / `FromHolder` | no panic; oversize rejected |
-| `render_frame_decode` | same, as `ServerFrame` / `ClientFrame` | no panic |
-| `jsonrpc_decode` | `rpc::Request` / `Response` / `Notification`, per-line parsing | no panic |
-| `key_grammar` | `parse_key`, `parse_binding`, `expand_range` | `format_key` then `parse_key` round-trips |
-| `vt_parse` | random bytes plus resizes into `vk_term::Engine::feed` | no panic or abort, bounded time |
-| `socks5_handshake` | bytes into `vk-preview` `socks::handshake` | no panic |
-| `mux_frame_decode` | `vk-remote` mux `Frame` decoding, and a live `Mux` fed the bytes | no panic or hang |
-| `hook_payloads` | arbitrary JSON into `interaction_from_hook` for every harness and event | no panic |
-| `policy_match` | URLs, allow rules and IPs into `vk-browser::policy` | no panic; metadata and link-local never allowed without a rule |
-| `kitty_probe` | terminal replies and SGR mouse reports into `vk-browser::probe` | no panic; consumed length in bounds |
-| `compat_import` | Herdr config TOML and session JSON importers | no panic |
-| `manifest_toml` | harness manifests: `parse_raw`, `Loaded::new` and its methods, `VersionReq` | no panic |
+| `holder_proto_decode` | `FrameBuf` chunks and raw postcard data as `ToHolder` / `FromHolder` | No panic. Reject oversized input. |
+| `render_frame_decode` | `FrameBuf` chunks and raw postcard data as `ServerFrame` / `ClientFrame` | No panic |
+| `jsonrpc_decode` | Line-based parsing of `rpc::Request` / `Response` / `Notification` | No panic |
+| `key_grammar` | `parse_key`, `parse_binding`, `expand_range` | `format_key` followed by `parse_key` returns the original value |
+| `vt_parse` | Random bytes and resizes through `vk_term::Engine::feed` | No panic or abort. Complete within the time limit. |
+| `socks5_handshake` | Bytes passed to `vk-preview` `socks::handshake` | No panic |
+| `mux_frame_decode` | Bytes passed to the `vk-remote` frame decoder and a live `Mux` | No panic or blocked response |
+| `hook_payloads` | Arbitrary JSON passed to `interaction_from_hook` for each harness and event | No panic |
+| `policy_match` | URLs, allow rules, and IP addresses passed to `vk-browser::policy` | No panic. Block metadata and link-local addresses unless a rule permits them. |
+| `kitty_probe` | Terminal replies and SGR mouse reports passed to `vk-browser::probe` | No panic. Consumed length stays within bounds. |
+| `compat_import` | Herdr config TOML and session JSON | No panic |
+| `manifest_toml` | Harness manifests passed to `parse_raw`, `Loaded::new`, its methods, and `VersionReq` | No panic |
 
-Seed corpora are in `fuzz/corpus/<target>/` (valid messages, fixtures and edge cases). Regenerate
-with `cargo test -p vk-fuzz --test random export_seed_corpus -- --ignored`.
-
-### Running
+Seed files in `fuzz/corpus/<target>/` include valid messages, test fixtures, and boundary cases.
+To regenerate them, run:
 
 ```sh
-mise run fuzz-smoke                       # stable, release build, bounded
-VK_FUZZ_CASES=100000 VK_FUZZ_SEED=3 cargo test -p vk-fuzz --test random   # deeper; debug build also catches arithmetic overflow
-FUZZ_TIME=300 mise run fuzz               # libFuzzer, needs nightly + cargo-fuzz
-FUZZ_TARGET=policy_match mise run fuzz    # one target
+cargo test -p vk-fuzz --test random export_seed_corpus -- --ignored
 ```
 
-`mise run fuzz` prints a hint and exits 0 if nightly or cargo-fuzz is missing. Run the stable
-property tests in a debug build for long runs: overflow checks turn silent wraparound into
-panics (this is how the policy bug below was found). A failing property case prints the exact
-input; add it as a regression unit test next to the code and as a seed.
+### Run the tests
 
-### Found so far
+For a bounded run with stable Rust, use:
 
-* `vk-browser::policy`: a v4-mapped IPv6 allow rule such as `::ffff:10.0.0.7/128` canonicalised
-  to IPv4 but kept its IPv6 prefix length, so `u32::MAX << (32 - bits)` overflowed (panic in
-  debug, wrong mask in release). The prefix is now counted from bit 96, and a mapped rule with
-  a prefix under 96 matches nothing. Regression test: `mapped_v6_rule_prefix_is_relative_to_bit_96`.
+```sh
+mise run fuzz-smoke
+```
 
-### OSS-Fuzz integration plan (M6)
+For more cases with arithmetic overflow checks, use a debug build:
 
-1. Make the targets self-contained for OSS-Fuzz: they already are (`vk-fuzz` is a path crate and
-   `fuzz/` is a standard cargo-fuzz layout). Add a `dictionary` per target where useful (escape
-   introducers for `vt_parse` and `kitty_probe`, JSON-RPC method names, key names).
-2. Open a PR to `google/oss-fuzz` with `projects/vibeke/`:
-   * `project.yaml`: `language: rust`, `main_repo`, primary contact, `fuzzing_engines: [libfuzzer]`,
-     `sanitizers: [address]` (add `undefined` once the native VT engine is clean), `architectures: [x86_64]`.
-   * `Dockerfile`: `FROM gcr.io/oss-fuzz-base/base-builder-rust`, install `zig 0.16` (needed by
-     `vk-term`'s vendored libghostty-vt build, spec 03 §2.2), copy the repo.
-   * `build.sh`: `cargo fuzz build --fuzz-dir fuzz -O`, copy the binaries to `$OUT`, and zip each
-     `fuzz/corpus/<target>` to `$OUT/<target>_seed_corpus.zip`.
-3. Native code: `vt_parse` exercises libghostty-vt through FFI. Build it with the OSS-Fuzz
-   `$CC`/`$CFLAGS` so ASan covers the C side, and keep `-rss_limit_mb` at the spec's 256 MiB
-   OOM oracle for that target.
-4. Triage: findings arrive as private OSS-Fuzz issues; each fix lands with a regression case in
-   the crate's own tests plus a new seed. Keep the nightly (1 CPU-hour per target) in our own
-   CI as well, as spec 10 §6 requires.
-5. Gate for 1.0 (spec 10 §8): seven days of fuzzing with no new crashes, all targets running
-   under OSS-Fuzz.
+```sh
+VK_FUZZ_CASES=100000 VK_FUZZ_SEED=3 cargo test -p vk-fuzz --test random
+```
 
-Not yet covered (spec 10 §6 targets that need harness work): `vt_resize_interleave` reflow
-invariants and `serialize` round-trip equality (need a snapshot comparison API), `compat_socket`
-(needs a socket-level driver), `transcript_parse`, `osc_image` decoder limits.
+For a libFuzzer run, install nightly Rust and cargo-fuzz first.
+Then run:
 
-## Performance budgets
+```sh
+FUZZ_TIME=300 mise run fuzz
+```
 
-`mise run perf-budgets` (`scripts/perf-budgets.sh`) runs the existing measurements and prints a
-table against the spec 10 §1 budgets. It is report-only: exit status is 0 unless
-`PERF_STRICT=1`. Raw output goes to `target/perf-budgets/`.
+To test one target, set `FUZZ_TARGET`:
 
-| Measurement | Source | Budget |
+```sh
+FUZZ_TARGET=policy_match mise run fuzz
+```
+
+If nightly Rust or cargo-fuzz is missing, `mise run fuzz` prints installation instructions.
+It then exits with status 0 without running the tests.
+
+A failed test prints the exact input.
+Add that input to a regression test beside the affected code.
+Also add it to the seed files for that target.
+
+### Fixed defects
+
+The policy tests found an IPv4-mapped IPv6 prefix error.
+A rule such as `::ffff:10.0.0.7/128` became an IPv4 address but kept its IPv6 prefix length.
+The expression `u32::MAX << (32 - bits)` then overflowed.
+This caused a panic in debug builds and an incorrect mask in release builds.
+
+The prefix now starts at bit 96.
+A mapped rule with a prefix below 96 matches no addresses.
+The regression test is `mapped_v6_rule_prefix_is_relative_to_bit_96`.
+
+### Planned OSS-Fuzz integration
+
+The target functions and cargo-fuzz directory already support separate builds.
+The remaining work is:
+
+1. Add input dictionaries where necessary. Examples include terminal escape sequences, JSON-RPC method names, and key names.
+2. Submit `projects/vibeke/` to `google/oss-fuzz` with the files below.
+3. Build the native VT engine with the OSS-Fuzz `$CC` and `$CFLAGS` variables. This lets ASan check the C code.
+4. Set `-rss_limit_mb` to 256 for `vt_parse`.
+5. Add a regression test and a seed for each reported defect.
+6. Run nightly tests in project CI for one CPU-hour per target.
+7. Before version 1.0, run all targets under OSS-Fuzz for seven days without a new crash.
+
+| File | Contents |
+|---|---|
+| `project.yaml` | Rust language, repository, contact, libFuzzer engine, address sanitizer, and x86_64 architecture. Add the undefined behavior sanitizer after the native VT engine passes its checks. |
+| `Dockerfile` | Base image `gcr.io/oss-fuzz-base/base-builder-rust`, Zig 0.16, and the repository. Zig builds the vendored libghostty-vt library. |
+| `build.sh` | Build with `cargo fuzz build --fuzz-dir fuzz -O`. Copy binaries to `$OUT`. Create `$OUT/<target>_seed_corpus.zip` from each seed directory. |
+
+Some planned targets still need test support:
+
+- `vt_resize_interleave` and `serialize` need an API to compare snapshots.
+- `compat_socket` needs a socket test driver.
+- `transcript_parse` needs a target.
+- `osc_image` needs tests for decoder limits.
+
+## Performance limits
+
+`mise run perf-budgets` runs `scripts/perf-budgets.sh`.
+It compares measurements with the limits in spec 10, section 1.
+Results go to `target/perf-budgets/`.
+By default, the command reports results and exits with status 0.
+Set `PERF_STRICT=1` to fail the command when a checked limit is exceeded.
+
+| Measurement | Command or source | Limit |
 |---|---|---|
-| VT parse throughput | `cargo test --release -p vk-term --test recovery throughput -- --ignored` | >= 300 MB/s (1.2) |
-| Added keystroke latency | `vibeke debug latency` | p50 <= 1 ms, p99 <= 3 ms (1.1) |
-| Remote bandwidth (`PERF_MACHINE=<label>`) | `vibeke debug bandwidth` | idle 0 B/s, spinner <= 2 KiB/s unfocused, <= 8 KiB/s focused (1.5); printed for review |
-| Idle CPU / RSS / wakeups (`PERF_IDLE=0` skips) | `vibeke debug idle` (isolated server, 30 idle panes, headless attached TUI; load average recorded, verdicts marked "(loaded)" on a busy host) | server <= 0.3% CPU, <= 2 wakeups/s, holder <= 2 MiB, server <= 25 MiB, TUI <= 30 MiB (1.3) |
-| VT conformance (`cargo test -p vk-term --test conformance`, also in `mise run test`) | in-repo corpus, `VK_CONFORMANCE_REPORT=1` prints per-category counts and expected failures | 0 unexpected failures (4.1) |
-| Browser frame path (`PERF_BROWSER=1`) | `cargo run -p vk-browser --example bench` | 1.6; printed for review |
+| VT parser throughput | `cargo test --release -p vk-term --test recovery throughput -- --ignored` | At least 300 MB/s |
+| Added keystroke latency | `vibeke debug latency` | p50 at most 1 ms. p99 at most 3 ms. |
+| Remote bandwidth | `vibeke debug bandwidth`, with `PERF_MACHINE=<label>` | Idle: 0 B/s. Unfocused spinner: at most 2 KiB/s. Focused spinner: at most 8 KiB/s. Results require manual review. |
+| Idle CPU, memory, and wakeups | `vibeke debug idle`. Set `PERF_IDLE=0` to skip this check. | Server: at most 0.3% CPU, 2 wakeups/s, and 25 MiB. Holder: at most 2 MiB. TUI: at most 30 MiB. |
+| VT conformance | `cargo test -p vk-term --test conformance`, also in `mise run test` | No unexpected failures. Set `VK_CONFORMANCE_REPORT=1` to print category counts and expected failures. |
+| Browser frames | `cargo run -p vk-browser --example bench`, with `PERF_BROWSER=1` | Manual review against spec 10, section 1.6 |
 
-Budgets are defined on the two reference machines (spec 10 §2.1); numbers from other hardware
-are indicative. Turning this into the PR gate (fail on a budget breach or a >10% regression
-against the median of the last five `main` runs) needs the benchmark-history store from spec 10
-§2 and is not part of this groundwork.
+The idle test uses a separate server with 30 idle panes and an attached TUI without a display.
+It records the system load.
+On a busy host, it marks results with “(loaded)”.
+
+These limits apply to the two reference machines in spec 10, section 2.1.
+Results from other hardware give an estimate.
+CI does not yet reject a pull request when these measurements exceed a limit.
+That check needs a store of past results.
+The planned check also rejects regressions above 10% against the median of the last five `main` runs.
 
 ## Reproducible builds
 
-`mise run repro-check` (`scripts/repro-check.sh`) builds the Linux musl release binary twice with
-`cargo zigbuild --release --locked`, in two separate target directories, with
-`SOURCE_DATE_EPOCH` (HEAD commit time unless set; releases use the tag commit),
-`--remap-path-prefix` for the workspace, `CARGO_HOME`, `RUSTUP_HOME` and the target directory,
-`-C strip=symbols`, `CARGO_INCREMENTAL=0`, `TZ=UTC` and `LC_ALL=C`, then compares sha256.
-`REPRO_TARGETS` selects targets (default `x86_64-unknown-linux-musl`).
+`mise run repro-check` runs `scripts/repro-check.sh`.
+The script builds the Linux musl release binary twice in separate target directories.
+It uses `cargo zigbuild --release --locked` and compares the SHA-256 hashes.
+Set `REPRO_TARGETS` to select targets.
+The default is `x86_64-unknown-linux-musl`.
 
-Result, 2026-10-06 (macOS arm64 host, Rust 1.99.0, Zig 0.16.0, commit `858036a` plus the M6
-docs changes): `x86_64-unknown-linux-musl` is **reproducible** between two clean builds on one
-machine: both produced sha256 `40e33616587d25f66ba32e9665da2eebec01bd3d9ce7f008aa8f9017d91257a2`
-(about 14 minutes per cold build). Not yet shown: `aarch64-unknown-linux-musl`; builds on
-different machines, different checkout paths (the remap should cover it, unverified) or different
-host OSes; a fixed container image; the vendored libghostty-vt Zig cache is not checksummed
-separately (Zig's own build is part of the compared output, so drift would have shown up as a
-differing hash). `dist.sh` does not yet set these flags, so `mise run dist` artifacts are not the
-ones checked here. CI does not run the check yet; the spec's target (CI double-builds on separate
-runners, digests published with the release notes) is open.
+Both builds use these settings:
+
+- `SOURCE_DATE_EPOCH` is the HEAD commit time unless explicitly set. Releases use the tag commit time.
+- `--remap-path-prefix` covers the workspace, `CARGO_HOME`, `RUSTUP_HOME`, and target directory.
+- Compiler settings include `-C strip=symbols` and `CARGO_INCREMENTAL=0`.
+- Environment settings include `TZ=UTC` and `LC_ALL=C`.
+
+### Recorded result
+
+On October 6, 2026, two clean builds on one macOS arm64 host produced the same binary.
+The source was commit `858036a` with the M6 documentation changes.
+The tools were Rust 1.99.0 and Zig 0.16.0.
+The target was `x86_64-unknown-linux-musl`.
+Each cold build took approximately 14 minutes.
+Both builds produced this SHA-256 hash:
+
+```text
+40e33616587d25f66ba32e9665da2eebec01bd3d9ce7f008aa8f9017d91257a2
+```
+
+This result covers two builds on one machine.
+It does not verify `aarch64-unknown-linux-musl`, separate machines, different checkout paths, or different host operating systems.
+It also does not use a fixed container image.
+
+The check does not calculate a separate hash for the vendored libghostty-vt Zig cache.
+The final binary comparison includes the output of the Zig build.
+
+`dist.sh` does not yet use these build settings.
+Thus, the result does not cover artifacts from `mise run dist`.
+CI does not run this check yet.
+Separate CI runners and published release digests remain planned work.

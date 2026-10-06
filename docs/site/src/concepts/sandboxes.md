@@ -1,5 +1,19 @@
-# Sandboxes and execution levels
+# Execution levels
 
-Each task runs at an **execution level**: `host`, `sandbox` (OS sandbox), `container` or `vm`. Host mode offers cooperative guardrails only: agents run as you, and Vibeke's tokens, scopes and self-answer rules stop accidents and casual misuse, not code that deliberately bypasses the API. Contained levels enforce a boundary: the process tree cannot reach Vibeke's sockets or state, and its only Vibeke endpoint is a brokered, pane-scoped socket. Egress, push and credentials are gated at the boundary and surface as interactions.
+Each task uses an execution level: `host`, `sandbox`, `container`, or `vm`. Provider availability depends on the host.
 
-Host runs of "yolo" agents carry a `YOLO·HOST` badge. See the [security model](../security.md).
+## Host execution
+
+Host mode uses your user permissions. API tokens and scopes limit accidental misuse through Vibeke. They do not stop a process that bypasses the API.
+
+Agents with unrestricted permissions show a `YOLO·HOST` indicator in host mode.
+
+## Isolated execution
+
+Supported sandbox, container, and VM providers limit access to host resources. The process cannot access privileged Vibeke sockets or state files.
+
+A broker exposes only the APIs permitted for that pane. Network access, Git pushes, and credentials follow the isolation policy. Required approvals appear as interactions.
+
+If the selected isolation provider is unavailable, Vibeke refuses to start the process. It does not start the process in host mode instead.
+
+Use `vibeke sandbox status` to check available providers. See the [security model](../security.md) for limits.

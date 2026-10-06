@@ -8,6 +8,7 @@ The phone/desktop apps of [spec 16](../spec/16-gateway-relay-and-apps.md). Bun w
 | `packages/ui` (`@vibeke/ui`) | Every screen and component (React 19, Tailwind v4, lucide). Depends only on core and a `UiPlatform` handed to `<VibekeApp platform={…}/>`. |
 | `apps/pwa` (`@vibeke/pwa`) | The PWA shell: Vite, `vite-plugin-pwa` (injectManifest, `src/sw.ts`), IndexedDB key/host store, WebSocket transport, Web Push, install prompt, speech. |
 | `apps/desktop` (`@vibeke/desktop`) | The Electron shell: connections and keys in the main process (safeStorage vault, relay + local Unix-socket transports), menu-bar quick approvals, native notifications, deep links, pop-out pane windows, electron-builder packaging. See [apps/desktop/README.md](apps/desktop/README.md). |
+| `apps/site` (`@vibeke/site`) | Public product website and searchable documentation. TanStack Start, React, and Tailwind; prerenders the canonical `docs/site/src/` Markdown. See [apps/site/README.md](apps/site/README.md). |
 
 No product code lives in shells: they implement `UiPlatform` and bootstrap.
 
@@ -23,6 +24,7 @@ bun run test       # unit tests (core, ui, pwa)
 bun run typecheck  # tsc for every package (incl. the service worker)
 bun run icons      # regenerate apps/pwa/public/icons
 bun run dev:desktop | build:desktop | dist:desktop | e2e:desktop   # the Electron app
+bun run dev:site | build:site | preview:site | e2e:site            # product website
 ```
 
 ## Running the stack locally

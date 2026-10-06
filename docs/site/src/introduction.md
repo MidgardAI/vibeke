@@ -1,7 +1,9 @@
 # Vibeke
 
-Vibeke is a terminal workspace for running coding agents. It understands agents structurally (hooks, extensions, RPC) instead of by reading their screens, keeps every process alive through server crashes and upgrades, isolates agents in task workspaces, and makes remote dev servers and previews feel local.
+Vibeke is a terminal workspace for coding agents. It connects to agent hooks, extensions, and RPC interfaces. It can also detect agent state from terminal output.
 
-This book covers installing and using Vibeke. The design documents live in the repository's `spec/` directory and are authoritative when this book is silent.
+Separate holder processes keep agents active after a server restart. Task worktrees separate file changes. Remote previews let you open an app from another host.
 
-The reference chapters (CLI, configuration, control API) are generated from the code and checked in CI, so they cannot drift from the binary. The control API string is `vibeke/1`; its freeze is a draft until 1.0 (see the [API reference](reference/api.md)).
+Use this guide to install and operate Vibeke. The `spec/` directory contains detailed design documents.
+
+The build generates the CLI, configuration, and API references from the source. Automated checks detect differences. The control API is `vibeke/1`. Its compatibility rules can change before version 1.0. See the [API reference](reference/api.md).

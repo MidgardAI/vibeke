@@ -1,24 +1,51 @@
 # Security model
 
-This is a summary of spec 09, which is authoritative.
+This page summarizes the security design in `spec/09-security-and-privacy.md`.
 
-## Two promises
+## Host execution
 
-- **Host execution: cooperative guardrails.** Agents run as you. Pane tokens, scopes, the no-self-answer rule, rate limits and the audit log stop accidental and casual prompt-injected misuse that goes through the `vibeke` API. They do not stop code running as the same user from reading state files, connecting to holder sockets or editing hook configs. Vibeke never calls host mode contained.
-- **Sandbox, container and VM: enforced containment.** The agent cannot reach privileged sockets or files; the only endpoint is a brokered, pane-scoped socket that exposes the pane capability set and cannot be upgraded. Spawns whose containment is unavailable fail instead of falling back to the host.
+Agents in host mode use your user permissions. Pane tokens, scopes, rate limits, and audit records limit misuse through the Vibeke API.
 
-## Adversaries in scope
+These controls do not contain a process with your user permissions. Such a process can access state files, holder sockets, or hook configuration outside the API.
 
-Other local users (socket permissions and peer credential checks, 0700 directories), malicious repository content (repo-local config and policy are trusted per content digest and never loosen policy), prompt-injected agents (the main novel threat), compromised plugins (consent, identity-bound brokers, audit), compromised remote machines (remote is untrusted input), network attackers, malicious web content in previews, and the supply chain (checksums, signing, reproducible builds, dependency policy). Root or same-user malware outside Vibeke is out of scope.
+## Isolated execution
 
-## Pane-scope capabilities
+Supported sandbox, container, and VM providers restrict access to host resources. A broker provides the APIs permitted for a pane. The agent cannot access privileged Vibeke sockets or files through that boundary.
 
-A pane token can read, write to its own panes and the panes it created (unless an interaction is open there), start agents there, create tasks and worktrees, and use previews and the browser. It cannot answer interactions, move focus, change other workspaces, edit policy, install integrations, or stop the server. The exact per-method scope is listed in the [API reference](reference/api.md).
+If the required isolation is unavailable, Vibeke refuses to start the process. It does not substitute host mode.
+
+## Threats and controls
+
+| Threat | Control |
+| --- | --- |
+| Other local users | Socket permissions, peer identity checks, and private directories. |
+| Malicious repository content | Trust applies to a content digest. Repository policy cannot reduce existing restrictions. |
+| Prompt injection through an agent | Pane scopes and rules that prevent agents from approving their own requests. |
+| Malicious plugins | Explicit trust, identity checks, broker access, and audit records. |
+| Compromised remote hosts | Remote input cannot directly execute local commands. |
+| Network and preview content | Authentication, connection policy, and isolated preview origins. |
+| Release file changes | Minisign signatures, checksums, and reproducibility checks. |
+
+Root access and malware with your user permissions outside Vibeke are outside this security boundary.
+
+## Pane permissions
+
+A pane token can read permitted state. It can send input to its own panes and panes that it created, unless a request is open there.
+
+A pane token can start agents in those panes. It can create tasks and worktrees, and use permitted previews and browser sessions.
+
+A pane token cannot approve interactions, change focus, modify other workspaces, edit policy, install integrations, or stop the server.
+
+See the [API reference](reference/api.md) for each method's scope.
 
 ## Data
 
-Pane contents, scrollback archives and `state.db` are sensitive and stored with restrictive permissions. Secrets are redacted before they reach logs, the audit trail or assistance prompts. Telemetry is off. Debug bundles are redacted before sharing.
+Pane output, scrollback archives, and `state.db` use restrictive file permissions. Redaction filters remove recognized secrets from logs, audit records, assistance prompts, and debug bundles. Filters cannot identify every possible secret.
+
+Telemetry is disabled.
 
 ## Releases
 
-Artifacts are checksummed; signing with minisign and Sigstore provenance is planned (see [Releases](reference/releases.md)). Linux musl builds are checked for reproducibility with `scripts/repro-check.sh`.
+Release files have checksums and Minisign signatures. Sigstore provenance is not yet provided. Linux musl reproducibility checks use `scripts/repro-check.sh`.
+
+See [release verification](reference/releases.md) for current results and limits.

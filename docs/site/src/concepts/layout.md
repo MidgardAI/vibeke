@@ -1,7 +1,15 @@
-# Sessions, workspaces, tabs and panes
+# Sessions, workspaces, tabs, and panes
 
-A **session** is one server (one control socket, one state database). Inside it, **workspaces** group related work (usually one checkout); each workspace has **tabs**, and each tab a tree of **panes** (splits, plus floating panes). Panes are addressed by handle: `w1`, `w1:t2`, `w1:p3`.
+A **session** has one server, one control socket, and one state database.
 
-Several clients (TUI, CLI, gateway, plugins) can be attached at once. The TUI that is actively resizing holds the geometry lease. The sidebar shows execution state and attention markers per workspace, with a needs-you section on top.
+A **workspace** groups related work, usually for one repository checkout. Each workspace contains **tabs**. Each tab contains **panes** in a split layout. A tab can also contain floating panes.
 
-Everything the TUI does is a control-API call, so everything is scriptable: `vibeke workspace|tab|pane ...` (see the [CLI reference](../reference/cli.md)).
+Handles identify each object. For example, `w1` identifies a workspace, `w1:t2` identifies a tab, and `w1:p3` identifies a pane.
+
+## Clients
+
+Terminal clients, CLI clients, gateways, and plugins can connect to the same session. The client that changes the terminal size controls the layout dimensions during that change.
+
+The sidebar shows agent state and requests for each workspace. Requests that need an answer appear at the top.
+
+Terminal actions use the control API. Scripts can use the same operations through `vibeke workspace|tab|pane ...`. See the [CLI reference](../reference/cli.md).

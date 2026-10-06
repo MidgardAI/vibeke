@@ -1,5 +1,11 @@
-# Holders and durability
+# Holders and process recovery
 
-Every pane's process runs under its own small **holder** process. Holders own the PTY (or a pipe, for headless adapters), keep a bounded output ring, and talk to the server over the holder protocol (`holder/1`). If the server crashes or is upgraded (`server.restart`), holders and their processes keep running and the next server reattaches. Input carries ids and acks so delivery is never duplicated.
+Each pane has a separate **holder process**. The holder owns the pseudo-terminal (PTY) or pipe for the agent. It stores a limited amount of recent output.
 
-Screen recovery after a server restart is best effort: the holder replays from its checkpoint and forces a redraw. Process survival is the hard guarantee; screen recovery is measured, not promised.
+If the server stops, the holder keeps the pane process active. A new server reconnects through the `holder/1` protocol. Input IDs and acknowledgments prevent duplicate input.
+
+## Recovery limits
+
+After a server restart, the holder replays output from its checkpoint. The server then requests a screen redraw. Screen recovery can be incomplete.
+
+The holder preserves processes through a server crash, server restart, or client disconnect. A host restart or holder failure stops those processes.

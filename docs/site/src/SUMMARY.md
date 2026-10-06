@@ -16,6 +16,11 @@
 - [Previews and browsers](concepts/previews.md)
 - [Sandboxes and execution levels](concepts/sandboxes.md)
 
+# Guides
+
+- [Mobile and desktop supervision](mobile.md)
+- [Sharing and handoff](handoff.md)
+
 # Reference
 
 - [CLI](reference/cli.md)
