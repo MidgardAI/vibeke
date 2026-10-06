@@ -667,3 +667,97 @@ fn acp_headless_run_resumes_with_session_load() {
     let screen = s.json(&["pane", "read", resumed["pane"].as_str().unwrap()]);
     assert!(screen.to_string().contains("earlier answer"), "{screen}");
 }
+
+/// An ACP agent that probes its confinement on each prompt: reads `$PROBE_SECRET` and connects
+/// to `127.0.0.1:$PROBE_PORT`, then reports both outcomes as its answer. It writes no log file
+/// (a sandboxed agent cannot write outside its checkout).
+const FAKE_PROBE: &str = r#"
+import json, os, socket, sys
+def out(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+def probe():
+    try:
+        open(os.environ["PROBE_SECRET"]).read(); r = "read=ok"
+    except Exception:
+        r = "read=denied"
+    try:
+        s = socket.create_connection(("127.0.0.1", int(os.environ["PROBE_PORT"])), timeout=3); s.close(); n = "net=ok"
+    except Exception:
+        n = "net=denied"
+    return r + " " + n
+for line in sys.stdin:
+    m = json.loads(line)
+    meth, mid = m.get("method"), m.get("id")
+    if meth == "initialize":
+        out({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    elif meth == "session/new":
+        out({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "probe-1"}})
+    elif meth == "session/prompt":
+        sid = m["params"]["sessionId"]
+        out({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": probe()}}}})
+        out({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+"#;
+
+/// Review finding 1: `agent.start {mode: "headless", isolate, network}` goes through the same
+/// isolation path as PTY agents. The same probe agent reads a host secret and reaches a local
+/// listener when run on the host, and is refused both when started with `isolate: "sandbox",
+/// network: "none"`. A network profile without an isolation level is refused outright instead
+/// of silently running on the host.
+#[cfg(target_os = "macos")]
+#[test]
+fn headless_isolation_confines_the_harness() {
+    let Some(py) = python3() else {
+        eprintln!("skipping: no python3 for the fake harnesses");
+        return;
+    };
+    let s = Session::new(&py, "0");
+    // Inside the checkout: the sandbox hides the rest of the temp dir (and /tmp) from reads.
+    let probe = s.dir.path().join("work/fake-probe");
+    std::fs::write(&probe, format!("#!{py}\n{FAKE_PROBE}")).unwrap();
+    std::fs::set_permissions(&probe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let secret = s.dir.path().join("home/secret.txt");
+    std::fs::write(&secret, "TOP SECRET").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let pane = s.workspace_pane();
+    let env = json!({"PROBE_SECRET": secret.to_string_lossy(), "PROBE_PORT": port.to_string()});
+
+    let answer = |extra: Value| -> String {
+        let mut p =
+            json!({"pane": pane, "acp": probe.to_string_lossy(), "mode": "headless", "env": env});
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        let started = s.api("agent.start", p).unwrap();
+        let Some(run_id) = started["run"]["id"].as_str().map(str::to_string) else {
+            panic!("no run ({extra}): {started}");
+        };
+        s.until("probe session", 30, || {
+            let r = s.run(&run_id);
+            (r["harness_session_id"] == "probe-1" && r["execution"]["value"] == "Idle")
+                .then_some(())
+        });
+        s.api(
+            "agent.prompt",
+            json!({"target": run_id, "text": "probe", "wait": true, "timeout_ms": 30000}),
+        )
+        .unwrap();
+        s.run(&run_id)["last_message"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+
+    // Control: on the host the probe succeeds, so the refusals below are the sandbox's.
+    assert_eq!(answer(json!({})), "read=ok net=ok");
+    let confined = answer(json!({"isolate": "sandbox", "network": "none"}));
+    assert_eq!(confined, "read=denied net=denied");
+
+    let e = s
+        .api(
+            "agent.start",
+            json!({"pane": pane, "acp": probe.to_string_lossy(), "mode": "headless", "network": "none"}),
+        )
+        .expect_err("network without isolation must be refused");
+    assert!(e.to_string().contains("isolation level"), "{e}");
+    drop(listener);
+}

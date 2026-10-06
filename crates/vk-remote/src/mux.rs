@@ -265,7 +265,11 @@ struct Chan {
 struct Shared {
     chans: Mutex<HashMap<u32, Chan>>,
     pending_open: Mutex<HashMap<u32, oneshot::Sender<Result<(), String>>>>,
-    out: mpsc::UnboundedSender<Frame>,
+    /// Frames for the writer, each tagged with its channel's scheduling class. The class
+    /// travels with the frame (rather than being looked up when the writer dequeues it) so
+    /// a channel's Data and Close keep their class after the channel leaves `chans`: a
+    /// Close can never be filed under another class and overtake queued data.
+    out: mpsc::UnboundedSender<(Frame, Class)>,
     next: AtomicU32,
     stats: Arc<Stats>,
     closed: Notify,
@@ -280,13 +284,9 @@ struct Shared {
 }
 
 impl Shared {
-    fn class_of(&self, ch: u32) -> Class {
-        self.chans
-            .lock()
-            .unwrap()
-            .get(&ch)
-            .map(|c| c.class)
-            .unwrap_or(Class::Control)
+    /// Queue a frame that is not channel data (written ahead of all scheduled data).
+    fn send(&self, f: Frame) -> Result<(), mpsc::error::SendError<(Frame, Class)>> {
+        self.out.send((f, Class::Control))
     }
 
     /// Compress data sent on a channel of `class`?
@@ -336,7 +336,7 @@ impl Mux {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let (out_tx, out_rx) = mpsc::unbounded_channel::<Frame>();
+        let (out_tx, out_rx) = mpsc::unbounded_channel::<(Frame, Class)>();
         let shared = Arc::new(Shared {
             chans: Mutex::new(HashMap::new()),
             pending_open: Mutex::new(HashMap::new()),
@@ -358,7 +358,7 @@ impl Mux {
             .stats
             .last_rx_ms
             .store(now_unix_ms(), Ordering::Relaxed);
-        let _ = shared.out.send(Frame::Hello {
+        let _ = shared.send(Frame::Hello {
             proto: PROTO,
             version: vk_proto::VERSION.into(),
             role: role_with_caps(role, opts),
@@ -385,7 +385,6 @@ impl Mux {
                 }
                 if m3
                     .shared
-                    .out
                     .send(Frame::Ping {
                         ts: t0.elapsed().as_micros() as u64,
                     })
@@ -477,7 +476,6 @@ impl Mux {
         let (local, remote_end) = tokio::io::duplex(WINDOW as usize);
         attach(&self.shared, ch, remote_end, class);
         self.shared
-            .out
             .send(Frame::Open {
                 ch,
                 kind: wire_kind,
@@ -525,7 +523,7 @@ fn abort_channel(shared: &Arc<Shared>, ch: u32, why: &str) {
     if let Some(c) = c {
         c.st.abort();
         if !c.st.sent_close.swap(true, Ordering::SeqCst) {
-            let _ = shared.out.send(Frame::Close { ch });
+            let _ = shared.out.send((Frame::Close { ch }, c.class));
         }
     }
 }
@@ -565,10 +563,13 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream, class: Class) {
                 return;
             }
             st2.inbound.fetch_add(n, Ordering::SeqCst);
-            let _ = out2.send(Frame::Window {
-                ch,
-                bytes: n as u32,
-            });
+            let _ = out2.send((
+                Frame::Window {
+                    ch,
+                    bytes: n as u32,
+                },
+                Class::Control,
+            ));
         }
         // Sender dropped (peer Close, after everything queued was written): clean EOF.
         if !st2.aborted.load(Ordering::SeqCst) {
@@ -600,10 +601,13 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream, class: Class) {
             };
             st.credit.fetch_sub(n as u32, Ordering::AcqRel);
             if out
-                .send(Frame::Data {
-                    ch,
-                    bytes: buf[..n].to_vec(),
-                })
+                .send((
+                    Frame::Data {
+                        ch,
+                        bytes: buf[..n].to_vec(),
+                    },
+                    class,
+                ))
                 .is_err()
             {
                 break;
@@ -611,7 +615,7 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream, class: Class) {
         }
         // Close goes through the same per-channel queue as Data, so EOF follows every byte.
         if !st.sent_close.swap(true, Ordering::SeqCst) {
-            let _ = out.send(Frame::Close { ch });
+            let _ = out.send((Frame::Close { ch }, class));
         }
         remove_if_done(&shared2, ch, &st);
     });
@@ -723,7 +727,7 @@ impl Codec {
 
 async fn writer<W: AsyncWrite + Unpin>(
     wr: W,
-    mut rx: mpsc::UnboundedReceiver<Frame>,
+    mut rx: mpsc::UnboundedReceiver<(Frame, Class)>,
     shared: Arc<Shared>,
 ) {
     let stats = shared.stats.clone();
@@ -754,15 +758,14 @@ async fn writer<W: AsyncWrite + Unpin>(
         // Take everything that arrived since the last frame, so a keystroke queued during a
         // bulk transfer is scheduled ahead of the bulk's next chunk. Close is queued behind
         // its channel's Data so it can never overtake it.
-        let mut incoming: Vec<Frame> = first.into_iter().collect();
+        let mut incoming: Vec<(Frame, Class)> = first.into_iter().collect();
         while let Ok(f) = rx.try_recv() {
             incoming.push(f);
         }
-        for f in incoming {
+        for (f, class) in incoming {
             match &f {
                 Frame::Data { ch, .. } | Frame::Close { ch } => {
                     let ch = *ch;
-                    let class = shared.class_of(ch);
                     let compress = shared.compress(class);
                     sched.push(f, ch, class, compress);
                 }
@@ -864,7 +867,7 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
             }
             Frame::Open { ch, kind } => {
                 let Some(acc) = acceptor.clone() else {
-                    let _ = mux.shared.out.send(Frame::OpenErr {
+                    let _ = mux.shared.send(Frame::OpenErr {
                         ch,
                         msg: "not accepting channels".into(),
                     });
@@ -877,13 +880,13 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
                         Ok(stream) => {
                             let (a, b) = tokio::io::duplex(WINDOW as usize);
                             attach(&m.shared, ch, b, class);
-                            let _ = m.shared.out.send(Frame::OpenOk { ch });
+                            let _ = m.shared.send(Frame::OpenOk { ch });
                             let mut a = a;
                             let mut stream = stream;
                             let _ = tokio::io::copy_bidirectional(&mut a, &mut stream).await;
                         }
                         Err(e) => {
-                            let _ = m.shared.out.send(Frame::OpenErr {
+                            let _ = m.shared.send(Frame::OpenErr {
                                 ch,
                                 msg: format!("{e:#}"),
                             });
@@ -932,7 +935,7 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
                 }
             }
             Frame::Ping { ts } => {
-                let _ = mux.shared.out.send(Frame::Pong { ts });
+                let _ = mux.shared.send(Frame::Pong { ts });
             }
             Frame::Pong { ts } => {
                 let now = t0.elapsed().as_micros() as u64;

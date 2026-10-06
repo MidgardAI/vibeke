@@ -538,3 +538,55 @@ async fn keystrokes_overtake_a_saturated_blob_channel() {
     bulk.abort();
     drain.abort();
 }
+
+#[tokio::test]
+async fn close_stays_behind_queued_data_after_the_channel_is_forgotten() {
+    // A slow link (1 KiB pipe the peer does not read yet) backs a blob channel up in the
+    // scheduler. The peer half-closes first, so once the local side finishes, the channel
+    // leaves the channel map while its data is still queued. Its remaining Data and the
+    // Close must keep the blob class: filed under another class they would overtake the
+    // queued data, reordering the stream and delivering EOF early.
+    let (a, b) = tokio::io::duplex(1024);
+    let (ar, aw) = tokio::io::split(a);
+    let (mut hr, mut hw) = tokio::io::split(b);
+    let client = Mux::start(ar, aw, "client", None);
+    raw_hello(&mut hw, "bridge").await;
+    let c2 = client.clone();
+    let open = tokio::spawn(async move { c2.open_class("socket", Class::Blob).await });
+    let ch = loop {
+        if let Some(Frame::Open { ch, .. }) = recv_raw(&mut hr).await {
+            break ch;
+        }
+    };
+    send_raw(&mut hw, &Frame::OpenOk { ch }).await;
+    let mut c = open.await.unwrap().unwrap();
+    send_raw(&mut hw, &Frame::Close { ch }).await; // peer half-closes
+    // Stay under the credit window, so the sender reaches EOF without a Window grant.
+    let expect: Vec<u8> = (0..WINDOW as usize - 1024)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let half = expect.len() / 2;
+    // First half: the writer files it under the blob class and stalls on the pipe.
+    c.write_all(&expect[..half]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Second half and EOF: both directions are now closed, so the channel is forgotten.
+    c.write_all(&expect[half..]).await.unwrap();
+    c.shutdown().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !client.shared.chans.lock().unwrap().contains_key(&ch),
+        "channel should be forgotten while its frames are still queued"
+    );
+    // Now drain the link: every byte, in order, then Close.
+    let mut got = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), recv_raw(&mut hr)).await {
+            Ok(Some(Frame::Data { ch: c, bytes })) if c == ch => got.extend_from_slice(&bytes),
+            Ok(Some(Frame::Close { ch: c })) if c == ch => break,
+            Ok(Some(_)) => {}
+            other => panic!("link ended before Close: {other:?}"),
+        }
+    }
+    assert_eq!(got.len(), expect.len(), "EOF arrived before all data");
+    assert!(got == expect, "data reordered");
+}

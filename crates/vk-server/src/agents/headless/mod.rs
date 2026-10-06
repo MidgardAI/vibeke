@@ -128,7 +128,26 @@ pub struct Record {
     /// The ACP agent command (an ad-hoc `--acp "<cmd>"` has no manifest to recover it from).
     #[serde(default)]
     pub acp_argv: Vec<String>,
+    /// Prompts acknowledged to the caller but not yet handed to the harness: submitted before
+    /// the session was ready, or follow-ups waiting for the running turn (adapters without a
+    /// native follow-up queue). Persisted before the ack, so a restart delivers them.
+    #[serde(default)]
+    pub queued: Vec<Queued>,
+    /// Automatic requests (ACP `fs/write_text_file`) whose side effect was carried out: a
+    /// replayed or reconciled request answers without repeating it.
+    #[serde(default)]
+    pub auto_done: Vec<String>,
 }
+
+/// A prompt waiting in [`Record::queued`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Queued {
+    pub text: String,
+    pub mode: PromptMode,
+}
+
+/// At most this many [`Record::auto_done`] ids are kept (the oldest are answered long ago).
+const AUTO_DONE_MAX: usize = 256;
 
 impl Record {
     pub fn load(server: &Server, pane: &str) -> Option<Record> {
@@ -154,7 +173,8 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptMode {
     Send,
     Steer,
@@ -214,6 +234,11 @@ pub struct Cx {
     resolved: Vec<String>,
     usage: Vec<(RunUsage, bool)>,
     session: Option<String>,
+    /// Set by the session for live steps (never during a journal replay): adapters carry out
+    /// side effects of automatic requests only then.
+    pub live: bool,
+    /// Automatic requests whose side effect was just carried out (see [`Record::auto_done`]).
+    auto_done: Vec<String>,
 }
 
 impl Cx {
@@ -249,6 +274,17 @@ impl Cx {
     pub fn session(&mut self, id: &str) {
         self.session = Some(id.to_string());
     }
+    /// An automatic request's side effect was carried out (persisted before its response is
+    /// written).
+    pub fn auto_done(&mut self, native_ref: String) {
+        self.auto_done.push(native_ref);
+    }
+    fn live() -> Cx {
+        Cx {
+            live: true,
+            ..Cx::default()
+        }
+    }
 }
 
 pub trait Adapter: Send {
@@ -273,6 +309,13 @@ pub trait Adapter: Send {
     fn ready(&self) -> bool;
     /// A turn is in progress.
     fn busy(&self) -> bool;
+    /// The harness queues a follow-up sent mid-turn itself. When false, the session keeps
+    /// follow-ups in [`Record::queued`] and sends them once the turn ends.
+    fn native_follow_up(&self) -> bool {
+        true
+    }
+    /// Automatic requests whose side effect already happened (from [`Record::auto_done`]).
+    fn set_auto_done(&mut self, _done: &[String]) {}
 }
 
 /// Line buffer of one journal stream.
@@ -306,8 +349,12 @@ pub struct Session {
     editor: String,
     /// The in-pane numbered prompt shows this request.
     prompt_ref: Option<String>,
-    /// Prompts submitted before the session was ready.
-    waiting: Vec<(String, PromptMode)>,
+    /// Native refs of server→client requests the journal showed (live or replayed): evidence
+    /// that a request which is no longer pending was answered. After a truncated replay a
+    /// request missing from here proves nothing (04 §7.3).
+    seen_requests: HashSet<String>,
+    /// [`Self::dispatch_queued`] is running (its prompts re-enter `apply`).
+    dispatching: bool,
     /// Signals emitted since the last persist of `processed`.
     dirty: bool,
 }
@@ -322,7 +369,8 @@ fn stream_ix(s: Stream) -> usize {
 
 impl Session {
     pub fn new(pane: &str, rec: Record) -> Session {
-        let adapter = rec.kind.adapter(&rec);
+        let mut adapter = rec.kind.adapter(&rec);
+        adapter.set_auto_done(&rec.auto_done);
         Session {
             pane: pane.to_string(),
             h: Harness::from_id(&rec.harness),
@@ -338,7 +386,8 @@ impl Session {
             queued: vec![],
             editor: String::new(),
             prompt_ref: None,
-            waiting: vec![],
+            seen_requests: HashSet::new(),
+            dispatching: false,
             dirty: false,
         }
     }
@@ -355,6 +404,8 @@ impl Session {
     /// A restarted server: rebuild from the journal with a fresh adapter.
     pub fn begin_replay(&mut self) {
         self.adapter = self.rec.kind.adapter(&self.rec);
+        self.adapter.set_auto_done(&self.rec.auto_done);
+        self.seen_requests.clear();
         self.seen = 0;
         self.lines = Default::default();
         self.replaying = true;
@@ -386,7 +437,7 @@ impl Session {
 
     /// Fresh process: run the handshake.
     pub fn start(&mut self, server: &Arc<Server>) -> Vec<Act> {
-        let mut cx = Cx::default();
+        let mut cx = Cx::live();
         cx.render(format!(
             "vibeke · {} headless ({}) · {}\n",
             self.rec.harness,
@@ -394,7 +445,18 @@ impl Session {
             self.rec.cwd
         ));
         self.adapter.start(&mut cx);
-        self.apply(server, cx, true)
+        let acts = self.apply(server, cx, true);
+        self.flush(server);
+        acts
+    }
+
+    /// Persist the record if anything changed: always before the acts of a step are carried
+    /// out, so what they depend on (queued prompts, unacked previews, completed side effects)
+    /// survives a crash.
+    fn flush(&mut self, server: &Server) {
+        if std::mem::take(&mut self.dirty) {
+            self.rec.persist(server, &self.pane);
+        }
     }
 
     pub fn on_output(
@@ -442,7 +504,10 @@ impl Session {
         let live = !self.replaying || end > self.rec.processed;
         let text = String::from_utf8_lossy(line);
         let text = text.trim_end_matches('\r');
-        let mut cx = Cx::default();
+        let mut cx = Cx {
+            live: !self.replaying,
+            ..Cx::default()
+        };
         match stream {
             Stream::Stderr => {
                 if !text.trim().is_empty() {
@@ -466,6 +531,22 @@ impl Session {
     /// Execute one adapter step. `live`: emit events (otherwise state and transcript only).
     fn apply(&mut self, server: &Arc<Server>, cx: Cx, live: bool) -> Vec<Act> {
         let mut acts: Vec<Act> = cx.render.into_iter().map(Act::Render).collect();
+        for r in cx.auto_done {
+            if !self.rec.auto_done.contains(&r) {
+                self.rec.auto_done.push(r);
+            }
+            let n = self.rec.auto_done.len();
+            if n > AUTO_DONE_MAX {
+                self.rec.auto_done.drain(..n - AUTO_DONE_MAX);
+            }
+            self.adapter.set_auto_done(&self.rec.auto_done);
+            self.dirty = true;
+        }
+        for it in &cx.opens {
+            if let Some(r) = &it.native_ref {
+                self.seen_requests.insert(r.clone());
+            }
+        }
         if let Some(s) = cx.session
             && self.rec.session.as_deref() != Some(s.as_str())
         {
@@ -505,16 +586,46 @@ impl Session {
                 acts.push(self.write(server, &v, preview));
             }
         }
-        if self.adapter.ready() && !self.waiting.is_empty() && !self.replaying {
-            for (t, m) in std::mem::take(&mut self.waiting) {
-                acts.extend(self.prompt(server, &t, m));
+        if !self.replaying {
+            acts.extend(self.dispatch_queued(server));
+        }
+        acts
+    }
+
+    /// Hand queued prompts to the adapter, in order, while it can take them: once the session
+    /// is ready, and a follow-up only when no turn is running and no earlier prompt is still
+    /// on its way (one follow-up starts one turn).
+    fn dispatch_queued(&mut self, server: &Arc<Server>) -> Vec<Act> {
+        if self.dispatching {
+            return vec![];
+        }
+        self.dispatching = true;
+        let mut acts = Vec::new();
+        while let Some(q) = self.rec.queued.first().cloned() {
+            let follow = q.mode == PromptMode::FollowUp;
+            if !self.adapter.ready()
+                || (follow && (self.adapter.busy() || !self.rec.unacked.is_empty()))
+            {
+                break;
+            }
+            self.rec.queued.remove(0);
+            self.dirty = true;
+            let mode = if follow { PromptMode::Send } else { q.mode };
+            acts.extend(self.prompt(server, &q.text, mode));
+            if follow {
+                break;
             }
         }
+        self.dispatching = false;
         acts
     }
 
     fn write(&mut self, server: &Server, v: &Value, preview: Option<String>) -> Act {
         let id = server.next_internal_input_id();
+        self.write_id(id, v, preview)
+    }
+
+    fn write_id(&mut self, id: u64, v: &Value, preview: Option<String>) -> Act {
         let mut bytes = serde_json::to_vec(v).unwrap_or_default();
         bytes.push(b'\n');
         if let Some(p) = preview {
@@ -553,7 +664,12 @@ impl Session {
         let Some(answer) = it.answer.clone() else {
             return vec![];
         };
-        let mut cx = Cx::default();
+        // Already on its way (a reconnect re-opens a request whose response the holder has not
+        // journaled yet): the ledger resends that input under its id; never write a second one.
+        if self.deliveries.values().any(|(i, _)| i == interaction) {
+            return vec![];
+        }
+        let mut cx = Cx::live();
         if !self.adapter.answer(&mut cx, native_ref, &it, &answer) {
             set_delivery(
                 server,
@@ -574,13 +690,18 @@ impl Session {
         let mut acts: Vec<Act> = cx.render.drain(..).map(Act::Render).collect();
         let mut first = true;
         for (v, preview) in std::mem::take(&mut cx.writes) {
-            let act = self.write(server, &v, preview);
-            if first && let Act::Write { id, .. } = &act {
+            if first {
+                // The response's input id derives from the decision's idempotency key, so a
+                // retry of the same decision (after a reconnect or restart) is the same input
+                // and the holder's dedupe collapses it (04 §7.3).
+                let id = delivery_input_id(key);
                 self.deliveries
-                    .insert(*id, (interaction.to_string(), key.to_string()));
+                    .insert(id, (interaction.to_string(), key.to_string()));
+                acts.push(self.write_id(id, &v, preview));
                 first = false;
+            } else {
+                acts.push(self.write(server, &v, preview));
             }
-            acts.push(act);
         }
         acts
     }
@@ -613,7 +734,7 @@ impl Session {
                 self.rec.harness
             )));
         }
-        let mut cx = Cx::default();
+        let mut cx = Cx::live();
         self.adapter.reconcile(&mut cx, self.gap);
         acts.extend(self.apply(server, cx, true));
         // Pending requests: re-open (deduped by native ref) or deliver a recorded decision.
@@ -624,7 +745,12 @@ impl Session {
                 acts.extend(self.open(server, it));
             }
         }
-        // Interactions whose request the journal shows as answered (or gone).
+        // Interactions whose request is no longer pending. Only evidence counts: the journal
+        // showed the request and then no longer has it waiting, or the journal reaches back to
+        // the session start. After a truncated replay (`gap`) a request the journal never
+        // showed proves nothing: an answer stays `delivery_unknown` and an unanswered request
+        // stays open (04 §7.3 rule 2).
+        let in_flight: HashSet<String> = self.deliveries.values().map(|(i, _)| i.clone()).collect();
         let stale: Vec<Interaction> = server.with_core(|c| {
             c.model
                 .interactions
@@ -635,6 +761,7 @@ impl Session {
                             .as_deref()
                             .is_some_and(|r| r.starts_with("rpc:"))
                         && !refs.contains(i.native_ref.as_deref().unwrap_or(""))
+                        && !in_flight.contains(&i.id)
                         && (i.status == InteractionStatus::Open
                             || matches!(
                                 i.delivery,
@@ -647,16 +774,34 @@ impl Session {
                 .collect()
         });
         for it in stale {
-            if it.status == InteractionStatus::Open {
-                resolve(
+            let r = it.native_ref.as_deref().unwrap_or("");
+            let evidence = !self.gap || self.seen_requests.contains(r);
+            match (it.status == InteractionStatus::Open, evidence) {
+                (true, true) => resolve(
                     server,
                     &it.id,
                     InteractionStatus::ResolvedElsewhere,
                     "request no longer pending after restart",
-                );
-            } else {
+                ),
                 // The response is in the journal: it was written before the crash.
-                set_delivery(server, &it.id, DeliveryState::Delivered, None);
+                (false, true) => set_delivery(server, &it.id, DeliveryState::Delivered, None),
+                (true, false) => {}
+                (false, false) => {
+                    set_delivery(
+                        server,
+                        &it.id,
+                        DeliveryState::DeliveryUnknown,
+                        Some(
+                            "journal_truncated: the journal no longer shows this request; \
+                             delivery could not be confirmed"
+                                .into(),
+                        ),
+                    );
+                    acts.push(Act::Render(format!(
+                        "⚠ could not confirm that the answer to \"{}\" reached {} (delivery_unknown); check the harness and answer again if it is still waiting\n",
+                        it.title, self.rec.harness
+                    )));
+                }
             }
         }
         self.rec.processed = self.rec.processed.max(self.seen);
@@ -665,6 +810,7 @@ impl Session {
         for c in std::mem::take(&mut self.queued) {
             acts.extend(self.on_cmd(server, c));
         }
+        self.flush(server);
         acts
     }
 
@@ -673,26 +819,36 @@ impl Session {
             self.queued.push(c);
             return vec![];
         }
-        match c {
+        let acts = match c {
             Cmd::Attach(_) => vec![],
             Cmd::Prompt { text, mode, ack } => {
-                let r = if self.adapter.ready() {
-                    let acts = self.prompt(server, &text, mode);
-                    if let Some(a) = ack {
-                        let _ = a.send(Ok(()));
+                // Not ready yet, behind earlier queued prompts, or a follow-up the harness does
+                // not queue itself: keep it in the record (persisted before the ack below).
+                let queue = !self.adapter.ready()
+                    || !self.rec.queued.is_empty()
+                    || (mode == PromptMode::FollowUp
+                        && self.adapter.busy()
+                        && !self.adapter.native_follow_up());
+                let acts = if queue {
+                    let mut acts = Vec::new();
+                    if self.adapter.ready() {
+                        acts.push(Act::Render(format!("› (queued) {text}\n")));
                     }
-                    return acts;
+                    self.rec.queued.push(Queued { text, mode });
+                    self.dirty = true;
+                    acts.extend(self.dispatch_queued(server));
+                    acts
                 } else {
-                    self.waiting.push((text, mode));
-                    Ok(())
+                    self.prompt(server, &text, mode)
                 };
+                self.flush(server);
                 if let Some(a) = ack {
-                    let _ = a.send(r);
+                    let _ = a.send(Ok(()));
                 }
-                vec![]
+                acts
             }
             Cmd::Interrupt => {
-                let mut cx = Cx::default();
+                let mut cx = Cx::live();
                 self.adapter.interrupt(&mut cx);
                 self.apply(server, cx, true)
             }
@@ -701,11 +857,13 @@ impl Session {
                 native_ref,
                 key,
             } => self.deliver(server, &interaction, &native_ref, &key),
-        }
+        };
+        self.flush(server);
+        acts
     }
 
     fn prompt(&mut self, server: &Arc<Server>, text: &str, mode: PromptMode) -> Vec<Act> {
-        let mut cx = Cx::default();
+        let mut cx = Cx::live();
         match self.adapter.prompt(&mut cx, text, mode) {
             Ok(()) => {}
             Err(e) => cx.render(format!("! {e}\n")),
@@ -770,6 +928,7 @@ impl Session {
             }
             i += 1;
         }
+        self.flush(server);
         acts
     }
 
@@ -823,7 +982,7 @@ impl Session {
                     "⚠ not confirmed: \"{preview}\" ({status:?})\n"
                 )));
             }
-            self.rec.persist(server, &self.pane);
+            self.dirty = true;
         }
         if let Some((interaction, _key)) = self.deliveries.remove(&id) {
             match status {
@@ -844,6 +1003,11 @@ impl Session {
                 ),
             }
         }
+        if !self.replaying {
+            // A follow-up may have been waiting for this write to land.
+            acts.extend(self.dispatch_queued(server));
+        }
+        self.flush(server);
         acts
     }
 
@@ -892,6 +1056,19 @@ fn signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) 
         }
         r.model = model.or(r.model.take());
     });
+}
+
+/// Holder input id of the response delivering decision `key` (an interaction's idempotency
+/// key): stable across reconnects and restarts. Bit 63 marks internal inputs and bit 62 keeps
+/// these apart from the counter-allocated ones ([`Server::next_internal_input_id`]).
+pub fn delivery_input_id(key: &str) -> u64 {
+    // FNV-1a: deterministic across processes and builds.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    (1u64 << 63) | (1u64 << 62) | (h & ((1u64 << 62) - 1))
 }
 
 fn interaction_for(server: &Server, run: &str, native_ref: &str) -> Option<String> {
@@ -1264,6 +1441,7 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
     if let Some(n) = s(p, "name") {
         validate_name(server, n)?;
     }
+    let opts = crate::sandbox::LaunchOpts::from_params(p)?;
     let args: Vec<String> = p
         .get("args")
         .and_then(Value::as_array)
@@ -1322,9 +1500,26 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
         "{} (headless)",
         s(p, "name").unwrap_or_else(|| h.id().trim_start_matches("acp:"))
     );
-    let (_, pane) = server
-        .create_tab(&ws, Some(&cwd), Some(title), Some(cmd), None)
-        .map_err(internal)?;
+    // `isolate` / `network` go through the same isolation path as PTY agents (13 §3): the
+    // run-scoped box exists before the pane spawns, so the harness never starts on the host.
+    let pane_id = crate::core::ulid();
+    let ws_task = server.with_core(|c| c.ws(&ws).and_then(|w| w.task.clone()));
+    crate::sandbox::prepare_headless(server, &pane_id, ws_task.as_deref(), &cwd, h.id(), &opts)
+        .await?;
+    let (_, pane) = match server.create_tab_as(
+        &ws,
+        Some(&cwd),
+        Some(title),
+        Some(cmd),
+        None,
+        Some(pane_id.clone()),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            crate::sandbox::teardown(server, &format!("pane:{pane_id}"));
+            return Err(internal(e));
+        }
+    };
     let rec = {
         let mut c = server.core.lock().unwrap();
         let mut run = new_run(
@@ -1355,6 +1550,8 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
             processed: 0,
             unacked: vec![],
             acp_argv: acp_argv.clone(),
+            queued: vec![],
+            auto_done: vec![],
         };
         let mut tx = Tx::new();
         tx.counters = true;

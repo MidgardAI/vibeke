@@ -15,6 +15,8 @@ fn rec(kind: Kind, session: Option<&str>) -> Record {
         processed: 0,
         unacked: vec![],
         acp_argv: vec![],
+        queued: vec![],
+        auto_done: vec![],
     }
 }
 
@@ -35,8 +37,9 @@ fn echo(a: &mut dyn Adapter, cx: &Cx) -> Cx {
     out
 }
 
+/// One live frame from the harness.
 fn step(a: &mut dyn Adapter, v: Value) -> Cx {
-    let mut cx = Cx::default();
+    let mut cx = Cx::live();
     a.on_frame(&mut cx, &v);
     cx
 }
@@ -616,5 +619,528 @@ fn launch_argv_per_protocol() {
     assert_eq!(
         launch_argv(Harness::Claude, Kind::Acp, None, false, &[], &acp),
         acp
+    );
+}
+
+// ---- sessions against an in-process server (journal replay, delivery, queued prompts) -------
+
+mod sessions {
+    use super::*;
+    use crate::ServerOpts;
+    use crate::paths::Paths;
+    use std::path::PathBuf;
+
+    fn init_env() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            // Same values as the other in-process test modules: one runtime/state root.
+            let base = std::env::temp_dir().join(format!("vk-review-tests-{}", std::process::id()));
+            std::fs::create_dir_all(&base).unwrap();
+            // SAFETY: identical values to the other writers; set before servers read them.
+            unsafe {
+                std::env::set_var("VIBEKE_RUNTIME_DIR", base.join("run"));
+                std::env::set_var("VIBEKE_STATE_DIR", base.join("state"));
+                std::env::set_var("VIBEKE_CONFIG", base.join("config.toml"));
+            }
+        });
+    }
+
+    struct T {
+        _dir: tempfile::TempDir,
+        server: Arc<Server>,
+        pane: String,
+        rec: Record,
+        /// The holder journal: (stream, offset, bytes).
+        journal: Vec<(Stream, u64, Vec<u8>)>,
+        end: u64,
+    }
+
+    impl T {
+        /// A server with one headless run on pane `p1` whose session is established.
+        fn new(harness: &str, kind: Kind) -> T {
+            init_env();
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let paths = Paths {
+                session: "t".into(),
+                runtime: root.join("run"),
+                state: root.join("state"),
+            };
+            let opts = ServerOpts {
+                session: "t".into(),
+                machine: "testbox".into(),
+                bin: "/bin/false".into(),
+                hold_args: vec![],
+                default_shell: None,
+                env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+                shims: false,
+            };
+            let server = Server::new(paths, opts).unwrap();
+            let work = root.join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            let pane = "p1".to_string();
+            let h = Harness::from_id(harness).unwrap();
+            let run = {
+                let mut c = server.core.lock().unwrap();
+                let run = new_run(
+                    &mut c,
+                    &pane,
+                    h,
+                    kind.integration(),
+                    StateSource::Structured,
+                    1.0,
+                );
+                let mut tx = Tx::new();
+                tx.run(run.clone());
+                server.commit(&mut c, tx).unwrap();
+                run
+            };
+            let rec = Record {
+                harness: harness.into(),
+                kind,
+                run: run.id,
+                cwd: work.to_string_lossy().into_owned(),
+                session: Some("sess-1".into()),
+                resume: false,
+                processed: 1,
+                unacked: vec![],
+                acp_argv: vec![],
+                queued: vec![],
+                auto_done: vec![],
+            };
+            rec.persist(&server, &pane);
+            T {
+                _dir: dir,
+                server,
+                pane,
+                rec,
+                journal: vec![],
+                end: 4096,
+            }
+        }
+
+        fn work(&self) -> PathBuf {
+            PathBuf::from(&self.rec.cwd)
+        }
+
+        /// A session attached to the stored record (what a fresh server process loads).
+        fn session(&self) -> Session {
+            Session::load(&self.server, &self.pane).expect("record")
+        }
+
+        /// One journal line on `stream`, fed to `s`.
+        fn feed(&mut self, s: &mut Session, stream: Stream, v: &Value) -> Vec<Act> {
+            let mut b = serde_json::to_vec(v).unwrap();
+            b.push(b'\n');
+            self.feed_raw(s, stream, b)
+        }
+
+        fn feed_raw(&mut self, s: &mut Session, stream: Stream, b: Vec<u8>) -> Vec<Act> {
+            let off = self.end;
+            self.end += b.len() as u64;
+            self.journal.push((stream, off, b.clone()));
+            s.on_output(&self.server, stream, off, &b)
+        }
+
+        /// The holder writes an input: journaled on `Stdin`, marked written, acked.
+        fn land(&mut self, s: &mut Session, id: u64, v: &Value) -> Vec<Act> {
+            let mut acts = self.feed(s, Stream::Stdin, v);
+            s.on_input_written(id);
+            acts.extend(s.on_ack(&self.server, id, InputStatus::Written));
+            acts
+        }
+
+        /// A restarted server: a new session replays the journal from the start (or from
+        /// `gap_from`, the ring having lost what came before).
+        fn restart(&self, gap_from: Option<u64>) -> (Session, Vec<Act>) {
+            let mut s = self.session();
+            s.begin_replay();
+            if let Some(g) = gap_from {
+                s.on_gap(g);
+            }
+            for (st, off, b) in &self.journal {
+                if gap_from.is_some_and(|g| *off < g) {
+                    continue;
+                }
+                s.on_output(&self.server, *st, *off, b);
+            }
+            let acts = s.replay_done(&self.server);
+            (s, acts)
+        }
+
+        fn interaction(&self, native_ref: &str) -> Interaction {
+            self.server.with_core(|c| {
+                c.model
+                    .interactions
+                    .iter()
+                    .find(|i| i.native_ref.as_deref() == Some(native_ref))
+                    .cloned()
+                    .expect("interaction")
+            })
+        }
+
+        /// Delivery-state events of interaction `id`: (type, reason). Settled interactions leave
+        /// the live model, so the event log is the record.
+        fn delivery_events(&self, id: &str) -> Vec<(String, String)> {
+            let evs = self
+                .server
+                .with_core(|c| c.store.events_after(0, 10_000, &[]).unwrap());
+            evs.iter()
+                .map(|e| serde_json::to_value(e).unwrap())
+                .filter(|e| e["subject"]["interaction"] == id)
+                .filter_map(|e| {
+                    let ty = e["type"].as_str()?.to_string();
+                    ty.starts_with("interaction.deliver")
+                        .then(|| (ty, e["data"]["reason"].as_str().unwrap_or("").to_string()))
+                })
+                .collect()
+        }
+
+        fn last_delivery(&self, id: &str) -> String {
+            self.delivery_events(id)
+                .last()
+                .map(|(t, _)| t.clone())
+                .unwrap_or_default()
+        }
+
+        fn decide(&self, native_ref: &str) -> (String, String) {
+            let it = self.interaction(native_ref);
+            let (_, key) = record_decision(&self.server, &it.id, allow(), "test", None, None, None)
+                .unwrap()
+                .unwrap();
+            (it.id, key)
+        }
+    }
+
+    fn act_writes(acts: &[Act]) -> Vec<(u64, Value)> {
+        acts.iter()
+            .filter_map(|a| match a {
+                Act::Write { id, bytes } => Some((*id, serde_json::from_slice(bytes).unwrap())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn act_text(acts: &[Act]) -> String {
+        acts.iter()
+            .filter_map(|a| match a {
+                Act::Render(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn permission(id: u64) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": {"sessionId": "sess-1", "toolCall": {"toolCallId": format!("tc{id}"), "title": "Run cargo test", "kind": "execute", "rawInput": {"command": "cargo test"}}, "options": [{"optionId": "once", "name": "Allow", "kind": "allow_once"}, {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}})
+    }
+
+    /// Review finding 8: an approval response recorded and enqueued but not yet journaled by
+    /// the holder when the connection drops is never written a second time: a reconnect sees
+    /// it in flight, and a restart re-delivers it under the same (key-derived) input id, which
+    /// the holder's dedupe collapses.
+    #[tokio::test]
+    async fn approval_response_is_delivered_once_across_reconnect_and_restart() {
+        let mut t = T::new("acp:fake", Kind::Acp);
+        let mut s = t.session();
+        t.feed(&mut s, Stream::Stdout, &permission(5));
+        let (it, key) = t.decide("rpc:5");
+        let answer = |s: &mut Session, t: &T| {
+            s.on_cmd(
+                &t.server,
+                Cmd::Answer {
+                    interaction: it.clone(),
+                    native_ref: "rpc:5".into(),
+                    key: key.clone(),
+                },
+            )
+        };
+        let w = act_writes(&answer(&mut s, &t));
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].1["id"], 5);
+        let first_id = w[0].0;
+        assert_eq!(
+            first_id,
+            delivery_input_id(&key),
+            "id derives from the decision key"
+        );
+
+        // The holder connection drops before the response is journaled; the reconnect's
+        // replay ends with the request still pending.
+        s.begin_reconnect();
+        let acts = s.replay_done(&t.server);
+        assert!(
+            act_writes(&acts).is_empty(),
+            "in flight: the ledger resends it, no second response"
+        );
+        // An `interaction.answer` retry while it is in flight is a no-op too.
+        assert!(act_writes(&answer(&mut s, &t)).is_empty());
+
+        // The server dies instead: the restarted server re-delivers under the same input id.
+        let (mut s2, acts) = t.restart(None);
+        let w2 = act_writes(&acts);
+        assert_eq!(w2.len(), 1, "{w2:?}");
+        assert_eq!(w2[0].0, first_id, "same input id: the holder dedupes it");
+
+        // The holder journals it once: delivered, and never written again.
+        t.land(&mut s2, first_id, &w2[0].1);
+        assert_eq!(t.last_delivery(&it), "interaction.delivered");
+        let (_s3, acts) = t.restart(None);
+        assert!(
+            act_writes(&acts).is_empty(),
+            "answered: never written again"
+        );
+    }
+
+    /// Review finding 9: when the journal was truncated (ring overflow) and no longer shows a
+    /// request, its recorded-but-unwritten decision is `delivery_unknown`, never `delivered`,
+    /// and an unanswered interaction stays open instead of `resolved_elsewhere`.
+    #[tokio::test]
+    async fn truncated_journal_never_counts_as_delivery_evidence() {
+        let mut t = T::new("acp:fake", Kind::Acp);
+        let mut s = t.session();
+        t.feed(&mut s, Stream::Stdout, &permission(5));
+        t.feed(&mut s, Stream::Stdout, &permission(6));
+        // A decision for 5 is recorded; the server crashes before writing the response.
+        let (id5, _) = t.decide("rpc:5");
+        let id6 = t.interaction("rpc:6").id;
+        // stderr floods the ring past both requests.
+        for i in 0..50 {
+            t.feed_raw(&mut s, Stream::Stderr, format!("noise {i}\n").into_bytes());
+        }
+        let gap = t.journal.last().unwrap().1;
+        let (_s, acts) = t.restart(Some(gap));
+        let ev5 = t.delivery_events(&id5);
+        assert!(
+            !ev5.iter().any(|(ty, _)| ty == "interaction.delivered"),
+            "{ev5:?}"
+        );
+        let (ty, reason) = ev5.last().cloned().unwrap();
+        assert_eq!(ty, "interaction.delivery_unknown");
+        assert!(reason.contains("journal_truncated"), "{reason}");
+        let it6 = t
+            .server
+            .with_core(|c| c.interaction(&id6).cloned())
+            .unwrap();
+        assert_eq!(
+            it6.status,
+            InteractionStatus::Open,
+            "no evidence: still asks"
+        );
+        assert!(act_text(&acts).contains("delivery_unknown"));
+
+        // With the whole journal available, the written response is evidence.
+        let mut t2 = T::new("acp:fake", Kind::Acp);
+        let mut s = t2.session();
+        t2.feed(&mut s, Stream::Stdout, &permission(7));
+        let (id7, _) = t2.decide("rpc:7");
+        t2.feed(
+            &mut s,
+            Stream::Stdin,
+            &json!({"jsonrpc": "2.0", "id": 7, "result": {"outcome": {"outcome": "selected", "optionId": "once"}}}),
+        );
+        t2.restart(None);
+        assert_eq!(t2.last_delivery(&id7), "interaction.delivered");
+    }
+
+    /// Review finding 10: a follow-up acknowledged while a Codex turn runs is persisted before
+    /// the ack; a server killed before dispatch delivers it after the restart. Prompts
+    /// acknowledged before the handshake finished are persisted the same way.
+    #[tokio::test]
+    async fn acknowledged_queued_prompts_survive_a_restart() {
+        let mut t = T::new("codex", Kind::AppServer);
+        let mut s = t.session();
+        let acts = s.on_cmd(
+            &t.server,
+            Cmd::Prompt {
+                text: "first".into(),
+                mode: PromptMode::Send,
+                ack: None,
+            },
+        );
+        let w = act_writes(&acts);
+        assert_eq!(w[0].1["method"], "turn/start");
+        t.land(&mut s, w[0].0, &w[0].1);
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"id": w[0].1["id"], "result": {"turn": {"id": "turn-1", "status": "inProgress"}}}),
+        );
+        t.feed(
+            &mut s,
+            Stream::Stdout,
+            &json!({"method": "turn/started", "params": {"threadId": "sess-1", "turn": {"id": "turn-1"}}}),
+        );
+        assert!(s.adapter.busy());
+
+        let (tx, rx) = oneshot::channel();
+        let acts = s.on_cmd(
+            &t.server,
+            Cmd::Prompt {
+                text: "and then the docs".into(),
+                mode: PromptMode::FollowUp,
+                ack: Some(tx),
+            },
+        );
+        assert!(act_writes(&acts).is_empty(), "waits for the turn");
+        assert_eq!(rx.await.unwrap(), Ok(()));
+        let stored = Record::load(&t.server, &t.pane).unwrap();
+        assert_eq!(stored.queued.len(), 1, "persisted before the ack");
+        assert_eq!(stored.queued[0].text, "and then the docs");
+
+        // The server is killed before dispatch; meanwhile the turn completes.
+        drop(s);
+        let (stream, off) = (Stream::Stdout, t.end);
+        let mut done = serde_json::to_vec(&json!({"method": "turn/completed", "params": {"threadId": "sess-1", "turn": {"id": "turn-1", "status": "completed"}}})).unwrap();
+        done.push(b'\n');
+        t.end += done.len() as u64;
+        t.journal.push((stream, off, done));
+        let (_s, acts) = t.restart(None);
+        let w: Vec<_> = act_writes(&acts)
+            .into_iter()
+            .filter(|(_, v)| v["method"] == "turn/start")
+            .collect();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].1["params"]["input"][0]["text"], "and then the docs");
+        let stored = Record::load(&t.server, &t.pane).unwrap();
+        assert!(stored.queued.is_empty());
+        assert_eq!(
+            stored.unacked.len(),
+            1,
+            "now an ordinary unacked input (input_unconfirmed if it is lost)"
+        );
+
+        // Before the handshake: an ACP session that is not open yet.
+        let t2 = T::new("acp:fake", Kind::Acp);
+        let mut r = t2.rec.clone();
+        r.session = None;
+        r.processed = 0;
+        r.persist(&t2.server, &t2.pane);
+        let mut s = t2.session();
+        let (tx, rx) = oneshot::channel();
+        s.on_cmd(
+            &t2.server,
+            Cmd::Prompt {
+                text: "hello early".into(),
+                mode: PromptMode::Send,
+                ack: Some(tx),
+            },
+        );
+        assert_eq!(rx.await.unwrap(), Ok(()));
+        let stored = Record::load(&t2.server, &t2.pane).unwrap();
+        assert_eq!(stored.queued[0].text, "hello early");
+    }
+
+    /// Review finding 4: replaying the journal of a completed ACP write never repeats it, and
+    /// a write carried out just before a crash (response not yet journaled) is answered after
+    /// the restart without writing again.
+    #[tokio::test]
+    async fn acp_journal_replay_never_repeats_filesystem_writes() {
+        let mut t = T::new("acp:fake", Kind::Acp);
+        let file = t.work().join("notes.txt");
+        let mut s = t.session();
+        let req = json!({"jsonrpc": "2.0", "id": 9, "method": "fs/write_text_file", "params": {"sessionId": "sess-1", "path": "notes.txt", "content": "old"}});
+        let acts = t.feed(&mut s, Stream::Stdout, &req);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
+        let w = act_writes(&acts);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].1.get("error").is_none(), "{w:?}");
+        t.land(&mut s, w[0].0, &w[0].1);
+        // The user edits the file afterwards; the server restarts and replays.
+        std::fs::write(&file, "newer").unwrap();
+        let (_s, acts) = t.restart(None);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "newer");
+        assert!(act_writes(&acts).is_empty());
+
+        // Crash between the write and its response: answered, not repeated.
+        let mut t2 = T::new("acp:fake", Kind::Acp);
+        let file = t2.work().join("notes.txt");
+        let mut s = t2.session();
+        let req = json!({"jsonrpc": "2.0", "id": 10, "method": "fs/write_text_file", "params": {"sessionId": "sess-1", "path": "notes.txt", "content": "old"}});
+        t2.feed(&mut s, Stream::Stdout, &req);
+        assert_eq!(
+            Record::load(&t2.server, &t2.pane).unwrap().auto_done,
+            ["rpc:10"],
+            "recorded before the response is written"
+        );
+        std::fs::write(&file, "newer").unwrap();
+        let (_s, acts) = t2.restart(None);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "newer");
+        let w = act_writes(&acts);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].1["id"], 10);
+        assert!(w[0].1.get("error").is_none());
+    }
+}
+
+/// Review finding 3: ACP fs requests through an in-checkout symlink (file or directory) to an
+/// external sentinel are refused for reads and writes; the sentinel is neither read nor changed.
+#[test]
+fn acp_fs_requests_never_follow_symlinks_out_of_the_cwd() {
+    let outside = tempfile::tempdir().unwrap();
+    let sentinel = outside.path().join("secret.txt");
+    std::fs::write(&sentinel, "TOP SECRET").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    std::os::unix::fs::symlink(&sentinel, cwd.join("link")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), cwd.join("dirlink")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("new.txt"), cwd.join("dangling")).unwrap();
+    std::fs::write(cwd.join("ok.txt"), "fine").unwrap();
+    std::os::unix::fs::symlink(cwd.join("ok.txt"), cwd.join("inner")).unwrap();
+    let mut r = rec(Kind::Acp, Some("acp-1"));
+    r.processed = 1;
+    r.cwd = cwd.to_string_lossy().into_owned();
+    let mut a = acp::Acp::new(&r);
+    let mut n = 100;
+    let mut req = |a: &mut acp::Acp, method: &str, params: Value| {
+        n += 1;
+        let cx = step(
+            a,
+            json!({"jsonrpc": "2.0", "id": n, "method": method, "params": params}),
+        );
+        writes(&cx)[0].clone()
+    };
+    for path in [
+        "link".to_string(),
+        "dirlink/secret.txt".into(),
+        cwd.join("link").to_string_lossy().into_owned(),
+        "../".to_string() + &outside.path().join("secret.txt").to_string_lossy(),
+    ] {
+        let r = req(&mut a, "fs/read_text_file", json!({"path": path}));
+        assert_eq!(r["error"]["code"], -32002, "read {path}: {r}");
+        let r = req(
+            &mut a,
+            "fs/write_text_file",
+            json!({"path": path, "content": "pwned"}),
+        );
+        assert_eq!(r["error"]["code"], -32002, "write {path}: {r}");
+    }
+    let r = req(
+        &mut a,
+        "fs/write_text_file",
+        json!({"path": "dangling", "content": "pwned"}),
+    );
+    assert_eq!(r["error"]["code"], -32002, "dangling: {r}");
+    assert!(!outside.path().join("new.txt").exists());
+    let r = req(
+        &mut a,
+        "fs/write_text_file",
+        json!({"path": "dirlink/new.txt", "content": "pwned"}),
+    );
+    assert_eq!(r["error"]["code"], -32002);
+    assert!(!outside.path().join("new.txt").exists());
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "TOP SECRET");
+
+    // Inside the cwd: plain files and in-cwd symlinks still work.
+    let r = req(&mut a, "fs/read_text_file", json!({"path": "inner"}));
+    assert_eq!(r["result"]["content"], "fine");
+    let r = req(
+        &mut a,
+        "fs/write_text_file",
+        json!({"path": "sub-new.txt", "content": "made"}),
+    );
+    assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("sub-new.txt")).unwrap(),
+        "made"
     );
 }

@@ -114,7 +114,8 @@ pub use setup::{
 pub use status::{Blockers, BranchStatus, branch_status, removal_blockers};
 pub use taskfile::{
     DepsSpec, DepsStrategy, FilesSpec, PlannedCommand, PortsSpec, SetupSpec, TASK_FILE, TaskFile,
-    TemplateVars, parse_duration, repo_key_matches, valid_env_name,
+    TemplateVars, denied_port_env_name, filter_port_env, parse_duration, parse_remote,
+    repo_key_matches, trusted_port_env_name, untrusted_port_env_name, valid_env_name,
 };
 pub use worktree::{
     Checkout, CreateRequest, FetchOutcome, WorktreeConfig, WorktreeEntry, WorktreeRoot,
