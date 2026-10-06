@@ -18,7 +18,8 @@ const HELP: &str = "vibeke — a terminal workspace for supervising coding agent
 
 usage:
   vibeke                          attach the TUI (spawns the server if needed)
-  vibeke attach [--session s]
+  vibeke attach [--session s] [--readonly]   --readonly: watch without input or changes
+  vibeke session list|new|stop|rename       sessions in the runtime dir
   vibeke ssh <host>               attach to a remote machine over SSH (installs vibeke there)
   vibeke attach-file <path> [--pane [machine/]pane]   copy a file/dir into the pane's inbox and paste its path
   vibeke <noun> <verb> [args]     API commands (vibeke <noun> for help)
@@ -35,7 +36,10 @@ usage:
   vibeke doctor [--rebuild-index] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index offline
   vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
   vibeke update [--check]         replace the binary and restart the server (panes survive)
-  vibeke server [start|stop|status|restart]
+  vibeke server [start|stop|status|restart [--binary PATH]|reload-config]
+  vibeke config path|get|set|validate|reload|default
+  vibeke events tail [--types t] [--after-seq N] [--follow]
+  vibeke completion bash|zsh|fish|nu|powershell
   vibeke gateway run|pair|share|devices|revoke|status   reach this host from phone/desktop apps (E2E via a relay)
   vibeke relay --public-url URL [--app-dir DIR]         run a self-hosted relay
   vibeke api call <method> [json]
@@ -270,7 +274,24 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             .await
         }
         Some("update") => commands::update(&g, &args[1..]).await,
-        Some("config") => commands::config(&g, &args[1..]),
+        // `config get|set|reload` are API calls (07 §2.14); path|validate|default stay local.
+        Some("config")
+            if !matches!(
+                args.get(1).map(String::as_str),
+                Some("get" | "set" | "reload")
+            ) =>
+        {
+            commands::config(&g, &args[1..])
+        }
+        Some("completion") => vk_cli::verbs::completion(&args[1..]),
+        Some("events") if args.get(1).map(String::as_str) == Some("tail") => {
+            let gr = &g;
+            let rest = &args[2..];
+            with_client(gr, |mut c| async move {
+                vk_cli::verbs::events_tail(&mut c, gr, rest).await
+            })
+            .await
+        }
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("machine") => remote::machine(&g, &args[1..]).await,
         Some("attach-file") => remote::attach_file(&g, &args[1..]).await,

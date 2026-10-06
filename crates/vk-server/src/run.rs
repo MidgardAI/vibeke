@@ -77,6 +77,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::sandbox::restore(&server).await;
     crate::compat::start(&server);
     crate::inbox::start(&server);
+    crate::config_api::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -223,6 +224,8 @@ where
         remote: false,
     };
     guard.client_ids.lock().unwrap().push(ctx.client_id.clone());
+    // `client.hello {readonly: true}` (`vibeke attach --readonly`): sticky for the connection.
+    let mut readonly = false;
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     let mut line = String::new();
     // Handle lines until render.attach (which needs the raw stream) or EOF.
@@ -256,6 +259,7 @@ where
                             guard.client_ids.lock().unwrap().push(c.into());
                         }
                         ctx.remote = req.params.get("remote").and_then(Value::as_bool).unwrap_or(false);
+                        readonly |= req.params.get("readonly").and_then(Value::as_bool) == Some(true);
                         crate::notify::record_host(&server, &ctx.client_id, req.params.get("host"));
                         let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
                     }
@@ -383,7 +387,13 @@ where
         wr.flush().await?;
         // Host terminal for click-to-focus raising and native notifications (08 §7.1).
         crate::notify::record_host(&server, &client_id, req.params.get("host"));
+        if readonly {
+            crate::session_api::set_readonly(&client_id, true);
+        }
         let r = render::serve(server.clone(), rd, wr, client_id.clone(), remote, max_fps).await;
+        if readonly {
+            crate::session_api::set_readonly(&client_id, false);
+        }
         crate::theme::forget_client(&server, &client_id);
         r?;
         return Ok(());

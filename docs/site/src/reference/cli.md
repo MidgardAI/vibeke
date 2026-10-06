@@ -33,6 +33,26 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
 | `snapshot` | - | `session.snapshot` | full session state |
+| `list` | - | `session.list` | sessions in the runtime and state dirs |
+| `new` | `<name>` | `session.create` | <name>: start a server for a new session |
+| `stop` | `<name>` | `session.stop` | <name> [--kill-panes] |
+| `rename` | `<name>` `<new_name>` | `session.rename` | <old> <new> (stopped sessions only) |
+
+## `vibeke config`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `get` | `<key>` | `config.get` | [key] effective value and its source (default\|user\|runtime) |
+| `set` | `<key>` `<value>` | `config.set` | <key> <value> [--persist]  (null resets; --persist writes config.toml, comments kept) |
+| `reload` | - | `config.reload` | re-read config.toml |
+
+## `vibeke blob`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `get` | `<hash>` | `blob.get` | <hash> [--range '{"offset":0,"length":N}'] [--out file] |
+| `stat` | `<hash>` | `blob.stat` | <hash> |
+| `put` | - | `blob.put` | --path file \| --data-b64 … |
 
 ## `vibeke workspace`
 
@@ -78,6 +98,9 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `wait-idle` | `<pane>` | `pane.wait_idle` | [--quiet-ms n] [--timeout-ms n] |
 | `mark-unread` | `<pane>` | `pane.mark_unread` |  |
 | `pin` | `<pane>` | `pane.pin` |  |
+| `move` | `<pane>` | `pane.move` | [pane] --to-tab t \| --to-workspace w \| --new-tab-in w [--direction right] [--anchor p] [--focus] |
+| `scroll` | `<pane>` `<to>` | `pane.scroll` | [pane] bottom\|top\|line [--line n] \| --delta n |
+| `screenshot` | `<pane>` | `pane.screenshot` | [pane] [--format ansi\|text\|html] [--source visible\|recent] [--out file] |
 | `float` | `<pane>` | `pane.float` | [pane] float/move it \| --tab t [--command c] [--cwd d]  [--rect '{"x":15,"y":15,"w":70,"h":70}'] [--focus] |
 | `embed` | `<pane>` | `pane.embed` | [--target p] [--direction right\|down\|left\|up] |
 
@@ -144,6 +167,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 |---|---|---|---|
 | `new` | `<title>` | `task.create` | [--repo .] [--agent claude:name] [--base ref] [--root sibling] [--isolation worktree\|jj_workspace\|none\|auto] [--yolo] [--isolate host\|sandbox\|container] [--network none\|harness-apis\|package-registries\|dev\|open] [--image ref] [--code clone\|worktree] [--devcontainer] [--build] |
 | `list` | - | `task.list` |  |
+| `park` | `<task>` | `task.park` | <task> stop its agents gracefully, keep the worktree |
+| `resume` | `<task>` | `task.resume` | <task> restart the parked agents from their sessions |
 | `sync` | `<task>` | `task.sync` | <task> [--direction pull\|push\|both] [--force]: host-side fetch of a container task's commits (push = host commits into the box) |
 | `get` | `<task>` | `task.get` |  |
 | `track` | - | `task.track` | [--pane @current\|--run r] [--turn N] [--title t] [--criterion text]... [--stop-at draft_pr] — track the agent's work (no send, no spawn) |
@@ -195,7 +220,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
 | `list` | - | `worktree.list` | [--cwd d] |
-| `remove` | `<path>` | `worktree.remove` | [--force] (async) |
+| `remove` | `<path>` | `worktree.remove` | [--force] [--dry-run] (async) |
 | `repo-root` | `<cwd>` | `worktree.repo_root` |  |
 
 ## `vibeke layout`
@@ -240,12 +265,6 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
 | `segments` | - | `status.segments` | [--pane p] [--client c] status-bar segment data |
-
-## `vibeke blob`
-
-| Verb | Positionals | Method | Description |
-|---|---|---|---|
-| `put` | - | `blob.put` | --path file \| --data-b64 … |
 
 ## `vibeke machine`
 

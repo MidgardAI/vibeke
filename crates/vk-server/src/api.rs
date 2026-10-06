@@ -278,6 +278,14 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     "interaction.cancel",
     "server.stop",
     "server.reload_config",
+    "server.restart",
+    "session.create",
+    "session.stop",
+    "session.rename",
+    "config.set",
+    "config.reload",
+    "task.park",
+    "task.resume",
     "workspace.close",
     "workspace.rename",
     "workspace.move",
@@ -522,6 +530,23 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     authorize(server, ctx, method, p)?;
     crate::search::authorize_read(server, ctx, method, p)?;
     crate::browser_pane::page_io::authorize_output_read(server, ctx, method, p)?;
+    crate::limits::check(server, ctx, method, p)?;
+    // Batch 2A API surface: one hook per module.
+    if let Some(r) = crate::config_api::api(server, method, p).await {
+        return r;
+    }
+    if let Some(r) = crate::session_api::api(server, ctx, method, p).await {
+        return r;
+    }
+    if let Some(r) = crate::blob_api::api(server, method, p) {
+        return r;
+    }
+    if let Some(r) = crate::pane_api::api(server, ctx, method, p) {
+        return r;
+    }
+    if let Some(r) = Box::pin(crate::task_park::api(server, ctx, method, p)).await {
+        return r;
+    }
     if let Some(r) = crate::parity::api(server, ctx, method, p).await {
         return r;
     }
@@ -604,6 +629,11 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::drafts::METHODS)
                     .chain(crate::assist::METHODS)
                     .chain(crate::compat::METHODS)
+                    .chain(crate::session_api::METHODS)
+                    .chain(crate::config_api::METHODS)
+                    .chain(crate::blob_api::METHODS)
+                    .chain(crate::pane_api::METHODS)
+                    .chain(crate::task_park::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
@@ -669,7 +699,6 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             });
             Ok(json!({}))
         }
-        "server.reload_config" => Ok(json!({"changed": [], "errors": []})),
         "session.snapshot" => Ok(server.snapshot_json()),
 
         // ---- workspaces -----------------------------------------------------------------
