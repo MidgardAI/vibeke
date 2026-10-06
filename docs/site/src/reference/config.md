@@ -250,6 +250,9 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # [agents.harness.codex]
 # shim            = true
 # headless_shared = false
+# Added after `codex` when Vibeke isolates a headless app-server run: Codex's own
+# sandbox cannot nest inside Vibeke's (the PTY path passes `--sandbox danger-full-access`).
+# isolated_args   = ["-c", 'sandbox_mode="danger-full-access"']
 
 # Policy rules (the first matching rule applies. See the policy documentation):
 # [[policy.rule]]

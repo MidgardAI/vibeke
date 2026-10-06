@@ -611,6 +611,9 @@ fn fill_harness_defaults(cfg: &mut Config) {
         if e.headless_shared.is_none() {
             e.headless_shared = d.headless_shared;
         }
+        if e.isolated_args.is_none() {
+            e.isolated_args = d.isolated_args.clone();
+        }
     }
 }
 
@@ -705,6 +708,7 @@ fn element_schema(path: &str) -> Option<&'static [&'static str]> {
             "extra_args",
             "shim",
             "headless_shared",
+            "isolated_args",
         ],
         _ => return None,
     })

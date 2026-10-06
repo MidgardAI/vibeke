@@ -9,6 +9,7 @@
 //! | `item/completed` `agentMessage` | transcript + last message |
 //! | `turn/completed {status}` | `Stop` / `Interrupt` / `StopFailure` |
 //! | `thread/tokenUsage/updated` | usage (session total) |
+//! | `account/rateLimits/updated` | run rate limit (most constrained window; 100 % → rate limited) |
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, legacy `execCommandApproval`/`applyPatchApproval`, `item/permissions/requestApproval` | approval: `accept` / `acceptForSession` / `decline` |
 //! | `item/tool/requestUserInput`, `mcpServer/elicitation/request` | question |
 //! | `serverRequest/resolved` | resolved by the harness |
@@ -37,6 +38,8 @@ pub struct Codex {
     items: HashMap<String, (String, Value)>,
     last_msg: Option<String>,
     identified: bool,
+    /// The last rate-limit snapshot had a window at 100 %.
+    limited: bool,
 }
 
 fn id_str(id: &Value) -> String {
@@ -64,6 +67,7 @@ impl Codex {
             items: HashMap::new(),
             last_msg: None,
             identified: est,
+            limited: false,
         }
     }
 
@@ -122,6 +126,27 @@ impl Codex {
             "webSearch" => ("WebSearch".into(), json!({"query": item.get("query")})),
             _ => return None,
         })
+    }
+
+    /// The unified diffs of a `fileChange` item (`changes[] {path, kind, diff}`).
+    fn item_diff(item: &Value) -> Option<String> {
+        let changes = item.get("changes")?.as_array()?;
+        let mut out = String::new();
+        for c in changes {
+            let Some(d) = c.get("diff").and_then(Value::as_str) else {
+                continue;
+            };
+            if changes.len() > 1
+                && let Some(p) = c.get("path").and_then(Value::as_str)
+            {
+                out.push_str(&format!("--- {p}\n"));
+            }
+            out.push_str(d);
+            if !d.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     fn interaction(&self, id: &Value, method: &str, p: &Value) -> Option<Interaction> {
@@ -380,10 +405,7 @@ impl Adapter for Codex {
                             .unwrap_or("")
                             .to_string();
                         if let Some((tool, input)) = Self::tool_of(&item) {
-                            cx.render(format!(
-                                "⏺ {tool} {}\n",
-                                harness::tool_summary(&tool, &input)
-                            ));
+                            cx.tool_start(&iid, harness::tool_summary(&tool, &input));
                             cx.signal(
                                 "PreToolUse",
                                 json!({"tool_name": tool, "tool_input": input, "tool_use_id": iid, "session_id": self.thread}),
@@ -417,10 +439,20 @@ impl Adapter for Codex {
                                             .get("exitCode")
                                             .and_then(Value::as_i64)
                                             .is_some_and(|c| c != 0);
-                                    cx.render(format!(
-                                        "  {} {tool}\n",
-                                        if failed { "✗" } else { "✓" }
-                                    ));
+                                    let status = match status {
+                                        "declined" => ToolStatus::Declined,
+                                        _ if failed => ToolStatus::Failed,
+                                        _ => ToolStatus::Done,
+                                    };
+                                    cx.tool_end(
+                                        &iid,
+                                        status,
+                                        item.get("aggregatedOutput")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_string),
+                                        Self::item_diff(&item),
+                                        item.get("exitCode").and_then(Value::as_i64),
+                                    );
                                     cx.signal(
                                         if failed { "PostToolUseFailure" } else { "PostToolUse" },
                                         json!({"tool_name": tool, "tool_input": input, "tool_use_id": iid, "exit_code": item.get("exitCode")}),
@@ -481,6 +513,19 @@ impl Adapter for Codex {
                             },
                             true,
                         );
+                    }
+                    "account/rateLimits/updated" => {
+                        if let Some(l) = usage::app_server_rate_limit(&p, now_ms()) {
+                            if l.limited && !self.limited {
+                                cx.render(format!(
+                                    "⚠ rate limited ({} window at {:.0}%)\n",
+                                    l.scope.as_deref().unwrap_or("usage"),
+                                    l.used_percent.unwrap_or(100.0)
+                                ));
+                            }
+                            self.limited = l.limited;
+                            cx.rate_limit(l);
+                        }
                     }
                     "serverRequest/resolved" => {
                         if let Some(rid) = p.get("requestId") {

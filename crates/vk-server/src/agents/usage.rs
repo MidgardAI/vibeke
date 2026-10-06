@@ -267,6 +267,68 @@ pub(super) fn from_headless(server: &Server, run: &AgentRun, u: RunUsage, total:
     store(server, &run.id, Some(next), None);
 }
 
+/// A headless rate-limit snapshot (Codex `account/rateLimits/updated`, 04 §6.2, §10): stored on
+/// the run; a window at 100 % marks the run rate-limited (once, until it is cleared).
+pub(super) fn from_headless_limit(server: &Server, run: &AgentRun, l: RateLimitInfo) {
+    let was = run.rate_limit.as_ref().is_some_and(|x| x.limited);
+    if l.limited && !was {
+        let msg = format!(
+            "{} rate-limit window at {:.0}%",
+            l.scope.as_deref().unwrap_or("usage"),
+            l.used_percent.unwrap_or(100.0)
+        );
+        rate_limited(server, run, l.resets_at_ms, Some(&msg));
+    }
+    store(server, &run.id, None, Some(l));
+}
+
+/// Codex app-server rate limits (`{rateLimits: {primary, secondary}}`, each `{usedPercent,
+/// windowDurationMins, resetsAt}` with `resetsAt` in epoch seconds; snake_case accepted): the
+/// most constrained window.
+pub fn app_server_rate_limit(p: &Value, now: i64) -> Option<RateLimitInfo> {
+    let rl = p
+        .get("rateLimits")
+        .or_else(|| p.get("rate_limits"))
+        .unwrap_or(p);
+    let mut best: Option<RateLimitInfo> = None;
+    for scope in ["primary", "secondary"] {
+        let Some(w) = rl.get(scope).filter(|w| w.is_object()) else {
+            continue;
+        };
+        let used = w
+            .get("usedPercent")
+            .or_else(|| w.get("used_percent"))
+            .and_then(Value::as_f64)
+            .map(|f| f as f32);
+        let resets = w
+            .get("resetsAt")
+            .or_else(|| w.get("resets_at"))
+            .and_then(Value::as_i64)
+            .map(|s| s * 1000)
+            .or_else(|| {
+                w.get("resetsInSeconds")
+                    .or_else(|| w.get("resets_in_seconds"))
+                    .and_then(Value::as_i64)
+                    .map(|s| now + s * 1000)
+            });
+        let info = RateLimitInfo {
+            limited: used.is_some_and(|u| u >= 100.0),
+            resets_at_ms: resets,
+            scope: Some(scope.to_string()),
+            used_percent: used,
+            message: None,
+            observed_at_ms: now,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|b| b.used_percent.unwrap_or(0.0) < info.used_percent.unwrap_or(0.0))
+        {
+            best = Some(info);
+        }
+    }
+    best
+}
+
 /// ACP `usage` on a prompt result (camelCase or snake_case token fields).
 pub(super) fn from_acp(server: &Server, run: &AgentRun, u: &Value) {
     let d = RunUsage {

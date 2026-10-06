@@ -591,6 +591,9 @@ pub struct Harness {
     pub extra_args: Vec<String>,
     pub shim: Option<bool>,
     pub headless_shared: Option<bool>,
+    /// Arguments added after the binary of a headless run that Vibeke isolates (13 §3): Codex's
+    /// own sandbox cannot nest inside Vibeke's, so it is switched off there (04 §6.2).
+    pub isolated_args: Option<Vec<String>>,
 }
 impl Default for Harness {
     fn default() -> Self {
@@ -600,6 +603,7 @@ impl Default for Harness {
             extra_args: Vec::new(),
             shim: None,
             headless_shared: None,
+            isolated_args: None,
         }
     }
 }
@@ -625,6 +629,7 @@ pub(crate) fn default_harnesses() -> BTreeMap<String, Harness> {
         Harness {
             shim: Some(true),
             headless_shared: Some(false),
+            isolated_args: Some(vec![s("-c"), s("sandbox_mode=\"danger-full-access\"")]),
             ..Harness::default()
         },
     );

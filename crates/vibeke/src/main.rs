@@ -180,6 +180,10 @@ fn main() {
         // Runs in the pane: drives an ACP agent over stdio (04 §6.6). Sync, no runtime.
         std::process::exit(vk_server::agents::acp::host_main(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("codex-mux") {
+        // A shared headless Codex app-server's relay or mux (04 §6.2). Sync, no runtime.
+        std::process::exit(vk_server::agents::headless::codex_mux::main(&args[1..]));
+    }
     // Invoked as `herdr` (the private plugin launcher or `vibeke compat install-shim`): the
     // Herdr-compatible CLI shim, never a real Herdr (07 §8.2).
     if std::env::args().next().is_some_and(|a| {

@@ -525,6 +525,7 @@ integration = "extension"             # extension | rpc | screen
 [agents.harness.codex]
 shim = true                           # adds --disable daemon_auto_start; user args untouched
 headless_shared = false               # one app-server per Vibeke session multiplexing threads (04 §6.2)
+isolated_args = ["-c", 'sandbox_mode="danger-full-access"']  # after `codex` when Vibeke isolates a headless run (04 §6.2)
 
 [policy]                              # rules: 02 §4
 [[policy.rule]]

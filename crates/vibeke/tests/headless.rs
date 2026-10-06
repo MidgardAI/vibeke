@@ -233,7 +233,7 @@ def L(s): log.write(s + "\n"); log.flush()
 def out(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 L("start:codex:%d:%s" % (os.getpid(), " ".join(sys.argv[1:])))
 L("env:CODEX_HOME=" + os.environ.get("CODEX_HOME", ""))
-thread = "th-fake-1"; busy = False; turn = None
+threads = 0; thread = None; busy = False; turn = None
 for line in sys.stdin:
     m = json.loads(line)
     meth, mid = m.get("method"), m.get("id")
@@ -242,12 +242,14 @@ for line in sys.stdin:
     elif meth == "initialized":
         L("initialized")
     elif meth == "thread/start":
+        threads += 1; thread = "th-fake-%d" % threads
         out({"id": mid, "result": {"thread": {"id": thread}}})
         out({"method": "thread/started", "params": {"thread": {"id": thread}}})
     elif meth == "thread/read":
         L("thread/read")
-        out({"id": mid, "result": {"thread": {"id": thread, "status": {"type": "active" if busy else "idle"}}}})
+        out({"id": mid, "result": {"thread": {"id": m["params"]["threadId"], "status": {"type": "active" if busy else "idle"}}}})
     elif meth == "turn/start":
+        thread = m["params"]["threadId"]
         busy = True; turn = "turn-%s" % mid
         L("prompt:" + m["params"]["input"][0]["text"])
         out({"id": mid, "result": {"turn": {"id": turn, "status": "inProgress"}}})
@@ -257,8 +259,8 @@ for line in sys.stdin:
     elif meth is None and mid is not None:
         L("decision:%s:%s" % (mid, m.get("result", {}).get("decision")))
         time.sleep(float(os.environ.get("VKFAKE_TURN_SECS", "0")))
-        out({"method": "item/completed", "params": {"item": {"type": "commandExecution", "id": "item-1", "status": "completed", "exitCode": 0}}})
-        out({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": "item-2", "text": "All green."}}})
+        out({"method": "item/completed", "params": {"threadId": thread, "item": {"type": "commandExecution", "id": "item-1", "status": "completed", "exitCode": 0}}})
+        out({"method": "item/completed", "params": {"threadId": thread, "item": {"type": "agentMessage", "id": "item-2", "text": "All green."}}})
         out({"method": "thread/tokenUsage/updated", "params": {"threadId": thread, "tokenUsage": {"total": {"inputTokens": 100, "cachedInputTokens": 10, "outputTokens": 20, "reasoningOutputTokens": 0}}}})
         out({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}})
         busy = False
@@ -666,6 +668,145 @@ fn acp_headless_run_resumes_with_session_load() {
     assert_eq!(s.log_count("start:acp"), 2);
     let screen = s.json(&["pane", "read", resumed["pane"].as_str().unwrap()]);
     assert!(screen.to_string().contains("earlier answer"), "{screen}");
+}
+
+/// An ACP agent that uses `terminal/*` on its first prompt (04 §6.6): a command in a cwd outside
+/// the session cwd (refused), then `echo term-ok; exit 3` in the session cwd: wait for exit,
+/// read the output, release. Its answer reports what it saw.
+const FAKE_ACP_TERM: &str = r#"
+import json, os, sys
+log = open(os.environ["VKFAKE_LOG"], "a")
+def L(s): log.write(s + "\n"); log.flush()
+def out(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+L("start:acpterm:%d" % os.getpid())
+nid = [100]
+def call(method, params):
+    nid[0] += 1; i = nid[0]
+    out({"jsonrpc": "2.0", "id": i, "method": method, "params": params})
+    for line in sys.stdin:
+        m = json.loads(line)
+        if m.get("id") == i and "method" not in m:
+            return m
+caps = None
+for line in sys.stdin:
+    m = json.loads(line)
+    meth, mid = m.get("method"), m.get("id")
+    if meth == "initialize":
+        caps = m["params"]["clientCapabilities"]; L("caps:terminal=%s" % caps.get("terminal"))
+        out({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    elif meth == "session/new":
+        cwd = m["params"]["cwd"]
+        out({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "term-1"}})
+    elif meth == "session/prompt":
+        sid = m["params"]["sessionId"]
+        bad = call("terminal/create", {"sessionId": sid, "command": "ls", "cwd": "/"})
+        L("outside:%s" % bad.get("error", {}).get("code"))
+        r = call("terminal/create", {"sessionId": sid, "command": "echo term-ok; exit 3", "cwd": cwd, "outputByteLimit": 4096})
+        tid = r["result"]["terminalId"]
+        ex = call("terminal/wait_for_exit", {"sessionId": sid, "terminalId": tid})["result"]
+        o = call("terminal/output", {"sessionId": sid, "terminalId": tid})["result"]
+        call("terminal/release", {"sessionId": sid, "terminalId": tid})
+        msg = "exit=%s out=%s" % (ex.get("exitCode"), "term-ok" in o.get("output", ""))
+        L(msg)
+        out({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": msg}}}})
+        out({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+"#;
+
+/// ACP `terminal/*` end to end: the terminal is a real pane, confined to the session cwd; its
+/// exit status and output reach the agent.
+#[test]
+fn acp_headless_terminals_run_as_panes() {
+    let Some(py) = python3() else {
+        eprintln!("skipping: no python3 for the fake harnesses");
+        return;
+    };
+    let s = Session::new(&py, "0");
+    let agent = s.fakebin.join("fake-acp-term");
+    std::fs::write(&agent, format!("#!{py}\n{FAKE_ACP_TERM}")).unwrap();
+    std::fs::set_permissions(&agent, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let pane = s.workspace_pane();
+    let started = s
+        .api(
+            "agent.start",
+            json!({"pane": pane, "acp": agent.to_string_lossy(), "mode": "headless"}),
+        )
+        .unwrap();
+    let run_id = started["run"]["id"].as_str().unwrap().to_string();
+    s.until("ACP session", 20, || {
+        let r = s.run(&run_id);
+        (r["harness_session_id"] == "term-1" && r["execution"]["value"] == "Idle").then_some(())
+    });
+    assert_eq!(s.log_count("caps:terminal=True"), 1, "{}", s.log_text());
+    s.api(
+        "agent.prompt",
+        json!({"target": run_id, "text": "use a terminal", "wait": true, "timeout_ms": 30000}),
+    )
+    .unwrap();
+    assert_eq!(s.log_count("outside:-32002"), 1, "{}", s.log_text());
+    let r = s.run(&run_id);
+    assert_eq!(
+        r["last_message"],
+        "exit=3 out=True",
+        "{r}\n{}",
+        s.log_text()
+    );
+}
+
+/// `agents.harness.codex.headless_shared = true` (04 §6.2): two headless Codex runs share one
+/// app-server (one process, one `initialized`), each with its own thread; an approval reaches
+/// only the run whose thread asked.
+#[test]
+fn codex_headless_shared_app_server_multiplexes_runs() {
+    let Some(py) = python3() else {
+        eprintln!("skipping: no python3 for the fake harnesses");
+        return;
+    };
+    let s = Session::new(&py, "0");
+    std::fs::write(
+        s.dir.path().join("config.toml"),
+        "[agents.harness.codex]\nheadless_shared = true\n",
+    )
+    .unwrap();
+    let pane = s.workspace_pane();
+    let start = |name: &str, thread: &str| -> String {
+        let started = s
+            .api(
+                "agent.start",
+                json!({"pane": pane, "harness": "codex", "mode": "headless", "name": name}),
+            )
+            .unwrap();
+        let id = started["run"]["id"].as_str().unwrap().to_string();
+        s.until("codex thread open", 20, || {
+            let r = s.run(&id);
+            (r["harness_session_id"] == thread && r["execution"]["value"] == "Idle").then_some(())
+        });
+        id
+    };
+    let a = start("cxa", "th-fake-1");
+    let b = start("cxb", "th-fake-2");
+    assert_eq!(
+        s.log_count("start:codex"),
+        1,
+        "one app-server: {}",
+        s.log_text()
+    );
+    assert_eq!(s.log_count("initialized"), 1);
+
+    s.api("agent.prompt", json!({"target": b, "text": "on b"}))
+        .unwrap();
+    let it = s.until("approval on b", 20, || {
+        s.open_interactions(&b).into_iter().next()
+    });
+    assert!(s.open_interactions(&a).is_empty());
+    s.api(
+        "interaction.answer",
+        json!({"interaction": it["id"], "decision": "allow"}),
+    )
+    .unwrap();
+    s.until("turn done on b", 20, || {
+        (s.run(&b)["last_message"] == "All green.").then_some(())
+    });
+    assert!(s.run(&a)["last_message"].is_null(), "{}", s.run(&a));
 }
 
 /// An ACP agent that probes its confinement on each prompt: reads `$PROBE_SECRET` and connects

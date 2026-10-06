@@ -32,9 +32,14 @@
 //! and absent from the journal is reported as `input_unconfirmed` (01 §1.2), never resent.
 
 pub mod acp;
+pub mod acp_term;
 pub mod claude;
 pub mod codex;
+pub mod codex_mux;
 pub mod pi;
+pub mod transcript;
+
+pub use transcript::{ToolStatus, View};
 
 use super::*;
 use crate::pane::PIPE_ARGV0;
@@ -76,7 +81,7 @@ impl Kind {
         }
     }
 
-    fn capabilities(&self) -> Vec<String> {
+    fn capabilities(&self, h: Harness) -> Vec<String> {
         let mut v = vec![
             "observe",
             "gate",
@@ -89,6 +94,10 @@ impl Kind {
         ];
         if *self == Kind::Rpc {
             v[2] = "answer_native:extension_dialog";
+            // omp's rpc-ui mode carries its tool approvals as dialogs (04 §6.3).
+            if h.base() == Harness::Omp {
+                v.push("answer_native:approval");
+            }
         }
         v.into_iter().map(str::to_string).collect()
     }
@@ -137,6 +146,14 @@ pub struct Record {
     /// replayed or reconciled request answers without repeating it.
     #[serde(default)]
     pub auto_done: Vec<String>,
+    /// Vibeke isolates the run (13 §3): host-side services for the agent (ACP `fs/*` and
+    /// `terminal/*`, which the server would carry out on the host) are refused.
+    #[serde(default)]
+    pub isolated: bool,
+    /// ACP terminals created for the agent (`terminal/create`), so a restarted server finds
+    /// their panes again.
+    #[serde(default)]
+    pub terminals: Vec<acp_term::Saved>,
 }
 
 /// A prompt waiting in [`Record::queued`].
@@ -207,6 +224,8 @@ pub enum Cmd {
         native_ref: String,
         key: String,
     },
+    /// An ACP terminal's process exited (its watcher task).
+    TerminalExited(String),
 }
 
 /// What the pane loop must do for the session: write protocol bytes as an acked holder input,
@@ -228,11 +247,15 @@ pub struct Pending {
 #[derive(Default)]
 pub struct Cx {
     writes: Vec<(Value, Option<String>)>,
-    render: Vec<String>,
+    /// Transcript output, in order (text and tool calls).
+    view: Vec<View>,
     signals: Vec<(String, Value)>,
     opens: Vec<Interaction>,
     resolved: Vec<String>,
     usage: Vec<(RunUsage, bool)>,
+    rate_limits: Vec<RateLimitInfo>,
+    /// ACP `terminal/*` requests for the session to carry out: (native ref, request).
+    terminal: Vec<(String, acp_term::Req)>,
     session: Option<String>,
     /// Set by the session for live steps (never during a journal replay): adapters carry out
     /// side effects of automatic requests only then.
@@ -252,7 +275,31 @@ impl Cx {
             .push((v, Some(preview.chars().take(60).collect())));
     }
     pub fn render(&mut self, s: impl Into<String>) {
-        self.render.push(s.into());
+        self.view.push(View::Text(s.into()));
+    }
+    /// A tool call started (`label`: its one-line summary).
+    pub fn tool_start(&mut self, id: &str, label: impl Into<String>) {
+        self.view.push(View::ToolStart {
+            id: id.to_string(),
+            label: label.into(),
+        });
+    }
+    /// A tool call ended, with what it changed (`diff`) and printed (`output`).
+    pub fn tool_end(
+        &mut self,
+        id: &str,
+        status: ToolStatus,
+        output: Option<String>,
+        diff: Option<String>,
+        exit_code: Option<i64>,
+    ) {
+        self.view.push(View::ToolEnd {
+            id: id.to_string(),
+            status,
+            output,
+            diff,
+            exit_code,
+        });
     }
     /// A hook-vocabulary signal (04 §3.3) for the run.
     pub fn signal(&mut self, event: &str, payload: Value) {
@@ -269,6 +316,14 @@ impl Cx {
     /// Token usage: a delta (`false`) or the session total (`true`).
     pub fn usage(&mut self, u: RunUsage, total: bool) {
         self.usage.push((u, total));
+    }
+    /// An ACP `terminal/*` request (live only; the session answers it, maybe later).
+    pub fn terminal(&mut self, native_ref: String, r: acp_term::Req) {
+        self.terminal.push((native_ref, r));
+    }
+    /// A rate-limit snapshot (Codex `account/rateLimits/updated`).
+    pub fn rate_limit(&mut self, l: RateLimitInfo) {
+        self.rate_limits.push(l);
     }
     /// The harness reported (or confirmed) its session id.
     pub fn session(&mut self, id: &str) {
@@ -357,6 +412,12 @@ pub struct Session {
     dispatching: bool,
     /// Signals emitted since the last persist of `processed`.
     dirty: bool,
+    /// What the pane shows, kept for redraws (`ctrl+o`).
+    transcript: transcript::Transcript,
+    /// ACP terminals of this run (shared with their watcher tasks).
+    terms: acp_term::Terms,
+    /// `terminal/wait_for_exit` requests waiting: (terminal id, request id).
+    term_waits: Vec<(String, Value)>,
 }
 
 fn stream_ix(s: Stream) -> usize {
@@ -389,6 +450,9 @@ impl Session {
             seen_requests: HashSet::new(),
             dispatching: false,
             dirty: false,
+            transcript: transcript::Transcript::default(),
+            terms: Default::default(),
+            term_waits: vec![],
         }
     }
 
@@ -413,6 +477,7 @@ impl Session {
         self.gap = false;
         self.written.clear();
         self.prompt_ref = None;
+        self.transcript = transcript::Transcript::default();
     }
 
     /// Reconnect to the same holder (no restart): continue from [`Self::seen`].
@@ -429,6 +494,43 @@ impl Session {
             l.buf.clear();
             l.skip_partial = true;
         }
+    }
+
+    /// Carry out an ACP `terminal/*` request; its response is written now or when the
+    /// terminal exits (`wait_for_exit`).
+    fn on_terminal(
+        &mut self,
+        server: &Arc<Server>,
+        native_ref: &str,
+        r: &acp_term::Req,
+    ) -> Vec<Act> {
+        let before = self.rec.terminals.clone();
+        let resp = {
+            let mut cx = acp_term::Ctx {
+                server,
+                owner: &self.pane,
+                cwd: &self.rec.cwd,
+                isolated: self.rec.isolated,
+                saved: &mut self.rec.terminals,
+                terms: &self.terms,
+                waits: &mut self.term_waits,
+            };
+            acp_term::handle(&mut cx, native_ref, r)
+        };
+        if self.rec.terminals != before {
+            // Persisted before the response is written (a restart must find the pane).
+            self.dirty = true;
+            self.flush(server);
+        }
+        match resp {
+            Some(v) => vec![self.write(server, &v, None)],
+            None => vec![],
+        }
+    }
+
+    /// Transcript text from the session itself (prompts, warnings).
+    fn say(&mut self, s: impl Into<String>) -> Act {
+        Act::Render(self.transcript.push(View::Text(s.into())))
     }
 
     pub fn on_input_written(&mut self, id: u64) {
@@ -530,7 +632,11 @@ impl Session {
 
     /// Execute one adapter step. `live`: emit events (otherwise state and transcript only).
     fn apply(&mut self, server: &Arc<Server>, cx: Cx, live: bool) -> Vec<Act> {
-        let mut acts: Vec<Act> = cx.render.into_iter().map(Act::Render).collect();
+        let mut acts: Vec<Act> = cx
+            .view
+            .into_iter()
+            .map(|v| Act::Render(self.transcript.push(v)))
+            .collect();
         for r in cx.auto_done {
             if !self.rec.auto_done.contains(&r) {
                 self.rec.auto_done.push(r);
@@ -565,6 +671,11 @@ impl Session {
                     usage::from_headless(server, &run, u, total);
                 }
             }
+            for l in cx.rate_limits {
+                if let Some(run) = server.with_core(|c| c.run(&self.rec.run).cloned()) {
+                    usage::from_headless_limit(server, &run, l);
+                }
+            }
             for r in cx.resolved {
                 self.dirty = true;
                 if self.prompt_ref.as_deref() == Some(r.as_str()) {
@@ -584,6 +695,9 @@ impl Session {
         if !self.replaying {
             for (v, preview) in cx.writes {
                 acts.push(self.write(server, &v, preview));
+            }
+            for (native_ref, r) in cx.terminal {
+                acts.extend(self.on_terminal(server, &native_ref, &r));
             }
         }
         if !self.replaying {
@@ -645,7 +759,7 @@ impl Session {
             Opened::Deliver(id, key) => self.deliver(server, &id, &native_ref, &key),
             Opened::Open(it) => {
                 self.prompt_ref = Some(native_ref);
-                vec![Act::Render(numbered_prompt(&it))]
+                vec![self.say(numbered_prompt(&it))]
             }
             Opened::Done => vec![],
         }
@@ -687,7 +801,11 @@ impl Session {
             "✓ {} (answered from Vibeke)\n",
             answer_label(&it, &answer)
         ));
-        let mut acts: Vec<Act> = cx.render.drain(..).map(Act::Render).collect();
+        let mut acts: Vec<Act> = cx
+            .view
+            .drain(..)
+            .map(|v| Act::Render(self.transcript.push(v)))
+            .collect();
         let mut first = true;
         for (v, preview) in std::mem::take(&mut cx.writes) {
             if first {
@@ -729,11 +847,14 @@ impl Session {
                 &preview,
                 "server_restarted",
             );
-            acts.push(Act::Render(format!(
+            acts.push(self.say(format!(
                 "⚠ not confirmed: \"{preview}\" may not have reached {} (input_unconfirmed); send it again if needed\n",
                 self.rec.harness
             )));
         }
+        // ACP terminals created before the restart: watch their panes again first, so the
+        // requests reconciled below find them.
+        acp_term::rewatch(server, &self.pane, &self.rec.terminals, &self.terms);
         let mut cx = Cx::live();
         self.adapter.reconcile(&mut cx, self.gap);
         acts.extend(self.apply(server, cx, true));
@@ -797,7 +918,7 @@ impl Session {
                                 .into(),
                         ),
                     );
-                    acts.push(Act::Render(format!(
+                    acts.push(self.say(format!(
                         "⚠ could not confirm that the answer to \"{}\" reached {} (delivery_unknown); check the harness and answer again if it is still waiting\n",
                         it.title, self.rec.harness
                     )));
@@ -832,7 +953,7 @@ impl Session {
                 let acts = if queue {
                     let mut acts = Vec::new();
                     if self.adapter.ready() {
-                        acts.push(Act::Render(format!("› (queued) {text}\n")));
+                        acts.push(self.say(format!("› (queued) {text}\n")));
                     }
                     self.rec.queued.push(Queued { text, mode });
                     self.dirty = true;
@@ -857,6 +978,10 @@ impl Session {
                 native_ref,
                 key,
             } => self.deliver(server, &interaction, &native_ref, &key),
+            Cmd::TerminalExited(tid) => acp_term::exited(&self.terms, &mut self.term_waits, &tid)
+                .into_iter()
+                .map(|v| self.write(server, &v, None))
+                .collect(),
         };
         self.flush(server);
         acts
@@ -883,6 +1008,8 @@ impl Session {
             match b[i] {
                 b'\r' | b'\n' => {
                     let line = std::mem::take(&mut self.editor);
+                    // The typed characters were echoed as they came; keep the line for redraws.
+                    self.transcript.push(View::Text(format!("{line}\n")));
                     acts.push(Act::Render("\n".into()));
                     acts.extend(self.submit_line(server, line.trim()));
                     if b[i] == b'\r' && b.get(i + 1) == Some(&b'\n') {
@@ -892,7 +1019,7 @@ impl Session {
                 0x1b if !matches!(b.get(i + 1), Some(b'[' | b'O')) => {
                     if self.adapter.busy() {
                         acts.extend(self.on_cmd(server, Cmd::Interrupt));
-                        acts.push(Act::Render("\n(interrupt requested)\n".into()));
+                        acts.push(self.say("\n(interrupt requested)\n"));
                     }
                 }
                 0x1b => {
@@ -906,8 +1033,10 @@ impl Session {
                         acts.extend(self.on_cmd(server, Cmd::Interrupt));
                     }
                     self.editor.clear();
-                    acts.push(Act::Render("^C\n› ".into()));
+                    acts.push(self.say("^C\n› "));
                 }
+                // ctrl+o: tool calls collapsed ⇄ expanded (the transcript is redrawn).
+                0x0f => acts.push(Act::Render(self.transcript.toggle(&self.editor))),
                 0x7f | 0x08 => {
                     if self.editor.pop().is_some() {
                         acts.push(Act::Render("\x08 \x08".into()));
@@ -943,7 +1072,7 @@ impl Session {
             && it.status == InteractionStatus::Open
         {
             let Some(answer) = answer_from_line(&it, line) else {
-                return vec![Act::Render(numbered_prompt(&it))];
+                return vec![self.say(numbered_prompt(&it))];
             };
             return match record_decision(server, &id, answer, "pane", None, None, None) {
                 Ok(Some((_, key))) => self.deliver(server, &id, &r, &key),
@@ -978,9 +1107,7 @@ impl Session {
                     &preview,
                     "not_written",
                 );
-                acts.push(Act::Render(format!(
-                    "⚠ not confirmed: \"{preview}\" ({status:?})\n"
-                )));
+                acts.push(self.say(format!("⚠ not confirmed: \"{preview}\" ({status:?})\n")));
             }
             self.dirty = true;
         }
@@ -1404,7 +1531,13 @@ fn launch_argv(
         }
         Kind::AppServer => vec![bin, "app-server".into()],
         Kind::Rpc => {
-            let mut v = vec![bin.clone(), "--mode".into(), "rpc".into()];
+            // omp's rpc-ui mode is RPC plus its own approval dialogs (04 §6.3).
+            let mode = if h.base() == Harness::Omp {
+                "rpc-ui"
+            } else {
+                "rpc"
+            };
+            let mut v = vec![bin.clone(), "--mode".into(), mode.into()];
             if let Some(s) = session {
                 match (h.base(), resume) {
                     (Harness::Omp, true) => v.extend(["--resume".into(), s.into()]),
@@ -1419,6 +1552,50 @@ fn launch_argv(
     };
     v.extend(args.iter().cloned());
     v
+}
+
+/// The launch argv of a run Vibeke isolates: Codex's own Seatbelt sandbox cannot nest inside
+/// Vibeke's, so (as on the PTY path, 13 §3) it is switched off at the sandbox level with the
+/// configured `agents.harness.codex.isolated_args`, inserted right after the binary. Approvals
+/// stay as they are: the app-server still asks Vibeke.
+fn isolated_argv(
+    h: Harness,
+    iso: Option<IsolationLevel>,
+    mut argv: Vec<String>,
+    cfg: &vk_config::Config,
+) -> Vec<String> {
+    if iso != Some(IsolationLevel::Sandbox) || h.base() != Harness::Codex {
+        return argv;
+    }
+    let extra = cfg
+        .agents
+        .harness
+        .get("codex")
+        .and_then(|c| c.isolated_args.clone())
+        .unwrap_or_default();
+    if !argv.is_empty() {
+        argv.splice(1..1, extra);
+    }
+    argv
+}
+
+/// The session's shared app-server socket when `agents.harness.codex.headless_shared` is on
+/// (04 §6.2). Isolated runs never share: their app-server must run inside their box.
+fn shared_codex_socket(
+    server: &Server,
+    h: Harness,
+    kind: Kind,
+    iso: Option<IsolationLevel>,
+    cfg: &vk_config::Config,
+) -> Option<std::path::PathBuf> {
+    let shared = cfg
+        .agents
+        .harness
+        .get("codex")
+        .and_then(|c| c.headless_shared)
+        .unwrap_or(false);
+    (shared && kind == Kind::AppServer && h.base() == Harness::Codex && iso.is_none())
+        .then(|| server.paths.runtime.join("codex-mux.sock"))
 }
 
 /// `agent.start {mode: "headless"}` (and `agent.resume` of a headless run): a new tab whose pane
@@ -1471,6 +1648,13 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
         }
     };
     let cwd = cwd.unwrap_or_else(|| crate::paths::home().to_string_lossy().into_owned());
+    // `isolate` / `network` go through the same isolation path as PTY agents (13 §3): the
+    // run-scoped box exists before the pane spawns, so the harness never starts on the host.
+    let pane_id = crate::core::ulid();
+    let ws_task = server.with_core(|c| c.ws(&ws).and_then(|w| w.task.clone()));
+    let iso =
+        crate::sandbox::prepare_headless(server, &pane_id, ws_task.as_deref(), &cwd, h.id(), &opts)
+            .await?;
     let mut cmd = vec![
         PIPE_ARGV0.to_string(),
         "/usr/bin/env".into(),
@@ -1487,6 +1671,9 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
             }
         }
     }
+    let cfg = vk_config::Config::load(vk_config::config_path())
+        .map(|(c, _)| c)
+        .unwrap_or_default();
     let argv = launch_argv(
         h,
         kind,
@@ -1495,17 +1682,16 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
         &args,
         &acp_argv,
     );
+    let argv = isolated_argv(h, iso, argv, &cfg);
+    let argv = match shared_codex_socket(server, h, kind, iso, &cfg) {
+        Some(sock) => codex_mux::relay_argv(&server.opts.bin, &sock, argv),
+        None => argv,
+    };
     cmd.extend(argv.iter().cloned());
     let title = format!(
         "{} (headless)",
         s(p, "name").unwrap_or_else(|| h.id().trim_start_matches("acp:"))
     );
-    // `isolate` / `network` go through the same isolation path as PTY agents (13 §3): the
-    // run-scoped box exists before the pane spawns, so the harness never starts on the host.
-    let pane_id = crate::core::ulid();
-    let ws_task = server.with_core(|c| c.ws(&ws).and_then(|w| w.task.clone()));
-    crate::sandbox::prepare_headless(server, &pane_id, ws_task.as_deref(), &cwd, h.id(), &opts)
-        .await?;
     let (_, pane) = match server.create_tab_as(
         &ws,
         Some(&cwd),
@@ -1532,7 +1718,7 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
         );
         run.name = s(p, "name").map(str::to_string);
         run.cwd = Some(cwd.clone());
-        run.capabilities = kind.capabilities();
+        run.capabilities = kind.capabilities(h);
         if let Some(sid) = &session {
             run.harness_session_id = Some(sid.clone());
             run.resume_argv = h.resume_argv(sid);
@@ -1552,6 +1738,8 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
             acp_argv: acp_argv.clone(),
             queued: vec![],
             auto_done: vec![],
+            isolated: iso.is_some(),
+            terminals: vec![],
         };
         let mut tx = Tx::new();
         tx.counters = true;
