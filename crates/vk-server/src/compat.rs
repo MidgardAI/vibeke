@@ -35,6 +35,7 @@
 mod brokers;
 pub mod capture;
 mod ext;
+mod gap;
 mod limits;
 mod views;
 
@@ -145,8 +146,14 @@ pub fn herdr_root(server: &Server) -> PathBuf {
 /// The public listener of this session: `<root>/herdr.sock` for `default`, else
 /// `<root>/sessions/<name>/herdr.sock`.
 pub fn listener_path(server: &Server) -> PathBuf {
-    herdr::session_socket(&herdr_root(server), &server.opts.session)
+    gap::session_listener(
+        gap::configured_socket().as_deref(),
+        &herdr_root(server),
+        &server.opts.session,
+    )
 }
+
+pub use gap::{extend_pane_env, listener_for};
 
 fn private_dir(p: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -300,18 +307,27 @@ pub fn start(server: &Arc<Server>) {
 
 fn bind_listener(server: &Arc<Server>) -> std::io::Result<UnixListener> {
     let path = listener_path(server);
-    if is_herdr_owned(&path) {
+    // Binding in Herdr's own directory needs the explicit `compat.herdr_socket_path`; a live
+    // socket there is still never replaced (`bind_socket`).
+    let custom = gap::configured_socket().is_some();
+    if is_herdr_owned(&path) && !custom {
         return Err(std::io::Error::other(
             "refusing to bind inside Herdr's config directory",
         ));
     }
-    let root = herdr_root(server);
-    private_dir(&root)?;
-    if let Some(dir) = path.parent()
-        && dir != root
-    {
-        private_dir(&root.join("sessions"))?;
-        private_dir(dir)?;
+    if custom {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+    } else {
+        let root = herdr_root(server);
+        private_dir(&root)?;
+        if let Some(dir) = path.parent()
+            && dir != root
+        {
+            private_dir(&root.join("sessions"))?;
+            private_dir(dir)?;
+        }
     }
     let l = bind_socket(&path)?;
     // Remove the socket on a clean stop (clients treat presence as liveness): on SIGTERM/SIGINT
@@ -334,6 +350,7 @@ fn bind_listener(server: &Arc<Server>) -> std::io::Result<UnixListener> {
         let _ = std::fs::remove_file(&p);
         if let Some(dir) = p.parent()
             && dir != herdr_root(&srv)
+            && !custom
         {
             let _ = std::fs::remove_dir(dir);
         }
@@ -977,6 +994,7 @@ fn project_event(
         tab: tab.as_deref(),
         pane: pane.as_deref(),
         status_after,
+        at_ms: ev.ts.max(0) as u64,
     };
     let names = proj.project(&input);
     names
@@ -1751,10 +1769,7 @@ pub async fn call(
                 json!({"logs": logs(server, filter, p.get("limit").and_then(Value::as_u64))}),
             ))
         }
-        "server.stop" => Err(WireError::new(
-            "unsupported",
-            "server.stop is refused on the Herdr compatibility endpoint; use `vibeke server stop`",
-        )),
+        m if gap::METHODS.contains(&m) => gap::call(server, caller, &sn, m, p).await,
         m if ext::METHODS.contains(&m) => ext::call(server, caller, &sn, m, p).await,
         other => match inventory::method_status(other) {
             Some(_) => Err(WireError::new(
@@ -3237,6 +3252,36 @@ mod tests {
                 std::env::set_var("VIBEKE_CONFIG", base.join("config.toml"));
             }
         });
+    }
+
+    #[tokio::test]
+    async fn gap_methods_dispatch_and_stay_gated() {
+        let (srv, _d) = server();
+        // `agent.explain` is a known method that needs a real target.
+        let e = call(&srv, &user(), "agent.explain", &json!({"target": "w9:p9"}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "agent_not_found");
+        let e = call(&srv, &user(), "agent.explain", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "invalid_params");
+        let v = call(&srv, &user(), "api.schema", &json!({})).await.unwrap();
+        assert!(
+            v["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["name"] == "agent.explain")
+        );
+        // `server.stop` is off unless the config enables it; a plugin is refused regardless.
+        let e = call(&srv, &user(), "server.stop", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "unsupported");
+        // The pane environment carries no HERDR_* while the compat listener is off.
+        let env = srv.pane_env_for("p1", "w1:p1", "w1:t1", "w1", &[]);
+        assert!(env.iter().all(|(k, _)| !k.starts_with("HERDR_")), "{env:?}");
     }
 
     fn server() -> (Arc<Server>, tempfile::TempDir) {

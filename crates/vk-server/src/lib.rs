@@ -745,6 +745,8 @@ impl Server {
             set(&mut env, "VIBEKE_ENFORCE", "1".into());
         }
         theme::pane_env(self, &mut env);
+        // `HERDR_*` aliases when `compat.herdr_env` and the compat listener are on (07 §8.2).
+        compat::extend_pane_env(self, &mut env, handle, tab_handle, ws_handle);
         // Leased ports of an owned task workspace (`PORT`, `[ports] env` names).
         for (k, v) in task_env {
             set(&mut env, k, v.clone());

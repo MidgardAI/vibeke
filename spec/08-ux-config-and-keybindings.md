@@ -685,6 +685,11 @@ enabled = ["acme.example"]
 [compat]
 herdr_env    = true                   # export HERDR_* aliases in panes
 herdr_socket = false                  # expose the full public Herdr API for the tested baseline (M5)
+herdr_socket_path = ""                # "" = $RUNTIME/herdr-compat/herdr.sock; e.g. "~/.config/herdr/herdr.sock" once Herdr is gone
+
+[compat.herdr]
+enabled = false                       # the public Herdr-compatible listener
+allow_server_stop = false             # serve `server.stop` / `herdr server stop` (never from a plugin or pane)
 
 [update]
 channel        = "stable"             # stable | preview

@@ -321,9 +321,11 @@ max_total_per_pane = "256MiB"         # per pane screen; the oldest images are e
 [compat]
 herdr_env    = true
 herdr_socket = false
+herdr_socket_path = ""                # "" = $RUNTIME/herdr-compat/herdr.sock; e.g. "~/.config/herdr/herdr.sock" once Herdr is gone (a live socket is never replaced)
 
-[compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/<session>/herdr-compat/herdr.sock
+[compat.herdr]                        # Herdr-compatible socket (M5, partial): $RUNTIME/herdr-compat/herdr.sock
 enabled = false
+allow_server_stop = false             # serve `server.stop` / `herdr server stop` (never from a plugin or pane)
 
 # Event log retention (02 §2.3). Read by the running server; changes apply at the next hourly
 # sweep (or `vibeke api call storage.prune`). Durations are `7d`/`36h` or a bare number of days.

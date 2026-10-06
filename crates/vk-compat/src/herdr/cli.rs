@@ -21,6 +21,12 @@ pub enum Parsed {
     },
     /// Operate on the per-user plugin registry (works without a server).
     Local(Local),
+    /// One request to the *native* socket (a Vibeke method with no Herdr counterpart, e.g.
+    /// `config check` → `config.validate`).
+    Native {
+        method: String,
+        params: Value,
+    },
     Version,
     Help(String),
     /// Bad arguments (exit 2).
@@ -58,6 +64,11 @@ pub enum Local {
     PluginList,
     PluginConfigDir {
         id: String,
+    },
+    /// `plugin update <id>`: re-fetch the recorded repository and ref.
+    PluginUpdate {
+        id: String,
+        yes: bool,
     },
 }
 
@@ -140,6 +151,7 @@ const VERBS: &[(&str, &str, &str, &[&str])] = &[
     ("agent", "view-set", "agent.view.set", &["target"]),
     ("agent", "view-clear", "agent.view.clear", &[]),
     ("agent", "send", "agent.send", &["target", "text"]),
+    ("agent", "explain", "agent.explain", &["target"]),
     ("worktree", "list", "worktree.list", &[]),
     ("worktree", "create", "worktree.create", &["branch"]),
     ("worktree", "open", "worktree.open", &["path"]),
@@ -351,9 +363,12 @@ fn plugin(args: &[String]) -> Parsed {
                 _ => Parsed::Usage("herdr plugin pane open|focus|close <plugin> <pane>".into()),
             }
         }
-        "update" | "upgrade" => Parsed::Refused {
-            command: format!("plugin {verb}"),
-            reason: "managed updates need a git source; reinstall from the updated path".into(),
+        "update" | "upgrade" => match split_flags(rest) {
+            Ok((pos, f)) if pos.len() == 1 => Parsed::Local(Local::PluginUpdate {
+                id: pos[0].clone(),
+                yes: f.get("yes").and_then(Value::as_bool).unwrap_or(false),
+            }),
+            _ => Parsed::Usage("herdr plugin update <id> [--yes]".into()),
         },
         _ => Parsed::Usage(HELP.into()),
     }
@@ -432,16 +447,44 @@ pub fn parse(args: &[String]) -> Parsed {
             };
         }
         "plugin" | "plugins" => return plugin(&args[1..]),
+        // `status`/`list`/`doctor` and confirmed (`--yes`/`--dry-run`) installs are served by
+        // the vibeke binary on Vibeke's own harness integrations before the shim sees them
+        // (`vibeke::commands::herdr_integration`); anything else lands here and is refused: the
+        // shim never installs into Herdr or into harness configs on its own.
         "integration" | "integrations" => {
             return Parsed::Refused {
                 command: format!("integration {}", args.get(1).map(String::as_str).unwrap_or("")),
-                reason: "the shim never installs into Herdr or harness configs; use `vibeke integration install <harness>`".into(),
+                reason: "installs need `--yes` (or `--dry-run`) and write Vibeke's own hooks, never Herdr's; or use `vibeke integration install <harness>`".into(),
             };
         }
-        "update" | "upgrade" | "web" | "completion" | "config" => {
+        "config" => {
+            return match args.get(1).map(String::as_str) {
+                Some("check") => match split_flags(&args[2..]) {
+                    Ok((pos, mut f)) => {
+                        f.remove("json");
+                        if let Some(p) = pos.first() {
+                            f.insert("path".into(), Value::String(p.clone()));
+                        }
+                        Parsed::Native {
+                            method: "config.validate".into(),
+                            params: Value::Object(f),
+                        }
+                    }
+                    Err(e) => Parsed::Usage(e),
+                },
+                _ => Parsed::Usage("herdr config check [path]".into()),
+            };
+        }
+        "completion" => {
+            return match args.get(1).map(String::as_str) {
+                Some(sh @ ("bash" | "zsh" | "fish")) => Parsed::Help(completion(sh)),
+                _ => Parsed::Usage("herdr completion bash|zsh|fish".into()),
+            };
+        }
+        "update" | "upgrade" | "web" => {
             return Parsed::Refused {
                 command: noun.to_string(),
-                reason: "not part of Vibeke's Herdr emulation; use the vibeke command".into(),
+                reason: "Vibeke updates itself with `vibeke update` and serves its web UI through the gateway; the shim never upgrades or serves anything on Herdr's behalf".into(),
             };
         }
         _ => {}
@@ -459,6 +502,89 @@ pub fn parse(args: &[String]) -> Parsed {
                 .join(", ")
         )),
         None => Parsed::Usage(format!("herdr: unknown command `{noun}`\n\n{HELP}")),
+    }
+}
+
+/// Nouns the grammar knows, with their verbs (for completion and `help`).
+fn grammar() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut out: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+    for (n, v, ..) in VERBS {
+        match out.iter_mut().find(|(x, _)| x == n) {
+            Some((_, vs)) => vs.push(v),
+            None => out.push((n, vec![v])),
+        }
+    }
+    out.push((
+        "plugin",
+        vec![
+            "install",
+            "link",
+            "unlink",
+            "uninstall",
+            "update",
+            "enable",
+            "disable",
+            "list",
+            "config-dir",
+            "action",
+            "log",
+            "pane",
+        ],
+    ));
+    out.push(("integration", vec!["status", "install", "doctor"]));
+    out.push(("config", vec!["check"]));
+    out.push(("completion", vec!["bash", "zsh", "fish"]));
+    out
+}
+
+/// A shell completion script for the shim grammar (`herdr completion bash|zsh|fish`).
+pub fn completion(shell: &str) -> String {
+    let g = grammar();
+    let nouns: Vec<&str> = g.iter().map(|(n, _)| *n).collect();
+    match shell {
+        "fish" => {
+            let mut s = String::from("# herdr (Vibeke compatibility shim) completions\n");
+            s.push_str(&format!(
+                "complete -c herdr -n '__fish_use_subcommand' -a '{}'\n",
+                nouns.join(" ")
+            ));
+            for (n, vs) in &g {
+                s.push_str(&format!(
+                    "complete -c herdr -n '__fish_seen_subcommand_from {n}' -a '{}'\n",
+                    vs.join(" ")
+                ));
+            }
+            s
+        }
+        "zsh" => {
+            let mut s = String::from("#compdef herdr\n_herdr() {\n  local -a nouns\n");
+            s.push_str(&format!("  nouns=({})\n", nouns.join(" ")));
+            s.push_str("  if (( CURRENT == 2 )); then\n    compadd -a nouns\n    return\n  fi\n");
+            s.push_str("  case $words[2] in\n");
+            for (n, vs) in &g {
+                s.push_str(&format!("    {n}) compadd {} ;;\n", vs.join(" ")));
+            }
+            s.push_str("  esac\n}\ncompdef _herdr herdr\n");
+            s
+        }
+        _ => {
+            let mut s = String::from(
+                "# herdr (Vibeke compatibility shim) completions\n_herdr() {\n  local cur=${COMP_WORDS[COMP_CWORD]}\n",
+            );
+            s.push_str(&format!(
+                "  if [ $COMP_CWORD -eq 1 ]; then COMPREPLY=($(compgen -W \"{}\" -- \"$cur\")); return; fi\n",
+                nouns.join(" ")
+            ));
+            s.push_str("  case ${COMP_WORDS[1]} in\n");
+            for (n, vs) in &g {
+                s.push_str(&format!(
+                    "    {n}) COMPREPLY=($(compgen -W \"{}\" -- \"$cur\")) ;;\n",
+                    vs.join(" ")
+                ));
+            }
+            s.push_str("  esac\n}\ncomplete -F _herdr herdr\n");
+            s
+        }
     }
 }
 
@@ -493,6 +619,11 @@ pub fn shim_commands() -> Vec<String> {
             "plugin disable",
             "plugin list",
             "plugin config-dir",
+            "plugin update",
+            "integration status",
+            "integration install",
+            "config check",
+            "completion",
             "plugin action list",
             "plugin action invoke",
             "plugin log list",
@@ -621,6 +752,55 @@ mod tests {
     }
 
     #[test]
+    fn gap_commands() {
+        assert_eq!(
+            p("plugin update acme.x --yes"),
+            Parsed::Local(Local::PluginUpdate {
+                id: "acme.x".into(),
+                yes: true
+            })
+        );
+        assert_eq!(
+            p("plugin upgrade acme.x"),
+            Parsed::Local(Local::PluginUpdate {
+                id: "acme.x".into(),
+                yes: false
+            })
+        );
+        assert!(matches!(p("plugin update"), Parsed::Usage(_)));
+        assert_eq!(
+            call("agent explain w1:p1"),
+            ("agent.explain".into(), json!({"target": "w1:p1"}))
+        );
+        assert_eq!(call("server stop").0, "server.stop");
+        assert_eq!(
+            p("config check /tmp/c.toml"),
+            Parsed::Native {
+                method: "config.validate".into(),
+                params: json!({"path": "/tmp/c.toml"})
+            }
+        );
+        assert_eq!(
+            p("config check --json"),
+            Parsed::Native {
+                method: "config.validate".into(),
+                params: json!({})
+            }
+        );
+        for sh in ["bash", "zsh", "fish"] {
+            let Parsed::Help(text) = p(&format!("completion {sh}")) else {
+                panic!("{sh}");
+            };
+            assert!(
+                text.contains("plugin") && text.contains("agent"),
+                "{sh}: {text}"
+            );
+            assert!(text.contains("explain") && text.contains("update"), "{sh}");
+            assert!(!text.contains("\\n"), "{sh}: literal escapes");
+        }
+    }
+
+    #[test]
     fn session_flag() {
         let a = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(
@@ -647,6 +827,9 @@ mod tests {
             Parsed::Refused { .. }
         ));
         assert!(matches!(p("update"), Parsed::Refused { .. }));
+        assert!(matches!(p("web ui"), Parsed::Refused { .. }));
+        assert!(matches!(p("config"), Parsed::Usage(_)));
+        assert!(matches!(p("completion powershell"), Parsed::Usage(_)));
         assert!(matches!(p("pane fly"), Parsed::Usage(_)));
         assert!(matches!(p("bogus"), Parsed::Usage(_)));
         assert!(matches!(p("pane get a b"), Parsed::Usage(_)));

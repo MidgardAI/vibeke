@@ -110,7 +110,9 @@ fn corpus_events_are_mostly_baseline_names() {
             }
         }
     }
-    // One plugin declares `workspace.reordered`, which the spec does not name.
-    assert_eq!(unknown, BTreeSet::from(["workspace.reordered".to_string()]));
+    // One plugin declares `workspace.reordered`, which the spec does not name; the projector
+    // emits it after a workspace move, so it is a known name now.
+    assert!(unknown.is_empty(), "{unknown:?}");
+    assert!(used.contains("workspace.reordered"));
     assert!(used.len() >= 20, "{used:?}");
 }

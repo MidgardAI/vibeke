@@ -645,6 +645,33 @@ pub async fn integration(g: &Global, args: &[String]) -> i32 {
     crate::integration::run(g, args).await
 }
 
+/// `herdr integration …` through the compatibility shim (07 §8.2): the read-only verbs and
+/// confirmed (`--yes` / `--dry-run`) installs act on *Vibeke's* harness integrations, never on
+/// Herdr's. `None`: not an integration command or an unconfirmed mutation (the shim refuses it).
+pub async fn herdr_integration(g: &Global, shim_args: &[String]) -> Option<i32> {
+    let (_, rest) = vk_compat::herdr::cli::take_session(shim_args).ok()?;
+    if !matches!(rest.first()?.as_str(), "integration" | "integrations") {
+        return None;
+    }
+    let verb = rest.get(1).map(String::as_str).unwrap_or("status");
+    let mutating = matches!(verb, "install" | "uninstall" | "remove" | "update");
+    let confirmed = rest
+        .iter()
+        .any(|a| matches!(a.as_str(), "--yes" | "-y" | "--dry-run"));
+    if mutating && !confirmed {
+        return None;
+    }
+    let mut args: Vec<String> = rest[1..].to_vec();
+    if verb == "remove" {
+        args[0] = "uninstall".into();
+    }
+    let g = Global {
+        json: Some(true),
+        ..g.clone()
+    };
+    Some(crate::integration::run(&g, &args).await)
+}
+
 pub async fn doctor(g: &Global, args: &[String]) -> i32 {
     crate::doctor::run(g, args).await
 }

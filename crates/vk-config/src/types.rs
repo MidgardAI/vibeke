@@ -937,6 +937,10 @@ pub struct Compat {
     pub herdr_env: bool,
     /// Legacy spelling of `[compat.herdr] enabled`.
     pub herdr_socket: bool,
+    /// Where the default session's compat listener binds (07 §8.3), for setups where Herdr is
+    /// no longer installed (`~/.config/herdr/herdr.sock`). Empty: `$RUNTIME/herdr-compat`.
+    /// A live socket at the path is never replaced.
+    pub herdr_socket_path: String,
     /// The Herdr compatibility listener (07 §8.3, M5).
     pub herdr: CompatHerdr,
 }
@@ -945,6 +949,7 @@ impl Default for Compat {
         Compat {
             herdr_env: true,
             herdr_socket: false,
+            herdr_socket_path: String::new(),
             herdr: CompatHerdr::default(),
         }
     }
@@ -956,6 +961,9 @@ impl Default for Compat {
 #[serde(default)]
 pub struct CompatHerdr {
     pub enabled: bool,
+    /// Serve `server.stop` / `herdr server stop` on the compat endpoint (stops this Vibeke
+    /// session only, never from a plugin or a pane). Off: refused.
+    pub allow_server_stop: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -18,6 +18,7 @@ pub const BASELINE_EVENTS: &[&str] = &[
     "workspace.closed",
     "workspace.focused",
     "workspace.moved",
+    "workspace.reordered",
     "tab.created",
     "tab.closed",
     "tab.focused",
@@ -54,6 +55,7 @@ pub const PROJECTED: &[&str] = &[
     "workspace.closed",
     "workspace.focused",
     "workspace.moved",
+    "workspace.reordered",
     "tab.created",
     "tab.closed",
     "tab.focused",
@@ -90,7 +92,12 @@ pub struct Input<'a> {
     /// The pane's Herdr agent status after this event (agent/interaction events), computed by
     /// the server from its model ([`super::status::agent_status`]).
     pub status_after: Option<&'a str>,
+    /// Event time in ms (0: unknown, no debouncing).
+    pub at_ms: u64,
 }
+
+/// `pane.agent_detected` fires at most once per pane in this window (07 §8.3).
+pub const DETECT_DEBOUNCE_MS: u64 = 250;
 
 /// Stateful Vibeke → Herdr event translation; one per subscription or hook dispatcher.
 #[derive(Debug, Default, Clone)]
@@ -98,6 +105,7 @@ pub struct Projector {
     focused_tab: Option<String>,
     focused_ws: Option<String>,
     status: HashMap<String, String>,
+    detected_at: HashMap<String, u64>,
 }
 
 impl Projector {
@@ -130,7 +138,9 @@ impl Projector {
                 }
                 out.push("workspace.closed")
             }
-            "workspace.moved" => out.push("workspace.moved"),
+            // `workspace.reordered` is declared by a corpus plugin; a move is the only
+            // reordering Vibeke has.
+            "workspace.moved" => out.extend(["workspace.moved", "workspace.reordered"]),
             "tab.created" => out.push("tab.created"),
             "tab.closed" => {
                 if self.focused_tab.as_deref() == e.tab {
@@ -145,6 +155,7 @@ impl Projector {
             "pane.closed" => {
                 if let Some(p) = e.pane {
                     self.status.remove(p);
+                    self.detected_at.remove(p);
                 }
                 out.push("pane.closed")
             }
@@ -166,7 +177,9 @@ impl Projector {
                 out.push("pane.focused");
             }
             "agent.detected" | "agent.started" => {
-                out.push("pane.agent_detected");
+                if self.detect_admitted(e) {
+                    out.push("pane.agent_detected");
+                }
                 self.status_change(e, &mut out);
             }
             "agent.state_changed"
@@ -185,6 +198,24 @@ impl Projector {
             _ => {}
         }
         out
+    }
+
+    /// The 250 ms debounce of `pane.agent_detected`: a second detection of the same pane inside
+    /// the window is folded into the first.
+    fn detect_admitted(&mut self, e: &Input) -> bool {
+        let (Some(pane), at) = (e.pane, e.at_ms) else {
+            return true;
+        };
+        if at == 0 {
+            return true;
+        }
+        match self.detected_at.get(pane) {
+            Some(prev) if at.saturating_sub(*prev) < DETECT_DEBOUNCE_MS => false,
+            _ => {
+                self.detected_at.insert(pane.to_string(), at);
+                true
+            }
+        }
     }
 
     fn status_change(&mut self, e: &Input, out: &mut Vec<&'static str>) {
@@ -257,7 +288,56 @@ mod tests {
             tab: Some(tab),
             pane: Some(pane),
             status_after: None,
+            at_ms: 0,
         }
+    }
+
+    #[test]
+    fn agent_detected_is_debounced_per_pane() {
+        let mut p = Projector::new();
+        let det = |p: &mut Projector, pane: &'static str, at_ms: u64, s: &'static str| {
+            p.project(&Input {
+                kind: "agent.detected",
+                pane: Some(pane),
+                status_after: Some(s),
+                at_ms,
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            det(&mut p, "w1:p1", 1000, "idle"),
+            vec!["pane.agent_detected", "pane.agent_status_changed"]
+        );
+        // Inside 250 ms: folded; a status change still reports.
+        assert_eq!(
+            det(&mut p, "w1:p1", 1200, "working"),
+            vec!["pane.agent_status_changed"]
+        );
+        // Another pane is independent.
+        assert_eq!(
+            det(&mut p, "w1:p2", 1200, "idle"),
+            vec!["pane.agent_detected", "pane.agent_status_changed"]
+        );
+        // After the window it fires again.
+        assert_eq!(
+            det(&mut p, "w1:p1", 1300, "working"),
+            vec!["pane.agent_detected"]
+        );
+        // Unknown time never debounces.
+        assert_eq!(
+            det(&mut p, "w1:p1", 0, "working"),
+            vec!["pane.agent_detected"]
+        );
+    }
+
+    #[test]
+    fn a_move_also_reports_a_reorder() {
+        let mut p = Projector::new();
+        let out = p.project(&Input {
+            kind: "workspace.moved",
+            ..Default::default()
+        });
+        assert_eq!(out, vec!["workspace.moved", "workspace.reordered"]);
     }
 
     #[test]
