@@ -28,6 +28,8 @@ fn pane(id: &str, tab: &str, ws: &str, title: &str) -> Pane {
         "recovered": null
     }))
     .unwrap()
+    isolation: Default::default(),
+    browser: None,
 }
 
 fn ws(id: &str, name: &str, root: &str, branch: Option<&str>) -> Workspace {
@@ -75,6 +77,8 @@ fn tab(id: &str, ws: &str, n: u32, panes: &[&str]) -> Tab {
         zoomed_pane: None,
         order: n as f64,
     }
+    floating: Default::default(),
+    floats_hidden: false,
 }
 
 /// Two workspaces: `api` (branch `feature/login`, tab 1 with a claude agent `reviewer` whose

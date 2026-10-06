@@ -22,6 +22,8 @@ fn watch_pane(id: &str, tab: &str) -> Pane {
                     "title": "", "watch": "b3"}
     }))
     .unwrap()
+    isolation: Default::default(),
+    browser: None,
 }
 
 /// Machine 0 is local; machine 1 (the devbox) runs the agent and owns a tab with the agent's
@@ -56,6 +58,8 @@ fn setup() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
         focused_pane: Some("wp".into()),
         zoomed_pane: None,
         order: 1.0,
+        floating: Default::default(),
+        floats_hidden: false,
     }];
     let mut shell = watch_pane("p1", "T");
     shell.browser = None;

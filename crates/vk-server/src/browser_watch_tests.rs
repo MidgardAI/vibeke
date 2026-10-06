@@ -163,6 +163,8 @@ impl Env {
             focused_pane: Some("pane-a".into()),
             zoomed_pane: None,
             order: 1.0,
+            floating: Default::default(),
+            floats_hidden: false,
         });
         tx.pane(Pane {
             id: "pane-a".into(),
