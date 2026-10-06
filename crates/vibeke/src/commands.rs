@@ -76,6 +76,8 @@ pub fn local_spec(session: &str, socket: PathBuf) -> vk_tui::app::MachineSpec {
                 Ok(Box::new(s) as vk_tui::app::Stream)
             })
         }),
+        bulk: None,
+        link: None,
     }
 }
 

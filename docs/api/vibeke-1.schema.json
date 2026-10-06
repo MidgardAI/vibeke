@@ -4122,6 +4122,9 @@
           },
           "stage": {
             "const": "browser"
+          },
+          "unpack": {
+            "const": "tar"
           }
         },
         "required": [
@@ -4145,6 +4148,9 @@
           },
           "path": {
             "type": "string"
+          },
+          "unpacked": {
+            "type": "boolean"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -11018,6 +11024,62 @@
         },
         "required": [
           "tab"
+        ]
+      }
+    },
+    "paste.translated": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "blob": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "local_name": {
+                  "type": "string"
+                },
+                "dir": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "blob"
+              ]
+            }
+          },
+          "target_namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "files"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "recorded": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "recorded"
         ]
       }
     },
@@ -18386,6 +18448,63 @@
         },
         "required": [
           "title"
+        ]
+      }
+    },
+    "paste.translated": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "type": "string"
+          },
+          "tab": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "blob": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "local_name": {
+                  "type": "string"
+                },
+                "dir": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "blob",
+                "bytes",
+                "local_name",
+                "dir"
+              ]
+            }
+          },
+          "target_namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "files",
+          "target_namespace"
         ]
       }
     },

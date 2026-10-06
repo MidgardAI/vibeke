@@ -4,7 +4,9 @@
 mod binding;
 mod keys;
 mod load;
+#[macro_use]
 mod types;
+mod preview;
 mod units;
 mod watch;
 
@@ -16,6 +18,10 @@ pub use keys::{
 pub use load::{
     ConfigError, Diagnostic, EXTERNAL_SECTIONS, Pos, Warning, config_path, config_path_with,
     default_config_toml, default_config_toml_uncommented, requires_new_panes,
+};
+pub use preview::{
+    AutoDiscover, BrowserExternal, LocalBrowser, PREVIEW_KEYS, PROFILE_BROWSERS, PaneLocation,
+    PaneSplit, Preview, PreviewMode, ProfileRoute, ProfileScope, ScreenshotFormat, parse_viewport,
 };
 pub use types::*;
 pub use units::{ByteSize, Dur, PortRange};

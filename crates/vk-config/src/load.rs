@@ -274,6 +274,8 @@ impl Config {
             }
         }
         warn_unknown(&raw, &mut warnings);
+        // Typed `[preview]` (06 Part C): bad values and unknown keys are located warnings.
+        warnings.extend(crate::preview::Preview::from_value(raw.get("preview")).1);
 
         let (problems, mut vwarn) = cfg.validate();
         warnings.append(&mut vwarn);

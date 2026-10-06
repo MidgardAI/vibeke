@@ -67,6 +67,8 @@ pub struct Machine {
     pub auto_ws: bool,
     /// `render.attach` features of this machine's server (`event_push`, …).
     pub features: Vec<String>,
+    /// Link state of a remote machine (RTT, degraded, last seen; 06 A7).
+    pub link: Option<crate::remote_view::LinkProbe>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +107,8 @@ pub enum Pending {
     Plugin(crate::plugins::Reply),
     /// Preview proxy / mirror commands (06 B4).
     Preview(crate::browser::Reply),
+    /// Remote link upkeep: event head and the reconnect replay (06 A7).
+    Remote(crate::remote_view::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -163,6 +167,7 @@ impl Machine {
             pending: HashMap::new(),
             auto_ws: false,
             features: Vec::new(),
+            link: None,
         }
     }
     pub fn send(&self, f: ClientFrame) -> bool {
@@ -417,6 +422,8 @@ pub struct App {
     pub external: Option<crate::scrollback::External>,
     /// Resolved `[keys.copy_mode]`.
     pub copy_keys: std::sync::Arc<crate::copykeys::CopyKeys>,
+    /// Remote links: frame pacing by ack, reconnect replay (06 A7).
+    pub remote: crate::remote_view::State,
 }
 
 pub struct Opts {
@@ -449,11 +456,24 @@ pub async fn attach_stream(
     remote: bool,
     inc: mpsc::UnboundedSender<Incoming>,
 ) -> Result<()> {
+    let fps = if remote { 60 } else { 120 };
+    attach_stream_fps(idx, stream, client_id, remote, fps, inc).await
+}
+
+/// [`attach_stream`] with an explicit frame cap (RTT-driven for remote links, 06 A7).
+pub async fn attach_stream_fps(
+    idx: usize,
+    stream: Stream,
+    client_id: String,
+    remote: bool,
+    max_fps: u32,
+    inc: mpsc::UnboundedSender<Incoming>,
+) -> Result<()> {
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
     let mut req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{
         "client_id": client_id, "remote": remote, "protocol": vk_proto::render::PROTOCOL,
-        "caps": {"max_fps": if remote { 60 } else { 120 }, "kitty_keyboard": true, "osc52": true, "truecolor": true}}});
+        "caps": {"max_fps": max_fps, "kitty_keyboard": true, "osc52": true, "truecolor": true}}});
     // Host terminal identity for native notifications and click-to-focus (08 §7.1): only to a
     // server on this machine, which is the one that can raise this terminal window.
     if !remote && let Some(h) = crate::notifications::host_meta() {
@@ -519,6 +539,11 @@ pub struct MachineSpec {
     pub label: String,
     pub local: bool,
     pub connect: Connector,
+    /// Connection for bulk uploads (a blob-class channel on a remote link, 06 A4); `None` =
+    /// use `connect`.
+    pub bulk: Option<Connector>,
+    /// Link state of a remote machine (RTT, degraded, last seen).
+    pub link: Option<crate::remote_view::LinkProbe>,
 }
 
 /// Run the TUI until detach or the last machine goes away.
@@ -577,12 +602,18 @@ async fn run_inner(
         ));
     }
     // Connect every machine (in the background; reconnect with backoff, 06 A7).
-    let connectors: Vec<std::sync::Arc<Connector>> = specs
-        .into_iter()
-        .map(|s| std::sync::Arc::new(s.connect))
-        .collect();
+    let mut connectors: Vec<std::sync::Arc<Connector>> = Vec::new();
+    let mut bulk: Vec<std::sync::Arc<Connector>> = Vec::new();
+    for (i, s) in specs.into_iter().enumerate() {
+        let c = std::sync::Arc::new(s.connect);
+        bulk.push(s.bulk.map(std::sync::Arc::new).unwrap_or_else(|| c.clone()));
+        connectors.push(c);
+        app.machines[i].link = s.link;
+    }
+    let pacers: Vec<Option<crate::remote_view::LinkProbe>> =
+        app.machines.iter().map(|m| m.link.clone()).collect();
     app.uploads.worker = Some(crate::upload::Worker {
-        connectors: connectors.clone(),
+        connectors: bulk,
         inc: inc_tx.clone(),
     });
     for (i, c) in connectors.iter().enumerate() {
@@ -590,7 +621,7 @@ async fn run_inner(
             i,
             c.clone(),
             client_id.clone(),
-            !app.machines[i].local,
+            (!app.machines[i].local, pacers[i].clone()),
             inc_tx.clone(),
             Duration::ZERO,
         );
@@ -681,7 +712,7 @@ async fn run_inner(
                         if app.machines.iter().all(|m| !m.connected()) && app.machines.len() == 1 && app.machines[0].local && app.machines[0].status == "stopped" {
                             return Ok("server stopped".into());
                         }
-                        spawn_connect(i, connectors[i].clone(), client_id.clone(), !app.machines[i].local, inc_tx.clone(), Duration::from_millis(500));
+                        spawn_connect(i, connectors[i].clone(), client_id.clone(), (!app.machines[i].local, pacers[i].clone()), inc_tx.clone(), Duration::from_millis(500));
                     }
                 }
                 while let Ok(more) = inc_rx.try_recv() {
@@ -693,7 +724,7 @@ async fn run_inner(
                             app.machines[i].tx = None;
                             app.on_disconnected(i);
                             app.machines[i].status = "offline".into();
-                            spawn_connect(i, connectors[i].clone(), client_id.clone(), !app.machines[i].local, inc_tx.clone(), Duration::from_millis(500));
+                            spawn_connect(i, connectors[i].clone(), client_id.clone(), (!app.machines[i].local, pacers[i].clone()), inc_tx.clone(), Duration::from_millis(500));
                         }
                     }
                 }
@@ -770,6 +801,7 @@ impl App {
             scrollback: None,
             external: None,
             copy_keys,
+            remote: Default::default(),
         }
     }
 }
@@ -782,25 +814,36 @@ fn rand_suffix() -> String {
     format!("{t:x}")
 }
 
+/// (Re)connect machine `i` with exponential backoff from 0.5 s to a 30 s cap, ±20% jitter
+/// (06 A7). `link.0` = remote; `link.1` = its link probe, whose RTT sets the attach frame cap.
 fn spawn_connect(
     i: usize,
     c: std::sync::Arc<Connector>,
     client_id: String,
-    remote: bool,
+    link: (bool, Option<crate::remote_view::LinkProbe>),
     inc: mpsc::UnboundedSender<Incoming>,
     initial: Duration,
 ) {
+    let (remote, probe) = link;
     tokio::spawn(async move {
         let mut delay = initial;
         loop {
             if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(delay.mul_f64(crate::remote_view::jitter())).await;
             }
-            if let Ok(stream) = (c)().await
-                && let Ok(()) =
-                    attach_stream(i, stream, client_id.clone(), remote, inc.clone()).await
-            {
-                return;
+            if let Ok(stream) = (c)().await {
+                let fps = match (&probe, remote) {
+                    (Some(p), _) => {
+                        crate::remote_view::target_hz(crate::remote_view::CLIENT_HZ, p().rtt_ms)
+                    }
+                    (None, true) => crate::remote_view::CLIENT_HZ,
+                    (None, false) => 120,
+                };
+                if let Ok(()) =
+                    attach_stream_fps(i, stream, client_id.clone(), remote, fps, inc.clone()).await
+                {
+                    return;
+                }
             }
             delay = (delay * 2).clamp(Duration::from_millis(500), Duration::from_secs(30));
         }
@@ -996,6 +1039,7 @@ impl App {
         crate::push::on_connected(self, i);
         crate::parity::on_connected(self, i);
         crate::plugins::on_connected(self, i);
+        crate::remote_view::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -1014,6 +1058,7 @@ impl App {
         self.machines[i].pending.clear();
         self.inbox.outstanding.remove(&i);
         crate::tasks::on_disconnect(self, i);
+        crate::remote_view::on_disconnected(self, i);
         if self.inbox.outstanding.is_empty()
             && let Some(f) = self.inbox.next_after.take()
         {
@@ -1180,7 +1225,7 @@ impl App {
                         title,
                     },
                 );
-                self.machines[i].send(ClientFrame::Ack { pane, epoch, rev });
+                crate::remote_view::ack(self, i, pane, epoch, rev);
             }
             ServerFrame::PaneDiff {
                 pane,
@@ -1218,11 +1263,10 @@ impl App {
                     }
                     _ => false,
                 };
-                let m = &self.machines[i];
                 if ok {
-                    m.send(ClientFrame::Ack { pane, epoch, rev });
+                    crate::remote_view::ack(self, i, pane, epoch, rev);
                 } else {
-                    m.send(ClientFrame::Resync { pane });
+                    self.machines[i].send(ClientFrame::Resync { pane });
                 }
             }
             ServerFrame::History {
@@ -1352,6 +1396,7 @@ impl App {
             Pending::Parity(r) => crate::parity::on_reply(self, i, r, res),
             Pending::Plugin(r) => crate::plugins::on_reply(self, i, r, res),
             Pending::Preview(r) => crate::browser::on_reply(self, i, r, res),
+            Pending::Remote(r) => crate::remote_view::on_reply(self, i, r, res),
         }
     }
 
@@ -1582,6 +1627,7 @@ impl App {
         crate::browser::tick(self);
         crate::plugins::report_scroll(self, now);
         crate::selection::tick(self, now);
+        crate::remote_view::release_due(self, now);
     }
 
     /// A deadline woke the loop: repaint when a redraw-only one passed (an age label, the
@@ -1614,6 +1660,7 @@ impl App {
         crate::browser::deadlines(self, now, &mut d);
         crate::plugins::deadlines(self, now, &mut d);
         crate::selection::deadlines(self, &mut d);
+        crate::remote_view::deadlines(self, &mut d);
         d
     }
 

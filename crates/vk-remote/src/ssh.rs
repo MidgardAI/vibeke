@@ -133,8 +133,54 @@ impl Target {
         let mut child = c.spawn().context("spawn ssh bridge")?;
         let si = child.stdin.take().context("stdin")?;
         let so = child.stdout.take().context("stdout")?;
-        let mux = Mux::start(so, si, "client", None);
+        let opts = crate::mux::MuxOpts {
+            compress: self.compress(),
+        };
+        let mux = Mux::start_with(so, si, "client", None, opts);
         Ok((mux, child))
+    }
+
+    /// `ssh -O <op>` on the shared ControlMaster: `check` (is it up?) or `exit` (close it and
+    /// every session multiplexed over it). Returns ssh's message.
+    pub async fn control(&self, op: &str) -> Result<String> {
+        if !matches!(op, "check" | "exit") {
+            bail!("unsupported control operation {op}");
+        }
+        let mut c = Command::new(std::env::var("VIBEKE_SSH").unwrap_or_else(|_| "ssh".into()));
+        c.args(self.args())
+            .args(["-O", op])
+            .arg(&self.address)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(10), c.output())
+            .await
+            .context("ssh -O timed out")??;
+        let msg = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .trim()
+        .to_string();
+        if out.status.success() {
+            Ok(msg)
+        } else {
+            bail!("{msg}")
+        }
+    }
+
+    /// zstd on render/blob channels (06 A4) unless the host is loopback, where compression
+    /// only costs CPU. `VIBEKE_MUX_ZSTD=0|1` overrides.
+    pub fn compress(&self) -> bool {
+        match std::env::var("VIBEKE_MUX_ZSTD").as_deref() {
+            Ok("0") => return false,
+            Ok("1") => return true,
+            _ => {}
+        }
+        let host = self.address.rsplit('@').next().unwrap_or(&self.address);
+        !crate::is_loopback_host(host)
     }
 }
 

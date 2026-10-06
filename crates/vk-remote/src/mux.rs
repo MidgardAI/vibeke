@@ -3,8 +3,16 @@
 //! Frames: `u32 len | postcard(Frame)`. Each channel is a bidirectional byte stream; a channel
 //! of kind `socket` is connected by the bridge to the remote server's Unix socket, so the
 //! control and render protocols run over it unchanged. Data is chunked (≤ 16 KiB) and the
-//! writer serves channels round-robin, so a bulk upload never queues keystrokes behind it.
+//! writer serves channels by **priority class** (control/input > render > events > forwards >
+//! blobs) with a weighted scheduler, so a bulk upload never queues keystrokes behind it.
 //! Per-channel credit windows bound memory on both ends.
+//!
+//! Capabilities ride in the `Hello.role` string (`client;caps=prio,zstd:<dict-id>`), which
+//! older peers ignore. A peer that advertised `prio` gets the opener's class as a `#<class>`
+//! suffix on `Open.kind` (so both directions of the channel are scheduled by it); a peer that
+//! advertised the same zstd dictionary gets `DataZ` frames (zstd with the shared dictionary,
+//! [`crate::dict`]) on render and blob channels when this side has compression enabled
+//! ([`MuxOpts::compress`]; off for loopback links).
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -19,6 +27,129 @@ use vk_proto::frame::asyncio;
 pub const PROTO: u32 = 1;
 const CHUNK: usize = 16 * 1024;
 const WINDOW: u32 = 256 * 1024;
+/// Frames shorter than this are never compressed (the zstd header eats the gain).
+const MIN_COMPRESS: usize = 64;
+/// How long `open` waits for the peer's `Hello` (its capabilities) before opening without a
+/// class hint. Every peer version sends `Hello` first, so this only matters for a peer that
+/// is not a Vibeke mux at all.
+const HELLO_WAIT: Duration = Duration::from_secs(5);
+
+/// Scheduling class of a channel (06 A4): control/input > render > events > forwards > blobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Class {
+    Control = 0,
+    Render = 1,
+    Events = 2,
+    Forward = 3,
+    Blob = 4,
+}
+
+impl Class {
+    pub const ALL: [Class; 5] = [
+        Class::Control,
+        Class::Render,
+        Class::Events,
+        Class::Forward,
+        Class::Blob,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Class::Control => "control",
+            Class::Render => "render",
+            Class::Events => "events",
+            Class::Forward => "forward",
+            Class::Blob => "blob",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Class> {
+        Class::ALL.into_iter().find(|c| c.name() == s)
+    }
+
+    /// Frames a class may send per scheduling round while other classes also have data
+    /// queued. A class alone on the link always gets the whole link.
+    pub fn weight(self) -> u32 {
+        match self {
+            Class::Control => 16,
+            Class::Render => 8,
+            Class::Events => 4,
+            Class::Forward => 2,
+            Class::Blob => 1,
+        }
+    }
+
+    /// The class of a channel kind opened without an explicit class.
+    pub fn for_kind(kind: &str) -> Class {
+        if kind.starts_with("tcp:") || kind.starts_with("egress:") {
+            Class::Forward
+        } else if kind == "blob" {
+            Class::Blob
+        } else {
+            Class::Control
+        }
+    }
+
+    /// zstd applies to render and blob channels (06 A4).
+    pub fn compressible(self) -> bool {
+        matches!(self, Class::Render | Class::Blob)
+    }
+}
+
+/// Split `kind#class` (as sent to a peer that advertised `prio`) into the kind the acceptor
+/// sees and the class. A kind without a valid suffix keeps its default class.
+pub fn split_class(kind: &str) -> (String, Class) {
+    if let Some((k, c)) = kind.rsplit_once('#')
+        && let Some(class) = Class::parse(c)
+    {
+        return (k.to_string(), class);
+    }
+    (kind.to_string(), Class::for_kind(kind))
+}
+
+/// Per-mux options.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MuxOpts {
+    /// Compress render and blob channel data with zstd when the peer supports the same
+    /// dictionary, and ask the peer to do the same (advertise `zstd:<id>`). Off for loopback
+    /// links (06 A4). The bridge turns it on, so it follows whatever the client advertises.
+    pub compress: bool,
+}
+
+/// What the peer's `Hello` advertised.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerCaps {
+    /// Understands `#class` suffixes on `Open.kind`.
+    pub prio: bool,
+    /// Decodes `DataZ` with our dictionary (same id) and wants compressed data.
+    pub zstd: bool,
+}
+
+/// Our `Hello.role` with capability tokens.
+pub fn role_with_caps(role: &str, opts: MuxOpts) -> String {
+    let mut caps = vec!["prio".to_string()];
+    if opts.compress {
+        caps.push(format!("zstd:{}", crate::dict::id()));
+    }
+    format!("{role};caps={}", caps.join(","))
+}
+
+/// Parse a peer's `Hello.role` (`bridge`, or `bridge;caps=prio,zstd:<id>`).
+pub fn parse_caps(role: &str) -> PeerCaps {
+    let mut pc = PeerCaps::default();
+    for part in role.split(';').skip(1) {
+        if let Some(list) = part.strip_prefix("caps=") {
+            for c in list.split(',') {
+                if c == "prio" {
+                    pc.prio = true;
+                } else if let Some(id) = c.strip_prefix("zstd:") {
+                    pc.zstd = id == crate::dict::id();
+                }
+            }
+        }
+    }
+    pc
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Frame {
@@ -56,6 +187,13 @@ pub enum Frame {
     Pong {
         ts: u64,
     },
+    /// `Data` compressed with zstd and the shared dictionary ([`crate::dict`]). Appended, so
+    /// earlier discriminants are unchanged; only sent to a peer that advertised the same
+    /// dictionary id. Credit counts the decompressed bytes.
+    DataZ {
+        ch: u32,
+        bytes: Vec<u8>,
+    },
 }
 
 /// Stats for the status bar and bandwidth budgets (06 A7, 10 §1.5).
@@ -64,6 +202,21 @@ pub struct Stats {
     pub bytes_in: AtomicU64,
     pub bytes_out: AtomicU64,
     pub rtt_us: AtomicU64,
+    /// Channel payload bytes sent before compression (`bytes_out` is what hit the wire).
+    pub payload_out: AtomicU64,
+    /// Data frames sent compressed.
+    pub zstd_frames_out: AtomicU64,
+    /// Wall clock (unix ms) of the last frame received: "last seen" and loss detection (A7).
+    pub last_rx_ms: AtomicU64,
+    /// Wall clock (unix ms) of the oldest Ping still waiting for its Pong (0 = none).
+    pub ping_outstanding_ms: AtomicU64,
+}
+
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Per-channel flow-control and lifecycle state shared by the channel tasks and the reader.
@@ -106,6 +259,7 @@ struct Chan {
     /// everything queued, then shut the local write half down).
     to_local: Option<mpsc::Sender<Vec<u8>>>,
     st: Arc<ChanState>,
+    class: Class,
 }
 
 struct Shared {
@@ -119,6 +273,28 @@ struct Shared {
     /// Set once the link is gone; checked after every registration to close the race with
     /// the teardown sweep.
     link_down: AtomicBool,
+    opts: MuxOpts,
+    /// The peer's capabilities, once its `Hello` arrived.
+    peer: Mutex<Option<PeerCaps>>,
+    hello: Notify,
+}
+
+impl Shared {
+    fn class_of(&self, ch: u32) -> Class {
+        self.chans
+            .lock()
+            .unwrap()
+            .get(&ch)
+            .map(|c| c.class)
+            .unwrap_or(Class::Control)
+    }
+
+    /// Compress data sent on a channel of `class`?
+    fn compress(&self, class: Class) -> bool {
+        self.opts.compress
+            && class.compressible()
+            && self.peer.lock().unwrap().as_ref().is_some_and(|p| p.zstd)
+    }
 }
 
 /// Handle to a running multiplexer.
@@ -145,6 +321,21 @@ impl Mux {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        Mux::start_with(rd, wr, role, acceptor, MuxOpts::default())
+    }
+
+    /// [`Mux::start`] with options (compression).
+    pub fn start_with<R, W>(
+        rd: R,
+        wr: W,
+        role: &str,
+        acceptor: Option<Acceptor>,
+        opts: MuxOpts,
+    ) -> Mux
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let (out_tx, out_rx) = mpsc::unbounded_channel::<Frame>();
         let shared = Arc::new(Shared {
             chans: Mutex::new(HashMap::new()),
@@ -155,15 +346,22 @@ impl Mux {
             closed: Notify::new(),
             writer_stop: Notify::new(),
             link_down: AtomicBool::new(false),
+            opts,
+            peer: Mutex::new(None),
+            hello: Notify::new(),
         });
         let mux = Mux {
             shared: shared.clone(),
             remote_version: Arc::new(Mutex::new(None)),
         };
+        shared
+            .stats
+            .last_rx_ms
+            .store(now_unix_ms(), Ordering::Relaxed);
         let _ = shared.out.send(Frame::Hello {
             proto: PROTO,
             version: vk_proto::VERSION.into(),
-            role: role.into(),
+            role: role_with_caps(role, opts),
         });
         tokio::spawn(writer(wr, out_rx, shared.clone()));
         let m2 = mux.clone();
@@ -171,12 +369,17 @@ impl Mux {
             let _ = reader(rd, m2.clone(), acceptor).await;
             link_down(&m2.shared);
         });
-        // Keepalive + RTT (06 A4: ping every 5 s).
+        // Keepalive + RTT (06 A4: ping every 5 s, the first one right away so the RTT that
+        // sets the render frame cap is known before the first attach).
         let m3 = mux.clone();
         tokio::spawn(async move {
             let t0 = Instant::now();
+            let mut first = true;
             loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                if !first {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+                first = false;
                 if m3.shared.link_down.load(Ordering::SeqCst) {
                     break;
                 }
@@ -190,6 +393,13 @@ impl Mux {
                 {
                     break;
                 }
+                // Keep the oldest unanswered ping: a link that stops answering ages it.
+                let _ = m3.shared.stats.ping_outstanding_ms.compare_exchange(
+                    0,
+                    now_unix_ms(),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
             }
         });
         mux
@@ -210,11 +420,53 @@ impl Mux {
         self.shared.closed.notified().await
     }
 
-    /// Open a channel of `kind` on the remote side; returns a local byte stream.
+    /// Tear the link down from this side (`machine disconnect`): every channel ends.
+    pub fn shutdown(&self) {
+        link_down(&self.shared);
+    }
+
+    /// The peer's capabilities (`None` until its `Hello` arrived).
+    pub fn peer_caps(&self) -> Option<PeerCaps> {
+        self.shared.peer.lock().unwrap().clone()
+    }
+
+    /// Wait (bounded) for the peer's `Hello`.
+    async fn wait_hello(&self) -> Option<PeerCaps> {
+        let deadline = tokio::time::Instant::now() + HELLO_WAIT;
+        loop {
+            let notified = self.shared.hello.notified();
+            if let Some(p) = self.peer_caps() {
+                return Some(p);
+            }
+            if self.is_closed() {
+                return None;
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep_until(deadline) => return self.peer_caps(),
+            }
+        }
+    }
+
+    /// Open a channel of `kind` on the remote side; returns a local byte stream. The class
+    /// follows the kind (`tcp:`/`egress:` forwards, else control); see [`Mux::open_class`].
     pub async fn open(&self, kind: &str) -> Result<DuplexStream> {
+        self.open_class(kind, Class::for_kind(kind)).await
+    }
+
+    /// Open a channel with an explicit scheduling class (a render stream or a bulk upload
+    /// over a `socket` channel). The class goes to peers that understand it, so both
+    /// directions of the channel are scheduled by it.
+    pub async fn open_class(&self, kind: &str, class: Class) -> Result<DuplexStream> {
         if self.is_closed() {
             return Err(anyhow!("link closed"));
         }
+        let wire_kind = match self.wait_hello().await {
+            Some(p) if p.prio && class != Class::for_kind(kind) => {
+                format!("{kind}#{}", class.name())
+            }
+            _ => kind.to_string(),
+        };
         let ch = self.shared.next.fetch_add(2, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.shared.pending_open.lock().unwrap().insert(ch, tx);
@@ -223,12 +475,12 @@ impl Mux {
             return Err(anyhow!("link closed"));
         }
         let (local, remote_end) = tokio::io::duplex(WINDOW as usize);
-        attach(&self.shared, ch, remote_end);
+        attach(&self.shared, ch, remote_end, class);
         self.shared
             .out
             .send(Frame::Open {
                 ch,
-                kind: kind.into(),
+                kind: wire_kind,
             })
             .map_err(|_| anyhow!("link closed"))?;
         match tokio::time::timeout(Duration::from_secs(10), rx).await {
@@ -261,6 +513,7 @@ fn link_down(shared: &Arc<Shared>) {
     for (_, tx) in shared.pending_open.lock().unwrap().drain() {
         let _ = tx.send(Err("link closed".into()));
     }
+    shared.hello.notify_waiters();
     shared.closed.notify_waiters();
     shared.writer_stop.notify_one();
 }
@@ -279,7 +532,7 @@ fn abort_channel(shared: &Arc<Shared>, ch: u32, why: &str) {
 
 /// Wire a duplex end into channel `ch`: bytes the local user writes go out as Data frames
 /// (respecting the peer's credit window); incoming Data is written into it.
-fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream) {
+fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream, class: Class) {
     let (mut rd, mut wr) = tokio::io::split(end);
     // Bounded by construction: the reader admits at most WINDOW unconsumed bytes and rejects
     // empty frames, so at most WINDOW frames can ever be queued.
@@ -290,6 +543,7 @@ fn attach(shared: &Arc<Shared>, ch: u32, end: DuplexStream) {
         Chan {
             to_local: Some(to_local),
             st: st.clone(),
+            class,
         },
     );
     if shared.link_down.load(Ordering::SeqCst) {
@@ -370,18 +624,120 @@ fn remove_if_done(shared: &Shared, ch: u32, st: &ChanState) {
     }
 }
 
+/// One channel's queued Data/Close frames.
+struct ChanQueue {
+    ch: u32,
+    compress: bool,
+    frames: VecDeque<Frame>,
+}
+
+/// Weighted priority scheduler over channel queues (06 A4). Within a class, channels are
+/// served round-robin one frame at a time; across classes, the highest class with data and
+/// quantum left goes next, and quanta ([`Class::weight`]) refill once every class with data
+/// has used its share. So control frames overtake everything, while a bulk class still gets
+/// 1 frame in 31 under full contention and the whole link when alone.
+#[derive(Default)]
+pub(crate) struct Scheduler {
+    classes: [VecDeque<ChanQueue>; 5],
+    quantum: [u32; 5],
+}
+
+impl Scheduler {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.classes.iter().all(VecDeque::is_empty)
+    }
+
+    fn push(&mut self, f: Frame, ch: u32, class: Class, compress: bool) {
+        let q = &mut self.classes[class as usize];
+        match q.iter_mut().find(|c| c.ch == ch) {
+            Some(c) => c.frames.push_back(f),
+            None => q.push_back(ChanQueue {
+                ch,
+                compress,
+                frames: VecDeque::from([f]),
+            }),
+        }
+    }
+
+    /// The next frame to write and whether to compress it.
+    fn next(&mut self) -> Option<(Frame, bool)> {
+        for _ in 0..2 {
+            for c in Class::ALL {
+                let i = c as usize;
+                if self.classes[i].is_empty() || self.quantum[i] == 0 {
+                    continue;
+                }
+                self.quantum[i] -= 1;
+                let mut cq = self.classes[i].pop_front()?;
+                let f = cq.frames.pop_front();
+                let compress = cq.compress;
+                if !cq.frames.is_empty() {
+                    self.classes[i].push_back(cq);
+                }
+                if let Some(f) = f {
+                    return Some((f, compress));
+                }
+            }
+            for c in Class::ALL {
+                self.quantum[c as usize] = c.weight();
+            }
+        }
+        None
+    }
+}
+
+/// zstd with the shared dictionary, one context per writer/reader.
+struct Codec {
+    comp: Option<zstd::bulk::Compressor<'static>>,
+    decomp: Option<zstd::bulk::Decompressor<'static>>,
+}
+
+impl Codec {
+    fn new() -> Codec {
+        Codec {
+            comp: None,
+            decomp: None,
+        }
+    }
+
+    /// Compressed bytes when that saves at least 1/8; `None` otherwise.
+    fn compress(&mut self, data: &[u8]) -> Option<Vec<u8>> {
+        if data.len() < MIN_COMPRESS {
+            return None;
+        }
+        if self.comp.is_none() {
+            self.comp = zstd::bulk::Compressor::with_dictionary(3, crate::dict::bytes()).ok();
+        }
+        let z = self.comp.as_mut()?.compress(data).ok()?;
+        (z.len() < data.len() - data.len() / 8).then_some(z)
+    }
+
+    /// Decompress at most one chunk (anything larger is a protocol violation).
+    fn decompress(&mut self, z: &[u8]) -> Option<Vec<u8>> {
+        if self.decomp.is_none() {
+            self.decomp = zstd::bulk::Decompressor::with_dictionary(crate::dict::bytes()).ok();
+        }
+        self.decomp.as_mut()?.decompress(z, CHUNK).ok()
+    }
+}
+
 async fn writer<W: AsyncWrite + Unpin>(
     wr: W,
     mut rx: mpsc::UnboundedReceiver<Frame>,
     shared: Arc<Shared>,
 ) {
     let stats = shared.stats.clone();
-    let mut wr = tokio::io::BufWriter::with_capacity(64 * 1024, wr);
-    // Round-robin over channels with queued data; other control frames go first. Close is
-    // queued behind its channel's Data so it can never overtake it.
-    let mut queues: VecDeque<(u32, VecDeque<Frame>)> = VecDeque::new();
+    // About one data frame: a larger buffer would hold bulk bytes ahead of a keystroke that
+    // the scheduler already put first.
+    let mut wr = tokio::io::BufWriter::with_capacity(CHUNK + 64, wr);
+    let mut sched = Scheduler::default();
+    let mut codec = Codec::new();
     loop {
-        let first = if queues.is_empty() {
+        // Nothing queued: flush and block for the next frame.
+        let first = if sched.is_empty() {
+            if wr.flush().await.is_err() {
+                return;
+            }
             tokio::select! {
                 f = rx.recv() => match f {
                     Some(f) => Some(f),
@@ -395,6 +751,9 @@ async fn writer<W: AsyncWrite + Unpin>(
         if shared.link_down.load(Ordering::SeqCst) {
             break;
         }
+        // Take everything that arrived since the last frame, so a keystroke queued during a
+        // bulk transfer is scheduled ahead of the bulk's next chunk. Close is queued behind
+        // its channel's Data so it can never overtake it.
         let mut incoming: Vec<Frame> = first.into_iter().collect();
         while let Ok(f) = rx.try_recv() {
             incoming.push(f);
@@ -403,10 +762,9 @@ async fn writer<W: AsyncWrite + Unpin>(
             match &f {
                 Frame::Data { ch, .. } | Frame::Close { ch } => {
                     let ch = *ch;
-                    match queues.iter_mut().find(|(c, _)| *c == ch) {
-                        Some((_, q)) => q.push_back(f),
-                        None => queues.push_back((ch, VecDeque::from([f]))),
-                    }
+                    let class = shared.class_of(ch);
+                    let compress = shared.compress(class);
+                    sched.push(f, ch, class, compress);
                 }
                 _ => {
                     if write_one(&mut wr, &f, &stats).await.is_err() {
@@ -415,22 +773,26 @@ async fn writer<W: AsyncWrite + Unpin>(
                 }
             }
         }
-        // One data frame per channel per round.
-        let rounds = queues.len();
-        for _ in 0..rounds {
-            if let Some((ch, mut q)) = queues.pop_front() {
-                if let Some(f) = q.pop_front()
-                    && write_one(&mut wr, &f, &stats).await.is_err()
-                {
-                    return;
+        // One data frame, then look for newly queued frames again.
+        if let Some((f, compress)) = sched.next() {
+            let f = match f {
+                Frame::Data { ch, bytes } => {
+                    stats
+                        .payload_out
+                        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                    match compress.then(|| codec.compress(&bytes)).flatten() {
+                        Some(z) => {
+                            stats.zstd_frames_out.fetch_add(1, Ordering::Relaxed);
+                            Frame::DataZ { ch, bytes: z }
+                        }
+                        None => Frame::Data { ch, bytes },
+                    }
                 }
-                if !q.is_empty() {
-                    queues.push_back((ch, q));
-                }
+                f => f,
+            };
+            if write_one(&mut wr, &f, &stats).await.is_err() {
+                return;
             }
-        }
-        if wr.flush().await.is_err() {
-            return;
         }
     }
 }
@@ -444,22 +806,61 @@ async fn write_one<W: AsyncWrite + Unpin>(wr: &mut W, f: &Frame, stats: &Stats) 
     Ok(())
 }
 
+/// Incoming channel data (already decompressed).
+fn on_data(mux: &Mux, ch: u32, bytes: Vec<u8>) {
+    let violation = {
+        let mut chans = mux.shared.chans.lock().unwrap();
+        match chans.get_mut(&ch) {
+            // Late data for a channel we already tore down.
+            None => None,
+            Some(c) => {
+                let n = bytes.len() as u64;
+                match &c.to_local {
+                    None => Some("data after close"),
+                    Some(_) if n == 0 => Some("empty data frame"),
+                    Some(_) if n > c.st.inbound.load(Ordering::SeqCst) => {
+                        Some("exceeded the granted credit window")
+                    }
+                    Some(tx) => {
+                        c.st.inbound.fetch_sub(n, Ordering::SeqCst);
+                        tx.try_send(bytes).err().map(|_| "receive queue overflow")
+                    }
+                }
+            }
+        }
+    };
+    if let Some(why) = violation {
+        abort_channel(&mux.shared, ch, why);
+    }
+}
+
 async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor>) -> Result<()> {
     let mut rd = tokio::io::BufReader::with_capacity(64 * 1024, rd);
     let t0 = Instant::now();
+    let mut codec = Codec::new();
     loop {
         let body = asyncio::read_body(&mut rd).await?;
         mux.shared
             .stats
             .bytes_in
             .fetch_add(body.len() as u64 + 4, Ordering::Relaxed);
+        mux.shared
+            .stats
+            .last_rx_ms
+            .store(now_unix_ms(), Ordering::Relaxed);
         let f: Frame = vk_proto::frame::decode(&body)?;
         match f {
-            Frame::Hello { version, proto, .. } => {
+            Frame::Hello {
+                version,
+                proto,
+                role,
+            } => {
                 if proto != PROTO {
                     return Err(anyhow!("bridge protocol {proto} != {PROTO}"));
                 }
                 *mux.remote_version.lock().unwrap() = Some(version);
+                *mux.shared.peer.lock().unwrap() = Some(parse_caps(&role));
+                mux.shared.hello.notify_waiters();
             }
             Frame::Open { ch, kind } => {
                 let Some(acc) = acceptor.clone() else {
@@ -469,12 +870,13 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
                     });
                     continue;
                 };
+                let (kind, class) = split_class(&kind);
                 let m = mux.clone();
                 tokio::spawn(async move {
                     match acc(kind).await {
                         Ok(stream) => {
                             let (a, b) = tokio::io::duplex(WINDOW as usize);
-                            attach(&m.shared, ch, b);
+                            attach(&m.shared, ch, b, class);
                             let _ = m.shared.out.send(Frame::OpenOk { ch });
                             let mut a = a;
                             let mut stream = stream;
@@ -499,32 +901,11 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
                     let _ = tx.send(Err(msg));
                 }
             }
-            Frame::Data { ch, bytes } => {
-                let violation = {
-                    let mut chans = mux.shared.chans.lock().unwrap();
-                    match chans.get_mut(&ch) {
-                        // Late data for a channel we already tore down.
-                        None => None,
-                        Some(c) => {
-                            let n = bytes.len() as u64;
-                            match &c.to_local {
-                                None => Some("data after close"),
-                                Some(_) if n == 0 => Some("empty data frame"),
-                                Some(_) if n > c.st.inbound.load(Ordering::SeqCst) => {
-                                    Some("exceeded the granted credit window")
-                                }
-                                Some(tx) => {
-                                    c.st.inbound.fetch_sub(n, Ordering::SeqCst);
-                                    tx.try_send(bytes).err().map(|_| "receive queue overflow")
-                                }
-                            }
-                        }
-                    }
-                };
-                if let Some(why) = violation {
-                    abort_channel(&mux.shared, ch, why);
-                }
-            }
+            Frame::Data { ch, bytes } => on_data(&mux, ch, bytes),
+            Frame::DataZ { ch, bytes } => match codec.decompress(&bytes) {
+                Some(raw) => on_data(&mux, ch, raw),
+                None => abort_channel(&mux.shared, ch, "undecodable compressed frame"),
+            },
             Frame::Window { ch, bytes } => {
                 if let Some(c) = mux.shared.chans.lock().unwrap().get(&ch) {
                     let mut cur = c.st.credit.load(Ordering::Acquire);
@@ -559,233 +940,15 @@ async fn reader<R: AsyncRead + Unpin>(rd: R, mux: Mux, acceptor: Option<Acceptor
                     .stats
                     .rtt_us
                     .store(now.saturating_sub(ts), Ordering::Relaxed);
+                mux.shared
+                    .stats
+                    .ping_outstanding_ms
+                    .store(0, Ordering::Relaxed);
             }
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn echo_channels_interleave() {
-        let (a, b) = tokio::io::duplex(1 << 20);
-        let (ar, aw) = tokio::io::split(a);
-        let (br, bw) = tokio::io::split(b);
-        // Bridge side: each channel is an echo server.
-        let acc: Acceptor = Arc::new(|kind: String| {
-            Box::pin(async move {
-                let (x, y) = tokio::io::duplex(1 << 16);
-                tokio::spawn(async move {
-                    let (mut r, mut w) = tokio::io::split(y);
-                    let _ = w.write_all(format!("hello {kind}\n").as_bytes()).await;
-                    let _ = tokio::io::copy(&mut r, &mut w).await;
-                });
-                Ok(Box::new(x) as Box<dyn Stream>)
-            })
-        });
-        let _bridge = Mux::start(br, bw, "bridge", Some(acc));
-        let client = Mux::start(ar, aw, "client", None);
-        let mut c1 = client.open("socket").await.unwrap();
-        let c2 = client.open("blob").await.unwrap();
-        let mut buf = vec![0u8; 13];
-        c1.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"hello socket\n");
-        // A large transfer on c2 does not block a small round trip on c1.
-        let big = vec![7u8; 2 << 20];
-        let big2 = big.clone();
-        let (mut r2, mut w2) = tokio::io::split(c2);
-        let mut hello = vec![0u8; 11];
-        r2.read_exact(&mut hello).await.unwrap();
-        let sender = tokio::spawn(async move { w2.write_all(&big2).await.unwrap() });
-        c1.write_all(b"ping").await.unwrap();
-        let mut p = [0u8; 4];
-        tokio::time::timeout(Duration::from_secs(2), c1.read_exact(&mut p))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(&p, b"ping");
-        let mut got = vec![0u8; big.len()];
-        tokio::time::timeout(Duration::from_secs(10), r2.read_exact(&mut got))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(got, big);
-        sender.await.unwrap();
-        assert!(client.stats().bytes_out.load(Ordering::Relaxed) > 2 << 20);
-    }
-
-    async fn send_raw<W: AsyncWrite + Unpin>(w: &mut W, f: &Frame) {
-        w.write_all(&vk_proto::frame::encode(f).unwrap())
-            .await
-            .unwrap();
-    }
-
-    async fn recv_raw<R: AsyncRead + Unpin>(r: &mut R) -> Option<Frame> {
-        let body = asyncio::read_body(r).await.ok()?;
-        vk_proto::frame::decode(&body).ok()
-    }
-
-    fn sink_acceptor() -> Acceptor {
-        // The accepted stream is never read, so the channel's receive path backs up.
-        Arc::new(|_k: String| {
-            Box::pin(async move {
-                let (x, y) = tokio::io::duplex(1024);
-                tokio::spawn(async move {
-                    let _keep = y;
-                    std::future::pending::<()>().await;
-                });
-                Ok(Box::new(x) as Box<dyn Stream>)
-            })
-        })
-    }
-
-    #[tokio::test]
-    async fn data_precedes_eof_under_load() {
-        let (a, b) = tokio::io::duplex(1 << 20);
-        let (ar, aw) = tokio::io::split(a);
-        let (br, bw) = tokio::io::split(b);
-        let (got_tx, got_rx) = oneshot::channel::<Vec<u8>>();
-        let got_tx = Arc::new(Mutex::new(Some(got_tx)));
-        let acc: Acceptor = Arc::new(move |_k: String| {
-            let got_tx = got_tx.clone();
-            Box::pin(async move {
-                let (x, mut y) = tokio::io::duplex(1 << 16);
-                tokio::spawn(async move {
-                    let mut all = Vec::new();
-                    let _ = y.read_to_end(&mut all).await; // returns only on EOF
-                    if let Some(t) = got_tx.lock().unwrap().take() {
-                        let _ = t.send(all);
-                    }
-                });
-                Ok(Box::new(x) as Box<dyn Stream>)
-            })
-        });
-        let _bridge = Mux::start(br, bw, "bridge", Some(acc));
-        let client = Mux::start(ar, aw, "client", None);
-        let mut c = client.open("socket").await.unwrap();
-        let mut expect = Vec::new();
-        for i in 0..400u32 {
-            let chunk: Vec<u8> = (0..(1 + (i as usize * 37) % 9000))
-                .map(|j| (i as usize + j) as u8)
-                .collect();
-            c.write_all(&chunk).await.unwrap();
-            expect.extend_from_slice(&chunk);
-        }
-        c.shutdown().await.unwrap(); // EOF right behind the last bytes
-        let got = tokio::time::timeout(Duration::from_secs(20), got_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(got.len(), expect.len());
-        assert!(got == expect);
-    }
-
-    async fn raw_open<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(r: &mut R, w: &mut W, ch: u32) {
-        send_raw(
-            w,
-            &Frame::Open {
-                ch,
-                kind: "x".into(),
-            },
-        )
-        .await;
-        loop {
-            if let Some(Frame::OpenOk { ch: c }) = recv_raw(r).await
-                && c == ch
-            {
-                break;
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn credit_violation_closes_channel() {
-        let (a, b) = tokio::io::duplex(8 << 20);
-        let (mut hr, mut hw) = tokio::io::split(a);
-        let (br, bw) = tokio::io::split(b);
-        let _bridge = Mux::start(br, bw, "bridge", Some(sink_acceptor()));
-        raw_open(&mut hr, &mut hw, 1).await;
-        // Hostile peer: ignore the window and keep sending until the bridge closes the channel.
-        let mut sent = 0usize;
-        let closed = loop {
-            send_raw(
-                &mut hw,
-                &Frame::Data {
-                    ch: 1,
-                    bytes: vec![1; CHUNK],
-                },
-            )
-            .await;
-            sent += CHUNK;
-            let mut saw_close = false;
-            while let Ok(Some(f)) =
-                tokio::time::timeout(Duration::from_millis(1), recv_raw(&mut hr)).await
-            {
-                if f == (Frame::Close { ch: 1 }) {
-                    saw_close = true;
-                }
-            }
-            if saw_close {
-                break true;
-            }
-            if sent > 16 * WINDOW as usize {
-                break false;
-            }
-        };
-        assert!(closed, "bridge never closed the channel");
-        // Bytes can only sit in the queue (<= WINDOW) and one duplex hop (<= WINDOW).
-        assert!(sent <= 3 * WINDOW as usize + 1024, "accepted {sent} bytes");
-        // A single oversized frame is refused immediately on a fresh channel.
-        raw_open(&mut hr, &mut hw, 3).await;
-        send_raw(
-            &mut hw,
-            &Frame::Data {
-                ch: 3,
-                bytes: vec![0; WINDOW as usize + 1],
-            },
-        )
-        .await;
-        loop {
-            match tokio::time::timeout(Duration::from_secs(5), recv_raw(&mut hr)).await {
-                Ok(Some(Frame::Close { ch: 3 })) => break,
-                Ok(Some(_)) => {}
-                _ => panic!("no Close for oversized frame"),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn link_drop_wakes_writer_blocked_on_credit() {
-        let (a, b) = tokio::io::duplex(8 << 20);
-        let (ar, aw) = tokio::io::split(a);
-        let (mut hr, mut hw) = tokio::io::split(b);
-        let client = Mux::start(ar, aw, "client", None);
-        let c2 = client.clone();
-        let open = tokio::spawn(async move { c2.open("socket").await });
-        let ch = loop {
-            if let Some(Frame::Open { ch, .. }) = recv_raw(&mut hr).await {
-                break ch;
-            }
-        };
-        send_raw(&mut hw, &Frame::OpenOk { ch }).await;
-        let mut c = open.await.unwrap().unwrap();
-        // The peer never grants more credit: the writer stalls after WINDOW bytes.
-        let writer = tokio::spawn(async move {
-            let data = vec![9u8; 4 << 20];
-            c.write_all(&data).await
-        });
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!writer.is_finished());
-        drop(hr);
-        drop(hw); // link drops
-        let r = tokio::time::timeout(Duration::from_secs(5), writer)
-            .await
-            .expect("writer still blocked after link drop")
-            .unwrap();
-        assert!(r.is_err());
-        client.closed().await;
-        assert!(client.open("socket").await.is_err());
-    }
-}
+#[path = "mux_tests.rs"]
+mod tests;

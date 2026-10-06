@@ -14,6 +14,8 @@ vk-term = { workspace = true }
 vk-config = { workspace = true }
 vk-compat = { workspace = true }
 vk-browser = { workspace = true }
+# Directory drops are packed with the same rules the server unpacks with (06 A11.2).
+vk-remote = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }

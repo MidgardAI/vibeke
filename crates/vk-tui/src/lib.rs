@@ -33,6 +33,7 @@ pub mod plugins;
 pub mod popups;
 pub mod preview_ui;
 pub mod push;
+pub mod remote_view;
 pub mod screen;
 pub mod scrollback;
 pub mod search;

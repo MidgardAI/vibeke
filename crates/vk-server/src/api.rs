@@ -226,6 +226,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("blob.append", true),
     ("blob.commit", true),
     ("blob.abort", true),
+    ("paste.translated", true),
     ("image.upload", true),
     ("git.status", false),
     ("git.diff", false),
@@ -328,6 +329,8 @@ pub const PANE_FORBIDDEN: &[&str] = &[
     // (the handler checks stay as defense in depth).
     "preview.mirror",
     "preview.unmirror",
+    // 06 A11: only the user's client reports translated pastes.
+    "paste.translated",
     "preview.profile.reset",
     "preview.profile_reset",
     "client.focus",
@@ -1304,6 +1307,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         "blob.append" => blob_append(ctx, p),
         "blob.commit" => blob_commit(server, ctx, p),
         "blob.abort" => blob_abort(ctx, p),
+        "paste.translated" => crate::inbox::paste_translated(server, ctx, p),
         _ => Err(err(
             ErrorKind::MethodNotFound,
             format!("unknown method {method}"),
@@ -1534,6 +1538,15 @@ fn blob_commit(server: &Server, ctx: &Ctx, p: &Value) -> R {
     if s(p, "stage") == Some("browser") {
         let root = crate::browser_pane::page_io::ensure_drops_root(server).map_err(internal)?;
         return upload_commit(&root, &ctx.client_id, p);
+    }
+    // `unpack: "tar"`: a dropped directory, sent as a tar stream (06 A11.2).
+    if s(p, "unpack") == Some("tar") {
+        return crate::inbox::commit_tar(
+            &crate::paths::Paths::inbox(),
+            &ctx.client_id,
+            blob_limit(),
+            p,
+        );
     }
     upload_commit(&crate::paths::Paths::inbox(), &ctx.client_id, p)
 }

@@ -39,6 +39,9 @@ pub enum Source {
     /// An already opened, checked file (a browser drop): read positionally, exactly `size`
     /// bytes, never reopened by path.
     File(Arc<std::fs::File>),
+    /// A dropped directory packed as a tar stream (06 A11.2): committed with
+    /// `unpack: "tar"`, so the pane gets the unpacked directory's path.
+    Tar(Arc<Vec<u8>>),
 }
 
 /// One file to upload.
@@ -99,6 +102,30 @@ fn max_bytes(app: &App) -> u64 {
     app.config.paste.max_auto_bytes.0
 }
 
+/// Pack a dropped directory (regular files and directories; symlinks and special files are
+/// skipped and reported) within `budget` bytes.
+fn pack_dir(dir: &Path, budget: u64) -> Result<(Item, vk_remote::inbox::PackReport), String> {
+    let mut tar = Vec::new();
+    let rep = vk_remote::inbox::pack_dir(dir, &mut tar, budget).map_err(|e| format!("{e:#}"))?;
+    let name = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "dir".into());
+    Ok((
+        Item {
+            name: format!("{name}.tar"),
+            size: tar.len() as u64,
+            src: Source::Tar(Arc::new(tar)),
+        },
+        rep,
+    ))
+}
+
+/// Does this set of items need an explicit yes (06 A11.5: directory drops always confirm)?
+pub fn needs_confirm(items: &[Item]) -> bool {
+    items.iter().any(|i| matches!(i.src, Source::Tar(_)))
+}
+
 /// Validate the dropped files. On any problem the original text is pasted instead.
 fn prepare(
     app: &mut App,
@@ -114,9 +141,26 @@ fn prepare(
         let f = t.local_path(home);
         match std::fs::metadata(&f) {
             Ok(m) if m.is_dir() => {
-                app.toast("directory drops are not supported yet — pasted the original path");
-                send_paste(app, machine, pane, original.to_string());
-                return None;
+                let budget = max_bytes(app).saturating_sub(total);
+                match pack_dir(&f, budget) {
+                    Ok((item, rep)) => {
+                        if rep.skipped_links + rep.skipped_special > 0 {
+                            app.toast(format!(
+                                "{}: skipping {} symlink(s) and {} special file(s)",
+                                item.name.trim_end_matches(".tar"),
+                                rep.skipped_links,
+                                rep.skipped_special
+                            ));
+                        }
+                        total += item.size;
+                        items.push(item);
+                    }
+                    Err(e) => {
+                        app.toast(format!("{e} — pasted the original path"));
+                        send_paste(app, machine, pane, original.to_string());
+                        return None;
+                    }
+                }
             }
             Ok(m) => {
                 total += m.len();
@@ -160,7 +204,8 @@ pub fn translate_paste(
     let Some(items) = prepare(app, machine, pane, &original, &parsed, home) else {
         return;
     };
-    if matches!(app.config.paste.translate, vk_config::PasteTranslate::Ask) {
+    if matches!(app.config.paste.translate, vk_config::PasteTranslate::Ask) || needs_confirm(&items)
+    {
         app.mode = crate::app::Mode::Popup(Popup::PasteAsk {
             machine,
             pane: pane.to_string(),
@@ -225,16 +270,27 @@ fn start(
         && let Some(conn) = w.connectors.get(machine).cloned()
     {
         let stage = browser.then_some("browser");
+        // Pastes (not browser drops) are recorded as `paste.translated` (06 A11.3).
+        let ns = (!browser).then(|| namespace(app, machine));
         tokio::spawn(run_transfer(
             conn,
             w.inc.clone(),
             id.clone(),
             items,
             cancel,
-            stage,
+            (stage, ns),
         ));
     }
     id
+}
+
+/// The `target_namespace` of a translated paste: `ssh:<machine>` for a remote machine,
+/// `local` for a pane on this machine that cannot see the file (sandbox, container).
+fn namespace(app: &App, machine: usize) -> String {
+    match app.machines.get(machine) {
+        Some(m) if !m.local => format!("ssh:{}", m.label),
+        _ => "local".into(),
+    }
 }
 
 /// Upload files to media host `host`'s drop directory for browser pane `pane`'s page
@@ -519,18 +575,20 @@ where
     Ok(v["result"].clone())
 }
 
+/// `how.0` = commit stage (`browser`), `how.1` = the paste's target namespace, which makes
+/// the task record `paste.translated` once every file landed.
 async fn run_transfer(
     conn: Arc<Connector>,
     inc: mpsc::UnboundedSender<Incoming>,
     id: TransferId,
     items: Vec<Item>,
     cancel: Arc<AtomicBool>,
-    stage: Option<&'static str>,
+    how: (Option<&'static str>, Option<String>),
 ) {
     let emit = |e: UploadEvent| {
         let _ = inc.send(Incoming::Upload(e));
     };
-    let r = transfer_items(&conn, &emit, &id, &items, &cancel, stage).await;
+    let r = transfer_items(&conn, &emit, &id, &items, &cancel, how).await;
     if let Err(message) = r
         && !cancel.load(Ordering::SeqCst)
     {
@@ -544,13 +602,15 @@ async fn transfer_items(
     id: &TransferId,
     items: &[Item],
     cancel: &AtomicBool,
-    stage: Option<&'static str>,
+    how: (Option<&'static str>, Option<String>),
 ) -> Result<(), String> {
+    let (stage, ns) = how;
     let stream = (conn)().await.map_err(|e| format!("connect: {e}"))?;
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
     let mut req = 1u64;
     let mut sent = 0u64;
+    let mut landed: Vec<Value> = Vec::new();
     for (index, item) in items.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             return Ok(());
@@ -587,31 +647,52 @@ async fn transfer_items(
                 return res.map(|_| ());
             }
         }
-        let done = rpc(
-            &mut rd,
-            &mut wr,
-            req,
-            "blob.commit",
-            match stage {
-                Some(st) => json!({"upload_id": upload_id, "stage": st}),
-                None => json!({"upload_id": upload_id}),
-            },
-        )
-        .await?;
+        let dir = matches!(item.src, Source::Tar(_));
+        let mut params = match stage {
+            Some(st) => json!({"upload_id": upload_id, "stage": st}),
+            None => json!({"upload_id": upload_id}),
+        };
+        if dir {
+            params["unpack"] = json!("tar");
+        }
+        let done = rpc(&mut rd, &mut wr, req, "blob.commit", params).await?;
         req += 1;
         if done["size"].as_u64() != Some(item.size) {
             return Err(format!("{}: size mismatch after upload", item.name));
+        }
+        if dir && done["unpacked"].as_bool() != Some(true) {
+            return Err(format!(
+                "{}: this machine's vibeke cannot unpack directory drops (upgrade it)",
+                item.name.trim_end_matches(".tar")
+            ));
         }
         let path = done["path_on_machine"]
             .as_str()
             .or(done["path"].as_str())
             .ok_or("blob.commit: no path")?
             .to_string();
+        landed.push(json!({
+            "blob": done["hash"].as_str().unwrap_or(""),
+            "bytes": item.size,
+            "local_name": if dir { item.name.trim_end_matches(".tar") } else { item.name.as_str() },
+            "dir": dir,
+        }));
         emit(UploadEvent::FileDone {
             id: id.clone(),
             index,
             path,
         });
+    }
+    if let Some(ns) = ns {
+        // Best effort: an older server without the method still gets the paste.
+        let _ = rpc(
+            &mut rd,
+            &mut wr,
+            req,
+            "paste.translated",
+            json!({"pane": id.pane, "files": landed, "target_namespace": ns}),
+        )
+        .await;
     }
     Ok(())
 }
@@ -664,7 +745,7 @@ where
                 .await
                 .map_err(|e| format!("read {}: {e}", p.display()))?,
         ),
-        Source::Bytes(_) | Source::File(_) => None,
+        Source::Bytes(_) | Source::File(_) | Source::Tar(_) => None,
     };
     let mut offset = 0u64;
     let mut buf = vec![0u8; CHUNK];
@@ -677,7 +758,7 @@ where
                 .read(&mut buf)
                 .await
                 .map_err(|e| format!("read {}: {e}", item.name))?,
-            (None, Source::Bytes(b)) => {
+            (None, Source::Bytes(b) | Source::Tar(b)) => {
                 let start = offset as usize;
                 let end = (start + CHUNK).min(b.len());
                 buf[..end - start].copy_from_slice(&b[start..end]);
@@ -870,6 +951,51 @@ mod tests {
     }
 
     #[test]
+    fn directory_drop_packs_and_always_asks() {
+        let (mut app, _rxs) = test_app(2);
+        app.cur = 1;
+        app.config.paste.translate = vk_config::PasteTranslate::PathsOnly;
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::write(proj.join("src/main.rs"), "fn main() {}").unwrap();
+        let text = proj.to_string_lossy().into_owned();
+        let parsed = paste::parse_paste(&text).unwrap();
+        translate_paste(&mut app, "p1", text, parsed, Path::new("/"));
+        // Directories confirm even when files would upload directly (06 A11.5).
+        assert!(app.uploads.transfers.is_empty());
+        match &app.mode {
+            Mode::Popup(Popup::PasteAsk { items, .. }) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].name, "proj.tar");
+                let Source::Tar(t) = &items[0].src else {
+                    panic!("not packed")
+                };
+                assert_eq!(t.len() as u64, items[0].size);
+            }
+            _ => panic!("no confirmation popup"),
+        }
+        app.on_key(key(Key::Char('u')));
+        assert_eq!(app.uploads.transfers.len(), 1);
+    }
+
+    #[test]
+    fn oversized_directory_pastes_the_original() {
+        let (mut app, mut rxs) = test_app(2);
+        app.cur = 1;
+        app.config.paste.max_auto_bytes = vk_config::ByteSize(10);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("big");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join("a.bin"), vec![0u8; 1000]).unwrap();
+        let text = proj.to_string_lossy().into_owned();
+        let parsed = paste::parse_paste(&text).unwrap();
+        translate_paste(&mut app, "p1", text.clone(), parsed, Path::new("/"));
+        assert!(app.uploads.transfers.is_empty());
+        assert_eq!(drops(&mut rxs[1]), vec![("p1".into(), text)]);
+    }
+
+    #[test]
     fn auto_mode_uploads_without_asking() {
         let (mut app, _rxs) = test_app(2);
         app.cur = 1;
@@ -971,7 +1097,7 @@ mod worker_tests {
             id,
             vec![item],
             Arc::new(AtomicBool::new(false)),
-            None,
+            (None, None),
         )
         .await;
         assert_eq!(srv.await.unwrap(), data);
@@ -986,5 +1112,98 @@ mod worker_tests {
         }
         assert_eq!(last, data.len() as u64);
         assert_eq!(done.as_deref(), Some("/in/abc/f.bin"));
+    }
+
+    /// A fake server for a directory drop: checks `unpack: "tar"` and records
+    /// `paste.translated`.
+    async fn fake_dir_server(stream: tokio::io::DuplexStream) -> (Vec<u8>, Value) {
+        let (rd, mut wr) = tokio::io::split(stream);
+        let mut rd = BufReader::new(rd);
+        let mut got = Vec::new();
+        let mut translated = Value::Null;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if rd.read_line(&mut line).await.unwrap() == 0 {
+                return (got, translated);
+            }
+            let v: Value = serde_json::from_str(&line).unwrap();
+            let result = match v["method"].as_str().unwrap() {
+                "blob.begin" => json!({"upload_id": "u1"}),
+                "blob.append" => {
+                    let d = base64::engine::general_purpose::STANDARD
+                        .decode(v["params"]["data_b64"].as_str().unwrap())
+                        .unwrap();
+                    got.extend(d);
+                    json!({"offset": got.len()})
+                }
+                "blob.commit" => {
+                    assert_eq!(v["params"]["unpack"], "tar");
+                    json!({"size": got.len(), "hash": "3f9a1c0b2e7d00",
+                           "path_on_machine": "/in/3f9a1c0b2e7d/proj", "unpacked": true})
+                }
+                "paste.translated" => {
+                    translated = v["params"].clone();
+                    json!({"recorded": 1})
+                }
+                m => panic!("unexpected {m}"),
+            };
+            let r = json!({"jsonrpc":"2.0","id":v["id"],"result":result});
+            wr.write_all(format!("{r}\n").as_bytes()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_drop_commits_unpacked_and_records_basenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join("a.txt"), "hello").unwrap();
+        let (item, _) = pack_dir(&proj, 1 << 20).unwrap();
+        let tar = match &item.src {
+            Source::Tar(t) => t.as_ref().clone(),
+            _ => unreachable!(),
+        };
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let srv = tokio::spawn(fake_dir_server(server));
+        let slot = std::sync::Mutex::new(Some(client));
+        let conn: Arc<Connector> = Arc::new(Box::new(move || {
+            let s = slot.lock().unwrap().take().unwrap();
+            Box::pin(async move { Ok(Box::new(s) as crate::app::Stream) })
+        }));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let id = TransferId {
+            machine: 1,
+            pane: "P9".into(),
+            seq: 0,
+        };
+        run_transfer(
+            conn,
+            tx,
+            id,
+            vec![item],
+            Arc::new(AtomicBool::new(false)),
+            (None, Some("ssh:devbox".into())),
+        )
+        .await;
+        let (got, translated) = srv.await.unwrap();
+        assert_eq!(got, tar, "the tar stream arrives intact");
+        let mut done = None;
+        while let Ok(Incoming::Upload(e)) = rx.try_recv() {
+            if let UploadEvent::FileDone { path, .. } = e {
+                done = Some(path);
+            }
+        }
+        assert_eq!(done.as_deref(), Some("/in/3f9a1c0b2e7d/proj"));
+        assert_eq!(translated["pane"], "P9");
+        assert_eq!(translated["target_namespace"], "ssh:devbox");
+        assert_eq!(translated["files"][0]["local_name"], "proj");
+        assert_eq!(translated["files"][0]["dir"], true);
+        assert!(
+            !translated
+                .to_string()
+                .contains(&dir.path().to_string_lossy().to_string()),
+            "no local paths leave the client in the event"
+        );
     }
 }
