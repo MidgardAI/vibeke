@@ -1445,7 +1445,11 @@ async fn a_ca_renewed_by_another_process_is_picked_up_by_the_running_proxy() {
     let port = f.proxy.port();
     let host = f.route.host.clone();
     let old = f.ca.cert_der().clone();
-    assert!(tls_connect(port, std::slice::from_ref(&old), &host).await.is_ok());
+    assert!(
+        tls_connect(port, std::slice::from_ref(&old), &host)
+            .await
+            .is_ok()
+    );
     // Another process renews (its clock says the CA is about to expire).
     let dir = f.store.dir().to_path_buf();
     let renewed = crate::ca::LocalCa::load_or_create_at(
