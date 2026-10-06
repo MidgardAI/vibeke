@@ -61,6 +61,8 @@ struct Gate {
 
 #[derive(Default)]
 struct Inner {
+    /// harness id → detected version (one `--version` per server lifetime).
+    versions: HashMap<String, Option<String>>,
     gates: HashMap<String, Gate>,
     /// Panes whose input is locked while a verified keystroke sequence runs (04 §8).
     locks: HashMap<String, Instant>,
@@ -620,7 +622,38 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
 // ---- hook transport ---------------------------------------------------------------------------
 
 /// Bind the signal to a run in the caller's pane (deterministic binding via pane token, §2.6).
-fn bound_run(server: &Server, pane: &str, h: Harness) -> AgentRun {
+/// Detect the harness version once (off the state path) and gate capabilities (04 §12.3).
+fn check_version(server: &Arc<Server>, run_id: &str, h: Harness) {
+    let cached = server.agents.inner.lock().unwrap().versions.get(h.id()).cloned();
+    let srv = server.clone();
+    let run_id = run_id.to_string();
+    tokio::spawn(async move {
+        let v = match cached {
+            Some(v) => v,
+            None => {
+                let v = tokio::task::spawn_blocking(move || harness::version(h)).await.ok().flatten();
+                srv.agents.inner.lock().unwrap().versions.insert(h.id().to_string(), v.clone());
+                v
+            }
+        };
+        let Some(v) = v else { return };
+        let ok = harness::validated(h, &v);
+        update_run(&srv, &run_id, |r, tx| {
+            if r.harness_version.as_deref() == Some(v.as_str()) {
+                return;
+            }
+            r.harness_version = Some(v.clone());
+            if !ok {
+                r.health = AdapterHealth::UnvalidatedVersion;
+                r.execution.confidence = r.execution.confidence.min(0.8);
+                r.capabilities = vec!["observe".into(), "answer_keystroke".into()];
+                tx.event("agent.harness_version_unvalidated", json!({"run": r.id, "pane": r.pane}), json!({"harness": h.id(), "version": v}));
+            }
+        });
+    });
+}
+
+fn bound_run(server: &Arc<Server>, pane: &str, h: Harness) -> AgentRun {
     let mut c = server.core.lock().unwrap();
     if let Some(r) = c.run_for_pane(pane).cloned() {
         if r.harness == h.id() {
@@ -1025,7 +1058,8 @@ async fn gate(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Val
     it.run = run.id.clone();
     it.pane = pane.to_string();
     // Questions are answered natively only where the capability is verified (04 §2.3).
-    let native = h.answer_native(it.kind);
+    let validated = run.health != AdapterHealth::UnvalidatedVersion;
+    let native = validated && h.answer_native(it.kind);
     // Policy fast path (02 §4): only for approvals the harness lets us gate.
     let policy = if it.kind == InteractionKind::Approval && native {
         match_policy(server, &it)

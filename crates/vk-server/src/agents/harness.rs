@@ -640,6 +640,21 @@ pub fn transcript_tail(path: &Path, limit: usize) -> String {
         .join("\n\n")
 }
 
+/// Validated version ranges per harness (04 §2.2, §12.3). Outside them a run gets only
+/// `observe` (+ keystrokes): native answering is withheld until the golden corpus covers it.
+/// The ranges are the versions the adapter was written and tested against in Goal 01 (see
+/// spec/04-harness-adapters.md: live golden fixtures still pending).
+pub fn validated(h: Harness, version: &str) -> bool {
+    let v: Vec<u64> = version.split(['.', '-', '+']).take(3).map(|x| x.parse().unwrap_or(0)).collect();
+    let (major, minor) = (v.first().copied().unwrap_or(0), v.get(1).copied().unwrap_or(0));
+    match h {
+        Harness::Claude => major == 2 && minor == 1,
+        Harness::Codex => major == 0 && (157..=160).contains(&minor),
+        Harness::Pi => major == 0 && (84..=90).contains(&minor),
+        Harness::Omp => major == 17,
+    }
+}
+
 pub fn version(h: Harness) -> Option<String> {
     let out = std::process::Command::new(h.id())
         .arg("--version")
