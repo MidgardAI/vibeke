@@ -34,4 +34,28 @@ Use `task depend` to add a blocking or related task link. Vibeke rejects cyclic 
 
 Dependency links do not merge branches or deploy results automatically.
 
+## Agents sharing one checkout
+
+When several agents work in one directory, Vibeke shows it instead of forbidding it. The collision tracker is advisory: it warns, and it never blocks, reverts, or reassigns a change.
+
+A collision is raised when:
+
+- two runs write the same file (`high`);
+- a run writes inside a glob another run claimed (`high`);
+- a run edits a file another run read in the last ten minutes (`medium`);
+- two runs write different files of one directory (`low`, a sidebar hint only).
+
+Reports from the agents are the main signal. For edits no agent reported, such as shell commands and formatters, Vibeke watches the checkout and polls `git status` while an agent works there. It attributes a change to the run that reported a tool call on that path, otherwise to the runs working there, and it marks the change `ambiguous` when more than one run could have made it. A change nobody was working on is not an agent's collision.
+
+A pane in a collision shows `⚠`, and the sidebar names the paths ("2 agents editing `src/auth.ts`"). Open the collision view with the `collisions` palette action. It lists the paths, the runs, and a timeline, and offers:
+
+- **Pause** one run, with the adapter's own interrupt.
+- **Tell the agents** with a short message. Vibeke uses only a native steer or follow-up channel, or Claude's next hook. It never types into a terminal mid-turn. A run with no such channel is told so.
+- **Start a fresh task from here.** Vibeke creates a task from the shared checkout's `HEAD` and starts a new run there with a hand-off prompt. The original runs keep working and nothing is moved.
+- **Ignore** a path.
+
+`vibeke claim add "src/auth/**" --run a12` says which part of the checkout a run works in. Another run writing there raises a `high` collision at once. With `[collision] enforce_claims = true`, Claude also denies its reported edit tools inside another run's claim. This is a courtesy guardrail: shell commands and other harnesses are unaffected. Claims end with their run.
+
+Use `vibeke collision list` and `vibeke task get <task> --collisions` to read collisions from the command line. See [the `[collision]` settings](../reference/config.md).
+
 See the [task commands](../reference/cli.md#vibeke-task) for arguments. See [transfers and shared access](../handoff.md) to transfer work to another host.

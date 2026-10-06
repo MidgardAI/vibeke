@@ -156,6 +156,64 @@ BrowserSession = TypedDict("BrowserSession", {
     "title": NotRequired[str],
 })
 
+Collision = TypedDict("Collision", {
+    "id": str,
+    "root": str,
+    "severity": Literal["low", "medium", "high"],
+    "status": Literal["open", "cleared", "ignored"],
+    "runs": List[str],
+    "run_info": List["CollisionRunInfo"],
+    "paths": List["CollisionPath"],
+    "ambiguous": bool,
+    "first_ms": int,
+    "last_ms": int,
+    "headline": str,
+    "cleared_ms": Optional[int],
+    "cleared_reason": Optional[str],
+    "timeline": NotRequired[List[Dict[str, Any]]],
+})
+
+CollisionClaim = TypedDict("CollisionClaim", {
+    "id": str,
+    "run": str,
+    "run_handle": Optional[str],
+    "root": str,
+    "glob": str,
+    "created_ms": int,
+    "note": Optional[str],
+    "task": Optional[str],
+})
+
+CollisionIgnore = TypedDict("CollisionIgnore", {
+    "id": str,
+    "root": str,
+    "path": str,
+    "created_ms": int,
+    "expires_ms": Optional[int],
+    "by": str,
+})
+
+CollisionPath = TypedDict("CollisionPath", {
+    "path": str,
+    "severity": Literal["low", "medium", "high"],
+    "reason": Dict[str, Any],
+    "runs": List[str],
+    "ambiguous": bool,
+    "first_ms": int,
+    "last_ms": int,
+})
+
+CollisionRunInfo = TypedDict("CollisionRunInfo", {
+    "run": str,
+    "handle": Optional[str],
+    "name": Optional[str],
+    "harness": Optional[str],
+    "pane": Optional[str],
+    "task": Optional[str],
+    "state": Optional[str],
+    "alive": bool,
+})
+
 ConfigDiagnostic = TypedDict("ConfigDiagnostic", {
     "line": int,
     "col": int,
@@ -751,6 +809,7 @@ AdapterSignalParams = TypedDict("AdapterSignalParams", {
 })
 
 AdapterSignalResult = TypedDict("AdapterSignalResult", {
+    "hook_output": NotRequired[Dict[str, Any]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -2437,6 +2496,131 @@ ClientListResultClientsItem = TypedDict("ClientListResultClientsItem", {
 
 ClientListResult = TypedDict("ClientListResult", {
     "clients": List["ClientListResultClientsItem"],
+})
+
+CollisionGetParams = TypedDict("CollisionGetParams", {
+    "collision": str,
+})
+
+CollisionGetResultSteerItem = TypedDict("CollisionGetResultSteerItem", {
+    "run": str,
+    "channel": Optional[str],
+    "reason": NotRequired[str],
+})
+
+CollisionGetResult = TypedDict("CollisionGetResult", {
+    "collision": "Collision",
+    "claims": List["CollisionClaim"],
+    "steer": List["CollisionGetResultSteerItem"],
+})
+
+CollisionIgnoreParams = TypedDict("CollisionIgnoreParams", {
+    "collision": NotRequired[str],
+    "root": NotRequired[str],
+    "path": str,
+    "for_secs": NotRequired[int],
+})
+
+CollisionIgnoreResult = TypedDict("CollisionIgnoreResult", {
+    "ignore": "CollisionIgnore",
+    "collision": Optional["Collision"],
+    "cursor": NotRequired["Cursor"],
+})
+
+CollisionIgnoresParams = TypedDict("CollisionIgnoresParams", {
+    "root": NotRequired[str],
+})
+
+CollisionIgnoresResult = TypedDict("CollisionIgnoresResult", {
+    "ignores": List["CollisionIgnore"],
+})
+
+CollisionListParams = TypedDict("CollisionListParams", {
+    "task": NotRequired["Target"],
+    "run": NotRequired["Target"],
+    "status": NotRequired[Literal["open", "cleared", "ignored", "all"]],
+    "limit": NotRequired[int],
+})
+
+CollisionListResult = TypedDict("CollisionListResult", {
+    "collisions": List["Collision"],
+    "enabled": bool,
+})
+
+CollisionPauseParams = TypedDict("CollisionPauseParams", {
+    "collision": str,
+    "run": "Target",
+})
+
+CollisionPauseResult = TypedDict("CollisionPauseResult", {
+    "run": Optional["AgentRun"],
+    "paused": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+CollisionStartTaskParams = TypedDict("CollisionStartTaskParams", {
+    "collision": str,
+    "run": NotRequired["Target"],
+    "title": NotRequired[str],
+    "harness": NotRequired[str],
+    "prompt": NotRequired[str],
+    "dry_run": NotRequired[bool],
+})
+
+CollisionStartTaskResult = TypedDict("CollisionStartTaskResult", {
+    "created": bool,
+    "base": str,
+    "title": str,
+    "harness": str,
+    "prompt": str,
+    "source_run": Optional[str],
+    "result": Any,
+    "cursor": NotRequired["Cursor"],
+})
+
+CollisionStatusParams: TypeAlias = Dict[str, Any]
+
+CollisionStatusResult = TypedDict("CollisionStatusResult", {
+    "enabled": bool,
+    "fs_attribution": str,
+    "watcher": str,
+    "window_ms": int,
+    "read_window_ms": int,
+    "poll_interval_ms": int,
+    "enforce_claims": bool,
+    "roots": List[Dict[str, Any]],
+    "claims": int,
+    "ignores": int,
+    "pending_context": int,
+    "note": str,
+})
+
+CollisionTellParams = TypedDict("CollisionTellParams", {
+    "collision": str,
+    "runs": NotRequired[List["Target"]],
+    "text": NotRequired[str],
+})
+
+CollisionTellResultResultsItem = TypedDict("CollisionTellResultResultsItem", {
+    "run": str,
+    "status": Literal["delivered", "queued", "unsupported", "failed"],
+    "channel": Optional[str],
+    "reason": NotRequired[str],
+})
+
+CollisionTellResult = TypedDict("CollisionTellResult", {
+    "results": List["CollisionTellResultResultsItem"],
+    "text": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+CollisionUnignoreParams = TypedDict("CollisionUnignoreParams", {
+    "ignore": str,
+})
+
+CollisionUnignoreResult = TypedDict("CollisionUnignoreResult", {
+    "removed": bool,
+    "cursor": NotRequired["Cursor"],
 })
 
 CompatHerdrCallParamsAsPlugin = TypedDict("CompatHerdrCallParamsAsPlugin", {
@@ -4984,6 +5168,42 @@ TaskCheckRunResult = TypedDict("TaskCheckRunResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+TaskClaimParams = TypedDict("TaskClaimParams", {
+    "glob": str,
+    "run": NotRequired["Target"],
+    "task": NotRequired["Target"],
+    "root": NotRequired[str],
+    "note": NotRequired[str],
+})
+
+TaskClaimResult = TypedDict("TaskClaimResult", {
+    "claim": "CollisionClaim",
+    "conflicts": List["CollisionClaim"],
+    "label": str,
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskClaimReleaseParams = TypedDict("TaskClaimReleaseParams", {
+    "claim": NotRequired[str],
+    "run": NotRequired["Target"],
+    "glob": NotRequired[str],
+})
+
+TaskClaimReleaseResult = TypedDict("TaskClaimReleaseResult", {
+    "released": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskClaimsParams = TypedDict("TaskClaimsParams", {
+    "task": NotRequired["Target"],
+    "run": NotRequired["Target"],
+    "root": NotRequired[str],
+})
+
+TaskClaimsResult = TypedDict("TaskClaimsResult", {
+    "claims": List["CollisionClaim"],
+})
+
 TaskCreateParamsAgentsItem = TypedDict("TaskCreateParamsAgentsItem", {
     "harness": str,
     "name": NotRequired[str],
@@ -5193,6 +5413,7 @@ TaskGetResult = TypedDict("TaskGetResult", {
     "task": "Task",
     "branch_status": Optional["TaskGetResultBranchStatusV0"],
     "pr": NotRequired[Optional["PrLookup"]],
+    "collisions": NotRequired[List["Collision"]],
 })
 
 TaskLinkStatusParams = TypedDict("TaskLinkStatusParams", {
@@ -6024,6 +6245,15 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "client.focus": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "client.hello": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "client.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "collision.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "collision.ignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "collision.ignores": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "collision.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "collision.pause": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "collision.start_task": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "collision.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "collision.tell": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "collision.unignore": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "compat.herdr.call": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "compat.invocation.verify": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "compat.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -6187,6 +6417,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.check.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.check.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.check.run": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.claim": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.claim_release": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "task.claims": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "task.dependency.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.dependency.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -7808,6 +8041,30 @@ TaskBranchChangedData = TypedDict("TaskBranchChangedData", {
     "actual": Optional[str],
 })
 
+TaskClaimAddedSubject = TypedDict("TaskClaimAddedSubject", {
+    "claim": str,
+    "run": str,
+})
+
+TaskClaimAddedData = TypedDict("TaskClaimAddedData", {
+    "glob": str,
+    "repo": str,
+    "note": Optional[str],
+    "conflicts": List[str],
+    "by": str,
+})
+
+TaskClaimReleasedSubject = TypedDict("TaskClaimReleasedSubject", {
+    "claim": str,
+    "run": str,
+})
+
+TaskClaimReleasedData = TypedDict("TaskClaimReleasedData", {
+    "glob": str,
+    "repo": str,
+    "reason": Literal["released", "run_ended"],
+})
+
 TaskCleanupSuggestedSubject = TypedDict("TaskCleanupSuggestedSubject", {
     "task": str,
 })
@@ -7817,6 +8074,57 @@ TaskCleanupSuggestedData = TypedDict("TaskCleanupSuggestedData", {
     "pr": int,
     "url": str,
     "hint": str,
+})
+
+TaskCollisionActionSubject = TypedDict("TaskCollisionActionSubject", {
+    "collision": NotRequired[Optional[str]],
+})
+
+TaskCollisionActionData = TypedDict("TaskCollisionActionData", {
+    "action": Literal["ignore", "pause", "tell", "tell_delivered", "start_task", "claim_denied"],
+    "path": NotRequired[str],
+    "repo": NotRequired[str],
+    "ignore": NotRequired[str],
+    "run": NotRequired[str],
+    "by": NotRequired[str],
+    "results": NotRequired[List[Dict[str, Any]]],
+    "text": NotRequired[str],
+    "via": NotRequired[str],
+    "messages": NotRequired[int],
+    "base": NotRequired[str],
+    "task": NotRequired[Any],
+    "source_run": NotRequired[Optional[str]],
+    "claim": NotRequired[str],
+    "owner": NotRequired[str],
+})
+
+TaskCollisionClearedSubject = TypedDict("TaskCollisionClearedSubject", {
+    "collision": str,
+})
+
+TaskCollisionClearedData = TypedDict("TaskCollisionClearedData", {
+    "repo": str,
+    "reason": Literal["quiet", "runs_ended", "ignored", "restart"],
+    "severity": Literal["low", "medium", "high"],
+    "runs": List[str],
+    "paths": List[str],
+})
+
+TaskCollisionDetectedSubject = TypedDict("TaskCollisionDetectedSubject", {
+    "collision": str,
+})
+
+TaskCollisionDetectedData = TypedDict("TaskCollisionDetectedData", {
+    "repo": str,
+    "severity": Literal["low", "medium", "high"],
+    "reason": Literal["same_file", "same_dir", "read_then_edited", "claim"],
+    "paths": List[str],
+    "new_paths": List[str],
+    "runs": List[str],
+    "new_runs": List[str],
+    "ambiguous": bool,
+    "created": bool,
+    "raised": bool,
 })
 
 TaskCreatedSubject = TypedDict("TaskCreatedSubject", {
@@ -8277,7 +8585,12 @@ EVENT_TYPES = (
     "task.archived",
     "task.binding_changed",
     "task.branch_changed",
+    "task.claim_added",
+    "task.claim_released",
     "task.cleanup_suggested",
+    "task.collision_action",
+    "task.collision_cleared",
+    "task.collision_detected",
     "task.created",
     "task.dependency_changed",
     "task.files_materialized",

@@ -287,6 +287,8 @@ impl Config {
         warnings.extend(crate::preview::Preview::from_value(raw.get("preview")).1);
         // Typed `[events]` (02 §2.3): bad values are located warnings and keep their defaults.
         warnings.extend(crate::events::Events::from_value(raw.get("events")).1);
+        // Typed `[collision]` (05 §10): same rule.
+        warnings.extend(crate::collision::Collision::from_value(raw.get("collision")).1);
 
         let (problems, mut vwarn) = cfg.validate();
         warnings.append(&mut vwarn);

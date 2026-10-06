@@ -137,6 +137,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::elevate::on_event(app, i, k, &v);
         } else if k == "pane.scroll_requested" {
             crate::scroll_req::on_event(app, i, &v);
+        } else if k.starts_with("task.collision_") {
+            crate::collision::on_event(app, i, k);
         }
     }
     if !confirms.is_empty() {

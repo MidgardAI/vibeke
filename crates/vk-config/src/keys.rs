@@ -70,6 +70,7 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("sync_input_pane", "prefix+alt+s"),
     ("fleet", "prefix+shift+m"),
     ("batch_approvals", ""),
+    ("collisions", ""),
     ("setup", ""),
     ("trust_repo", ""),
     // v1 TUI (08 §2.1, §3, §6.5; 09 §3.2).

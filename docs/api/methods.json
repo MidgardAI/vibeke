@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 303,
+  "method_count": 315,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -64,7 +64,7 @@
       "milestone": null,
       "spec": null,
       "params": "{harness: string, event: string, payload?: any, pid?: int}",
-      "result": "{}"
+      "result": "{hook_output?: object}"
     },
     {
       "name": "agent.get",
@@ -1257,6 +1257,132 @@
       "spec": "`{}` → `{clients: [{id, kind, client, version, attached_at, peer: {uid, pid?, machine?}, focused_pane?}]}`",
       "params": "{}",
       "result": "{clients: [{id: string, kind: string, client?: string, version?: string, attached_at: int, peer?: {uid: int, pid?: int, machine?: string}, focused_pane: string|null}]}"
+    },
+    {
+      "name": "collision.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{collision}` → `{collision (with `timeline[{at_ms, run \\| candidates, path, what, source: adapter\\|watcher\\|git}]`), claims[], steer[{run, channel: headless_steer\\|hook_context\\|null, reason?}]}` — `steer` says how each run can be told something (never by typing into a TUI)",
+      "params": "{collision: string}",
+      "result": "{collision: Collision, claims: [CollisionClaim], steer: [{run: string, channel: string|null, reason?: string}]}"
+    },
+    {
+      "name": "collision.ignore",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{collision?: string, root?: string, path: string, for_secs?: int}",
+      "result": "{ignore: CollisionIgnore, collision: Collision|null}"
+    },
+    {
+      "name": "collision.ignores",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "collision"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{root?: string}",
+      "result": "{ignores: [CollisionIgnore]}"
+    },
+    {
+      "name": "collision.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{task?, run?, status?: open|cleared|ignored|all = open, limit?}` → `{collisions: [Collision], enabled}` — `Collision {id, root, severity: low|medium|high, status, runs[], run_info[{run, handle, name, harness, pane, task, state, alive}], paths[{path, severity, reason {kind: same_file|same_dir|read_then_edited|claim, ...}, runs, ambiguous, first_ms, last_ms}], ambiguous, first_ms, last_ms, headline (\"2 agents editing src/auth.ts\"), cleared_ms, cleared_reason}`",
+      "params": "{task?: Target, run?: Target, status?: open|cleared|ignored|all = open, limit?: int}",
+      "result": "{collisions: [Collision], enabled: bool}"
+    },
+    {
+      "name": "collision.pause",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{collision, run}` → `{run, paused}` — the adapter's own interrupt (`agent.interrupt`) of one run of the collision",
+      "params": "{collision: string, run: Target}",
+      "result": "{run: AgentRun|null, paused: bool}"
+    },
+    {
+      "name": "collision.start_task",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{collision, run?, title?, harness?, prompt?, dry_run?: false}` → `{created, base, title, harness, prompt, source_run, result}` — \"Start a fresh task from here\": `task.create` from the shared checkout's `HEAD` (no fetch) with a new run and a hand-off prompt (paths, the shared checkout's branch and `HEAD`, the source run's redacted last message); nothing in the shared checkout and none of its runs is touched. `dry_run` returns the plan (the TUI shows it and asks first)",
+      "params": "{collision: string, run?: Target, title?: string, harness?: string, prompt?: string, dry_run?: bool = false}",
+      "result": "{created: bool, base: string, title: string, harness: string, prompt: string, source_run: string|null, result: any}"
+    },
+    {
+      "name": "collision.status",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{}` → `{enabled, fs_attribution, watcher, window_ms, read_window_ms, poll_interval_ms, enforce_claims, roots[{root, runs, working, watching, watching_since_ms, touches, last_poll_ms}], claims, ignores, pending_context, note}` — the checkouts the tracker follows (two or more live runs, or a claim)",
+      "params": "{}",
+      "result": "{enabled: bool, fs_attribution: string, watcher: string, window_ms: int, read_window_ms: int, poll_interval_ms: int, enforce_claims: bool, roots: [object], claims: int, ignores: int, pending_context: int, note: string}"
+    },
+    {
+      "name": "collision.tell",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{collision, runs?, text?}` → `{results[{run, status: delivered\\|queued\\|unsupported\\|failed, channel, reason?}], text}` — a short steering message (\"Note: another agent (codex, pane w5:p3) is also editing src/auth.ts — coordinate or avoid.\"). Only through a native channel: a headless run's steer (`agent.prompt {mode: steer}`: pi/omp `steer`, Codex `turn/steer`, Claude stream-json), or Claude's hook `additionalContext` carried by the next `UserPromptSubmit`/`PostToolUse` (`queued`, then `task.collision_action {action: tell_delivered}`; dropped after 10 minutes). Any other run is `unsupported` with the reason",
+      "params": "{collision: string, runs?: [Target], text?: string}",
+      "result": "{results: [{run: string, status: delivered|queued|unsupported|failed, channel: string|null, reason?: string}], text: string}"
+    },
+    {
+      "name": "collision.unignore",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{ignore: string}",
+      "result": "{removed: bool}"
     },
     {
       "name": "compat.herdr.call",
@@ -3546,6 +3672,48 @@
       "result": "{check_run: object, definition: object, provenance: any}"
     },
     {
+      "name": "task.claim",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{glob, run?, task?, root?, note?}` → `{claim {id, run, run_handle, root, glob, created_ms, note, task}, conflicts[], label}` — an advisory claim of a repo-relative glob (`src/auth/**`; a directory name covers its contents). Idempotent per run, root and glob; overlapping claims of other runs are reported, not refused. A write by another run inside a claimed glob raises a `high` collision at once. Released when the run ends",
+      "params": "{glob: string, run?: Target, task?: Target, root?: string, note?: string}",
+      "result": "{claim: CollisionClaim, conflicts: [CollisionClaim], label: string}"
+    },
+    {
+      "name": "task.claim_release",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "actor_required",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{claim?, run?, glob?}` → `{released: [claim id]}` (an agent releases its own claims only)",
+      "params": "{claim?: string, run?: Target, glob?: string}",
+      "result": "{released: [string]}"
+    },
+    {
+      "name": "task.claims",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "collision"
+      ],
+      "milestone": "3A, as built 2026-10-07",
+      "spec": "`{task?, run?, root?}` → `{claims[]}` (an agent sees the claims of its own checkout)",
+      "params": "{task?: Target, run?: Target, root?: string}",
+      "result": "{claims: [CollisionClaim]}"
+    },
+    {
       "name": "task.create",
       "mutating": true,
       "scope": "pane",
@@ -3659,7 +3827,7 @@
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{task}` → `{task, workspace, runs, previews, collisions[]}`",
       "params": "{task: Target}",
-      "result": "{task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null}"
+      "result": "{task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null, collisions?: [Collision]}"
     },
     {
       "name": "task.link.status",

@@ -53,6 +53,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("task_lifecycle", task_lifecycle::METHODS),
         ("review::pr", review::pr::METHODS),
         ("review::interval", review::interval::METHODS),
+        ("collision", collision::METHODS),
     ]
 }
 
@@ -117,6 +118,7 @@ fn build() -> Result<Registry, Vec<String>> {
         .lines()
         .chain(BATCH_3D_DEFS.lines())
         .chain(BATCH_3F_DEFS.lines())
+        .chain(BATCH_3A_DEFS.lines())
     {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -169,7 +171,12 @@ fn build() -> Result<Registry, Vec<String>> {
     };
     let methods = load(METHOD_SHAPES, "method", &mut errs);
     let events = load(
-        &[EVENT_SHAPES, BATCH_3D_EVENT_SHAPES, BATCH_3F_EVENT_SHAPES],
+        &[
+            EVENT_SHAPES,
+            BATCH_3D_EVENT_SHAPES,
+            BATCH_3F_EVENT_SHAPES,
+            BATCH_3A_EVENT_SHAPES,
+        ],
         "event",
         &mut errs,
     );
@@ -481,6 +488,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     V1_REMAINDER_SHAPES,
     BATCH_3D_SHAPES,
     BATCH_3F_SHAPES,
+    BATCH_3A_SHAPES,
 ];
 
 const CORE_SHAPES: &str = r##"
@@ -589,7 +597,7 @@ interaction.cancel :: {interaction: Target} => {interaction: Interaction}
 
 # --- tasks, worktrees ---
 task.list :: {status?: string, repo?: string} => {tasks: [Task]}
-task.get :: {task: Target} => {task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null}
+task.get :: {task: Target} => {task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null, collisions?: [Collision]}
 task.create :: {title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool, dry_run?: bool = false}
   => {task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun], copied?: [string], files?: [MaterializedFile], deps?: any, setup?: {pane: string|null, status: string|null, agents_pending: bool, commands: [{source: string, command: string}]}, warnings?: [string]}
   | {dry_run: true, title: string, repo_root: string, slug: string, plan: object, agents: any, setup: bool}
@@ -744,7 +752,7 @@ adapter.gate :: {harness: string, event: string, payload?: any, pid?: int} => {d
 adapter.report_self :: {pane?: Target, pane_id?: Target, source?: string = vibeke, seq?: int, agent?: string, harness?: string, state: idle|working|blocked|done|string, message?: string, resume_argv?: [string]}
   => {type: 'ok', dropped?: 'stale_seq', applied?: bool}
 # pane-token only; fire-and-forget event signal from a hook/extension
-adapter.signal :: {harness: string, event: string, payload?: any, pid?: int} => {}
+adapter.signal :: {harness: string, event: string, payload?: any, pid?: int} => {hook_output?: object}
 agent.manifests :: {} => {manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}], warnings: [string]}
 agent.manifests_reload :: {} => {warnings: [string], manifests: [{id: string, name: string, source: string, family: string, transports: [string], validated_range: any, capabilities_unversioned: any, capabilities_unverified: any, detects: bool, screen_rules: bool, warnings: [string]}]}
 agent.report :: {pane?: Target, state: string, harness?: string = claude, message?: string} => {}
@@ -1270,6 +1278,48 @@ const BATCH_3F_EVENT_SHAPES: &str = r##"
 review.pr_observed :: {task: string} => {observation: string, lookup: observed|no_pr|failed, pr: string|null, head: string|null, state: open|closed|merged|null, draft: bool|null, checks: none|pending|passing|failing|null, reason: string|null}
 review.pr_head_changed :: {task: string} => {pr: string|null, from: string|null, to: string|null, observation: string}
 review.pr_claimed :: {task: string} => {claim: string, url: string, pr: string|null, source: pasted_url|agent_statement}
+"##;
+
+/// Collision tracker and claims (05 §10; 3A).
+const BATCH_3A_DEFS: &str = r##"
+CollisionRunInfo = {run: string, handle: string|null, name: string|null, harness: string|null, pane: string|null, task: string|null, state: string|null, alive: bool}
+CollisionPath = {path: string, severity: low|medium|high, reason: object, runs: [string], ambiguous: bool, first_ms: int, last_ms: int}
+Collision = {id: string, root: string, severity: low|medium|high, status: open|cleared|ignored, runs: [string], run_info: [CollisionRunInfo], paths: [CollisionPath], ambiguous: bool, first_ms: int, last_ms: int, headline: string, cleared_ms: int|null, cleared_reason: string|null, timeline?: [object]}
+CollisionClaim = {id: string, run: string, run_handle: string|null, root: string, glob: string, created_ms: int, note: string|null, task: string|null}
+CollisionIgnore = {id: string, root: string, path: string, created_ms: int, expires_ms: int|null, by: string}
+"##;
+
+const BATCH_3A_SHAPES: &str = r##"
+# --- collision tracker (05 §10): advisory; it warns and never blocks, reverts or reassigns ---
+# an agent (pane scope) sees the collisions of its own run only
+collision.list :: {task?: Target, run?: Target, status?: open|cleared|ignored|all = open, limit?: int} => {collisions: [Collision], enabled: bool}
+collision.get :: {collision: string} => {collision: Collision, claims: [CollisionClaim], steer: [{run: string, channel: string|null, reason?: string}]}
+# full scope only
+collision.status :: {} => {enabled: bool, fs_attribution: string, watcher: string, window_ms: int, read_window_ms: int, poll_interval_ms: int, enforce_claims: bool, roots: [object], claims: int, ignores: int, pending_context: int, note: string}
+collision.ignores :: {root?: string} => {ignores: [CollisionIgnore]}
+# "Ignore for this path": drops the path from open collisions and stops tracking it (optionally for a while)
+collision.ignore :: {collision?: string, root?: string, path: string, for_secs?: int} => {ignore: CollisionIgnore, collision: Collision|null}
+collision.unignore :: {ignore: string} => {removed: bool}
+# the adapter's own interrupt of one run of the collision
+collision.pause :: {collision: string, run: Target} => {run: AgentRun|null, paused: bool}
+# native steer only (headless steer, Claude hook context on the next prompt or tool result); never typed into a TUI
+collision.tell :: {collision: string, runs?: [Target], text?: string} => {results: [{run: string, status: delivered|queued|unsupported|failed, channel: string|null, reason?: string}], text: string}
+# a task from the shared checkout's HEAD with a new run and a hand-off prompt; nothing is moved
+collision.start_task :: {collision: string, run?: Target, title?: string, harness?: string, prompt?: string, dry_run?: bool = false} => {created: bool, base: string, title: string, harness: string, prompt: string, source_run: string|null, result: any}
+
+# --- advisory claims ---
+# a pane-scoped agent claims for its own run only
+task.claim :: {glob: string, run?: Target, task?: Target, root?: string, note?: string} => {claim: CollisionClaim, conflicts: [CollisionClaim], label: string}
+task.claims :: {task?: Target, run?: Target, root?: string} => {claims: [CollisionClaim]}
+task.claim_release :: {claim?: string, run?: Target, glob?: string} => {released: [string]}
+"##;
+
+const BATCH_3A_EVENT_SHAPES: &str = r##"
+task.collision_detected :: {collision: string} => {repo: string, severity: low|medium|high, reason: same_file|same_dir|read_then_edited|claim, paths: [string], new_paths: [string], runs: [string], new_runs: [string], ambiguous: bool, created: bool, raised: bool}
+task.collision_cleared :: {collision: string} => {repo: string, reason: quiet|runs_ended|ignored|restart, severity: low|medium|high, runs: [string], paths: [string]}
+task.collision_action :: {collision?: string|null} => {action: ignore|pause|tell|tell_delivered|start_task|claim_denied, path?: string, repo?: string, ignore?: string, run?: string, by?: string, results?: [object], text?: string, via?: string, messages?: int, base?: string, task?: any, source_run?: string|null, claim?: string, owner?: string}
+task.claim_added :: {claim: string, run: string} => {glob: string, repo: string, note: string|null, conflicts: [string], by: string}
+task.claim_released :: {claim: string, run: string} => {glob: string, repo: string, reason: released|run_ended}
 "##;
 
 #[cfg(test)]

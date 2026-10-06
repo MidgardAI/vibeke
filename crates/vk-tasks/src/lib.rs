@@ -58,6 +58,7 @@
 //!   the in-box clone script plus host-side fetch/push (`vibeke task sync`).
 
 mod clone;
+pub mod collision;
 mod deps;
 mod error;
 mod files;

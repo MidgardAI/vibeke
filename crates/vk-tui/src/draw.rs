@@ -244,6 +244,15 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         segs.push((format!("{mark} "), t.s(c)));
     }
     segs.push((label, t.dim()));
+    // Another agent is editing the same files in this checkout (05 §10; `~` = same directory).
+    if let Some((mark, rank)) = crate::collision::agent_marker(app, mi, &r.pane) {
+        let c = match rank {
+            3 => t.red,
+            2 => t.yellow,
+            _ => t.muted,
+        };
+        segs.push((format!(" {mark}"), t.bold(c)));
+    }
     // A plugin's status line for this run (`agent.view.set`).
     if let Some(v) = crate::plugins::agent_view(app, mi, &r.id) {
         let c = match v.tone.as_str() {
@@ -509,6 +518,20 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
         if !crate::sidebar::hidden(app, mi, r) {
             rows.push(agent_row(app, mi, r, &format!("{pad}    ")));
         }
+    }
+    // "2 agents editing src/auth.ts" (05 §10); a dim `~` hint for the same-directory level.
+    for (line, rank) in crate::collision::sidebar_lines(app, mi, &ws_panes) {
+        let (mark, c) = match rank {
+            3 => ("⚠", t.red),
+            2 => ("⚠", t.yellow),
+            _ => ("~", t.muted),
+        };
+        rows.push(SideRow {
+            segs: vec![(format!("{pad}    {mark} {line}"), t.s(c))],
+            target: crate::collision::sidebar_target(app, mi, &ws_panes).map(|p| (mi, p)),
+            focused: false,
+            ..Default::default()
+        });
     }
     for c in crate::sidebar::task_children(app, mi, w) {
         workspace_rows_at(app, mi, c, depth + 1, rows);
@@ -778,6 +801,15 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
     draw_borders(app, g, area, &rects, focused.as_deref());
     for (pid, r) in &rects {
         draw_pane_at(app, g, pid, *r, focused.as_deref(), &mut cursor);
+        // ⚠ in the top-left corner of a pane whose agent shares files with another (05 §10).
+        if let Some(b) = crate::collision::pane_badge(app, app.cur, pid) {
+            let c = if crate::collision::pane_rank(app, app.cur, pid) >= 3 {
+                t.red
+            } else {
+                t.yellow
+            };
+            g.put_str(r.x, r.y, &format!(" {b} "), t.bold(c), 3);
+        }
         // 📷 counter in the corner of unfocused panes only (never over the focused agent).
         if focused.as_deref() != Some(pid.as_str())
             && let Some(n) = crate::gallery::badge(app, app.cur, pid)

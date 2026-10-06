@@ -281,6 +281,33 @@ class Api:
     async def client_list(self, params: "Optional[t.ClientListParams]" = None) -> "t.ClientListResult":
         return await self.call("client.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def collision_get(self, params: "t.CollisionGetParams") -> "t.CollisionGetResult":
+        return await self.call("collision.get", params)  # type: ignore[arg-type, return-value]
+
+    async def collision_ignore(self, params: "t.CollisionIgnoreParams") -> "t.CollisionIgnoreResult":
+        return await self.call("collision.ignore", params)  # type: ignore[arg-type, return-value]
+
+    async def collision_ignores(self, params: "Optional[t.CollisionIgnoresParams]" = None) -> "t.CollisionIgnoresResult":
+        return await self.call("collision.ignores", params or {})  # type: ignore[arg-type, return-value]
+
+    async def collision_list(self, params: "Optional[t.CollisionListParams]" = None) -> "t.CollisionListResult":
+        return await self.call("collision.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def collision_pause(self, params: "t.CollisionPauseParams") -> "t.CollisionPauseResult":
+        return await self.call("collision.pause", params)  # type: ignore[arg-type, return-value]
+
+    async def collision_start_task(self, params: "t.CollisionStartTaskParams") -> "t.CollisionStartTaskResult":
+        return await self.call("collision.start_task", params)  # type: ignore[arg-type, return-value]
+
+    async def collision_status(self, params: "Optional[t.CollisionStatusParams]" = None) -> "t.CollisionStatusResult":
+        return await self.call("collision.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def collision_tell(self, params: "t.CollisionTellParams") -> "t.CollisionTellResult":
+        return await self.call("collision.tell", params)  # type: ignore[arg-type, return-value]
+
+    async def collision_unignore(self, params: "t.CollisionUnignoreParams") -> "t.CollisionUnignoreResult":
+        return await self.call("collision.unignore", params)  # type: ignore[arg-type, return-value]
+
     async def compat_herdr_call(self, params: "t.CompatHerdrCallParams") -> "t.CompatHerdrCallResult":
         return await self.call("compat.herdr.call", params)  # type: ignore[arg-type, return-value]
 
@@ -769,6 +796,15 @@ class Api:
 
     async def task_check_run(self, params: "t.TaskCheckRunParams") -> "t.TaskCheckRunResult":
         return await self.call("task.check.run", params)  # type: ignore[arg-type, return-value]
+
+    async def task_claim(self, params: "t.TaskClaimParams") -> "t.TaskClaimResult":
+        return await self.call("task.claim", params)  # type: ignore[arg-type, return-value]
+
+    async def task_claim_release(self, params: "Optional[t.TaskClaimReleaseParams]" = None) -> "t.TaskClaimReleaseResult":
+        return await self.call("task.claim_release", params or {})  # type: ignore[arg-type, return-value]
+
+    async def task_claims(self, params: "Optional[t.TaskClaimsParams]" = None) -> "t.TaskClaimsResult":
+        return await self.call("task.claims", params or {})  # type: ignore[arg-type, return-value]
 
     async def task_create(self, params: "t.TaskCreateParams") -> "t.TaskCreateResult":
         return await self.call("task.create", params)  # type: ignore[arg-type, return-value]

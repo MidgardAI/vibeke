@@ -437,6 +437,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::machines::PANE_FORBIDDEN.contains(&method)
         || crate::items::PANE_FORBIDDEN.contains(&method)
         || crate::review::pr::PANE_FORBIDDEN.contains(&method)
+        || crate::collision::PANE_FORBIDDEN.contains(&method)
         || crate::review::ext::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
@@ -581,6 +582,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::items::api(server, method, p) {
         return r;
     }
+    if let Some(r) = crate::collision::api(server, ctx, method, p).await {
+        return r;
+    }
     if let Some(r) = crate::pane_api::api(server, ctx, method, p) {
         return r;
     }
@@ -696,6 +700,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::security::METHODS)
                     .chain(crate::review::pr::METHODS)
                     .chain(crate::review::interval::METHODS)
+                    .chain(crate::collision::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

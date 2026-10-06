@@ -2,6 +2,7 @@
 //! checks, hot-reload diffing and a debounced file watcher.
 
 mod binding;
+mod collision;
 pub mod edit;
 mod events;
 mod keys;
@@ -15,6 +16,7 @@ mod units;
 mod watch;
 
 pub use binding::{Binding, parse_binding, parse_prefix_key};
+pub use collision::{COLLISION_KEYS, Collision, FsAttribution};
 pub use events::Events;
 pub use keys::{
     ACTION_ALIASES, COPY_MODE_ACTIONS, Conflict, ConflictReason, DEFAULT_KEYMAP, binding_clash,

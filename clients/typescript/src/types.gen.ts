@@ -145,6 +145,64 @@ export type BrowserSession = {
   title?: string;
 };
 
+export type Collision = {
+  id: string;
+  root: string;
+  severity: "low" | "medium" | "high";
+  status: "open" | "cleared" | "ignored";
+  runs: string[];
+  run_info: CollisionRunInfo[];
+  paths: CollisionPath[];
+  ambiguous: boolean;
+  first_ms: number;
+  last_ms: number;
+  headline: string;
+  cleared_ms: number | null;
+  cleared_reason: string | null;
+  timeline?: Record<string, unknown>[];
+};
+
+export type CollisionClaim = {
+  id: string;
+  run: string;
+  run_handle: string | null;
+  root: string;
+  glob: string;
+  created_ms: number;
+  note: string | null;
+  task: string | null;
+};
+
+export type CollisionIgnore = {
+  id: string;
+  root: string;
+  path: string;
+  created_ms: number;
+  expires_ms: number | null;
+  by: string;
+};
+
+export type CollisionPath = {
+  path: string;
+  severity: "low" | "medium" | "high";
+  reason: Record<string, unknown>;
+  runs: string[];
+  ambiguous: boolean;
+  first_ms: number;
+  last_ms: number;
+};
+
+export type CollisionRunInfo = {
+  run: string;
+  handle: string | null;
+  name: string | null;
+  harness: string | null;
+  pane: string | null;
+  task: string | null;
+  state: string | null;
+  alive: boolean;
+};
+
 export type ConfigDiagnostic = {
   line: number;
   col: number;
@@ -720,6 +778,7 @@ export type AdapterSignalParams = {
 };
 
 export type AdapterSignalResult = {
+  hook_output?: Record<string, unknown>;
   cursor?: Cursor;
 };
 
@@ -2258,6 +2317,127 @@ export type ClientListResult = {
     };
     focused_pane: string | null;
   }[];
+};
+
+export type CollisionGetParams = {
+  collision: string;
+};
+
+export type CollisionGetResult = {
+  collision: Collision;
+  claims: CollisionClaim[];
+  steer: {
+    run: string;
+    channel: string | null;
+    reason?: string;
+  }[];
+};
+
+export type CollisionIgnoreParams = {
+  collision?: string;
+  root?: string;
+  path: string;
+  for_secs?: number;
+};
+
+export type CollisionIgnoreResult = {
+  ignore: CollisionIgnore;
+  collision: Collision | null;
+  cursor?: Cursor;
+};
+
+export type CollisionIgnoresParams = {
+  root?: string;
+};
+
+export type CollisionIgnoresResult = {
+  ignores: CollisionIgnore[];
+};
+
+export type CollisionListParams = {
+  task?: Target;
+  run?: Target;
+  status?: "open" | "cleared" | "ignored" | "all";
+  limit?: number;
+};
+
+export type CollisionListResult = {
+  collisions: Collision[];
+  enabled: boolean;
+};
+
+export type CollisionPauseParams = {
+  collision: string;
+  run: Target;
+};
+
+export type CollisionPauseResult = {
+  run: AgentRun | null;
+  paused: boolean;
+  cursor?: Cursor;
+};
+
+export type CollisionStartTaskParams = {
+  collision: string;
+  run?: Target;
+  title?: string;
+  harness?: string;
+  prompt?: string;
+  dry_run?: boolean;
+};
+
+export type CollisionStartTaskResult = {
+  created: boolean;
+  base: string;
+  title: string;
+  harness: string;
+  prompt: string;
+  source_run: string | null;
+  result: unknown;
+  cursor?: Cursor;
+};
+
+export type CollisionStatusParams = Record<string, unknown>;
+
+export type CollisionStatusResult = {
+  enabled: boolean;
+  fs_attribution: string;
+  watcher: string;
+  window_ms: number;
+  read_window_ms: number;
+  poll_interval_ms: number;
+  enforce_claims: boolean;
+  roots: Record<string, unknown>[];
+  claims: number;
+  ignores: number;
+  pending_context: number;
+  note: string;
+};
+
+export type CollisionTellParams = {
+  collision: string;
+  runs?: Target[];
+  text?: string;
+};
+
+export type CollisionTellResult = {
+  results: {
+    run: string;
+    status: "delivered" | "queued" | "unsupported" | "failed";
+    channel: string | null;
+    reason?: string;
+  }[];
+  text: string;
+  cursor?: Cursor;
+};
+
+export type CollisionUnignoreParams = {
+  ignore: string;
+};
+
+export type CollisionUnignoreResult = {
+  removed: boolean;
+  cursor?: Cursor;
 };
 
 export type CompatHerdrCallParams = {
@@ -4643,6 +4823,42 @@ export type TaskCheckRunResult = {
   cursor?: Cursor;
 };
 
+export type TaskClaimParams = {
+  glob: string;
+  run?: Target;
+  task?: Target;
+  root?: string;
+  note?: string;
+};
+
+export type TaskClaimResult = {
+  claim: CollisionClaim;
+  conflicts: CollisionClaim[];
+  label: string;
+  cursor?: Cursor;
+};
+
+export type TaskClaimReleaseParams = {
+  claim?: string;
+  run?: Target;
+  glob?: string;
+};
+
+export type TaskClaimReleaseResult = {
+  released: string[];
+  cursor?: Cursor;
+};
+
+export type TaskClaimsParams = {
+  task?: Target;
+  run?: Target;
+  root?: string;
+};
+
+export type TaskClaimsResult = {
+  claims: CollisionClaim[];
+};
+
 export type TaskCreateParams = {
   title: string;
   repo: string;
@@ -4814,6 +5030,7 @@ export type TaskGetResult = {
     compared_to: string | null;
   } | null;
   pr?: PrLookup | null;
+  collisions?: Collision[];
 };
 
 export type TaskLinkStatusParams = {
@@ -5595,6 +5812,15 @@ export interface Methods {
   "client.focus": { params: ClientFocusParams; result: ClientFocusResult };
   "client.hello": { params: ClientHelloParams; result: ClientHelloResult };
   "client.list": { params: ClientListParams; result: ClientListResult };
+  "collision.get": { params: CollisionGetParams; result: CollisionGetResult };
+  "collision.ignore": { params: CollisionIgnoreParams; result: CollisionIgnoreResult };
+  "collision.ignores": { params: CollisionIgnoresParams; result: CollisionIgnoresResult };
+  "collision.list": { params: CollisionListParams; result: CollisionListResult };
+  "collision.pause": { params: CollisionPauseParams; result: CollisionPauseResult };
+  "collision.start_task": { params: CollisionStartTaskParams; result: CollisionStartTaskResult };
+  "collision.status": { params: CollisionStatusParams; result: CollisionStatusResult };
+  "collision.tell": { params: CollisionTellParams; result: CollisionTellResult };
+  "collision.unignore": { params: CollisionUnignoreParams; result: CollisionUnignoreResult };
   "compat.herdr.call": { params: CompatHerdrCallParams; result: CompatHerdrCallResult };
   "compat.invocation.verify": { params: CompatInvocationVerifyParams; result: CompatInvocationVerifyResult };
   "compat.status": { params: CompatStatusParams; result: CompatStatusResult };
@@ -5758,6 +5984,9 @@ export interface Methods {
   "task.check.get": { params: TaskCheckGetParams; result: TaskCheckGetResult };
   "task.check.list": { params: TaskCheckListParams; result: TaskCheckListResult };
   "task.check.run": { params: TaskCheckRunParams; result: TaskCheckRunResult };
+  "task.claim": { params: TaskClaimParams; result: TaskClaimResult };
+  "task.claim_release": { params: TaskClaimReleaseParams; result: TaskClaimReleaseResult };
+  "task.claims": { params: TaskClaimsParams; result: TaskClaimsResult };
   "task.create": { params: TaskCreateParams; result: TaskCreateResult };
   "task.dependency.add": { params: TaskDependencyAddParams; result: TaskDependencyAddResult };
   "task.dependency.list": { params: TaskDependencyListParams; result: TaskDependencyListResult };
@@ -5904,6 +6133,15 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "client.focus": { mutating: true, scope: "full", paneScope: "forbidden" },
   "client.hello": { mutating: false, scope: "pane", paneScope: "open" },
   "client.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "collision.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "collision.ignore": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "collision.ignores": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "collision.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "collision.pause": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "collision.start_task": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "collision.status": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "collision.tell": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "collision.unignore": { mutating: true, scope: "full", paneScope: "forbidden" },
   "compat.herdr.call": { mutating: true, scope: "pane", paneScope: "open" },
   "compat.invocation.verify": { mutating: true, scope: "full", paneScope: "forbidden" },
   "compat.status": { mutating: false, scope: "pane", paneScope: "open" },
@@ -6067,6 +6305,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "task.check.get": { mutating: false, scope: "pane", paneScope: "open" },
   "task.check.list": { mutating: false, scope: "pane", paneScope: "open" },
   "task.check.run": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "task.claim": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.claim_release": { mutating: true, scope: "pane", paneScope: "open" },
+  "task.claims": { mutating: false, scope: "pane", paneScope: "open" },
   "task.create": { mutating: true, scope: "pane", paneScope: "open" },
   "task.dependency.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "task.dependency.list": { mutating: false, scope: "pane", paneScope: "open" },
@@ -7682,6 +7923,30 @@ export type TaskBranchChangedData = {
   actual: string | null;
 };
 
+export type TaskClaimAddedSubject = {
+  claim: string;
+  run: string;
+};
+
+export type TaskClaimAddedData = {
+  glob: string;
+  repo: string;
+  note: string | null;
+  conflicts: string[];
+  by: string;
+};
+
+export type TaskClaimReleasedSubject = {
+  claim: string;
+  run: string;
+};
+
+export type TaskClaimReleasedData = {
+  glob: string;
+  repo: string;
+  reason: "released" | "run_ended";
+};
+
 export type TaskCleanupSuggestedSubject = {
   task: string;
 };
@@ -7691,6 +7956,57 @@ export type TaskCleanupSuggestedData = {
   pr: number;
   url: string;
   hint: string;
+};
+
+export type TaskCollisionActionSubject = {
+  collision?: string | null;
+};
+
+export type TaskCollisionActionData = {
+  action: "ignore" | "pause" | "tell" | "tell_delivered" | "start_task" | "claim_denied";
+  path?: string;
+  repo?: string;
+  ignore?: string;
+  run?: string;
+  by?: string;
+  results?: Record<string, unknown>[];
+  text?: string;
+  via?: string;
+  messages?: number;
+  base?: string;
+  task?: unknown;
+  source_run?: string | null;
+  claim?: string;
+  owner?: string;
+};
+
+export type TaskCollisionClearedSubject = {
+  collision: string;
+};
+
+export type TaskCollisionClearedData = {
+  repo: string;
+  reason: "quiet" | "runs_ended" | "ignored" | "restart";
+  severity: "low" | "medium" | "high";
+  runs: string[];
+  paths: string[];
+};
+
+export type TaskCollisionDetectedSubject = {
+  collision: string;
+};
+
+export type TaskCollisionDetectedData = {
+  repo: string;
+  severity: "low" | "medium" | "high";
+  reason: "same_file" | "same_dir" | "read_then_edited" | "claim";
+  paths: string[];
+  new_paths: string[];
+  runs: string[];
+  new_runs: string[];
+  ambiguous: boolean;
+  created: boolean;
+  raised: boolean;
 };
 
 export type TaskCreatedSubject = {
@@ -8147,7 +8463,12 @@ export interface EventMap {
   "task.archived": { subject: TaskArchivedSubject; data: TaskArchivedData };
   "task.binding_changed": { subject: TaskBindingChangedSubject; data: TaskBindingChangedData };
   "task.branch_changed": { subject: TaskBranchChangedSubject; data: TaskBranchChangedData };
+  "task.claim_added": { subject: TaskClaimAddedSubject; data: TaskClaimAddedData };
+  "task.claim_released": { subject: TaskClaimReleasedSubject; data: TaskClaimReleasedData };
   "task.cleanup_suggested": { subject: TaskCleanupSuggestedSubject; data: TaskCleanupSuggestedData };
+  "task.collision_action": { subject: TaskCollisionActionSubject; data: TaskCollisionActionData };
+  "task.collision_cleared": { subject: TaskCollisionClearedSubject; data: TaskCollisionClearedData };
+  "task.collision_detected": { subject: TaskCollisionDetectedSubject; data: TaskCollisionDetectedData };
   "task.created": { subject: TaskCreatedSubject; data: TaskCreatedData };
   "task.dependency_changed": { subject: TaskDependencyChangedSubject; data: TaskDependencyChangedData };
   "task.files_materialized": { subject: TaskFilesMaterializedSubject; data: TaskFilesMaterializedData };

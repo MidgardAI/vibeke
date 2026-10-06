@@ -303,6 +303,25 @@ Pane-scoped callers (agents) may read tasks but not `task.track`, `task.intent.u
 
 *As built (2026-10-06, M5 slice 2):* `worktree.create {repo|cwd, branch, base?, open?: false, focus?: false, name?}` creates the worktree under `[tasks] root` (branch template and fetch settings from `[tasks]`, overridable per call) and returns `{worktree: {path, branch, base_ref, repo_root, created_branch}, workspace?, tab?, root_pane?}`; `path` is not supported yet. `worktree.open {path, focus?, name?}` reuses the workspace rooted at the worktree or creates one: `{worktree, workspace, created}`. They emit `worktree.created` / `worktree.opened`; `task.create` emits `worktree.created` for worktree checkouts too. Pane-scoped callers cannot pass `focus: true`.
 
+### 2.10a `collision.*`, `task.claim*` [3A, as built 2026-10-07]
+
+The shared-checkout collision tracker and advisory claims (05 §10). **Advisory**: the tracker warns; it never blocks, reverts or reassigns a change. Pane-scoped callers (agents) may read the collisions of their own run (`collision.list|get` are filtered to it) and manage their own claims (`task.claim`, `task.claims`, `task.claim_release`: a claim names the caller's own run; `permission_denied` otherwise); everything else is full scope only (`PANE_FORBIDDEN`). Events: `task.collision_detected {repo, severity, reason, paths, new_paths, runs, new_runs, ambiguous, created, raised}` (a record was created, gained a path or a run, or its severity rose), `task.collision_cleared {repo, reason: quiet|runs_ended|ignored|restart, ...}`, `task.collision_action {action: ignore|pause|tell|tell_delivered|start_task|claim_denied, ...}`, `task.claim_added`, `task.claim_released {reason: released|run_ended}`.
+
+| Method | Params → Result |
+|---|---|
+| `collision.list` | `{task?, run?, status?: open|cleared|ignored|all = open, limit?}` → `{collisions: [Collision], enabled}` — `Collision {id, root, severity: low|medium|high, status, runs[], run_info[{run, handle, name, harness, pane, task, state, alive}], paths[{path, severity, reason {kind: same_file|same_dir|read_then_edited|claim, ...}, runs, ambiguous, first_ms, last_ms}], ambiguous, first_ms, last_ms, headline ("2 agents editing src/auth.ts"), cleared_ms, cleared_reason}` |
+| `collision.get` | `{collision}` → `{collision (with `timeline[{at_ms, run \| candidates, path, what, source: adapter\|watcher\|git}]`), claims[], steer[{run, channel: headless_steer\|hook_context\|null, reason?}]}` — `steer` says how each run can be told something (never by typing into a TUI) |
+| `collision.status` | `{}` → `{enabled, fs_attribution, watcher, window_ms, read_window_ms, poll_interval_ms, enforce_claims, roots[{root, runs, working, watching, watching_since_ms, touches, last_poll_ms}], claims, ignores, pending_context, note}` — the checkouts the tracker follows (two or more live runs, or a claim) |
+| `collision.ignore` / `.unignore` / `.ignores` | "Ignore for this path": `{collision?, root?, path, for_secs?}` → `{ignore {id, root, path, created_ms, expires_ms, by}, collision}` drops the path from the open records of the checkout (a record with no path left closes as `ignored`) and stops tracking it, optionally for a while. `unignore {ignore}` → `{removed}`; `ignores {root?}` → `{ignores}` |
+| `collision.pause` | `{collision, run}` → `{run, paused}` — the adapter's own interrupt (`agent.interrupt`) of one run of the collision |
+| `collision.tell` | `{collision, runs?, text?}` → `{results[{run, status: delivered\|queued\|unsupported\|failed, channel, reason?}], text}` — a short steering message ("Note: another agent (codex, pane w5:p3) is also editing src/auth.ts — coordinate or avoid."). Only through a native channel: a headless run's steer (`agent.prompt {mode: steer}`: pi/omp `steer`, Codex `turn/steer`, Claude stream-json), or Claude's hook `additionalContext` carried by the next `UserPromptSubmit`/`PostToolUse` (`queued`, then `task.collision_action {action: tell_delivered}`; dropped after 10 minutes). Any other run is `unsupported` with the reason |
+| `collision.start_task` | `{collision, run?, title?, harness?, prompt?, dry_run?: false}` → `{created, base, title, harness, prompt, source_run, result}` — "Start a fresh task from here": `task.create` from the shared checkout's `HEAD` (no fetch) with a new run and a hand-off prompt (paths, the shared checkout's branch and `HEAD`, the source run's redacted last message); nothing in the shared checkout and none of its runs is touched. `dry_run` returns the plan (the TUI shows it and asks first) |
+| `task.claim` | `{glob, run?, task?, root?, note?}` → `{claim {id, run, run_handle, root, glob, created_ms, note, task}, conflicts[], label}` — an advisory claim of a repo-relative glob (`src/auth/**`; a directory name covers its contents). Idempotent per run, root and glob; overlapping claims of other runs are reported, not refused. A write by another run inside a claimed glob raises a `high` collision at once. Released when the run ends |
+| `task.claims` | `{task?, run?, root?}` → `{claims[]}` (an agent sees the claims of its own checkout) |
+| `task.claim_release` | `{claim?, run?, glob?}` → `{released: [claim id]}` (an agent releases its own claims only) |
+
+`adapter.signal` replies `{hook_output?}`: the `vibeke hook` shim prints it for Claude (queued steering context; with `[collision] enforce_claims = true`, a `PreToolUse` `permissionDecision: deny` for a reported edit tool inside another live run's claim — a courtesy guardrail: shell commands and non-integrated harnesses are unaffected). `task.get` also returns `collisions[]` (the open collisions of the task's runs); `vibeke task get <t> --collisions` prints only those.
+
 ### 2.11 `preview.*`, `browser.*` [M3]
 
 Semantics in [06](06-remote-and-preview.md) Part B.
@@ -808,6 +827,8 @@ vibeke interaction list|get|answer|cancel   (alias: vibeke ask …)
 vibeke policy    list|add|remove|test|trust
 vibeke task      new|list|get|park|resume|finish|archive|setup-log
 vibeke worktree  list|create|open|remove|repo-root
+vibeke claim     add <glob> [--run r|--task t] [--root dir] [--note t]|list|rm <claim>|--run r   # advisory claims (05 §10, 3A)
+vibeke collision list|get|status|ignore <collision> <path>|ignores|unignore|pause <collision> <run>|tell <collision> [--text t]|fresh <collision> [--dry-run]   # shared-checkout collisions (05 §10, 3A); also `task get <t> --collisions`
 vibeke preview   list|declare|promote|dismiss|open|url|mirror|unmirror|forget|profile|show
 vibeke browser   open|navigate|click|type|press|wait|eval|screenshot|snapshot|console|network|dom|close|list|status|install|take-over|release|diff
 vibeke mcp       stdio MCP server (06 B7)

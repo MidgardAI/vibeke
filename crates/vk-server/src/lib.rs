@@ -11,6 +11,7 @@ pub mod assist;
 pub mod blob_api;
 pub mod blob_store;
 pub mod browser_pane;
+pub mod collision;
 pub mod compat;
 pub mod config_api;
 pub mod core;
@@ -192,6 +193,8 @@ pub struct Server {
     pub hardening: hardening::State,
     /// Turn/Item stream recorder (02 §1.1, 3D).
     pub items: items::State,
+    /// Shared-cwd collision tracker and claims (05 §10, 3A).
+    pub collision: collision::State,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -288,6 +291,7 @@ impl Server {
             security: Default::default(),
             hardening: Default::default(),
             items: Default::default(),
+            collision: Default::default(),
         }))
     }
 

@@ -87,6 +87,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         crate::blob_store::adopt_legacy(&adopt);
     });
     crate::items::start(&server);
+    crate::collision::start(&server);
     crate::assist::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
@@ -916,7 +917,7 @@ pub async fn tasks_api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value)
                     });
                     let pr = crate::task_workspace::pr_peek(&task);
                     Ok(
-                        json!({"task": task, "branch_status": status.map(|s| json!({"branch": s.branch, "ahead": s.ahead, "behind": s.behind, "dirty_files": s.dirty_files, "upstream": s.upstream, "compared_to": s.compared_to})), "pr": pr}),
+                        json!({"task": task, "branch_status": status.map(|s| json!({"branch": s.branch, "ahead": s.ahead, "behind": s.behind, "dirty_files": s.dirty_files, "upstream": s.upstream, "compared_to": s.compared_to})), "pr": pr, "collisions": crate::collision::for_task(server, &task)}),
                     )
                 }
                 None => Err(not_found("task", t)),

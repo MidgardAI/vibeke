@@ -107,7 +107,8 @@ pub(super) fn open_of(server: &Server, run: &str, source: Option<StateSource>) -
     })
 }
 
-pub(super) fn file_changed(server: &Server, run: &AgentRun, path: &str, op: &str) {
+pub(super) fn file_changed(server: &Arc<Server>, run: &AgentRun, path: &str, op: &str) {
+    crate::collision::file_changed(server, run, path, op);
     update_run(server, &run.id, |r, tx| {
         tx.event(
             "agent.file_changed",

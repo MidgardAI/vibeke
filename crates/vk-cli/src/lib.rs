@@ -556,7 +556,98 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["path"],
         "Trust repository automation at its current digest. Print the setup script.",
     ),
-    ("task", "get", "task.get", &["task"], ""),
+    (
+        "task",
+        "get",
+        "task.get",
+        &["task"],
+        "<task> [--collisions: only the open shared-checkout collisions (05 §10)]",
+    ),
+    // 05 §10: advisory claims and the shared-checkout collision tracker (3A).
+    (
+        "claim",
+        "add",
+        "task.claim",
+        &["glob"],
+        "<glob> [--run r|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; other runs writing there raise a high collision)",
+    ),
+    (
+        "claim",
+        "list",
+        "task.claims",
+        &[],
+        "[--task t|--run r|--root dir]",
+    ),
+    (
+        "claim",
+        "rm",
+        "task.claim_release",
+        &["claim"],
+        "<claim> | --run r [--glob g]: release a claim",
+    ),
+    (
+        "collision",
+        "list",
+        "collision.list",
+        &[],
+        "[--task t] [--run r] [--status open|cleared|ignored|all]: shared-checkout collisions (advisory)",
+    ),
+    (
+        "collision",
+        "get",
+        "collision.get",
+        &["collision"],
+        "<collision>: paths, runs, timeline and how each run can be told",
+    ),
+    (
+        "collision",
+        "status",
+        "collision.status",
+        &[],
+        "tracker config, the checkouts followed, claims",
+    ),
+    (
+        "collision",
+        "ignore",
+        "collision.ignore",
+        &["collision", "path"],
+        "<collision> <path> [--for-secs n]: stop tracking a path (or `--root dir <path>` without a collision)",
+    ),
+    (
+        "collision",
+        "ignores",
+        "collision.ignores",
+        &[],
+        "[--root dir]",
+    ),
+    (
+        "collision",
+        "unignore",
+        "collision.unignore",
+        &["ignore"],
+        "<ignore id>",
+    ),
+    (
+        "collision",
+        "pause",
+        "collision.pause",
+        &["collision", "run"],
+        "<collision> <run>: the adapter's interrupt for one run",
+    ),
+    (
+        "collision",
+        "tell",
+        "collision.tell",
+        &["collision"],
+        "<collision> [--runs r]... [--text t]: native steer only (never typed into a TUI)",
+    ),
+    (
+        "collision",
+        "fresh",
+        "collision.start_task",
+        &["collision"],
+        "<collision> [--run r] [--title t] [--harness h] [--prompt text] [--dry-run]: a new task from the shared checkout's HEAD with a hand-off prompt; nothing is moved",
+    ),
     (
         "task",
         "track",
@@ -2366,6 +2457,54 @@ pub fn pretty(method: &str, v: &Value) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
+        "collision.list" | "task.collisions" => rows("collisions")
+            .iter()
+            .map(|c| {
+                format!(
+                    "{:<14} {:<7} {:<8} {}",
+                    c["id"].as_str().unwrap_or(""),
+                    c["severity"].as_str().unwrap_or(""),
+                    c["status"].as_str().unwrap_or(""),
+                    c["headline"].as_str().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "task.claims" => rows("claims")
+            .iter()
+            .map(|c| {
+                format!(
+                    "{:<14} {:<10} {}{}",
+                    c["id"].as_str().unwrap_or(""),
+                    c["run_handle"].as_str().or(c["run"].as_str()).unwrap_or(""),
+                    c["glob"].as_str().unwrap_or(""),
+                    c["note"]
+                        .as_str()
+                        .map(|n| format!("  # {n}"))
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "collision.tell" => {
+            let mut lines: Vec<String> = rows("results")
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{:<10} {:<11} {}{}",
+                        r["run"].as_str().unwrap_or(""),
+                        r["status"].as_str().unwrap_or(""),
+                        r["channel"].as_str().unwrap_or("-"),
+                        r["reason"]
+                            .as_str()
+                            .map(|n| format!("  ({n})"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect();
+            lines.push(format!("text: {}", v["text"].as_str().unwrap_or("")));
+            lines.join("\n")
+        }
         "pane.read" | "agent.read" => v["text"].as_str().unwrap_or("").to_string(),
         "preview.open" if v["opened_in"] == "proxy" => {
             let mut out = format!(
@@ -2410,6 +2549,12 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     adjust(method, &mut params);
+    // `task get <t> --collisions`: only the open collisions of the task.
+    let only_collisions = method == "task.get"
+        && params
+            .as_object_mut()
+            .and_then(|o| o.remove("collisions"))
+            .is_some_and(|v| v != json!(false));
     // `task ports <t> --re-lease` is its own (full-scope) method.
     let method = if method == "task.ports"
         && params
@@ -2457,6 +2602,11 @@ where
     }
     match client.call(method, params).await {
         Ok(mut v) => {
+            let mut method = method;
+            if only_collisions {
+                v = json!({"task": v["task"]["handle"], "collisions": v["collisions"]});
+                method = "task.collisions";
+            }
             if let Some(path) = &out {
                 use base64::Engine as _;
                 let data = v
@@ -2975,6 +3125,70 @@ mod tests {
         adjust("interaction.answer", &mut p);
         assert_eq!(p, json!({"interaction": "i3", "decision": "allow"}));
         assert!(build_params(&[], &["x".into()]).is_err());
+    }
+
+    #[test]
+    fn claim_and_collision_verbs_map_to_their_methods() {
+        let (m, pos) = lookup("claim", "add").unwrap();
+        assert_eq!(m, "task.claim");
+        let mut p = build_params(
+            pos,
+            &[
+                "src/auth/**".into(),
+                "--run".into(),
+                "a12".into(),
+                "--note".into(),
+                "auth".into(),
+            ],
+        )
+        .unwrap();
+        adjust(m, &mut p);
+        assert_eq!(
+            p,
+            json!({"glob": "src/auth/**", "run": "a12", "note": "auth"})
+        );
+        assert_eq!(lookup("claim", "list").unwrap().0, "task.claims");
+        assert_eq!(lookup("claim", "rm").unwrap().0, "task.claim_release");
+        let (m, pos) = lookup("collision", "ignore").unwrap();
+        assert_eq!(m, "collision.ignore");
+        let p = build_params(
+            pos,
+            &[
+                "col_x".into(),
+                "src/a.rs".into(),
+                "--for-secs".into(),
+                "60".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            json!({"collision": "col_x", "path": "src/a.rs", "for_secs": 60})
+        );
+        let (m, pos) = lookup("collision", "fresh").unwrap();
+        assert_eq!(m, "collision.start_task");
+        let p = build_params(pos, &["col_x".into(), "--dry-run".into()]).unwrap();
+        assert_eq!(p, json!({"collision": "col_x", "dry_run": true}));
+        for verb in [
+            "list", "get", "status", "ignores", "unignore", "pause", "tell",
+        ] {
+            assert!(lookup("collision", verb).is_some(), "{verb}");
+        }
+    }
+
+    #[test]
+    fn collision_lists_render_as_rows() {
+        let v = json!({"collisions": [{"id": "col_1", "severity": "high", "status": "open", "headline": "2 agents editing a.rs"}]});
+        let out = pretty("collision.list", &v);
+        assert!(
+            out.contains("col_1") && out.contains("high") && out.contains("2 agents editing a.rs")
+        );
+        let c = json!({"claims": [{"id": "clm_1", "run": "r1", "run_handle": "a12", "glob": "src/**", "note": "auth"}]});
+        let out = pretty("task.claims", &c);
+        assert!(out.contains("a12") && out.contains("src/**") && out.contains("# auth"));
+        let t = json!({"results": [{"run": "a12", "status": "queued", "channel": "hook_context"}], "text": "Note: x"});
+        let out = pretty("collision.tell", &t);
+        assert!(out.contains("queued") && out.contains("text: Note: x"));
     }
 
     #[test]

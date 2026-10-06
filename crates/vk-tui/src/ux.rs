@@ -23,6 +23,8 @@
 //! - [`crate::repo_preview`]: a trusted repo's `[preview]`.
 //! - [`crate::taskbadge`]: PR badges and recreate/forget for missing tasks.
 //! - [`crate::agent_list`]: every agent on every machine by attention (`prefix+alt+a`).
+//!
+//! Lane 3A: [`crate::collision`]: shared-checkout collisions (pane badge, sidebar line, popup).
 
 use crate::app::{App, Popup, RpcErr};
 use crate::screen::Grid;
@@ -45,6 +47,7 @@ pub struct State {
     pub elevate: crate::elevate::State,
     pub scroll: crate::scroll_req::State,
     pub tasks: crate::taskbadge::State,
+    pub collision: crate::collision::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -56,6 +59,7 @@ pub enum Reply {
     Batch(crate::batch::Reply),
     Elevate(crate::elevate::Reply),
     Tasks(crate::taskbadge::Reply),
+    Collision(crate::collision::Reply),
     /// `tab.renumber`.
     Renumber,
 }
@@ -68,6 +72,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Batch(r) => crate::batch::on_reply(app, mi, r, res),
         Reply::Elevate(r) => crate::elevate::on_reply(app, mi, r, res),
         Reply::Tasks(r) => crate::taskbadge::on_reply(app, mi, r, res),
+        Reply::Collision(r) => crate::collision::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
 }
@@ -89,6 +94,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::elevate::action(app, action)
         || crate::agent_list::action(app, action)
         || crate::taskbadge::action(app, action)
+        || crate::collision::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
@@ -167,6 +173,7 @@ pub fn on_tick(app: &mut App) {
     crate::elevate::tick(app);
     crate::scroll_req::tick(app);
     crate::taskbadge::tick(app, now);
+    crate::collision::tick(app, now);
 }
 
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
@@ -175,6 +182,7 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::sidebar::deadlines(app, now, d);
     crate::elevate::deadlines(app, d);
     crate::taskbadge::deadlines(app, d);
+    crate::collision::deadlines(app, d);
 }
 
 /// Navigate-mode keys added by 2B (true when handled).

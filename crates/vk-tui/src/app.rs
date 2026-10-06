@@ -325,6 +325,8 @@ pub enum Popup {
     /// Elevation request review (09 §3.2), replacing the pane area; state in
     /// `App::ux.elevate`.
     Elevate,
+    /// Shared-checkout collision view (05 §10); state in `App::ux.collision`.
+    Collision,
     /// Every agent on every machine by attention (`agent_list`, 08 §6.5).
     Agents {
         filter: String,
@@ -1113,6 +1115,7 @@ impl App {
         crate::tasks::on_disconnect(self, i);
         crate::remote_view::on_disconnected(self, i);
         crate::taskbadge::on_disconnected(self, i);
+        crate::collision::on_disconnected(self, i);
         if self.inbox.outstanding.is_empty()
             && let Some(f) = self.inbox.next_after.take()
         {

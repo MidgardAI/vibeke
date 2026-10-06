@@ -151,6 +151,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
             crate::ux::popup_key(app, ev, p)
         }
         Popup::Elevate => crate::elevate::key(app, ev),
+        Popup::Collision => crate::collision::key(app, ev),
         Popup::Agents { filter, sel } => crate::agent_list::key(app, ev, filter, sel),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
@@ -508,6 +509,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 crate::ux::popup_draw(app, g, p)
             }
             Popup::Elevate => crate::elevate::draw(app, g),
+            Popup::Collision => crate::collision::draw(app, g),
             Popup::Agents { filter, sel } => {
                 let (x, y) = crate::agent_list::draw(app, g, filter, *sel);
                 return Some((x, y, CursorShape::Bar));

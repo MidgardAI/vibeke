@@ -10,6 +10,7 @@ pub mod browser_io;
 pub mod caps;
 pub mod chrome;
 pub mod clipboard;
+pub mod collision;
 pub mod copy;
 pub mod copykeys;
 pub mod copyout;

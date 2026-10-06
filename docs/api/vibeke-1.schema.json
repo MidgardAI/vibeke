@@ -656,6 +656,326 @@
         "environment"
       ]
     },
+    "Collision": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "cleared",
+            "ignored"
+          ]
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "run_info": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CollisionRunInfo"
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CollisionPath"
+          }
+        },
+        "ambiguous": {
+          "type": "boolean"
+        },
+        "first_ms": {
+          "type": "integer"
+        },
+        "last_ms": {
+          "type": "integer"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "cleared_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleared_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "root",
+        "severity",
+        "status",
+        "runs",
+        "run_info",
+        "paths",
+        "ambiguous",
+        "first_ms",
+        "last_ms",
+        "headline",
+        "cleared_ms",
+        "cleared_reason"
+      ]
+    },
+    "CollisionClaim": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        },
+        "run_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "root": {
+          "type": "string"
+        },
+        "glob": {
+          "type": "string"
+        },
+        "created_ms": {
+          "type": "integer"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "run",
+        "run_handle",
+        "root",
+        "glob",
+        "created_ms",
+        "note",
+        "task"
+      ]
+    },
+    "CollisionIgnore": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "created_ms": {
+          "type": "integer"
+        },
+        "expires_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "by": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "root",
+        "path",
+        "created_ms",
+        "expires_ms",
+        "by"
+      ]
+    },
+    "CollisionPath": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "reason": {
+          "type": "object"
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ambiguous": {
+          "type": "boolean"
+        },
+        "first_ms": {
+          "type": "integer"
+        },
+        "last_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "severity",
+        "reason",
+        "runs",
+        "ambiguous",
+        "first_ms",
+        "last_ms"
+      ]
+    },
+    "CollisionRunInfo": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string"
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pane": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alive": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run",
+        "handle",
+        "name",
+        "harness",
+        "pane",
+        "task",
+        "state",
+        "alive"
+      ]
+    },
     "ConfigDiagnostic": {
       "type": "object",
       "properties": {
@@ -3312,6 +3632,9 @@
       "result": {
         "type": "object",
         "properties": {
+          "hook_output": {
+            "type": "object"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -9489,6 +9812,487 @@
         },
         "required": [
           "clients"
+        ]
+      }
+    },
+    "collision.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collision"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "$ref": "#/$defs/Collision"
+          },
+          "claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CollisionClaim"
+            }
+          },
+          "steer": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "channel": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "channel"
+              ]
+            }
+          }
+        },
+        "required": [
+          "collision",
+          "claims",
+          "steer"
+        ]
+      }
+    },
+    "collision.ignore": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "for_secs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ignore": {
+            "$ref": "#/$defs/CollisionIgnore"
+          },
+          "collision": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Collision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "ignore",
+          "collision"
+        ]
+      }
+    },
+    "collision.ignores": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "ignores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CollisionIgnore"
+            }
+          }
+        },
+        "required": [
+          "ignores"
+        ]
+      }
+    },
+    "collision.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "cleared",
+              "ignored",
+              "all"
+            ],
+            "default": "open"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "collisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Collision"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "collisions",
+          "enabled"
+        ]
+      }
+    },
+    "collision.pause": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "collision",
+          "run"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AgentRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "run",
+          "paused"
+        ]
+      }
+    },
+    "collision.start_task": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "title": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "collision"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "created": {
+            "type": "boolean"
+          },
+          "base": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "source_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {},
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "created",
+          "base",
+          "title",
+          "harness",
+          "prompt",
+          "source_run",
+          "result"
+        ]
+      }
+    },
+    "collision.status": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "fs_attribution": {
+            "type": "string"
+          },
+          "watcher": {
+            "type": "string"
+          },
+          "window_ms": {
+            "type": "integer"
+          },
+          "read_window_ms": {
+            "type": "integer"
+          },
+          "poll_interval_ms": {
+            "type": "integer"
+          },
+          "enforce_claims": {
+            "type": "boolean"
+          },
+          "roots": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "claims": {
+            "type": "integer"
+          },
+          "ignores": {
+            "type": "integer"
+          },
+          "pending_context": {
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "fs_attribution",
+          "watcher",
+          "window_ms",
+          "read_window_ms",
+          "poll_interval_ms",
+          "enforce_claims",
+          "roots",
+          "claims",
+          "ignores",
+          "pending_context",
+          "note"
+        ]
+      }
+    },
+    "collision.tell": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Target"
+            }
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collision"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "delivered",
+                    "queued",
+                    "unsupported",
+                    "failed"
+                  ]
+                },
+                "channel": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "status",
+                "channel"
+              ]
+            }
+          },
+          "text": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "results",
+          "text"
+        ]
+      }
+    },
+    "collision.unignore": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "ignore": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ignore"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "removed"
         ]
       }
     },
@@ -18592,6 +19396,128 @@
         ]
       }
     },
+    "task.claim": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "glob": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "root": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "glob"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "$ref": "#/$defs/CollisionClaim"
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CollisionClaim"
+            }
+          },
+          "label": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "claim",
+          "conflicts",
+          "label"
+        ]
+      }
+    },
+    "task.claim_release": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "glob": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "released": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "released"
+        ]
+      }
+    },
+    "task.claims": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "$ref": "#/$defs/Target"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "root": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CollisionClaim"
+            }
+          }
+        },
+        "required": [
+          "claims"
+        ]
+      }
+    },
     "task.create": {
       "mutating": true,
       "scope": "pane",
@@ -19353,6 +20279,12 @@
                 "type": "null"
               }
             ]
+          },
+          "collisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Collision"
+            }
           }
         },
         "required": [
@@ -27460,6 +28392,100 @@
         ]
       }
     },
+    "task.claim_added": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim",
+          "run"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "glob": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "glob",
+          "repo",
+          "note",
+          "conflicts",
+          "by"
+        ]
+      }
+    },
+    "task.claim_released": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim",
+          "run"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "glob": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "released",
+              "run_ended"
+            ]
+          }
+        },
+        "required": [
+          "glob",
+          "repo",
+          "reason"
+        ]
+      }
+    },
     "task.cleanup_suggested": {
       "subject": {
         "type": "object",
@@ -27493,6 +28519,232 @@
           "pr",
           "url",
           "hint"
+        ]
+      }
+    },
+    "task.collision_action": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "ignore",
+              "pause",
+              "tell",
+              "tell_delivered",
+              "start_task",
+              "claim_denied"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "ignore": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "text": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "integer"
+          },
+          "base": {
+            "type": "string"
+          },
+          "task": {},
+          "source_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    "task.collision_cleared": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collision"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "quiet",
+              "runs_ended",
+              "ignored",
+              "restart"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "reason",
+          "severity",
+          "runs",
+          "paths"
+        ]
+      }
+    },
+    "task.collision_detected": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "collision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "collision"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "same_file",
+              "same_dir",
+              "read_then_edited",
+              "claim"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "new_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "new_runs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ambiguous": {
+            "type": "boolean"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "raised": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "repo",
+          "severity",
+          "reason",
+          "paths",
+          "new_paths",
+          "runs",
+          "new_runs",
+          "ambiguous",
+          "created",
+          "raised"
         ]
       }
     },

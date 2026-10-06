@@ -521,6 +521,10 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "Batch view: answer equivalent approvals at once",
     ),
     (
+        "collisions",
+        "Collisions: agents editing the same files (pause, tell, fresh task, ignore)",
+    ),
+    (
         "setup",
         "Setup: terminal check, integrations, notifications, theme",
     ),

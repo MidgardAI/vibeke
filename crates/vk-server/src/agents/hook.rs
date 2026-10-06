@@ -94,7 +94,19 @@ pub fn main(args: &[String]) -> i32 {
     }
     let params = json!({"harness": harness, "event": event, "payload": payload, "pid": std::os::unix::process::parent_id()});
     if !gate_capable(harness, event, &payload) {
-        let _ = call(&mut stream, &mut rd, 2, "adapter.signal", params);
+        // The reply may carry a `hook_output` for the harness (collision tracker: queued steering
+        // context, an enforced claim's deny). Observation otherwise stays silent on stdout.
+        if let Some(out) = call(&mut stream, &mut rd, 2, "adapter.signal", params)
+            .as_ref()
+            .and_then(|r| r.get("hook_output"))
+            .filter(|o| o.is_object())
+        {
+            let mut stdout = std::io::stdout();
+            let _ = stdout
+                .write_all(serde_json::to_string(out).unwrap_or_default().as_bytes())
+                .and_then(|_| stdout.write_all(b"\n"))
+                .and_then(|_| stdout.flush());
+        }
         return 0;
     }
     // Gate: may wait up to the hook timeout for a decision (or a release on focus).

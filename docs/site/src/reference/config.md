@@ -139,6 +139,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # sync_input_pane          = "prefix+alt+s"   # add/remove the focused pane from the tab's sync set
 # fleet                    = "prefix+shift+m" # fleet grid: every agent on every machine
 # batch_approvals          = ""               # batch view of equivalent approvals (also `A` on a card)
+# collisions               = ""               # agents editing the same files in a shared checkout: pause, tell, fresh task, ignore
 # setup                    = ""               # onboarding: terminal check, integrations, notifications, theme
 # trust_repo               = ""               # review and trust this repo's .vibeke/ (repo-local config)
 # agent_list               = "prefix+alt+a"   # every agent on every machine, by attention; enter jumps
@@ -350,6 +351,23 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # arm_delay_ms  = 500               # a freshly started watcher counts as armed after this delay
 # harnesses     = ["claude"]        # only harnesses whose pre-tool hook runs before the tool
 
+# Shared-checkout collision tracker (05 §10). Advisory: it warns, and never blocks, reverts or
+# reassigns changes. Read by the running server. A watcher and a status poll run only for a
+# checkout that two or more live runs share (or that holds a claim).
+# [collision]
+# enabled        = true
+# window         = "30m"            # rolling window per checkout in which touches count
+# read_window    = "10m"            # a read makes another run's later edit of that file `medium`
+# fs_attribution = "auto"           # auto | off | aggressive (+ open-file sampling on Linux, best effort)
+# enforce_claims = false            # cooperating adapters (Claude) deny *reported* edit tools inside a foreign claim
+# dir_depth      = 2                # same directory/module = the first N directory components (0 = rule off)
+# poll_interval  = "5s"             # `git status --porcelain` while an agent in the checkout is working
+# settle         = "150ms"          # wait before attributing a file-system event (the adapter's report lands first)
+# watcher        = "os"             # os | none
+# notify         = true             # a notification for high and medium (once per path set per window)
+# ignore         = []               # extra repo-relative globs never tracked (.git and node_modules always are)
+# max_touches    = 5000             # touches remembered per checkout
+
 # [update]
 # channel        = "stable"             # stable | preview
 # version_check  = true
@@ -406,5 +424,5 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # # is used only if it meets the feature's requirements.
 
 # Sections owned by other components and documented with them:
-# [collision], [isolation], [preview], [security], [plugins]
+# [isolation], [preview], [security], [plugins]
 ```

@@ -360,6 +360,7 @@ Vibeke additions beyond the base set are marked ✚.
 | | | | ✚ agent_list (§6.5) | `prefix+alt+a` |
 | | | | ✚ elevation_requests (§8) | `prefix+shift+e` |
 | | | | ✚ batch_approvals / setup / trust_repo | palette (unbound) |
+| | | | ✚ collisions (05 §10; pane `⚠`, sidebar line, view with pause / tell / fresh task / ignore) | palette (unbound) |
 | | | | ✚ tab_renumber / task_recreate / task_forget | palette (unbound) |
 
 ✚ `search_global` (search all panes, popup) defaults to `prefix+alt+/` (`prefix+/` is `search_scrollback`); M4 palette-only actions: `float_pane`, `embed_pane`, `group_new`, `group_move`, `group_rename`, `group_collapse`, `layout_save`, `layout_apply`, `status_bar_toggle`, `theme_detect`.
@@ -575,8 +576,16 @@ suffix = ""                           # optional per-run prompt suffix for best-
 [collision]                           # advisory only (05 §10)
 enabled        = true
 window         = "30m"
-fs_attribution = "auto"               # auto | off | aggressive (fanotify)
+fs_attribution = "auto"               # auto | off | aggressive (open-file sampling on Linux; best effort)
 enforce_claims = false                # courtesy guardrail for cooperating adapters only
+read_window    = "10m"                # a read makes another run's later edit of that file `medium`
+dir_depth      = 2                    # same directory/module = the first N directory components (0 = off)
+poll_interval  = "5s"                 # status poll while an agent in the checkout works
+settle         = "150ms"              # wait before attributing a file-system event
+watcher        = "os"                 # os | none
+notify         = true                 # notification for high and medium, once per path set per window
+ignore         = []                   # extra repo-relative globs never tracked
+max_touches    = 5000
 
 [isolation]                           # see 13
 default             = "host"          # host | sandbox | container | vm — for tasks without --isolate

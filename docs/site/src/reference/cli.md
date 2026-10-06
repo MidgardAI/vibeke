@@ -174,7 +174,7 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `park` | `<task>` | `task.park` | <task> stop its agents gracefully, keep the worktree |
 | `resume` | `<task>` | `task.resume` | <task> restart the parked agents from their sessions |
 | `sync` | `<task>` | `task.sync` | <task> [--direction pull\|push\|both] [--force]: host-side fetch of a container task's commits (push = host commits into the box) |
-| `get` | `<task>` | `task.get` |  |
+| `get` | `<task>` | `task.get` | <task> [--collisions: only the open shared-checkout collisions (05 §10)] |
 | `track` | - | `task.track` | [--pane @current\|--run r] [--turn N] [--title t] [--criterion text]... [--stop-at draft_pr] — track the agent's work (no send, no spawn) |
 | `sources` | - | `task.sources` | [--pane p\|--run r] — recent requests you can track |
 | `show` | `<task>` | `task.detail` | intent, bindings, baseline, messages |
@@ -241,6 +241,28 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `add` | - | `policy.add` | --effect allow\|deny\|ask [--tool T] [--command-regex RE] [--path-glob G] [--url-glob G] [--scope dir] [--note text] |
 | `remove` | `<rule_id>` | `policy.remove` | <rule> — only rules added with `policy add` (p-…) |
 | `test` | - | `policy.test` | --tool T [--command C] [--path P] [--url U] [--scope dir] — what an approval would get (dry run) |
+
+## `vibeke claim`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `add` | `<glob>` | `task.claim` | <glob> [--run r\|--task t] [--root dir] [--note text]: say which part of the checkout this run works in (advisory; other runs writing there raise a high collision) |
+| `list` | - | `task.claims` | [--task t\|--run r\|--root dir] |
+| `rm` | `<claim>` | `task.claim_release` | <claim> \| --run r [--glob g]: release a claim |
+
+## `vibeke collision`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `list` | - | `collision.list` | [--task t] [--run r] [--status open\|cleared\|ignored\|all]: shared-checkout collisions (advisory) |
+| `get` | `<collision>` | `collision.get` | <collision>: paths, runs, timeline and how each run can be told |
+| `status` | - | `collision.status` | tracker config, the checkouts followed, claims |
+| `ignore` | `<collision>` `<path>` | `collision.ignore` | <collision> <path> [--for-secs n]: stop tracking a path (or `--root dir <path>` without a collision) |
+| `ignores` | - | `collision.ignores` | [--root dir] |
+| `unignore` | `<ignore>` | `collision.unignore` | <ignore id> |
+| `pause` | `<collision>` `<run>` | `collision.pause` | <collision> <run>: the adapter's interrupt for one run |
+| `tell` | `<collision>` | `collision.tell` | <collision> [--runs r]... [--text t]: native steer only (never typed into a TUI) |
+| `fresh` | `<collision>` | `collision.start_task` | <collision> [--run r] [--title t] [--harness h] [--prompt text] [--dry-run]: a new task from the shared checkout's HEAD with a hand-off prompt; nothing is moved |
 
 ## `vibeke worktree`
 
