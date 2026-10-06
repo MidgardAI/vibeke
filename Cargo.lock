@@ -1453,6 +1453,7 @@ dependencies = [
  "vk-hold",
  "vk-proto",
  "vk-redact",
+ "vk-review",
  "vk-store",
  "vk-tasks",
  "vk-term",
