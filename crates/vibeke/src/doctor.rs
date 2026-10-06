@@ -984,9 +984,85 @@ fn check_topology(r: &mut Report) {
     }
 }
 
+/// `vibeke doctor --rebuild-index` (02 "Archive search as implemented", 07 §7): rebuild
+/// `scrollback_fts` and `archive_panes` from the zstd segments on disk. Works offline on the
+/// session's state dir and refuses while the session's server is running (it would be writing
+/// the same tables); segment files are never modified.
+async fn rebuild_index(g: &Global) -> i32 {
+    let p = Paths::new(&g.session);
+    let socket = client::socket_path(&g.session, g.socket.as_deref());
+    let pid_alive = std::fs::read_to_string(p.pidfile())
+        .ok()
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .is_some_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0);
+    let running = !matches!(
+        probe_server(&socket).await,
+        ServerProbe::NoSocket | ServerProbe::Stale(_)
+    ) || pid_alive;
+    if running {
+        eprintln!(
+            "refusing to rebuild the index of session `{}` while its server is running (it writes the same tables); run `vibeke server stop` first (panes survive), then retry",
+            g.session
+        );
+        return 1;
+    }
+    if !p.db().exists() {
+        eprintln!(
+            "no state database at {} (session `{}`): nothing to rebuild",
+            p.db().display(),
+            g.session
+        );
+        return 1;
+    }
+    let report = match vk_store::Store::open(&p.db())
+        .and_then(|s| s.rebuild_archive_index(&p.scrollback()))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rebuild failed (the old index is unchanged): {e:#}");
+            return 1;
+        }
+    };
+    if g.json == Some(true) || !std::io::stdout().is_terminal() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({"session": g.session, "rebuilt": report}))
+                .unwrap_or_default()
+        );
+    } else {
+        println!(
+            "session `{}`: re-indexed {} rows from {} segments of {} panes (was {} rows); archive_panes {} -> {}",
+            g.session,
+            report.rows_indexed,
+            report.segments,
+            report.panes,
+            report.fts_rows_before,
+            report.archive_panes_before,
+            report.archive_panes_after
+        );
+        for d in &report.damaged {
+            println!("  damaged, indexed up to the damage: {d}");
+        }
+        for k in &report.skipped {
+            println!("  skipped (nothing readable): {k}");
+        }
+        println!(
+            "segment files were not modified; timestamps of re-indexed rows are the segment files' modification times"
+        );
+    }
+    EXIT_OK
+}
+
 pub async fn run(g: &Global, args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--rebuild-index") {
+        if let Some(bad) = args.iter().find(|a| a.as_str() != "--rebuild-index") {
+            eprintln!("vibeke doctor --rebuild-index takes no other flag  (unexpected `{bad}`)");
+            return EXIT_USAGE;
+        }
+        return rebuild_index(g).await;
+    }
     if let Some(bad) = args.iter().find(|a| a.as_str() != "--no-remote") {
-        eprintln!("vibeke doctor [--json] [--no-remote]  (unexpected `{bad}`)");
+        eprintln!("vibeke doctor [--json] [--no-remote] | --rebuild-index  (unexpected `{bad}`)");
         return EXIT_USAGE;
     }
     let no_remote = args.iter().any(|a| a == "--no-remote");

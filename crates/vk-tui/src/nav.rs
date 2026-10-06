@@ -801,6 +801,9 @@ pub fn run_palette(app: &mut App, id: &str) {
 pub enum ListKey {
     Stay(String, usize),
     Enter(usize),
+    /// `ctrl+enter` (kitty / modifyOtherKeys hosts) or `alt+enter` (everywhere): the secondary
+    /// action of a list (goto: open in a new split / workspace).
+    EnterAlt(usize),
     Close,
 }
 
@@ -810,6 +813,7 @@ pub fn list_key(ev: &KeyEvent, mut filter: String, sel: usize, n: usize) -> List
     }
     match ev.key {
         Key::Named(NamedKey::Escape) => ListKey::Close,
+        Key::Named(NamedKey::Enter) if ev.mods.ctrl() || ev.mods.alt() => ListKey::EnterAlt(sel),
         Key::Named(NamedKey::Enter) => ListKey::Enter(sel),
         Key::Named(NamedKey::Down) | Key::Named(NamedKey::Tab) => {
             ListKey::Stay(filter, (sel + 1).min(n.saturating_sub(1)))
@@ -836,7 +840,7 @@ pub fn palette_key(app: &mut App, ev: KeyEvent, filter: String, sel: usize) {
     let ranked = palette_ranked(app, &filter);
     match list_key(&ev, filter, sel, ranked.len()) {
         ListKey::Close => {}
-        ListKey::Enter(i) => {
+        ListKey::Enter(i) | ListKey::EnterAlt(i) => {
             if let Some((e, _)) = ranked.get(i) {
                 let id = e.id.clone();
                 run_palette(app, &id);
@@ -991,9 +995,20 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
             String::new()
         };
         for w in &m.model.workspaces {
-            let branch = w
-                .branch
-                .as_ref()
+            let jj = m
+                .model
+                .tabs
+                .iter()
+                .find(|t| t.workspace == w.id)
+                .and_then(|t| {
+                    t.focused_pane
+                        .as_ref()
+                        .or(t.layout.panes().first())
+                        .and_then(|pid| m.model.panes.iter().find(|p| &p.id == pid))
+                })
+                .and_then(|p| p.jj.clone());
+            let branch = jj
+                .or_else(|| w.branch.clone())
                 .map(|b| format!(" ⎇ {b}"))
                 .unwrap_or_default();
             out.push(GotoEntry {
@@ -1202,6 +1217,7 @@ pub fn goto_key(app: &mut App, ev: KeyEvent, filter: String, sel: usize) {
         return;
     }
     let ranked = goto_ranked(app, &filter);
+    let typed = filter.clone();
     match list_key(&ev, filter, sel, ranked.len()) {
         ListKey::Close => {}
         ListKey::Enter(i) => {
@@ -1209,8 +1225,94 @@ pub fn goto_key(app: &mut App, ev: KeyEvent, filter: String, sel: usize) {
                 jump(app, &e);
             }
         }
+        ListKey::EnterAlt(i) => {
+            if let Some(path) = goto_path(&typed) {
+                new_workspace_at(app, &path);
+            } else if let Some((e, _)) = ranked.get(i).cloned() {
+                open_split(app, &e);
+            }
+        }
         ListKey::Stay(filter, sel) => app.mode = Mode::Popup(Popup::Goto { filter, sel }),
     }
+}
+
+/// A goto query that names a directory (`/abs/path` or `~/path`): `ctrl+enter`/`alt+enter`
+/// creates a workspace there (08 §6.2). Fuzzy queries never start with `/`; `~` alone is the
+/// workspace kind prefix.
+pub fn goto_path(filter: &str) -> Option<String> {
+    let f = filter.trim();
+    if !(f.starts_with('/') || f.starts_with("~/")) {
+        return None;
+    }
+    Some(match f.strip_prefix("~/") {
+        Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+        None => f.to_string(),
+    })
+}
+
+fn new_workspace_at(app: &mut App, path: &str) {
+    app.command(
+        "workspace.create",
+        json!({"cwd": path, "focus": true}),
+        Pending::Ignore,
+    );
+}
+
+/// Directory a goto entry stands for: a pane's cwd, a tab's focused pane, a workspace root, a
+/// task's checkout.
+fn entry_cwd(app: &App, e: &GotoEntry) -> Option<String> {
+    let m = &app.machines[e.mi];
+    let pane_cwd = |id: &str| {
+        m.model
+            .panes
+            .iter()
+            .find(|p| p.id == id)
+            .and_then(|p| p.cwd.clone())
+    };
+    match &e.target {
+        GotoTarget::Pane(p) => pane_cwd(p),
+        GotoTarget::Tab(t) => m
+            .model
+            .tabs
+            .iter()
+            .find(|x| &x.id == t)
+            .and_then(|t| {
+                t.focused_pane
+                    .clone()
+                    .or_else(|| t.layout.panes().first().cloned())
+            })
+            .and_then(|p| pane_cwd(&p)),
+        GotoTarget::Workspace(w) => m
+            .model
+            .workspaces
+            .iter()
+            .find(|x| &x.id == w)
+            .map(|w| w.root_path.clone()),
+        GotoTarget::Task(t) => m.model.tasks.iter().find(|x| &x.id == t).map(|t| {
+            t.worktree_path
+                .clone()
+                .unwrap_or_else(|| t.repo_root.clone())
+        }),
+    }
+}
+
+/// `ctrl+enter` / `alt+enter` on a goto entry: a new split next to the current pane, started in
+/// the entry's directory. Stays on the current machine (a path on another machine is not one
+/// here).
+pub fn open_split(app: &mut App, e: &GotoEntry) {
+    if e.mi != app.cur {
+        app.toast("split opens on the current machine; use enter to switch machines");
+        return;
+    }
+    let Some(pane) = app.focused_pane() else {
+        app.toast("no pane to split");
+        return;
+    };
+    let mut params = json!({"pane": pane, "direction": "right", "focus": true});
+    if let Some(cwd) = entry_cwd(app, e) {
+        params["cwd"] = json!(cwd);
+    }
+    app.command("pane.split", params, Pending::Ignore);
 }
 
 pub fn jump(app: &mut App, e: &GotoEntry) {
@@ -1255,7 +1357,7 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
     let (x, y, w, rows) = list_frame(
         app,
         g,
-        "goto · @agent #task :tab ~workspace !state · > commands",
+        "goto · @agent #task :tab ~workspace !state · > commands · alt+enter split",
         filter,
     );
     let t = app.theme;
@@ -1299,7 +1401,11 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
         list_row(g, at, segs, note, i == sel, app);
     }
     if ranked.is_empty() {
-        g.put_str(x + 1, y, "nothing matches", t.dim(), w);
+        let msg = match goto_path(filter) {
+            Some(p) => format!("ctrl+enter / alt+enter: new workspace at {p}"),
+            None => "nothing matches".to_string(),
+        };
+        g.put_str(x + 1, y, &msg, t.dim(), w);
     }
     (x + 2 + UnicodeWidthStr::width(filter) as u16, y - 1)
 }

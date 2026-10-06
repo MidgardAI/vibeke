@@ -255,23 +255,72 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
     (user_prompt, items)
 }
 
+/// A transcript line's timestamp in epoch ms: an RFC 3339 string (both harness formats) or a
+/// number (seconds or ms).
+fn line_ts_ms(v: &Value) -> Option<i64> {
+    match v.get("timestamp")? {
+        Value::String(t) => crate::agents::usage::parse_rfc3339_ms(t),
+        Value::Number(n) => n
+            .as_i64()
+            .map(|n| if n < 100_000_000_000 { n * 1000 } else { n }),
+        _ => None,
+    }
+}
+
+/// Tool names that start a subagent (Claude `Task`/`Agent`, Codex agent spawning).
+fn is_subagent_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "Task" | "Agent" | "spawn_agent" | "spawn_subagent" | "create_agent"
+    )
+}
+
+/// Per-turn timing and counts: `duration_ms` (last item ts − turn start, null when unknown),
+/// `tool_count` and `subagent_count`.
+fn finish_turn(turn: &mut Value) {
+    let items = turn["items"].as_array().cloned().unwrap_or_default();
+    let start = turn
+        .get("ts")
+        .and_then(Value::as_str)
+        .and_then(crate::agents::usage::parse_rfc3339_ms)
+        .or_else(|| items.first().and_then(|i| i["ts"].as_i64()));
+    let end = items.iter().rev().find_map(|i| i["ts"].as_i64());
+    let duration = start.zip(end).map(|(a, b)| (b - a).max(0));
+    let calls = items.iter().filter(|i| i["kind"] == "tool_call");
+    let tool_count = calls.clone().count();
+    let subagents = calls
+        .filter(|i| i["tool"].as_str().is_some_and(is_subagent_tool))
+        .count();
+    turn["duration_ms"] = json!(duration);
+    turn["tool_count"] = json!(tool_count);
+    turn["subagent_count"] = json!(subagents);
+}
+
 /// Turns numbered from the start of the transcript (stable `n` across calls). A turn starts at
-/// a user prompt (not a tool result).
+/// a user prompt (not a tool result). Items carry `ts` (epoch ms, null when the line has none);
+/// turns carry `duration_ms`, `tool_count` and `subagent_count`.
 pub fn transcript_items(text: &str) -> Vec<Value> {
     let mut turns: Vec<Value> = Vec::new();
     for l in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(l) else {
             continue;
         };
-        let (prompt, items) = line_items(&v);
+        let (prompt, mut items) = line_items(&v);
         if items.is_empty() {
             continue;
+        }
+        let ts = line_ts_ms(&v);
+        for it in &mut items {
+            it["ts"] = json!(ts);
         }
         if prompt || turns.is_empty() {
             turns.push(json!({"n": turns.len() as u64 + 1, "ts": v.get("timestamp"), "items": []}));
         }
         let last = turns.last_mut().unwrap();
         last["items"].as_array_mut().unwrap().extend(items);
+    }
+    for t in &mut turns {
+        finish_turn(t);
     }
     turns
 }
@@ -471,6 +520,35 @@ mod tests {
         );
         assert_eq!(turns[0]["items"][2]["tool"], "Bash");
         assert_eq!(turns[1]["n"], 2);
+        assert_eq!(turns[0]["tool_count"], 1);
+        assert_eq!(turns[0]["subagent_count"], 0);
+        // No parseable timestamps: duration unknown.
+        assert!(turns[0]["duration_ms"].is_null());
+        assert!(turns[0]["items"][0]["ts"].is_null());
+    }
+
+    #[test]
+    fn claude_turn_timing_and_subagents() {
+        let t = [
+            json!({"type": "user", "message": {"content": "go"}, "timestamp": "2026-10-06T12:00:00.000Z"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Task", "id": "t1", "input": {"prompt": "explore"}}]}, "timestamp": "2026-10-06T12:00:01.500Z"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Agent", "id": "t2", "input": {}}, {"type": "tool_use", "name": "Read", "id": "t3", "input": {}}]}, "timestamp": "2026-10-06T12:00:02.000Z"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}, "timestamp": "2026-10-06T12:00:09.250Z"}),
+        ]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let turns = transcript_items(&t);
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn["ts"], "2026-10-06T12:00:00.000Z", "turn ts unchanged");
+        assert_eq!(turn["duration_ms"], 9250);
+        assert_eq!(turn["tool_count"], 3);
+        assert_eq!(turn["subagent_count"], 2);
+        let start = crate::agents::usage::parse_rfc3339_ms("2026-10-06T12:00:00.000Z").unwrap();
+        assert_eq!(turn["items"][0]["ts"], start);
+        assert_eq!(turn["items"][1]["ts"], start + 1500);
     }
 
     #[test]
@@ -487,6 +565,31 @@ mod tests {
         let turns = transcript_items(&t);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0]["items"].as_array().unwrap().len(), 3);
+        assert_eq!(turns[0]["tool_count"], 1);
+        assert!(turns[0]["duration_ms"].is_null());
+    }
+
+    #[test]
+    fn codex_turn_timing_and_subagents() {
+        let t = [
+            json!({"timestamp": "2026-10-06T08:00:00.100Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}}),
+            json!({"timestamp": "2026-10-06T08:00:01.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "spawn_agent", "arguments": "{}", "call_id": "c1"}}),
+            json!({"timestamp": "2026-10-06T08:00:02.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c2"}}),
+            json!({"timestamp": "2026-10-06T08:00:03.100Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "c2", "output": "ok"}}),
+            json!({"timestamp": "2026-10-06T08:01:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "again"}]}}),
+        ]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let turns = transcript_items(&t);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0]["duration_ms"], 3000);
+        assert_eq!(turns[0]["tool_count"], 2);
+        assert_eq!(turns[0]["subagent_count"], 1);
+        assert_eq!(turns[0]["items"][3]["ts"].as_i64().unwrap() % 1000, 100);
+        assert_eq!(turns[1]["duration_ms"], 0);
+        assert_eq!(turns[1]["tool_count"], 0);
     }
 
     #[test]

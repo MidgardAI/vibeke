@@ -63,7 +63,7 @@ export function ShareSheet({ row, open, onClose }: { row: PaneRow; open: boolean
       {invite ? (
         <div className="space-y-3">
           <InviteLink invite={invite} shareTitle={t.share.shareText(hostName)} note={t.share.note} />
-          <div className="text-[12px] text-muted">
+          <div className="text-xs text-muted">
             {invite.expiresAt !== undefined ? t.share.accessUntil(whenText(invite.expiresAt * 1000, now)) : t.share.lasts(shortDuration(invite.lasts * 1000))}
           </div>
           <Button block variant="ghost" onClick={() => setInvite(null)}>
@@ -104,7 +104,7 @@ export function ShareSheet({ row, open, onClose }: { row: PaneRow; open: boolean
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <div className="text-[13px] text-muted">{label}</div>
+      <div className="text-sm text-muted">{label}</div>
       <div className="overflow-x-auto">{children}</div>
     </div>
   );
@@ -136,7 +136,7 @@ export function ReceiveHandoff({ hostId, hostName }: { hostId: string; hostName:
   };
   return (
     <div className="space-y-3 px-4 py-3">
-      <div className="text-[13px] text-muted">{t.settings.receiveHandoffHint(hostName)}</div>
+      <div className="text-sm text-muted">{t.settings.receiveHandoffHint(hostName)}</div>
       {invite ? (
         <>
           <InviteLink invite={invite} shareTitle={t.pair.handoffFrom(hostName)} note={t.share.note} />
@@ -147,7 +147,7 @@ export function ReceiveHandoff({ hostId, hostName }: { hostId: string; hostName:
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[13px] text-muted">{t.settings.receiveValid}</span>
+            <span className="text-sm text-muted">{t.settings.receiveValid}</span>
             <Segmented<(typeof HANDOFF_TTLS)[number]> label={t.settings.receiveValid} value={ttl} onChange={setTtl} options={HANDOFF_TTLS.map((v) => ({ value: v, label: HANDOFF_TTL_LABELS[v] }))} />
           </div>
           {err && <Notice tone="danger">{err}</Notice>}

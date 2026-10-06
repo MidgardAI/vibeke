@@ -4,7 +4,7 @@
 
 Every command is `vibeke <noun> <verb> [positionals] [--flag value]` and maps onto one control-API method (see the [API reference](api.md)). Global flags: `--session NAME`, `--machine NAME`, `--socket PATH`, `--timeout MS`, `--json`, `--pretty`, `--quiet`, `--no-spawn`. Results print as JSON on stdout when `--json` is set or stdout is not a terminal.
 
-Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the server if needed), `vibeke ssh <host>`, `vibeke update`, `vibeke doctor`, `vibeke --skill`, `vibeke --default-config`, `vibeke --version`.
+Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the server if needed), `vibeke ssh <host>`, `vibeke update`, `vibeke doctor [--rebuild-index]` (offline rebuild of the scrollback search index, server stopped), `vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]` (delete archived scrollback; calls `scrollback.forget`), `vibeke --skill`, `vibeke --default-config`, `vibeke --version`.
 
 ## `vibeke server`
 
@@ -254,6 +254,7 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `unmirror` | `<preview>` | `preview.unmirror` | <devbox/v4 \| port> stop a mirror |
 | `promote` | `<preview>` | `preview.promote` | accept a suggestion |
 | `forget` | `<preview>` | `preview.forget` |  |
+| `show` | `<preview>` | `screenshot.list` | <v4\|devbox/v4> [--no-image] the latest screenshot of a preview, inline (kitty graphics, iTerm2) or path + metadata |
 | `profile` | `<action>` `<profile>` | `preview.profile` | list \| reset <profile> |
 | `status` | - | `preview.status` | SOCKS port, managed browsers, links |
 
@@ -261,14 +262,14 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 
 | Verb | Positionals | Method | Description |
 |---|---|---|---|
-| `open` | `<target>` | `browser.open` | <preview\|url> [--viewport 390x844] [--dark] — headless session on this machine |
+| `open` | `<target>` | `browser.open` | <preview\|url> [--viewport 390x844] [--device iphone-15\|pixel-8\|ipad\|desktop-1280\|desktop-1440\|desktop-1920] [--dark] — headless session on this machine |
 | `navigate` | `<session>` `<url>` | `browser.navigate` | <session> <url\|/path> [--wait load\|domcontentloaded\|none] |
 | `click` | `<session>` `<selector>` | `browser.click` | <session> <css\|text=…> \| --x N --y N [--timeout-ms n] |
 | `type` | `<session>` `<selector>` `<text>` | `browser.type` | <session> [selector] <text> [--submit] [--clear] |
 | `press` | `<session>` `<key>` | `browser.press` | <session> <key> (enter, tab, ctrl+a, ArrowDown) |
 | `wait` | `<session>` `<for>` | `browser.wait` | <session> load\|networkidle\|selector:<css>\|ms:<n> |
 | `eval` | `<session>` `<expression>` | `browser.eval` | <session> <js> (from a pane: needs preview.browser_script) |
-| `screenshot` | `<session>` | `browser.screenshot` | <session> [--full-page] [--selector css] [--out f.png] |
+| `screenshot` | `<session>` | `browser.screenshot` | <session\|preview\|url> [--full-page] [--selector css] [--out f.png] — a preview handle or URL (or --preview/--url) is a one-shot capture in a fresh context, with [--device d] [--viewport WxH] |
 | `snapshot` | `<session>` | `browser.snapshot` | <session> [--format a11y\|text\|html] [--selector css] |
 | `dom` | `<session>` | `browser.dom` | alias of snapshot |
 | `console` | `<session>` | `browser.console` | <session> [--level error\|warn\|all] [--since 5m] \| --pane <browser pane> [--follow] [--console\|--network] [--errors] (follow keys: c n e a q) |

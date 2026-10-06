@@ -20,6 +20,8 @@ export interface WindowsOptions {
   devTools: boolean;
   /** Destroy the quick popover after it has been hidden this long (it is recreated on demand). */
   quickTtlMs: number;
+  /** A renderer starts a new document (reload / full navigation): per-document state resets. */
+  onNewDocument?(wc: WebContents): void;
   /** Destroy the hidden main window's renderer after this long (menu-bar only; recreated on show). */
   mainTtlMs: number;
 }
@@ -73,7 +75,10 @@ export class Windows {
     const wc = win.webContents;
     // Navigation *start* (before the new document can run and acknowledge), main frame only.
     wc.on('did-start-navigation', (e) => {
-      if (e.isMainFrame && !e.isSameDocument) this.ready.delete(wc);
+      if (e.isMainFrame && !e.isSameDocument) {
+        this.ready.delete(wc);
+        this.o.onNewDocument?.(wc);
+      }
     });
   }
 

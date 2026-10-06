@@ -1,35 +1,30 @@
-//! Device presets and pinned viewports (06 B3.2 "`--viewport 390x844` / `--device iphone-15`
-//! pins a device size and letterboxes it", 06 B5 `--device`).
-//!
-//! One small built-in table shared by the browser pane and the agents' headless browser:
-//! [`preset`] looks a name up, [`PRESETS`] lists them. A pinned viewport that doesn't match the
-//! pane's aspect is shown centred on a neutral fill ([`Letterbox`]).
+//! Device presets and pinned viewports, shared by the agents' headless browser (`--device`,
+//! 06 B5) and the browser pane (06 B3.2 "`--viewport 390x844` / `--device iphone-15` pins a
+//! device size and letterboxes it"): viewport, device pixel ratio, mobile/touch emulation and
+//! user agent. [`preset`] looks a name up, [`PRESETS`] lists them. A pinned viewport that
+//! doesn't match the pane's aspect is shown centred on a neutral fill ([`Letterbox`]).
 
 use crate::frame::{Rgba, scale_to_fit};
 use serde_json::{Value, json};
 
-/// A device to emulate: CSS viewport, device pixel ratio, mobile/touch and user agent.
+/// One emulated device. `width`/`height` are CSS pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Device {
     pub name: &'static str,
-    /// CSS viewport size.
     pub width: u32,
     pub height: u32,
-    /// Device pixel ratio (`window.devicePixelRatio` in the page).
     pub dpr: f64,
-    /// `Emulation.setDeviceMetricsOverride {mobile}` (meta viewport, overlay scrollbars).
     pub mobile: bool,
+    pub user_agent: &'static str,
     /// Touch events (`Emulation.setTouchEmulationEnabled`).
     pub touch: bool,
-    /// `Emulation.setUserAgentOverride`; `None` keeps the browser's own.
-    pub user_agent: Option<&'static str>,
 }
 
-const UA_IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-const UA_PIXEL: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36";
-const UA_IPAD: &str = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+const UA_IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+const UA_IPAD: &str = "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+const UA_PIXEL: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+const UA_DESKTOP: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-/// The built-in presets (names are lower-case; [`preset`] ignores case).
 pub const PRESETS: &[Device] = &[
     Device {
         name: "iphone-15",
@@ -37,8 +32,8 @@ pub const PRESETS: &[Device] = &[
         height: 852,
         dpr: 3.0,
         mobile: true,
+        user_agent: UA_IPHONE,
         touch: true,
-        user_agent: Some(UA_IPHONE),
     },
     Device {
         name: "pixel-8",
@@ -46,8 +41,8 @@ pub const PRESETS: &[Device] = &[
         height: 915,
         dpr: 2.625,
         mobile: true,
+        user_agent: UA_PIXEL,
         touch: true,
-        user_agent: Some(UA_PIXEL),
     },
     Device {
         name: "ipad",
@@ -55,8 +50,8 @@ pub const PRESETS: &[Device] = &[
         height: 1180,
         dpr: 2.0,
         mobile: true,
+        user_agent: UA_IPAD,
         touch: true,
-        user_agent: Some(UA_IPAD),
     },
     Device {
         name: "desktop-1280",
@@ -64,8 +59,8 @@ pub const PRESETS: &[Device] = &[
         height: 800,
         dpr: 1.0,
         mobile: false,
+        user_agent: UA_DESKTOP,
         touch: false,
-        user_agent: None,
     },
     Device {
         name: "desktop-1440",
@@ -73,8 +68,8 @@ pub const PRESETS: &[Device] = &[
         height: 900,
         dpr: 1.0,
         mobile: false,
+        user_agent: UA_DESKTOP,
         touch: false,
-        user_agent: None,
     },
     Device {
         name: "desktop-1920",
@@ -82,25 +77,28 @@ pub const PRESETS: &[Device] = &[
         height: 1080,
         dpr: 1.0,
         mobile: false,
+        user_agent: UA_DESKTOP,
         touch: false,
-        user_agent: None,
     },
 ];
 
-/// A preset by name (case-insensitive; `_` and spaces count as `-`).
+/// Look a preset up by name (case-insensitive; `_`, spaces and a missing dash are tolerated:
+/// `iPhone 15`, `iphone15`, `pixel_8`).
 pub fn preset(name: &str) -> Option<Device> {
-    let n: String = name
-        .trim()
-        .chars()
-        .map(|c| match c {
-            '_' | ' ' => '-',
-            c => c.to_ascii_lowercase(),
-        })
-        .collect();
-    PRESETS.iter().copied().find(|d| d.name == n)
+    let norm = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+    };
+    let want = norm(name);
+    if want.is_empty() {
+        return None;
+    }
+    PRESETS.iter().copied().find(|d| norm(d.name) == want)
 }
 
-/// Preset names, for error messages and help.
+/// Preset names for error messages.
 pub fn names() -> Vec<&'static str> {
     PRESETS.iter().map(|d| d.name).collect()
 }
@@ -177,7 +175,8 @@ impl From<Device> for Pin {
             dpr: Some(d.dpr),
             mobile: d.mobile,
             touch: d.touch,
-            user_agent: d.user_agent.map(str::to_string),
+            // A desktop pin keeps the browser's own user agent; phones/tablets get theirs.
+            user_agent: d.mobile.then(|| d.user_agent.to_string()),
             device: Some(d.name.to_string()),
         }
     }
@@ -274,11 +273,13 @@ mod tests {
     fn presets_and_names() {
         let p = preset("iPhone-15").unwrap();
         assert_eq!((p.width, p.height, p.dpr, p.mobile), (393, 852, 3.0, true));
-        assert!(p.user_agent.unwrap().contains("iPhone"));
+        assert!(p.user_agent.contains("iPhone") && p.touch);
         assert_eq!(preset("pixel_8").unwrap().name, "pixel-8");
         assert_eq!(preset("desktop-1440").unwrap().width, 1440);
         assert!(!preset("desktop-1920").unwrap().mobile);
-        assert!(preset("nokia-3310").is_none());
+        assert!(preset("nokia-3310").is_none() && preset("").is_none());
+        assert_eq!(preset("iPhone 15").unwrap().name, "iphone-15");
+        assert_eq!(Pin::from(preset("desktop-1280").unwrap()).user_agent, None);
         assert_eq!(names().len(), PRESETS.len());
         for d in PRESETS {
             assert_eq!(preset(d.name), Some(*d));

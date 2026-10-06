@@ -787,3 +787,62 @@ fn screenshots_carry_environment_code_state_and_binding_with_real_chromium() {
     );
     s.json(&["browser", "close", &sid]);
 }
+
+/// Device presets, one-shot screenshots and `preview.console_error` against Playwright's
+/// headless shell (gated; never the user's browser or profiles).
+#[test]
+fn device_one_shot_and_console_errors_with_real_chromium() {
+    if !browser_tests() {
+        eprintln!("skipped: set VIBEKE_BROWSER_TESTS=1");
+        return;
+    }
+    let Some(shell) = playwright_shell() else {
+        eprintln!("skipped: no Playwright chrome-headless-shell on disk");
+        return;
+    };
+    let s = Session::new(&format!(
+        "[preview]\nbrowser_path = \"{shell}\"\nbrowser_idle = \"30s\"\nbrowser_external = \"deny\"\n"
+    ));
+    let app = http_server(
+        vec![(
+            "/",
+            "<html><head><title>Dev</title></head><body><h1>Dev</h1><script>console.error('boom token=abcd1234abcd1234'); throw new Error('kaput');</script></body></html>".into(),
+        )],
+        None,
+    );
+    s.json(&[
+        "preview",
+        "declare",
+        &app.port.to_string(),
+        "--label",
+        "app",
+    ]);
+    // One-shot, no session: the device's viewport and DPR end up in the screenshot record.
+    let shot = s.json(&["browser", "screenshot", "v1", "--device", "iphone-15"]);
+    assert_eq!(shot["one_shot"], true, "{shot}");
+    let env = &shot["meta"]["environment"];
+    assert_eq!(env["device"], "iphone-15");
+    assert_eq!(env["viewport"]["width"], 393);
+    assert_eq!(env["dpr"], 3.0);
+    // 393 x 852 CSS px at DPR 3.
+    assert_eq!(shot["width"], 1179, "{shot}");
+    assert_eq!(
+        s.json(&["browser", "list"])["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    // The page's uncaught exception and console.error reach the event log, redacted.
+    wait_until("preview.console_error", Duration::from_secs(20), || {
+        !s.events("preview.console_error").is_empty()
+    });
+    let ev = s.events("preview.console_error");
+    assert_eq!(ev[0]["subject"]["preview"], "v1");
+    let all = serde_json::to_string(&ev).unwrap();
+    assert!(!all.contains("abcd1234abcd1234"), "{all}");
+    // A session with a device keeps it in its summary.
+    let open = s.json(&["browser", "open", "v1", "--device", "pixel-8"]);
+    assert_eq!(open["device"], "pixel-8");
+    s.json(&["browser", "close", open["session"].as_str().unwrap()]);
+}

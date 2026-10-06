@@ -1216,6 +1216,11 @@ fn on_event(server: &Weak<Server>, proc: &Arc<Proc>, t: &Arc<Target>, ev: Event)
                 refresh_title(t);
             }
         }
+        "Runtime.exceptionThrown" | "Runtime.consoleAPICalled" => {
+            if let Some(srv) = server.upgrade() {
+                crate::preview_console::from_pane_event(&srv, &t.pane, &ev.method, &ev.params);
+            }
+        }
         "Inspector.targetCrashed" => {
             let mut st = t.st.lock().unwrap();
             st.error = Some("page crashed — reload (prefix+.)".into());
@@ -2494,6 +2499,7 @@ pub fn create_pane(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             recovered: None,
             browser: Some(spec.clone()),
             isolation: Default::default(),
+            jj: None,
         };
         tx.counters = true;
         tx.pane(pane.clone());

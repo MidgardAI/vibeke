@@ -75,3 +75,36 @@ describe('transcript paging', () => {
     expect(ownMessages(turns)).toEqual(['1:0', '2:0', '3:0']);
   });
 });
+
+describe('transcript timing fields', () => {
+  const timed = (n: number, items: number, duration: number | null): TranscriptTurn => ({
+    ...turn(n),
+    items: turn(n).items.slice(0, items).map((it, i) => ({ ...it, ts: 1_000 * n + i * 250 })),
+    duration_ms: duration,
+    tool_count: 1,
+    subagent_count: 0,
+  });
+
+  test('a live refresh replaces the growing turn with its newer timing, keeps older turns as they were', () => {
+    let s = applyLatest(emptyTranscript(), { run: 'r1', turns: [timed(1, 5, 900), timed(2, 3, 400)], next_before: null });
+    const first = s.turns[0];
+    s = applyLatest(s, { run: 'r1', turns: [timed(2, 5, 1_000), timed(3, 1, 0)], next_before: 2 });
+    expect(s.turns.map((t) => t.n)).toEqual([1, 2, 3]);
+    expect(s.turns[0]).toBe(first);
+    expect(s.turns[1]!.duration_ms).toBe(1_000);
+    expect(s.turns[1]!.items).toHaveLength(5);
+    expect(s.turns[1]!.items[4]!.ts).toBe(3_000);
+    expect(s.turns[2]!.tool_count).toBe(1);
+    // The newest page's cursor does not move the older-pages cursor.
+    expect(s.nextBefore).toBeNull();
+  });
+
+  test('older pages keep their timing; missing fields stay absent (older servers)', () => {
+    let s = applyLatest(emptyTranscript(), { run: 'r1', turns: [timed(5, 2, 50)], next_before: 5 });
+    s = applyOlder(s, { run: 'r1', turns: [turn(4)], next_before: null });
+    expect(s.turns.map((t) => [t.n, t.duration_ms ?? null])).toEqual([
+      [4, null],
+      [5, 50],
+    ]);
+  });
+});

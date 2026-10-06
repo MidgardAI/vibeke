@@ -40,6 +40,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("pane.embed", true),
     ("tab.floats", true),
     ("status.segments", false),
+    ("scrollback.forget", true),
 ];
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
@@ -48,6 +49,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             return Some(search::read_archive(server, ctx, p));
         }
         "search.query" => return Some(search::query(server, ctx, p)),
+        "scrollback.forget" => return Some(search::forget(server, ctx, p)),
         "workspace.create" if p.get("group").is_some_and(|g| !g.is_null()) => {
             return Some(create_in_group(server, ctx, p).await);
         }
@@ -657,7 +659,7 @@ fn status_segments(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             "session": {"name": c.model.session},
             "workspace": ws.as_ref().map(|w| json!({"id": w.id, "handle": w.handle, "name": w.display_name()})),
             "task": task.as_ref().map(|t| json!({"id": t.id, "handle": t.handle, "title": t.title, "status": t.status, "review_label": t.review_label})),
-            "branch": ws.as_ref().and_then(|w| w.branch.clone()).or_else(|| task.as_ref().and_then(|t| t.branch.clone())).map(|b| json!({"name": b})),
+            "branch": focus.pane.as_deref().and_then(|p| c.pane(p)).and_then(|p| p.jj.clone()).or_else(|| ws.as_ref().and_then(|w| w.branch.clone())).or_else(|| task.as_ref().and_then(|t| t.branch.clone())).map(|b| json!({"name": b})),
             "ports": {"range": task.as_ref().and_then(|t| t.port_range), "previews": ports_previews},
             "attention": {
                 "count": unfocused.len(),

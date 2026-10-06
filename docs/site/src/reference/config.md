@@ -173,6 +173,7 @@ The file is `~/.config/vibeke/config.toml` (override with `VIBEKE_CONFIG`). It r
 # collapsed         = false
 # show_shell_panes  = false
 # nest_tasks        = true
+# preview_thumbnails = false             # tiny latest-screenshot thumbnail per preview row (kitty graphics)
 # show_state_source = "inferred-only"   # inferred-only | always | never
 
 # [ui.sidebar.isolation_glyphs]

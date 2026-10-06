@@ -143,23 +143,166 @@ impl Archive {
         Ok(out)
     }
 
-    /// Delete the oldest segments until the pane's archive is under `max_bytes` (compressed).
-    pub fn enforce_retention(&mut self, pane: &str, max_bytes: u64) -> Result<()> {
+    /// Pane ids that have a segment directory on disk or an open segment.
+    pub fn pane_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(&self.root)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.extend(self.open.keys().cloned());
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Is a segment of this pane currently open for writing?
+    pub fn is_open(&self, pane: &str) -> bool {
+        self.open.contains_key(pane)
+    }
+
+    /// Discard the pane's open (buffered) segment state; its file is removed by the caller.
+    pub fn drop_open(&mut self, pane: &str) {
+        self.open.remove(pane);
+    }
+
+    /// Segments of `pane` (oldest first) chosen by `sel`. Retention selections never include
+    /// the segment currently being written; [`Select::All`] does.
+    pub fn select(&self, pane: &str, sel: Select) -> Vec<SegInfo> {
         let segs = self.segments(pane);
-        let sizes: Vec<u64> = segs
+        let starts: Vec<u64> = segs.iter().map(|p| seg_start(p)).collect();
+        let infos: Vec<SegInfo> = segs
             .iter()
-            .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+            .enumerate()
+            .map(|(i, p)| {
+                let md = std::fs::metadata(p).ok();
+                SegInfo {
+                    path: p.clone(),
+                    start: starts[i],
+                    end: starts.get(i + 1).copied().unwrap_or(u64::MAX),
+                    bytes: md.as_ref().map(|m| m.len()).unwrap_or(0),
+                    mtime_ms: md
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                }
+            })
             .collect();
-        let mut total: u64 = sizes.iter().sum();
-        for (p, s) in segs.iter().zip(sizes) {
-            if total <= max_bytes || self.open.get(pane).is_some_and(|o| &o.path == p) {
-                break;
+        let is_open = |s: &SegInfo| self.open.get(pane).is_some_and(|o| o.path == s.path);
+        match sel {
+            Select::All => infos,
+            Select::OlderThan(ms) => infos
+                .into_iter()
+                .filter(|s| !is_open(s) && s.mtime_ms < ms)
+                .collect(),
+            Select::OverBytes(max) => {
+                let mut total: u64 = infos.iter().map(|s| s.bytes).sum();
+                let mut out = Vec::new();
+                for s in infos {
+                    if total <= max || is_open(&s) {
+                        break;
+                    }
+                    total -= s.bytes;
+                    out.push(s);
+                }
+                out
             }
-            std::fs::remove_file(p)?;
-            total -= s;
+        }
+    }
+
+    /// Every segment of `pane` on disk, oldest first.
+    pub fn segment_infos(&self, pane: &str) -> Vec<SegInfo> {
+        self.select(pane, Select::All)
+    }
+
+    /// Delete segment files (a missing file counts as deleted).
+    pub fn remove_segments(segs: &[SegInfo]) -> Result<()> {
+        for s in segs {
+            match std::fs::remove_file(&s.path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
         Ok(())
     }
+
+    /// Remove the pane's directory when it is empty.
+    pub fn prune_dir(&self, pane: &str) {
+        let _ = std::fs::remove_dir(self.pane_dir(pane));
+    }
+}
+
+/// Which segments a purge takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Select {
+    /// Everything, including the segment being written.
+    All,
+    /// Closed segments last written before this time (ms since epoch). A segment is the unit
+    /// of deletion, so a segment that straddles the time stays whole.
+    OlderThan(i64),
+    /// Oldest closed segments until the pane is within this many compressed bytes.
+    OverBytes(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegInfo {
+    pub path: PathBuf,
+    /// First absolute line of the segment (its file name).
+    pub start: u64,
+    /// Exclusive end: the next segment's start, `u64::MAX` for the last.
+    pub end: u64,
+    pub bytes: u64,
+    pub mtime_ms: i64,
+}
+
+/// What reading one segment recovered.
+#[derive(Debug)]
+pub struct SegRead {
+    pub rows: Vec<ArchivedRow>,
+    /// The zstd stream or a row line was damaged; `rows` holds what was recoverable.
+    pub damaged: bool,
+}
+
+/// Read a segment, salvaging the rows before a truncated or corrupt frame.
+pub fn read_seg_lossy(p: &Path) -> std::io::Result<SegRead> {
+    use std::io::Read;
+    let raw = std::fs::read(p)?;
+    let mut text = Vec::new();
+    let mut damaged = false;
+    match zstd::stream::read::Decoder::new(&raw[..]) {
+        Ok(mut d) => {
+            let mut chunk = [0u8; 16 * 1024];
+            loop {
+                match d.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => text.extend_from_slice(&chunk[..n]),
+                    Err(_) => {
+                        damaged = true;
+                        break;
+                    }
+                }
+            }
+        }
+        Err(_) => damaged = true,
+    }
+    let mut rows = Vec::new();
+    let lines = text.split(|&b| b == b'\n');
+    for l in lines {
+        if l.is_empty() {
+            continue;
+        }
+        match serde_json::from_slice::<ArchivedRow>(l) {
+            Ok(r) => rows.push(r),
+            // A line cut short by a damaged stream is expected to be the last one.
+            Err(_) => damaged = true,
+        }
+    }
+    Ok(SegRead { rows, damaged })
 }
 
 fn seg_start(p: &Path) -> u64 {
@@ -224,7 +367,9 @@ mod tests {
         assert_eq!(a.last_line("p1").unwrap(), Some(29_999));
         assert_eq!(a.first_line("p1").unwrap(), Some(0));
         assert_eq!(a.first_line("nope").unwrap(), None);
-        a.enforce_retention("p1", 1).unwrap();
+        let sel = a.select("p1", Select::OverBytes(1));
+        assert!(!sel.is_empty());
+        Archive::remove_segments(&sel).unwrap();
         assert!(a.read("p1", 0, 10).unwrap().is_empty());
     }
 }

@@ -167,6 +167,11 @@ pub struct Pane {
     /// viewport rendered on the viewing client's machine. Last field (postcard is positional).
     #[serde(default)]
     pub browser: Option<BrowserPane>,
+    /// Jujutsu state of the pane's cwd (08 §2.1, M4): the working-copy change's bookmarks
+    /// (comma-joined) or its short change id; `None` outside a jj repo or without `jj`.
+    /// Appended (postcard is positional).
+    #[serde(default)]
+    pub jj: Option<String>,
 }
 
 impl Pane {

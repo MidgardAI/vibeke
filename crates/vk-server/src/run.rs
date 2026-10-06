@@ -63,6 +63,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
                 _ = tokio::time::sleep_until(prune_at) => {
                     hk.housekeeping();
                     let _ = hk.with_core(|c| c.store.prune(7, 365));
+                    hk.archive_retention();
                     prune_at += hour;
                 }
             }
@@ -70,6 +71,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     });
     crate::agents::start(&server);
     crate::preview::start(&server);
+    crate::vcs::start(&server);
     crate::screenshots::start(&server);
     crate::desk::start(&server);
     crate::sandbox::restore(&server).await;

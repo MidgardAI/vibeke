@@ -31,11 +31,20 @@ describe('keyboard shortcuts', () => {
     expect(shortcutFor(k('k', { metaKey: true }), ctx({ typing: true }))).toEqual({ type: 'palette' });
     expect(shortcutFor(k('k', { ctrlKey: true }), ctx())).toBeNull();
     expect(shortcutFor(k('k', { ctrlKey: true }), ctx({ mac: false }))).toEqual({ type: 'palette' });
-    expect(shortcutFor(k('3', { metaKey: true }), ctx())).toEqual({ type: 'tab', tab: 'focus' });
+    expect(shortcutFor(k('1', { metaKey: true }), ctx())).toEqual({ type: 'go', to: 'inbox' });
+    expect(shortcutFor(k('2', { metaKey: true }), ctx())).toEqual({ type: 'go', to: 'workspace' });
+    expect(shortcutFor(k('3', { metaKey: true }), ctx())).toEqual({ type: 'panel' });
+    expect(shortcutFor(k('4', { metaKey: true }), ctx())).toEqual({ type: 'go', to: 'settings' });
+    expect(shortcutFor(k('\\', { metaKey: true }), ctx({ typing: true }))).toEqual({ type: 'sidebar' });
+    expect(shortcutFor(k('E', { metaKey: true, shiftKey: true }), ctx())).toEqual({ type: 'changes' });
+    expect(shortcutFor(k('e', { metaKey: true }), ctx())).toBeNull();
+    expect(shortcutFor(k('2', { ctrlKey: true }), ctx({ mac: false }))).toEqual({ type: 'go', to: 'workspace' });
     expect(shortcutFor(k('5', { metaKey: true }), ctx())).toBeNull();
     expect(keyLabel(true, 'mod+k')).toBe('⌘K');
     expect(keyLabel(false, 'mod+1')).toBe('Ctrl+1');
     expect(keyLabel(true, 'j')).toBe('j');
+    expect(keyLabel(true, 'mod+shift+e')).toBe('⇧⌘E');
+    expect(keyLabel(false, 'mod+shift+e')).toBe('Ctrl+Shift+E');
   });
   test('fuzzy matching prefers prefixes and word starts', () => {
     expect(fuzzyScore('sah', 'samplehub')).toBeGreaterThan(fuzzyScore('sah', 'the samplehub'));

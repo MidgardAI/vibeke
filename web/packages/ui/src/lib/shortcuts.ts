@@ -1,8 +1,6 @@
 // Keyboard-first navigation (spec 16 §16.2), shared by the desktop app and the PWA (iPad with a
 // hardware keyboard): pure key → action mapping, so it is testable without a DOM.
 
-import type { Tab } from '../router';
-
 export type ShortcutAction =
   | { type: 'next' }
   | { type: 'prev' }
@@ -11,7 +9,11 @@ export type ShortcutAction =
   | { type: 'allowAlways' }
   | { type: 'open' }
   | { type: 'back' }
-  | { type: 'tab'; tab: Tab }
+  | { type: 'go'; to: 'inbox' | 'workspace' | 'settings' }
+  | { type: 'panel' }
+  | { type: 'sidebar' }
+  | { type: 'changes' }
+  | { type: 'agentView' }
   | { type: 'find' }
   | { type: 'palette' }
   | { type: 'help' };
@@ -39,7 +41,8 @@ export interface KeyContext {
   onControl: boolean;
 }
 
-export const TAB_ORDER: readonly Tab[] = ['inbox', 'panes', 'focus', 'changes'];
+/** ⌘1 Inbox, ⌘2 first workspace, ⌘3 toggle the panel, ⌘4 Settings. */
+const NUMBERED: readonly ShortcutAction[] = [{ type: 'go', to: 'inbox' }, { type: 'go', to: 'workspace' }, { type: 'panel' }, { type: 'go', to: 'settings' }];
 
 /** Actions that answer interactions: never from a held (auto-repeating) key. */
 const MUTATING = new Set<ShortcutAction['type']>(['allow', 'deny', 'allowAlways', 'open']);
@@ -56,8 +59,11 @@ function mapKey(e: KeyLike, ctx: KeyContext): ShortcutAction | null {
   if (mod && !e.altKey) {
     const k = e.key.toLowerCase();
     if (k === 'k' && !e.shiftKey) return { type: 'palette' };
+    if (k === '\\' && !e.shiftKey) return { type: 'sidebar' };
+    if (k === 'e' && e.shiftKey) return { type: 'changes' };
+    if (k === 't' && e.shiftKey) return { type: 'agentView' };
     const n = Number(e.key);
-    if (!e.shiftKey && Number.isInteger(n) && n >= 1 && n <= TAB_ORDER.length) return { type: 'tab', tab: TAB_ORDER[n - 1]! };
+    if (!e.shiftKey && Number.isInteger(n) && n >= 1 && n <= NUMBERED.length) return NUMBERED[n - 1]!;
     return null;
   }
   if (ctx.typing || ctx.dialog) return null;
@@ -89,8 +95,11 @@ function mapKey(e: KeyLike, ctx: KeyContext): ShortcutAction | null {
 /** Display form of a shortcut for the cheat sheet / palette, e.g. `⌘K` or `Ctrl+K`. */
 export function keyLabel(mac: boolean, combo: string): string {
   if (!combo.startsWith('mod+')) return combo;
-  const rest = combo.slice(4).toUpperCase();
-  return mac ? `⌘${rest}` : `Ctrl+${rest}`;
+  let rest = combo.slice(4);
+  const shift = rest.startsWith('shift+');
+  if (shift) rest = rest.slice(6);
+  rest = rest.toUpperCase();
+  return mac ? `${shift ? '⇧' : ''}⌘${rest}` : `Ctrl+${shift ? 'Shift+' : ''}${rest}`;
 }
 
 /** Shortcuts listed in the `?` cheat sheet (mod = ⌘ on Apple platforms, Ctrl elsewhere). */
@@ -102,7 +111,13 @@ export const SHORTCUTS: readonly { keys: string[]; what: string }[] = [
   { keys: ['A'], what: 'allowAlways' },
   { keys: ['Enter'], what: 'open' },
   { keys: ['Esc'], what: 'back' },
-  { keys: ['mod+1', 'mod+2', 'mod+3', 'mod+4'], what: 'tabs' },
+  { keys: ['mod+1'], what: 'inbox' },
+  { keys: ['mod+2'], what: 'workspace' },
+  { keys: ['mod+3'], what: 'panel' },
+  { keys: ['mod+shift+e'], what: 'changes' },
+  { keys: ['mod+\\'], what: 'sidebar' },
+  { keys: ['mod+shift+t'], what: 'agentView' },
+  { keys: ['mod+4'], what: 'settings' },
   { keys: ['/'], what: 'find' },
   { keys: ['?'], what: 'help' },
 ];

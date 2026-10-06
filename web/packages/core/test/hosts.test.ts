@@ -117,6 +117,32 @@ describe('HostManager', () => {
     mgr.stop();
   });
 
+  test('subscribeEvents: per-host listeners (and onAnyEvent) see deduped events; unsubscribe stops them', async () => {
+    const { mgr, state } = harness();
+    const got: string[] = [];
+    const any: string[] = [];
+    // Subscribing before the connection exists works (the UI subscribes on mount).
+    const off = mgr.subscribeEvents('h1', (e) => got.push(`${e.seq}:${e.type}`));
+    mgr.subscribeEvents('other', () => got.push('wrong host'));
+    const offAny = mgr.onAnyEvent((id, e) => any.push(`${id}:${e.seq}`));
+    await mgr.start();
+    await flush(20);
+    const ev = (seq: number, type: string) => state.ctx!.notify('event', { seq, ts: 0, type, subject: { run: 'r1' }, data: {} });
+    ev(11, 'agent.turn_started');
+    ev(11, 'agent.turn_started');
+    ev(12, 'agent.turn_completed');
+    await flush();
+    expect(got).toEqual(['11:agent.turn_started', '12:agent.turn_completed']);
+    expect(any).toEqual(['h1:11', 'h1:12']);
+    off();
+    offAny();
+    ev(13, 'agent.usage');
+    await flush();
+    expect(got.length).toBe(2);
+    expect(any.length).toBe(2);
+    mgr.stop();
+  });
+
   test('reconnects with backoff and resumes from the cursor; reset falls back to dashboard', async () => {
     const { mgr, h, calls, state, platform } = harness();
     await mgr.start();

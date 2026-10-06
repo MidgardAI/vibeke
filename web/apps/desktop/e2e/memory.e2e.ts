@@ -93,8 +93,10 @@ test('three hosts stay within the memory budget', async () => {
       report.push(`1 host, main window: ${one.total} MB ws, ${one.footprint} MB footprint (${one.byType})`);
     }
   }
+  // The old Panes route redirects to a workspace; the sidebar lists one workspace per host.
   await page.evaluate(() => (location.hash = '#/panes'));
-  await expect(page.locator('[data-nav-item]')).toHaveCount(3, { timeout: 30_000 });
+  await expect(page).toHaveURL(/#\/w\//, { timeout: 30_000 });
+  await expect(page.getByRole('navigation', { name: 'Workspaces' }).locator('[data-nav-item]')).toHaveCount(3, { timeout: 30_000 });
   await settle(6000);
   const three = await sample(app);
   report.push(`3 hosts, main window: ${three.total} MB ws, ${three.footprint} MB footprint (${three.byType})`);
@@ -122,7 +124,7 @@ test('three hosts stay within the memory budget', async () => {
   const t1 = Date.now();
   await app.evaluate(({ app: x }) => x.emit('activate'));
   const again = await app.waitForEvent('window', { predicate: (p) => p.url().includes('surface=full'), timeout: 15_000 });
-  await expect(again.locator('[data-nav-item]')).toHaveCount(3, { timeout: 15_000 });
+  await expect(again.getByRole('navigation', { name: 'Workspaces' }).locator('[data-nav-item]')).toHaveCount(3, { timeout: 15_000 });
   report.push(`reopen main window after release → panes listed: ${Date.now() - t1} ms`);
   console.log(`memory MB (per process: working set/footprint)\n  ${report.join('\n  ')}`);
 

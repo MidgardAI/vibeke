@@ -230,7 +230,7 @@ export async function settled(page: Page): Promise<void> {
   });
 }
 
-/** Follow a light/dark appearance (the app's theme is "system" by default). */
+/** Switch the native appearance (vibrancy material, title bar) to light/dark. */
 export async function appearance(app: ElectronApplication, mode: 'light' | 'dark'): Promise<void> {
   await app.evaluate(({ nativeTheme }, m) => {
     nativeTheme.themeSource = m;
@@ -239,8 +239,8 @@ export async function appearance(app: ElectronApplication, mode: 'light' | 'dark
 }
 
 const VIBRANCY_STANDIN = `
-  :root[data-vibrancy] body { background: #e9e9eb; }
-  @media (prefers-color-scheme: dark) { :root[data-vibrancy] body { background: #232326; } }
+  :root[data-vibrancy][data-theme="light"] body { background: #e9e9eb; }
+  :root[data-vibrancy][data-theme="dark"] body { background: #232326; }
 `;
 
 /**
@@ -262,12 +262,17 @@ async function nativeShot(app: ElectronApplication, page: Page, path: string): P
   }
 }
 
-/** Screenshot in light and dark, after animations settle: `<name>-light.png`, `<name>-dark.png`. */
+/**
+ * Screenshot in light and dark, after animations settle: `<name>-light.png`, `<name>-dark.png`.
+ * The app's own theme preference is overridden for the capture and restored afterwards.
+ */
 export async function shoot(app: ElectronApplication, page: Page, name: string): Promise<void> {
+  const prev = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
   for (const mode of ['light', 'dark'] as const) {
     await appearance(app, mode);
     // Playwright pins prefers-color-scheme to light unless told otherwise.
     await page.emulateMedia({ colorScheme: mode });
+    await page.evaluate((m) => document.documentElement.setAttribute('data-theme', m), mode);
     await settled(page);
     const path = join(appRoot, 'test-results', `${name}-${mode}.png`);
     if (!(await nativeShot(app, page, path))) {
@@ -277,6 +282,14 @@ export async function shoot(app: ElectronApplication, page: Page, name: string):
       await page.screenshot({ path });
     }
   }
+  await page.evaluate((t) => (t ? document.documentElement.setAttribute('data-theme', t) : document.documentElement.removeAttribute('data-theme')), prev);
   await appearance(app, 'light');
   await page.emulateMedia({ colorScheme: 'light' });
+}
+
+/** Make `pane`'s shell run a Claude-style hook event (session start, prompt, stop…). */
+export function hookEvent(host: TestHost, pane: string, event: string, cwd: string, extra: Record<string, unknown> = {}): void {
+  const payload = JSON.stringify({ session_id: `e2e-${pane}`, hook_event_name: event, cwd, ...extra }).replace(/'/g, '');
+  host.cli(['pane', 'send-text', pane, `echo '${payload}' | '${host.bin}' hook claude ${event}`]);
+  host.cli(['pane', 'send-keys', pane, 'enter']);
 }

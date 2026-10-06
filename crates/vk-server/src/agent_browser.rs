@@ -96,6 +96,10 @@ pub struct AgentBrowserConfig {
     pub default_viewport: String,
     /// Grants `browser.eval` to pane-scoped callers (capability `browser.script`, 09 §5.2).
     pub browser_script: bool,
+    /// `[browser] session_previews`: `own` (default; a session opened from a pane reaches only
+    /// that pane's / task's previews) | `machine` (every declared preview of the machine).
+    #[serde(skip)]
+    pub session_previews: String,
 }
 
 impl Default for AgentBrowserConfig {
@@ -107,6 +111,7 @@ impl Default for AgentBrowserConfig {
             browser_allow_private: Vec::new(),
             default_viewport: "1440x900".into(),
             browser_script: false,
+            session_previews: "own".into(),
         }
     }
 }
@@ -120,11 +125,26 @@ impl AgentBrowserConfig {
     }
 
     pub fn from_config(cfg: &vk_config::Config) -> Self {
-        cfg.extra
+        let mut c: AgentBrowserConfig = cfg
+            .extra
             .get("preview")
             .and_then(|t| serde_json::to_value(t).ok())
             .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        c.session_previews = cfg
+            .extra
+            .get("browser")
+            .and_then(|b| b.get("session_previews"))
+            .and_then(|v| v.as_str())
+            .filter(|v| matches!(*v, "own" | "machine"))
+            .unwrap_or("own")
+            .to_string();
+        c
+    }
+
+    /// Sessions opened from a pane are limited to that pane's / task's previews.
+    pub fn own_previews_only(&self) -> bool {
+        self.session_previews != "machine"
     }
 
     pub fn idle(&self) -> Duration {
@@ -204,6 +224,26 @@ impl Proc {
     }
 }
 
+/// The previews a pane-opened session may reach (`[browser] session_previews = "own"`): those
+/// of the pane's task, of the pane itself, and of panes it created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewScope {
+    pub pane: String,
+    pub task: Option<String>,
+}
+
+impl PreviewScope {
+    fn owns(&self, c: &crate::core::Core, pv: &vk_proto::model::Preview) -> bool {
+        if pv.task.is_some() && pv.task == self.task {
+            return true;
+        }
+        let Some(pane) = &pv.pane else { return false };
+        *pane == self.pane
+            || c.pane(pane)
+                .is_some_and(|p| p.created_by == format!("agent:{}", self.pane))
+    }
+}
+
 /// One screencast frame (JPEG as Chromium sent it).
 #[derive(Debug, Clone)]
 pub struct Frame {
@@ -236,6 +276,11 @@ pub struct Session {
     /// Device scale factor and emulated `prefers-color-scheme` (screenshot environment, B6).
     pub dpr: f64,
     pub color_scheme: Option<String>,
+    /// Device preset the session emulates (`iphone-15`), and whether it is a mobile device.
+    pub device: Option<String>,
+    pub mobile: bool,
+    /// Which previews this session may reach (`None` = every declared preview of the machine).
+    pub scope: Option<PreviewScope>,
     proxy: Mutex<Option<ProxyHandle>>,
     console: Mutex<VecDeque<Value>>,
     network: Mutex<VecDeque<Value>>,
@@ -282,6 +327,8 @@ impl Session {
             "url": *self.url.lock().unwrap(),
             "created_ms": self.created_ms,
             "viewport": {"width": self.viewport.0, "height": self.viewport.1},
+            "device": self.device,
+            "previews": if self.scope.is_some() { "own" } else { "machine" },
             "human_control": self.human_control().is_some(),
             "screencast": self.screencast_subs.load(Ordering::Relaxed) > 0,
             "proxy_port": self.proxy.lock().unwrap().as_ref().map(|p| p.port),
@@ -325,6 +372,8 @@ pub struct AgentBrowsers {
     /// `[preview]` config, re-read at most every 2 s (the Fetch layer asks per request).
     cfg_cache: Mutex<Option<(Instant, AgentBrowserConfig)>>,
     pub denied: AtomicU64,
+    /// `preview.console_error` limiter (shared with browser panes).
+    pub console_errors: crate::preview_console::Limiter,
 }
 
 impl AgentBrowsers {
@@ -730,21 +779,37 @@ fn emit(server: &Server, kind: &str, sess: &Session, data: Value) {
 
 /// The live policy for this machine: declared previews' ports + config.
 pub fn current_policy(server: &Server, cfg: &AgentBrowserConfig) -> Policy {
-    let ports = server.with_core(|c| {
-        c.model
-            .previews
-            .iter()
-            .filter(|p| {
-                matches!(
-                    p.status,
-                    PreviewStatus::Declared | PreviewStatus::Up | PreviewStatus::Down
-                )
-            })
-            .map(|p| p.port)
-            .collect()
+    session_policy(server, cfg, None)
+}
+
+/// The policy for one session: with a [`PreviewScope`] only that scope's previews are
+/// reachable, the machine's other previews are `foreign_preview`.
+pub fn session_policy(
+    server: &Server,
+    cfg: &AgentBrowserConfig,
+    scope: Option<&PreviewScope>,
+) -> Policy {
+    let (own, foreign) = server.with_core(|c| {
+        let mut own = std::collections::BTreeSet::new();
+        let mut foreign = std::collections::BTreeSet::new();
+        for p in c.model.previews.iter().filter(|p| {
+            matches!(
+                p.status,
+                PreviewStatus::Declared | PreviewStatus::Up | PreviewStatus::Down
+            )
+        }) {
+            if scope.is_none_or(|s| s.owns(c, p)) {
+                own.insert(p.port);
+            } else {
+                foreign.insert(p.port);
+            }
+        }
+        foreign.retain(|port| !own.contains(port));
+        (own, foreign)
     });
     Policy {
-        preview_ports: ports,
+        preview_ports: own,
+        foreign_ports: foreign,
         allow: cfg.allow_rules(),
         external: cfg.external(),
     }
@@ -797,6 +862,7 @@ fn record_denial(
 /// The Fetch layer's decision for one paused request. `None` = continue.
 async fn fetch_decision(
     server: &Server,
+    scope: Option<&PreviewScope>,
     url: &str,
     resource_type: &str,
     main_frame: bool,
@@ -808,7 +874,7 @@ async fn fetch_decision(
         return Some(Reason::Scheme.as_str());
     };
     let cfg = server.agent_browser.config();
-    let pol = current_policy(server, &cfg);
+    let pol = session_policy(server, &cfg, scope);
     let kind = if main_frame && resource_type == "Document" {
         Kind::Navigation
     } else {
@@ -889,6 +955,49 @@ fn remote_object_text(o: &Value) -> String {
         .to_string()
 }
 
+/// The preview a session is looking at: the one it was opened on, else the one whose port its
+/// current page is served from.
+fn session_preview(server: &Server, sess: &Session) -> Option<String> {
+    if let Some(p) = &sess.preview {
+        return Some(p.clone());
+    }
+    let url = sess.url.lock().unwrap().clone();
+    let t = policy::parse_target(&url)?;
+    if !policy::is_localhost_name(&t.host) && t.host != "127.0.0.1" && t.host != "::1" {
+        return None;
+    }
+    server.with_core(|c| {
+        c.model
+            .previews
+            .iter()
+            .find(|p| p.port == t.port && p.status != PreviewStatus::Gone)
+            .map(|p| p.handle.clone())
+    })
+}
+
+/// `preview.console_error` for an uncaught exception / `console.error` on a preview.
+fn report_console_error(server: &Server, sess: &Session, method: &str, params: &Value) {
+    let Some((source, text, url, line)) = crate::preview_console::parse_event(method, params)
+    else {
+        return;
+    };
+    let Some(preview) = session_preview(server, sess) else {
+        return;
+    };
+    crate::preview_console::report(
+        server,
+        &preview,
+        sess.owner_pane.as_deref(),
+        Some(&sess.handle),
+        &crate::preview_console::ConsoleError {
+            source,
+            text: &text,
+            url: url.as_deref(),
+            line,
+        },
+    );
+}
+
 fn on_event(
     server: &Arc<Server>,
     cdp: &Arc<Cdp>,
@@ -908,7 +1017,7 @@ fn on_event(
             let (srv, cdp, sess, sid) =
                 (server.clone(), cdp.clone(), sess.clone(), sid.to_string());
             rt.spawn(async move {
-                match fetch_decision(&srv, &url, &rtype, main).await {
+                match fetch_decision(&srv, sess.scope.as_ref(), &url, &rtype, main).await {
                     None => {
                         let _ = cdp.send(
                             Some(&sid),
@@ -982,6 +1091,7 @@ fn on_event(
                 json!({"ts": vk_store::now_ms(), "level": console_level(p["type"].as_str().unwrap_or("log")), "text": text,
                        "source": "console", "url": frame["url"], "line": frame["lineNumber"]}),
             );
+            report_console_error(server, sess, &ev.method, p);
         }
         "Runtime.exceptionThrown" => {
             let d = &p["exceptionDetails"];
@@ -994,6 +1104,7 @@ fn on_event(
                 &sess.console,
                 json!({"ts": vk_store::now_ms(), "level": "error", "text": text, "source": "exception", "url": d["url"], "line": d["lineNumber"]}),
             );
+            report_console_error(server, sess, &ev.method, p);
         }
         "Log.entryAdded" => {
             let e = &p["entry"];
@@ -1188,6 +1299,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         "browser.press" => with_session(server, ctx, method, p, press).await,
         "browser.wait" => with_session(server, ctx, method, p, wait).await,
         "browser.eval" => with_session(server, ctx, method, p, eval).await,
+        "browser.screenshot" if session_param(p).is_none() => {
+            one_shot_screenshot(server, ctx, p).await
+        }
         "browser.screenshot" => match target_session(server, ctx, method, p) {
             Ok(sess) => screenshot(server, ctx, &sess, p).await,
             Err(e) => Err(e),
@@ -1312,7 +1426,19 @@ fn preview_url(pv: &vk_proto::model::Preview) -> String {
     format!("{scheme}://localhost:{}{}", pv.port, pv.path)
 }
 
+/// The preview scope for a session opened by `ctx` (`None` = machine-wide: full-scope callers,
+/// or `[browser] session_previews = "machine"`).
+fn scope_for(server: &Server, ctx: &Ctx, cfg: &AgentBrowserConfig) -> Option<PreviewScope> {
+    let pane = ctx.pane_scope.as_ref()?;
+    cfg.own_previews_only().then(|| PreviewScope {
+        pane: pane.clone(),
+        task: server.with_core(|c| crate::preview::task_of_pane(c, pane)),
+    })
+}
+
 async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let cfg = server.agent_browser.config();
+    let scope = scope_for(server, ctx, &cfg);
     // What to open.
     let mut preview_id = None;
     let url = match (s(p, "preview"), s(p, "url")) {
@@ -1338,6 +1464,15 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             if pv.status == PreviewStatus::Gone {
                 return Err(not_found("preview", t));
             }
+            // Someone else's preview: refused before anything (a suggestion is not promoted).
+            if let Some(sc) = &scope
+                && !server.with_core(|c| sc.owns(c, &pv))
+            {
+                return Err(destination_denied(
+                    &preview_url(&pv),
+                    Reason::ForeignPreview.as_str(),
+                ));
+            }
             if pv.status == PreviewStatus::Suggested {
                 // Opening a suggestion confirms it (as `preview.open` does).
                 if let Some(Err(e)) =
@@ -1358,7 +1493,17 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     {
         return Err(destination_denied(u, Reason::Scheme.as_str()));
     }
-    let cfg = server.agent_browser.config();
+    // Device preset: viewport, DPR, mobile emulation and user agent; explicit `viewport` and
+    // `dpr` override its size and ratio.
+    let device = match s(p, "device").filter(|d| !d.is_empty()) {
+        Some(name) => Some(vk_browser::devices::preset(name).ok_or_else(|| {
+            invalid(format!(
+                "unknown device `{name}` (presets: {})",
+                vk_browser::devices::names().join(", ")
+            ))
+        })?),
+        None => None,
+    };
     let viewport = p
         .get("viewport")
         .and_then(|v| match v {
@@ -1369,12 +1514,18 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             )),
             _ => None,
         })
+        .or(device.map(|d| (d.width, d.height)))
         .unwrap_or_else(|| cfg.viewport());
+    let dpr = p
+        .get("dpr")
+        .and_then(Value::as_f64)
+        .or(device.map(|d| d.dpr))
+        .unwrap_or(1.0);
     // Pre-check before starting anything (clean error, nothing left behind).
     if let Some(u) = &url
         && let Some(t) = policy::parse_target(u)
     {
-        let pol = current_policy(server, &cfg);
+        let pol = session_policy(server, &cfg, scope.as_ref());
         let ips = proxy::resolve_with(&proxy::SystemResolver, &t.host, t.port)
             .await
             .unwrap_or_default();
@@ -1391,8 +1542,9 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let handle = format!("b{n}");
     // The session's filtering proxy.
     let srv = server.clone();
+    let proxy_scope = scope.clone();
     let mut po = ProxyOptions::new(Arc::new(move || {
-        current_policy(&srv, &srv.agent_browser.config())
+        session_policy(&srv, &srv.agent_browser.config(), proxy_scope.as_ref())
     }));
     if let Some(root) = proc_.pid {
         po.peer_check = Some(Arc::new(move |peer, local| {
@@ -1493,10 +1645,13 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         cdp_session: cdp_session.clone(),
         created_ms: vk_store::now_ms(),
         viewport,
-        dpr: p.get("dpr").and_then(Value::as_f64).unwrap_or(1.0),
+        dpr,
         color_scheme: s(p, "color_scheme")
             .or(b(p, "dark").and_then(|d| d.then_some("dark")))
             .map(str::to_string),
+        device: device.map(|d| d.name.to_string()),
+        mobile: device.is_some_and(|d| d.mobile),
+        scope,
         proxy: Mutex::new(Some(proxy)),
         console: Mutex::default(),
         network: Mutex::default(),
@@ -1549,9 +1704,27 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             &cdp,
             cs,
             "Emulation.setDeviceMetricsOverride",
-            json!({"width": viewport.0, "height": viewport.1, "deviceScaleFactor": sess.dpr, "mobile": false}),
+            json!({"width": viewport.0, "height": viewport.1, "deviceScaleFactor": sess.dpr, "mobile": sess.mobile}),
         )
         .await?;
+        if let Some(d) = device {
+            let _ = call(
+                &cdp,
+                cs,
+                "Emulation.setUserAgentOverride",
+                json!({"userAgent": d.user_agent}),
+            )
+            .await;
+            if d.mobile {
+                let _ = call(
+                    &cdp,
+                    cs,
+                    "Emulation.setTouchEmulationEnabled",
+                    json!({"enabled": true, "maxTouchPoints": 5}),
+                )
+                .await;
+            }
+        }
         if let Some(scheme) =
             s(p, "color_scheme").or(b(p, "dark").and_then(|d| d.then_some("dark")))
         {
@@ -1578,6 +1751,9 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let mut out = sess.summary(server);
     out["machine"] = json!(server.opts.machine);
     out["environment"] = environment(server, &proc_);
+    out["environment"]["device"] = json!(sess.device);
+    out["environment"]["viewport"] = json!({"width": sess.viewport.0, "height": sess.viewport.1});
+    out["environment"]["dpr"] = json!(sess.dpr);
     if let Some(u) = url {
         match navigate(server, &sess, &u, p).await {
             Ok(nav) => {
@@ -1634,7 +1810,7 @@ async fn navigate(server: &Arc<Server>, sess: &Arc<Session>, to: &str, p: &Value
         return Err(destination_denied(&url, Reason::Scheme.as_str()));
     };
     let cfg = server.agent_browser.config();
-    let pol = current_policy(server, &cfg);
+    let pol = session_policy(server, &cfg, sess.scope.as_ref());
     let ips = proxy::resolve_with(&proxy::SystemResolver, &t.host, t.port)
         .await
         .unwrap_or_default();
@@ -2115,7 +2291,7 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         },
         dpr: sess.dpr,
         color_scheme: sess.color_scheme.clone(),
-        device: None,
+        device: sess.device.clone(),
         fresh_context: true,
         profile: None,
     };
@@ -2171,6 +2347,32 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         } else {
             out["inline_skipped"] = json!(format!("{} bytes > {MAX_INLINE}", png.len()));
         }
+    }
+    Ok(out)
+}
+
+/// `browser.screenshot {url|preview, device?, viewport?, full_page?, …}` without a session:
+/// a fresh context (same destination policy and preview scope as `browser.open`), one capture,
+/// closed again.
+async fn one_shot_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    if s(p, "url").is_none() && s(p, "preview").is_none() {
+        return Err(invalid(
+            "browser.screenshot needs `session`, or `url` / `preview` for a one-shot capture",
+        ));
+    }
+    let opened = open(server, ctx, p).await?;
+    let handle = opened["session"].as_str().unwrap_or("").to_string();
+    let Some(sess) = server.agent_browser.session(&handle) else {
+        return Err(not_found("browser_session", &handle));
+    };
+    let r = screenshot(server, ctx, &sess, p).await;
+    close_session(server, &sess, "one_shot").await;
+    let mut out = r?;
+    out["one_shot"] = json!(true);
+    out["session"] = Value::Null;
+    out["opened_session"] = json!(handle);
+    for k in ["status", "final_url", "title"] {
+        out[k] = opened[k].clone();
     }
     Ok(out)
 }

@@ -6,10 +6,10 @@ import { t } from '../i18n';
 import { basename } from '../lib/format';
 import { harnessLabel } from '../lib/harness';
 import { InteractionCard } from './interaction-card';
-import { Button, Card, Notice, RiskBadge } from './ui';
+import { Button, Card, Notice, RiskBadge, cx } from './ui';
 
 /** "4 agents want `pnpm test` in samplehub" → Allow all / Deny all / expand (spec 16 §9.2). */
-export function BatchCard({ batch, showHost }: { batch: Batch; showHost: boolean }) {
+export function BatchCard({ batch, showHost, variant = 'default' }: { batch: Batch; showHost: boolean; variant?: 'default' | 'compact' }) {
   const app = useApp();
   const host = useHost(batch.host_id);
   const [expanded, setExpanded] = useState(false);
@@ -32,11 +32,11 @@ export function BatchCard({ batch, showHost }: { batch: Batch; showHost: boolean
   if (expanded) {
     return (
       <div className="space-y-2">
-        <button type="button" className="flex items-center gap-1 px-1 text-[13px] text-accent" onClick={() => setExpanded(false)}>
+        <button type="button" className="flex items-center gap-1 px-1 text-sm text-accent" onClick={() => setExpanded(false)}>
           <ChevronUp className="size-4" /> {t.inbox.collapse}
         </button>
         {batch.items.map((it) => (
-          <InteractionCard key={it.interaction.id} item={it} showHost={showHost} />
+          <InteractionCard key={it.interaction.id} item={it} showHost={showHost} variant={variant} />
         ))}
       </div>
     );
@@ -44,17 +44,17 @@ export function BatchCard({ batch, showHost }: { batch: Batch; showHost: boolean
 
   return (
     <div data-nav-item={`batch:${batch.host_id}:${batch.fingerprint}`} tabIndex={-1} aria-label={t.inbox.batchTitle(batch.items.length, '')}>
-    <Card className="animate-in space-y-2.5 p-3.5">
-      <div className="flex items-center gap-2 text-[12px] text-muted">
+    <Card className={cx('animate-in space-y-2.5', variant === 'compact' ? 'rounded-xl p-3' : 'p-3.5')}>
+      <div className="flex items-center gap-2 text-xs text-muted">
         <Layers className="size-3.5" />
         <span className="min-w-0 flex-1 truncate">
           {[harnessLabel(first.harness ?? batch.items[0]!.run?.harness), showHost ? (host?.info?.host_name ?? host?.record.name) : null].filter(Boolean).join(' · ')}
         </span>
         <RiskBadge risk={batch.risk} />
       </div>
-      <div className="text-[15px] font-medium leading-snug">
+      <div className={cx('font-medium leading-snug', variant === 'compact' ? 'text-sm' : 'text-base')}>
         {t.inbox.batchTitle(batch.items.length, '')}
-        <code className="ml-1 rounded bg-surface-2 px-1 font-mono text-[13px]">{what.replace(/^`|`$/g, '')}</code>
+        <code className="ml-1 rounded bg-surface-2 px-1 font-mono text-sm">{what.replace(/^`|`$/g, '')}</code>
         {repo && <span className="text-muted"> {t.inbox.batchIn(basename(repo))}</span>}
       </div>
       {result && <Notice tone="warn">{result}</Notice>}
@@ -66,7 +66,7 @@ export function BatchCard({ batch, showHost }: { batch: Batch; showHost: boolean
           {t.inbox.allowAll}
         </Button>
       </div>
-      <button type="button" data-act="open" className="flex items-center gap-1 text-[13px] text-accent" onClick={() => setExpanded(true)}>
+      <button type="button" data-act="open" className="flex items-center gap-1 text-sm text-accent" onClick={() => setExpanded(true)}>
         <ChevronDown className="size-4" /> {t.inbox.expand}
       </button>
     </Card>

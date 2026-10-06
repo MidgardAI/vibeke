@@ -131,7 +131,7 @@ Agents run as the user and can type anything into their own shell, including `vi
 | `agent.start/spawn` | ✔ (rate-limited, depth-limited) | |
 | `task.create`, `worktree.create` | ✔ | worktree removal of non-descendant tasks ✘ |
 | `interaction.list/get` | ✔ (workspace) | answering ✘ (§5.1) |
-| `preview.*`, `browser.open/navigate/click/type/press/wait/screenshot/snapshot/console/network/dom/close/list` | ✔ (own machine's previews; own sessions only) | `browser.eval` ✘ unless `browser.script` granted (as built: `preview.browser_script = true`); `browser.install`, `take_over/release`, screencast ✘ |
+| `preview.*`, `browser.open/navigate/click/type/press/wait/screenshot/snapshot/console/network/dom/close/list` | ✔ (own sessions only; previews of the pane's own task only, `[browser] session_previews = "own"` default — other previews are denied `foreign_preview`, 06 B5; `device` presets and one-shot screenshots obey the same destination policy) | `browser.eval` ✘ unless `browser.script` granted (as built: `preview.browser_script = true`); `browser.install`, `take_over/release`, screencast ✘ |
 | `image.show`, `notification.send` | ✔ | notifications from agents are labelled with the agent name, rate-limited 6/min |
 | `desk.search/sessions/context`, `draft.create/update/get/list/reorder/delete/combine/check`, `notes.get/set` | ✔ (own workspace only) | desk results only for sessions whose run was in the caller's workspace; opted-in transcript roots are invisible to panes; `draft.send/reconcile`, `desk.open/resume/forget/index/status` ✘ |
 | `events.subscribe` | ✔ (workspace subjects) | |
@@ -260,7 +260,9 @@ A shared `vk-redact` module scrubs strings before they enter logs, events, debug
 
 `vibeke forget --pane p | --workspace w | --before date` purges archives, events and blobs for scope (events replaced by tombstones to keep `seq` gapless).
 
-As built for the session desk: `desk.forget {session | repo | workspace | before}` (`vibeke desk forget`) deletes conversation-index rows; forgotten sessions are tombstoned so the indexer never re-adds them, while source cursors stay put so already-read bytes are not read again. It does not delete the native transcript files (the harness owns them) or drafts (`draft.delete`). The general `vibeke forget` command is not built yet; when it is, it must also call `desk.forget` and delete scoped drafts/notes (15 §11).
+As built: `vibeke forget --pane p | --workspace w | --before t | --all [--yes] [--dry-run]` (`scrollback.forget`, full scope only; pane tokens are refused) purges the **scrollback archive** only: segment files, `scrollback_fts` rows and `archive_panes` metadata, atomically (02 "Archive search as implemented"). Events (tombstoning), blobs, the desk index, drafts, notes and assistant records are **not** purged by it yet (use `desk.forget`, `draft.delete`, `assistant.purge`); the `scrollback.forgotten` event records scope and counts, never text. Retention for the scrollback archive (`terminal.archive_max_per_pane`, `terminal.archive_days`, defaults 200 MiB and 30 days, not the table's `retention.scrollback` figure) runs hourly and deletes the matching index rows in the same transaction. `vibeke doctor --rebuild-index` rebuilds the derived archive index offline from the segments.
+
+As built for the session desk: `desk.forget {session | repo | workspace | before}` (`vibeke desk forget`) deletes conversation-index rows; forgotten sessions are tombstoned so the indexer never re-adds them, while source cursors stay put so already-read bytes are not read again. It does not delete the native transcript files (the harness owns them) or drafts (`draft.delete`). The general `vibeke forget` command so far covers only the scrollback archive (above); extending it to call `desk.forget`, and to delete scoped drafts/notes, events and blobs (15 §11), is open.
 
 ### 9.3a Assistance egress, consent and retention (14) — as built 2026-10-06
 

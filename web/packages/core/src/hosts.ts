@@ -548,6 +548,12 @@ export interface HostManagerApi {
   connections(): HostConnectionApi[];
   remove(hostId: string): Promise<void>;
   stop(): void;
+  /**
+   * Live app events of one host, in order (deduped by seq). Survives reconnects and re-pairing of
+   * the same host id. Shells that run connections elsewhere may forward only the event types the
+   * UI needs (agent.*, interaction.*, task.*, preview.*, tab.*, pane.*, notification.created).
+   */
+  subscribeEvents(hostId: string, cb: (e: AppEvent) => void): () => void;
 }
 
 export interface HostManagerOptions extends ConnectionOptions {
@@ -559,6 +565,8 @@ export class HostManager implements HostManagerApi {
   private readonly conns = new Map<string, HostConnection>();
   private readonly listeners = new Set<() => void>();
   private readonly unsubs = new Map<string, () => void>();
+  private readonly eventSubs = new Map<string, Set<(e: AppEvent) => void>>();
+  private readonly anyEventSubs = new Set<(hostId: string, e: AppEvent) => void>();
   private snapshot: readonly HostState[] = [];
   private lifecycleOff: (() => void)[] = [];
 
@@ -609,10 +617,46 @@ export class HostManager implements HostManagerApi {
     return () => this.listeners.delete(cb);
   };
 
+  subscribeEvents(hostId: string, cb: (e: AppEvent) => void): () => void {
+    let set = this.eventSubs.get(hostId);
+    if (!set) this.eventSubs.set(hostId, (set = new Set()));
+    set.add(cb);
+    return () => {
+      set.delete(cb);
+      if (!set.size && this.eventSubs.get(hostId) === set) this.eventSubs.delete(hostId);
+    };
+  }
+
+  /** Every host's events (the desktop engine forwards a filtered subset to its windows). */
+  onAnyEvent(cb: (hostId: string, e: AppEvent) => void): () => void {
+    this.anyEventSubs.add(cb);
+    return () => this.anyEventSubs.delete(cb);
+  }
+
+  private dispatchEvent(hostId: string, e: AppEvent): void {
+    for (const cb of [...(this.eventSubs.get(hostId) ?? [])]) {
+      try {
+        cb(e);
+      } catch {
+        /* a listener's failure must not break the others */
+      }
+    }
+    for (const cb of [...this.anyEventSubs]) {
+      try {
+        cb(hostId, e);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   private attach(record: HostRecord): HostConnection {
     const c = new HostConnection(record, { ...this.o, persist: (r) => this.o.store.put(r) });
-    this.conns.set(record.host_id, c);
-    this.unsubs.set(record.host_id, c.subscribe(() => this.changed()));
+    const id = record.host_id;
+    this.conns.set(id, c);
+    const offState = c.subscribe(() => this.changed());
+    const offEvents = c.onEvent((e) => this.dispatchEvent(id, e));
+    this.unsubs.set(id, () => (offState(), offEvents()));
     this.changed();
     return c;
   }

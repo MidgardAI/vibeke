@@ -6,7 +6,7 @@
     "proto": 1,
     "min": 1
   },
-  "method_count": 232,
+  "method_count": 236,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -1211,6 +1211,30 @@
       "spec": "`{types, subjects?, after?: Cursor, timeout_ms?}` → `{event}` — one-shot wait (CLI-friendly)"
     },
     {
+      "name": "fs.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane, path?: \"\"}` → `{path, entries: [{name, kind: file|dir|symlink|other, size? (files), ignored, secret}], truncated}` — one level of the directory `path` relative to the repository root of the pane's cwd; directories first, then by name; ≤ 2000 entries. Symlinks are listed, never followed; `.git` is not listed; secret-looking entries are listed with `secret: true` and no size, and a secret directory lists as `{secret: true, entries: []}`"
+    },
+    {
+      "name": "fs.read",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane, path}` → `{path, text?, binary, truncated, size, secret}` — at most 512 KiB of a regular file (`truncated` when larger, cut on a character boundary); `binary` (NUL in the first 8 KiB) returns no text; secret-looking files return `{secret: true}` without content"
+    },
+    {
       "name": "git.diff",
       "mutating": false,
       "scope": "pane",
@@ -1221,6 +1245,18 @@
       ],
       "milestone": "16 G2",
       "spec": "`{pane|path, file, staged?}` → `{file, diff, truncated, binary, untracked, secret?}`; `file` must be a relative path listed by `git.status`; diff against `HEAD` (or the index with `staged`), capped at 512 KiB"
+    },
+    {
+      "name": "git.log",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "16 G2",
+      "spec": "`{pane|path, base?, limit?: 50 (≤ 200)}` → `{commits: [{sha, short, author, ts (epoch ms), subject}], truncated}`, newest first; with `base`, only commits in `base..HEAD`"
     },
     {
       "name": "git.status",
@@ -2186,6 +2222,18 @@
       ],
       "milestone": "M3",
       "spec": "`{id}` → as `get` with the image inline (the CLI writes it to `$TMPDIR/vibeke-screenshots/<id>.png` and opens it with `open`/`xdg-open`; `VIBEKE_NO_OPEN=1` only reports the path)."
+    },
+    {
+      "name": "scrollback.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "parity"
+      ],
+      "milestone": "M1",
+      "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false` → `{scope, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata, in one transaction. Idempotent; `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`."
     },
     {
       "name": "search.query",

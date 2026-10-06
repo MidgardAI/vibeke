@@ -101,15 +101,31 @@ export const TerminalMirror = memo(function TerminalMirror({
   const lines = useMemo(() => styledLines ?? parseAnsi(text), [styledLines, text]);
   const ref = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const stickRef = useRef(stickToBottom);
+  stickRef.current = stickToBottom && !find?.query;
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const size = { w: el.clientWidth, h: el.clientHeight };
     const onScroll = () => {
+      // A scroll caused by a resize (the browser clamping scrollTop while the text rewraps) is not
+      // the user scrolling away from the bottom: the resize observer below handles it.
+      if (el.clientWidth !== size.w || el.clientHeight !== size.h) return;
       atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
+    // A resize (window, belt or dock opening, rewrapping) keeps a bottom-pinned screen pinned.
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      size.w = el.clientWidth;
+      size.h = el.clientHeight;
+      if (stickRef.current && atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
+    };
   }, []);
 
   useEffect(() => {

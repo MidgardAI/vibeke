@@ -281,6 +281,7 @@ pub fn policy_match(data: &[u8]) {
     let rules: Vec<AllowRule> = s.split([',', ' ']).filter_map(AllowRule::parse).collect();
     let policy = Policy {
         preview_ports: [3000u16, 5173].into_iter().collect(),
+        foreign_ports: Default::default(),
         allow: if rng.chance(2) { rules } else { vec![] },
         external: *rng.pick(&[External::Deny, External::Subresources, External::Allow]),
     };

@@ -2,7 +2,7 @@
 // of one of our windows showing the bundled app (`event.senderFrame` origin), then validates each
 // argument (validate.ts). Results cross as `WireResult` so errors keep their kind.
 
-import { BrowserWindow, clipboard, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, clipboard, ipcMain, nativeTheme, shell, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { parseLink, type HostRecord } from '@vibeke/core';
 import { EVENT, INVOKE, type ChooseVibekeResult, type DesktopSettings, type LocalConnectResult, type RendererSettingsPatch, type WireResult } from '../shared/contract';
 import { toWire, type Engine } from './engine';
@@ -11,6 +11,8 @@ import type { Windows } from './windows';
 
 export interface IpcDeps {
   engine: Engine;
+  /** A window starts / stops receiving one host's events. */
+  setHostEvents(wc: WebContents, hostId: string, on: boolean): void;
   windows: Windows;
   trusted(): readonly string[];
   settings(): DesktopSettings;
@@ -117,6 +119,11 @@ export function registerIpc(d: IpcDeps): void {
 
   handle(INVOKE.ready, (e) => {
     d.windows.markReady(e.sender);
+    return ok(null);
+  });
+
+  handle(INVOKE.hostEvents, (e, host, on) => {
+    d.setHostEvents(e.sender, v.hostId(host), v.flag(on, 'host events flag'));
     return ok(null);
   });
 

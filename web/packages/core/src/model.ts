@@ -207,6 +207,25 @@ export interface AppEvent {
   data: Record<string, unknown>;
 }
 
+/** A dev-server preview the host detected or an agent declared (vk-proto `Preview`). */
+export interface Preview {
+  id: string;
+  handle: string;
+  machine?: string;
+  pane: string | null;
+  task?: string | null;
+  port: number;
+  path: string;
+  label: string | null;
+  url: string;
+  scheme?: string;
+  /** `suggested` | `declared` | `up` | `down` | `gone`. */
+  status: string;
+  source?: string;
+  first_seen_ms?: number;
+  last_seen_ms?: number;
+}
+
 export interface Dashboard {
   /** Snapshot barrier: subscribe with `after = at`. */
   at: number;
@@ -218,6 +237,8 @@ export interface Dashboard {
   runs: AgentRun[];
   interactions: Interaction[];
   tasks: Task[];
+  /** Full-scope devices only (shares never see previews in the snapshot). */
+  previews?: Preview[];
   notifications_unread: number;
 }
 
@@ -255,6 +276,83 @@ export interface GitDiff {
   secret?: boolean;
 }
 
+/** One file of a `git.diff {base|range}` listing (no `file`). */
+export interface GitRevFile {
+  path: string;
+  adds?: number | null;
+  dels?: number | null;
+  binary: boolean;
+  secret?: boolean;
+  /** git's name-status letter (A added, M modified, D deleted, R renamed, C copied, T type change). */
+  status?: 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | null;
+  /** Source path of a rename / copy. */
+  orig_path?: string | null;
+}
+
+/** `git.diff {pane, base | range}` without `file`: the files that differ. */
+export interface GitRevFiles {
+  rev: string;
+  files: GitRevFile[];
+  truncated: boolean;
+}
+
+/** `git.diff` params: the working tree (`file`, `staged`), or against `base` / over `range`. */
+export type GitDiffParams =
+  | { pane: string; file: string; staged?: boolean }
+  | { pane: string; base: string; file?: string }
+  | { pane: string; range: string; file?: string };
+
+/** `git.log` entry; `ts` is unix ms. */
+export interface Commit {
+  sha: string;
+  short: string;
+  author: string;
+  ts: number;
+  subject: string;
+}
+
+export interface GitLog {
+  commits: Commit[];
+  truncated: boolean;
+}
+
+export type FsEntryKind = 'file' | 'dir' | 'symlink' | 'other';
+
+/** One `fs.list` entry (one directory level; secrets are listed but never readable). */
+export interface FsEntry {
+  name: string;
+  kind: FsEntryKind;
+  size?: number | null;
+  ignored: boolean;
+  secret: boolean;
+}
+
+export interface FsList {
+  path: string;
+  entries: FsEntry[];
+  truncated: boolean;
+  /** The directory itself looks like a secret: no entries. */
+  secret?: boolean;
+}
+
+export interface FsRead {
+  path: string;
+  text?: string | null;
+  binary: boolean;
+  truncated: boolean;
+  size: number | null;
+  secret: boolean;
+}
+
+export interface Worktree {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  locked: boolean;
+  prunable: boolean;
+  main: boolean;
+}
+
 export type TranscriptItemKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
 /** One item of a transcript turn (server gateway_api.rs `line_items`). */
@@ -271,6 +369,8 @@ export interface TranscriptItem {
   id?: string | null;
   /** `tool_result`: the tool failed. */
   error?: boolean | null;
+  /** Epoch ms of the transcript line (null when the line has none; older servers omit it). */
+  ts?: number | null;
 }
 
 /** One transcript turn (`agent.transcript`): a user prompt and everything up to the next one. */
@@ -279,6 +379,12 @@ export interface TranscriptTurn {
   n: number;
   ts?: string | number | null;
   items: TranscriptItem[];
+  /** Last item ts − turn start; null when unknown (older servers omit it). */
+  duration_ms?: number | null;
+  /** Tool calls in the turn. */
+  tool_count?: number | null;
+  /** Tool calls that start a subagent (Task/Agent…). */
+  subagent_count?: number | null;
 }
 
 export interface TranscriptPage {
@@ -442,6 +548,10 @@ export interface AppApi {
   };
   'agent.harnesses': { params: Record<string, never>; result: { harnesses: HarnessInfo[] } };
   'tab.create': { params: { workspace: string; cwd?: string; title?: string }; result: { tab: Tab; root_pane: Pane } };
+  'tab.rename': { params: { tab: string; title: string | null }; result: unknown };
+  'tab.close': { params: { tab: string }; result: unknown };
+  'tab.focus': { params: { tab: string }; result: unknown };
+  'preview.open': { params: { preview?: string; url?: string; pane?: string; focus?: boolean }; result: unknown };
   'interaction.list': { params: Record<string, unknown>; result: { interactions: Interaction[] } };
   'interaction.get': { params: { interaction: string }; result: { interaction: Interaction } };
   'interaction.answer': {
@@ -461,7 +571,12 @@ export interface AppApi {
     result: { results: BatchResult[] };
   };
   'git.status': { params: { pane: string }; result: GitStatus };
-  'git.diff': { params: { pane: string; file: string; staged?: boolean }; result: GitDiff };
+  /** With `file`: one file's diff (`rev` set for base/range); without (base/range): `GitRevFiles`. */
+  'git.diff': { params: GitDiffParams; result: GitDiff & Partial<GitRevFiles> };
+  'git.log': { params: { pane: string; base?: string; limit?: number }; result: GitLog };
+  'fs.list': { params: { pane: string; path?: string }; result: FsList };
+  'fs.read': { params: { pane: string; path: string }; result: FsRead };
+  'worktree.list': { params: { pane: string } | { workspace: string }; result: { worktrees: Worktree[] } };
   /** `data_b64` is standard (padded) base64, as the server's image.upload expects. */
   'attachment.put': {
     params: { name: string; mime: string; data_b64: string };
@@ -522,6 +637,10 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'agent.interrupt',
   'agent.start',
   'tab.create',
+  'tab.rename',
+  'tab.close',
+  'tab.focus',
+  'preview.open',
   'interaction.answer',
   'interaction.answer_batch',
   'notification.read',
@@ -579,6 +698,7 @@ export function normalizeDashboard(raw: unknown): Dashboard {
     tabs: d.tabs ?? [],
     panes: d.panes ?? [],
     tasks: d.tasks ?? [],
+    ...(Array.isArray(d.previews) ? { previews: d.previews.map((p) => ({ ...p, status: snakeOr<string>(p.status) })) } : {}),
     notifications_unread: d.notifications_unread ?? 0,
   };
 }

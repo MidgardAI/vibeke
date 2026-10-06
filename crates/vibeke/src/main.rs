@@ -31,7 +31,8 @@ usage:
   vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
-  vibeke doctor                   diagnose install, sockets, integrations, terminal, remote
+  vibeke doctor [--rebuild-index] diagnose install, sockets, integrations, terminal, remote; rebuild the scrollback index offline
+  vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]   delete archived scrollback
   vibeke update [--check]         replace the binary and restart the server (panes survive)
   vibeke server [start|stop|status|restart]
   vibeke gateway run|pair|share|devices|revoke|status   reach this host from phone/desktop apps (E2E via a relay)
@@ -242,6 +243,20 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("compat") => vk_cli::compat::compat_cmd(&g, &args[1..]).await,
         Some("integration") => commands::integration(&g, &args[1..]).await,
         Some("doctor") => commands::doctor(&g, &args[1..]).await,
+        Some("forget") => {
+            let params = match vk_cli::build_params(&[], &args[1..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::FORGET_USAGE);
+                    return EXIT_USAGE;
+                }
+            };
+            let gr = &g;
+            with_client(gr, |mut c| async move {
+                vk_cli::forget(&mut c, gr, params).await
+            })
+            .await
+        }
         Some("update") => commands::update(&g, &args[1..]).await,
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
@@ -279,6 +294,27 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             let gr = &g;
             with_client(gr, |mut c| async move {
                 vk_cli::browser_console::run(&mut c, gr, params).await
+            })
+            .await
+        }
+        Some("preview") if args.get(1).map(String::as_str) == Some("show") => {
+            let params = match vk_cli::build_params(&["preview"], &args[2..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}\n{}", vk_cli::noun_help("preview"));
+                    return EXIT_USAGE;
+                }
+            };
+            // `devbox/v4`: the screenshots live on that machine.
+            let mut g = g;
+            if g.machine.is_none()
+                && let Some((m, _)) = params["preview"].as_str().and_then(|h| h.split_once('/'))
+            {
+                g.machine = Some(m.to_string());
+            }
+            let gr = &g;
+            with_client(gr, |mut c| async move {
+                vk_cli::preview_show(&mut c, gr, params).await
             })
             .await
         }

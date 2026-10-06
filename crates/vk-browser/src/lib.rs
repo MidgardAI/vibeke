@@ -24,6 +24,7 @@
 
 pub mod capture;
 pub mod cdp;
+/// Device presets (`--device iphone-15`): viewport, DPR, mobile, user agent.
 pub mod devices;
 pub mod diff;
 pub mod fake;

@@ -1512,6 +1512,7 @@ pub fn open_url(app: &mut App, mi: usize, pane: &str, url: &str) {
 
 /// Open a preview as a browser pane next to `source` (window fallback without graphics).
 pub fn open_preview(app: &mut App, mi: usize, p: &Preview, source: Option<String>) {
+    crate::preview_ui::clear(app, mi, &p.handle);
     if gfx(app) == Gfx::None {
         let local = app.machines.iter().position(|m| m.local).unwrap_or(mi);
         let target = if local == mi {
@@ -1587,6 +1588,7 @@ fn take_target(app: &mut App) -> Option<(usize, Preview)> {
 
 /// Open a preview in a window of the profile browser (always, whatever the terminal can draw).
 fn preview_window(app: &mut App, mi: usize, p: &Preview) {
+    crate::preview_ui::clear(app, mi, &p.handle);
     let (local, target) = local_target(app, mi, p);
     app.command_on(
         local,
@@ -1600,6 +1602,7 @@ fn preview_window(app: &mut App, mi: usize, p: &Preview) {
 /// returns the one-time URL to this full-scope client (`no_open`: the server never opens it
 /// for us); only this explicit action hands it to the OS opener.
 fn preview_proxy(app: &mut App, mi: usize, p: &Preview) {
+    crate::preview_ui::clear(app, mi, &p.handle);
     if app.caps.host_remote {
         // The proxy listens on the server's loopback; a browser here could not reach it.
         app.toast(format!(
@@ -1996,6 +1999,10 @@ pub fn preview_segs(app: &App, mi: usize, p: &Preview) -> Vec<(String, Style)> {
     if suggested {
         segs.push((" open?".into(), t.dim()));
     }
+    let errs = crate::preview_ui::badge_text(app, mi, &p.handle);
+    if !errs.is_empty() {
+        segs.push((errs, t.bold(t.red)));
+    }
     segs
 }
 
@@ -2039,6 +2046,11 @@ pub fn chip_entries(app: &App, tabs_end: u16) -> Vec<(usize, Preview, String, u1
         } else {
             format!(" ◉ {name} :{} ", p.port)
         };
+        let label = format!(
+            "{}{} ",
+            label.trim_end(),
+            crate::preview_ui::badge_text(app, cur, &p.handle)
+        );
         let w = UnicodeWidthStr::width(label.as_str()) as u16;
         out.push((cur, p.clone(), label, x, x + w));
         x += w;
