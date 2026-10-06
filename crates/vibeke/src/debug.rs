@@ -48,8 +48,14 @@ pub fn ptyshot(args: &[String]) -> i32 {
                     engine.feed(&buf[..n], fx);
                     // Answer terminal queries like a real host would.
                     for e in fx.drain(..) {
-                        if let vk_term::Effect::Reply(b) = e {
-                            let _ = rustix::io::write(&pty.master, &b);
+                        match e {
+                            vk_term::Effect::Reply(b) => {
+                                let _ = rustix::io::write(&pty.master, &b);
+                            }
+                            vk_term::Effect::Clipboard { data, .. } => {
+                                eprintln!("[host clipboard set: {:?}]", String::from_utf8_lossy(&data));
+                            }
+                            _ => {}
                         }
                     }
                 }
