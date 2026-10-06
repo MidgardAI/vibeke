@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 272,
+  "method_count": 276,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -473,6 +473,20 @@
       "result": "{enabled: bool, configured: bool, config_problem?: string|null, coordinator?: {machine: string, session: string}, profile?: object|null, limits?: object, today?: {utc_day: int, used: any, reserved: any, remaining: any}}"
     },
     {
+      "name": "attention.batch",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{interaction: string}",
+      "result": "{interaction: string, batchable: bool, batch?: string, reason?: string, members: [{interaction: string, handle: string, run: string, pane: string, title: string, decision_rev: int, opened_at_ms: int}], facts?: object | null, note?: string}"
+    },
+    {
       "name": "attention.list",
       "mutating": false,
       "scope": "pane",
@@ -484,7 +498,7 @@
       "milestone": null,
       "spec": null,
       "params": "{budget_ms?: int, effort?: quick|minutes|deep}",
-      "result": "{items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool}], coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int}, five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null}"
+      "result": "{items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool, deadline_ms?: int | null, deadline_source?: native|gate|null, deadline_in_ms?: int | null, batch?: {id: string, size: int} | null}], coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int}, five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null, batches?: [{id: string, members: [{kind: string, id: string}]}], also_working?: [{run: string, pane: string, name: string, harness: string, task: {id: string, handle: string, title: string} | null, since_ms: int, working_for_ms: int}]}"
     },
     {
       "name": "attention.update",
@@ -2969,7 +2983,7 @@
       "milestone": "M1",
       "spec": "`{pane}\\|{workspace}\\|{before}\\|{all: true}` (exactly one), `dry_run?: false`, `plan?` → `{scope, pane_ids, plan, dry_run, panes, segments_deleted, bytes_deleted, fts_rows_deleted, archive_panes_dropped}` — deletes archived scrollback for the scope: zstd segments, `scrollback_fts` rows and `archive_panes` metadata. `scope` is canonical (pane/workspace id, absolute `before` ms), `pane_ids` the resolved panes (null for `before`/`all`), `plan` a digest of both. If the scope no longer matches `plan`, the server returns `conflict`. The CLI sends the dry run's `scope` + `plan` to confirm the deletion. This prevents a focus change or relative cutoff from changing the deletion target. Idempotent. `before` is segment-granular. Does not delete events, blobs, the desk index, drafts or notes (02, 09 §9.3). Event `scrollback.forgotten {scope} {panes, segments, bytes, fts_rows, panes_dropped}` (no text). Full scope only. CLI `vibeke forget` asks first unless `--yes`.",
       "params": "{pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}",
-      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int}"
+      "result": "{scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}"
     },
     {
       "name": "search.query",
@@ -3396,6 +3410,20 @@
       "result": "{task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null}"
     },
     {
+      "name": "task.link.status",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{run?: string, pane?: Target}",
+      "result": "{run: {id: string, handle: string, harness: string, integration: string, pane: string, session_reported: bool}, verified: bool, reasons: [string], remedies: [{action: string, label: string, command?: string, note?: string}], candidates: [object], note: string}"
+    },
+    {
       "name": "task.list",
       "mutating": false,
       "scope": "pane",
@@ -3508,6 +3536,20 @@
       "result": "{task: Target, subject: string, base_sha: string, head_sha: string, content_sha: string, path: string | null, diff: string, truncated: bool, total_bytes: int, max_bytes: int}"
     },
     {
+      "name": "task.review.forget",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task?: Target, pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false}",
+      "result": "{scope: any, dry_run: bool, purged: ReviewPurge}"
+    },
+    {
       "name": "task.review.get",
       "mutating": false,
       "scope": "pane",
@@ -3519,7 +3561,21 @@
       "milestone": null,
       "spec": null,
       "params": "{task: Target, subject?: string}",
-      "result": "{task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}}"
+      "result": "{task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string, selection?: object}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}, human_reviews?: [object], purged?: any}"
+    },
+    {
+      "name": "task.review.human_review",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "review::ext"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{task: Target, criterion: string, verdict: supported|failed|withdrawn, subject?: string, expected_subject?: string, note?: string, screenshots?: [string], idempotency_key?: string}",
+      "result": "{review: object, note: string}"
     },
     {
       "name": "task.review.note.classify",
@@ -3578,8 +3634,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{task: Target, idempotency_key?: string}",
-      "result": "{subject: object, snapshot: object, label: string, note: string}"
+      "params": "{task: Target, paths?: [string], patch?: string, idempotency_key?: string}",
+      "result": "{subject: object, snapshot: object, selection?: object, label: string, note: string}"
     },
     {
       "name": "task.review.snapshot.gc",
@@ -3608,7 +3664,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, idempotency_key?: string}",
+      "params": "{request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, checkout?: disposable|task, idempotency_key?: string}",
       "result": "{request: object, run: Target, binding: object, note?: string, replayed?: bool}"
     },
     {

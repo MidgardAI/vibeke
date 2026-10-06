@@ -51,6 +51,7 @@ pub mod statusbar;
 pub mod sync_input;
 pub mod tabbar;
 pub mod tasks;
+pub mod tasks_2c;
 pub mod tasks_t4;
 pub mod term;
 pub mod theme;

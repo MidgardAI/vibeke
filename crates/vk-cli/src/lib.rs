@@ -600,6 +600,35 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["task"],
         "[task] — confirmed links and how many open tasks each blocks",
     ),
+    // 15 lane 2C.
+    (
+        "task",
+        "select",
+        "task.review.snapshot",
+        &["task"],
+        "<task> --paths f [--paths g …] | --patch <unified diff> — capture only these files or hunks as a selected-patch subject (checks on it verify the selection alone)",
+    ),
+    (
+        "task",
+        "human-review",
+        "task.review.human_review",
+        &["task", "criterion", "verdict"],
+        "<task> <criterion> supported|failed|withdrawn [--note n] [--subject s] [--screenshots id] — your judgment of a human criterion on the shown revision",
+    ),
+    (
+        "task",
+        "forget",
+        "task.review.forget",
+        &[],
+        "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
+    ),
+    (
+        "task",
+        "link",
+        "task.link.status",
+        &[],
+        "--run r | --pane p — why a run's identity is not verified, how to verify it, and verified runs to track instead",
+    ),
     (
         "task",
         "message",

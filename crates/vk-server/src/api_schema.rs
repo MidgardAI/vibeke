@@ -28,6 +28,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("api", api::METHODS),
         ("agents", agents::METHODS),
         ("review::t4", review::t4::METHODS),
+        ("review::ext", review::ext::METHODS),
         ("preview", preview::METHODS),
         ("sandbox", sandbox::METHODS),
         ("agent_browser", agent_browser::METHODS),
@@ -407,6 +408,7 @@ pub const DEFS: &str = r##"
 # (null when unset), hence `T|null` rather than `?`. Everywhere: `f?: T` may be absent but is
 # never null; a field that can be null says `T|null` (`f?: T|null`: absent or null).
 Target = string
+ReviewPurge = {tasks: int, runs: int, messages: int, intent_excerpts: int, turns: int, tool_items: int, reviewer_prompts: int, notes: int, human_notes: int, check_logs: int, projections: int}
 Cursor = {machine_uuid: string, session_uuid: string, log_epoch: string, seq: int}
 ConfigDiagnostic = {line: int, col: int, message: string}
 ConfigWarning = {key: string, line: int|null, col: int|null, message: string}
@@ -599,7 +601,7 @@ blob.put :: {mime: string, data_b64?: string, path?: string} => {hash: string, s
 image.upload :: {pane: Target, mime: string, data_b64?: string, path_on_client?: string} => {path_on_machine: string, blob?: string}
 search.query :: {q: string, scope?: {workspace?: Target, pane?: Target, run?: Target}, sources?: [scrollback|transcript|events], limit?: int = 50, regex?: bool = false} => {hits: [{pane?: string, run?: string|null, source: string, line?: any, text: string, ts?: int, context?: any}]}
 scrollback.forget :: {pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false, plan?: string}
-  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int}
+  => {scope: any, pane_ids: [string], plan: any, dry_run: bool, panes?: int, segments_deleted?: int, bytes_deleted?: int, fts_rows_deleted?: int, archive_panes_dropped?: int, review?: ReviewPurge}
 
 # --- fs, git ---
 fs.list :: {pane?: Target, path?: string = ''} => {path: string, entries: [{name: string, kind: file|dir|symlink|other, size?: int, ignored: bool, secret: bool}], truncated: bool}
@@ -727,9 +729,14 @@ agent.report :: {pane?: Target, state: string, harness?: string = claude, messag
 agent.resumable :: {} => {runs: [AgentRun]}
 # pane-scoped callers only see items in their workspace; coverage.excluded counts the hidden ones
 attention.list :: {budget_ms?: int, effort?: quick|minutes|deep}
-  => {items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool}],
+  => {items: [{key: {kind: string, id: string}, class: int | 'finished_turns', title: string, subtitle: string, task: string | null, run: string | null, pane: string | null, interaction: string | null, explanation: string, age_ms: int, risk: string | null, effort: string | null, effort_estimate: {effort: string, source: 'heuristic'} | null, blocks_tasks: int, snoozed_until_ms: int | null, woke_from_snooze: string | null, urgent: bool, deadline_ms?: int | null, deadline_source?: native|gate|null, deadline_in_ms?: int | null, batch?: {id: string, size: int} | null}],
   coverage: {complete: bool, notes: [string], scope: 'all' | {workspace: string}, excluded: int},
-  five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null}
+  five_minute: {keys: [{kind: string, id: string}], omitted_count: int, note: string, item_notes: [{key: {kind: string, id: string}, note: string}]} | null,
+  batches?: [{id: string, members: [{kind: string, id: string}]}],
+  also_working?: [{run: string, pane: string, name: string, harness: string, task: {id: string, handle: string, title: string} | null, since_ms: int, working_for_ms: int}]}
+# equivalent natively answerable approvals (15 §8.3); answer each member with interaction.answer (expected_decision_rev)
+attention.batch :: {interaction: string}
+  => {interaction: string, batchable: bool, batch?: string, reason?: string, members: [{interaction: string, handle: string, run: string, pane: string, title: string, decision_rev: int, opened_at_ms: int}], facts?: object | null, note?: string}
 # key.kind is one of interaction|review|check_failed|send_unknown|finished_turn|binding_suspended; snooze_until_ms: null clears
 attention.update :: {key: {kind: string, id: string}, seen?: bool, item_rev?: int, snooze_until_ms?: int | null, pin?: bool}
   => {key: {kind: string, id: string}, seen: bool, seen_rev: int | null, snoozed_until_ms: int | null, pinned: bool, warning: string | null}
@@ -761,17 +768,27 @@ task.review.candidates :: {task: Target} => {task: Target, current: string | nul
 task.review.diff :: {task: Target, subject?: string, path?: string, max_bytes?: int} => {task: Target, subject: string, base_sha: string, head_sha: string, content_sha: string, path: string | null, diff: string, truncated: bool, total_bytes: int, max_bytes: int}
 # the review package; flat aliases revision/criteria/observed/blockers added
 task.review.get :: {task: Target, subject?: string}
-  => {task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}}
+  => {task: Target, task_title: string, package_revision: int, revision: int, intent_revision: int | null, intent: object | null, subject: object | null, subject_current: bool, accept_capable: bool, candidates: [object], inspect_only: any, no_end_candidate: any, review_base: any, baseline: any, warnings: [string], diff_stat: any, sources_verified: bool, historical_only: bool, observed_commands: [object], claims: [object], observed: [object], screenshots: [ScreenshotMeta], checks: [object], check_runs: [object], assessment: object, criteria: [object], blockers: any, label: string, label_text: string, readiness: {label: string, label_text: string}, acceptance: object | null, acceptance_history: [object], live: object, mappings_confirmed: any, review_notes: [object], reviewer_runs: [object], dependencies: object, effort: {set: string | null, heuristic: any, note: string}, snapshot: {available: bool, method: string, note: string, selection?: object}, actions: {accept: {available: bool, reason: string | null, requires_exceptions: any}}, human_reviews?: [object], purged?: any}
 task.review.note.classify :: {note: string, classification: blocking|not_blocking|dismissed, reason?: string, idempotency_key?: string} => {note: object}
 task.review.notes :: {task: Target} => {task: Target, notes: [object], reviewer_runs: [object]}
 task.review.request_reviewer :: {task: Target, harness?: string = claude, subject?: string, expected_subject?: string, prompt?: string, idempotency_key?: string}
   => {request: object, prompt: string, prompt_digest: string, harness: string, subject: string, requires_confirmation: true, label: string, uses_provider: string, confirm_with: {method: string, params: {request: string, prompt_digest: string}}}
-task.review.snapshot :: {task: Target, idempotency_key?: string} => {subject: object, snapshot: object, label: string, note: string}
+# paths (whole files) or patch (a unified diff) capture a selected-patch subject instead of all uncommitted work
+task.review.snapshot :: {task: Target, paths?: [string], patch?: string, idempotency_key?: string} => {subject: object, snapshot: object, selection?: object, label: string, note: string}
+# full scope only; supported | failed (needs a note) | withdrawn; screenshots must be bound to the reviewed subject
+task.review.human_review :: {task: Target, criterion: string, verdict: supported|failed|withdrawn, subject?: string, expected_subject?: string, note?: string, screenshots?: [string], idempotency_key?: string}
+  => {review: object, note: string}
+# full scope only; exactly one of task, pane, workspace, before, all
+task.review.forget :: {task?: Target, pane?: Target, workspace?: Target, before?: string|int, all?: bool, dry_run?: bool = false}
+  => {scope: any, dry_run: bool, purged: ReviewPurge}
+# why a run's identity is not verified, remedies, and verified runs nearby; never binds or installs
+task.link.status :: {run?: string, pane?: Target}
+  => {run: {id: string, handle: string, harness: string, integration: string, pane: string, session_reported: bool}, verified: bool, reasons: [string], remedies: [{action: string, label: string, command?: string, note?: string}], candidates: [object], note: string}
 # not allowed from a pane scope
 task.review.snapshot.gc :: {task: Target, include_unrecorded?: bool = false, dry_run?: bool = false} | {repo: string, include_unrecorded?: bool = false, dry_run?: bool = false}
   => {repo: string, task: Target | null, dry_run: bool, removed: [object], kept: [object], unrecorded: [object], note: string}
 # replay of an already-started request returns {request, run, binding, replayed: true}
-task.review.start_reviewer :: {request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, idempotency_key?: string}
+task.review.start_reviewer :: {request: string, prompt_digest: string, pane?: Target, split_of?: Target, direction?: string = right, checkout?: disposable|task, idempotency_key?: string}
   => {request: object, run: Target, binding: object, note?: string, replayed?: bool}
 # user client only (pane tokens get PermissionDenied); container sandbox with private clone required
 task.sync :: {task: Target, direction?: pull|push|both = pull, force?: bool = false} => {task: Target | null, synced: [{direction: string, status: string, commits: any, from: any, to: any, ref: any}]}
@@ -1004,6 +1021,9 @@ review.reviewer_started :: {task: string, request: string, run: string} => {subj
 review.reviewer_unknown :: {task: string, request: string} => {reason: string, subject: string}
 review.snapshot_created :: {task: string, subject: string} => {head: string, content: string, ref: string, attempts: any}
 review.snapshot_refs_removed :: {repo: string, task: any} => any
+review.human_reviewed :: {task: string, criterion: string, subject: string} => {verdict: string, screenshots: int, intent_revision: int}
+review.purged :: {scope: any} => ReviewPurge
+review.reviewer_checkout_removed :: {task: string, request: string} => {run: string | null}
 worktree.created :: {workspace?: string} => any
 worktree.opened :: {workspace: string} => {path: string, branch: string|null, repo_root: string, created_workspace?: any}
 worktree.removed :: {path: string, task?: string} => {job?: string, state: string}

@@ -26,6 +26,10 @@
 //! - [`effort`]: the deterministic review-effort heuristic (§8.2).
 //! - [`reviewer`]: reviewable reviewer-run prompts and reviewer findings as attributed notes
 //!   (§6.1, §7).
+//! - [`selection`]: selected-patch snapshots (whole files or a patch on top of HEAD) as
+//!   immutable, accept-capable review subjects (§5).
+//! - [`scratch`]: disposable reviewer checkouts, so a reviewer is never a writer in the task's
+//!   checkout (§6.1).
 //!
 //! Conventions: timestamps are Unix epoch milliseconds (`i64`, fields suffixed `_ms`, as in
 //! `vk-proto`); every enum serializes as `snake_case`; ids are opaque strings (ULIDs where this
@@ -39,7 +43,9 @@ pub mod effort;
 pub mod intent;
 pub mod readiness;
 pub mod reviewer;
+pub mod scratch;
 pub mod screenshot;
+pub mod selection;
 pub mod snapshot;
 pub mod subject;
 

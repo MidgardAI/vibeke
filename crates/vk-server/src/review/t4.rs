@@ -46,6 +46,13 @@ pub struct SnapRec {
     pub attempts: u32,
     pub created_by: Actor,
     pub created_at_ms: i64,
+    /// A selected-patch snapshot (lane 2C, `review::patch`): only this selection of the
+    /// uncommitted work. Never the task's "current dirty snapshot".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<vk_review::subject::Selection>,
+    /// Pinned as a binding's end candidate when the binding closed (lane 2C).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_end: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,11 +101,15 @@ pub struct ReviewerRequest {
     /// Idempotency key of the confirmation that started (or is starting) the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_key: Option<String>,
+    /// The disposable checkout the reviewer works in (lane 2C, `review::scratch`); `None`
+    /// when it works in the task's checkout or a pane the user named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<super::scratch::ReviewerCheckout>,
 }
 
 // ---- helpers used by review.rs ------------------------------------------------------------------
 
-fn snaps_of(c: &Core, task: &str) -> Vec<SnapRec> {
+pub(super) fn snaps_of(c: &Core, task: &str) -> Vec<SnapRec> {
     let mut v: Vec<SnapRec> = by_task(c, K_SNAP, task);
     v.sort_by_key(|s| s.created_at_ms);
     v
@@ -114,7 +125,9 @@ pub(super) fn current_snapshot(
 ) -> Option<ChangeSubject> {
     let (head, digest) = (head?, digest?);
     server.with_core(|c| {
-        let last = snaps_of(c, task).pop()?;
+        let last = snaps_of(c, task)
+            .into_iter()
+            .rfind(|s| s.selection.is_none())?;
         (last.head_sha == head && last.dirty_digest == digest)
             .then(|| {
                 c.store
@@ -297,6 +310,7 @@ pub(super) fn reviewer_json(r: &ReviewerRequest) -> Value {
         "prompt_digest": r.prompt_digest, "prompt_source": r.prompt_source,
         "run": r.run, "pane": r.pane, "binding": r.binding, "created_at_ms": r.created_at_ms,
         "started_at_ms": r.started_at_ms, "error": r.error,
+        "checkout": r.checkout.as_ref().map(|c| json!({"path": c.path, "kind": "disposable", "content_sha": c.content_sha, "removed_at_ms": c.removed_at_ms})),
     })
 }
 
@@ -304,6 +318,9 @@ pub(super) fn reviewer_json(r: &ReviewerRequest) -> Value {
 
 pub(super) async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
+        "task.review.snapshot" if super::patch::is_selection(p) => {
+            super::patch::snapshot_api(server, ctx, p).await
+        }
         "task.review.snapshot" => snapshot_api(server, ctx, p).await,
         "task.review.snapshot.gc" => snapshot_gc(server, ctx, p).await,
         "task.review.request_reviewer" => request_reviewer(server, ctx, p).await,
@@ -314,7 +331,7 @@ pub(super) async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value
         "task.dependency.remove" => dependency_remove(server, ctx, p),
         "task.dependency.list" => dependency_list(server, ctx, p),
         "task.effort.estimate" => effort_api(server, ctx, p).await,
-        _ => return None,
+        m => return super::ext::api(server, ctx, m, p).await,
     })
 }
 
@@ -386,6 +403,8 @@ async fn snapshot_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         attempts: sn.attempts,
         created_by: tracking::user(ctx),
         created_at_ms: now(),
+        selection: None,
+        binding_end: None,
     };
     let result = json!({
         "subject": subj,
@@ -445,7 +464,7 @@ async fn snapshot_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 
 // ---- snapshot ref retention ---------------------------------------------------------------------
 
-fn snap_gate() -> &'static tokio::sync::Mutex<()> {
+pub(super) fn snap_gate() -> &'static tokio::sync::Mutex<()> {
     static G: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     G.get_or_init(Default::default)
 }
@@ -462,9 +481,12 @@ fn task_open(c: &Core, task: &str) -> bool {
 /// still queued/running. Everything else recorded is unreferenced.
 fn snapshot_ref_uses(c: &Core) -> (HashSet<String>, HashMap<String, Vec<String>>) {
     let snaps: Vec<SnapRec> = c.store.load(K_SNAP).unwrap_or_default();
-    let mut latest: HashMap<&str, &SnapRec> = HashMap::new();
+    // Latest per task and kind: a selected patch never supersedes the dirty snapshot.
+    let mut latest: HashMap<(&str, bool), &SnapRec> = HashMap::new();
     for s in &snaps {
-        let e = latest.entry(s.task.as_str()).or_insert(s);
+        let e = latest
+            .entry((s.task.as_str(), s.selection.is_some()))
+            .or_insert(s);
         if s.created_at_ms >= e.created_at_ms {
             *e = s;
         }
@@ -479,8 +501,15 @@ fn snapshot_ref_uses(c: &Core) -> (HashSet<String>, HashMap<String, Vec<String>>
         let open = task_open(c, &s.task);
         let sid = s.subject_id.as_str();
         let is_latest = latest
-            .get(s.task.as_str())
+            .get(&(s.task.as_str(), s.selection.is_some()))
             .is_some_and(|l| l.subject_id == sid);
+        // Pinned as a binding's end candidate (lane 2C): kept like an accepted subject.
+        let pinned = || {
+            !c.store
+                .load_by_field::<Value>(K_END, "$.subject_id", sid)
+                .unwrap_or_default()
+                .is_empty()
+        };
         let accepted = || {
             !c.store
                 .load_by_field::<Value>(K_ACCEPT, "$.acceptance.subject_id", sid)
@@ -501,7 +530,7 @@ fn snapshot_ref_uses(c: &Core) -> (HashSet<String>, HashMap<String, Vec<String>>
                 .iter()
                 .any(|r| !r.run.state.is_terminal())
         };
-        if (open && is_latest) || accepted() || (open && reviewing()) || checking() {
+        if (open && is_latest) || accepted() || pinned() || (open && reviewing()) || checking() {
             referenced.insert(s.content_sha.clone());
         }
     }
@@ -511,7 +540,7 @@ fn snapshot_ref_uses(c: &Core) -> (HashSet<String>, HashMap<String, Vec<String>>
 /// Delete the snapshot refs of the repository at `repo` that no record references (see
 /// [`snapshot_ref_uses`]). With `task`, only that task's recorded snapshots are candidates.
 /// Unrecorded refs are removed only with `include_unrecorded`. Blocking (git).
-fn prune_snapshot_refs(
+pub(super) fn prune_snapshot_refs(
     server: &Server,
     repo: &Path,
     task: Option<&str>,
@@ -732,6 +761,7 @@ async fn request_reviewer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         error: None,
         attempt: None,
         start_key: None,
+        checkout: None,
     };
     let result = json!({
         "request": reviewer_json(&rq),
@@ -838,6 +868,8 @@ async fn launch(
     rq: &ReviewerRequest,
     p: &Value,
 ) -> Result<(String, String), RpcError> {
+    // Lane 2C: a disposable checkout of the reviewed revision (default for a new split).
+    let scratch_dir = super::scratch::prepare(server, rq, p).await?;
     #[cfg(test)]
     if let Some(f) = test_launcher(&rq.task) {
         return f(server, rq);
@@ -866,7 +898,9 @@ async fn launch(
             };
             let dir = vk_proto::layout::Direction::parse(s(p, "direction").unwrap_or("right"))
                 .unwrap_or(vk_proto::layout::Direction::Right);
-            let cwd = checkout_of(&task).map(|p| p.to_string_lossy().into_owned());
+            let cwd = scratch_dir
+                .or_else(|| checkout_of(&task))
+                .map(|p| p.to_string_lossy().into_owned());
             // Never moves anyone's focus (15 §1.1).
             let pane = server
                 .split_pane(
@@ -992,6 +1026,7 @@ async fn start_reviewer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let (run_id, pane) = match launched {
         Ok(x) => x,
         Err(e) => {
+            super::scratch::discard(server, &rq.id);
             let mut c = server.core.lock().unwrap();
             if let Some(mut cur) = held(&c) {
                 cur.state = ReviewerState::Prepared;
@@ -1005,6 +1040,7 @@ async fn start_reviewer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             return Err(e);
         }
     };
+    rq.checkout = super::scratch::take_prepared(&rq.id);
     let actor = tracking::user(ctx);
     let mut c = server.core.lock().unwrap();
     if held(&c).is_none() {
