@@ -9,7 +9,7 @@
 pub mod archive;
 pub mod conv;
 mod purge;
-pub use purge::{PurgeReport, RebuildReport};
+pub use purge::{PurgeRecovery, PurgeReport, RebuildReport};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};

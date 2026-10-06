@@ -165,6 +165,14 @@ impl Server {
     pub fn new(paths: Paths, opts: ServerOpts) -> Result<Arc<Self>> {
         paths.ensure()?;
         let store = vk_store::Store::open(&paths.db())?;
+        // Settle archive purges a crash interrupted (02 "Archive search as implemented").
+        match store.recover_archive_purges(&paths.scrollback()) {
+            Ok(r) if r != vk_store::PurgeRecovery::default() => {
+                tracing::warn!(?r, "archive: settled interrupted purges");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "archive: purge recovery failed"),
+        }
         let mut core = Core::load(store, &opts.session, &opts.machine)?;
         // Pane tokens are stored as blake3 hashes only (09 §3.2). Migrate the old raw record.
         let mut tokens: HashMap<String, String> = core

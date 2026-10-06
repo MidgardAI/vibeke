@@ -3,8 +3,10 @@
 //! The zstd segments under `scrollback/<pane>/` are the source of truth for archived text;
 //! `scrollback_fts` and `archive_panes` are derived from them. Retention, `forget` and
 //! `doctor --rebuild-index` all go through here so the files and the index never disagree:
-//! the matching FTS rows are deleted in the same SQLite transaction as the segment files, and
-//! the transaction is rolled back when a file cannot be removed.
+//! segments are first moved into a staging dir (`scrollback/.trash/<purge-id>/`), then the
+//! matching FTS rows and a purge-journal row commit in one SQLite transaction, then the staging
+//! dir is unlinked. A failure before the commit moves the segments back; a crash is settled at
+//! startup by [`Store::recover_archive_purges`] according to whether the journal row committed.
 
 use crate::archive::{Archive, SegInfo, Select, read_seg_lossy};
 use crate::{Store, now_ms};
@@ -12,7 +14,7 @@ use anyhow::Result;
 use rusqlite::types::Value as Sql;
 use rusqlite::{Params, params, params_from_iter};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What a purge removed (or, for a dry run, would remove).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,18 +146,118 @@ impl Store {
         if dry_run {
             return Ok(report);
         }
+        // Recoverable deletion: (1) record the purge in the journal and move the segments into
+        // `.trash/<purge-id>/` (a failure moves them back and rolls the index back); (2) commit
+        // the index rows and the journal row together; (3) unlink the staging dir and the
+        // journal row. A crash in between is settled by `recover_archive_purges` at startup:
+        // journal row committed → the staging dir goes; not committed → its files come back.
+        let staging = if chosen.is_empty() {
+            None
+        } else {
+            let purge_id = ulid::Ulid::new().to_string();
+            tx.execute(
+                "INSERT INTO kv (scope, key, value) VALUES (?1, ?2, ?3)",
+                params![PURGE_JOURNAL, purge_id, now_ms().to_string()],
+            )?;
+            let dir = archive.root().join(TRASH).join(&purge_id);
+            let moved = stage(&chosen, &dir)?;
+            Some((purge_id, dir, moved))
+        };
+        if let Err(e) = fault("commit")
+            .map_err(anyhow::Error::from)
+            .and_then(|()| tx.commit().map_err(anyhow::Error::from))
+        {
+            if let Some((_, dir, moved)) = &staging {
+                unstage(moved, dir);
+            }
+            return Err(e);
+        }
+        fault("crash_after_commit")?;
         if sel == Select::All {
             for id in &ids {
                 archive.drop_open(id);
             }
         }
-        // Files after the index rows, before the commit: a failure rolls the rows back.
-        Archive::remove_segments(&chosen)?;
-        tx.commit()?;
         for id in &emptied {
             archive.prune_dir(id);
         }
+        if let Some((purge_id, dir, _)) = &staging {
+            // Committed: the purge has happened. A staging dir that can't be removed now is
+            // removed at the next startup (the journal row stays until it is).
+            if fault("unlink").is_ok() && std::fs::remove_dir_all(dir).is_ok() {
+                let _ = self.conn.execute(
+                    "DELETE FROM kv WHERE scope = ?1 AND key = ?2",
+                    params![PURGE_JOURNAL, purge_id],
+                );
+                let _ = std::fs::remove_dir(archive.root().join(TRASH));
+            }
+        }
         Ok(report)
+    }
+
+    /// Settle purges interrupted by a crash or a failed unlink (call at startup, before the
+    /// archive is used). For each `.trash/<purge-id>/`: if the purge's journal row is in the
+    /// database its transaction committed, so the staged segments are deleted; otherwise the
+    /// index still has their rows, so the segments move back (a segment whose original path
+    /// is taken meanwhile stays staged and is reported). Journal rows without a staging dir
+    /// are dropped.
+    pub fn recover_archive_purges(&self, root: &Path) -> Result<PurgeRecovery> {
+        let mut rep = PurgeRecovery::default();
+        let trash = root.join(TRASH);
+        let committed: Vec<String> = {
+            let mut st = self.conn.prepare("SELECT key FROM kv WHERE scope = ?1")?;
+            st.query_map([PURGE_JOURNAL], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let dirs: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(&trash)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (id, dir) in &dirs {
+            if committed.contains(id) {
+                std::fs::remove_dir_all(dir)?;
+                rep.completed += 1;
+                continue;
+            }
+            let mut kept = false;
+            for pane in std::fs::read_dir(dir)?.flatten() {
+                let pane_name = pane.file_name();
+                for seg in std::fs::read_dir(pane.path())?.flatten() {
+                    let dest = root.join(&pane_name).join(seg.file_name());
+                    if dest.exists() {
+                        kept = true;
+                        rep.conflicts.push(dest.display().to_string());
+                        continue;
+                    }
+                    std::fs::create_dir_all(root.join(&pane_name))?;
+                    std::fs::rename(seg.path(), &dest)?;
+                    rep.segments_restored += 1;
+                }
+            }
+            if !kept {
+                std::fs::remove_dir_all(dir)?;
+            }
+            rep.restored += 1;
+        }
+        let present: Vec<&String> = dirs.iter().map(|(id, _)| id).collect();
+        for id in committed.iter().filter(|id| !present.contains(id)) {
+            self.conn.execute(
+                "DELETE FROM kv WHERE scope = ?1 AND key = ?2",
+                params![PURGE_JOURNAL, id],
+            )?;
+        }
+        for (id, _) in dirs.iter().filter(|(id, _)| committed.contains(id)) {
+            self.conn.execute(
+                "DELETE FROM kv WHERE scope = ?1 AND key = ?2",
+                params![PURGE_JOURNAL, id],
+            )?;
+        }
+        let _ = std::fs::remove_dir(&trash);
+        Ok(rep)
     }
 
     fn archive_pane_ids(&self) -> Result<Vec<String>> {
@@ -272,6 +374,120 @@ impl Store {
         tx.commit()?;
         Ok(rep)
     }
+}
+
+/// Staging area for segments being purged, inside `scrollback/` (same filesystem, so moves
+/// are renames; dot directories are not panes).
+pub const TRASH: &str = ".trash";
+/// `kv` scope of the purge journal: one row per purge whose transaction committed and whose
+/// staging dir may still exist.
+const PURGE_JOURNAL: &str = "archive_purge";
+
+/// What [`Store::recover_archive_purges`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeRecovery {
+    /// Committed purges whose staged segments were deleted.
+    pub completed: u64,
+    /// Uncommitted purges whose segments were moved back.
+    pub restored: u64,
+    pub segments_restored: u64,
+    /// Staged segments left in place because their original path is taken.
+    pub conflicts: Vec<String>,
+}
+
+/// Move `segs` into `dir/<pane>/<file>`; on failure move back what was moved and fail.
+fn stage(segs: &[SegInfo], dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let res = (|| -> std::io::Result<()> {
+        for s in segs {
+            let (Some(name), Some(pane)) = (
+                s.path.file_name(),
+                s.path.parent().and_then(|p| p.file_name()),
+            ) else {
+                continue;
+            };
+            let to = dir.join(pane).join(name);
+            std::fs::create_dir_all(dir.join(pane))?;
+            fault("stage")?;
+            match std::fs::rename(&s.path, &to) {
+                Ok(()) => moved.push((s.path.clone(), to)),
+                // A missing file counts as deleted.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    })();
+    match res {
+        Ok(()) => Ok(moved),
+        Err(e) => {
+            unstage(&moved, dir);
+            Err(e.into())
+        }
+    }
+}
+
+/// Move staged segments back (newest move first) and drop the staging dir.
+fn unstage(moved: &[(PathBuf, PathBuf)], dir: &Path) {
+    for (from, to) in moved.iter().rev() {
+        if let Err(e) = std::fs::rename(to, from) {
+            eprintln!(
+                "archive purge: could not restore staged segment {}: {e}; it is restored at the next start",
+                from.display()
+            );
+            return;
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    if let Some(trash) = dir.parent() {
+        let _ = std::fs::remove_dir(trash);
+    }
+}
+
+// Fault injection for the purge protocol's tests: `inject_fault(point, skip, crash)` makes the
+// `skip`+1-th pass through `point` fail (or panic, for a simulated crash) on this thread.
+#[cfg(test)]
+thread_local! {
+    static FAULT: std::cell::RefCell<Option<(&'static str, usize, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_fault(point: &'static str, skip: usize, crash: bool) {
+    FAULT.with(|f| *f.borrow_mut() = Some((point, skip, crash)));
+}
+
+fn fault(point: &'static str) -> std::io::Result<()> {
+    #[cfg(test)]
+    {
+        let hit = FAULT.with(|f| {
+            let mut f = f.borrow_mut();
+            match f.as_mut() {
+                Some((p, n, crash)) if *p == point => {
+                    if *n == 0 {
+                        let crash = *crash;
+                        *f = None;
+                        Some(crash)
+                    } else {
+                        *n -= 1;
+                        None
+                    }
+                }
+                _ => None,
+            }
+        });
+        match hit {
+            Some(true) => panic!("injected crash at {point}"),
+            Some(false) => {
+                return Err(std::io::Error::other(format!(
+                    "injected failure at {point}"
+                )));
+            }
+            None => {}
+        }
+    }
+    let _ = point;
+    Ok(())
 }
 
 fn scalar(c: &rusqlite::Connection, sql: &str, args: impl Params) -> Result<u64> {
@@ -529,5 +745,170 @@ mod tests {
         let p = s.archive_pane("p2").unwrap().unwrap();
         assert_eq!((p.1.as_str(), p.4.as_str()), ("w2", "zsh"));
         assert!(s.archive_pane("p1").unwrap().is_none());
+    }
+
+    // ---- recoverable deletion (leftovers review finding 8) ----
+
+    /// Every segment file of `pane` with its bytes.
+    fn files(a: &Archive, pane: &str) -> Vec<(PathBuf, Vec<u8>)> {
+        a.segment_infos(pane)
+            .into_iter()
+            .map(|s| {
+                let b = std::fs::read(&s.path).unwrap();
+                (s.path, b)
+            })
+            .collect()
+    }
+
+    fn journal(s: &Store) -> i64 {
+        s.conn
+            .query_row(
+                "SELECT COUNT(*) FROM kv WHERE scope = ?1",
+                [PURGE_JOURNAL],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn trash_dirs(root: &Path) -> usize {
+        std::fs::read_dir(root.join(TRASH))
+            .map(|rd| rd.count())
+            .unwrap_or(0)
+    }
+
+    /// The second segment can't be moved: the first comes back, the index rolls back, nothing
+    /// is lost and nothing is staged.
+    #[test]
+    fn failure_on_the_second_segment_restores_the_first() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = fixture(d.path());
+        a.close_pane("p1").unwrap();
+        let before = files(&a, "p1");
+        assert!(before.len() > 2);
+        inject_fault("stage", 1, false);
+        let err = s
+            .purge_archive(&mut a, Some(&["p1".into()]), Select::OverBytes(1), false)
+            .unwrap_err();
+        assert!(err.to_string().contains("injected"), "{err}");
+        assert_eq!(files(&a, "p1"), before);
+        assert_eq!(fts_count(&s, "p1"), 30_000);
+        assert_eq!(journal(&s), 0);
+        assert!(!d.path().join(TRASH).exists());
+        assert_eq!(a.pane_ids(), vec!["p1".to_string(), "p2".to_string()]);
+        // Forget (Select::All) of a live pane: same, and its open segment keeps working.
+        let live_before = files(&a, "p2");
+        inject_fault("stage", 0, false);
+        assert!(
+            s.purge_archive(&mut a, Some(&["p2".into()]), Select::All, false)
+                .is_err()
+        );
+        assert_eq!(files(&a, "p2"), live_before);
+        assert_eq!(fts_count(&s, "p2"), 1000);
+    }
+
+    /// The commit fails after every segment was staged: all of them come back.
+    #[test]
+    fn commit_failure_restores_the_segments() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = fixture(d.path());
+        let before = files(&a, "p1");
+        inject_fault("commit", 0, false);
+        assert!(s.purge_archive(&mut a, None, Select::All, false).is_err());
+        assert_eq!(files(&a, "p1"), before);
+        assert_eq!(fts_count(&s, "p1"), 30_000);
+        assert_eq!(fts_count(&s, "p2"), 1000);
+        assert_eq!(journal(&s), 0);
+        assert!(!d.path().join(TRASH).exists());
+        assert!(s.archive_pane("p1").unwrap().is_some());
+        // The buffered (open) segment state survived too: appends land in the same file.
+        a.append(
+            "p1",
+            &[ArchivedRow {
+                n: 30_000,
+                t: "later".into(),
+                w: false,
+            }],
+        )
+        .unwrap();
+        a.flush().unwrap();
+        assert_eq!(a.segment_infos("p1").len(), before.len());
+        assert_eq!(a.read("p1", 30_000, 30_001).unwrap()[0].t, "later");
+    }
+
+    /// Unlinking the staging dir fails after the commit: the purge stands (the segments are no
+    /// longer readable), and the next startup removes the staged files and the journal row.
+    #[test]
+    fn unlink_failure_after_commit_is_finished_at_startup() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = fixture(d.path());
+        a.close_pane("p2").unwrap();
+        inject_fault("unlink", 0, false);
+        let r = s
+            .purge_archive(&mut a, Some(&["p2".into()]), Select::All, false)
+            .unwrap();
+        assert_eq!(r.fts_rows, 1000);
+        assert!(a.segment_infos("p2").is_empty());
+        assert!(a.read("p2", 0, u64::MAX).unwrap().is_empty());
+        assert!(!a.pane_ids().contains(&".trash".to_string()));
+        assert_eq!((journal(&s), trash_dirs(d.path())), (1, 1));
+        let rec = s.recover_archive_purges(d.path()).unwrap();
+        assert_eq!((rec.completed, rec.restored), (1, 0));
+        assert_eq!(journal(&s), 0);
+        assert!(!d.path().join(TRASH).exists());
+        assert_eq!(fts_count(&s, "p2"), 0);
+        assert_eq!(fts_count(&s, "p1"), 30_000);
+    }
+
+    /// The process dies after staging, before the commit: at restart the index still has the
+    /// rows (the transaction never committed), so the staged segments move back.
+    #[test]
+    fn restart_after_a_crash_before_the_commit_restores() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = fixture(d.path());
+        a.close_pane("p1").unwrap();
+        let before = files(&a, "p1");
+        inject_fault("commit", 0, true);
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            s.purge_archive(&mut a, Some(&["p1".into()]), Select::OverBytes(1), false)
+        }));
+        assert!(crashed.is_err());
+        assert!(files(&a, "p1").len() < before.len(), "segments are staged");
+        assert_eq!(fts_count(&s, "p1"), 30_000, "nothing committed");
+        assert_eq!((journal(&s), trash_dirs(d.path())), (0, 1));
+        // Restart.
+        let rec = s.recover_archive_purges(d.path()).unwrap();
+        assert_eq!((rec.completed, rec.restored), (0, 1));
+        assert!(rec.segments_restored > 0 && rec.conflicts.is_empty());
+        let mut a = Archive::new(d.path());
+        assert_eq!(files(&a, "p1"), before);
+        assert_eq!(a.read("p1", 0, 3).unwrap().len(), 3);
+        assert!(!d.path().join(TRASH).exists());
+        // Retention then works normally.
+        let r = s
+            .purge_archive(&mut a, Some(&["p1".into()]), Select::OverBytes(1), false)
+            .unwrap();
+        assert!(r.segments > 0);
+        assert_eq!((journal(&s), trash_dirs(d.path())), (0, 0));
+    }
+
+    /// The process dies right after the commit: at restart the journal row says the purge
+    /// happened, so the staged segments are deleted, not restored.
+    #[test]
+    fn restart_after_a_crash_after_the_commit_completes() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = fixture(d.path());
+        a.close_pane("p1").unwrap();
+        inject_fault("crash_after_commit", 0, true);
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            s.purge_archive(&mut a, Some(&["p1".into()]), Select::All, false)
+        }));
+        assert!(crashed.is_err());
+        assert_eq!(fts_count(&s, "p1"), 0, "committed");
+        assert_eq!((journal(&s), trash_dirs(d.path())), (1, 1));
+        let rec = s.recover_archive_purges(d.path()).unwrap();
+        assert_eq!((rec.completed, rec.restored), (1, 0));
+        assert!(Archive::new(d.path()).segment_infos("p1").is_empty());
+        assert_eq!((journal(&s), trash_dirs(d.path())), (0, 0));
+        assert_eq!(fts_count(&s, "p2"), 1000);
     }
 }
