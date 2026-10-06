@@ -234,13 +234,7 @@ pub struct PreviewScope {
 
 impl PreviewScope {
     fn owns(&self, c: &crate::core::Core, pv: &vk_proto::model::Preview) -> bool {
-        if pv.task.is_some() && pv.task == self.task {
-            return true;
-        }
-        let Some(pane) = &pv.pane else { return false };
-        *pane == self.pane
-            || c.pane(pane)
-                .is_some_and(|p| p.created_by == format!("agent:{}", self.pane))
+        crate::preview::pane_owns_preview(c, &self.pane, self.task.as_deref(), pv)
     }
 }
 

@@ -187,6 +187,24 @@ async fn run_server(g: &Global) -> i32 {
     if opts.shims {
         let _ = vk_server::agents::install_shims(&opts.bin);
     }
+    // The state dir's writer lock, for the server's whole life (02): a running
+    // `doctor --rebuild-index` holds it, and a server that is still shutting down may for a
+    // moment, so wait a little, then refuse.
+    let _state_lock = match paths.lock_state(std::time::Duration::from_secs(10)) {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            eprintln!(
+                "server: the state of session `{}` is locked by another process ({}): `vibeke doctor --rebuild-index` or another server is using it; retry when it is done",
+                g.session,
+                paths.state_lock().display()
+            );
+            return EXIT_API;
+        }
+        Err(e) => {
+            eprintln!("server: lock {}: {e}", paths.state_lock().display());
+            return EXIT_API;
+        }
+    };
     let server = match vk_server::Server::new(paths.clone(), opts) {
         Ok(s) => s,
         Err(e) => {

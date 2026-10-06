@@ -41,6 +41,11 @@ impl Archive {
         }
     }
 
+    /// The `scrollback/` directory.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn pane_dir(&self, pane: &str) -> PathBuf {
         self.root.join(pane)
     }
@@ -143,13 +148,15 @@ impl Archive {
         Ok(out)
     }
 
-    /// Pane ids that have a segment directory on disk or an open segment.
+    /// Pane ids that have a segment directory on disk or an open segment. Dot directories
+    /// (the purge staging area `.trash/`) are not panes.
     pub fn pane_ids(&self) -> Vec<String> {
         let mut v: Vec<String> = std::fs::read_dir(&self.root)
             .map(|rd| {
                 rd.flatten()
                     .filter(|e| e.path().is_dir())
                     .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|n| !n.starts_with('.'))
                     .collect()
             })
             .unwrap_or_default();

@@ -200,6 +200,189 @@ async fn forget_scopes_dry_run_and_idempotence() {
     );
 }
 
+/// Review finding 7: a housekeeping pass paused right after draining the FTS buffer must not
+/// re-insert its batch after a `forget` of that pane: the forget waits for the batch (both run
+/// under the archive lock), then deletes the batch's rows with the rest.
+#[test]
+fn in_flight_fts_batch_cannot_resurrect_forgotten_text() {
+    use std::sync::mpsc;
+    let e = Env::new();
+    e.fill("p1", 1);
+    e.fill("p2", 1);
+    // A batch that is archived but not indexed yet.
+    let rows = (1000..1100)
+        .map(|n| ArchivedRow {
+            n,
+            t: format!("needle p1 secret {n}"),
+            w: false,
+        })
+        .collect();
+    e.server.archive_rows("p1", rows);
+    let (drained_tx, drained_rx) = mpsc::channel::<()>();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let go_rx = std::sync::Mutex::new(go_rx);
+    *e.server.after_fts_drain.lock().unwrap() = Some(Box::new(move || {
+        let _ = drained_tx.send(());
+        let _ = go_rx.lock().unwrap().recv();
+    }));
+    let srv = e.server.clone();
+    let hk = std::thread::spawn(move || srv.housekeeping());
+    drained_rx.recv().unwrap();
+    // Housekeeping holds its private batch. Forget the pane meanwhile.
+    let srv = e.server.clone();
+    let fg = std::thread::spawn(move || {
+        crate::search::forget(&srv, &ctx_full(), &json!({"pane": "p1"}))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !fg.is_finished(),
+        "forget must wait for the in-flight FTS batch"
+    );
+    go_tx.send(()).unwrap();
+    hk.join().unwrap();
+    let r = fg.join().unwrap().unwrap();
+    *e.server.after_fts_drain.lock().unwrap() = None;
+    assert_eq!(r["fts_rows_deleted"], 1100, "{r}");
+    // Nothing of p1 is searchable, now or after the next flush; p2 is untouched.
+    e.server.housekeeping();
+    assert_eq!(e.fts_rows("p1"), 0);
+    assert_eq!(e.fts_rows("p2"), 1000);
+}
+
+fn put_pane(e: &Env, id: &str, ws: &str) {
+    let p = vk_proto::model::Pane {
+        id: id.into(),
+        handle: id.into(),
+        tab: "tab".into(),
+        workspace: ws.into(),
+        title: None,
+        auto_title: String::new(),
+        cwd: None,
+        cols: 80,
+        rows: 24,
+        child_pid: None,
+        fg_cmdline: vec![],
+        exited: false,
+        exit_code: None,
+        unread: false,
+        marked_unread: false,
+        pinned: false,
+        created_by: "user".into(),
+        recovered: None,
+        isolation: Default::default(),
+        browser: None,
+        jj: None,
+    };
+    let mut c = e.server.core.lock().unwrap();
+    let mut tx = crate::core::Tx::new();
+    tx.pane(p);
+    e.server.commit(&mut c, tx).unwrap();
+}
+
+fn focus(e: &Env, pane: &str) {
+    e.server.clients.lock().unwrap().insert(
+        "tui1".into(),
+        crate::ClientState {
+            kind: "tui".into(),
+            focus: crate::ClientFocus {
+                pane: Some(pane.into()),
+                ..Default::default()
+            },
+            last_active: Some(std::time::Instant::now()),
+            ..Default::default()
+        },
+    );
+}
+
+/// Review finding 6: the dry run returns the canonical plan (resolved ids, absolute cutoff,
+/// digest) and the confirmed call executes exactly that. Focus moving from A to B between the
+/// dry run and the confirmation deletes A only; resending `@focused` with the old plan is
+/// refused; a workspace that gained a pane, or a relative cutoff, no longer matches either.
+#[tokio::test]
+async fn forget_executes_the_confirmed_plan_after_a_focus_change() {
+    let e = Env::new();
+    put_pane(&e, "pa", "w1");
+    put_pane(&e, "pb", "w1");
+    e.fill("pa", 1);
+    e.fill("pb", 1);
+    focus(&e, "pa");
+    let plan = e
+        .call(
+            "scrollback.forget",
+            json!({"pane": "@focused", "dry_run": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan["scope"], json!({"pane": "pa"}));
+    assert_eq!(plan["pane_ids"], json!(["pa"]));
+    let digest = plan["plan"].as_str().unwrap().to_string();
+    assert!(digest.starts_with("fp1-"));
+    // The user is looking at the prompt; focus moves to B.
+    focus(&e, "pb");
+    // The original parameters with the old plan no longer resolve the same way: refused.
+    let err = e
+        .call(
+            "scrollback.forget",
+            json!({"pane": "@focused", "plan": digest}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "conflict");
+    assert_eq!(e.fts_rows("pa"), 1000);
+    assert_eq!(e.fts_rows("pb"), 1000);
+    // The canonical plan deletes exactly what was shown.
+    let mut confirmed = plan["scope"].clone();
+    confirmed["plan"] = json!(digest);
+    let r = e.call("scrollback.forget", confirmed).await.unwrap();
+    assert_eq!(r["fts_rows_deleted"], 1000);
+    assert_eq!(e.fts_rows("pa"), 0);
+    assert_eq!(e.fts_rows("pb"), 1000);
+
+    // Workspace: a pane added after the dry run changes the plan.
+    let plan = e
+        .call(
+            "scrollback.forget",
+            json!({"workspace": "w1", "dry_run": true}),
+        )
+        .await
+        .unwrap();
+    put_pane(&e, "pc", "w1");
+    let mut confirmed = plan["scope"].clone();
+    confirmed["plan"] = plan["plan"].clone();
+    let err = e.call("scrollback.forget", confirmed).await.unwrap_err();
+    assert_eq!(err.data.kind, "conflict");
+    assert_eq!(e.fts_rows("pb"), 1000);
+
+    // `before`: the plan carries an absolute cutoff; a relative one re-evaluated later doesn't
+    // match it.
+    let plan = e
+        .call(
+            "scrollback.forget",
+            json!({"before": "1d", "dry_run": true}),
+        )
+        .await
+        .unwrap();
+    let cutoff = plan["scope"]["before"].as_i64().unwrap();
+    assert!(cutoff > 0);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let err = e
+        .call(
+            "scrollback.forget",
+            json!({"before": "1d", "plan": plan["plan"]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.data.kind, "conflict");
+    let r = e
+        .call(
+            "scrollback.forget",
+            json!({"before": cutoff, "plan": plan["plan"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["scope"]["before"], cutoff);
+}
+
 #[tokio::test]
 async fn forget_is_not_available_to_pane_tokens() {
     let e = Env::new();

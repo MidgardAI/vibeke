@@ -115,6 +115,35 @@ pub struct RuntimeIdentity {
     pub detail: Option<String>,
 }
 
+/// Longest page-reported identity string kept (a build id or digest is far shorter).
+const MAX_PAGE_TEXT: usize = 200;
+
+/// A string the running app (that is, the page) reported, made safe to store and show: control
+/// characters (C0 incl. ESC/BEL, DEL, C1) become visible escapes and the length is capped, so a
+/// `build_id` can't carry terminal escape sequences into `binding_reason`, `preview show` or
+/// the gallery (leftovers review finding 9).
+pub fn page_text(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars().take(MAX_PAGE_TEXT) {
+        if c.is_control() {
+            let n = c as u32;
+            if n < 0x80 {
+                out.push_str(&format!("\\x{n:02x}"));
+            } else {
+                out.push_str(&format!("\\u{{{n:x}}}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The first `n` characters (never splits one).
+fn prefix(s: &str, n: usize) -> &str {
+    s.char_indices().nth(n).map_or(s, |(i, _)| &s[..i])
+}
+
 impl RuntimeIdentity {
     pub fn unknown(detail: impl Into<String>, at_ms: i64) -> Self {
         RuntimeIdentity {
@@ -130,7 +159,7 @@ impl RuntimeIdentity {
     /// [`CodeState`]) or `{build_id?, head_sha?, dirty_digest?, dirty_state?, started_at_ms?,
     /// fixture?}`. Returns `None` when it carries no identity at all.
     pub fn from_report(v: &serde_json::Value, source: &str, at_ms: i64) -> Option<Self> {
-        let str_of = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        let str_of = |k: &str| v.get(k).and_then(|x| x.as_str()).map(page_text);
         let head_sha = str_of("head_sha").filter(|s| !s.is_empty());
         let build_id = str_of("build_id")
             .or_else(|| str_of("buildId"))
@@ -169,7 +198,7 @@ impl RuntimeIdentity {
         let mut build_id = None;
         for p in parts {
             if let Some(b) = p.strip_prefix("build=") {
-                build_id = Some(b.to_string());
+                build_id = Some(page_text(b));
             }
         }
         let head_ok = !head.is_empty() && head.chars().all(|c| c.is_ascii_hexdigit());
@@ -181,7 +210,7 @@ impl RuntimeIdentity {
             source: "header".into(),
             build_id,
             head_sha: head_ok.then(|| head.to_string()),
-            dirty_digest: dirty.filter(|d| !d.is_empty()).map(str::to_string),
+            dirty_digest: dirty.filter(|d| !d.is_empty()).map(page_text),
             dirty_state: head_ok.then_some(if dirty.is_some() {
                 DirtyState::Dirty
             } else {
@@ -238,7 +267,7 @@ pub fn decide_binding(code: Option<&CodeState>, runtime: &RuntimeIdentity) -> (B
             Binding::Illustrative,
             format!(
                 "Running build is {} but the checkout is at {}",
-                &rt_head[..rt_head.len().min(7)],
+                prefix(rt_head, 7),
                 code.label()
             ),
         );
@@ -317,6 +346,42 @@ mod tests {
         // Not a repository.
         let t = tempfile::tempdir().unwrap();
         assert!(capture_code_state(t.path()).is_err());
+    }
+
+    /// Review finding 9: a page reporting an escape-bearing `build_id` (and no `head_sha`)
+    /// can't get control sequences into the stored identity or `binding_reason`; a non-ASCII
+    /// `head_sha` doesn't panic the reason's prefix either.
+    #[test]
+    fn page_reported_identity_is_escaped() {
+        let r = TestRepo::new();
+        r.write("a.txt", "one\n");
+        r.commit("init");
+        let clean = capture_code_state(&r.path()).unwrap();
+        let evil = "x\x1b]52;c;cHduZWQ=\x07\x1b[2J\u{9b}31m\ny";
+        let no_controls = |s: &str| !s.chars().any(char::is_control);
+        for rt in [
+            RuntimeIdentity::from_report(&serde_json::json!({"build_id": evil}), "page", 1),
+            RuntimeIdentity::from_header(&format!("zz; build={evil}"), 1),
+        ] {
+            let rt = rt.unwrap();
+            let id = rt.build_id.clone().unwrap();
+            assert!(no_controls(&id), "{id:?}");
+            assert!(id.contains("\\x1b]52"), "{id}");
+            let (b, why) = decide_binding(Some(&clean), &rt);
+            assert_eq!(b, Binding::Illustrative);
+            assert!(no_controls(&why), "{why:?}");
+            assert!(why.contains("\\x1b"), "{why}");
+        }
+        let long = "é".repeat(1000);
+        let rt = RuntimeIdentity::from_report(
+            &serde_json::json!({"head_sha": "éééééééé\x1b", "build_id": long}),
+            "page",
+            1,
+        )
+        .unwrap();
+        assert_eq!(rt.build_id.as_ref().unwrap().chars().count(), MAX_PAGE_TEXT);
+        let (_, why) = decide_binding(Some(&clean), &rt);
+        assert!(why.starts_with("Running build is ééééééé but"), "{why}");
     }
 
     #[test]

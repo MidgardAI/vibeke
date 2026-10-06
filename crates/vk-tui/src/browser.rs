@@ -1990,7 +1990,8 @@ pub fn preview_segs(app: &App, mi: usize, p: &Preview) -> Vec<(String, Style)> {
             if suggested { t.dim() } else { t.bold(t.fg) },
         ));
         if let Some(l) = &p.label {
-            segs.push((format!(" {l}"), text));
+            // Labels come from dev-server output and declarations: never control sequences.
+            segs.push((format!(" {}", vk_proto::text::escape_controls(l)), text));
         }
     }
     if app.machines.len() > 1 {

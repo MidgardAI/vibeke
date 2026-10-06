@@ -2070,7 +2070,13 @@ where
             return EXIT_OK;
         }
     }
-    match client.call("scrollback.forget", params).await {
+    // Execute exactly the plan that was shown: its resolved scope (pane/workspace id, absolute
+    // cutoff) and digest, never the original `@focused` or relative `--before` again. The
+    // server refuses if the scope no longer resolves to that plan.
+    match client
+        .call("scrollback.forget", forget_confirmed_params(&plan))
+        .await
+    {
         Ok(v) => {
             if !g.quiet {
                 println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -2082,6 +2088,19 @@ where
             exit_code_for(&e)
         }
     }
+}
+
+/// The confirmed `scrollback.forget` call for a dry run's result: its canonical `scope` plus
+/// its `plan` digest.
+fn forget_confirmed_params(plan: &Value) -> Value {
+    let mut p = match &plan["scope"] {
+        Value::Object(o) => Value::Object(o.clone()),
+        _ => json!({}),
+    };
+    if let Some(d) = plan["plan"].as_str() {
+        p["plan"] = json!(d);
+    }
+    p
 }
 
 /// `vibeke preview show <handle>`: print the newest screenshot of a preview inline when the
@@ -2298,6 +2317,143 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for c in COMMANDS {
             assert!(seen.insert((c.0, c.1)), "duplicate {} {}", c.0, c.1);
+        }
+    }
+
+    /// Review finding 6: the confirmed call executes the dry run's canonical plan (resolved pane
+    /// id, absolute cutoff, digest), not `@focused`/a relative `--before` evaluated again, so
+    /// a focus change while the prompt is open can't redirect the deletion.
+    #[tokio::test]
+    async fn forget_confirms_the_canonical_plan() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let g = Global {
+            session: "t".into(),
+            machine: None,
+            socket: None,
+            json: Some(false),
+            quiet: true,
+            no_spawn: true,
+            timeout_ms: None,
+        };
+        for (args, scope) in [
+            (
+                json!({"pane": "@focused", "yes": true}),
+                json!({"pane": "PANE-A"}),
+            ),
+            (
+                json!({"before": "7d", "yes": true}),
+                json!({"before": 1_700_000_000_000_i64}),
+            ),
+        ] {
+            let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            let rec = seen.clone();
+            let plan_scope = scope.clone();
+            tokio::spawn(async move {
+                let (rd, mut wr) = tokio::io::split(theirs);
+                let mut lines = BufReader::new(rd).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&l).unwrap();
+                    let result = if req["method"] == "scrollback.forget" {
+                        rec.lock().unwrap().push(req["params"].clone());
+                        json!({"scope": plan_scope, "pane_ids": null, "plan": "fp1-abc",
+                            "dry_run": req["params"]["dry_run"] == true, "panes": 1,
+                            "segments_deleted": 2, "bytes_deleted": 10, "fts_rows_deleted": 5,
+                            "archive_panes_dropped": 1})
+                    } else {
+                        json!({})
+                    };
+                    let mut s = serde_json::to_string(
+                        &json!({"jsonrpc": "2.0", "id": req["id"], "result": result}),
+                    )
+                    .unwrap();
+                    s.push('\n');
+                    wr.write_all(s.as_bytes()).await.unwrap();
+                }
+            });
+            let mut c = Client::new(ours);
+            assert_eq!(forget(&mut c, &g, args.clone()).await, EXIT_OK);
+            let calls = seen.lock().unwrap().clone();
+            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert_eq!(calls[0]["dry_run"], true);
+            let mut want = scope.clone();
+            want["plan"] = json!("fp1-abc");
+            assert_eq!(calls[1], want, "{args}");
+        }
+    }
+
+    /// Review finding 9: page-controlled metadata (an escape-bearing build id inside
+    /// `binding_reason`, the page's URL) is printed escaped in text and image modes, while the
+    /// intentional image-protocol sequences stay intact.
+    #[tokio::test]
+    async fn preview_show_escapes_page_controlled_metadata() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let evil = "\x1b]52;c;cHduZWQ=\x07\x1b[2J\u{9b}31m";
+        let spawn = || {
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            tokio::spawn(async move {
+                let (rd, mut wr) = tokio::io::split(theirs);
+                let mut lines = BufReader::new(rd).lines();
+                while let Ok(Some(l)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&l).unwrap();
+                    let result = match req["method"].as_str().unwrap() {
+                        "screenshot.list" => json!({"screenshots": [{"id": "S9"}], "count": 1}),
+                        "screenshot.get" => json!({"id": "S9", "handle": "s9",
+                            "label": format!("devbox{evil}"),
+                            "url": format!("http://localhost:5173/{evil}"),
+                            "binding": "illustrative",
+                            "binding_reason": format!("Build not verified: build id {evil} is not tied to a checkout state"),
+                            "created_at_ms": 0, "path_on_machine": format!("/state/blobs/{evil}.png"),
+                            "data_b64": "iVBORw0KGgo="}),
+                        _ => json!({}),
+                    };
+                    let mut s = serde_json::to_string(
+                        &json!({"jsonrpc": "2.0", "id": req["id"], "result": result}),
+                    )
+                    .unwrap();
+                    s.push('\n');
+                    wr.write_all(s.as_bytes()).await.unwrap();
+                }
+            });
+            Client::new(ours)
+        };
+        let g = Global {
+            session: "t".into(),
+            machine: None,
+            socket: None,
+            json: Some(false),
+            quiet: false,
+            no_spawn: true,
+            timeout_ms: None,
+        };
+        for mode in [show::Mode::Kitty, show::Mode::Iterm, show::Mode::Text] {
+            let mut c = spawn();
+            let mut out = Vec::new();
+            let code =
+                preview_show_to(&mut c, &g, json!({"preview": "v4"}), mode, true, &mut out).await;
+            assert_eq!(code, EXIT_OK);
+            let text = String::from_utf8_lossy(&out).to_string();
+            // The image protocol's own escapes come first (graphics modes) and are intact.
+            let meta = match mode {
+                show::Mode::Kitty => {
+                    assert!(text.starts_with("\x1b_Ga=T,"), "{text:?}");
+                    let end = text.find("\x1b\\\n").unwrap() + 3;
+                    &text[end..]
+                }
+                show::Mode::Iterm => {
+                    assert!(text.starts_with("\x1b]1337;File=inline=1;"), "{text:?}");
+                    let end = text.find("\x07\n").unwrap() + 2;
+                    &text[end..]
+                }
+                show::Mode::Text => text.as_str(),
+            };
+            assert!(
+                !meta.chars().any(|c| c.is_control() && c != '\n'),
+                "{mode:?}: {meta:?}"
+            );
+            assert!(meta.contains("build id \\x1b]52;c;"), "{meta}");
+            assert!(meta.contains("\\u{9b}31m"), "{meta}");
         }
     }
 

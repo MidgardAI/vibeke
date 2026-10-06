@@ -87,41 +87,57 @@ pub struct Shot {
     pub bytes: u64,
 }
 
+/// Screenshot metadata is shown as text and can carry what the page supplied (title, final
+/// URL, the build id inside `binding_reason`): control characters become visible escapes.
+fn clean(s: &str) -> String {
+    vk_proto::text::escape_controls(s).into_owned()
+}
+
 fn opt(v: &Value, k: &str) -> Option<String> {
     v.get(k)
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(clean)
+}
+
+/// The first `n` characters (never splits one).
+fn prefix(s: &str, n: usize) -> &str {
+    s.char_indices().nth(n).map_or(s, |(i, _)| &s[..i])
 }
 
 impl Shot {
     pub fn parse(v: &Value) -> Option<Shot> {
-        let id = opt(v, "id")?;
+        let id = v
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())?
+            .to_string();
         let code = v.get("code").cloned().unwrap_or(Value::Null);
+        let text = |k: &str| clean(st(v, k));
         Some(Shot {
             id,
-            handle: st(v, "handle").into(),
-            label: st(v, "label").into(),
-            url: opt(v, "final_url").unwrap_or_else(|| st(v, "url").into()),
-            title: st(v, "title").into(),
+            handle: text("handle"),
+            label: text("label"),
+            url: opt(v, "final_url").unwrap_or_else(|| text("url")),
+            title: text("title"),
             created_at_ms: v.get("created_at_ms").and_then(Value::as_i64).unwrap_or(0),
-            binding: st(v, "binding").into(),
-            binding_reason: st(v, "binding_reason").into(),
-            env_kind: v
-                .pointer("/environment/kind")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .into(),
+            binding: text("binding"),
+            binding_reason: text("binding_reason"),
+            env_kind: clean(
+                v.pointer("/environment/kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            ),
             head_sha: opt(&code, "head_sha"),
             dirty_state: opt(&code, "dirty_state"),
             task: opt(v, "task"),
             pane: opt(v, "pane").or_else(|| {
                 v.pointer("/taken_by/pane")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
+                    .map(clean)
             }),
             preview: opt(v, "preview"),
-            path: st(v, "path_on_machine").into(),
+            path: text("path_on_machine"),
             exists: v.get("exists").and_then(Value::as_bool).unwrap_or(true),
             width: v.get("width").and_then(Value::as_u64).unwrap_or(0) as u32,
             height: v.get("height").and_then(Value::as_u64).unwrap_or(0) as u32,
@@ -131,9 +147,9 @@ impl Shot {
 
     pub fn code_text(&self) -> String {
         match (&self.head_sha, self.dirty_state.as_deref()) {
-            (Some(h), Some("dirty")) => format!("{} + uncommitted changes", &h[..h.len().min(8)]),
-            (Some(h), Some("unknown")) => format!("{} (dirty state unknown)", &h[..h.len().min(8)]),
-            (Some(h), _) => h[..h.len().min(8)].to_string(),
+            (Some(h), Some("dirty")) => format!("{} + uncommitted changes", prefix(h, 8)),
+            (Some(h), Some("unknown")) => format!("{} (dirty state unknown)", prefix(h, 8)),
+            (Some(h), _) => prefix(h, 8).to_string(),
             (None, _) => "no checkout".into(),
         }
     }
