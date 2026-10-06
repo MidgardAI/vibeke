@@ -1,0 +1,61 @@
+name: release
+# On a v* tag: build the release artifacts and attach them to a DRAFT release, unsigned.
+# Signing is deliberately not done here: the maintainer downloads the draft's files, runs
+# scripts/release-sign.sh on their own Mac (the secret key never leaves it), uploads the
+# .minisig files and publishes. This workflow needs no signing secret and only the repository's
+# own GITHUB_TOKEN to create the draft. See docs/releases.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-14
+            only: macos
+          - os: ubuntu-latest
+            only: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Tag must match the workspace version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' Cargo.toml | head -n 1)
+          [ "$version" = "$cargo_version" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml version $cargo_version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build
+        run: mise exec -- sh scripts/release-build.sh "$VERSION" --only ${{ matrix.only }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.only }}
+          path: dist/${{ env.VERSION }}/vibeke-*
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release and upload files; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the draft release and upload the unsigned files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Vibeke ${GITHUB_REF_NAME#v}" \
+            --notes "Unsigned draft. The maintainer signs SHA256SUMS and manifest.json locally (scripts/release-sign.sh) and uploads the .minisig files before publishing." \
+            dist/vibeke-*

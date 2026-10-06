@@ -96,10 +96,47 @@ pub fn verify(a: &Artifact) -> Result<()> {
     Ok(())
 }
 
+/// The current release signing key (`keys/vibeke-2026.pub`, minisign key id `5F6E09C78F555F34`).
+/// `scripts/release-sign.sh` reads this line to verify what it signed, so keep it on one line.
+pub const KEY_CURRENT: &str = "RWQ0X1WPxwluX2gFO4vO586PSTdpSfJqrb+xsQnZ2ctND/VDw7VCWx5z";
+/// The next release signing key (`keys/vibeke-next.pub`, key id `69536A23D04E2C7C`), embedded one
+/// release ahead of its first use so a rotation never needs a flag day (09 §10).
+pub const KEY_NEXT: &str = "RWR8LE7QI2pTaSsb4srEFbF1j78fXZzbORy4KGRzHErddJwSJLxwqH3x";
+
+/// An embedded release public key.
+#[derive(Debug, Clone, Copy)]
+pub struct ReleaseKey {
+    pub label: &'static str,
+    /// minisign key id as printed by `minisign` (upper-case hex).
+    pub key_id: &'static str,
+    pub public_key: &'static str,
+}
+
+pub const RELEASE_KEYS: &[ReleaseKey] = &[
+    ReleaseKey {
+        label: "current",
+        key_id: "5F6E09C78F555F34",
+        public_key: KEY_CURRENT,
+    },
+    ReleaseKey {
+        label: "next",
+        key_id: "69536A23D04E2C7C",
+        public_key: KEY_NEXT,
+    },
+];
+
 /// Minisign public keys (base64 key lines, current + next for rotation, 09 §10) trusted to
-/// sign `SHA256SUMS` and the release manifest. No release key exists yet, so this is empty
-/// and no signature can verify; the user adds the keys when they are generated.
-pub const TRUSTED_KEYS: &[&str] = &[];
+/// sign `SHA256SUMS` and the release manifest. The manifest channel uses the same keys.
+pub const TRUSTED_KEYS: &[&str] = &[KEY_CURRENT, KEY_NEXT];
+
+/// `release key 5F6E09C78F555F34 (current) or 69536A23D04E2C7C (next)`, for error messages.
+pub fn expected_keys_hint() -> String {
+    let ids: Vec<String> = RELEASE_KEYS
+        .iter()
+        .map(|k| format!("{} ({})", k.key_id, k.label))
+        .collect();
+    format!("release key {}", ids.join(" or "))
+}
 
 /// The keys signatures are checked against: [`TRUSTED_KEYS`], plus the deterministic test
 /// key in `cfg(test)` builds only (`minisign::testing`), never in a shipped binary.
@@ -113,7 +150,7 @@ pub fn trusted_keys() -> Vec<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureError {
-    /// This build embeds no release public keys, so nothing can be verified.
+    /// No keys were given to verify against (never the case for the embedded release keys).
     NoTrustedKeys,
     /// The signature or checksum file could not be read.
     Io(String),
@@ -127,10 +164,18 @@ impl std::fmt::Display for SignatureError {
             SignatureError::NoTrustedKeys => {
                 write!(
                     f,
-                    "this build embeds no release signing keys (none exist yet)"
+                    "no release signing keys to verify against (expected {})",
+                    expected_keys_hint()
                 )
             }
             SignatureError::Io(e) => write!(f, "{e}"),
+            SignatureError::Invalid(crate::minisign::MinisignError::UnknownKey { key_id }) => {
+                write!(
+                    f,
+                    "signed with untrusted key {key_id}; expected {}",
+                    expected_keys_hint()
+                )
+            }
             SignatureError::Invalid(e) => write!(f, "{e}"),
         }
     }
@@ -169,8 +214,8 @@ pub fn verify_signature_with(
 }
 
 /// Verify the minisign signature `sig` over the checksum file `sums` against
-/// [`trusted_keys`]. With no embedded release key this always refuses, and the opt-in path
-/// (`VIBEKE_ALLOW_UNSIGNED=1`) is the only way to accept artifacts.
+/// [`trusted_keys`] (the embedded current and next release keys). Anything else is refused,
+/// and the opt-in path (`VIBEKE_ALLOW_UNSIGNED=1`) is the only way to accept artifacts.
 pub fn verify_signature(
     sums: &std::path::Path,
     sig: &std::path::Path,
@@ -256,7 +301,7 @@ enum SumSource {
     Sidecar,
 }
 
-fn valid_sha(s: &str) -> bool {
+pub(crate) fn valid_sha(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -312,9 +357,15 @@ pub fn trust_artifact(artifact: &std::path::Path, allow_unsigned: bool) -> Resul
             Err(e) => e.to_string(),
         }
     } else if source == SumSource::Sums {
-        "no SHA256SUMS.minisig next to it".to_string()
+        format!(
+            "no SHA256SUMS.minisig next to it; expected a signature by {}",
+            expected_keys_hint()
+        )
     } else {
-        "checksum came from a sidecar, which no signature covers".to_string()
+        format!(
+            "checksum came from a sidecar, which no signature covers; expected SHA256SUMS signed by {}",
+            expected_keys_hint()
+        )
     };
     if allow_unsigned {
         return Ok((actual, Trust::UnsignedOptIn));
@@ -392,19 +443,72 @@ pub async fn ensure(
     })
 }
 
+/// `bootstrap = "remote-download"` (06 A3): install the version named by the **verified**
+/// release manifest `m` on the remote. The laptop has already checked the manifest's
+/// signature; the remote downloads the file and checks the manifest's sha256 before the atomic
+/// switch. A GitHub `token` (private release repo) reaches the remote only on the stdin of
+/// `sh -s`, never on a command line.
+pub async fn ensure_download(
+    t: &Target,
+    p: &Probe,
+    m: &ReleaseManifest,
+    token: Option<&crate::download::Secret>,
+    upgrade_ok: bool,
+) -> Result<Outcome> {
+    let entry = m
+        .artifact(&p.target())
+        .with_context(|| format!("the release manifest has no {} artifact", p.target()))?;
+    match &p.version {
+        Some(have) if *have == m.version => return Ok(Outcome::AlreadyCurrent),
+        Some(have) if !upgrade_ok => bail!(
+            "{} runs vibeke {have}, the release is {}; rerun with --upgrade (panes survive the upgrade)",
+            t.label,
+            m.version
+        ),
+        _ => {}
+    }
+    if !valid_version(&m.version) || !valid_sha(&entry.sha256) {
+        bail!("invalid version or sha256 in the release manifest");
+    }
+    let (url, octet) =
+        crate::download::resolve_download(&entry.url, token, &crate::download::github_api_base())?;
+    let dir = format!("~/.local/share/vibeke/versions/{}", m.version);
+    let script = crate::download::remote_download_script(
+        &sh_quote(&dir),
+        &url,
+        octet,
+        token.filter(|_| octet),
+        &entry.sha256,
+    )?;
+    let out = t
+        .run("sh -s", Some(script.as_bytes()))
+        .await
+        .context("remote download")?;
+    if !out.contains("staged") {
+        bail!("remote download check failed: {out}");
+    }
+    activate_staged(t, &m.version, &entry.sha256).await?;
+    Ok(if p.version.is_some() {
+        Outcome::Upgraded
+    } else {
+        Outcome::Installed
+    })
+}
+
 fn check_artifact(a: &Artifact) -> Result<()> {
     if !valid_sha(&a.sha256) {
         bail!("invalid sha256 for artifact");
     }
-    if a.version.is_empty()
-        || !a
-            .version
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
-    {
+    if !valid_version(&a.version) {
         bail!("invalid artifact version {:?}", a.version);
     }
     verify(a)
+}
+
+pub(crate) fn valid_version(v: &str) -> bool {
+    !v.is_empty()
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
 }
 
 /// Stage `a` on the remote without switching to it: upload into
@@ -445,7 +549,15 @@ echo staged"#,
 /// `~/.local/bin/vibeke`, prune all but the last 2 versions and check the new binary runs.
 pub async fn activate(t: &Target, a: &Artifact) -> Result<()> {
     check_artifact(a)?;
-    let dir = format!("~/.local/share/vibeke/versions/{}", a.version);
+    activate_staged(t, &a.version, &a.sha256).await
+}
+
+/// [`activate`] for a version already staged on the remote (no local file involved).
+pub async fn activate_staged(t: &Target, version: &str, sha256: &str) -> Result<()> {
+    if !valid_sha(sha256) || !valid_version(version) {
+        bail!("invalid sha256 or version for activation");
+    }
+    let dir = format!("~/.local/share/vibeke/versions/{version}");
     let activate = format!(
         r#"set -e
 V={v}
@@ -467,14 +579,14 @@ mkdir -p ~/.local/bin && ln -sfn ~/.local/share/vibeke/current/vibeke ~/.local/b
 ls -1t versions | tail -n +3 | while read old; do [ "$old" = "$V" ] || rm -rf "versions/$old"; done
 "$HOME/.local/share/vibeke/current/vibeke" --version"#,
         d = sh_quote(&dir),
-        sha = a.sha256,
-        v = sh_quote(&a.version)
+        sha = sha256,
+        v = sh_quote(version)
     );
     let out = t
         .run("sh -s", Some(activate.as_bytes()))
         .await
         .context("activate")?;
-    if !out.contains(&a.version) {
+    if !out.contains(version) {
         bail!("activation check failed: {out}");
     }
     Ok(())
@@ -666,5 +778,92 @@ mod tests {
         assert!(load_self_artifact(f.clone(), "0.1.0".into(), false).is_err());
         let a = load_self_artifact(f, "0.1.0".into(), true).unwrap();
         assert_eq!(a.trust, Trust::SelfHashedOptIn);
+    }
+
+    #[test]
+    fn embedded_release_keys_parse_and_match_their_ids() {
+        use crate::minisign::{PublicKey, key_id_hex};
+        assert_eq!(RELEASE_KEYS.len(), 2);
+        assert_eq!(RELEASE_KEYS[0].label, "current");
+        assert_eq!(RELEASE_KEYS[1].label, "next");
+        assert_eq!(TRUSTED_KEYS, &[KEY_CURRENT, KEY_NEXT]);
+        for k in RELEASE_KEYS {
+            let pk = PublicKey::parse(k.public_key).expect(k.label);
+            assert_eq!(key_id_hex(&pk.key_id), k.key_id, "{}", k.label);
+            assert_eq!(pk.to_base64(), k.public_key);
+        }
+        assert_ne!(KEY_CURRENT, KEY_NEXT);
+        // The published .pub files carry the same keys.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (file, key) in [
+            ("keys/vibeke-2026.pub", KEY_CURRENT),
+            ("keys/vibeke-next.pub", KEY_NEXT),
+        ] {
+            let text = std::fs::read_to_string(root.join(file)).unwrap();
+            assert_eq!(PublicKey::parse(&text).unwrap().to_base64(), key, "{file}");
+        }
+    }
+
+    /// A fixture signed with the test-key path (`minisign::testing`) verifies against the test
+    /// key; the embedded release keys refuse it and the error names them.
+    #[test]
+    fn fixture_signed_with_test_key_verifies_only_against_the_test_key() {
+        let data = b"sums\n";
+        let sig = crate::minisign::testing::sign(data, "vibeke v0.1.0");
+        let test_key = crate::minisign::testing::public_key_b64();
+        assert_eq!(
+            verify_signature_bytes(&[test_key], data, &sig).unwrap(),
+            "vibeke v0.1.0"
+        );
+        let real: Vec<String> = TRUSTED_KEYS.iter().map(|k| k.to_string()).collect();
+        let e = SignatureError::Invalid(verify_signature_bytes_raw(&real, data, &sig));
+        let msg = e.to_string();
+        assert!(msg.contains("untrusted key"), "{msg}");
+        assert!(
+            msg.contains("5F6E09C78F555F34") && msg.contains("69536A23D04E2C7C"),
+            "{msg}"
+        );
+    }
+
+    fn verify_signature_bytes_raw(
+        keys: &[String],
+        data: &[u8],
+        sig: &str,
+    ) -> crate::minisign::MinisignError {
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        crate::minisign::verify(&refs, data, sig).unwrap_err()
+    }
+
+    /// Rotation: a signature by the `next` key is accepted when it is embedded, and refused
+    /// when only the old key is.
+    #[test]
+    fn rotation_accepts_the_next_key() {
+        let data = b"sums\n";
+        let next_sk = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let next_id = crate::minisign::PublicKey::parse(KEY_NEXT).unwrap().key_id;
+        // Stand-in for the user's next key: same key id, a test-controlled secret.
+        let stand_in = crate::minisign::PublicKey::from_parts(next_id, next_sk.verifying_key());
+        let keys = vec![KEY_CURRENT.to_string(), stand_in.to_base64()];
+        let sig = crate::minisign::testing::sign_with(&next_sk, next_id, data, "vibeke v0.2.0");
+        assert!(verify_signature_bytes(&keys, data, &sig).is_ok());
+        assert!(verify_signature_bytes(&[KEY_CURRENT.to_string()], data, &sig).is_err());
+    }
+
+    #[test]
+    fn unsigned_refusal_names_the_expected_keys() {
+        let (_d, f) = dist(false, true, true);
+        let e = format!("{:#}", trust_artifact(&f, false).unwrap_err());
+        assert!(
+            e.contains("5F6E09C78F555F34") && e.contains("(current)"),
+            "{e}"
+        );
+        assert!(
+            e.contains("69536A23D04E2C7C") && e.contains("(next)"),
+            "{e}"
+        );
+        assert!(e.contains("VIBEKE_ALLOW_UNSIGNED=1"), "{e}");
+        // Still refused without a checksum even with the opt-in.
+        let (_d, f) = dist(false, false, true);
+        assert!(trust_artifact(&f, true).is_err());
     }
 }

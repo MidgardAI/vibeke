@@ -6,6 +6,7 @@ pub mod agents;
 pub mod bootstrap;
 pub mod boxlink;
 pub mod dict;
+pub mod download;
 pub mod inbox;
 pub mod link;
 pub mod minisign;

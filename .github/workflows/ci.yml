@@ -16,6 +16,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: mise run ci
       - run: sh scripts/tests/repro-check-test.sh
+      - run: sh scripts/tests/release-sign-test.sh
   web:
     strategy:
       fail-fast: false
