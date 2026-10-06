@@ -630,3 +630,380 @@ fn playwright_chromium() -> Option<PathBuf> {
     }
     None
 }
+
+/// A blocking HTTP/1.1 request to the preview proxy on 127.0.0.1 → (status, head, body).
+fn proxy_get(port: u16, host: &str, path: &str, extra: &str) -> (u16, String, String) {
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{extra}Connection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    let _ = s.read_to_end(&mut out);
+    let t = String::from_utf8_lossy(&out).into_owned();
+    let (head, body) = t.split_once("\r\n\r\n").unwrap_or((&t, ""));
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(0);
+    (status, head.to_string(), body.to_string())
+}
+
+/// B4 end to end with the real binary: a preview declared on the fake remote (a real
+/// `vibeke bridge` behind a fake `ssh`) opened in proxy mode; the one-time link sets the
+/// cookie, the app is reached over the bridge `tcp:` channel with the credential stripped;
+/// no credential / forged host are refused. Mirror mode is off until asked for, and asking
+/// for it while the port is busy locally is a conflict.
+#[test]
+fn proxy_mode_and_mirror_through_bridge() {
+    let mut s = Session::new(
+        "[[remote.machine]]\nlabel = \"fakebox\"\naddress = \"fakebox\"\n\n[preview]\nproxy_port = 0\n",
+    );
+    let ssh = fake_ssh(s.path());
+    s.extra_env = vec![
+        ("VIBEKE_SSH".into(), ssh.to_string_lossy().into_owned()),
+        ("VIBEKE_NO_OPEN".into(), "1".into()),
+    ];
+    let app = http_server("hello-through-the-proxy");
+    s.json(&["server", "status"]);
+    let d = s.json(&[
+        "--machine",
+        "fakebox",
+        "preview",
+        "declare",
+        &app.port.to_string(),
+        "--label",
+        "web",
+        "--path",
+        "/dash",
+    ]);
+    let rh = d["preview"]["handle"].as_str().unwrap().to_string();
+    let target = format!("fakebox/{rh}");
+    // Mirror mode is never on unless explicitly enabled.
+    assert_eq!(s.json(&["preview", "status"])["mirrors"], json!([]));
+
+    let r = s.json(&["preview", "open", &target, "--proxy", "--no-open"]);
+    assert_eq!(r["opened_in"], "proxy", "{r}");
+    assert_eq!(r["opened"], false);
+    assert_eq!(r["machine"], "fakebox");
+    let host = r["host"].as_str().unwrap().to_string();
+    assert!(
+        host.starts_with(&format!("{rh}-fakebox")) && host.ends_with(".vibeke.localhost"),
+        "{host}"
+    );
+    let port = r["proxy_port"].as_u64().unwrap() as u16;
+    let authority = format!("{host}:{port}");
+    let open_url = r["open_url"].as_str().unwrap().to_string();
+    let path = open_url.split_once(&authority).unwrap().1.to_string();
+    assert!(path.starts_with("/dash?vk_token="), "{path}");
+
+    // No credential, forged Host: refused, nothing reaches the app.
+    assert_eq!(proxy_get(port, &authority, "/dash", "").0, 401);
+    assert_eq!(
+        proxy_get(port, &format!("evil.vibeke.localhost:{port}"), "/", "").0,
+        421
+    );
+    assert_eq!(
+        proxy_get(port, &format!("127.0.0.1:{port}"), "/", "").0,
+        421
+    );
+    if let Ok(out) = Command::new("curl")
+        .args([
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-m",
+            "5",
+            "--resolve",
+            &format!("{host}:{port}:127.0.0.1"),
+            &format!("http://{authority}/dash"),
+        ])
+        .output()
+    {
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "401", "{out:?}");
+    }
+    assert!(
+        app.seen.lock().unwrap().is_empty(),
+        "nothing reached the app"
+    );
+
+    // The one-time link → 303 + host-only HttpOnly SameSite=Strict cookie.
+    let (st, head, _) = proxy_get(port, &authority, &path, "");
+    assert_eq!(st, 303, "{head}");
+    let lower = head.to_ascii_lowercase();
+    assert!(lower.contains("location: /dash\r\n"), "{head}");
+    let cookie = lower
+        .lines()
+        .find_map(|l| l.strip_prefix("set-cookie: __host-vk_preview="))
+        .unwrap_or_else(|| panic!("{head}"))
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(lower.contains("httponly") && lower.contains("samesite=strict"));
+    // Replay of the link: refused.
+    assert_eq!(proxy_get(port, &authority, &path, "").0, 401);
+    // With the cookie: the app on "fakebox", over the bridge.
+    let ck = format!("Cookie: __Host-vk_preview={cookie}; theme=dark\r\n");
+    let (st, head, body) = proxy_get(port, &authority, "/dash", &ck);
+    assert_eq!(st, 200, "{head}\n{}", s.log_tail());
+    assert!(body.contains("hello-through-the-proxy"), "{body}");
+    let seen = app.seen.lock().unwrap().clone();
+    assert!(seen.iter().any(|l| l.starts_with("GET /dash ")), "{seen:?}");
+    let status = s.json(&["preview", "status"]);
+    let link = status["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["machine"] == "fakebox")
+        .cloned()
+        .unwrap_or_else(|| panic!("no fakebox link: {status}"));
+    assert!(link["bytes_in"].as_u64().unwrap() > 100, "{link}");
+    assert_eq!(status["proxy"]["routes"][0]["host"], json!(host));
+    // `preview url` reports the origin without a credential.
+    let u = s.json(&["preview", "url", &target]);
+    assert_eq!(u["proxy_url"], json!(format!("http://{authority}/dash")));
+    // The token never lands in the event log.
+    let ev = s.json(&[
+        "api",
+        "call",
+        "events.read",
+        r#"{"types":["preview.opened"]}"#,
+    ]);
+    assert!(!ev.to_string().contains("vk_token"), "{ev}");
+
+    // Real Chromium (gated; temp profile, never the user's): the one-time link is exchanged for
+    // the cookie and the redirected navigation reaches the app over the bridge.
+    if std::env::var("VIBEKE_BROWSER_TESTS").is_ok_and(|v| v == "1")
+        && let Some(chromium) = playwright_chromium()
+    {
+        let r = s.json(&["preview", "open", &target, "--proxy", "--no-open"]);
+        let url = r["open_url"]
+            .as_str()
+            .unwrap()
+            .replace("/dash?", "/chromium?");
+        let profile = tempfile::tempdir().unwrap();
+        let mut child = Command::new(&chromium)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--disable-background-networking",
+                &format!("--user-data-dir={}", profile.path().display()),
+                &url,
+            ])
+            .spawn()
+            .unwrap();
+        let t0 = Instant::now();
+        while !app
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("GET /chromium "))
+        {
+            if t0.elapsed() > Duration::from_secs(30) {
+                let _ = child.kill();
+                panic!(
+                    "Chromium never got through the proxy: {:?}\n{}",
+                    s.json(&["preview", "status"])["proxy"],
+                    s.log_tail()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    // Mirror: the app's port is in use on this machine (the "remote" is this host) → conflict.
+    let e = s.try_json(&["preview", "mirror", &target]).unwrap_err();
+    assert!(e.contains("conflict") && e.contains("busy"), "{e}");
+    assert_eq!(s.json(&["preview", "status"])["mirrors"], json!([]));
+
+    let _ = s
+        .cmd(&["--machine", "fakebox", "server", "stop", "--kill-panes"])
+        .output();
+}
+
+fn git(repo: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+/// Task `[previews]` (06 B2 + 05 §6): `task new` declares the repo's previews on ports from
+/// the task's lease before anything listens; a server on the leased port turns the preview
+/// up; finishing the task retires them.
+#[test]
+fn task_previews_with_port_leases() {
+    let s = Session::new("");
+    let repo = s.path().join("repo");
+    std::fs::create_dir_all(repo.join(".vibeke")).unwrap();
+    std::fs::write(
+        repo.join(".vibeke/task.toml"),
+        "[ports]\nenv = { PORT = 0, API_PORT = 2 }\n\n[previews]\nweb = { port_env = \"PORT\", path = \"/app\" }\napi = { port_env = \"API_PORT\", label = \"api\" }\nevil = { port = 22 }\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("README"), "x\n").unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    let root = s.path().join("wt");
+    let r = s.json(&[
+        "task",
+        "new",
+        "Fix login",
+        "--repo",
+        &repo.to_string_lossy(),
+        "--root",
+        &root.to_string_lossy(),
+    ]);
+    let task = &r["task"];
+    let range = task["port_range"].as_array().unwrap();
+    let base = range[0].as_u64().unwrap();
+    let previews = r["previews"].as_array().unwrap();
+    assert_eq!(previews.len(), 2, "{r}");
+    let by = |n: &str| previews.iter().find(|p| p["name"] == n).cloned().unwrap();
+    assert_eq!(by("web")["port"], json!(base));
+    assert_eq!(
+        by("web")["url"],
+        json!(format!("http://localhost:{base}/app"))
+    );
+    assert_eq!(by("api")["port"], json!(base + 2));
+    assert_eq!(by("api")["label"], "api");
+    assert!(
+        r["preview_warnings"].to_string().contains("port = 22"),
+        "{r}"
+    );
+    let handle = task["handle"].as_str().unwrap().to_string();
+    let listed = s.json(&["preview", "list", "--task", &handle]);
+    assert_eq!(listed["previews"].as_array().unwrap().len(), 2, "{listed}");
+    // The dev server comes up on the leased port → the preview goes up.
+    let _srv = std::net::TcpListener::bind(("127.0.0.1", base as u16)).unwrap();
+    s.wait_preview("task preview up", |p| {
+        p["port"] == json!(base) && p["status"] == "up"
+    });
+    // Finishing the task retires its previews.
+    s.json(&["task", "finish", &handle]);
+    let t0 = Instant::now();
+    while s
+        .previews()
+        .iter()
+        .any(|p| p["task_handle"] == json!(handle))
+    {
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", s.previews());
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn installed_firefox() -> Option<PathBuf> {
+    let mut c: Vec<PathBuf> = vec![];
+    if let Some(p) = std::env::var_os("VIBEKE_FIREFOX") {
+        c.push(PathBuf::from(p));
+    }
+    c.push("/Applications/Firefox.app/Contents/MacOS/firefox".into());
+    if let Some(path) = std::env::var_os("PATH") {
+        c.extend(std::env::split_paths(&path).map(|d| d.join("firefox")));
+    }
+    c.into_iter().find(|p| p.is_file())
+}
+
+/// Firefox window profile (06 B3.4), gated: needs `VIBEKE_BROWSER_TESTS=1` **and** an
+/// installed Firefox. Headless Firefox on a Vibeke-state profile (`<state>/browser-profiles/
+/// fakebox-firefox`, `user.js` with the SOCKS route) loads a remote preview through the
+/// peer-checked SOCKS listener and the fake bridge. The user's own Firefox profiles are never
+/// touched (explicit `-profile`, `-new-instance`).
+#[test]
+fn firefox_window_profile_routes_over_socks() {
+    if std::env::var("VIBEKE_BROWSER_TESTS").ok().as_deref() != Some("1") {
+        eprintln!("VIBEKE_BROWSER_TESTS != 1; skipping");
+        return;
+    }
+    let Some(ff) = installed_firefox() else {
+        eprintln!("Firefox not installed; skipping");
+        return;
+    };
+    let mut s = Session::new(&format!(
+        "[[remote.machine]]\nlabel = \"fakebox\"\naddress = \"fakebox\"\n\n[preview]\nprofile_browser = \"firefox\"\nbrowser = \"{}\"\n",
+        ff.display()
+    ));
+    let ssh = fake_ssh(s.path());
+    s.extra_env = vec![
+        ("VIBEKE_SSH".into(), ssh.to_string_lossy().into_owned()),
+        ("VIBEKE_TEST_HOOKS".into(), "1".into()),
+    ];
+    let app = http_server("hello-firefox");
+    let d = s.json(&[
+        "--machine",
+        "fakebox",
+        "preview",
+        "declare",
+        &app.port.to_string(),
+    ]);
+    let rh = d["preview"]["handle"].as_str().unwrap().to_string();
+    let r = s.json(&[
+        "preview",
+        "open",
+        &format!("fakebox/{rh}"),
+        "--window",
+        "--headless",
+    ]);
+    assert_eq!(r["browser_kind"], "firefox", "{r}");
+    assert_eq!(r["profile"], "fakebox-firefox");
+    let dir = PathBuf::from(r["profile_dir"].as_str().unwrap());
+    assert!(dir.starts_with(s.path()), "{}", dir.display());
+    let prefs = std::fs::read_to_string(dir.join("user.js")).unwrap();
+    let socks = r["socks_port"].as_u64().unwrap();
+    assert!(
+        prefs.contains(&format!("network.proxy.socks_port\", {socks}")),
+        "{prefs}"
+    );
+    let pid = r["pid"].as_u64().unwrap() as i32;
+    let t0 = Instant::now();
+    while !app
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.starts_with("GET / "))
+    {
+        if t0.elapsed() > Duration::from_secs(40) {
+            // SAFETY: plain kill of the browser the server launched for this test.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            panic!(
+                "Firefox never fetched through the route: {}\n{}",
+                s.json(&["preview", "status"]),
+                s.log_tail()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // SAFETY: plain kill of the browser the server launched for this test.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let _ = s
+        .cmd(&["--machine", "fakebox", "server", "stop", "--kill-panes"])
+        .output();
+}

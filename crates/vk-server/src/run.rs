@@ -1024,6 +1024,16 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
         server.commit(&mut c, tx).map_err(internal)?;
     }
+    // Task `[previews]` with ports from the lease (06 B2): declared before anything starts.
+    let task_previews = crate::preview_fabric::declare_task_previews(
+        server,
+        ctx,
+        &task,
+        &pane.id,
+        &checkout.path,
+        lease.as_ref(),
+        p,
+    );
     // Setup script in the background (05 §7).
     let script = checkout
         .path
@@ -1121,7 +1131,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         .map(|c| c.rel.clone())
         .collect();
     Ok(
-        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings}),
+        json!({"task": task, "workspace": ws, "panes": [pane], "runs": runs, "copied": copied, "warnings": checkout.warnings, "previews": task_previews["previews"], "preview_warnings": task_previews["warnings"]}),
     )
 }
 
@@ -1162,6 +1172,8 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
         vk_tasks::PortPool::parse("20000-29999", 10).map_err(|e| invalid(e.to_string()))?,
     );
     let _ = leases.release(&task.id);
+    // The lease is gone, so are the task's previews (06 B2 lifecycle).
+    crate::preview_fabric::retire_task_previews(server, &task.id);
     crate::sandbox::teardown(server, &task.id);
     let mut job = None;
     let kind = task.checkout.clone().unwrap_or_else(|| "worktree".into());
