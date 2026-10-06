@@ -5,6 +5,13 @@
 //! answered with `{outcome: {outcome: "selected", optionId}}`, `fs/read_text_file` /
 //! `fs/write_text_file` served inside the session cwd, `session/cancel` → interrupt.
 //!
+//! **fs requests.** The path is resolved completely, final component included: anything that
+//! resolves outside the session cwd (through `..`, a symlinked directory or a symlinked file)
+//! is refused, and the file is opened with `O_NOFOLLOW` so a component swapped for a symlink
+//! after the check fails instead of being followed. Side effects run only for live requests:
+//! a journal replay rebuilds state without touching the filesystem, and a completed write is
+//! recorded (`Record::auto_done`) so reconciling an unanswered one never repeats it.
+//!
 //! **Reconcile.** A restarted server replays the journal; when the ring no longer reaches the
 //! session start (`gap`) and the agent advertises `loadSession`, the adapter sends
 //! `session/load`: the agent replays the conversation as `session/update`s, which rebuild the
@@ -41,6 +48,8 @@ pub struct Acp {
     /// toolCallId → (title, rawInput, kind).
     tools: HashMap<String, (String, Value, String)>,
     turn_text: String,
+    /// Native refs of `fs/write_text_file` requests already carried out.
+    done: HashSet<String>,
 }
 
 fn id_str(id: &Value) -> String {
@@ -69,6 +78,7 @@ impl Acp {
             auto: vec![],
             tools: HashMap::new(),
             turn_text: String::new(),
+            done: HashSet::new(),
         }
     }
 
@@ -90,28 +100,24 @@ impl Acp {
         }
     }
 
-    fn within_cwd(&self, path: &str) -> Option<std::path::PathBuf> {
-        let p = std::path::Path::new(path);
-        let p = if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.cwd.join(p)
-        };
-        let root = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
-        let parent = p.parent()?.canonicalize().ok()?;
-        let full = parent.join(p.file_name()?);
-        full.starts_with(&root).then_some(full)
+    /// The physical path of `path` (relative to the session cwd) when it stays inside the cwd:
+    /// every component resolved, the final one included. A missing final component is allowed
+    /// for writes only (its parent is resolved; a dangling symlink is refused).
+    fn resolve(&self, path: &str, write: bool) -> Option<std::path::PathBuf> {
+        resolve_within(&self.cwd, path, write)
     }
 
-    /// The response to an automatic request (`fs/*`, unsupported methods).
-    fn auto_response(&self, id: &Value, method: &str, p: &Value) -> Value {
+    /// The response to an automatic request (`fs/*`, unsupported methods), carrying out its
+    /// side effect. Live requests only (never during a journal replay).
+    fn auto_response(&self, cx: &mut Cx, id: &Value, method: &str, p: &Value) -> Value {
         let err = |code: i64, msg: &str| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": msg}});
+        let native_ref = format!("rpc:{}", id_str(id));
         match method {
             "fs/read_text_file" => {
                 let path = p.get("path").and_then(Value::as_str).unwrap_or("");
                 match self
-                    .within_cwd(path)
-                    .and_then(|f| std::fs::read_to_string(f).ok())
+                    .resolve(path, false)
+                    .and_then(|f| read_nofollow(&f).ok())
                 {
                     Some(text) => {
                         let line = p.get("line").and_then(Value::as_u64);
@@ -131,10 +137,15 @@ impl Acp {
                 }
             }
             "fs/write_text_file" => {
+                if self.done.contains(&native_ref) {
+                    // Carried out before a restart; the response was never written.
+                    return json!({"jsonrpc": "2.0", "id": id, "result": null});
+                }
                 let path = p.get("path").and_then(Value::as_str).unwrap_or("");
                 let content = p.get("content").and_then(Value::as_str).unwrap_or("");
-                match self.within_cwd(path) {
-                    Some(f) if std::fs::write(&f, content).is_ok() => {
+                match self.resolve(path, true) {
+                    Some(f) if write_nofollow(&f, content.as_bytes()).is_ok() => {
+                        cx.auto_done(native_ref);
                         json!({"jsonrpc": "2.0", "id": id, "result": null})
                     }
                     _ => err(-32002, "write refused: outside the session cwd"),
@@ -440,8 +451,15 @@ impl Adapter for Acp {
             }
             (Some(m), Some(id)) => {
                 let p = v.get("params").cloned().unwrap_or(Value::Null);
-                self.auto.push((id.clone(), m.to_string(), p.clone()));
-                cx.write(self.auto_response(id, m, &p));
+                if !self.auto.iter().any(|(i, _, _)| i == id) {
+                    self.auto.push((id.clone(), m.to_string(), p.clone()));
+                }
+                // A replayed request only rebuilds state: its response may follow in the
+                // journal, and `reconcile` answers the ones that stay unanswered.
+                if cx.live {
+                    let r = self.auto_response(cx, id, m, &p);
+                    cx.write(r);
+                }
             }
             _ => {}
         }
@@ -568,7 +586,8 @@ impl Adapter for Acp {
             );
         }
         for (id, m, p) in self.auto.clone() {
-            cx.write(self.auto_response(&id, &m, &p));
+            let r = self.auto_response(cx, &id, &m, &p);
+            cx.write(r);
         }
     }
 
@@ -579,4 +598,78 @@ impl Adapter for Acp {
     fn busy(&self) -> bool {
         self.busy
     }
+
+    fn set_auto_done(&mut self, done: &[String]) {
+        self.done = done.iter().cloned().collect();
+    }
+}
+
+/// `path` resolved under `root` (see [`Acp::resolve`]).
+pub(crate) fn resolve_within(
+    root: &std::path::Path,
+    path: &str,
+    write: bool,
+) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+    let p = Path::new(path);
+    let p = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
+    let root = root.canonicalize().ok()?;
+    let full = match std::fs::symlink_metadata(&p) {
+        // Exists (a symlink included): resolve every component.
+        Ok(_) => p.canonicalize().ok()?,
+        Err(e) if write && e.kind() == std::io::ErrorKind::NotFound => {
+            let name = match p.components().next_back()? {
+                Component::Normal(n) => n.to_os_string(),
+                _ => return None,
+            };
+            p.parent()?.canonicalize().ok()?.join(name)
+        }
+        Err(_) => return None,
+    };
+    if !full.starts_with(&root) {
+        return None;
+    }
+    // The resolved path must not itself be a symlink (it was swapped since).
+    match std::fs::symlink_metadata(&full) {
+        Ok(m) if m.file_type().is_symlink() || m.is_dir() => None,
+        Ok(_) => Some(full),
+        Err(_) if write => Some(full),
+        Err(_) => None,
+    }
+}
+
+fn read_nofollow(path: &std::path::Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut s = String::new();
+    f.read_to_string(&mut s)?;
+    Ok(s)
+}
+
+fn write_nofollow(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o644)
+        .open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    f.set_len(0)?;
+    f.write_all(bytes)
 }

@@ -180,6 +180,12 @@ mod tests {
         );
         assert!(t0.elapsed() >= std::time::Duration::from_millis(200));
         drop(held);
-        assert!(p.try_lock_state().unwrap().is_some());
+        // Not `try_lock_state`: a process forked by a concurrent test holds a duplicate of the
+        // descriptor (and so the flock) until its exec closes it (O_CLOEXEC), briefly.
+        assert!(
+            p.lock_state(std::time::Duration::from_secs(5))
+                .unwrap()
+                .is_some()
+        );
     }
 }

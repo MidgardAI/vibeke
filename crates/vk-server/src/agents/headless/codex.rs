@@ -36,8 +36,6 @@ pub struct Codex {
     /// item id → (tool, input), from `item/started`.
     items: HashMap<String, (String, Value)>,
     last_msg: Option<String>,
-    /// Prompts sent as follow-ups wait for the running turn.
-    follow: Vec<String>,
     identified: bool,
 }
 
@@ -65,7 +63,6 @@ impl Codex {
             auto: vec![],
             items: HashMap::new(),
             last_msg: None,
-            follow: vec![],
             identified: est,
         }
     }
@@ -464,10 +461,6 @@ impl Adapter for Codex {
                             }
                         }
                         cx.render(format!("[{status}]\n› "));
-                        if !self.follow.is_empty() {
-                            let next = self.follow.remove(0);
-                            let _ = self.prompt(cx, &next, PromptMode::Send);
-                        }
                     }
                     "thread/tokenUsage/updated" => {
                         let t = p
@@ -556,10 +549,12 @@ impl Adapter for Codex {
         let input = json!([{"type": "text", "text": text}]);
         if self.busy {
             match (mode, self.turn.clone()) {
+                // Follow-ups wait in the session's durable queue (`Record::queued`), which
+                // sends them as new turns once this one ends.
                 (PromptMode::FollowUp, _) => {
-                    self.follow.push(text.to_string());
-                    cx.render(format!("› (queued) {text}\n"));
-                    return Ok(());
+                    return Err(
+                        "a turn is in progress; the follow-up is queued by the session".into(),
+                    );
                 }
                 (_, Some(turn)) => {
                     let id = self.next;
@@ -679,5 +674,9 @@ impl Adapter for Codex {
 
     fn busy(&self) -> bool {
         self.busy
+    }
+
+    fn native_follow_up(&self) -> bool {
+        false
     }
 }

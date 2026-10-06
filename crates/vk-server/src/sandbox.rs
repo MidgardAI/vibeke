@@ -732,6 +732,93 @@ pub fn wrap_spawn(
     Ok((prepared.argv, prepared.env, iso))
 }
 
+/// Isolation of a headless launch (`agent.start {mode: "headless", isolate, network}`, 13 §3),
+/// prepared before its pane exists: the run-scoped box is created under `pane:<pane_id>` and
+/// the pipe-mode spawn of that pane runs inside it ([`wrap_run_spawn`]), exactly like a PTY
+/// agent's ad-hoc box. A pane in a contained task is wrapped by the task's box already;
+/// asking for the host there, or for a network profile without an isolation level, is refused
+/// rather than run on the host unrestricted.
+pub async fn prepare_headless(
+    server: &Arc<Server>,
+    pane_id: &str,
+    ws_task: Option<&str>,
+    cwd: &str,
+    harness: &str,
+    opts: &LaunchOpts,
+) -> Result<(), vk_proto::rpc::RpcError> {
+    let contained = box_for_spawn(server, ws_task, cwd).is_some_and(|b| b.task.is_some())
+        || failed_for_spawn(server, ws_task, cwd).is_some();
+    if contained {
+        if opts.isolate == Some(IsolationLevel::Host) {
+            return Err(invalid(
+                "this workspace is sandboxed; an agent in it cannot run on the host",
+            ));
+        }
+        return Ok(());
+    }
+    if opts.yolo {
+        return Err(err(
+            ErrorKind::Unsupported,
+            "yolo is not available for headless runs (their approvals are answered through Vibeke)",
+        ));
+    }
+    let level = opts.isolate.unwrap_or(IsolationLevel::Host);
+    if level == IsolationLevel::Host {
+        if opts.network.is_some() {
+            return Err(invalid(
+                "a network profile needs an isolation level (isolate); refusing to run on the host unrestricted",
+            ));
+        }
+        return Ok(());
+    }
+    let cfg = load_cfg();
+    let checkout = vk_tasks::repo_root(Path::new(cwd))
+        .map(|r| r.worktree_root)
+        .unwrap_or_else(|| PathBuf::from(cwd));
+    let req = IsoRequest {
+        level,
+        network: opts.network.unwrap_or(cfg.network_profile()),
+        yolo: false,
+        harnesses: vec![harness.to_string()],
+        local_ports: cfg.sandbox.local_ports.clone(),
+        image: cfg.container.image.clone(),
+        proxy_port: None,
+        ..Default::default()
+    };
+    prepare_box(server, &format!("pane:{pane_id}"), None, &checkout, req).await?;
+    Ok(())
+}
+
+/// Wrap the pipe-mode spawn of a pane that has a run-scoped box ([`prepare_headless`]);
+/// `None` when it has none. Must not lock `core`.
+pub fn wrap_run_spawn(
+    server: &Arc<Server>,
+    pane_id: &str,
+    cwd: &str,
+    argv: &[String],
+    env: Vec<(String, String)>,
+) -> anyhow::Result<Option<WrappedSpawn>> {
+    let Some(b) = server.sandbox.get(&format!("pane:{pane_id}")) else {
+        return Ok(None);
+    };
+    let prepared = b.runner.runner().prepare(SpawnRequest {
+        pane_id: pane_id.to_string(),
+        argv: argv.to_vec(),
+        cwd: PathBuf::from(cwd),
+        env,
+    })?;
+    if let Some(sock) = &prepared.broker_socket {
+        start_broker(server, pane_id, sock);
+        if let Some(l) = link(server, &b.key) {
+            l.add_pane(pane_id);
+        }
+    }
+    let mut iso = b.isolation.clone();
+    iso.scope = "run".into();
+    iso.visible_roots = prepared.visible_roots.clone();
+    Ok(Some((prepared.argv, prepared.env, iso)))
+}
+
 // ---- broker (13 §4.1) -------------------------------------------------------------------------
 
 fn start_broker(server: &Arc<Server>, pane_id: &str, path: &Path) {

@@ -546,9 +546,19 @@ impl Server {
         };
         // Headless harnesses run under a pipe-mode holder (01 §1.2).
         let (mode, argv) = pane::holder_mode(argv);
-        // Execution isolation (13): a sandboxed task's panes get a wrapped command and env.
-        let (argv, env, isolation) = sandbox::wrap_spawn(self, pane_id, &cwd, argv, env, ws_task)
-            .context("prepare isolated spawn")?;
+        // Execution isolation (13): a sandboxed task's panes get a wrapped command and env; an
+        // isolated headless run spawns inside the run-scoped box prepared for its pane.
+        let run_box = if mode == vk_proto::holder::Mode::Pipe {
+            sandbox::wrap_run_spawn(self, pane_id, &cwd, argv, env.clone())
+                .context("prepare isolated spawn")?
+        } else {
+            None
+        };
+        let (argv, env, isolation) = match run_box {
+            Some(w) => w,
+            None => sandbox::wrap_spawn(self, pane_id, &cwd, argv, env, ws_task)
+                .context("prepare isolated spawn")?,
+        };
         let spec = SpawnSpec {
             pane_id: pane_id.to_string(),
             socket: socket.clone(),
@@ -722,7 +732,34 @@ impl Server {
         title: Option<String>,
         created_by: &str,
     ) -> Result<Pane> {
-        let id = ulid();
+        self.new_pane_as(
+            c,
+            tx,
+            ws,
+            tab_id,
+            tab_handle,
+            cwd,
+            command,
+            title,
+            created_by,
+            ulid(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_pane_as(
+        self: &Arc<Self>,
+        c: &mut Core,
+        tx: &mut Tx,
+        ws: &Workspace,
+        tab_id: &str,
+        tab_handle: &str,
+        cwd: &str,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        created_by: &str,
+        id: String,
+    ) -> Result<Pane> {
         let handle = c.next_pane_handle(&ws.handle);
         let (cols, rows) = (80, 24);
         let argv = command.unwrap_or_else(|| shell_argv(&self.opts));
@@ -827,7 +864,7 @@ impl Server {
             json!({"workspace": ws.id}),
             json!({"cwd": cwd}),
         );
-        let tab = self.tab_in(&mut c, &mut tx, &ws, None, cwd, command)?;
+        let tab = self.tab_in(&mut c, &mut tx, &ws, None, cwd, command, None)?;
         let pane_id = tab.focused_pane.clone().unwrap_or_default();
         let pane = tx
             .panes
@@ -851,6 +888,7 @@ impl Server {
         title: Option<String>,
         cwd: &str,
         command: Option<Vec<String>>,
+        pane_id: Option<String>,
     ) -> Result<Tab> {
         let id = ulid();
         let number = c.next_tab_number(&ws.id);
@@ -861,7 +899,18 @@ impl Server {
             .fold(0.0, f64::max)
             + 1.0;
         let tab_handle = format!("{}:t{number}", ws.handle);
-        let pane = self.new_pane(c, tx, ws, &id, &tab_handle, cwd, command, None, "user")?;
+        let pane = self.new_pane_as(
+            c,
+            tx,
+            ws,
+            &id,
+            &tab_handle,
+            cwd,
+            command,
+            None,
+            "user",
+            pane_id.unwrap_or_else(ulid),
+        )?;
         let tab = Tab {
             id: id.clone(),
             handle: tab_handle,
@@ -894,13 +943,27 @@ impl Server {
         command: Option<Vec<String>>,
         focus_client: Option<&str>,
     ) -> Result<(Tab, Pane)> {
+        self.create_tab_as(ws_id, cwd, title, command, focus_client, None)
+    }
+
+    /// [`Self::create_tab`] whose pane gets a pre-chosen id (an isolated headless run prepares
+    /// its run-scoped sandbox under that id before the pane spawns).
+    pub fn create_tab_as(
+        self: &Arc<Self>,
+        ws_id: &str,
+        cwd: Option<&str>,
+        title: Option<String>,
+        command: Option<Vec<String>>,
+        focus_client: Option<&str>,
+        pane_id: Option<String>,
+    ) -> Result<(Tab, Pane)> {
         let mut c = self.core.lock().unwrap();
         let ws = c.ws(ws_id).cloned().context("workspace not found")?;
         let cwd = cwd
             .map(str::to_string)
             .unwrap_or_else(|| ws.root_path.clone());
         let mut tx = Tx::new();
-        let tab = self.tab_in(&mut c, &mut tx, &ws, title, &cwd, command)?;
+        let tab = self.tab_in(&mut c, &mut tx, &ws, title, &cwd, command, pane_id)?;
         let pane = tx
             .panes
             .iter()
