@@ -37,6 +37,8 @@ fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
         session: std::env::var("VIBEKE_SESSION").unwrap_or_else(|_| "default".into()),
         ..Default::default()
     };
+    // `vibeke import herdr --session` uses `--session` as a plain flag (08 §12).
+    let importing = args.first().map(String::as_str) == Some("import");
     let mut i = 0;
     while i < args.len() {
         let take = |args: &mut Vec<String>, i: usize| -> Result<String, String> {
@@ -48,6 +50,7 @@ fn parse_global(args: &mut Vec<String>) -> Result<Global, String> {
             Ok(v)
         };
         match args[i].as_str() {
+            "--session" if importing => i += 1,
             "--session" => g.session = take(args, i)?,
             "--machine" => g.machine = Some(take(args, i)?),
             "--socket" => g.socket = Some(PathBuf::from(take(args, i)?)),
@@ -149,8 +152,12 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("machine") => remote::machine_cmd(&g, &args[1..]),
-        Some("debug") if args.get(1).map(String::as_str) == Some("latency") => debug::latency(&g, &args[2..]).await,
-        Some("debug") if args.get(1).map(String::as_str) == Some("bandwidth") => debug::bandwidth(&g, &args[2..]).await,
+        Some("debug") if args.get(1).map(String::as_str) == Some("latency") => {
+            debug::latency(&g, &args[2..]).await
+        }
+        Some("debug") if args.get(1).map(String::as_str) == Some("bandwidth") => {
+            debug::bandwidth(&g, &args[2..]).await
+        }
         Some("api") if args.get(1).map(String::as_str) == Some("call") => {
             let Some(method) = args.get(2) else {
                 eprintln!("vibeke api call <method> [json]");
