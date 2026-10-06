@@ -453,6 +453,36 @@ fn browser_pane_end_to_end_with_fake_chromium() {
         Duration::from_secs(10),
     );
 
+    // The pane's screenshot action records through the one capture path (06 B6/B8): a
+    // `screenshot` record with `environment.kind = local_pane`, attributed to the source pane.
+    s.json(&["browser", "command", &bp, "screenshot"]);
+    let t0 = Instant::now();
+    let shot = loop {
+        let l = s.json(&["screenshot", "list"]);
+        if let Some(x) = l["screenshots"].as_array().and_then(|a| a.first()).cloned() {
+            break x;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "no screenshot: {l}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(shot["environment"]["kind"], "local_pane", "{shot}");
+    assert_eq!(shot["environment"]["fresh_context"], false, "{shot}");
+    assert_eq!(shot["url"], json!(url), "{shot}");
+    assert_eq!(shot["pane"], json!(src), "{shot}");
+    assert!(shot["handle"].as_str().unwrap().starts_with('s'), "{shot}");
+    assert!(
+        shot["label"].as_str().unwrap().contains("browser pane"),
+        "{shot}"
+    );
+    r.state(
+        |st| {
+            st.notice
+                .as_deref()
+                .is_some_and(|n| n.starts_with("screenshot s"))
+        },
+        Duration::from_secs(10),
+    );
+
     // Open in window (06 B3.3): the headless browser on the profile closes, a window process
     // takes the profile, the pane shows "windowed"; back to the pane relaunches headless.
     let launches = |l: &[Value]| l.iter().filter(|v| v.get("argv").is_some()).count();

@@ -1442,10 +1442,10 @@ pub fn command(server: &Arc<Server>, pane: &str, cmd: BrowserCmd, key_releases: 
         }
         BrowserCmd::Screenshot => {
             let server = server.clone();
-            tokio::task::spawn_blocking(move || {
-                let msg = match screenshot(&server, &t) {
-                    Ok(p) => format!("screenshot saved: {}", p.display()),
-                    Err(e) => format!("screenshot failed: {e:#}"),
+            tokio::spawn(async move {
+                let msg = match screenshot(&server, &t).await {
+                    Ok(m) => format!("screenshot {} recorded · {}", m.handle, m.label),
+                    Err(e) => format!("screenshot failed: {e}"),
                 };
                 let mut st = t.st.lock().unwrap();
                 st.notice = Some(msg);
@@ -1471,19 +1471,68 @@ fn history_step(page: &Page, back: bool) {
     }
 }
 
-/// Pane screenshot (B6 groundwork; `environment = LocalPane`). Metadata/evidence is Stage 4.
-fn screenshot(server: &Arc<Server>, t: &Arc<Target>) -> Result<PathBuf> {
-    let page = t.page().ok_or_else(|| anyhow!("the page is not running"))?;
-    let png = page.capture_screenshot(true, 100)?;
-    let dir = server.paths.state.join("screenshots");
-    std::fs::create_dir_all(&dir)?;
-    let ts = vk_store::now_ms();
-    let path = dir.join(format!(
-        "pane-{}-{ts}.png",
-        &t.pane[t.pane.len().saturating_sub(6)..]
-    ));
-    std::fs::write(&path, png)?;
-    Ok(path)
+/// Pane screenshot (06 B6/B8): captured off the runtime, then recorded through the one capture
+/// path ([`crate::screenshots::record_screenshot`]) with `environment.kind = local_pane`, so it
+/// gets a `screenshot` record (handle `sN`), code state, binding and a `screenshot.captured`
+/// event like the agents' headless screenshots.
+async fn screenshot(
+    server: &Arc<Server>,
+    t: &Arc<Target>,
+) -> std::result::Result<crate::screenshots::ScreenshotMeta, String> {
+    let page = t.page().ok_or("the page is not running")?;
+    let (url, title, css, profile, dpr) = {
+        let st = t.st.lock().unwrap();
+        (
+            st.url.clone(),
+            st.title.clone(),
+            st.css,
+            st.route.profile.clone(),
+            st.proc.as_ref().map(|p| p.dpr).unwrap_or(1.0),
+        )
+    };
+    let png = tokio::task::spawn_blocking(move || page.capture_screenshot(true, 100))
+        .await
+        .map_err(|e| format!("capture task failed: {e}"))?
+        .map_err(|e| format!("{e:#}"))?;
+    let spec = server.with_core(|c| c.pane(&t.pane).and_then(|p| p.browser.clone()));
+    let environment = crate::screenshots::Environment {
+        kind: crate::screenshots::EnvKind::LocalPane,
+        machine: server.opts.machine.clone(),
+        runner: "host".into(),
+        browser: "Chromium".into(),
+        browser_version: None,
+        viewport: crate::screenshots::Viewport {
+            width: css.0,
+            height: css.1,
+        },
+        dpr,
+        color_scheme: None,
+        device: None,
+        fresh_context: false,
+        profile: (!profile.is_empty()).then_some(profile),
+    };
+    let inputs = crate::screenshots::ShotInputs {
+        environment,
+        url: url.clone(),
+        final_url: (!url.is_empty()).then(|| url.clone()),
+        title: (!title.is_empty()).then_some(title),
+        preview: spec.as_ref().and_then(|b| b.preview.clone()),
+        session: None,
+        taken_by: crate::screenshots::Requester {
+            kind: "user".into(),
+            pane: spec.as_ref().and_then(|b| b.source_pane.clone()),
+            run: None,
+            client: None,
+        },
+        full_page: false,
+        selector: None,
+        checkout: None,
+        runtime: None,
+        probe_runtime: true,
+    };
+    crate::screenshots::record_screenshot(server, &png, inputs)
+        .await
+        .map_err(|e| e.message)
 }
 
 fn internal_ctx() -> Ctx {
