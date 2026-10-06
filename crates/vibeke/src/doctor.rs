@@ -312,6 +312,21 @@ const INTEG: &str = "integrations";
 const TERMINAL: &str = "terminal";
 const REMOTE: &str = "remote";
 const TOPOLOGY: &str = "topology";
+const ISOLATION: &str = "isolation";
+
+/// Which execution isolation levels work here (13 §11, acceptance 7). Never starts anything.
+fn check_isolation(r: &mut Report) {
+    for (level, res) in vk_sandbox::runner::availability() {
+        match res {
+            Ok(d) => r.add(ISOLATION, Level::Pass, format!("{}: {d}", level.as_str())),
+            Err(h) => r.add(
+                ISOLATION,
+                Level::Info,
+                format!("{}: unavailable — {h}", level.as_str()),
+            ),
+        }
+    }
+}
 
 fn check_install(r: &mut Report) {
     let exe = std::env::current_exe().unwrap_or_default();
@@ -936,6 +951,7 @@ pub async fn run(g: &Global, args: &[String]) -> i32 {
         check_remote(&mut r).await;
     }
     check_topology(&mut r);
+    check_isolation(&mut r);
     if g.json == Some(true) {
         println!(
             "{}",

@@ -2854,6 +2854,7 @@ dependencies = [
  "vk-proto",
  "vk-relay",
  "vk-remote",
+ "vk-sandbox",
  "vk-server",
  "vk-term",
  "vk-tui",
@@ -3082,6 +3083,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vk-sandbox"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "vk-proto",
+]
+
+[[package]]
 name = "vk-server"
 version = "0.1.0"
 dependencies = [
@@ -3109,6 +3125,7 @@ dependencies = [
  "vk-redact",
  "vk-remote",
  "vk-review",
+ "vk-sandbox",
  "vk-store",
  "vk-tasks",
  "vk-term",

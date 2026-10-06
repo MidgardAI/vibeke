@@ -94,6 +94,9 @@ pub struct Pane {
     pub pinned: bool,
     pub created_by: String,
     pub recovered: Option<String>,
+    /// Execution isolation of this pane's process tree (13 §12). Host by default.
+    #[serde(default)]
+    pub isolation: Isolation,
 }
 
 impl Pane {
@@ -405,6 +408,76 @@ pub struct Task {
     /// Coarse user-set effort for the five-minute view (15 §8.2): quick | minutes | deep | unknown.
     #[serde(default)]
     pub effort: Option<String>,
+    /// Execution isolation chosen at creation (13 §12); panes in the task inherit it.
+    #[serde(default)]
+    pub isolation: Isolation,
+}
+
+/// Execution isolation level (13 §2.1). Append-only: postcard encodes the variant index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationLevel {
+    #[default]
+    Host,
+    Sandbox,
+    Container,
+    Vm,
+}
+
+impl IsolationLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IsolationLevel::Host => "host",
+            IsolationLevel::Sandbox => "sandbox",
+            IsolationLevel::Container => "container",
+            IsolationLevel::Vm => "vm",
+        }
+    }
+    pub fn parse(s: &str) -> Option<IsolationLevel> {
+        Some(match s {
+            "host" | "none" => IsolationLevel::Host,
+            "sandbox" | "sbx" => IsolationLevel::Sandbox,
+            "container" | "ctr" => IsolationLevel::Container,
+            "vm" => IsolationLevel::Vm,
+            _ => return None,
+        })
+    }
+    /// Enforced containment vs cooperative guardrails (13 §2.2).
+    pub fn containment(&self) -> &'static str {
+        match self {
+            IsolationLevel::Host => "guardrail",
+            _ => "enforced",
+        }
+    }
+}
+
+/// Execution facts for a task, pane or run (13 §12). Every field is always serialized (postcard).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Isolation {
+    #[serde(default)]
+    pub level: IsolationLevel,
+    /// Provider that implements the level: `seatbelt`, `bwrap`, `docker`, … (empty for host).
+    #[serde(default)]
+    pub provider: String,
+    /// Network profile name (13 §7): `none`, `harness-apis`, `package-registries`, `dev`, `open`.
+    #[serde(default)]
+    pub network: String,
+    /// Vibeke launched the harness with its approval-bypass flags.
+    #[serde(default)]
+    pub yolo: bool,
+    /// `pane` (the whole process tree) or `run` (only an agent command typed into a host pane).
+    #[serde(default)]
+    pub scope: String,
+    /// Host paths the contained processes can read: the client translates pasted paths outside
+    /// them into the inbox (06 A11.4).
+    #[serde(default)]
+    pub visible_roots: Vec<String>,
+}
+
+impl Isolation {
+    pub fn is_contained(&self) -> bool {
+        self.level != IsolationLevel::Host
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

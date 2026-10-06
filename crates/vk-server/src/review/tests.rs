@@ -1705,6 +1705,7 @@ fn put_pane(e: &Env, id: &str, ws: &str) {
         marked_unread: false,
         pinned: false,
         created_by: "user".into(),
+        isolation: Default::default(),
         recovered: None,
     };
     let mut c = e.server.core.lock().unwrap();

@@ -79,9 +79,9 @@ trait IsolationBackend {
 | `worktree` (default for git) | `git worktree add -b <branch> <path> <base>` | `base` defaults to `origin/<default_branch>` after a `git fetch --quiet` (skippable with `tasks.fetch_before_create=false`, 5 s timeout, falls back to local). Sets `extensions.worktreeConfig` only if needed. Submodules: `git submodule update --init --recursive` if `.gitmodules` exists (configurable). |
 | `jj` (default when `.jj/` exists) | `jj workspace add --name <slug> -r <base> <path>` | Branch → jj bookmark `<branch>` created on first commit (`jj bookmark create`). Status via `jj log -r @ --no-graph -T …`. Co-located git repos keep working. |
 | `none` | Workspace rooted at the repo itself | Shared cwd. The collision tracker (§10) is active. |
-| `clone` | private clone inside a container/VM (`git clone --reference`), synced back by host-side fetch | Default code isolation for `container`/`vm` execution — see [13](13-sandboxes-and-vms.md) §6. |
+| `clone` | private clone inside a container/VM (`git clone --reference`), synced back by host-side fetch | Default code isolation for `container`/`vm` execution — see [13](13-sandboxes-and-vms.md) §6. **Not implemented yet** (M2 follow-up together with `vibeke task sync`). |
 
-Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal axis, specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) and in Phase 1 scope (M2–M4).
+Execution isolation (`host` / `sandbox` / `container` / `vm`) is an orthogonal axis, specified in [13-sandboxes-and-vms.md](13-sandboxes-and-vms.md) and in Phase 1 scope (M2–M4). **Status (2026-10-06):** `vibeke task new --isolate sandbox|container [--yolo] [--network p]` combines `worktree` code isolation with the chosen execution level. The task records it as `Task.isolation`, and every pane in the task's workspace inherits it. A sandboxed worktree gets the git write rules of 13 §6. See 13 §15.
 
 **Worktree root**: `tasks.root = "~/.vibeke/worktrees"`, layout `<root>/<repo-name>-<hash6>/<slug>`. `tasks.root = "sibling"` gives the maintainer's current convention, `../<repo>-<slug>`, next to the repo (e.g. `~/code/samplehub-lk20-maths-grade-names`). Either way the path is stored on the Task, never recomputed.
 
@@ -268,6 +268,8 @@ trait Runner {
     async fn teardown(&self, h: &RunnerHandle, opts: TeardownOpts) -> Result<()>;
 }
 ```
+
+**Implemented (2026-10-06):** `vk_sandbox::runner::Runner`, with `level()`, `provider()`, `check()` and a synchronous `prepare(SpawnRequest) -> PreparedSpawn` (argv wrapper, scrubbed env, cwd, mounts, generated profile, broker socket, visible roots). It differs from the sketch above: holders keep owning the PTY on the host and the runner only wraps the holder's child, so there is no `spawn_pane` returning a holder address yet. Checkout preparation stays in `task.create`. `forward_port`, `snapshot`, `fork` and `teardown` are not part of the trait yet; contexts are torn down by the server's sandbox module. Implementations: `HostRunner`, `SandboxRunner` (Seatbelt on macOS; bubblewrap/Landlock/seccomp chain on Linux, unverified), `ContainerRunner` (groundwork: network `none`/`open` only) and `VmRunner` (placeholder). The SSH runner remains the bridge stack of 06. Details and caveats: 13 §15.
 
 Container and microVM notes (detailed in 13):
 - Docker Sandboxes / Apple `container` / Firecracker-based providers implement `Runner`.

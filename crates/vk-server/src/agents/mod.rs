@@ -654,6 +654,36 @@ fn resolve(server: &Server, id: &str, status: InteractionStatus, reason: &str) {
     let _ = server.commit(&mut c, tx);
 }
 
+/// Hold a gate for an Interaction answered outside the hook path (sandbox egress, 13 §7).
+/// Resolves `true` once `interaction.answer` recorded a decision, `false` when it was closed.
+/// The gate is keyed to a pseudo-pane so release-on-focus and run end never drop it.
+pub(crate) fn hold_external_gate(server: &Server, id: &str, pane: &str) -> oneshot::Receiver<bool> {
+    let (tx, rx) = oneshot::channel();
+    let (gtx, grx) = oneshot::channel::<GateReply>();
+    server.agents.inner.lock().unwrap().gates.insert(
+        id.to_string(),
+        Gate {
+            tx: gtx,
+            pane: format!("external:{pane}"),
+        },
+    );
+    tokio::spawn(async move {
+        let answered = matches!(grx.await, Ok(GateReply::Decision { .. }));
+        let _ = tx.send(answered);
+    });
+    rx
+}
+
+/// Close an Interaction from outside this module (confirms delivery when one is in flight).
+pub(crate) fn close_interaction(
+    server: &Server,
+    id: &str,
+    status: InteractionStatus,
+    reason: &str,
+) {
+    resolve(server, id, status, reason);
+}
+
 // ---- hook transport ---------------------------------------------------------------------------
 
 /// Bind the signal to a run in the caller's pane (deterministic binding via pane token, §2.6).
@@ -1816,6 +1846,22 @@ pub async fn start_in_pane(
     args: &[String],
     task: Option<&str>,
 ) -> Result<Value, vk_proto::rpc::RpcError> {
+    let opts = crate::sandbox::LaunchOpts::default();
+    start_in_pane_opts(server, pane, harness, name, prompt, args, task, &opts).await
+}
+
+/// [`start_in_pane`] with `--yolo` / `--isolate` / `--network` (13 §3).
+#[allow(clippy::too_many_arguments)]
+pub async fn start_in_pane_opts(
+    server: &Arc<Server>,
+    pane: &str,
+    harness: &str,
+    name: Option<&str>,
+    prompt: Option<&str>,
+    args: &[String],
+    task: Option<&str>,
+    opts: &crate::sandbox::LaunchOpts,
+) -> Result<Value, vk_proto::rpc::RpcError> {
     let h =
         Harness::from_id(harness).ok_or_else(|| invalid(format!("unknown harness {harness}")))?;
     if let Some(n) = name {
@@ -1835,7 +1881,15 @@ pub async fn start_in_pane(
             .details(json!({"reason": "an agent already runs in this pane"})));
     }
     let session_id = h.preassign_session_id();
-    let argv = h.launch_argv(session_id.as_deref(), args, prompt);
+    let launch = crate::sandbox::prepare_agent(
+        server,
+        pane,
+        h.id(),
+        h.launch_argv(session_id.as_deref(), args, prompt),
+        opts,
+    )
+    .await?;
+    let argv = launch.argv;
     let run = {
         let mut c = server.core.lock().unwrap();
         let mut run = new_run(&mut c, pane, h, "process", StateSource::Process, 0.6);
@@ -1857,7 +1911,7 @@ pub async fn start_in_pane(
         server.commit(&mut c, tx).map_err(internal)?;
         run
     };
-    let line = format!("{}\r", harness::shell_join(&argv));
+    let line = format!("{}\r", launch.line);
     crate::render::write_and_ack(
         server,
         pane,
@@ -2118,7 +2172,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                         .collect()
                 })
                 .unwrap_or_default();
-            start_in_pane(
+            let opts = match crate::sandbox::LaunchOpts::from_params(p) {
+                Ok(o) => o,
+                Err(e) => return Some(Err(e)),
+            };
+            start_in_pane_opts(
                 server,
                 &pane.id,
                 s(p, "harness").unwrap_or("claude"),
@@ -2126,6 +2184,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 s(p, "prompt"),
                 &args,
                 None,
+                &opts,
             )
             .await
         }
@@ -2168,7 +2227,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                         .collect()
                 })
                 .unwrap_or_default();
-            let r = start_in_pane(
+            let opts = match crate::sandbox::LaunchOpts::from_params(p) {
+                Ok(o) => o,
+                Err(e) => return Some(Err(e)),
+            };
+            let r = start_in_pane_opts(
                 server,
                 &pane.id,
                 s(p, "harness").unwrap_or("claude"),
@@ -2176,6 +2239,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 None,
                 &args,
                 None,
+                &opts,
             )
             .await;
             if let (Ok(_), Some(text)) = (&r, s(p, "prompt")) {

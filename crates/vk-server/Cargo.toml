@@ -17,6 +17,7 @@ vk-config = { workspace = true }
 vk-agents = { workspace = true }
 vk-preview = { workspace = true }
 vk-remote = { workspace = true }
+vk-sandbox = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

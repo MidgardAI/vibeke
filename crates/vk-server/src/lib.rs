@@ -14,6 +14,7 @@ pub mod preview;
 pub mod render;
 pub mod review;
 pub mod run;
+pub mod sandbox;
 pub mod tracking;
 
 use crate::core::{Core, Tx, subject_pane, ulid};
@@ -91,6 +92,8 @@ pub struct Server {
     pub gateway: gateway_api::State,
     pub agents: agents::Agents,
     pub previews: preview::Previews,
+    /// Execution isolation contexts (13).
+    pub sandbox: sandbox::State,
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
@@ -161,6 +164,7 @@ impl Server {
             gateway: Default::default(),
             agents: agents::Agents::default(),
             previews: preview::Previews::default(),
+            sandbox: sandbox::State::default(),
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
@@ -373,7 +377,7 @@ impl Server {
 
     fn respawn_pane(self: &Arc<Self>, old: &Pane, cwd: &str) -> Result<()> {
         let argv = shell_argv(&self.opts);
-        let (wsh, tabh) = self.with_core(|c| {
+        let (wsh, tabh, ws_task) = self.with_core(|c| {
             (
                 c.ws(&old.workspace)
                     .map(|w| w.handle.clone())
@@ -381,9 +385,10 @@ impl Server {
                 c.tab(&old.tab)
                     .map(|t| t.handle.clone())
                     .unwrap_or_default(),
+                c.ws(&old.workspace).and_then(|w| w.task.clone()),
             )
         });
-        let (holder_pid, child_pid, socket, key) = self.spawn_holder(
+        let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
             &old.id,
             &old.handle,
             &tabh,
@@ -392,9 +397,11 @@ impl Server {
             cwd,
             old.cols,
             old.rows,
+            ws_task.as_deref(),
         )?;
         let mut c = self.core.lock().unwrap();
         let mut p = old.clone();
+        p.isolation = isolation;
         p.child_pid = Some(child_pid);
         p.exited = false;
         p.recovered = Some("lost".into());
@@ -417,9 +424,9 @@ impl Server {
 
     // ---- spawning -------------------------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn spawn_holder(
-        &self,
+        self: &Arc<Self>,
         pane_id: &str,
         handle: &str,
         tab_handle: &str,
@@ -428,7 +435,8 @@ impl Server {
         cwd: &str,
         cols: u16,
         rows: u16,
-    ) -> Result<(u32, u32, String, Vec<u8>)> {
+        ws_task: Option<&str>,
+    ) -> Result<(u32, u32, String, Vec<u8>, Isolation)> {
         let socket = self
             .paths
             .holder_socket(pane_id)
@@ -441,10 +449,13 @@ impl Server {
         } else {
             paths::home().to_string_lossy().into_owned()
         };
+        // Execution isolation (13): a sandboxed task's panes get a wrapped command and env.
+        let (argv, env, isolation) = sandbox::wrap_spawn(self, pane_id, &cwd, argv, env, ws_task)
+            .context("prepare isolated spawn")?;
         let spec = SpawnSpec {
             pane_id: pane_id.to_string(),
             socket: socket.clone(),
-            argv: argv.to_vec(),
+            argv,
             cwd,
             env,
             key: key.clone(),
@@ -462,7 +473,18 @@ impl Server {
             Some(&log),
         )
         .context("launch holder")?;
-        Ok((l.holder_pid, l.child_pid, socket, key))
+        Ok((l.holder_pid, l.child_pid, socket, key, isolation))
+    }
+
+    /// The env a host pane would get (sandbox launches scrub and extend it, 13 §8).
+    pub(crate) fn pane_env_for(
+        &self,
+        pane_id: &str,
+        handle: &str,
+        tab_handle: &str,
+        ws_handle: &str,
+    ) -> Vec<(String, String)> {
+        self.pane_env(pane_id, handle, tab_handle, ws_handle)
     }
 
     /// Must not lock `core`: callers hold it while spawning.
@@ -572,8 +594,17 @@ impl Server {
         let handle = c.next_pane_handle(&ws.handle);
         let (cols, rows) = (80, 24);
         let argv = command.unwrap_or_else(|| shell_argv(&self.opts));
-        let (holder_pid, child_pid, socket, key) =
-            self.spawn_holder(&id, &handle, tab_handle, &ws.handle, &argv, cwd, cols, rows)?;
+        let (holder_pid, child_pid, socket, key, isolation) = self.spawn_holder(
+            &id,
+            &handle,
+            tab_handle,
+            &ws.handle,
+            &argv,
+            cwd,
+            cols,
+            rows,
+            ws.task.as_deref(),
+        )?;
         let pane = Pane {
             id: id.clone(),
             handle,
@@ -596,6 +627,7 @@ impl Server {
             pinned: false,
             created_by: created_by.into(),
             recovered: None,
+            isolation,
         };
         tx.m.holder(&id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
         tx.event(

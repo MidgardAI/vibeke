@@ -127,6 +127,25 @@ fn urgency(app: &App, m: &crate::app::Machine, r: &AgentRun) -> u8 {
     }
 }
 
+/// Sidebar isolation glyph (13 §3): `sb`/`ct`/`vm` (configurable), plus the network profile
+/// when it is not the default `dev`. `None` for host panes.
+pub fn isolation_glyph(app: &App, iso: &Isolation) -> Option<String> {
+    let g = &app.config.ui.sidebar.isolation_glyphs;
+    let base = match iso.level {
+        IsolationLevel::Host => g.host.clone(),
+        IsolationLevel::Sandbox => g.sandbox.clone(),
+        IsolationLevel::Container => g.container.clone(),
+        IsolationLevel::Vm => g.vm.clone(),
+    };
+    if base.is_empty() {
+        return None;
+    }
+    Some(match iso.network.as_str() {
+        "" | "dev" => base,
+        n => format!("{base}·{n}"),
+    })
+}
+
 fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
     let m = &app.machines[mi];
     let t = &app.theme;
@@ -136,8 +155,23 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
         (format!("{indent}{} ", harness_icon(&r.harness)), t.s(color)),
         (format!("{name} "), t.text()),
     ];
+    // A run is as contained as its pane (13 §2.2): enforced inside sandbox/container/vm.
+    let iso = m
+        .model
+        .panes
+        .iter()
+        .find(|p| p.id == r.pane)
+        .map(|p| p.isolation.clone())
+        .unwrap_or_default();
+    if let Some(gl) = isolation_glyph(app, &iso) {
+        segs.push((format!("{gl} "), t.s(t.accent)));
+    }
     if r.yolo {
-        segs.push(("YOLO·HOST ".into(), app.theme.bold(t.red)));
+        if iso.is_contained() {
+            segs.push(("YOLO ".into(), app.theme.bold(t.yellow)));
+        } else {
+            segs.push(("YOLO·HOST ".into(), app.theme.bold(t.red)));
+        }
     }
     let glyph = if inferred
         && app.config.ui.sidebar.show_state_source != vk_config::ShowStateSource::Never
@@ -328,8 +362,12 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
                     .filter(|p| p.workspace == w.id && !runs.iter().any(|r| r.pane == p.id))
                 {
                     let focused = mi == app.cur && m.focus.pane.as_deref() == Some(&p.id);
+                    let mut segs = vec![(format!("    {}", p.display_title()), t.dim())];
+                    if let Some(gl) = isolation_glyph(app, &p.isolation) {
+                        segs.push((format!(" {gl}"), t.s(t.accent)));
+                    }
                     rows.push(SideRow {
-                        segs: vec![(format!("    {}", p.display_title()), t.dim())],
+                        segs,
                         target: Some((mi, p.id.clone())),
                         focused,
                     });
