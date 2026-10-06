@@ -1,0 +1,17 @@
+[package]
+name = "vk-review"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic core of task intent, change subjects, checks, readiness and the attention inbox (spec 15, T1–T3)"
+
+[dependencies]
+blake3.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
