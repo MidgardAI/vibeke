@@ -7,20 +7,29 @@
 //! Vibeke's state directory.
 //!
 //! Safety properties:
-//! - The CA is **name-constrained** (X.509 `nameConstraints`, permitted DNS subtree
-//!   `vibeke.localhost`, which covers the apex and every `*.vibeke.localhost`): even if its key
-//!   leaked, a trusted copy cannot vouch for any other site. [`LocalCa::issue`] additionally
-//!   refuses to sign anything outside that subtree.
+//! - The CA is **name-constrained** (X.509 `nameConstraints`, critical): permitted DNS subtree
+//!   `vibeke.localhost` (the apex and every `*.vibeke.localhost`) and excluded IP subtrees
+//!   `0.0.0.0/0` and `::/0`. Name constraints apply per name form (RFC 5280 §4.2.1.10), so the
+//!   DNS subtree alone would leave IP-address certificates unrestricted; with the exclusions
+//!   even a leaked key cannot make a trusted copy vouch for any other site or any IP address.
+//!   [`LocalCa::issue`] additionally refuses to sign anything outside the DNS subtree.
 //! - The CA key is `0600` in a `0700` directory, generated on first use, never leaves the
 //!   machine and is never installed into a trust store by Vibeke: the user does that
 //!   explicitly (`vibeke preview trust-ca`).
+//! - Every file operation refuses symlinks (`O_NOFOLLOW` opens, `lstat` checks) for the
+//!   directory, the lock, the key, the certificate and the metadata, requires them to be owned
+//!   by this user, and writes by temp file + `rename` in the same directory: a planted link
+//!   can neither redirect a write nor feed a foreign key in.
 //! - Leaf certificates live [`LEAF_TTL`] (7 days), are created per hostname on first handshake,
 //!   cached in memory only and re-issued when less than [`LEAF_RENEW_BEFORE`] is left.
+//! - A long-running proxy holds a [`CaStore`], not a fixed CA: it re-checks the CA files'
+//!   identity before every issuance and reloads (dropping its leaves) when another process
+//!   renewed the CA, so the served chain always matches the CA file `trust-ca` installs.
 
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
-    GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose, NameConstraints, PublicKeyData,
-    SanType,
+    BasicConstraints, CertificateParams, CidrSubnet, DistinguishedName, DnType,
+    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    NameConstraints, PublicKeyData, SanType,
 };
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -28,8 +37,8 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io::{Read, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -49,11 +58,17 @@ const CA_COMMON_NAME: &str = "Vibeke local preview CA (vibeke.localhost only)";
 const CA_CERT_FILE: &str = "preview-ca.pem";
 const CA_KEY_FILE: &str = "preview-ca-key.pem";
 const CA_META_FILE: &str = "preview-ca.json";
+const LOCK_FILE: &str = ".lock";
+/// Version of the CA's constraint set, recorded in the metadata. A stored CA of an older
+/// version (before the IP exclusions) is replaced on load.
+const CONSTRAINTS_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub enum CaError {
     /// The hostname is not `vibeke.localhost` or below (or is not a plain DNS name).
     OutsideConstraints(String),
+    /// A CA path is a symlink, not a regular file/directory, or not owned by this user.
+    Unsafe(String),
     Io(std::io::Error),
     Crypto(String),
 }
@@ -65,6 +80,7 @@ impl std::fmt::Display for CaError {
                 f,
                 "the preview CA only signs for {PERMITTED_DOMAIN} and its subdomains, not {h:?}"
             ),
+            CaError::Unsafe(e) => write!(f, "preview CA: refusing an unsafe path: {e}"),
             CaError::Io(e) => write!(f, "preview CA: {e}"),
             CaError::Crypto(e) => write!(f, "preview CA: {e}"),
         }
@@ -122,7 +138,12 @@ fn ca_params(not_before: SystemTime, not_after: SystemTime) -> CertificateParams
     p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     p.name_constraints = Some(NameConstraints {
         permitted_subtrees: vec![GeneralSubtree::DnsName(PERMITTED_DOMAIN.to_string())],
-        excluded_subtrees: vec![],
+        // Constraints are per name form: without these a leaked key could still sign
+        // certificates for any IP address.
+        excluded_subtrees: vec![
+            GeneralSubtree::IpAddress(CidrSubnet::V4([0; 4], [0; 4])),
+            GeneralSubtree::IpAddress(CidrSubnet::V6([0; 16], [0; 16])),
+        ],
     });
     p.not_before = odt(not_before);
     p.not_after = odt(not_after);
@@ -132,6 +153,8 @@ fn ca_params(not_before: SystemTime, not_after: SystemTime) -> CertificateParams
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Meta {
     not_after: u64,
+    #[serde(default)]
+    constraints: u32,
 }
 
 fn unix(t: SystemTime) -> u64 {
@@ -140,33 +163,161 @@ fn unix(t: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
-/// Write `data` to `path` with mode `0600` (temp file + rename: never readable by others,
-/// not even briefly).
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    let _ = std::fs::remove_file(&tmp);
+fn uid() -> u32 {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+fn unsafe_path(p: &Path, why: &str) -> CaError {
+    CaError::Unsafe(format!("{}: {why}", p.display()))
+}
+
+fn nofollow_err(path: &Path, e: std::io::Error) -> CaError {
+    match e.raw_os_error() {
+        Some(libc::ELOOP) => unsafe_path(path, "is a symlink"),
+        _ => CaError::Io(e),
+    }
+}
+
+/// The CA directory: created `0700` when missing; an existing one must be a real directory
+/// (never a symlink) owned by this user, and is tightened to `0700` through its own descriptor.
+fn ensure_dir(dir: &Path) -> Result<(), CaError> {
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = dir.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(e) => return Err(e.into()),
+        Ok(_) => {}
+    }
+    let md = std::fs::symlink_metadata(dir)?;
+    if md.file_type().is_symlink() || !md.is_dir() {
+        return Err(unsafe_path(
+            dir,
+            "not a plain directory (symlink or other file)",
+        ));
+    }
+    if md.uid() != uid() {
+        return Err(unsafe_path(dir, &format!("owned by uid {}", md.uid())));
+    }
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(dir)
+        .map_err(|e| nofollow_err(dir, e))?;
+    if f.metadata()?.permissions().mode() & 0o777 != 0o700 {
+        f.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// `lstat` an entry of the CA directory: `None` when missing; a symlink, a non-regular file or
+/// a file of another user is refused.
+fn check_entry(path: &Path) -> Result<Option<std::fs::Metadata>, CaError> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+        Ok(md) if md.file_type().is_symlink() => Err(unsafe_path(path, "is a symlink")),
+        Ok(md) if !md.is_file() => Err(unsafe_path(path, "not a regular file")),
+        Ok(md) if md.uid() != uid() => {
+            Err(unsafe_path(path, &format!("owned by uid {}", md.uid())))
+        }
+        Ok(md) => Ok(Some(md)),
+    }
+}
+
+/// Open an existing entry for reading without following a symlink, re-checking the opened file.
+/// `Ok(None)` when it is missing.
+fn open_existing(path: &Path) -> Result<Option<std::fs::File>, CaError> {
+    if check_entry(path)?.is_none() {
+        return Ok(None);
+    }
+    let f = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(nofollow_err(path, e)),
+    };
+    let md = f.metadata()?;
+    if !md.is_file() || md.uid() != uid() {
+        return Err(unsafe_path(path, "not a regular file of this user"));
+    }
+    Ok(Some(f))
+}
+
+fn read_entry(path: &Path) -> Result<Option<Vec<u8>>, CaError> {
+    let Some(mut f) = open_existing(path)? else {
+        return Ok(None);
+    };
+    let mut v = Vec::new();
+    f.read_to_end(&mut v)?;
+    Ok(Some(v))
+}
+
+/// Write `data` to `path` with `mode`: a fresh temp file in the same directory (`O_EXCL`,
+/// `O_NOFOLLOW`, created with `mode`, never readable by others even briefly), then `rename`
+/// over the target. A symlink at the target is refused, never followed.
+fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<(), CaError> {
+    check_entry(path)?;
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let suffix: u64 = rand::random();
+    let tmp = dir.join(format!(".{name}.{suffix:016x}.tmp"));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(0o600)
+        .mode(mode)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&tmp)?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    std::fs::rename(&tmp, path)
+    let r = (|| -> std::io::Result<()> {
+        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r?;
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
 }
 
-/// Exclusive advisory lock on `<dir>/.lock` (blocking), released on drop.
-fn lock_dir(dir: &Path) -> std::io::Result<std::fs::File> {
+/// Exclusive advisory lock on `<dir>/.lock` (blocking), released on drop. The lock file is
+/// opened with `O_NOFOLLOW` and must be a regular file of this user.
+fn lock_dir(dir: &Path) -> Result<std::fs::File, CaError> {
     use std::os::fd::AsRawFd;
+    let path = dir.join(LOCK_FILE);
+    check_entry(&path)?;
     let f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .mode(0o600)
-        .open(dir.join(".lock"))?;
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|e| nofollow_err(&path, e))?;
+    let md = f.metadata()?;
+    if !md.is_file() || md.uid() != uid() {
+        return Err(unsafe_path(&path, "not a regular file of this user"));
+    }
     // SAFETY: a valid open file descriptor; flock has no other preconditions.
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(std::io::Error::last_os_error().into());
     }
     Ok(f)
 }
@@ -205,12 +356,11 @@ impl LocalCa {
     }
 
     pub fn load_or_create_at(dir: &Path, now: SystemTime) -> Result<Arc<LocalCa>, CaError> {
-        std::fs::create_dir_all(dir)?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        ensure_dir(dir)?;
         // One creator at a time (the server and `vibeke preview trust-ca` can both be first):
         // an advisory lock held while loading/generating, released when `_lock` drops.
         let _lock = lock_dir(dir)?;
-        if let Some(ca) = Self::load(dir, now) {
+        if let Some(ca) = Self::load(dir, now)? {
             return Ok(Arc::new(ca));
         }
         Self::generate(dir, now)
@@ -222,54 +372,72 @@ impl LocalCa {
         let not_after = now + CA_TTL;
         let params = ca_params(not_before, not_after);
         let cert = params.self_signed(&key).map_err(crypto)?;
+        // Refuse before writing anything if any entry is unsafe.
+        for f in [CA_KEY_FILE, CA_CERT_FILE, CA_META_FILE] {
+            check_entry(&dir.join(f))?;
+        }
         // Key first: a certificate without a key is ignored on load, never the reverse.
-        write_private(&dir.join(CA_KEY_FILE), key.serialize_pem().as_bytes())?;
-        std::fs::write(dir.join(CA_CERT_FILE), cert.pem())?;
-        std::fs::set_permissions(
-            dir.join(CA_CERT_FILE),
-            std::fs::Permissions::from_mode(0o644),
+        write_atomic(
+            &dir.join(CA_KEY_FILE),
+            key.serialize_pem().as_bytes(),
+            0o600,
         )?;
+        write_atomic(&dir.join(CA_CERT_FILE), cert.pem().as_bytes(), 0o644)?;
         let meta = serde_json::to_vec(&Meta {
             not_after: unix(not_after),
+            constraints: CONSTRAINTS_VERSION,
         })
         .map_err(crypto)?;
-        std::fs::write(dir.join(CA_META_FILE), meta)?;
-        Self::load(dir, now)
+        write_atomic(&dir.join(CA_META_FILE), &meta, 0o600)?;
+        Self::load(dir, now)?
             .map(Arc::new)
             .ok_or_else(|| CaError::Crypto("the generated CA could not be read back".to_string()))
     }
 
-    fn load(dir: &Path, now: SystemTime) -> Option<LocalCa> {
-        let key_pem = std::fs::read_to_string(dir.join(CA_KEY_FILE)).ok()?;
-        let cert_pem = std::fs::read_to_string(dir.join(CA_CERT_FILE)).ok()?;
-        let meta: Meta =
-            serde_json::from_slice(&std::fs::read(dir.join(CA_META_FILE)).ok()?).ok()?;
+    /// `Ok(None)`: missing, inconsistent, outdated or expiring (replace it). `Err`: an unsafe
+    /// entry (symlink, foreign owner): refused, nothing is replaced.
+    fn load(dir: &Path, now: SystemTime) -> Result<Option<LocalCa>, CaError> {
+        let key_path = dir.join(CA_KEY_FILE);
+        // Every entry is checked (and an unsafe one refused) before any is used.
+        let entries = [
+            check_entry(&key_path)?,
+            check_entry(&dir.join(CA_CERT_FILE))?,
+            check_entry(&dir.join(CA_META_FILE))?,
+        ];
+        if entries.iter().any(Option::is_none) {
+            return Ok(None);
+        }
+        let Some(key_pem) = Self::read_key(&key_path)? else {
+            return Ok(None);
+        };
+        let Some(cert_pem) =
+            read_entry(&dir.join(CA_CERT_FILE))?.and_then(|b| String::from_utf8(b).ok())
+        else {
+            return Ok(None);
+        };
+        let Some(meta) = read_entry(&dir.join(CA_META_FILE))?
+            .and_then(|b| serde_json::from_slice::<Meta>(&b).ok())
+        else {
+            return Ok(None);
+        };
         let not_after = UNIX_EPOCH + Duration::from_secs(meta.not_after);
-        if now + CA_RENEW_BEFORE >= not_after {
-            return None;
+        if now + CA_RENEW_BEFORE >= not_after || meta.constraints < CONSTRAINTS_VERSION {
+            return Ok(None);
         }
-        // The key file must stay private; tighten a loosened mode rather than trust it.
-        let mode = std::fs::metadata(dir.join(CA_KEY_FILE))
-            .ok()?
-            .permissions()
-            .mode();
-        if mode & 0o077 != 0 {
-            std::fs::set_permissions(
-                dir.join(CA_KEY_FILE),
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .ok()?;
-        }
-        let key = KeyPair::from_pem(&key_pem).ok()?;
+        let Ok(key) = KeyPair::from_pem(&key_pem) else {
+            return Ok(None);
+        };
         let spki = key.subject_public_key_info();
-        let pem = pem_der(&cert_pem)?;
+        let Some(pem) = pem_der(&cert_pem) else {
+            return Ok(None);
+        };
         // The stored certificate must belong to the stored key.
         if !contains(&pem, &spki_key_bytes(&key)) {
-            return None;
+            return Ok(None);
         }
         // Deterministic issuer parameters: same subject and key id as the stored certificate.
         let issuer = Issuer::new(ca_params(now, not_after), key);
-        Some(LocalCa {
+        Ok(Some(LocalCa {
             dir: dir.to_path_buf(),
             issuer,
             cert_pem,
@@ -277,7 +445,20 @@ impl LocalCa {
             spki,
             not_after,
             cache: Mutex::default(),
-        })
+        }))
+    }
+
+    /// The key (`O_NOFOLLOW`); a loosened mode is tightened through the open descriptor rather
+    /// than trusted.
+    fn read_key(path: &Path) -> Result<Option<String>, CaError> {
+        let Some(mut f) = open_existing(path)? else {
+            return Ok(None);
+        };
+        if f.metadata()?.permissions().mode() & 0o077 != 0 {
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        let mut s = String::new();
+        Ok(f.read_to_string(&mut s).ok().map(|_| s))
     }
 
     /// `<state>/tls/preview-ca.pem`: the file the user imports into a trust store.
@@ -361,13 +542,37 @@ impl LocalCa {
         host: &str,
         now: SystemTime,
     ) -> Result<(Arc<CertifiedKey>, SystemTime), CaError> {
+        self.sign_sans(
+            host,
+            vec![SanType::DnsName(host.try_into().map_err(crypto)?)],
+            now,
+        )
+    }
+
+    /// Sign a leaf for arbitrary SANs with the CA key, bypassing every check of [`Self::issue`]
+    /// (tests only: what a stolen key could produce).
+    #[cfg(test)]
+    pub(crate) fn sign_raw(
+        &self,
+        sans: Vec<SanType>,
+        now: SystemTime,
+    ) -> Result<Arc<CertifiedKey>, CaError> {
+        self.sign_sans("raw", sans, now).map(|x| x.0)
+    }
+
+    fn sign_sans(
+        &self,
+        cn: &str,
+        sans: Vec<SanType>,
+        now: SystemTime,
+    ) -> Result<(Arc<CertifiedKey>, SystemTime), CaError> {
         let key = KeyPair::generate().map_err(crypto)?;
         let not_after = now + LEAF_TTL;
         let mut p = CertificateParams::default();
         let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, host);
+        dn.push(DnType::CommonName, cn);
         p.distinguished_name = dn;
-        p.subject_alt_names = vec![SanType::DnsName(host.try_into().map_err(crypto)?)];
+        p.subject_alt_names = sans;
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         p.not_before = odt(now - Duration::from_secs(300));
@@ -416,16 +621,93 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Identity of the CA's files (device, inode, size, mtime of the key, certificate and
+/// metadata); `None` entries are missing files.
+type FilesId = [Option<(u64, u64, u64, i64, i64)>; 3];
+
+fn files_id(dir: &Path) -> FilesId {
+    let one = |f: &str| {
+        std::fs::symlink_metadata(dir.join(f))
+            .ok()
+            .map(|m| (m.dev(), m.ino(), m.size(), m.mtime(), m.mtime_nsec()))
+    };
+    [one(CA_KEY_FILE), one(CA_CERT_FILE), one(CA_META_FILE)]
+}
+
+struct StoreState {
+    ca: Arc<LocalCa>,
+    id: FilesId,
+}
+
+/// The CA as a long-running process holds it: the loaded [`LocalCa`] keyed by the identity of
+/// its files plus its fingerprint. [`CaStore::current`] re-checks the files before each use
+/// (every leaf issuance) and reloads when they changed (another process renewed or replaced
+/// the CA) or the CA is due for renewal; a reload with a different fingerprint starts a fresh
+/// leaf cache, so leaves are re-issued by the new key and the served chain, the CA file and
+/// the reported fingerprint always agree.
+pub struct CaStore {
+    dir: PathBuf,
+    state: Mutex<StoreState>,
+}
+
+impl std::fmt::Debug for CaStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaStore").field("dir", &self.dir).finish()
+    }
+}
+
+impl CaStore {
+    /// Load (or generate) the CA in `dir`.
+    pub fn open(dir: &Path) -> Result<Arc<CaStore>, CaError> {
+        let ca = LocalCa::load_or_create(dir)?;
+        Ok(Arc::new(CaStore {
+            dir: dir.to_path_buf(),
+            state: Mutex::new(StoreState {
+                ca,
+                id: files_id(dir),
+            }),
+        }))
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The CA to sign with now (see the type docs).
+    pub fn current(&self) -> Result<Arc<LocalCa>, CaError> {
+        self.current_at(SystemTime::now())
+    }
+
+    pub fn current_at(&self, now: SystemTime) -> Result<Arc<LocalCa>, CaError> {
+        let mut st = self.state.lock().unwrap();
+        if files_id(&self.dir) == st.id && now + CA_RENEW_BEFORE < st.ca.not_after {
+            return Ok(st.ca.clone());
+        }
+        let fresh = LocalCa::load_or_create_at(&self.dir, now)?;
+        if fresh.fingerprint_sha256() != st.ca.fingerprint_sha256() {
+            tracing::info!(
+                old = %st.ca.fingerprint_sha256(),
+                new = %fresh.fingerprint_sha256(),
+                "preview CA changed on disk: reloaded, leaves will be re-issued"
+            );
+            st.ca = fresh;
+        }
+        st.id = files_id(&self.dir);
+        Ok(st.ca.clone())
+    }
+}
+
 /// Chooses the certificate by SNI at handshake time: only for names `allow` accepts (the
 /// proxy: hostnames of registered `tls_origin` routes) and the CA permits. No SNI (an IP
-/// literal) or any other name → no certificate, the handshake fails.
+/// literal) or any other name → no certificate, the handshake fails. The CA comes from a
+/// [`CaStore`] on every handshake, so a renewed CA is picked up.
 pub struct SniResolver {
-    ca: Arc<LocalCa>,
+    ca: Arc<CaStore>,
     allow: Box<dyn Fn(&str) -> bool + Send + Sync>,
 }
 
 impl SniResolver {
-    pub fn new(ca: Arc<LocalCa>, allow: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
+    pub fn new(ca: Arc<CaStore>, allow: impl Fn(&str) -> bool + Send + Sync + 'static) -> Self {
         SniResolver {
             ca,
             allow: Box::new(allow),
@@ -445,7 +727,13 @@ impl ResolvesServerCert for SniResolver {
         if !(self.allow)(&name) {
             return None;
         }
-        self.ca.issue(&name).ok()
+        match self.ca.current() {
+            Ok(ca) => ca.issue(&name).ok(),
+            Err(e) => {
+                tracing::warn!(error = %e, "preview CA unavailable: TLS handshake refused");
+                None
+            }
+        }
     }
 }
 

@@ -407,6 +407,220 @@
         "title"
       ]
     },
+    "BrowserSession": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "pane": {
+                  "type": "string"
+                },
+                "pane_handle": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "run": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "pane",
+                "pane_handle",
+                "run"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "user": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "user"
+              ]
+            }
+          ]
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "created_ms": {
+          "type": "integer"
+        },
+        "viewport": {
+          "type": "object",
+          "properties": {
+            "width": {
+              "type": "integer"
+            },
+            "height": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ]
+        },
+        "device": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previews": {
+          "type": "string",
+          "enum": [
+            "own",
+            "machine"
+          ]
+        },
+        "human_control": {
+          "type": "boolean"
+        },
+        "screencast": {
+          "type": "boolean"
+        },
+        "proxy_port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "machine": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "machine": {
+              "type": "string"
+            },
+            "runner": {
+              "type": "string"
+            },
+            "browser": {},
+            "fresh_context": {
+              "type": "boolean"
+            },
+            "device": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "viewport": {
+              "type": "object",
+              "properties": {
+                "width": {
+                  "type": "integer"
+                },
+                "height": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "width",
+                "height"
+              ]
+            },
+            "dpr": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "machine",
+            "runner",
+            "browser",
+            "fresh_context",
+            "device",
+            "viewport",
+            "dpr"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "final_url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "session_id",
+        "owner",
+        "preview",
+        "url",
+        "created_ms",
+        "viewport",
+        "device",
+        "previews",
+        "human_control",
+        "screencast",
+        "proxy_port",
+        "machine",
+        "environment"
+      ]
+    },
     "Cursor": {
       "type": "object",
       "properties": {
@@ -1123,6 +1337,26 @@
         },
         "last_seen_ms": {
           "type": "integer"
+        },
+        "pane_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1141,6 +1375,79 @@
         "pid",
         "first_seen_ms",
         "last_seen_ms"
+      ]
+    },
+    "PreviewCa": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "spki_sha256": {
+          "type": "string"
+        },
+        "trust": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "spki_sha256",
+        "trust"
+      ]
+    },
+    "PreviewMirror": {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "preview_handle": {
+          "type": "string"
+        },
+        "local_port": {
+          "type": "integer"
+        },
+        "addrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "since_ms": {
+          "type": "integer"
+        },
+        "accepted": {
+          "type": "integer"
+        },
+        "rejected": {
+          "type": "integer"
+        },
+        "authenticated": {
+          "type": "boolean"
+        },
+        "peer_check": {
+          "const": "same_user"
+        }
+      },
+      "required": [
+        "machine",
+        "preview",
+        "preview_handle",
+        "local_port",
+        "addrs",
+        "since_ms",
+        "accepted",
+        "rejected",
+        "authenticated",
+        "peer_check"
       ]
     },
     "RateLimitInfo": {
@@ -3902,21 +4209,43 @@
           "session": {
             "type": "string"
           },
-          "after_seq": {
-            "type": "integer"
+          "browser_session": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
           }
-        },
-        "required": [
-          "session"
-        ]
+        }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "delivery": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "poll": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        }
+        },
+        "required": [
+          "session",
+          "delivery",
+          "width",
+          "height",
+          "poll"
+        ]
       }
     },
     "browser.click": {
@@ -3926,7 +4255,13 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           },
           "selector": {
@@ -3935,27 +4270,82 @@
           "text": {
             "type": "string"
           },
-          "role": {
-            "type": "string"
+          "x": {
+            "type": "number"
           },
-          "key": {
-            "type": "string"
+          "y": {
+            "type": "number"
           },
-          "submit": {
-            "type": "boolean"
+          "click_count": {
+            "type": "integer",
+            "default": 1
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 5000
           }
-        },
-        "required": [
-          "browser_session"
-        ]
+        }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "element": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "width": {
+                    "type": "number"
+                  },
+                  "height": {
+                    "type": "number"
+                  },
+                  "tag": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "width",
+                  "height",
+                  "tag",
+                  "text"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        }
+        },
+        "required": [
+          "session",
+          "x",
+          "y",
+          "element"
+        ]
       }
     },
     "browser.close": {
@@ -4035,12 +4425,127 @@
         ]
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "pane"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "pane",
+              "profile"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "opened_in": {
+                "const": "window"
+              },
+              "url": {
+                "type": "string"
+              },
+              "machine": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "profile_dir": {
+                "type": "string"
+              },
+              "browser": {
+                "type": "string"
+              },
+              "browser_kind": {
+                "type": "string"
+              },
+              "pid": {
+                "type": "integer"
+              },
+              "reused": {
+                "type": "boolean"
+              },
+              "socks_port": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "route": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "opened_in",
+              "url",
+              "machine",
+              "profile",
+              "profile_dir",
+              "browser",
+              "browser_kind",
+              "pid",
+              "reused",
+              "socks_port",
+              "route"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "opened_in": {
+                "const": "default_browser"
+              },
+              "url": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "opened_in",
+              "url"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            }
           }
-        }
+        ]
       }
     },
     "browser.console": {
@@ -4048,58 +4553,178 @@
       "scope": "pane",
       "pane_scope": "open",
       "params": {
-        "type": "object",
-        "properties": {
-          "browser_session": {
-            "type": "string"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "browser_session": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "warn",
+                  "warning",
+                  "all"
+                ]
+              },
+              "since_ms": {
+                "type": "integer"
+              },
+              "since": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer",
+                "default": 200
+              }
+            }
           },
-          "preview": {
-            "$ref": "#/$defs/Target"
-          },
-          "since_ms": {
-            "type": "integer"
-          },
-          "level": {
-            "type": "string",
-            "enum": [
-              "error",
-              "warn",
-              "all"
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "$ref": "#/$defs/Target"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "console",
+                  "network"
+                ]
+              },
+              "level": {
+                "type": "string"
+              },
+              "errors": {
+                "type": "boolean"
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "failed_only": {
+                "type": "boolean"
+              },
+              "after": {
+                "type": "integer"
+              },
+              "since_ms": {
+                "type": "integer"
+              },
+              "since": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "pane"
             ]
           }
-        }
+        ]
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "entries": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "ts": {
-                  "type": "integer"
-                },
-                "level": {
-                  "type": "string"
-                },
-                "text": {
-                  "type": "string"
-                },
-                "source": {
-                  "type": "string"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ts": {
+                      "type": "integer"
+                    },
+                    "level": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "url": {},
+                    "line": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ts",
+                    "level",
+                    "text",
+                    "source"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "session",
+              "entries"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "type": "string"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object"
                 }
               },
-              "required": [
-                "ts",
-                "level",
-                "text"
-              ]
-            }
+              "last_seq": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "relayed",
+                  "none"
+                ]
+              },
+              "url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "pane",
+              "entries",
+              "last_seq",
+              "source",
+              "url"
+            ]
           }
-        },
-        "required": [
-          "entries"
         ]
       }
     },
@@ -4112,19 +4737,32 @@
         "properties": {
           "session": {
             "type": "string"
+          },
+          "browser_session": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
           }
-        },
-        "required": [
-          "session"
-        ]
+        }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "detached": {
+            "type": "boolean"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        }
+        },
+        "required": [
+          "session",
+          "detached"
+        ]
       }
     },
     "browser.diff": {
@@ -4141,9 +4779,20 @@
             "type": "string"
           },
           "threshold": {
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": 0.1
           },
           "force": {
+            "type": "boolean"
+          },
+          "inline": {
             "type": "boolean"
           }
         },
@@ -4155,21 +4804,141 @@
       "result": {
         "type": "object",
         "properties": {
-          "blob": {
-            "type": "string"
+          "a": {
+            "type": "object"
+          },
+          "b": {
+            "type": "object"
+          },
+          "threshold": {
+            "type": "number"
+          },
+          "channel_threshold": {},
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "size_mismatch": {
+            "type": "boolean"
+          },
+          "a_size": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ]
+          },
+          "b_size": {
+            "type": "object",
+            "properties": {
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ]
+          },
+          "changed_pixels": {
+            "type": "integer"
+          },
+          "total_pixels": {
+            "type": "integer"
           },
           "changed_ratio": {
             "type": "number"
           },
-          "regions": {},
+          "regions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "integer"
+                },
+                "y": {
+                  "type": "integer"
+                },
+                "width": {
+                  "type": "integer"
+                },
+                "height": {
+                  "type": "integer"
+                },
+                "pixels": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "width",
+                "height",
+                "pixels"
+              ]
+            }
+          },
+          "regions_total": {
+            "type": "integer"
+          },
+          "forced": {
+            "type": "boolean"
+          },
+          "blob": {
+            "type": "string"
+          },
+          "path_on_machine": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "data_b64": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "inline_skipped": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
-          "blob",
+          "a",
+          "b",
+          "threshold",
+          "channel_threshold",
+          "width",
+          "height",
+          "size_mismatch",
+          "a_size",
+          "b_size",
+          "changed_pixels",
+          "total_pixels",
           "changed_ratio",
-          "regions"
+          "regions",
+          "regions_total",
+          "forced",
+          "blob",
+          "path_on_machine",
+          "bytes"
         ]
       }
     },
@@ -4180,34 +4949,58 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
             "type": "string"
           },
-          "preview": {
-            "$ref": "#/$defs/Target"
-          },
-          "selector": {
+          "target": {
             "type": "string"
           },
           "format": {
             "type": "string",
             "enum": [
+              "a11y",
+              "accessibility",
               "text",
-              "html",
-              "a11y"
-            ]
+              "html"
+            ],
+            "default": "a11y"
+          },
+          "max_bytes": {
+            "type": "integer"
+          },
+          "selector": {
+            "type": "string"
           }
         }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
           "content": {
             "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
           }
         },
         "required": [
-          "content"
+          "session",
+          "url",
+          "format",
+          "content",
+          "truncated"
         ]
       }
     },
@@ -4218,27 +5011,36 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           },
           "expression": {
             "type": "string"
+          },
+          "js": {
+            "type": "string"
           }
-        },
-        "required": [
-          "browser_session",
-          "expression"
-        ]
+        }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "value": {},
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
+          "session",
           "value"
         ]
       }
@@ -4265,12 +5067,91 @@
         }
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "plan": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "platform": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "checksum_known": {
+                    "type": "boolean"
+                  },
+                  "dir": {
+                    "type": "string"
+                  },
+                  "binary": {
+                    "type": "string"
+                  },
+                  "installed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "version",
+                  "platform",
+                  "url",
+                  "sha256",
+                  "checksum_known",
+                  "dir",
+                  "binary",
+                  "installed"
+                ]
+              },
+              "confirm_required": {
+                "type": "boolean"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "plan",
+              "confirm_required"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "installed": {
+                "type": "boolean"
+              },
+              "binary": {
+                "type": "string"
+              },
+              "plan": {
+                "type": "object"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "installed",
+              "binary",
+              "plan"
+            ]
           }
-        }
+        ]
       }
     },
     "browser.list": {
@@ -4289,7 +5170,9 @@
               "type": "object"
             }
           },
-          "browser": {},
+          "browser": {
+            "type": "object"
+          },
           "machine": {
             "type": "string"
           }
@@ -4308,7 +5191,13 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           },
           "url": {
@@ -4318,20 +5207,51 @@
             "type": "string"
           },
           "wait": {
-            "type": "boolean"
+            "anyOf": [
+              {
+                "const": "load"
+              },
+              {
+                "const": "domcontentloaded"
+              },
+              {
+                "const": "commit"
+              },
+              {
+                "const": "none"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": "load"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 15000
           }
-        },
-        "required": [
-          "browser_session"
-        ]
+        }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "status": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "final_url": {
+            "type": "string"
+          },
+          "title": {
             "type": "string"
           },
           "cursor": {
@@ -4339,8 +5259,10 @@
           }
         },
         "required": [
+          "session",
           "status",
-          "final_url"
+          "final_url",
+          "title"
         ]
       }
     },
@@ -4349,59 +5271,218 @@
       "scope": "pane",
       "pane_scope": "open",
       "params": {
-        "type": "object",
-        "properties": {
-          "browser_session": {
-            "type": "string"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "browser_session": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "failed_only": {
+                "type": "boolean"
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "since_ms": {
+                "type": "integer"
+              },
+              "since": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer",
+                "default": 200
+              }
+            }
           },
-          "preview": {
-            "$ref": "#/$defs/Target"
-          },
-          "failed_only": {
-            "type": "boolean"
-          },
-          "since_ms": {
-            "type": "integer"
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "$ref": "#/$defs/Target"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "console",
+                  "network"
+                ]
+              },
+              "level": {
+                "type": "string"
+              },
+              "errors": {
+                "type": "boolean"
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "failed_only": {
+                "type": "boolean"
+              },
+              "after": {
+                "type": "integer"
+              },
+              "since_ms": {
+                "type": "integer"
+              },
+              "since": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "pane"
+            ]
           }
-        }
+        ]
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "entries": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "ts": {
-                  "type": "integer"
-                },
-                "method": {
-                  "type": "string"
-                },
-                "url": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "integer"
-                },
-                "error": {
-                  "type": "string"
-                },
-                "blocked_by_policy": {
-                  "type": "boolean"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ts": {
+                      "type": "integer"
+                    },
+                    "method": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "mime": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "blocked_reason": {
+                      "type": "string"
+                    },
+                    "blocked_by_policy": {
+                      "type": "string"
+                    },
+                    "layer": {
+                      "type": "string"
+                    },
+                    "duration_ms": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "ts",
+                    "type"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "session",
+              "entries"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "type": "string"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object"
                 }
               },
-              "required": [
-                "ts",
-                "method",
-                "url"
-              ]
-            }
+              "last_seq": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "relayed",
+                  "none"
+                ]
+              },
+              "url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "pane",
+              "entries",
+              "last_seq",
+              "source",
+              "url"
+            ]
           }
-        },
-        "required": [
-          "entries"
         ]
       }
     },
@@ -4456,170 +5537,17 @@
           },
           "dark": {
             "type": "boolean"
+          },
+          "wait": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer"
           }
         }
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "session": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "owner": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "pane": {
-                    "type": "string"
-                  },
-                  "pane_handle": {
-                    "type": "string"
-                  },
-                  "run": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "pane"
-                ]
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "user": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "user"
-                ]
-              }
-            ]
-          },
-          "preview": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
-          },
-          "created_ms": {
-            "type": "integer"
-          },
-          "viewport": {
-            "type": "object",
-            "properties": {
-              "width": {
-                "type": "integer"
-              },
-              "height": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "width",
-              "height"
-            ]
-          },
-          "device": {
-            "type": "string"
-          },
-          "previews": {
-            "type": "string",
-            "enum": [
-              "own",
-              "machine"
-            ]
-          },
-          "human_control": {
-            "type": "boolean"
-          },
-          "screencast": {
-            "type": "boolean"
-          },
-          "proxy_port": {
-            "type": "integer"
-          },
-          "machine": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string"
-              },
-              "machine": {
-                "type": "string"
-              },
-              "runner": {
-                "type": "string"
-              },
-              "browser": {},
-              "fresh_context": {
-                "type": "boolean"
-              },
-              "device": {
-                "type": "string"
-              },
-              "viewport": {
-                "type": "object",
-                "properties": {
-                  "width": {
-                    "type": "integer"
-                  },
-                  "height": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "width",
-                  "height"
-                ]
-              },
-              "dpr": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "kind",
-              "machine",
-              "runner",
-              "browser",
-              "fresh_context",
-              "viewport",
-              "dpr"
-            ]
-          },
-          "status": {
-            "type": "integer"
-          },
-          "final_url": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
-          }
-        },
-        "required": [
-          "session",
-          "session_id",
-          "owner",
-          "url",
-          "created_ms",
-          "viewport",
-          "previews",
-          "human_control",
-          "screencast",
-          "machine",
-          "environment"
-        ]
+        "$ref": "#/$defs/BrowserSession"
       }
     },
     "browser.pane.console": {
@@ -4640,18 +5568,58 @@
             "type": "boolean",
             "default": false
           }
-        },
-        "required": [
-          "pane"
-        ]
+        }
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "closed": {
+                "type": "string"
+              },
+              "pane_handle": {
+                "type": "string"
+              },
+              "browser_pane": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "closed",
+              "pane_handle",
+              "browser_pane"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "pane": {
+                "type": "string"
+              },
+              "pane_handle": {
+                "type": "string"
+              },
+              "browser_pane": {
+                "type": "string"
+              },
+              "existing": {
+                "type": "boolean"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "pane",
+              "pane_handle",
+              "browser_pane"
+            ]
           }
-        }
+        ]
       }
     },
     "browser.pane.console_push": {
@@ -4702,9 +5670,6 @@
       "params": {
         "type": "object",
         "properties": {
-          "pane": {
-            "$ref": "#/$defs/Target"
-          },
           "preview": {
             "$ref": "#/$defs/Target"
           },
@@ -4718,11 +5683,44 @@
               "down",
               "left",
               "up",
-              "tab"
-            ]
+              "tab",
+              "float"
+            ],
+            "default": "right"
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
           },
           "machine": {
             "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "viewport": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "width": {
+                    "type": "integer"
+                  },
+                  "height": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "width",
+                  "height"
+                ]
+              }
+            ]
+          },
+          "fit": {
+            "type": "boolean"
           },
           "focus": {
             "type": "boolean",
@@ -4737,7 +5735,7 @@
         "type": "object",
         "properties": {
           "opened_in": {
-            "type": "string"
+            "const": "pane"
           },
           "pane": {
             "type": "string"
@@ -5049,7 +6047,26 @@
             "type": "string"
           },
           "viewport": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "width": {
+                    "type": "integer"
+                  },
+                  "height": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "width",
+                  "height"
+                ]
+              }
+            ]
           },
           "fit": {
             "type": "boolean"
@@ -5063,7 +6080,7 @@
         "type": "object",
         "properties": {
           "pane": {
-            "$ref": "#/$defs/Pane"
+            "type": "string"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -5081,36 +6098,40 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
             "type": "string"
           },
-          "selector": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          },
-          "role": {
+          "target": {
             "type": "string"
           },
           "key": {
             "type": "string"
-          },
-          "submit": {
-            "type": "boolean"
           }
         },
         "required": [
-          "browser_session"
+          "key"
         ]
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        }
+        },
+        "required": [
+          "session",
+          "key"
+        ]
       }
     },
     "browser.release": {
@@ -5122,11 +6143,14 @@
         "properties": {
           "session": {
             "type": "string"
+          },
+          "browser_session": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
           }
-        },
-        "required": [
-          "session"
-        ]
+        }
       },
       "result": {
         "type": "object",
@@ -5157,16 +6181,95 @@
           "session": {
             "type": "string"
           },
+          "browser_session": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
           "after_seq": {
             "type": "integer"
           }
-        },
-        "required": [
-          "session"
-        ]
+        }
       },
       "result": {
-        "type": "object"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "integer"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "width": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "height": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "received_ms": {
+                "type": "integer"
+              },
+              "data_b64": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "session",
+              "seq",
+              "mime",
+              "width",
+              "height",
+              "received_ms",
+              "data_b64"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "seq": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "data_b64": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "session",
+              "seq",
+              "data_b64"
+            ]
+          }
+        ]
       }
     },
     "browser.screenshot": {
@@ -5176,14 +6279,42 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
             "type": "string"
           },
-          "preview": {
-            "$ref": "#/$defs/Target"
+          "target": {
+            "type": "string"
           },
           "url": {
             "type": "string"
+          },
+          "preview": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "viewport": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "dpr": {
+            "type": "number"
+          },
+          "color_scheme": {
+            "type": "string"
+          },
+          "dark": {
+            "type": "boolean"
           },
           "full_page": {
             "type": "boolean"
@@ -5191,15 +6322,33 @@
           "selector": {
             "type": "string"
           },
-          "viewport": {},
-          "device": {
-            "type": "string"
+          "timeout_ms": {
+            "type": "integer"
+          },
+          "inline": {
+            "type": "boolean"
           }
         }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
           "blob": {
             "type": "string"
           },
@@ -5212,18 +6361,82 @@
           "height": {
             "type": "integer"
           },
+          "bytes": {
+            "type": "integer"
+          },
+          "binding": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "illustrative"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
           "meta": {
             "$ref": "#/$defs/ScreenshotMeta"
+          },
+          "data_b64": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "inline_skipped": {
+            "type": "string"
+          },
+          "one_shot": {
+            "type": "boolean"
+          },
+          "opened_session": {
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "final_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
+          "session",
+          "id",
+          "handle",
           "blob",
           "path_on_machine",
           "width",
           "height",
+          "bytes",
+          "binding",
+          "label",
           "meta"
         ]
       }
@@ -5235,21 +6448,34 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
             "type": "string"
+          },
+          "target": {
+            "type": "string"
           }
-        },
-        "required": [
-          "browser_session"
-        ]
+        }
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "closed": {
+            "type": "boolean"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        }
+        },
+        "required": [
+          "session",
+          "closed"
+        ]
       }
     },
     "browser.session_open": {
@@ -5259,51 +6485,61 @@
       "params": {
         "type": "object",
         "properties": {
-          "preview": {
-            "$ref": "#/$defs/Target"
-          },
           "url": {
             "type": "string"
           },
-          "viewport": {
-            "type": "object",
-            "properties": {
-              "w": {
-                "type": "integer"
-              },
-              "h": {
-                "type": "integer"
-              },
-              "dpr": {
-                "type": "number"
-              }
-            }
+          "preview": {
+            "type": "string"
+          },
+          "machine": {
+            "type": "string"
           },
           "device": {
             "type": "string"
           },
-          "color_scheme": {
-            "type": "string",
-            "enum": [
-              "light",
-              "dark"
+          "viewport": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "width": {
+                    "type": "integer"
+                  },
+                  "height": {
+                    "type": "integer"
+                  },
+                  "w": {
+                    "type": "integer"
+                  },
+                  "h": {
+                    "type": "integer"
+                  }
+                }
+              }
             ]
+          },
+          "dpr": {
+            "type": "number"
+          },
+          "color_scheme": {
+            "type": "string"
+          },
+          "dark": {
+            "type": "boolean"
+          },
+          "wait": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer"
           }
         }
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "browser_session": {
-            "type": "string"
-          },
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
-          }
-        },
-        "required": [
-          "browser_session"
-        ]
+        "$ref": "#/$defs/BrowserSession"
       }
     },
     "browser.snapshot": {
@@ -5376,7 +6612,111 @@
         "type": "object"
       },
       "result": {
-        "type": "object"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "running": {
+                "const": true
+              },
+              "pid": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "product": {
+                "type": "string"
+              },
+              "binary": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "uptime_ms": {
+                "type": "integer"
+              },
+              "sessions": {
+                "type": "integer"
+              },
+              "denied": {
+                "type": "integer"
+              },
+              "profile_dir": {
+                "type": "string"
+              },
+              "idle_timeout_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "running",
+              "pid",
+              "product",
+              "binary",
+              "kind",
+              "uptime_ms",
+              "sessions",
+              "denied",
+              "profile_dir",
+              "idle_timeout_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "running": {
+                "const": false
+              },
+              "sessions": {
+                "type": "integer"
+              },
+              "denied": {
+                "type": "integer"
+              },
+              "binary": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "profile_dir": {
+                "type": "string"
+              },
+              "idle_timeout_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "running",
+              "sessions",
+              "denied",
+              "binary",
+              "kind",
+              "profile_dir",
+              "idle_timeout_ms"
+            ]
+          }
+        ]
       }
     },
     "browser.take_over": {
@@ -5388,11 +6728,14 @@
         "properties": {
           "session": {
             "type": "string"
+          },
+          "browser_session": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
           }
-        },
-        "required": [
-          "session"
-        ]
+        }
       },
       "result": {
         "type": "object",
@@ -5420,36 +6763,52 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
             "type": "string"
           },
-          "selector": {
+          "target": {
             "type": "string"
           },
           "text": {
             "type": "string"
           },
-          "role": {
+          "selector": {
             "type": "string"
           },
-          "key": {
-            "type": "string"
+          "clear": {
+            "type": "boolean"
           },
           "submit": {
             "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "integer"
           }
         },
         "required": [
-          "browser_session"
+          "text"
         ]
       },
       "result": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
+          "typed": {
+            "type": "integer"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        }
+        },
+        "required": [
+          "session",
+          "typed"
+        ]
       }
     },
     "browser.wait": {
@@ -5459,46 +6818,39 @@
       "params": {
         "type": "object",
         "properties": {
+          "session": {
+            "type": "string"
+          },
           "browser_session": {
             "type": "string"
           },
+          "target": {
+            "type": "string"
+          },
           "for": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "selector": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "selector"
-                ]
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "ms": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "ms"
-                ]
-              }
-            ]
+            "type": "string",
+            "default": "load"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 15000
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "waited": {
+            "type": "string"
           }
         },
         "required": [
-          "browser_session",
-          "for"
+          "session",
+          "waited"
         ]
-      },
-      "result": {
-        "type": "object"
       }
     },
     "browser.watch": {
@@ -5524,8 +6876,10 @@
               "down",
               "left",
               "up",
-              "tab"
-            ]
+              "tab",
+              "float"
+            ],
+            "default": "right"
           },
           "focus": {
             "type": "boolean",
@@ -5564,7 +6918,14 @@
             "type": "string"
           },
           "source_pane": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
@@ -7202,6 +8563,33 @@
         "required": [
           "subscription_id",
           "at"
+        ]
+      }
+    },
+    "events.unsubscribe": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "subscription_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "unsubscribed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "unsubscribed"
         ]
       }
     },
@@ -10159,18 +11547,26 @@
         "type": "object",
         "properties": {
           "port": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
-          "host": {
+          "path": {
             "type": "string",
-            "default": "127.0.0.1"
+            "default": "/"
           },
           "scheme": {
             "type": "string",
+            "enum": [
+              "http",
+              "https"
+            ],
             "default": "http"
-          },
-          "path": {
-            "type": "string"
           },
           "label": {
             "type": "string"
@@ -10180,6 +11576,9 @@
           },
           "task": {
             "$ref": "#/$defs/Target"
+          },
+          "tls_origin": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -10210,6 +11609,9 @@
         "properties": {
           "preview": {
             "$ref": "#/$defs/Target"
+          },
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10219,16 +11621,10 @@
       "result": {
         "type": "object",
         "properties": {
-          "preview": {
-            "$ref": "#/$defs/Preview"
-          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
-        },
-        "required": [
-          "preview"
-        ]
+        }
       }
     },
     "preview.forget": {
@@ -10240,6 +11636,9 @@
         "properties": {
           "preview": {
             "$ref": "#/$defs/Target"
+          },
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10264,6 +11663,9 @@
         "properties": {
           "preview": {
             "$ref": "#/$defs/Target"
+          },
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10302,10 +11704,15 @@
             "type": "string",
             "enum": [
               "suggested",
+              "declared",
               "up",
               "down",
+              "gone",
               "all"
             ]
+          },
+          "all": {
+            "type": "boolean"
           }
         }
       },
@@ -10317,6 +11724,9 @@
             "items": {
               "$ref": "#/$defs/Preview"
             }
+          },
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10333,6 +11743,9 @@
         "properties": {
           "preview": {
             "$ref": "#/$defs/Target"
+          },
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10342,15 +11755,64 @@
       "result": {
         "type": "object",
         "properties": {
+          "machine": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string"
+          },
+          "preview_handle": {
+            "type": "string"
+          },
           "local_port": {
             "type": "integer"
+          },
+          "addrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "since_ms": {
+            "type": "integer"
+          },
+          "accepted": {
+            "type": "integer"
+          },
+          "rejected": {
+            "type": "integer"
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "peer_check": {
+            "const": "same_user"
+          },
+          "warning": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "already": {
+            "type": "boolean"
           },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
-          "local_port"
+          "machine",
+          "preview",
+          "preview_handle",
+          "local_port",
+          "addrs",
+          "since_ms",
+          "accepted",
+          "rejected",
+          "authenticated",
+          "peer_check",
+          "warning"
         ]
       }
     },
@@ -10364,37 +11826,283 @@
           "preview": {
             "$ref": "#/$defs/Target"
           },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "profile",
-              "proxy"
-            ]
-          },
-          "client": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "preview"
-        ]
-      },
-      "result": {
-        "type": "object",
-        "properties": {
-          "opened_in": {
-            "type": "string"
-          },
           "url": {
             "type": "string"
           },
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+          "machine": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "pane",
+              "window",
+              "proxy"
+            ]
+          },
+          "window": {
+            "type": "boolean"
+          },
+          "proxy": {
+            "type": "boolean"
+          },
+          "split": {
+            "type": "string",
+            "enum": [
+              "right",
+              "down",
+              "left",
+              "up",
+              "tab",
+              "float"
+            ]
+          },
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "focus": {
+            "type": "boolean",
+            "default": true
+          },
+          "device": {
+            "type": "string"
+          },
+          "viewport": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "width": {
+                    "type": "integer"
+                  },
+                  "height": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "width",
+                  "height"
+                ]
+              }
+            ]
+          },
+          "profile": {
+            "type": "string"
+          },
+          "no_open": {
+            "type": "boolean",
+            "default": false
+          },
+          "open": {
+            "type": "boolean"
+          },
+          "tls_origin": {
+            "type": "boolean"
           }
-        },
-        "required": [
-          "opened_in",
-          "url"
+        }
+      },
+      "result": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "opened_in": {
+                "const": "pane"
+              },
+              "pane": {
+                "type": "string"
+              },
+              "pane_handle": {
+                "type": "string"
+              },
+              "tab": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "machine": {
+                "type": "string"
+              },
+              "source_pane": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "opened_in",
+              "pane",
+              "pane_handle",
+              "tab",
+              "url",
+              "machine",
+              "source_pane"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "opened_in": {
+                "const": "window"
+              },
+              "url": {
+                "type": "string"
+              },
+              "machine": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "profile_dir": {
+                "type": "string"
+              },
+              "browser": {
+                "type": "string"
+              },
+              "browser_kind": {
+                "type": "string"
+              },
+              "pid": {
+                "type": "integer"
+              },
+              "reused": {
+                "type": "boolean"
+              },
+              "socks_port": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "route": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "loopback",
+                  "remote"
+                ]
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "opened_in",
+              "url",
+              "machine",
+              "profile",
+              "profile_dir",
+              "browser",
+              "browser_kind",
+              "pid",
+              "reused",
+              "socks_port",
+              "route"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "opened_in": {
+                "const": "default_browser"
+              },
+              "url": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "opened_in",
+              "url"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "opened_in": {
+                "const": "proxy"
+              },
+              "url": {
+                "type": "string"
+              },
+              "proxy_url": {
+                "type": "string"
+              },
+              "host": {
+                "type": "string"
+              },
+              "proxy_port": {
+                "type": "integer"
+              },
+              "machine": {
+                "type": "string"
+              },
+              "preview": {
+                "type": "string"
+              },
+              "opened": {
+                "type": "boolean"
+              },
+              "token_ttl_s": {
+                "type": "integer"
+              },
+              "session_ttl_s": {
+                "type": "integer"
+              },
+              "tls_origin": {
+                "type": "boolean"
+              },
+              "remote_url": {
+                "type": "string"
+              },
+              "caveats": {
+                "type": "string"
+              },
+              "ca": {
+                "$ref": "#/$defs/PreviewCa"
+              },
+              "open_url": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "opened_in",
+              "url",
+              "proxy_url",
+              "host",
+              "proxy_port",
+              "machine",
+              "preview",
+              "opened",
+              "token_ttl_s",
+              "session_ttl_s",
+              "tls_origin",
+              "remote_url",
+              "caveats"
+            ]
+          }
         ]
       }
     },
@@ -10441,13 +12149,34 @@
                       "type": "boolean"
                     },
                     "pid": {
-                      "type": "integer"
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "machine": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "route": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "bytes": {
                       "type": "integer"
@@ -10457,6 +12186,9 @@
                     "name",
                     "path",
                     "running",
+                    "pid",
+                    "machine",
+                    "route",
                     "bytes"
                   ]
                 }
@@ -10519,13 +12251,34 @@
                   "type": "boolean"
                 },
                 "pid": {
-                  "type": "integer"
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "machine": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "route": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "bytes": {
                   "type": "integer"
@@ -10535,6 +12288,9 @@
                 "name",
                 "path",
                 "running",
+                "pid",
+                "machine",
+                "route",
                 "bytes"
               ]
             }
@@ -10562,10 +12318,7 @@
           "machine": {
             "type": "string"
           }
-        },
-        "required": [
-          "profile"
-        ]
+        }
       },
       "result": {
         "type": "object",
@@ -10595,6 +12348,9 @@
         "properties": {
           "preview": {
             "$ref": "#/$defs/Target"
+          },
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10639,13 +12395,82 @@
           "browsers": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "profile": {
+                  "type": "string"
+                },
+                "machine": {
+                  "type": "string"
+                },
+                "route": {
+                  "type": "string"
+                },
+                "pid": {
+                  "type": "integer"
+                },
+                "running": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "profile",
+                "machine",
+                "route",
+                "pid",
+                "running"
+              ]
             }
           },
           "links": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "machine": {
+                  "type": "string"
+                },
+                "connected": {
+                  "type": "boolean"
+                },
+                "bytes_in": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "bytes_out": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "rtt_ms": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "machine",
+                "connected",
+                "bytes_in",
+                "bytes_out",
+                "rtt_ms"
+              ]
             }
           },
           "accepted": {
@@ -10653,11 +12478,107 @@
           },
           "rejected": {
             "type": "integer"
+          },
+          "proxy": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "port": {
+                    "type": "integer"
+                  },
+                  "tls": {
+                    "type": "boolean"
+                  },
+                  "routes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "host": {
+                          "type": "string"
+                        },
+                        "machine": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "type": "string"
+                        },
+                        "handle": {
+                          "type": "string"
+                        },
+                        "port": {
+                          "type": "integer"
+                        },
+                        "scheme": {
+                          "type": "string",
+                          "enum": [
+                            "http",
+                            "https"
+                          ]
+                        },
+                        "tls": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "host",
+                        "machine",
+                        "preview",
+                        "handle",
+                        "port",
+                        "scheme",
+                        "tls"
+                      ]
+                    }
+                  },
+                  "stats": {
+                    "type": "object",
+                    "properties": {
+                      "requests": {
+                        "type": "integer"
+                      },
+                      "denied": {
+                        "type": "integer"
+                      },
+                      "websockets": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "requests",
+                      "denied",
+                      "websockets"
+                    ]
+                  }
+                },
+                "required": [
+                  "port",
+                  "tls",
+                  "routes",
+                  "stats"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mirrors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PreviewMirror"
+            }
           }
         },
         "required": [
+          "socks_port",
           "browsers",
-          "links"
+          "links",
+          "accepted",
+          "rejected",
+          "proxy",
+          "mirrors"
         ]
       }
     },
@@ -10669,12 +12590,22 @@
         "type": "object",
         "properties": {
           "preview": {
-            "$ref": "#/$defs/Target"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Target"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "port": {
+            "type": "integer"
+          },
+          "machine": {
+            "type": "string"
           }
-        },
-        "required": [
-          "preview"
-        ]
+        }
       },
       "result": {
         "type": "object",
@@ -10682,12 +12613,20 @@
           "local_port": {
             "type": "integer"
           },
+          "machine": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string"
+          },
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
         },
         "required": [
-          "local_port"
+          "local_port",
+          "machine",
+          "preview"
         ]
       }
     },
@@ -10701,12 +12640,8 @@
           "preview": {
             "$ref": "#/$defs/Target"
           },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "profile",
-              "proxy"
-            ]
+          "machine": {
+            "type": "string"
           }
         },
         "required": [
@@ -10723,12 +12658,20 @@
             "type": "string"
           },
           "proxy_url": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "remote_url",
-          "profile_url"
+          "profile_url",
+          "proxy_url"
         ]
       }
     },
@@ -10989,19 +12932,33 @@
             "type": "object",
             "properties": {
               "runtime": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "docker_sandboxes": {
-                "type": "object",
-                "properties": {
-                  "plugin": {},
-                  "note": {
-                    "type": "string"
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "plugin": {},
+                      "note": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "plugin",
+                      "note"
+                    ]
+                  },
+                  {
+                    "type": "null"
                   }
-                },
-                "required": [
-                  "plugin",
-                  "note"
                 ]
               },
               "vibeke_linux": {},
@@ -12269,6 +14226,15 @@
           },
           "group": {
             "$ref": "#/$defs/Target"
+          },
+          "root": {
+            "type": "string"
+          },
+          "branch_template": {
+            "type": "string"
+          },
+          "fetch": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -12411,7 +14377,7 @@
                           "type": "object",
                           "properties": {
                             "hidden": {
-                              "const": "true"
+                              "const": true
                             },
                             "title": {
                               "type": "string"
@@ -12467,7 +14433,7 @@
                           "type": "object",
                           "properties": {
                             "hidden": {
-                              "const": "true"
+                              "const": true
                             },
                             "title": {
                               "type": "string"
@@ -12679,16 +14645,25 @@
             "$ref": "#/$defs/Target"
           },
           "remove_worktree": {
-            "type": "string",
-            "enum": [
-              "ask",
-              "true",
-              "false"
-            ]
+            "anyOf": [
+              {
+                "const": "ask"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "default": false
           },
-          "delete_branch": {
+          "force": {
             "type": "boolean",
             "default": false
+          },
+          "archive": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
           }
         },
         "required": [
@@ -12701,6 +14676,7 @@
           "task": {
             "$ref": "#/$defs/Task"
           },
+          "job": {},
           "cursor": {
             "$ref": "#/$defs/Cursor"
           }
@@ -12731,39 +14707,69 @@
           "task": {
             "$ref": "#/$defs/Task"
           },
-          "workspace": {
+          "branch_status": {
             "anyOf": [
               {
-                "$ref": "#/$defs/Workspace"
+                "type": "object",
+                "properties": {
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "ahead": {
+                    "type": "integer"
+                  },
+                  "behind": {
+                    "type": "integer"
+                  },
+                  "dirty_files": {
+                    "type": "integer"
+                  },
+                  "upstream": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "compared_to": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "branch",
+                  "ahead",
+                  "behind",
+                  "dirty_files",
+                  "upstream",
+                  "compared_to"
+                ]
               },
               {
                 "type": "null"
               }
             ]
-          },
-          "runs": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/AgentRun"
-            }
-          },
-          "previews": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/Preview"
-            }
-          },
-          "collisions": {
-            "type": "array",
-            "items": {}
           }
         },
         "required": [
           "task",
-          "workspace",
-          "runs",
-          "previews",
-          "collisions"
+          "branch_status"
         ]
       }
     },
@@ -13470,7 +15476,7 @@
             "type": "string"
           },
           "requires_confirmation": {
-            "const": "true"
+            "const": true
           },
           "label": {
             "type": "string"
@@ -16454,8 +18460,26 @@
           "preview_id": {
             "type": "string"
           },
-          "pane": {},
-          "task": {},
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "machine": {
             "type": "string"
           }
@@ -16480,9 +18504,36 @@
           "text": {
             "type": "string"
           },
-          "url": {},
-          "line": {},
-          "session": {}
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
         },
         "required": [
           "count",
@@ -16491,6 +18542,222 @@
           "url",
           "line",
           "session"
+        ]
+      }
+    },
+    "preview.declared": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "type": "string"
+          },
+          "preview_handle": {
+            "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview",
+          "preview_handle",
+          "pane",
+          "task",
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "$ref": "#/$defs/Preview"
+          }
+        },
+        "required": [
+          "preview"
+        ]
+      }
+    },
+    "preview.discovered": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "type": "string"
+          },
+          "preview_handle": {
+            "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview",
+          "preview_handle",
+          "pane",
+          "task",
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "$ref": "#/$defs/Preview"
+          }
+        },
+        "required": [
+          "preview"
+        ]
+      }
+    },
+    "preview.down": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "type": "string"
+          },
+          "preview_handle": {
+            "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview",
+          "preview_handle",
+          "pane",
+          "task",
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "$ref": "#/$defs/Preview"
+          }
+        },
+        "required": [
+          "preview"
+        ]
+      }
+    },
+    "preview.gone": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "type": "string"
+          },
+          "preview_handle": {
+            "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview",
+          "preview_handle",
+          "pane",
+          "task",
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "$ref": "#/$defs/Preview"
+          }
+        },
+        "required": [
+          "preview"
         ]
       }
     },
@@ -16538,11 +18805,34 @@
       "subject": {
         "type": "object",
         "properties": {
+          "machine": {
+            "type": "string"
+          },
           "preview": {
             "type": "string"
           },
-          "pane": {
+          "preview_handle": {
             "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -16553,13 +18843,39 @@
             "type": "string"
           },
           "opened_in": {
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "pane"
+              },
+              {
+                "const": "window"
+              },
+              {
+                "const": "proxy"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "profile": {
             "type": "string"
           },
           "browser": {
             "type": "string"
+          },
+          "tls_origin": {
+            "type": "boolean"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -16597,6 +18913,60 @@
         },
         "required": [
           "local_port"
+        ]
+      }
+    },
+    "preview.up": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "type": "string"
+          },
+          "preview_handle": {
+            "type": "string"
+          },
+          "pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "machine": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview",
+          "preview_handle",
+          "pane",
+          "task",
+          "machine"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "preview": {
+            "$ref": "#/$defs/Preview"
+          }
+        },
+        "required": [
+          "preview"
         ]
       }
     },
@@ -17780,6 +20150,9 @@
         "properties": {
           "path": {
             "type": "string"
+          },
+          "task": {
+            "type": "string"
           }
         },
         "required": [
@@ -17797,7 +20170,6 @@
           }
         },
         "required": [
-          "job",
           "state"
         ]
       }

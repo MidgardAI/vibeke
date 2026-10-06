@@ -691,7 +691,7 @@ fn proxy_mode_and_mirror_through_bridge() {
     assert_eq!(r["machine"], "fakebox");
     let host = r["host"].as_str().unwrap().to_string();
     assert!(
-        host.starts_with(&format!("{rh}-fakebox")) && host.ends_with(".vibeke.localhost"),
+        host.starts_with(&format!("{rh}-")) && host.ends_with(".vibeke.localhost"),
         "{host}"
     );
     let port = r["proxy_port"].as_u64().unwrap() as u16;
@@ -1262,6 +1262,21 @@ fn tls_origin_trust_ca_and_https_proxy() {
     );
     // The https proxy shows in `preview status`.
     assert_eq!(s.json(&["preview", "status"])["proxy"]["tls"], true);
+    // The hostname is unguessable (`<handle>-<26 base32>`) and a re-open rotates it.
+    let label = host.strip_suffix(".vibeke.localhost").unwrap();
+    assert_eq!(label.rsplit_once('-').unwrap().1.len(), 26, "{host}");
+    let again = s.json(&[
+        "preview",
+        "open",
+        &handle,
+        "--proxy",
+        "--no-open",
+        "--tls-origin",
+    ]);
+    assert_ne!(again["host"], json!(host), "{again}");
+    // Events never carry a proxy hostname (other panes read them).
+    let ev = s.json(&["events", "read", "--types", "preview.opened"]);
+    assert!(!ev.to_string().contains(".vibeke.localhost"), "{ev}");
 
     if std::env::var("VIBEKE_BROWSER_TESTS").is_ok_and(|v| v == "1")
         && let Some(chromium) = playwright_chromium()
@@ -1320,5 +1335,97 @@ fn tls_origin_trust_ca_and_https_proxy() {
             "{:?}",
             app.seen.lock().unwrap()
         );
+
+        // The residual risk (spec 09 §8), measured: an HTTP listener of another local process
+        // on another port that *knows the hostname* gets the browser to send it the session
+        // cookie (no cookie attribute scopes by port; Chromium sends Secure cookies to
+        // http://*.localhost), including on a follow-up request. It cannot replay it over
+        // plain HTTP (the MAC binds it to https; the https route refuses http anyway). Without
+        // the API it never learns the hostname: the 128-bit label is not guessable.
+        let tls_host = r["host"].as_str().unwrap().to_string();
+        let sentinel = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let sport = sentinel.local_addr().unwrap().port();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let heard2 = heard.clone();
+        std::thread::spawn(move || {
+            for c in sentinel.incoming() {
+                let Ok(mut c) = c else { continue };
+                let mut buf = vec![0u8; 8192];
+                let mut got = 0;
+                let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+                while got < buf.len() {
+                    match c.read(&mut buf[got..]) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got += n,
+                    }
+                    if buf[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                heard2
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..got]).into_owned());
+                let html = "<html><body><script>fetch('/follow')</script></body></html>";
+                let _ = write!(
+                    c,
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{html}",
+                    html.len()
+                );
+            }
+        });
+        let mut child = Command::new(&chromium)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--disable-background-networking",
+                &format!("--user-data-dir={}", profile.path().display()),
+                &format!("--ignore-certificate-errors-spki-list={spki}"),
+                &format!("http://{tls_host}:{sport}/first"),
+            ])
+            .spawn()
+            .unwrap();
+        let t0 = Instant::now();
+        while !heard
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|h| h.starts_with("GET /follow "))
+            && t0.elapsed() < Duration::from_secs(30)
+        {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let heard = heard.lock().unwrap().clone();
+        assert!(
+            heard.iter().any(|h| h.starts_with("GET /first ")),
+            "the sentinel was reached only because the test handed the browser the hostname: {heard:?}"
+        );
+        let cookie = heard.iter().find_map(|h| {
+            h.lines()
+                .filter(|l| l.to_ascii_lowercase().starts_with("cookie:"))
+                .flat_map(|l| l[7..].split(';').map(str::trim).collect::<Vec<_>>())
+                .find(|c| c.starts_with("__Host-vk_preview="))
+                .map(str::to_string)
+        });
+        eprintln!(
+            "sentinel on another port received the session cookie: {}",
+            cookie.is_some()
+        );
+        if let Some(c) = cookie {
+            // Replayed over plain HTTP against the proxy: refused.
+            let (st, head, _) = proxy_get(
+                port,
+                &format!("{tls_host}:{port}"),
+                "/ctx",
+                &format!("Cookie: {c}\r\n"),
+            );
+            assert_eq!(st, 421, "{head}");
+        }
     }
 }

@@ -26,6 +26,11 @@ pub fn load() -> Result<std::sync::Arc<LocalCa>, vk_preview::ca::CaError> {
     LocalCa::load_or_create(&ca_dir())
 }
 
+/// The CA as the long-running proxy holds it (reloaded when another process renews it).
+pub fn store() -> Result<std::sync::Arc<vk_preview::ca::CaStore>, vk_preview::ca::CaError> {
+    vk_preview::ca::CaStore::open(&ca_dir())
+}
+
 /// Adds the CA file to the login keychain; `Ok(true)` when the system accepted it.
 pub fn macos_install(pem: &Path) -> std::io::Result<bool> {
     let keychain = crate::paths::home().join("Library/Keychains/login.keychain-db");

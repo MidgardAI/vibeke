@@ -7,8 +7,14 @@
 //!
 //! - object: `{field, field?, field: Type, field?: Type = default, ...}`; a field without a type
 //!   is `any`; `{*: Type}` is a map with arbitrary string keys; keys may be quoted.
+//! - optional vs nullable: `field?: T` may be **absent** but, when present, is a `T`; a field
+//!   the server can send as JSON `null` says so in its type: `field: T|null` (always present,
+//!   maybe null) or `field?: T|null` (absent or null). The emitter writes `null` into the
+//!   schema only when the type says so (`anyOf: [T, {type: null}]`) and the validator below
+//!   checks exactly what the emitted JSON Schema means.
 //! - array: `[Type]`; union: `A | B`; bare lowercase words that are not builtin type names are
-//!   string literals (`allow|deny`), quoted `'x'` too.
+//!   string literals (`allow|deny`), quoted `'x'` too. Bare `true` and `false` are JSON boolean
+//!   literals (`ask|bool`, `requires_confirmation: true`); quote them (`'true'`) for the string.
 //! - builtins: `string bool int number any object null`; CamelCase names are references to
 //!   shared definitions.
 //! - Objects are open (unknown fields are allowed): within `vibeke/1` results only grow
@@ -28,6 +34,8 @@ pub enum Shape {
     /// An open JSON object with no declared fields.
     Object,
     Lit(String),
+    /// A JSON boolean literal (bare `true` / `false`).
+    BoolLit(bool),
     Array(Box<Shape>),
     Map(Box<Shape>),
     Obj(Vec<Field>),
@@ -170,6 +178,8 @@ impl Parser {
                     "any" => Shape::Any,
                     "object" => Shape::Object,
                     "null" => Shape::Null,
+                    "true" => Shape::BoolLit(true),
+                    "false" => Shape::BoolLit(false),
                     n if n.starts_with(|c: char| c.is_ascii_uppercase()) => Shape::Ref(n.into()),
                     n => Shape::Lit(n.into()),
                 })
@@ -310,6 +320,7 @@ impl Shape {
             Shape::Str => json!({"type": "string"}),
             Shape::Object => json!({"type": "object"}),
             Shape::Lit(s) => json!({"const": s}),
+            Shape::BoolLit(b) => json!({"const": b}),
             Shape::Array(s) => json!({"type": "array", "items": s.to_schema()}),
             Shape::Map(s) => json!({"type": "object", "additionalProperties": s.to_schema()}),
             Shape::Ref(n) => json!({"$ref": format!("#/$defs/{n}")}),
@@ -407,6 +418,11 @@ impl Shape {
                     bad(out, &format!("'{s}'"))
                 }
             }
+            Shape::BoolLit(b) => {
+                if v.as_bool() != Some(*b) {
+                    bad(out, &b.to_string())
+                }
+            }
             Shape::Array(s) => match v.as_array() {
                 Some(a) => {
                     for (i, e) in a.iter().enumerate() {
@@ -430,8 +446,9 @@ impl Shape {
             Shape::Obj(fs) => match v.as_object() {
                 Some(o) => {
                     for f in fs {
+                        // A present field is checked against its type whether it is optional
+                        // or not: `null` passes only where the type includes `null`.
                         match o.get(&f.name) {
-                            Some(Value::Null) if f.optional => {}
                             Some(e) => f.shape.check(e, defs, &format!("{path}.{}", f.name), out),
                             None if f.optional => {}
                             None => out.push(format!("{path}: missing required `{}`", f.name)),
@@ -522,12 +539,83 @@ mod tests {
                 .any(|e| e.contains("missing required"))
                 || !p("{a} | {b}").validate(&json!({"c": 1}), &defs).is_empty()
         );
-        // Optional fields accept null (servers serialize unset options as null).
+        // Optional means "may be absent", not "may be null": null needs `|null`.
+        assert!(p("{a?: int}").validate(&json!({}), &defs).is_empty());
+        assert_eq!(p("{a?: int}").validate(&json!({"a": null}), &defs).len(), 1);
         assert!(
-            p("{a?: int}")
+            p("{a?: int|null}")
                 .validate(&json!({"a": null}), &defs)
                 .is_empty()
         );
+        assert!(
+            p("{a: int|null}")
+                .validate(&json!({"a": null}), &defs)
+                .is_empty()
+        );
+        assert_eq!(p("{a: int|null}").validate(&json!({}), &defs).len(), 1);
+    }
+
+    #[test]
+    fn bare_true_and_false_are_boolean_literals() {
+        let defs = BTreeMap::new();
+        assert_eq!(p("true"), Shape::BoolLit(true));
+        assert_eq!(p("false"), Shape::BoolLit(false));
+        assert_eq!(p("'true'"), Shape::Lit("true".into()));
+        // `task.finish remove_worktree`: "ask" or a JSON boolean, never the string "true".
+        let s = p("{remove_worktree?: ask|true|false}");
+        let rw = &s.to_schema()["properties"]["remove_worktree"];
+        assert_eq!(
+            *rw,
+            json!({"anyOf": [{"const": "ask"}, {"const": true}, {"const": false}]})
+        );
+        for ok in [
+            json!({"remove_worktree": true}),
+            json!({"remove_worktree": false}),
+            json!({"remove_worktree": "ask"}),
+        ] {
+            assert!(s.validate(&ok, &defs).is_empty(), "{ok}");
+        }
+        for bad in [
+            json!({"remove_worktree": "true"}),
+            json!({"remove_worktree": "false"}),
+            json!({"remove_worktree": 1}),
+        ] {
+            assert!(!s.validate(&bad, &defs).is_empty(), "{bad}");
+        }
+        // A boolean-literal result field.
+        let r = p("{requires_confirmation: true}");
+        assert_eq!(
+            r.to_schema()["properties"]["requires_confirmation"],
+            json!({"const": true})
+        );
+        assert!(
+            r.validate(&json!({"requires_confirmation": true}), &defs)
+                .is_empty()
+        );
+        assert!(
+            !r.validate(&json!({"requires_confirmation": "true"}), &defs)
+                .is_empty()
+        );
+        assert!(
+            !r.validate(&json!({"requires_confirmation": false}), &defs)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn nullable_fields_are_emitted_as_nullable() {
+        let s = p("{a?: string, b: string|null, c?: int|null}");
+        let sc = s.to_schema();
+        assert_eq!(sc["properties"]["a"], json!({"type": "string"}));
+        assert_eq!(
+            sc["properties"]["b"],
+            json!({"anyOf": [{"type": "string"}, {"type": "null"}]})
+        );
+        assert_eq!(
+            sc["properties"]["c"],
+            json!({"anyOf": [{"type": "integer"}, {"type": "null"}]})
+        );
+        assert_eq!(sc["required"], json!(["b"]));
     }
 
     #[test]

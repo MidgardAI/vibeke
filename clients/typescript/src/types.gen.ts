@@ -52,7 +52,7 @@ export type AgentRun = {
   started_at_ms: number;
   ended_at_ms: number | null;
   capabilities: string[];
-  usage?: RunUsage | null;
+  usage?: RunUsage;
   rate_limit?: RateLimitInfo | null;
 };
 
@@ -67,7 +67,7 @@ export type AgentSummary = {
 
 export type Answer = {
   decision: "allow" | "allow_always" | "deny" | string | null;
-  choices?: unknown[] | null;
+  choices?: unknown[];
   text?: string | null;
 };
 
@@ -91,6 +91,47 @@ export type BrowserPane = {
   watch?: string | null;
   device?: string | null;
   viewport?: string | null;
+};
+
+export type BrowserSession = {
+  session: string;
+  session_id: string;
+  owner: {
+    pane: string;
+    pane_handle: string | null;
+    run: string | null;
+  } | {
+    user: string;
+  };
+  preview: string | null;
+  url: string;
+  created_ms: number;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  device: string | null;
+  previews: "own" | "machine";
+  human_control: boolean;
+  screencast: boolean;
+  proxy_port: number | null;
+  machine: string;
+  environment: {
+    kind: string;
+    machine: string;
+    runner: string;
+    browser: unknown;
+    fresh_context: boolean;
+    device: string | null;
+    viewport: {
+      width: number;
+      height: number;
+    };
+    dpr: number;
+  };
+  status?: number | null;
+  final_url?: string;
+  title?: string;
 };
 
 export type Cursor = {
@@ -199,7 +240,7 @@ export type Notification = {
   urgency: string;
   created_at_ms: number;
   read: boolean;
-  channels?: string[] | null;
+  channels?: string[];
 };
 
 export type Pane = {
@@ -221,7 +262,7 @@ export type Pane = {
   pinned: boolean;
   created_by: string;
   recovered: string | null;
-  isolation?: Isolation | null;
+  isolation?: Isolation;
   browser?: BrowserPane | null;
 };
 
@@ -243,6 +284,28 @@ export type Preview = {
   pid: number | null;
   first_seen_ms: number;
   last_seen_ms: number;
+  pane_handle?: string | null;
+  task_handle?: string | null;
+};
+
+export type PreviewCa = {
+  path: string;
+  sha256: string;
+  spki_sha256: string;
+  trust: string;
+};
+
+export type PreviewMirror = {
+  machine: string;
+  preview: string;
+  preview_handle: string;
+  local_port: number;
+  addrs: string[];
+  since_ms: number;
+  accepted: number;
+  rejected: number;
+  authenticated: boolean;
+  peer_check: "same_user";
 };
 
 export type RateLimitInfo = {
@@ -279,18 +342,18 @@ export type RunUsage = {
 
 export type ScreenshotMeta = {
   id: string;
-  handle?: string | null;
-  workspace?: string | null;
+  handle?: string;
+  workspace?: string;
   task?: string | null;
   run?: string | null;
   preview?: string | null;
-  mime?: string | null;
-  width?: number | null;
-  height?: number | null;
-  ts?: number | null;
-  blob?: string | null;
-  environment?: Record<string, unknown> | null;
-  code?: Record<string, unknown> | null;
+  mime?: string;
+  width?: number;
+  height?: number;
+  ts?: number;
+  blob?: string;
+  environment?: Record<string, unknown>;
+  code?: Record<string, unknown>;
 };
 
 export type Tab = {
@@ -303,8 +366,8 @@ export type Tab = {
   focused_pane: string | null;
   zoomed_pane: string | null;
   order: number;
-  floating?: FloatingPane[] | null;
-  floats_hidden?: boolean | null;
+  floating?: FloatingPane[];
+  floats_hidden?: boolean;
 };
 
 export type Target = string;
@@ -323,14 +386,14 @@ export type Task = {
   status: string;
   setup_status: string | null;
   created_at_ms: number;
-  ownership?: "owned" | "attached" | null;
-  owner_machine?: string | null;
+  ownership?: "owned" | "attached";
+  owner_machine?: string;
   intent_revision?: number | null;
   priority?: number | null;
-  rev?: number | null;
+  rev?: number;
   review_label?: string | null;
   effort?: string | null;
-  isolation?: Isolation | null;
+  isolation?: Isolation;
   checkout?: string | null;
   rate_limit?: RateLimitInfo | null;
 };
@@ -355,7 +418,7 @@ export type AdapterDeliveryAckParams = {
 };
 
 export type AdapterDeliveryAckResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AdapterGateParams = {
@@ -367,11 +430,11 @@ export type AdapterGateParams = {
 
 export type AdapterGateResult = {
   decision: Record<string, unknown> | null;
-  interaction?: Target | null;
-  idempotency_key?: string | null;
-  mode?: "observe" | null;
-  resumed?: boolean | null;
-  cursor?: Cursor | null;
+  interaction?: Target;
+  idempotency_key?: string;
+  mode?: "observe";
+  resumed?: boolean;
+  cursor?: Cursor;
 };
 
 export type AdapterReportSelfParams = {
@@ -388,9 +451,9 @@ export type AdapterReportSelfParams = {
 
 export type AdapterReportSelfResult = {
   type: "ok";
-  dropped?: "stale_seq" | null;
-  applied?: boolean | null;
-  cursor?: Cursor | null;
+  dropped?: "stale_seq";
+  applied?: boolean;
+  cursor?: Cursor;
 };
 
 export type AdapterSignalParams = {
@@ -401,7 +464,7 @@ export type AdapterSignalParams = {
 };
 
 export type AdapterSignalResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentGetParams = {
@@ -420,10 +483,10 @@ export type AgentHarnessesParams = Record<string, unknown>;
 export type AgentHarnessesResult = {
   harnesses: {
     id: string;
-    display?: string | null;
+    display?: string;
     version_detected?: string | null;
-    integration_installed?: boolean | null;
-    capabilities?: string[] | null;
+    integration_installed?: boolean;
+    capabilities?: string[];
   }[];
 };
 
@@ -433,7 +496,7 @@ export type AgentInterruptParams = {
 
 export type AgentInterruptResult = {
   run: AgentRun;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentListParams = {
@@ -482,7 +545,7 @@ export type AgentManifestsReloadResult = {
     screen_rules: boolean;
     warnings: string[];
   }[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentPromptParams = {
@@ -498,7 +561,7 @@ export type AgentPromptParams = {
 export type AgentPromptResult = {
   run: AgentRun;
   turn?: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentReadParams = {
@@ -509,11 +572,11 @@ export type AgentReadParams = {
 };
 
 export type AgentReadResult = {
-  text?: string | null;
-  turns?: unknown[] | null;
-  rows?: number | null;
-  revision?: number | null;
-  truncated?: boolean | null;
+  text?: string;
+  turns?: unknown[];
+  rows?: number;
+  revision?: number;
+  truncated?: boolean;
 };
 
 export type AgentReleaseParams = {
@@ -521,7 +584,7 @@ export type AgentReleaseParams = {
 };
 
 export type AgentReleaseResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentRenameParams = {
@@ -531,7 +594,7 @@ export type AgentRenameParams = {
 
 export type AgentRenameResult = {
   run: AgentRun;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentReportParams = {
@@ -542,7 +605,7 @@ export type AgentReportParams = {
 };
 
 export type AgentReportResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentResumableParams = Record<string, unknown>;
@@ -559,7 +622,7 @@ export type AgentResumeParams = {
 
 export type AgentResumeResult = {
   run: AgentRun;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentSendKeysParams = {
@@ -568,7 +631,7 @@ export type AgentSendKeysParams = {
 };
 
 export type AgentSendKeysResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentSpawnParams = {
@@ -583,7 +646,7 @@ export type AgentSpawnParams = {
 export type AgentSpawnResult = {
   pane: Pane;
   run: AgentRun;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentStartParams = {
@@ -600,7 +663,7 @@ export type AgentStartParams = {
 
 export type AgentStartResult = {
   run: AgentRun;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AgentWaitParams = {
@@ -612,7 +675,7 @@ export type AgentWaitParams = {
 export type AgentWaitResult = {
   run: AgentRun;
   state: string;
-  interaction?: Interaction | null;
+  interaction?: Interaction;
 };
 
 export type ApiMethodsParams = Record<string, unknown>;
@@ -621,8 +684,8 @@ export type ApiMethodsResult = {
   methods: {
     name: string;
     mutating: boolean;
-    milestone?: string | null;
-    capability?: string | null;
+    milestone?: string;
+    capability?: string;
   }[];
 };
 
@@ -640,7 +703,7 @@ export type AssistantCancelParams = {
 
 export type AssistantCancelResult = {
   request: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AssistantConfirmParams = {
@@ -650,7 +713,7 @@ export type AssistantConfirmParams = {
 
 export type AssistantConfirmResult = {
   request: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AssistantConsentParams = {
@@ -665,7 +728,7 @@ export type AssistantConsentParams = {
 export type AssistantConsentResult = {
   consent: Record<string, unknown>;
   notice: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AssistantGenerateParams = {
@@ -686,24 +749,24 @@ export type AssistantGenerateResult = {
   request: Record<string, unknown>;
   preview: {
     digest: string;
-    system?: string | null;
-    user?: string | null;
-    model?: string | null;
-    adapter?: string | null;
-    endpoint_host?: string | null;
-    execution_machine?: string | null;
-    max_output_tokens?: number | null;
-    bytes?: number | null;
-    estimated_input_tokens?: number | null;
+    system?: string;
+    user?: string;
+    model?: string;
+    adapter?: string;
+    endpoint_host?: string;
+    execution_machine?: string;
+    max_output_tokens?: number;
+    bytes?: number;
+    estimated_input_tokens?: number;
     estimated_max_cost_usd?: number | null;
-    sources?: Record<string, unknown>[] | null;
+    sources?: Record<string, unknown>[];
     omitted?: unknown;
     redactions?: unknown;
-    notice?: string | null;
+    notice?: string;
   };
   requires_confirmation: boolean;
-  confirm_with?: Record<string, unknown> | null;
-  cursor?: Cursor | null;
+  confirm_with?: Record<string, unknown>;
+  cursor?: Cursor;
 };
 
 export type AssistantGetParams = {
@@ -747,7 +810,7 @@ export type AssistantPurgeParams = {
 
 export type AssistantPurgeResult = {
   purged: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AssistantRevokeParams = {
@@ -758,7 +821,7 @@ export type AssistantRevokeParams = {
 export type AssistantRevokeResult = {
   revoked: number;
   cancelled_requests: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type AssistantStatusParams = Record<string, unknown>;
@@ -770,15 +833,15 @@ export type AssistantStatusResult = {
   coordinator?: {
     machine: string;
     session: string;
-  } | null;
+  };
   profile?: Record<string, unknown> | null;
-  limits?: Record<string, unknown> | null;
+  limits?: Record<string, unknown>;
   today?: {
     utc_day: number;
     used: unknown;
     reserved: unknown;
     remaining: unknown;
-  } | null;
+  };
 };
 
 export type AttentionListParams = {
@@ -858,7 +921,7 @@ export type AttentionUpdateResult = {
   snoozed_until_ms: number | null;
   pinned: boolean;
   warning: string | null;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BlobAbortParams = {
@@ -867,7 +930,7 @@ export type BlobAbortParams = {
 
 export type BlobAbortResult = {
   aborted: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BlobAppendParams = {
@@ -878,7 +941,7 @@ export type BlobAppendParams = {
 
 export type BlobAppendResult = {
   offset: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BlobBeginParams = {
@@ -890,7 +953,7 @@ export type BlobBeginParams = {
 export type BlobBeginResult = {
   upload_id: string;
   max_chunk: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BlobCommitParams = {
@@ -904,7 +967,7 @@ export type BlobCommitResult = {
   size: number;
   path_on_machine: string;
   path: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BlobPutParams = {
@@ -916,29 +979,49 @@ export type BlobPutParams = {
 export type BlobPutResult = {
   hash: string;
   size: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserAttachScreencastParams = {
-  session: string;
-  after_seq?: number;
+  session?: string;
+  browser_session?: string;
+  target?: string;
 };
 
 export type BrowserAttachScreencastResult = {
-  cursor?: Cursor | null;
+  session: string;
+  delivery: string;
+  width: number;
+  height: number;
+  poll: string;
+  cursor?: Cursor;
 };
 
 export type BrowserClickParams = {
-  browser_session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
   selector?: string;
   text?: string;
-  role?: string;
-  key?: string;
-  submit?: boolean;
+  x?: number;
+  y?: number;
+  click_count?: number;
+  timeout_ms?: number;
 };
 
 export type BrowserClickResult = {
-  cursor?: Cursor | null;
+  session: string;
+  x: number;
+  y: number;
+  element: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    tag: string;
+    text: string;
+  } | null;
+  cursor?: Cursor;
 };
 
 export type BrowserCloseParams = {
@@ -950,7 +1033,7 @@ export type BrowserCloseParams = {
 export type BrowserCloseResult = {
   session: string;
   closed: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserCommandParams = {
@@ -962,66 +1045,158 @@ export type BrowserCommandParams = {
 };
 
 export type BrowserCommandResult = {
-  cursor?: Cursor | null;
+  pane: string;
+  cursor?: Cursor;
+} | {
+  pane: string;
+  profile: string;
+  cursor?: Cursor;
+} | {
+  opened_in: "window";
+  url: string;
+  machine: string;
+  profile: string;
+  profile_dir: string;
+  browser: string;
+  browser_kind: string;
+  pid: number;
+  reused: boolean;
+  socks_port: number | null;
+  route: string;
+  cursor?: Cursor;
+} | {
+  opened_in: "default_browser";
+  url: string;
+  cursor?: Cursor;
+} | {
+  cursor?: Cursor;
 };
 
 export type BrowserConsoleParams = {
+  session?: string;
   browser_session?: string;
-  preview?: Target;
+  target?: string;
+  level?: "error" | "warn" | "warning" | "all";
   since_ms?: number;
-  level?: "error" | "warn" | "all";
+  since?: string;
+  limit?: number;
+} | {
+  pane: Target;
+  kind?: "all" | "console" | "network";
+  level?: string;
+  errors?: boolean;
+  failed?: boolean;
+  failed_only?: boolean;
+  after?: number;
+  since_ms?: number;
+  since?: string;
+  limit?: number;
 };
 
 export type BrowserConsoleResult = {
+  session: string;
   entries: {
     ts: number;
     level: string;
     text: string;
-    source?: string | null;
+    source: string;
+    url?: unknown;
+    line?: number | null;
   }[];
+} | {
+  pane: string;
+  entries: Record<string, unknown>[];
+  last_seq: number;
+  source: "local" | "relayed" | "none";
+  url: string | null;
 };
 
 export type BrowserDetachScreencastParams = {
-  session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
 };
 
 export type BrowserDetachScreencastResult = {
-  cursor?: Cursor | null;
+  session: string;
+  detached: boolean;
+  cursor?: Cursor;
 };
 
 export type BrowserDiffParams = {
   a: string;
   b: string;
-  threshold?: number;
+  threshold?: number | string;
   force?: boolean;
+  inline?: boolean;
 };
 
 export type BrowserDiffResult = {
-  blob: string;
+  a: Record<string, unknown>;
+  b: Record<string, unknown>;
+  threshold: number;
+  channel_threshold: unknown;
+  width: number;
+  height: number;
+  size_mismatch: boolean;
+  a_size: {
+    width: number;
+    height: number;
+  };
+  b_size: {
+    width: number;
+    height: number;
+  };
+  changed_pixels: number;
+  total_pixels: number;
   changed_ratio: number;
-  regions: unknown;
-  cursor?: Cursor | null;
+  regions: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    pixels: number;
+  }[];
+  regions_total: number;
+  forced: boolean;
+  blob: string;
+  path_on_machine: string;
+  bytes: number;
+  data_b64?: string;
+  mime?: string;
+  inline_skipped?: string;
+  cursor?: Cursor;
 };
 
 export type BrowserDomParams = {
+  session?: string;
   browser_session?: string;
-  preview?: Target;
+  target?: string;
+  format?: "a11y" | "accessibility" | "text" | "html";
+  max_bytes?: number;
   selector?: string;
-  format?: "text" | "html" | "a11y";
 };
 
 export type BrowserDomResult = {
+  session: string;
+  url: string;
+  format: string;
   content: string;
+  truncated: boolean;
 };
 
 export type BrowserEvalParams = {
-  browser_session: string;
-  expression: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
+  expression?: string;
+  js?: string;
 };
 
 export type BrowserEvalResult = {
+  session: string;
   value: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserInstallParams = {
@@ -1032,46 +1207,94 @@ export type BrowserInstallParams = {
 };
 
 export type BrowserInstallResult = {
-  cursor?: Cursor | null;
+  plan: {
+    version: string;
+    platform: string;
+    url: string;
+    sha256: string | null;
+    checksum_known: boolean;
+    dir: string;
+    binary: string;
+    installed: boolean;
+  };
+  confirm_required: boolean;
+  cursor?: Cursor;
+} | {
+  installed: boolean;
+  binary: string;
+  plan: Record<string, unknown>;
+  cursor?: Cursor;
 };
 
 export type BrowserListParams = Record<string, unknown>;
 
 export type BrowserListResult = {
   sessions: Record<string, unknown>[];
-  browser: unknown;
+  browser: Record<string, unknown>;
   machine: string;
 };
 
 export type BrowserNavigateParams = {
-  browser_session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
   url?: string;
   path?: string;
-  wait?: boolean;
+  wait?: "load" | "domcontentloaded" | "commit" | "none" | string;
+  timeout_ms?: number;
 };
 
 export type BrowserNavigateResult = {
-  status: number;
+  session: string;
+  status: number | null;
   final_url: string;
-  cursor?: Cursor | null;
+  title: string;
+  cursor?: Cursor;
 };
 
 export type BrowserNetworkParams = {
+  session?: string;
   browser_session?: string;
-  preview?: Target;
+  target?: string;
   failed_only?: boolean;
+  failed?: boolean;
   since_ms?: number;
+  since?: string;
+  limit?: number;
+} | {
+  pane: Target;
+  kind?: "all" | "console" | "network";
+  level?: string;
+  errors?: boolean;
+  failed?: boolean;
+  failed_only?: boolean;
+  after?: number;
+  since_ms?: number;
+  since?: string;
+  limit?: number;
 };
 
 export type BrowserNetworkResult = {
+  session: string;
   entries: {
     ts: number;
-    method: string;
-    url: string;
+    method?: string | null;
+    url?: string;
+    type: string | null;
     status?: number | null;
     error?: string | null;
-    blocked_by_policy?: boolean | null;
+    mime?: string | null;
+    blocked_reason?: string;
+    blocked_by_policy?: string;
+    layer?: string;
+    duration_ms?: number;
   }[];
+} | {
+  pane: string;
+  entries: Record<string, unknown>[];
+  last_seq: number;
+  source: "local" | "relayed" | "none";
+  url: string | null;
 };
 
 export type BrowserOpenParams = {
@@ -1088,58 +1311,29 @@ export type BrowserOpenParams = {
   dpr?: number;
   color_scheme?: string;
   dark?: boolean;
+  wait?: string;
+  timeout_ms?: number;
 };
 
-export type BrowserOpenResult = {
-  session: string;
-  session_id: string;
-  owner: {
-    pane: string;
-    pane_handle?: string | null;
-    run?: string | null;
-  } | {
-    user: string;
-  };
-  preview?: string | null;
-  url: string;
-  created_ms: number;
-  viewport: {
-    width: number;
-    height: number;
-  };
-  device?: string | null;
-  previews: "own" | "machine";
-  human_control: boolean;
-  screencast: boolean;
-  proxy_port?: number | null;
-  machine: string;
-  environment: {
-    kind: string;
-    machine: string;
-    runner: string;
-    browser: unknown;
-    fresh_context: boolean;
-    device?: string | null;
-    viewport: {
-      width: number;
-      height: number;
-    };
-    dpr: number;
-  };
-  status?: number | null;
-  final_url?: string | null;
-  title?: string | null;
-  cursor?: Cursor | null;
-};
+export type BrowserOpenResult = BrowserSession;
 
 export type BrowserPaneConsoleParams = {
-  pane: Target;
+  pane?: Target;
   toggle?: boolean;
   focus?: boolean;
 };
 
 export type BrowserPaneConsoleResult = {
-  cursor?: Cursor | null;
+  closed: string;
+  pane_handle: string;
+  browser_pane: string;
+  cursor?: Cursor;
+} | {
+  pane: string;
+  pane_handle: string;
+  browser_pane: string;
+  existing?: boolean;
+  cursor?: Cursor;
 };
 
 export type BrowserPaneConsolePushParams = {
@@ -1150,28 +1344,34 @@ export type BrowserPaneConsolePushParams = {
 export type BrowserPaneConsolePushResult = {
   pane: string;
   stored: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserPaneCreateParams = {
-  pane?: Target;
   preview?: Target;
   url?: string;
-  split?: "right" | "down" | "left" | "up" | "tab";
+  split?: "right" | "down" | "left" | "up" | "tab" | "float";
+  pane?: Target;
   machine?: string;
+  device?: string;
+  viewport?: string | {
+    width: number;
+    height: number;
+  };
+  fit?: boolean;
   focus?: boolean;
   focus_client?: string;
 };
 
 export type BrowserPaneCreateResult = {
-  opened_in: string;
+  opened_in: "pane";
   pane: string;
   pane_handle: string;
   tab: string;
   url: string;
   machine: string;
   source_pane: string | null;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserPaneListParams = Record<string, unknown>;
@@ -1191,15 +1391,15 @@ export type BrowserPaneStatusResult = {
   browsers: {
     profile: string;
     dpr: number;
-    pid?: number | null;
+    pid?: number;
     targets: number;
     up_ms: number;
   }[];
   targets: {
     pane: string;
     owner: string;
-    url?: string | null;
-    title?: string | null;
+    url?: string;
+    title?: string;
     profile: string;
     machine: string;
     route: string;
@@ -1210,18 +1410,18 @@ export type BrowserPaneStatusResult = {
     fps: number;
     decode_ms: number;
     css: number[];
-    frame?: number[] | null;
+    frame?: number[];
     history: unknown;
-    error?: string | null;
+    error?: string;
     pin?: {
-      device?: string | null;
+      device?: string;
       width: number;
       height: number;
     };
     letterbox?: {
       rect: number[];
       scale: number;
-    } | null;
+    };
     console: number;
     network: number;
     clipboard: {
@@ -1241,88 +1441,135 @@ export type BrowserPaneUpdateParams = {
   history?: string[];
   history_index?: number;
   device?: string;
-  viewport?: string;
+  viewport?: string | {
+    width: number;
+    height: number;
+  };
   fit?: boolean;
 };
 
 export type BrowserPaneUpdateResult = {
-  pane: Pane;
-  cursor?: Cursor | null;
+  pane: string;
+  cursor?: Cursor;
 };
 
 export type BrowserPressParams = {
-  browser_session: string;
-  selector?: string;
-  text?: string;
-  role?: string;
-  key?: string;
-  submit?: boolean;
+  session?: string;
+  browser_session?: string;
+  target?: string;
+  key: string;
 };
 
 export type BrowserPressResult = {
-  cursor?: Cursor | null;
+  session: string;
+  key: string;
+  cursor?: Cursor;
 };
 
 export type BrowserReleaseParams = {
-  session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
 };
 
 export type BrowserReleaseResult = {
   session: string;
   human_control: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserScreencastFrameParams = {
-  session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
   after_seq?: number;
 };
 
-export type BrowserScreencastFrameResult = Record<string, unknown>;
+export type BrowserScreencastFrameResult = {
+  session: string;
+  seq: number;
+  mime: string;
+  width: number | null;
+  height: number | null;
+  received_ms: number;
+  data_b64: string;
+} | {
+  session: string;
+  seq: number | null;
+  data_b64: null;
+};
 
 export type BrowserScreenshotParams = {
+  session?: string;
   browser_session?: string;
-  preview?: Target;
+  target?: string;
   url?: string;
+  preview?: string;
+  device?: string;
+  viewport?: string | Record<string, unknown>;
+  dpr?: number;
+  color_scheme?: string;
+  dark?: boolean;
   full_page?: boolean;
   selector?: string;
-  viewport?: unknown;
-  device?: string;
+  timeout_ms?: number;
+  inline?: boolean;
 };
 
 export type BrowserScreenshotResult = {
+  session: string | null;
+  id: string;
+  handle: string;
   blob: string;
   path_on_machine: string;
   width: number;
   height: number;
+  bytes: number;
+  binding: "bound" | "illustrative";
+  label: string;
   meta: ScreenshotMeta;
-  cursor?: Cursor | null;
+  data_b64?: string;
+  mime?: string;
+  inline_skipped?: string;
+  one_shot?: boolean;
+  opened_session?: string;
+  status?: number | null;
+  final_url?: string | null;
+  title?: string | null;
+  cursor?: Cursor;
 };
 
 export type BrowserSessionCloseParams = {
-  browser_session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
 };
 
 export type BrowserSessionCloseResult = {
-  cursor?: Cursor | null;
+  session: string;
+  closed: boolean;
+  cursor?: Cursor;
 };
 
 export type BrowserSessionOpenParams = {
-  preview?: Target;
   url?: string;
-  viewport?: {
+  preview?: string;
+  machine?: string;
+  device?: string;
+  viewport?: string | {
+    width?: number;
+    height?: number;
     w?: number;
     h?: number;
-    dpr?: number;
   };
-  device?: string;
-  color_scheme?: "light" | "dark";
+  dpr?: number;
+  color_scheme?: string;
+  dark?: boolean;
+  wait?: string;
+  timeout_ms?: number;
 };
 
-export type BrowserSessionOpenResult = {
-  browser_session: string;
-  cursor?: Cursor | null;
-};
+export type BrowserSessionOpenResult = BrowserSession;
 
 export type BrowserSnapshotParams = {
   session?: string;
@@ -1343,47 +1590,74 @@ export type BrowserSnapshotResult = {
 
 export type BrowserStatusParams = Record<string, unknown>;
 
-export type BrowserStatusResult = Record<string, unknown>;
+export type BrowserStatusResult = {
+  running: true;
+  pid: number | null;
+  product: string;
+  binary: string;
+  kind: string;
+  uptime_ms: number;
+  sessions: number;
+  denied: number;
+  profile_dir: string;
+  idle_timeout_ms: number;
+} | {
+  running: false;
+  sessions: number;
+  denied: number;
+  binary: string | null;
+  kind: string | null;
+  profile_dir: string;
+  idle_timeout_ms: number;
+};
 
 export type BrowserTakeOverParams = {
-  session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
 };
 
 export type BrowserTakeOverResult = {
   session: string;
   human_control: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type BrowserTypeParams = {
-  browser_session: string;
+  session?: string;
+  browser_session?: string;
+  target?: string;
+  text: string;
   selector?: string;
-  text?: string;
-  role?: string;
-  key?: string;
+  clear?: boolean;
   submit?: boolean;
+  timeout_ms?: number;
 };
 
 export type BrowserTypeResult = {
-  cursor?: Cursor | null;
+  session: string;
+  typed: number;
+  cursor?: Cursor;
 };
 
 export type BrowserWaitParams = {
-  browser_session: string;
-  for: string | {
-    selector: string;
-  } | {
-    ms: number;
-  };
+  session?: string;
+  browser_session?: string;
+  target?: string;
+  for?: string;
+  timeout_ms?: number;
 };
 
-export type BrowserWaitResult = Record<string, unknown>;
+export type BrowserWaitResult = {
+  session: string;
+  waited: string;
+};
 
 export type BrowserWatchParams = {
   session?: string;
   agent_pane?: Target;
   pane?: Target;
-  split?: "right" | "down" | "left" | "up" | "tab";
+  split?: "right" | "down" | "left" | "up" | "tab" | "float";
   focus?: boolean;
   focus_client?: string;
 };
@@ -1397,8 +1671,8 @@ export type BrowserWatchResult = {
   tab: string;
   url: string;
   machine: string;
-  source_pane: string;
-  cursor?: Cursor | null;
+  source_pane: string | null;
+  cursor?: Cursor;
 };
 
 export type ClientAppearanceParams = {
@@ -1409,7 +1683,7 @@ export type ClientAppearanceParams = {
 export type ClientAppearanceResult = {
   appearance: Appearance;
   colorfgbg: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ClientFocusParams = {
@@ -1424,7 +1698,7 @@ export type ClientFocusResult = {
   focused: boolean;
   raised: boolean;
   host: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ClientHelloParams = {
@@ -1446,7 +1720,7 @@ export type ClientHelloResult = {
   machine: string;
   capabilities: string[];
   features: string[];
-  client_id?: string | null;
+  client_id?: string;
 };
 
 export type ClientListParams = Record<string, unknown>;
@@ -1455,13 +1729,13 @@ export type ClientListResult = {
   clients: {
     id: string;
     kind: string;
-    client?: string | null;
-    version?: string | null;
+    client?: string;
+    version?: string;
     attached_at: number;
     peer?: {
       uid: number;
-      pid?: number | null;
-      machine?: string | null;
+      pid?: number;
+      machine?: string;
     };
     focused_pane: string | null;
   }[];
@@ -1478,13 +1752,13 @@ export type CompatHerdrCallParams = {
 
 export type CompatHerdrCallResult = {
   result: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 } | {
   error: {
     code: string;
     message: string;
   };
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type CompatInvocationVerifyParams = {
@@ -1498,7 +1772,7 @@ export type CompatInvocationVerifyResult = {
   log_id: string;
   session: string;
   sandboxed: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type CompatStatusParams = Record<string, unknown>;
@@ -1527,18 +1801,18 @@ export type CompatStatusResult = {
 export type CompatUiStateParams = Record<string, unknown>;
 
 export type CompatUiStateResult = {
-  window_title?: string | null;
+  window_title?: string;
   popup?: {
     pane: string;
     plugin_id: string;
     entrypoint_id: string;
-  } | null;
+  };
   agent_views: {
     plugin_id: string;
     run: string;
     text: string;
-    detail?: string | null;
-    tone?: string | null;
+    detail?: string;
+    tone?: string;
     updated_ms: number;
   }[];
 };
@@ -1565,7 +1839,7 @@ export type DeskForgetParams = {
 export type DeskForgetResult = {
   rows_deleted: number;
   sessions_forgotten: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DeskIndexParams = {
@@ -1582,7 +1856,7 @@ export type DeskIndexResult = {
     pending: number;
     errors: unknown;
   };
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DeskOpenParams = {
@@ -1596,9 +1870,9 @@ export type DeskOpenResult = {
   status: string;
   action: string;
   turn_items?: unknown;
-  focused?: boolean | null;
-  actions?: Record<string, unknown>[] | null;
-  cursor?: Cursor | null;
+  focused?: boolean;
+  actions?: Record<string, unknown>[];
+  cursor?: Cursor;
 };
 
 export type DeskResumeParams = {
@@ -1609,7 +1883,7 @@ export type DeskResumeParams = {
 };
 
 export type DeskResumeResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DeskSearchParams = {
@@ -1639,17 +1913,17 @@ export type DeskSessionsResult = {
   sessions: {
     session: string;
     harness: string;
-    machine?: string | null;
+    machine?: string;
     repo?: string | null;
     cwd?: string | null;
     workspace?: string | null;
     run?: string | null;
-    first_ts?: number | null;
-    last_ts?: number | null;
-    turns?: number | null;
-    rows?: number | null;
+    first_ts?: number;
+    last_ts?: number;
+    turns?: number;
+    rows?: number;
     paths?: unknown;
-    status?: string | null;
+    status?: string;
     live?: unknown;
     resume?: unknown;
   }[];
@@ -1679,8 +1953,8 @@ export type DraftCheckResult = {
   native_conversation_id: string | null;
   send_path: "prompt_input" | "open_pane_only";
   unsafe?: unknown;
-  follow_up?: string | null;
-  steer?: boolean | null;
+  follow_up?: string;
+  steer?: boolean;
   hidden_attachments?: unknown;
 };
 
@@ -1693,7 +1967,7 @@ export type DraftCombineParams = {
 
 export type DraftCombineResult = {
   draft: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DraftCreateParams = {
@@ -1714,7 +1988,7 @@ export type DraftCreateParams = {
 
 export type DraftCreateResult = {
   draft: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DraftDeleteParams = {
@@ -1723,7 +1997,7 @@ export type DraftDeleteParams = {
 
 export type DraftDeleteResult = {
   deleted: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DraftGetParams = {
@@ -1753,7 +2027,7 @@ export type DraftReconcileResult = {
   receipt: Record<string, unknown>;
   may_retry: boolean;
   note: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DraftReorderParams = {
@@ -1761,8 +2035,8 @@ export type DraftReorderParams = {
 };
 
 export type DraftReorderResult = {
-  drafts?: Record<string, unknown>[] | null;
-  cursor?: Cursor | null;
+  drafts?: Record<string, unknown>[];
+  cursor?: Cursor;
 };
 
 export type DraftSendParams = {
@@ -1778,7 +2052,7 @@ export type DraftSendResult = {
   draft: Record<string, unknown>;
   send: Record<string, unknown>;
   send_path: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type DraftUpdateParams = {
@@ -1793,7 +2067,7 @@ export type DraftUpdateParams = {
 
 export type DraftUpdateResult = {
   draft: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type EventsReadParams = {
@@ -1828,6 +2102,14 @@ export type EventsSubscribeResult = {
   at: Cursor;
 };
 
+export type EventsUnsubscribeParams = {
+  subscription_id: string;
+};
+
+export type EventsUnsubscribeResult = {
+  unsubscribed: boolean;
+};
+
 export type EventsWaitParams = {
   types?: string[] | string;
   subjects?: Record<string, unknown>;
@@ -1849,7 +2131,7 @@ export type FsListResult = {
   entries: {
     name: string;
     kind: "file" | "dir" | "symlink" | "other";
-    size?: number | null;
+    size?: number;
     ignored: boolean;
     secret: boolean;
   }[];
@@ -1863,7 +2145,7 @@ export type FsReadParams = {
 
 export type FsReadResult = {
   path: string;
-  text?: string | null;
+  text?: string;
   binary: boolean;
   truncated: boolean;
   size: number;
@@ -1883,7 +2165,7 @@ export type GitDiffResult = {
   truncated: boolean;
   binary: boolean;
   untracked: boolean;
-  secret?: boolean | null;
+  secret?: boolean;
 };
 
 export type GitLogParams = {
@@ -1940,7 +2222,7 @@ export type GroupAddParams = {
 export type GroupAddResult = {
   workspace: Workspace;
   group: string | null;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type GroupCollapseParams = {
@@ -1950,7 +2232,7 @@ export type GroupCollapseParams = {
 
 export type GroupCollapseResult = {
   group: Group;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type GroupCreateParams = {
@@ -1960,7 +2242,7 @@ export type GroupCreateParams = {
 
 export type GroupCreateResult = {
   group: Group;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type GroupDeleteParams = {
@@ -1968,7 +2250,7 @@ export type GroupDeleteParams = {
 };
 
 export type GroupDeleteResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type GroupListParams = Record<string, unknown>;
@@ -1987,7 +2269,7 @@ export type GroupMoveParams = {
 
 export type GroupMoveResult = {
   group: Group;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type GroupRemoveParams = {
@@ -1998,7 +2280,7 @@ export type GroupRemoveParams = {
 export type GroupRemoveResult = {
   workspace: Workspace;
   group: string | null;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type GroupRenameParams = {
@@ -2008,7 +2290,7 @@ export type GroupRenameParams = {
 
 export type GroupRenameResult = {
   group: Group;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ImageUploadParams = {
@@ -2020,8 +2302,8 @@ export type ImageUploadParams = {
 
 export type ImageUploadResult = {
   path_on_machine: string;
-  blob?: string | null;
-  cursor?: Cursor | null;
+  blob?: string;
+  cursor?: Cursor;
 };
 
 export type InteractionAnswerParams = {
@@ -2040,10 +2322,10 @@ export type InteractionAnswerResult = {
   interaction: Interaction;
   delivery: {
     state: string;
-    channel?: "native" | "keystrokes" | "none" | string | null;
+    channel?: "native" | "keystrokes" | "none" | string;
   };
-  duplicate?: boolean | null;
-  cursor?: Cursor | null;
+  duplicate?: boolean;
+  cursor?: Cursor;
 };
 
 export type InteractionCancelParams = {
@@ -2052,7 +2334,7 @@ export type InteractionCancelParams = {
 
 export type InteractionCancelResult = {
   interaction: Interaction;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type InteractionGetParams = {
@@ -2087,7 +2369,7 @@ export type LayoutApplyResult = {
   workspace: Workspace;
   tabs: Tab[];
   panes: Pane[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type LayoutExportParams = {
@@ -2157,7 +2439,7 @@ export type NotesSetResult = {
     text: string;
     rev: number;
   };
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type NotificationConfigParams = Record<string, unknown>;
@@ -2165,7 +2447,7 @@ export type NotificationConfigParams = Record<string, unknown>;
 export type NotificationConfigResult = {
   channels: string[];
   rules: unknown;
-  native?: Record<string, unknown> | null;
+  native?: Record<string, unknown>;
   hosts?: unknown;
 };
 
@@ -2184,7 +2466,7 @@ export type NotificationReadParams = {
 };
 
 export type NotificationReadResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type NotificationSendParams = {
@@ -2197,7 +2479,7 @@ export type NotificationSendParams = {
 
 export type NotificationSendResult = {
   notification: Notification;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneCanSeePathsParams = {
@@ -2215,7 +2497,7 @@ export type PaneCloseParams = {
 };
 
 export type PaneCloseResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneCurrentParams = Record<string, unknown>;
@@ -2234,7 +2516,7 @@ export type PaneEmbedParams = {
 export type PaneEmbedResult = {
   pane: Pane;
   tab: Tab;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneEqualizeParams = {
@@ -2243,7 +2525,7 @@ export type PaneEqualizeParams = {
 
 export type PaneEqualizeResult = {
   layout: LayoutSpec;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneFloatParams = {
@@ -2262,7 +2544,7 @@ export type PaneFloatParams = {
 
 export type PaneFloatResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneFocusParams = {
@@ -2272,7 +2554,7 @@ export type PaneFocusParams = {
 
 export type PaneFocusResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneGetParams = {
@@ -2282,7 +2564,7 @@ export type PaneGetParams = {
 export type PaneGetResult = {
   pane: Pane;
   run?: AgentRun | null;
-  open_interactions?: Interaction[] | null;
+  open_interactions?: Interaction[];
 };
 
 export type PaneListParams = {
@@ -2301,7 +2583,7 @@ export type PaneMarkSeenParams = {
 
 export type PaneMarkSeenResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneMarkUnreadParams = {
@@ -2310,7 +2592,7 @@ export type PaneMarkUnreadParams = {
 
 export type PaneMarkUnreadResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PanePinParams = {
@@ -2320,7 +2602,7 @@ export type PanePinParams = {
 
 export type PanePinResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneReadParams = {
@@ -2333,11 +2615,11 @@ export type PaneReadParams = {
 };
 
 export type PaneReadResult = {
-  text?: string | null;
+  text?: string;
   cells?: unknown;
-  rows?: number | null;
-  revision?: number | null;
-  truncated?: boolean | null;
+  rows?: number;
+  revision?: number;
+  truncated?: boolean;
   scroll?: unknown;
   cursor?: unknown;
 };
@@ -2349,7 +2631,7 @@ export type PaneRenameParams = {
 
 export type PaneRenameResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneReportAgentParams = {
@@ -2366,9 +2648,9 @@ export type PaneReportAgentParams = {
 
 export type PaneReportAgentResult = {
   type: "ok";
-  dropped?: "stale_seq" | null;
-  applied?: boolean | null;
-  cursor?: Cursor | null;
+  dropped?: "stale_seq";
+  applied?: boolean;
+  cursor?: Cursor;
 };
 
 export type PaneReportAgentSessionParams = {
@@ -2385,8 +2667,8 @@ export type PaneReportAgentSessionParams = {
 
 export type PaneReportAgentSessionResult = {
   type: "ok";
-  dropped?: "stale_seq" | null;
-  cursor?: Cursor | null;
+  dropped?: "stale_seq";
+  cursor?: Cursor;
 };
 
 export type PaneResizeParams = {
@@ -2398,7 +2680,7 @@ export type PaneResizeParams = {
 
 export type PaneResizeResult = {
   layout: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneRunParams = {
@@ -2410,8 +2692,8 @@ export type PaneRunParams = {
 
 export type PaneRunResult = {
   exit_code?: number | null;
-  output_tail?: string | null;
-  cursor?: Cursor | null;
+  output_tail?: string;
+  cursor?: Cursor;
 };
 
 export type PaneSendBytesParams = {
@@ -2420,7 +2702,7 @@ export type PaneSendBytesParams = {
 };
 
 export type PaneSendBytesResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneSendKeysParams = {
@@ -2429,7 +2711,7 @@ export type PaneSendKeysParams = {
 };
 
 export type PaneSendKeysResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneSendTextParams = {
@@ -2440,7 +2722,7 @@ export type PaneSendTextParams = {
 
 export type PaneSendTextResult = {
   bytes: number;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneSplitParams = {
@@ -2456,7 +2738,7 @@ export type PaneSplitParams = {
 
 export type PaneSplitResult = {
   pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PaneWaitIdleParams = {
@@ -2491,7 +2773,7 @@ export type PaneZoomParams = {
 
 export type PaneZoomResult = {
   tab: Tab;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PluginActionListParams = {
@@ -2504,7 +2786,7 @@ export type PluginActionListResult = {
     action_id: string;
     qualified_id: string;
     title: string;
-    description?: string | null;
+    description?: string;
     contexts: unknown;
     available: boolean;
     status: string;
@@ -2513,9 +2795,9 @@ export type PluginActionListResult = {
     plugin_id: string;
     key: string;
     action: string;
-    description?: string | null;
+    description?: string;
     installed: boolean;
-    reason?: string | null;
+    reason?: string;
     conflicts_with?: unknown;
   }[];
 };
@@ -2545,24 +2827,24 @@ export type PluginActionRunResult = {
   log: {
     log_id: string;
     plugin_id: string;
-    action_id?: string | null;
-    event?: string | null;
-    entrypoint_id?: string | null;
+    action_id?: string;
+    event?: string;
+    entrypoint_id?: string;
     source: string;
     command: unknown;
     long_lived: boolean;
     isolation: "sandbox" | "host";
     status: string;
     started_unix_ms: number;
-    finished_unix_ms?: number | null;
+    finished_unix_ms?: number;
     started_at: number;
-    finished_at?: number | null;
-    exit_code?: number | null;
+    finished_at?: number;
+    exit_code?: number;
     stdout: string;
     stderr: string;
     context: Record<string, unknown>;
   };
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PluginLinkOpenParams = {
@@ -2581,7 +2863,7 @@ export type PluginLinkOpenParams = {
 
 export type PluginLinkOpenResult = {
   log: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PluginLinkHandlerListParams = Record<string, unknown>;
@@ -2590,9 +2872,9 @@ export type PluginLinkHandlerListResult = {
   handlers: {
     plugin_id: string;
     handler_id: string;
-    title?: string | null;
+    title?: string;
     pattern: string;
-    action_id?: string | null;
+    action_id?: string;
     available: boolean;
     status: string;
   }[];
@@ -2603,9 +2885,9 @@ export type PluginListParams = Record<string, unknown>;
 export type PluginListResult = {
   plugins: {
     id: string;
-    version?: string | null;
+    version?: string;
     enabled: boolean;
-    kind?: "actions" | "process" | string | null;
+    kind?: "actions" | "process" | string;
     capabilities?: unknown;
     status?: unknown;
   }[];
@@ -2624,7 +2906,7 @@ export type PluginRegistryNotifyParams = Record<string, unknown>;
 
 export type PluginRegistryNotifyResult = {
   ok: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PluginSurfaceCloseParams = {
@@ -2633,43 +2915,45 @@ export type PluginSurfaceCloseParams = {
 
 export type PluginSurfaceCloseResult = {
   closed: Target | null;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewDeclareParams = {
-  port: number;
-  host?: string;
-  scheme?: string;
+  port: number | string;
   path?: string;
+  scheme?: "http" | "https";
   label?: string;
   pane?: Target;
   task?: Target;
+  tls_origin?: boolean;
 };
 
 export type PreviewDeclareResult = {
   preview: Preview;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewDismissParams = {
   preview: Target;
+  machine?: string;
 };
 
 export type PreviewDismissResult = {
-  preview: Preview;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewForgetParams = {
   preview: Target;
+  machine?: string;
 };
 
 export type PreviewForgetResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewGetParams = {
   preview: Target;
+  machine?: string;
 };
 
 export type PreviewGetResult = {
@@ -2680,32 +2964,101 @@ export type PreviewListParams = {
   machine?: string;
   task?: Target;
   pane?: Target;
-  status?: "suggested" | "up" | "down" | "all";
+  status?: "suggested" | "declared" | "up" | "down" | "gone" | "all";
+  all?: boolean;
 };
 
 export type PreviewListResult = {
   previews: Preview[];
+  machine?: string;
 };
 
 export type PreviewMirrorParams = {
   preview: Target;
+  machine?: string;
 };
 
 export type PreviewMirrorResult = {
+  machine: string;
+  preview: string;
+  preview_handle: string;
   local_port: number;
-  cursor?: Cursor | null;
+  addrs: string[];
+  since_ms: number;
+  accepted: number;
+  rejected: number;
+  authenticated: boolean;
+  peer_check: "same_user";
+  warning: string;
+  url?: string;
+  already?: boolean;
+  cursor?: Cursor;
 };
 
 export type PreviewOpenParams = {
-  preview: Target;
-  mode?: "profile" | "proxy";
-  client?: string;
+  preview?: Target;
+  url?: string;
+  machine?: string;
+  mode?: "pane" | "window" | "proxy";
+  window?: boolean;
+  proxy?: boolean;
+  split?: "right" | "down" | "left" | "up" | "tab" | "float";
+  pane?: Target;
+  focus?: boolean;
+  device?: string;
+  viewport?: string | {
+    width: number;
+    height: number;
+  };
+  profile?: string;
+  no_open?: boolean;
+  open?: boolean;
+  tls_origin?: boolean;
 };
 
 export type PreviewOpenResult = {
-  opened_in: string;
+  opened_in: "pane";
+  pane: string;
+  pane_handle: string;
+  tab: string;
   url: string;
-  cursor?: Cursor | null;
+  machine: string;
+  source_pane: string | null;
+  cursor?: Cursor;
+} | {
+  opened_in: "window";
+  url: string;
+  machine: string;
+  profile: string;
+  profile_dir: string;
+  browser: string;
+  browser_kind: string;
+  pid: number;
+  reused: boolean;
+  socks_port: number | null;
+  route: "none" | "loopback" | "remote";
+  cursor?: Cursor;
+} | {
+  opened_in: "default_browser";
+  url: string;
+  cursor?: Cursor;
+} | {
+  opened_in: "proxy";
+  url: string;
+  proxy_url: string;
+  host: string;
+  proxy_port: number;
+  machine: string;
+  preview: string;
+  opened: boolean;
+  token_ttl_s: number;
+  session_ttl_s: number;
+  tls_origin: boolean;
+  remote_url: string;
+  caveats: string;
+  ca?: PreviewCa;
+  open_url?: string;
+  cursor?: Cursor;
 };
 
 export type PreviewProfileParams = {
@@ -2719,17 +3072,17 @@ export type PreviewProfileResult = {
     name: string;
     path: string;
     running: boolean;
-    pid?: number | null;
-    machine?: string | null;
-    route?: string | null;
+    pid: number | null;
+    machine: string | null;
+    route: string | null;
     bytes: number;
   }[];
   root: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 } | {
   profile: string;
   removed: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewProfileListParams = Record<string, unknown>;
@@ -2739,62 +3092,98 @@ export type PreviewProfileListResult = {
     name: string;
     path: string;
     running: boolean;
-    pid?: number | null;
-    machine?: string | null;
-    route?: string | null;
+    pid: number | null;
+    machine: string | null;
+    route: string | null;
     bytes: number;
   }[];
   root: string;
 };
 
 export type PreviewProfileResetParams = {
-  profile: string;
+  profile?: string;
   machine?: string;
 };
 
 export type PreviewProfileResetResult = {
   profile: string;
   removed: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewPromoteParams = {
   preview: Target;
+  machine?: string;
 };
 
 export type PreviewPromoteResult = {
   preview: Preview;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type PreviewStatusParams = Record<string, unknown>;
 
 export type PreviewStatusResult = {
-  socks_port?: number | null;
-  browsers: Record<string, unknown>[];
-  links: Record<string, unknown>[];
-  accepted?: number | null;
-  rejected?: number | null;
+  socks_port: number | null;
+  browsers: {
+    profile: string;
+    machine: string;
+    route: string;
+    pid: number;
+    running: boolean;
+  }[];
+  links: {
+    machine: string;
+    connected: boolean;
+    bytes_in: number | null;
+    bytes_out: number | null;
+    rtt_ms: number | null;
+  }[];
+  accepted: number;
+  rejected: number;
+  proxy: {
+    port: number;
+    tls: boolean;
+    routes: {
+      host: string;
+      machine: string;
+      preview: string;
+      handle: string;
+      port: number;
+      scheme: "http" | "https";
+      tls: boolean;
+    }[];
+    stats: {
+      requests: number;
+      denied: number;
+      websockets: number;
+    };
+  } | null;
+  mirrors: PreviewMirror[];
 };
 
 export type PreviewUnmirrorParams = {
-  preview: Target;
+  preview?: Target | number;
+  port?: number;
+  machine?: string;
 };
 
 export type PreviewUnmirrorResult = {
   local_port: number;
-  cursor?: Cursor | null;
+  machine: string;
+  preview: string;
+  cursor?: Cursor;
 };
 
 export type PreviewUrlParams = {
   preview: Target;
-  mode?: "profile" | "proxy";
+  machine?: string;
 };
 
 export type PreviewUrlResult = {
   remote_url: string;
   profile_url: string;
-  proxy_url?: string | null;
+  proxy_url: string | null;
 };
 
 export type SandboxAllowParams = {
@@ -2805,7 +3194,7 @@ export type SandboxAllowParams = {
 export type SandboxAllowResult = {
   task: string;
   allowed: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type SandboxListParams = Record<string, unknown>;
@@ -2813,13 +3202,13 @@ export type SandboxListParams = Record<string, unknown>;
 export type SandboxListResult = {
   sandboxes: {
     sandbox: string;
-    task?: string | null;
-    checkout?: string | null;
+    task?: string;
+    checkout?: string;
     level: string;
-    provider?: string | null;
+    provider?: string;
     network: unknown;
     yolo: boolean;
-    proxy_port?: number | null;
+    proxy_port?: number;
     task_allow?: unknown;
     credentials: unknown;
     container?: {
@@ -2831,7 +3220,7 @@ export type SandboxListResult = {
       clone?: {
         branch: string;
         base: string;
-      } | null;
+      };
       devcontainer: unknown;
       warnings: unknown;
       in_box_vibeke: unknown;
@@ -2849,9 +3238,9 @@ export type SandboxRemoveResult = {
   action: string;
   sync: unknown;
   leftovers: unknown;
-  error?: string | null;
+  error?: string;
   unsynced_kept: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type SandboxStartParams = {
@@ -2861,7 +3250,7 @@ export type SandboxStartParams = {
 export type SandboxStartResult = {
   state: string;
   created: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type SandboxStatusParams = Record<string, unknown>;
@@ -2871,7 +3260,7 @@ export type SandboxStatusResult = {
     level: string;
     available: boolean;
     detail?: unknown;
-    hint?: string | null;
+    hint?: string;
   }[];
   config: Record<string, unknown>;
   container: {
@@ -2891,7 +3280,7 @@ export type SandboxStopParams = {
 
 export type SandboxStopResult = {
   state: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ScreenshotDeleteParams = {
@@ -2904,7 +3293,7 @@ export type ScreenshotDeleteResult = {
   handle: string;
   deleted: boolean;
   blob_removed: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ScreenshotGetParams = {
@@ -2948,12 +3337,12 @@ export type ScrollbackForgetResult = {
   pane_ids: string[];
   plan: unknown;
   dry_run: boolean;
-  panes?: number | null;
-  segments_deleted?: number | null;
-  bytes_deleted?: number | null;
-  fts_rows_deleted?: number | null;
-  archive_panes_dropped?: number | null;
-  cursor?: Cursor | null;
+  panes?: number;
+  segments_deleted?: number;
+  bytes_deleted?: number;
+  fts_rows_deleted?: number;
+  archive_panes_dropped?: number;
+  cursor?: Cursor;
 };
 
 export type SearchQueryParams = {
@@ -2970,12 +3359,12 @@ export type SearchQueryParams = {
 
 export type SearchQueryResult = {
   hits: {
-    pane?: string | null;
+    pane?: string;
     run?: string | null;
     source: string;
     line?: unknown;
     text: string;
-    ts?: number | null;
+    ts?: number;
     context?: unknown;
   }[];
 };
@@ -2985,7 +3374,7 @@ export type ServerReloadConfigParams = Record<string, unknown>;
 export type ServerReloadConfigResult = {
   changed: string[];
   errors: unknown[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ServerStatusParams = Record<string, unknown>;
@@ -2999,16 +3388,16 @@ export type ServerStatusResult = {
   panes: number;
   holders: {
     live: number;
-    orphaned?: number | null;
+    orphaned?: number;
   };
   clients: number;
   event_seq: number;
-  socket?: string | null;
+  socket?: string;
   degraded?: unknown;
-  preview?: Record<string, unknown> | null;
-  timers?: Record<string, unknown> | null;
-  db_size?: number | null;
-  rss?: number | null;
+  preview?: Record<string, unknown>;
+  timers?: Record<string, unknown>;
+  db_size?: number;
+  rss?: number;
 };
 
 export type ServerStopParams = {
@@ -3016,7 +3405,7 @@ export type ServerStopParams = {
 };
 
 export type ServerStopResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type SessionSnapshotParams = {
@@ -3025,15 +3414,15 @@ export type SessionSnapshotParams = {
 
 export type SessionSnapshotResult = {
   at_seq: number;
-  workspaces?: Workspace[] | null;
-  groups?: Group[] | null;
-  tabs?: Tab[] | null;
-  panes?: Pane[] | null;
-  runs?: AgentRun[] | null;
-  interactions?: Interaction[] | null;
-  tasks?: Task[] | null;
-  previews?: Preview[] | null;
-  layouts?: unknown[] | null;
+  workspaces?: Workspace[];
+  groups?: Group[];
+  tabs?: Tab[];
+  panes?: Pane[];
+  runs?: AgentRun[];
+  interactions?: Interaction[];
+  tasks?: Task[];
+  previews?: Preview[];
+  layouts?: unknown[];
   focused?: { [key: string]: {
     workspace: string | null;
     tab: string | null;
@@ -3059,7 +3448,7 @@ export type TabCloseParams = {
 };
 
 export type TabCloseResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TabCreateParams = {
@@ -3074,7 +3463,7 @@ export type TabCreateParams = {
 export type TabCreateResult = {
   tab: Tab;
   root_pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TabFloatsParams = {
@@ -3084,7 +3473,7 @@ export type TabFloatsParams = {
 
 export type TabFloatsResult = {
   tab: Tab;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TabFocusParams = {
@@ -3094,7 +3483,7 @@ export type TabFocusParams = {
 
 export type TabFocusResult = {
   tab: Tab;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TabListParams = {
@@ -3113,7 +3502,7 @@ export type TabMoveParams = {
 
 export type TabMoveResult = {
   tabs: Tab[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TabRenameParams = {
@@ -3123,7 +3512,7 @@ export type TabRenameParams = {
 
 export type TabRenameResult = {
   tab: Tab;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskCheckAuthorizeParams = {
@@ -3147,7 +3536,7 @@ export type TaskCheckAuthorizeResult = {
     runner: "host";
     checkout: string;
   };
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskCheckCancelParams = {
@@ -3157,7 +3546,7 @@ export type TaskCheckCancelParams = {
 export type TaskCheckCancelResult = {
   check_run: Record<string, unknown>;
   cancelling: boolean;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskCheckGetParams = {
@@ -3198,7 +3587,7 @@ export type TaskCheckRunResult = {
   check_run: Record<string, unknown>;
   definition: Record<string, unknown>;
   provenance: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskCreateParams = {
@@ -3216,6 +3605,9 @@ export type TaskCreateParams = {
   setup?: boolean;
   ports?: number;
   group?: Target;
+  root?: string;
+  branch_template?: string;
+  fetch?: boolean;
 };
 
 export type TaskCreateResult = {
@@ -3223,7 +3615,7 @@ export type TaskCreateResult = {
   workspace: Workspace;
   panes: Pane[];
   runs: AgentRun[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskDependencyAddParams = {
@@ -3236,7 +3628,7 @@ export type TaskDependencyAddParams = {
 export type TaskDependencyAddResult = {
   edge: Record<string, unknown>;
   note: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskDependencyListParams = {
@@ -3250,7 +3642,7 @@ export type TaskDependencyListResult = {
       edge: Record<string, unknown>;
       title: string | null;
     } | {
-      hidden: "true";
+      hidden: true;
       title: string;
       edge: {
         kind: string;
@@ -3260,7 +3652,7 @@ export type TaskDependencyListResult = {
       edge: Record<string, unknown>;
       title: string | null;
     } | {
-      hidden: "true";
+      hidden: true;
       title: string;
       edge: {
         kind: string;
@@ -3285,7 +3677,7 @@ export type TaskDependencyRemoveParams = {
 export type TaskDependencyRemoveResult = {
   removed: Record<string, unknown>[];
   removed_by: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskEffortEstimateParams = {
@@ -3308,13 +3700,16 @@ export type TaskEffortEstimateResult = {
 
 export type TaskFinishParams = {
   task: Target;
-  remove_worktree?: "ask" | "true" | "false";
-  delete_branch?: boolean;
+  remove_worktree?: "ask" | boolean;
+  force?: boolean;
+  archive?: boolean;
+  status?: string;
 };
 
 export type TaskFinishResult = {
   task: Task;
-  cursor?: Cursor | null;
+  job?: unknown;
+  cursor?: Cursor;
 };
 
 export type TaskGetParams = {
@@ -3323,10 +3718,14 @@ export type TaskGetParams = {
 
 export type TaskGetResult = {
   task: Task;
-  workspace: Workspace | null;
-  runs: AgentRun[];
-  previews: Preview[];
-  collisions: unknown[];
+  branch_status: {
+    branch: string | null;
+    ahead: number;
+    behind: number;
+    dirty_files: number;
+    upstream: string | null;
+    compared_to: string | null;
+  } | null;
 };
 
 export type TaskListParams = {
@@ -3359,7 +3758,7 @@ export type TaskReviewAcceptResult = {
   label_text: string;
   task: Task;
   note: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskReviewCandidatesParams = {
@@ -3470,7 +3869,7 @@ export type TaskReviewNoteClassifyParams = {
 
 export type TaskReviewNoteClassifyResult = {
   note: Record<string, unknown>;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskReviewNotesParams = {
@@ -3498,7 +3897,7 @@ export type TaskReviewRequestReviewerResult = {
   prompt_digest: string;
   harness: string;
   subject: string;
-  requires_confirmation: "true";
+  requires_confirmation: true;
   label: string;
   uses_provider: string;
   confirm_with: {
@@ -3508,7 +3907,7 @@ export type TaskReviewRequestReviewerResult = {
       prompt_digest: string;
     };
   };
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskReviewSnapshotParams = {
@@ -3521,7 +3920,7 @@ export type TaskReviewSnapshotResult = {
   snapshot: Record<string, unknown>;
   label: string;
   note: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskReviewSnapshotGcParams = {
@@ -3542,7 +3941,7 @@ export type TaskReviewSnapshotGcResult = {
   kept: Record<string, unknown>[];
   unrecorded: Record<string, unknown>[];
   note: string;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type TaskReviewStartReviewerParams = {
@@ -3558,9 +3957,9 @@ export type TaskReviewStartReviewerResult = {
   request: Record<string, unknown>;
   run: Target;
   binding: Record<string, unknown>;
-  note?: string | null;
-  replayed?: boolean | null;
-  cursor?: Cursor | null;
+  note?: string;
+  replayed?: boolean;
+  cursor?: Cursor;
 };
 
 export type TaskSyncParams = {
@@ -3579,7 +3978,7 @@ export type TaskSyncResult = {
     to: unknown;
     ref: unknown;
   }[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type ThemeGetParams = Record<string, unknown>;
@@ -3598,7 +3997,7 @@ export type ThemeSetModeResult = {
   appearance: Appearance;
   colorfgbg: string;
   reports?: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorkspaceCloseParams = {
@@ -3607,7 +4006,7 @@ export type WorkspaceCloseParams = {
 };
 
 export type WorkspaceCloseResult = {
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorkspaceCreateParams = {
@@ -3623,7 +4022,7 @@ export type WorkspaceCreateResult = {
   workspace: Workspace;
   tab: Tab;
   root_pane: Pane;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorkspaceFocusParams = {
@@ -3633,7 +4032,7 @@ export type WorkspaceFocusParams = {
 
 export type WorkspaceFocusResult = {
   workspace: Workspace;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorkspaceGetParams = {
@@ -3661,7 +4060,7 @@ export type WorkspaceMoveParams = {
 
 export type WorkspaceMoveResult = {
   workspaces: Workspace[];
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorkspaceRenameParams = {
@@ -3671,7 +4070,7 @@ export type WorkspaceRenameParams = {
 
 export type WorkspaceRenameResult = {
   workspace: Workspace;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorktreeCreateParams = {
@@ -3686,8 +4085,8 @@ export type WorktreeCreateParams = {
 
 export type WorktreeCreateResult = {
   worktree: unknown;
-  workspace?: Workspace | null;
-  cursor?: Cursor | null;
+  workspace?: Workspace;
+  cursor?: Cursor;
 };
 
 export type WorktreeListParams = {
@@ -3714,7 +4113,7 @@ export type WorktreeOpenParams = {
 
 export type WorktreeOpenResult = {
   workspace: Workspace;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorktreeRemoveParams = {
@@ -3724,7 +4123,7 @@ export type WorktreeRemoveParams = {
 
 export type WorktreeRemoveResult = {
   job: unknown;
-  cursor?: Cursor | null;
+  cursor?: Cursor;
 };
 
 export type WorktreeRepoRootParams = {
@@ -3838,6 +4237,7 @@ export interface Methods {
   "draft.update": { params: DraftUpdateParams; result: DraftUpdateResult };
   "events.read": { params: EventsReadParams; result: EventsReadResult };
   "events.subscribe": { params: EventsSubscribeParams; result: EventsSubscribeResult };
+  "events.unsubscribe": { params: EventsUnsubscribeParams; result: EventsUnsubscribeResult };
   "events.wait": { params: EventsWaitParams; result: EventsWaitResult };
   "fs.list": { params: FsListParams; result: FsListResult };
   "fs.read": { params: FsReadParams; result: FsReadResult };
@@ -4082,6 +4482,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "draft.update": { mutating: true, scope: "pane", paneScope: "open" },
   "events.read": { mutating: false, scope: "pane", paneScope: "open" },
   "events.subscribe": { mutating: false, scope: "pane", paneScope: "open" },
+  "events.unsubscribe": { mutating: false, scope: "pane", paneScope: "open" },
   "events.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "fs.list": { mutating: false, scope: "pane", paneScope: "open" },
   "fs.read": { mutating: false, scope: "pane", paneScope: "open" },
@@ -4240,8 +4641,8 @@ export type AdapterHealthChangedSubject = {
 
 export type AdapterHealthChangedData = {
   to: string;
-  from?: string | null;
-  transport?: string | null;
+  from?: string;
+  transport?: string;
 };
 
 export type AgentDetectedSubject = {
@@ -4337,7 +4738,7 @@ export type AgentStartedSubject = {
 
 export type AgentStartedData = {
   harness: string;
-  via?: string | null;
+  via?: string;
 };
 
 export type AgentStateChangedSubject = {
@@ -4347,10 +4748,10 @@ export type AgentStateChangedSubject = {
 
 export type AgentStateChangedData = {
   facet: string;
-  from?: string | null;
+  from?: string;
   to: string;
-  source?: string | null;
-  confidence?: number | null;
+  source?: string;
+  confidence?: number;
 };
 
 export type AgentTurnCompletedSubject = {
@@ -4385,7 +4786,7 @@ export type AgentUsageData = {
 };
 
 export type AssistantConsentGrantedSubject = {
-  workspace?: string | null;
+  workspace?: string;
 };
 
 export type AssistantConsentGrantedData = unknown;
@@ -4427,8 +4828,8 @@ export type AttentionPreferenceChangedData = {
 
 export type BrowserNavigatedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type BrowserNavigatedData = {
@@ -4437,8 +4838,8 @@ export type BrowserNavigatedData = {
 
 export type BrowserViewportChangedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type BrowserViewportChangedData = {
@@ -4547,13 +4948,13 @@ export type DeskForgottenData = {
 };
 
 export type DraftCreatedSubject = {
-  draft?: string | null;
+  draft?: string;
 };
 
 export type DraftCreatedData = unknown;
 
 export type DraftDeletedSubject = {
-  draft?: string | null;
+  draft?: string;
 };
 
 export type DraftDeletedData = {
@@ -4561,7 +4962,7 @@ export type DraftDeletedData = {
 };
 
 export type DraftDeliveryUnknownSubject = {
-  draft?: string | null;
+  draft?: string;
 };
 
 export type DraftDeliveryUnknownData = unknown;
@@ -4577,7 +4978,7 @@ export type DraftReorderedData = {
 };
 
 export type DraftSendingSubject = {
-  draft?: string | null;
+  draft?: string;
 };
 
 export type DraftSendingData = {
@@ -4588,7 +4989,7 @@ export type DraftSendingData = {
 };
 
 export type DraftUpdatedSubject = {
-  draft?: string | null;
+  draft?: string;
 };
 
 export type DraftUpdatedData = unknown;
@@ -4652,7 +5053,7 @@ export type InteractionDecidedData = {
   rev: number;
   by: string;
   decision: string | null;
-  channel?: string | null;
+  channel?: string;
 };
 
 export type InteractionDeliveryUnknownSubject = {
@@ -4666,15 +5067,15 @@ export type InteractionDeliveryUnknownData = {
 
 export type InteractionExpiredSubject = {
   interaction: string;
-  pane?: string | null;
+  pane?: string;
 };
 
 export type InteractionExpiredData = unknown;
 
 export type InteractionOpenedSubject = {
-  interaction?: string | null;
-  pane?: string | null;
-  run?: string | null;
+  interaction?: string;
+  pane?: string;
+  run?: string;
 };
 
 export type InteractionOpenedData = unknown;
@@ -4685,8 +5086,8 @@ export type InteractionUpdatedSubject = {
 };
 
 export type InteractionUpdatedData = {
-  gate?: boolean | null;
-  reason?: string | null;
+  gate?: boolean;
+  reason?: string;
 };
 
 export type LayoutAppliedSubject = {
@@ -4723,26 +5124,26 @@ export type NotificationCreatedData = {
 
 export type PaneClosedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneClosedData = {
-  reason?: string | null;
+  reason?: string;
 };
 
 export type PaneCreatedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneCreatedData = Record<string, unknown>;
 
 export type PaneCwdChangedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneCwdChangedData = {
@@ -4751,25 +5152,25 @@ export type PaneCwdChangedData = {
 
 export type PaneExitedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneExitedData = {
   code?: number | null;
   signal?: unknown;
-  reason?: string | null;
-  respawn_error?: string | null;
+  reason?: string;
+  respawn_error?: string;
 };
 
 export type PaneFocusedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneFocusedData = {
-  client?: string | null;
+  client?: string;
 };
 
 export type PaneIsolationChangedSubject = {
@@ -4784,8 +5185,8 @@ export type PaneIsolationChangedData = {
 
 export type PaneMarkedUnreadSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneMarkedUnreadData = {
@@ -4794,8 +5195,8 @@ export type PaneMarkedUnreadData = {
 
 export type PaneMovedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneMovedData = {
@@ -4805,8 +5206,8 @@ export type PaneMovedData = {
 
 export type PaneOutputMatchedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneOutputMatchedData = {
@@ -4816,8 +5217,8 @@ export type PaneOutputMatchedData = {
 
 export type PanePinnedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PanePinnedData = {
@@ -4826,8 +5227,8 @@ export type PanePinnedData = {
 
 export type PaneProcessChangedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneProcessChangedData = {
@@ -4836,8 +5237,8 @@ export type PaneProcessChangedData = {
 
 export type PaneRecoveredSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneRecoveredData = {
@@ -4846,28 +5247,28 @@ export type PaneRecoveredData = {
 
 export type PaneScrollChangedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneScrollChangedData = {
   offset: number;
   total: number;
-  client?: string | null;
+  client?: string;
 };
 
 export type PaneSeenSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneSeenData = Record<string, unknown>;
 
 export type PaneTitleChangedSubject = {
   pane: string;
-  tab?: string | null;
-  workspace?: string | null;
+  tab?: string;
+  workspace?: string;
 };
 
 export type PaneTitleChangedData = {
@@ -4893,8 +5294,8 @@ export type PolicyRuleMatchedData = {
 export type PreviewConsoleErrorSubject = {
   preview: string;
   preview_id: string;
-  pane: unknown;
-  task: unknown;
+  pane: string | null;
+  task: string | null;
   machine: string;
 };
 
@@ -4902,9 +5303,57 @@ export type PreviewConsoleErrorData = {
   count: number;
   source: string;
   text: string;
-  url: unknown;
-  line: unknown;
-  session: unknown;
+  url: string | null;
+  line: number | null;
+  session: string | null;
+};
+
+export type PreviewDeclaredSubject = {
+  preview: string;
+  preview_handle: string;
+  pane: string | null;
+  task: string | null;
+  machine: string;
+};
+
+export type PreviewDeclaredData = {
+  preview: Preview;
+};
+
+export type PreviewDiscoveredSubject = {
+  preview: string;
+  preview_handle: string;
+  pane: string | null;
+  task: string | null;
+  machine: string;
+};
+
+export type PreviewDiscoveredData = {
+  preview: Preview;
+};
+
+export type PreviewDownSubject = {
+  preview: string;
+  preview_handle: string;
+  pane: string | null;
+  task: string | null;
+  machine: string;
+};
+
+export type PreviewDownData = {
+  preview: Preview;
+};
+
+export type PreviewGoneSubject = {
+  preview: string;
+  preview_handle: string;
+  pane: string | null;
+  task: string | null;
+  machine: string;
+};
+
+export type PreviewGoneData = {
+  preview: Preview;
 };
 
 export type PreviewMirroredSubject = {
@@ -4920,15 +5369,20 @@ export type PreviewMirroredData = {
 };
 
 export type PreviewOpenedSubject = {
-  preview?: string | null;
+  machine?: string;
+  preview?: string;
+  preview_handle?: string;
   pane?: string | null;
+  task?: string | null;
 };
 
 export type PreviewOpenedData = {
   url: string;
-  opened_in: string;
-  profile?: string | null;
-  browser?: string | null;
+  opened_in: "pane" | "window" | "proxy" | string;
+  profile?: string;
+  browser?: string;
+  tls_origin?: boolean;
+  pane?: string | null;
 };
 
 export type PreviewUnmirroredSubject = {
@@ -4939,6 +5393,18 @@ export type PreviewUnmirroredSubject = {
 
 export type PreviewUnmirroredData = {
   local_port: number;
+};
+
+export type PreviewUpSubject = {
+  preview: string;
+  preview_handle: string;
+  pane: string | null;
+  task: string | null;
+  machine: string;
+};
+
+export type PreviewUpData = {
+  preview: Preview;
 };
 
 export type ReviewAcceptedSubject = {
@@ -5072,7 +5538,7 @@ export type SandboxCreatedData = {
 };
 
 export type ScreenshotCapturedSubject = {
-  machine?: string | null;
+  machine?: string;
 };
 
 export type ScreenshotCapturedData = unknown;
@@ -5100,9 +5566,9 @@ export type ScrollbackForgottenData = {
 export type SessionServerRestartedSubject = Record<string, unknown>;
 
 export type SessionServerRestartedData = {
-  recovered_panes?: number | null;
-  pid?: number | null;
-  prev_pid?: number | null;
+  recovered_panes?: number;
+  pid?: number;
+  prev_pid?: number;
 };
 
 export type TabClosedSubject = {
@@ -5123,11 +5589,11 @@ export type TabCreatedData = {
 
 export type TabLayoutChangedSubject = {
   tab: string;
-  workspace?: string | null;
+  workspace?: string;
 };
 
 export type TabLayoutChangedData = {
-  floated?: string | null;
+  floated?: string;
 };
 
 export type TabMovedSubject = {
@@ -5155,8 +5621,8 @@ export type TaskBindingChangedSubject = {
 
 export type TaskBindingChangedData = {
   state: string;
-  reason?: string | null;
-  offers?: string[] | null;
+  reason?: string;
+  offers?: string[];
 };
 
 export type TaskCreatedSubject = {
@@ -5270,7 +5736,7 @@ export type TaskUpdatedSubject = {
 export type TaskUpdatedData = {
   priority?: unknown;
   effort?: unknown;
-  effort_source?: string | null;
+  effort_source?: string;
 };
 
 export type ThemeChangedSubject = Record<string, unknown>;
@@ -5288,7 +5754,7 @@ export type WorkspaceCreatedSubject = {
 };
 
 export type WorkspaceCreatedData = {
-  cwd?: string | null;
+  cwd?: string;
 };
 
 export type WorkspaceMovedSubject = {
@@ -5308,7 +5774,7 @@ export type WorkspaceRenamedData = {
 };
 
 export type WorktreeCreatedSubject = {
-  workspace?: string | null;
+  workspace?: string;
 };
 
 export type WorktreeCreatedData = unknown;
@@ -5326,10 +5792,11 @@ export type WorktreeOpenedData = {
 
 export type WorktreeRemovedSubject = {
   path: string;
+  task?: string;
 };
 
 export type WorktreeRemovedData = {
-  job: string;
+  job?: string;
   state: string;
 };
 
@@ -5407,9 +5874,14 @@ export interface EventMap {
   "policy.repo_trusted": { subject: PolicyRepoTrustedSubject; data: PolicyRepoTrustedData };
   "policy.rule_matched": { subject: PolicyRuleMatchedSubject; data: PolicyRuleMatchedData };
   "preview.console_error": { subject: PreviewConsoleErrorSubject; data: PreviewConsoleErrorData };
+  "preview.declared": { subject: PreviewDeclaredSubject; data: PreviewDeclaredData };
+  "preview.discovered": { subject: PreviewDiscoveredSubject; data: PreviewDiscoveredData };
+  "preview.down": { subject: PreviewDownSubject; data: PreviewDownData };
+  "preview.gone": { subject: PreviewGoneSubject; data: PreviewGoneData };
   "preview.mirrored": { subject: PreviewMirroredSubject; data: PreviewMirroredData };
   "preview.opened": { subject: PreviewOpenedSubject; data: PreviewOpenedData };
   "preview.unmirrored": { subject: PreviewUnmirroredSubject; data: PreviewUnmirroredData };
+  "preview.up": { subject: PreviewUpSubject; data: PreviewUpData };
   "review.accepted": { subject: ReviewAcceptedSubject; data: ReviewAcceptedData };
   "review.candidate_created": { subject: ReviewCandidateCreatedSubject; data: ReviewCandidateCreatedData };
   "review.end_candidate_pinned": { subject: ReviewEndCandidatePinnedSubject; data: ReviewEndCandidatePinnedData };

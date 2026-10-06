@@ -398,7 +398,8 @@ fn event_envelope_problems(event: &Value, reg: &Registry) -> Vec<String> {
 pub const DEFS: &str = r##"
 # Shared definitions. Model structs live in vk-proto (model.rs); enum-valued fields are `string`
 # here unless the wire form is a stable snake_case set. Option fields are always serialized
-# (null when unset), hence `T|null` rather than `?`.
+# (null when unset), hence `T|null` rather than `?`. Everywhere: `f?: T` may be absent but is
+# never null; a field that can be null says `T|null` (`f?: T|null`: absent or null).
 Target = string
 Cursor = {machine_uuid: string, session_uuid: string, log_epoch: string, seq: int}
 Event = {seq: int, ts: int, v: int, tier: sync|history, type: string, subject: object, actor: object, data: any}
@@ -421,7 +422,10 @@ Interaction = {id: string, handle: string, run: string, pane: string, kind: stri
 PolicyRule = object
 Notification = {id: string, kind: string, pane: string|null, title: string, body: string, urgency: string, created_at_ms: int, read: bool, channels?: [string]}
 Task = {id: string, handle: string, title: string, slug: string, workspace: string|null, repo_root: string, worktree_path: string|null, branch: string|null, base_ref: string|null, port_range: [int]|null, status: string, setup_status: string|null, created_at_ms: int, ownership?: owned|attached, owner_machine?: string, intent_revision?: int|null, priority?: int|null, rev?: int, review_label?: string|null, effort?: string|null, isolation?: Isolation, checkout?: string|null, rate_limit?: RateLimitInfo|null}
-Preview = {id: string, handle: string, machine: string, pane: string|null, task: string|null, port: int, path: string, label: string|null, url: string, scheme: string, status: suggested|declared|up|down|gone, source: declared|listener|output_url|banner, pid: int|null, first_seen_ms: int, last_seen_ms: int}
+Preview = {id: string, handle: string, machine: string, pane: string|null, task: string|null, port: int, path: string, label: string|null, url: string, scheme: string, status: suggested|declared|up|down|gone, source: declared|listener|output_url|banner, pid: int|null, first_seen_ms: int, last_seen_ms: int, pane_handle?: string|null, task_handle?: string|null}
+PreviewCa = {path: string, sha256: string, spki_sha256: string, trust: string}
+PreviewMirror = {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user}
+BrowserSession = {session: string, session_id: string, owner: {pane: string, pane_handle: string|null, run: string|null} | {user: string}, preview: string|null, url: string, created_ms: int, viewport: {width: int, height: int}, device: string|null, previews: own|machine, human_control: bool, screencast: bool, proxy_port: int|null, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device: string|null, viewport: {width: int, height: int}, dpr: number}, status?: int|null, final_url?: string, title?: string}
 Appearance = {known: bool, dark: bool, mode: string, theme: string, source: string}
 LayoutSpec = object
 ScreenshotMeta = {id: string, handle?: string, workspace?: string, task?: string|null, run?: string|null, preview?: string|null, mime?: string, width?: int, height?: int, ts?: int, blob?: string, environment?: object, code?: object}
@@ -431,7 +435,7 @@ RpcError = {code: int, message: string, data: RpcErrorData}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
-/// the handler. Optional (`?`) fields may be absent or null.
+/// the handler. Optional (`?`) fields may be absent; only `|null` types may be null.
 pub const METHOD_SHAPES: &[&str] = &[CORE_SHAPES, MORE_SHAPES, INTERNAL_SHAPES];
 
 const CORE_SHAPES: &str = r##"
@@ -539,10 +543,10 @@ interaction.cancel :: {interaction: Target} => {interaction: Interaction}
 
 # --- tasks, worktrees ---
 task.list :: {status?: string, repo?: string} => {tasks: [Task]}
-task.get :: {task: Target} => {task: Task, workspace: Workspace|null, runs: [AgentRun], previews: [Preview], collisions: [any]}
-task.create :: {title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target}
+task.get :: {task: Target} => {task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null}
+task.create :: {title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool}
   => {task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun]}
-task.finish :: {task: Target, remove_worktree?: ask|true|false, delete_branch?: bool = false} => {task: Task}
+task.finish :: {task: Target, remove_worktree?: ask|bool = false, force?: bool = false, archive?: bool, status?: string} => {task: Task, job?: any}
 worktree.list :: {repo?: string, cwd?: string} => {worktrees: [{path: string, branch: string|null, head: string, task?: string|null, workspace?: string|null, locked: bool, prunable: bool}]}
 worktree.create :: {repo?: string, cwd?: string, branch: string, path?: string, base?: string, open?: bool, focus?: bool = false} => {worktree: any, workspace?: Workspace}
 worktree.open :: {path: string, focus?: bool = false} => {workspace: Workspace}
@@ -574,19 +578,23 @@ git.diff :: {pane?: Target, path?: string, file: string, staged?: bool} => {file
 git.log :: {pane?: Target, path?: string, base?: string, limit?: int = 50} => {commits: [{sha: string, short: string, author: string, ts: int, subject: string}], truncated: bool}
 
 # --- previews ---
-preview.list :: {machine?: string, task?: Target, pane?: Target, status?: suggested|up|down|all} => {previews: [Preview]}
-preview.get :: {preview: Target} => {preview: Preview}
-preview.declare :: {port: int, host?: string = '127.0.0.1', scheme?: string = http, path?: string, label?: string, pane?: Target, task?: Target} => {preview: Preview}
-preview.promote :: {preview: Target} => {preview: Preview}
-preview.dismiss :: {preview: Target} => {preview: Preview}
-preview.forget :: {preview: Target} => {}
-preview.open :: {preview: Target, mode?: profile|proxy, client?: string} => {opened_in: string, url: string}
-preview.url :: {preview: Target, mode?: profile|proxy} => {remote_url: string, profile_url: string, proxy_url?: string}
-preview.status :: {} => {socks_port?: int|null, browsers: [object], links: [object], accepted?: int, rejected?: int}
+preview.list :: {machine?: string, task?: Target, pane?: Target, status?: suggested|declared|up|down|gone|all, all?: bool} => {previews: [Preview], machine?: string}
+preview.get :: {preview: Target, machine?: string} => {preview: Preview}
+preview.declare :: {port: int|string, path?: string = '/', scheme?: http|https = http, label?: string, pane?: Target, task?: Target, tls_origin?: bool} => {preview: Preview}
+preview.promote :: {preview: Target, machine?: string} => {preview: Preview}
+preview.dismiss :: {preview: Target, machine?: string} => {}
+preview.forget :: {preview: Target, machine?: string} => {}
+preview.open :: {preview?: Target, url?: string, machine?: string, mode?: pane|window|proxy, window?: bool, proxy?: bool, split?: right|down|left|up|tab|float, pane?: Target, focus?: bool = true, device?: string, viewport?: string|{width: int, height: int}, profile?: string, no_open?: bool = false, open?: bool, tls_origin?: bool}
+  => {opened_in: pane, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}
+   | {opened_in: window, url: string, machine: string, profile: string, profile_dir: string, browser: string, browser_kind: string, pid: int, reused: bool, socks_port: int|null, route: none|loopback|remote}
+   | {opened_in: default_browser, url: string}
+   | {opened_in: proxy, url: string, proxy_url: string, host: string, proxy_port: int, machine: string, preview: string, opened: bool, token_ttl_s: int, session_ttl_s: int, tls_origin: bool, remote_url: string, caveats: string, ca?: PreviewCa, open_url?: string}
+preview.url :: {preview: Target, machine?: string} => {remote_url: string, profile_url: string, proxy_url: string|null}
+preview.status :: {} => {socks_port: int|null, browsers: [{profile: string, machine: string, route: string, pid: int, running: bool}], links: [{machine: string, connected: bool, bytes_in: int|null, bytes_out: int|null, rtt_ms: int|null}], accepted: int, rejected: int, proxy: {port: int, tls: bool, routes: [{host: string, machine: string, preview: string, handle: string, port: int, scheme: http|https, tls: bool}], stats: {requests: int, denied: int, websockets: int}}|null, mirrors: [PreviewMirror]}
 # full scope only
-preview.mirror :: {preview: Target} => {local_port: int}
+preview.mirror :: {preview: Target, machine?: string} => {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user, warning: string, url?: string, already?: bool}
 # full scope only
-preview.unmirror :: {preview: Target} => {local_port: int}
+preview.unmirror :: {preview?: Target|int, port?: int, machine?: string} => {local_port: int, machine: string, preview: string}
 
 # --- screenshots ---
 screenshot.list :: {task?: Target, preview?: Target, run?: Target, since?: string|int, since_ms?: int, limit?: int = 50} => {screenshots: [ScreenshotMeta], count: int, total: int}
@@ -630,33 +638,40 @@ draft.send :: {draft: Target, target_run: Target, idempotency_key: string, inclu
 draft.reconcile :: {draft: Target} => {send: object, receipt: object, may_retry: bool, note: string}
 
 # --- browser (06 B) ---
-browser.list :: {} => {sessions: [object], browser: any, machine: string}
-browser.session_open :: {preview?: Target, url?: string, viewport?: {w?: int, h?: int, dpr?: number}, device?: string, color_scheme?: light|dark} => {browser_session: string}
-browser.session_close :: {browser_session: string} => {}
-browser.navigate :: {browser_session: string, url?: string, path?: string, wait?: bool} => {status: int, final_url: string}
-browser.click :: {browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool} => {}
-browser.type :: {browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool} => {}
-browser.press :: {browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool} => {}
-browser.wait :: {browser_session: string, for: string | {selector: string} | {ms: int}} => {}
-browser.eval :: {browser_session: string, expression: string} => {value: any}
-browser.dom :: {browser_session?: string, preview?: Target, selector?: string, format?: text|html|a11y} => {content: string}
-browser.console :: {browser_session?: string, preview?: Target, since_ms?: int, level?: error|warn|all} => {entries: [{ts: int, level: string, text: string, source?: string}]}
-browser.network :: {browser_session?: string, preview?: Target, failed_only?: bool, since_ms?: int} => {entries: [{ts: int, method: string, url: string, status?: int, error?: string, blocked_by_policy?: bool}]}
-browser.screenshot :: {browser_session?: string, preview?: Target, url?: string, full_page?: bool, selector?: string, viewport?: any, device?: string} => {blob: string, path_on_machine: string, width: int, height: int, meta: ScreenshotMeta}
-browser.diff :: {a: string, b: string, threshold?: number, force?: bool} => {blob: string, changed_ratio: number, regions: any}
-browser.install :: {confirm?: bool, version?: string, url?: string, sha256?: string} => object
-browser.status :: {} => object
-browser.take_over :: {session: string} => {session: string, human_control: bool}
-browser.release :: {session: string} => {session: string, human_control: bool}
-browser.attach_screencast :: {session: string, after_seq?: int} => object
-browser.detach_screencast :: {session: string} => object
-browser.screencast_frame :: {session: string, after_seq?: int} => object
-browser.watch :: {session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab, focus?: bool = true, focus_client?: string} => {opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string}
-browser.command :: {pane: Target, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?: string, hard?: bool, text?: string} => object
-browser.pane.create :: {pane?: Target, preview?: Target, url?: string, split?: right|down|left|up|tab, machine?: string, focus?: bool = true, focus_client?: string} => {opened_in: string, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}
+browser.list :: {} => {sessions: [object], browser: object, machine: string}
+browser.session_open :: {url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int} => BrowserSession
+browser.session_close :: {session?: string, browser_session?: string, target?: string} => {session: string, closed: bool}
+browser.navigate :: {session?: string, browser_session?: string, target?: string, url?: string, path?: string, wait?: load|domcontentloaded|commit|none|string = load, timeout_ms?: int = 15000} => {session: string, status: int|null, final_url: string, title: string}
+browser.click :: {session?: string, browser_session?: string, target?: string, selector?: string, text?: string, x?: number, y?: number, click_count?: int = 1, timeout_ms?: int = 5000} => {session: string, x: number, y: number, element: {x: number, y: number, width: number, height: number, tag: string, text: string}|null}
+browser.type :: {session?: string, browser_session?: string, target?: string, text: string, selector?: string, clear?: bool, submit?: bool, timeout_ms?: int} => {session: string, typed: int}
+browser.press :: {session?: string, browser_session?: string, target?: string, key: string} => {session: string, key: string}
+browser.wait :: {session?: string, browser_session?: string, target?: string, for?: string = load, timeout_ms?: int = 15000} => {session: string, waited: string}
+browser.eval :: {session?: string, browser_session?: string, target?: string, expression?: string, js?: string} => {session: string, value: any}
+browser.dom :: {session?: string, browser_session?: string, target?: string, format?: a11y|accessibility|text|html = a11y, max_bytes?: int, selector?: string} => {session: string, url: string, format: string, content: string, truncated: bool}
+browser.console :: {session?: string, browser_session?: string, target?: string, level?: error|warn|warning|all, since_ms?: int, since?: string, limit?: int = 200} | {pane: Target, kind?: all|console|network, level?: string, errors?: bool, failed?: bool, failed_only?: bool, after?: int, since_ms?: int, since?: string, limit?: int}
+  => {session: string, entries: [{ts: int, level: string, text: string, source: string, url?: any, line?: int|null}]} | {pane: string, entries: [object], last_seq: int, source: local|relayed|none, url: string|null}
+browser.network :: {session?: string, browser_session?: string, target?: string, failed_only?: bool, failed?: bool, since_ms?: int, since?: string, limit?: int = 200} | {pane: Target, kind?: all|console|network, level?: string, errors?: bool, failed?: bool, failed_only?: bool, after?: int, since_ms?: int, since?: string, limit?: int}
+  => {session: string, entries: [{ts: int, method?: string|null, url?: string, type: string|null, status?: int|null, error?: string|null, mime?: string|null, blocked_reason?: string, blocked_by_policy?: string, layer?: string, duration_ms?: int}]} | {pane: string, entries: [object], last_seq: int, source: local|relayed|none, url: string|null}
+browser.screenshot :: {session?: string, browser_session?: string, target?: string, url?: string, preview?: string, device?: string, viewport?: string|object, dpr?: number, color_scheme?: string, dark?: bool, full_page?: bool, selector?: string, timeout_ms?: int, inline?: bool}
+  => {session: string|null, id: string, handle: string, blob: string, path_on_machine: string, width: int, height: int, bytes: int, binding: bound|illustrative, label: string, meta: ScreenshotMeta, data_b64?: string, mime?: string, inline_skipped?: string, one_shot?: bool, opened_session?: string, status?: int|null, final_url?: string|null, title?: string|null}
+browser.diff :: {a: string, b: string, threshold?: number|string = 0.1, force?: bool, inline?: bool}
+  => {a: object, b: object, threshold: number, channel_threshold: any, width: int, height: int, size_mismatch: bool, a_size: {width: int, height: int}, b_size: {width: int, height: int}, changed_pixels: int, total_pixels: int, changed_ratio: number, regions: [{x: int, y: int, width: int, height: int, pixels: int}], regions_total: int, forced: bool, blob: string, path_on_machine: string, bytes: int, data_b64?: string, mime?: string, inline_skipped?: string}
+browser.install :: {confirm?: bool, version?: string, url?: string, sha256?: string} => {plan: {version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool}, confirm_required: bool} | {installed: bool, binary: string, plan: object}
+browser.status :: {}
+  => {running: true, pid: int|null, product: string, binary: string, kind: string, uptime_ms: int, sessions: int, denied: int, profile_dir: string, idle_timeout_ms: int}
+   | {running: false, sessions: int, denied: int, binary: string|null, kind: string|null, profile_dir: string, idle_timeout_ms: int}
+browser.take_over :: {session?: string, browser_session?: string, target?: string} => {session: string, human_control: bool}
+browser.release :: {session?: string, browser_session?: string, target?: string} => {session: string, human_control: bool}
+browser.attach_screencast :: {session?: string, browser_session?: string, target?: string} => {session: string, delivery: string, width: int, height: int, poll: string}
+browser.detach_screencast :: {session?: string, browser_session?: string, target?: string} => {session: string, detached: bool}
+browser.screencast_frame :: {session?: string, browser_session?: string, target?: string, after_seq?: int} => {session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}
+browser.watch :: {session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab|float = right, focus?: bool = true, focus_client?: string} => {opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}
+browser.command :: {pane: Target, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?: string, hard?: bool, text?: string}
+  => {pane: string} | {pane: string, profile: string} | {opened_in: window, url: string, machine: string, profile: string, profile_dir: string, browser: string, browser_kind: string, pid: int, reused: bool, socks_port: int|null, route: string} | {opened_in: default_browser, url: string} | object
+browser.pane.create :: {preview?: Target, url?: string, split?: right|down|left|up|tab|float = right, pane?: Target, machine?: string, device?: string, viewport?: string|{width: int, height: int}, fit?: bool, focus?: bool = true, focus_client?: string} => {opened_in: pane, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}
 browser.pane.list :: {} => {panes: [{pane: string, handle: string, tab: string, browser: BrowserPane}]}
-browser.pane.update :: {pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string, fit?: bool} => {pane: Pane}
-browser.pane.console :: {pane: Target, toggle?: bool = true, focus?: bool = false} => object
+browser.pane.update :: {pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string|{width: int, height: int}, fit?: bool} => {pane: string}
+browser.pane.console :: {pane?: Target, toggle?: bool = true, focus?: bool = false} => {closed: string, pane_handle: string, browser_pane: string} | {pane: string, pane_handle: string, browser_pane: string, existing?: bool}
 browser.pane.console_push :: {pane: Target, entries: [object]} => {pane: string, stored: int}
 
 # --- plugins ---
@@ -736,8 +751,7 @@ blob.begin :: {name: string, size: int, sha256?: string} => {upload_id: string, 
 blob.commit :: {upload_id: string, stage?: browser} => {hash: string, sha256: string, size: int, path_on_machine: string, path: string}
 browser.close :: {session?: string, browser_session?: string, target?: string} => {session: string, closed: bool}
 # session is required (any of session|browser_session|target); preview is a preview id/handle or URL; viewport is "WxH" or {width|w, height|h}
-browser.open :: {url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool}
-  => {session: string, session_id: string, owner: {pane: string, pane_handle?: string, run?: string} | {user: string}, preview?: string, url: string, created_ms: int, viewport: {width: int, height: int}, device?: string, previews: own|machine, human_control: bool, screencast: bool, proxy_port?: int, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device?: string, viewport: {width: int, height: int}, dpr: number}, status?: int, final_url?: string, title?: string}
+browser.open :: {url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int} => BrowserSession
 browser.pane.status :: {} => {browsers: [{profile: string, dpr: number, pid?: int, targets: int, up_ms: int}], targets: [{pane: string, owner: string, url?: string, title?: string, profile: string, machine: string, route: string, running: bool, screencast: bool, viewers: int, frames: int, fps: number, decode_ms: number, css: [number], frame?: [int], history: any, error?: string, pin?: {device?: string, width: int, height: int}, letterbox?: {rect: [number], scale: number}, console: int, network: int, clipboard: {forwarded: int, blocked: int}}], windowed: [string], tiles_sent: int, media_bytes: int}
 # session is required (any of session|browser_session|target); aliases: browser.dom
 browser.snapshot :: {session?: string, browser_session?: string, target?: string, format?: a11y|accessibility|text|html = a11y, max_bytes?: int, selector?: string} => {session: string, url: string, format: string, content: string, truncated: bool}
@@ -761,10 +775,10 @@ plugin.registry.notify :: {} => {ok: bool}
 plugin.surface.close :: {pane: Target} => {closed: Target | null}
 # alias form: action=reset (needs a user client) behaves as preview.profile.reset; default/list action lists
 preview.profile :: {action?: list|reset = list, profile?: string, machine?: string}
-  => {profiles: [{name: string, path: string, running: bool, pid?: int, machine?: string, route?: string, bytes: int}], root: string} | {profile: string, removed: bool}
-preview.profile.list :: {} => {profiles: [{name: string, path: string, running: bool, pid?: int, machine?: string, route?: string, bytes: int}], root: string}
+  => {profiles: [{name: string, path: string, running: bool, pid: int|null, machine: string|null, route: string|null, bytes: int}], root: string} | {profile: string, removed: bool}
+preview.profile.list :: {} => {profiles: [{name: string, path: string, running: bool, pid: int|null, machine: string|null, route: string|null, bytes: int}], root: string}
 # not allowed from a pane
-preview.profile.reset :: {profile: string, machine?: string} => {profile: string, removed: bool}
+preview.profile.reset :: {profile?: string, machine?: string} => {profile: string, removed: bool}
 # not allowed from a pane
 sandbox.allow :: {task: Target, host: string} => {task: string, allowed: string}
 sandbox.list :: {} => {sandboxes: [{sandbox: string, task?: string, checkout?: string, level: string, provider?: string, network: any, yolo: bool, proxy_port?: int, task_allow?: any, credentials: any, container?: {container: string, state: string, image: any, code: any, workdir: any, clone?: {branch: string, base: string}, devcontainer: any, warnings: any, in_box_vibeke: any}}]}
@@ -772,7 +786,7 @@ sandbox.list :: {} => {sandboxes: [{sandbox: string, task?: string, checkout?: s
 sandbox.remove :: {task: Target, force?: bool = false} => {container: string, action: string, sync: any, leftovers: any, error?: string, unsynced_kept: bool}
 # not allowed from a pane; container boxes only
 sandbox.start :: {task: Target} => {state: string, created: bool}
-sandbox.status :: {} => {levels: [{level: string, available: bool, detail?: any, hint?: string}], config: object, container: {runtime?: string, docker_sandboxes?: {plugin: any, note: string}, vibeke_linux: any, vibeke_linux_hint: string}}
+sandbox.status :: {} => {levels: [{level: string, available: bool, detail?: any, hint?: string}], config: object, container: {runtime?: string|null, docker_sandboxes?: {plugin: any, note: string}|null, vibeke_linux: any, vibeke_linux_hint: string}}
 # not allowed from a pane; container boxes only
 sandbox.stop :: {task: Target} => {state: string}
 "##;
@@ -866,11 +880,16 @@ review.snapshot_created :: {task: string, subject: string} => {head: string, con
 review.snapshot_refs_removed :: {repo: string, task: any} => any
 worktree.created :: {workspace?: string} => any
 worktree.opened :: {workspace: string} => {path: string, branch: string|null, repo_root: string, created_workspace?: any}
-worktree.removed :: {path: string} => {job: string, state: string}
-preview.opened :: {preview?: string, pane?: string} => {url: string, opened_in: string, profile?: string, browser?: string}
+worktree.removed :: {path: string, task?: string} => {job?: string, state: string}
+preview.opened :: {machine?: string, preview?: string, preview_handle?: string, pane?: string|null, task?: string|null} => {url: string, opened_in: pane|window|proxy|string, profile?: string, browser?: string, tls_origin?: bool, pane?: string|null}
+preview.discovered :: {preview: string, preview_handle: string, pane: string|null, task: string|null, machine: string} => {preview: Preview}
+preview.declared :: {preview: string, preview_handle: string, pane: string|null, task: string|null, machine: string} => {preview: Preview}
+preview.up :: {preview: string, preview_handle: string, pane: string|null, task: string|null, machine: string} => {preview: Preview}
+preview.down :: {preview: string, preview_handle: string, pane: string|null, task: string|null, machine: string} => {preview: Preview}
+preview.gone :: {preview: string, preview_handle: string, pane: string|null, task: string|null, machine: string} => {preview: Preview}
 preview.mirrored :: {machine: string, preview: string, preview_handle: string} => {local_port: int, url: string, warning: string}
 preview.unmirrored :: {machine: string, preview: string, preview_handle: string} => {local_port: int}
-preview.console_error :: {preview: string, preview_id: string, pane: any, task: any, machine: string} => {count: int, source: string, text: string, url: any, line: any, session: any}
+preview.console_error :: {preview: string, preview_id: string, pane: string|null, task: string|null, machine: string} => {count: int, source: string, text: string, url: string|null, line: int|null, session: string|null}
 browser.navigated :: {pane: string, tab?: string, workspace?: string} => {url: string}
 browser.viewport_changed :: {pane: string, tab?: string, workspace?: string} => {device: string|null, viewport: any}
 notification.created :: {pane: string|null} => {id: string, kind: string, title: string, body: string, urgency: string}
@@ -967,7 +986,11 @@ mod tests {
                 walk(&src, &mut files);
             }
         }
-        let re = regex::Regex::new(r#"\.event(?:_by)?\(\s*"([a-z_]+\.[a-z_.]+)""#).unwrap();
+        // Also the preview lifecycle names handed to `commit_previews` (`Some("preview.up")`).
+        let re = regex::Regex::new(
+            r#"\.event(?:_by)?\(\s*"([a-z_]+\.[a-z_.]+)"|Some\("(preview\.[a-z_]+)"\)"#,
+        )
+        .unwrap();
         let reg = registry();
         let mut missing = std::collections::BTreeSet::new();
         for f in &files {
@@ -978,8 +1001,9 @@ mod tests {
             }
             let text = std::fs::read_to_string(f).unwrap();
             for c in re.captures_iter(&text) {
-                if !reg.events.contains_key(&c[1]) {
-                    missing.insert(format!("{} ({})", &c[1], name));
+                let t = c.get(1).or_else(|| c.get(2)).unwrap().as_str();
+                if !reg.events.contains_key(t) {
+                    missing.insert(format!("{t} ({name})"));
                 }
             }
         }

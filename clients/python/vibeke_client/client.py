@@ -188,7 +188,8 @@ class EventStream:
     @property
     def queued(self) -> int:
         """Events queued and not yet consumed (internal; tests check retention)."""
-        return sum(1 for x in self._queue._queue if isinstance(x, Event))  # type: ignore[attr-defined]
+        items: List[Any] = list(self._queue._queue)  # type: ignore[attr-defined]
+        return sum(1 for x in items if isinstance(x, Event))
 
     def __aiter__(self) -> "EventStream":
         return self
@@ -392,7 +393,7 @@ class Client(Api):
         params = m.get("params") or {}
         if method == "events.event":
             # Unknown ids (closed streams) are dropped.
-            stream = self._streams.get(params.get("subscription_id"))
+            stream = self._streams.get(str(params.get("subscription_id")))
             if stream is not None:
                 stream._push(Event.from_json(params["event"]))
         elif method == "events.overflow":

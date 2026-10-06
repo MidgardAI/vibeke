@@ -4,6 +4,7 @@
 
 use super::*;
 use std::sync::Mutex as StdMutex;
+use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -148,8 +149,8 @@ async fn fixture() -> Fixture {
     let (pb, _seen_b, _) = upstream(5174).await;
     up.map.lock().unwrap().insert(5173, pa);
     up.map.lock().unwrap().insert(5174, pb);
-    let route = |id: &str, handle: &str, port: u16, slug: &str| Route {
-        host: hostname_for(handle, Some("devbox"), Some(slug), "s0123456789"),
+    let route = |id: &str, handle: &str, port: u16, _slug: &str| Route {
+        host: String::new(),
         machine: "devbox".into(),
         preview: id.into(),
         handle: handle.into(),
@@ -237,31 +238,31 @@ async fn login(f: &Fixture, r: &Route) -> String {
 }
 
 #[test]
-fn hostnames_and_cookie_rules() {
-    assert_eq!(
-        hostname_for("v4", None, Some("fix-login"), "sabc"),
-        "v4-fix-login-sabc.vibeke.localhost"
-    );
-    assert_eq!(
-        hostname_for("v12", Some("demo@devbox.ts.net"), Some("Fix Login!"), "s1"),
-        "v12-demo-devbox-ts-net-fix-login-s1.vibeke.localhost"
-    );
-    // The session tag survives truncation: two sessions never share a host.
-    let tag = session_tag();
-    assert_eq!(tag.len(), 10, "{tag}");
+fn hostnames_are_unguessable_and_cookie_rules() {
+    // `<handle>-<26 base32 chars>.vibeke.localhost`: 128 random bits per hostname.
+    let h = hostname_for("V4 Web!");
+    let label = h.strip_suffix(".vibeke.localhost").unwrap();
+    let (handle, rand) = label.rsplit_once('-').unwrap();
+    assert_eq!(handle, "v4-web", "{h}");
+    assert_eq!(rand.len(), 26, "{h}");
     assert!(
-        tag.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        rand.bytes()
+            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b)),
+        "{h}"
     );
-    assert_ne!(session_tag(), tag);
-    let long = hostname_for("v1", Some("m"), Some(&"x".repeat(200)), &tag);
-    let label = long.split('.').next().unwrap();
-    assert!(label.len() <= 63, "{long}");
-    assert!(label.ends_with(&format!("-{tag}")), "{long}");
-    assert_ne!(
-        hostname_for("v1", None, Some("web"), "saaaaaaaaa"),
-        hostname_for("v1", None, Some("web"), "sbbbbbbbbb")
-    );
+    assert!(label.len() <= 63);
+    assert!(crate::ca::host_permitted(&h), "{h}");
+    let long = hostname_for(&"x".repeat(200));
+    assert!(long.split('.').next().unwrap().len() <= 63, "{long}");
+    assert!(hostname_for("").starts_with("p-"));
+    let many: std::collections::HashSet<String> = (0..2000).map(|_| hostname_for("v1")).collect();
+    assert_eq!(many.len(), 2000, "every hostname differs");
+    // Every base32 symbol appears in the random part (it is not a narrow alphabet).
+    let symbols: std::collections::HashSet<u8> = many
+        .iter()
+        .flat_map(|h| h[3..29].bytes().collect::<Vec<_>>())
+        .collect();
+    assert_eq!(symbols.len(), 32);
     assert!(reserved_cookie("vk_token") && reserved_cookie("__Host-vk_preview"));
     assert!(reserved_cookie("__Secure-VK_x") && !reserved_cookie("app"));
     assert_eq!(
@@ -806,25 +807,134 @@ async fn keep_alive_reuses_the_upstream_and_unreachable_is_502() {
     .await;
     assert_eq!(r.status, 502, "{}", r.head);
     assert!(r.body.contains("port 5173 of devbox"), "{}", r.body);
-    // Re-registering the same preview keeps its host (and its sessions).
-    let again = f.proxy.register(Route {
-        host: "something-else.vibeke.localhost".into(),
-        ..f.a.clone()
-    });
-    assert_eq!(again.host, f.a.host);
-    // Name collision with another preview: a suffixed host.
+    // Another preview with the same handle: its own random host.
     let c = f.proxy.register(Route {
         preview: "01C".into(),
         ..f.a.clone()
     });
     assert_ne!(c.host, f.a.host);
-    assert!(
-        c.host.ends_with(".vibeke.localhost") && c.host.contains("-2"),
-        "{}",
-        c.host
-    );
+    assert!(c.host.starts_with("v4-") && c.host.ends_with(".vibeke.localhost"));
     f.proxy.remove_preview("devbox", "01C");
     assert!(!f.proxy.routes().iter().any(|r| r.preview == "01C"));
+}
+
+#[tokio::test]
+async fn reopening_rotates_the_host_and_revokes_the_old_origin() {
+    let f = fixture().await;
+    let port = f.proxy.port();
+    let sess = login(&f, &f.a).await;
+    let cookie = format!("Cookie: {COOKIE}={sess}\r\n");
+    assert_eq!(
+        send(port, get(&f.a.host, port, "/", &cookie)).await.status,
+        200
+    );
+    let stale = f.proxy.mint_token(&f.a.host).unwrap();
+    // A re-open (whatever host the caller suggests) gets a fresh random host.
+    let again = f.proxy.register(Route {
+        host: f.a.host.clone(),
+        ..f.a.clone()
+    });
+    assert_ne!(again.host, f.a.host);
+    assert!(again.host.starts_with("v4-"));
+    // The old origin is gone with its sessions and unused tokens.
+    assert_eq!(
+        send(port, get(&f.a.host, port, "/", &cookie)).await.status,
+        421
+    );
+    let r = send(
+        port,
+        get(&f.a.host, port, &format!("/?{TOKEN_PARAM}={stale}"), ""),
+    )
+    .await;
+    assert_eq!(r.status, 421);
+    // The old cookie does not open the new origin either.
+    assert_eq!(
+        send(port, get(&again.host, port, "/", &cookie))
+            .await
+            .status,
+        401
+    );
+    assert_eq!(
+        f.proxy
+            .routes()
+            .iter()
+            .filter(|r| r.preview == "01A")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn hostnames_are_shown_only_to_their_opener() {
+    let f = fixture().await;
+    let mine = f.proxy.register_for(
+        Route {
+            preview: "01P".into(),
+            ..f.a.clone()
+        },
+        Some("pane-1".into()),
+    );
+    let theirs = f.proxy.register_for(
+        Route {
+            preview: "01Q".into(),
+            ..f.b.clone()
+        },
+        Some("pane-2".into()),
+    );
+    let hosts = |v: Vec<Route>| v.into_iter().map(|r| r.host).collect::<Vec<_>>();
+    assert_eq!(
+        hosts(f.proxy.routes_visible_to(Some("pane-1"))),
+        vec![mine.host.clone()]
+    );
+    assert_eq!(
+        hosts(f.proxy.routes_visible_to(Some("pane-2"))),
+        vec![theirs.host.clone()]
+    );
+    assert!(f.proxy.routes_visible_to(Some("pane-3")).is_empty());
+    // Full scope sees every origin (including the two opened by full-scope clients).
+    let all = hosts(f.proxy.routes_visible_to(None));
+    assert_eq!(all.len(), 4);
+    assert!(all.contains(&mine.host) && all.contains(&theirs.host) && all.contains(&f.a.host));
+}
+
+#[tokio::test]
+async fn sessions_are_bound_to_host_and_scheme_and_expire() {
+    let f = fixture().await;
+    let port = f.proxy.port();
+    let sess = login(&f, &f.a).await;
+    let v = vec![sess.clone()];
+    // Issued over http for host a: valid only there, only over http.
+    assert!(f.proxy.session_ok(&f.a.host, false, &v));
+    assert!(!f.proxy.session_ok(&f.a.host, true, &v), "scheme is bound");
+    assert!(!f.proxy.session_ok(&f.b.host, false, &v), "host is bound");
+    let cookie = format!("Cookie: {COOKIE}={sess}\r\n");
+    assert_eq!(
+        send(port, get(&f.b.host, port, "/", &cookie)).await.status,
+        401
+    );
+    // Idle sessions end after SESSION_IDLE; active ones are refreshed by use.
+    f.proxy
+        .age_sessions(&f.a.host, SESSION_IDLE - Duration::from_secs(60));
+    assert!(f.proxy.session_ok(&f.a.host, false, &v), "used: refreshed");
+    f.proxy
+        .age_sessions(&f.a.host, SESSION_IDLE + Duration::from_secs(1));
+    assert!(!f.proxy.session_ok(&f.a.host, false, &v), "idle: expired");
+    assert_eq!(
+        send(port, get(&f.a.host, port, "/", &cookie)).await.status,
+        401
+    );
+    // Absolute lifetime: even a session in constant use ends after SESSION_TTL.
+    let sess = login(&f, &f.a).await;
+    let v = vec![sess];
+    let mut aged = Duration::ZERO;
+    while aged < SESSION_TTL {
+        f.proxy.age_sessions(&f.a.host, Duration::from_secs(1800));
+        aged += Duration::from_secs(1800);
+        if aged < SESSION_TTL {
+            assert!(f.proxy.session_ok(&f.a.host, false, &v), "{aged:?}");
+        }
+    }
+    assert!(!f.proxy.session_ok(&f.a.host, false, &v), "absolute expiry");
 }
 
 #[tokio::test]
@@ -847,7 +957,7 @@ async fn https_upstream_with_a_self_signed_certificate() {
     let proxy = Proxy::new(up);
     proxy.serve(Proxy::bind(0).await.unwrap());
     let r = proxy.register(Route {
-        host: hostname_for("v9", None, Some("tls"), "s1"),
+        host: String::new(),
         machine: "local".into(),
         preview: "01T".into(),
         handle: "v9".into(),
@@ -888,6 +998,7 @@ async fn https_upstream_with_a_self_signed_certificate() {
 struct TlsFixture {
     proxy: Arc<Proxy>,
     ca: Arc<crate::ca::LocalCa>,
+    store: Arc<crate::ca::CaStore>,
     route: Route,
     seen: Seen,
     plain: Route,
@@ -896,7 +1007,8 @@ struct TlsFixture {
 
 async fn tls_fixture() -> TlsFixture {
     let dir = tempfile::tempdir().unwrap();
-    let ca = crate::ca::LocalCa::load_or_create(&dir.path().join("tls")).unwrap();
+    let store = crate::ca::CaStore::open(&dir.path().join("tls")).unwrap();
+    let ca = store.current().unwrap();
     let up = Arc::new(FakeUpstream {
         map: StdMutex::new(HashMap::new()),
         connects: AtomicU64::new(0),
@@ -905,7 +1017,7 @@ async fn tls_fixture() -> TlsFixture {
     });
     let proxy = Proxy::new(up.clone());
     let weak = Arc::downgrade(&proxy);
-    let resolver = crate::ca::SniResolver::new(ca.clone(), move |h| {
+    let resolver = crate::ca::SniResolver::new(store.clone(), move |h| {
         weak.upgrade().is_some_and(|p| p.is_tls_host(h))
     });
     proxy.set_tls(crate::ca::server_config(Arc::new(resolver)));
@@ -915,7 +1027,7 @@ async fn tls_fixture() -> TlsFixture {
     up.map.lock().unwrap().insert(5173, pa);
     up.map.lock().unwrap().insert(5174, pb);
     let mk = |id: &str, handle: &str, port: u16, tls: bool| Route {
-        host: hostname_for(handle, None, Some("app"), "s0123456789"),
+        host: String::new(),
         machine: "local".into(),
         preview: id.into(),
         handle: handle.into(),
@@ -928,6 +1040,7 @@ async fn tls_fixture() -> TlsFixture {
     TlsFixture {
         proxy,
         ca,
+        store,
         route,
         seen,
         plain,
@@ -1209,4 +1322,150 @@ async fn websocket_over_tls_is_tunnelled() {
     let mut out = Vec::new();
     let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
     assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 403"));
+}
+
+/// Finding: `Secure` does not keep the cookie from another listener on the same hostname (no
+/// cookie attribute scopes by port). What does: the hostname is unguessable and never shown to
+/// a prober, and the cookie only works for the host and scheme it was issued for. A sentinel
+/// (an HTTP listener of another local process on another port) that is handed the cookie still
+/// cannot use it over plain HTTP, and it cannot find the hostname without the API.
+#[tokio::test]
+async fn an_http_sentinel_cannot_learn_the_host_or_replay_an_https_cookie() {
+    let f = tls_fixture().await;
+    let port = f.proxy.port();
+    let trusted = [f.ca.cert_der().clone()];
+    let host = f.route.host.clone();
+    // Authenticate over https.
+    let t = f.proxy.mint_token(&host).unwrap();
+    let r = tls_send(
+        port,
+        &trusted,
+        &host,
+        get(&host, port, &format!("/?{TOKEN_PARAM}={t}"), ""),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 303);
+    let sess = r.header_values("set-cookie")[0]
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once('=')
+        .unwrap()
+        .1
+        .to_string();
+    let cookie = format!("Cookie: {COOKIE}={sess}\r\n");
+    assert_eq!(
+        tls_send(port, &trusted, &host, get(&host, port, "/", &cookie))
+            .await
+            .unwrap()
+            .status,
+        200
+    );
+
+    // The sentinel: an HTTP listener on another loopback port, recording what reaches it.
+    let sentinel = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sport = sentinel.local_addr().unwrap().port();
+    let heard = Seen::default();
+    let heard2 = heard.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = sentinel.accept().await {
+            let head = read_head(&mut s).await;
+            heard2.0.lock().unwrap().push(head);
+            let _ = s
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        }
+    });
+    // What the sentinel can learn by probing the proxy without the API: nothing names a host.
+    let mut probes = vec![
+        send(port, get("vibeke.localhost", port, "/", "")).await,
+        send(port, get("v1.vibeke.localhost", port, "/", "")).await,
+        send(port, get("127.0.0.1", port, "/", "")).await,
+        send(
+            port,
+            "GET / HTTP/1.1\r\nConnection: close\r\n\r\n".to_string(),
+        )
+        .await,
+    ];
+    // Plain http with a guessed handle-only name, and the right handle with a wrong suffix.
+    probes.push(
+        send(
+            port,
+            get(
+                &format!("v1-{}.vibeke.localhost", "a".repeat(26)),
+                port,
+                "/",
+                "",
+            ),
+        )
+        .await,
+    );
+    for p in &probes {
+        assert!(matches!(p.status, 400 | 421), "{}", p.head);
+        assert!(
+            !p.head.contains(&host) && !p.body.contains(&host),
+            "{}",
+            p.body
+        );
+        assert!(!p.body.contains(".vibeke.localhost:"), "{}", p.body);
+    }
+    // TLS without SNI or with an unregistered name: no certificate, so no hostname either.
+    assert!(
+        tls_connect(port, &trusted, "v1.vibeke.localhost")
+            .await
+            .is_err()
+    );
+    // Brute force is hopeless: 128 random bits, and the sentinel only ever hears requests for
+    // names it already knows (here: none — no browser was sent to it).
+    let _ = send(sport, get("localhost", sport, "/", "")).await;
+    assert!(heard.all().iter().all(|h| !h.contains(&host)));
+
+    // Even handed the cookie (a browser sends Secure cookies to http://*.localhost on any port
+    // once it knows the hostname), the sentinel cannot replay it over plain HTTP: the https
+    // route refuses http outright, and the MAC binds the cookie to https.
+    let r = send(port, get(&host, port, "/", &cookie)).await;
+    assert_eq!(r.status, 421, "{}", r.head);
+    assert!(
+        !f.proxy
+            .session_ok(&host, false, std::slice::from_ref(&sess))
+    );
+    assert!(f.proxy.session_ok(&host, true, std::slice::from_ref(&sess)));
+    // Nor against another route, over either scheme.
+    let r = send(port, get(&f.plain.host, port, "/", &cookie)).await;
+    assert_eq!(r.status, 401, "{}", r.head);
+}
+
+/// Finding: a CA renewed by another process must reach the running proxy. The resolver holds a
+/// `CaStore`; after another loader replaces the CA files, the next handshake is served by the
+/// new CA and the reported trust information matches the chain.
+#[tokio::test]
+async fn a_ca_renewed_by_another_process_is_picked_up_by_the_running_proxy() {
+    let f = tls_fixture().await;
+    let port = f.proxy.port();
+    let host = f.route.host.clone();
+    let old = f.ca.cert_der().clone();
+    assert!(tls_connect(port, std::slice::from_ref(&old), &host).await.is_ok());
+    // Another process renews (its clock says the CA is about to expire).
+    let dir = f.store.dir().to_path_buf();
+    let renewed = crate::ca::LocalCa::load_or_create_at(
+        &dir,
+        SystemTime::now() + crate::ca::CA_TTL - Duration::from_secs(86400),
+    )
+    .unwrap();
+    assert_ne!(renewed.cert_der().as_ref(), old.as_ref());
+    // The running proxy now serves leaves of the new CA (and the chain carries it)...
+    let s = tls_connect(port, &[renewed.cert_der().clone()], &host)
+        .await
+        .unwrap();
+    let chain = s.get_ref().1.peer_certificates().unwrap().to_vec();
+    assert_eq!(chain.last().unwrap().as_ref(), renewed.cert_der().as_ref());
+    drop(s);
+    // ...a client trusting only the old CA no longer verifies it...
+    assert!(tls_connect(port, &[old], &host).await.is_err());
+    // ...and what the server would report (path + fingerprint) is the file on disk.
+    let cur = f.store.current().unwrap();
+    assert_eq!(cur.fingerprint_sha256(), renewed.fingerprint_sha256());
+    let on_disk = std::fs::read_to_string(cur.ca_path()).unwrap();
+    assert_eq!(on_disk, renewed.cert_pem());
 }

@@ -134,11 +134,11 @@ class Api:
     async def blob_put(self, params: "t.BlobPutParams") -> "t.BlobPutResult":
         return await self.call("blob.put", params)  # type: ignore[arg-type, return-value]
 
-    async def browser_attach_screencast(self, params: "t.BrowserAttachScreencastParams") -> "t.BrowserAttachScreencastResult":
-        return await self.call("browser.attach_screencast", params)  # type: ignore[arg-type, return-value]
+    async def browser_attach_screencast(self, params: "Optional[t.BrowserAttachScreencastParams]" = None) -> "t.BrowserAttachScreencastResult":
+        return await self.call("browser.attach_screencast", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_click(self, params: "t.BrowserClickParams") -> "t.BrowserClickResult":
-        return await self.call("browser.click", params)  # type: ignore[arg-type, return-value]
+    async def browser_click(self, params: "Optional[t.BrowserClickParams]" = None) -> "t.BrowserClickResult":
+        return await self.call("browser.click", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_close(self, params: "Optional[t.BrowserCloseParams]" = None) -> "t.BrowserCloseResult":
         return await self.call("browser.close", params or {})  # type: ignore[arg-type, return-value]
@@ -146,11 +146,11 @@ class Api:
     async def browser_command(self, params: "t.BrowserCommandParams") -> "t.BrowserCommandResult":
         return await self.call("browser.command", params)  # type: ignore[arg-type, return-value]
 
-    async def browser_console(self, params: "Optional[t.BrowserConsoleParams]" = None) -> "t.BrowserConsoleResult":
-        return await self.call("browser.console", params or {})  # type: ignore[arg-type, return-value]
+    async def browser_console(self, params: "t.BrowserConsoleParams") -> "t.BrowserConsoleResult":
+        return await self.call("browser.console", params)  # type: ignore[arg-type, return-value]
 
-    async def browser_detach_screencast(self, params: "t.BrowserDetachScreencastParams") -> "t.BrowserDetachScreencastResult":
-        return await self.call("browser.detach_screencast", params)  # type: ignore[arg-type, return-value]
+    async def browser_detach_screencast(self, params: "Optional[t.BrowserDetachScreencastParams]" = None) -> "t.BrowserDetachScreencastResult":
+        return await self.call("browser.detach_screencast", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_diff(self, params: "t.BrowserDiffParams") -> "t.BrowserDiffResult":
         return await self.call("browser.diff", params)  # type: ignore[arg-type, return-value]
@@ -158,8 +158,8 @@ class Api:
     async def browser_dom(self, params: "Optional[t.BrowserDomParams]" = None) -> "t.BrowserDomResult":
         return await self.call("browser.dom", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_eval(self, params: "t.BrowserEvalParams") -> "t.BrowserEvalResult":
-        return await self.call("browser.eval", params)  # type: ignore[arg-type, return-value]
+    async def browser_eval(self, params: "Optional[t.BrowserEvalParams]" = None) -> "t.BrowserEvalResult":
+        return await self.call("browser.eval", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_install(self, params: "Optional[t.BrowserInstallParams]" = None) -> "t.BrowserInstallResult":
         return await self.call("browser.install", params or {})  # type: ignore[arg-type, return-value]
@@ -167,17 +167,17 @@ class Api:
     async def browser_list(self, params: "Optional[t.BrowserListParams]" = None) -> "t.BrowserListResult":
         return await self.call("browser.list", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_navigate(self, params: "t.BrowserNavigateParams") -> "t.BrowserNavigateResult":
-        return await self.call("browser.navigate", params)  # type: ignore[arg-type, return-value]
+    async def browser_navigate(self, params: "Optional[t.BrowserNavigateParams]" = None) -> "t.BrowserNavigateResult":
+        return await self.call("browser.navigate", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_network(self, params: "Optional[t.BrowserNetworkParams]" = None) -> "t.BrowserNetworkResult":
-        return await self.call("browser.network", params or {})  # type: ignore[arg-type, return-value]
+    async def browser_network(self, params: "t.BrowserNetworkParams") -> "t.BrowserNetworkResult":
+        return await self.call("browser.network", params)  # type: ignore[arg-type, return-value]
 
     async def browser_open(self, params: "Optional[t.BrowserOpenParams]" = None) -> "t.BrowserOpenResult":
         return await self.call("browser.open", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_pane_console(self, params: "t.BrowserPaneConsoleParams") -> "t.BrowserPaneConsoleResult":
-        return await self.call("browser.pane.console", params)  # type: ignore[arg-type, return-value]
+    async def browser_pane_console(self, params: "Optional[t.BrowserPaneConsoleParams]" = None) -> "t.BrowserPaneConsoleResult":
+        return await self.call("browser.pane.console", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_pane_console_push(self, params: "t.BrowserPaneConsolePushParams") -> "t.BrowserPaneConsolePushResult":
         return await self.call("browser.pane.console_push", params)  # type: ignore[arg-type, return-value]
@@ -197,17 +197,17 @@ class Api:
     async def browser_press(self, params: "t.BrowserPressParams") -> "t.BrowserPressResult":
         return await self.call("browser.press", params)  # type: ignore[arg-type, return-value]
 
-    async def browser_release(self, params: "t.BrowserReleaseParams") -> "t.BrowserReleaseResult":
-        return await self.call("browser.release", params)  # type: ignore[arg-type, return-value]
+    async def browser_release(self, params: "Optional[t.BrowserReleaseParams]" = None) -> "t.BrowserReleaseResult":
+        return await self.call("browser.release", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_screencast_frame(self, params: "t.BrowserScreencastFrameParams") -> "t.BrowserScreencastFrameResult":
-        return await self.call("browser.screencast_frame", params)  # type: ignore[arg-type, return-value]
+    async def browser_screencast_frame(self, params: "Optional[t.BrowserScreencastFrameParams]" = None) -> "t.BrowserScreencastFrameResult":
+        return await self.call("browser.screencast_frame", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_screenshot(self, params: "Optional[t.BrowserScreenshotParams]" = None) -> "t.BrowserScreenshotResult":
         return await self.call("browser.screenshot", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_session_close(self, params: "t.BrowserSessionCloseParams") -> "t.BrowserSessionCloseResult":
-        return await self.call("browser.session_close", params)  # type: ignore[arg-type, return-value]
+    async def browser_session_close(self, params: "Optional[t.BrowserSessionCloseParams]" = None) -> "t.BrowserSessionCloseResult":
+        return await self.call("browser.session_close", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_session_open(self, params: "Optional[t.BrowserSessionOpenParams]" = None) -> "t.BrowserSessionOpenResult":
         return await self.call("browser.session_open", params or {})  # type: ignore[arg-type, return-value]
@@ -218,14 +218,14 @@ class Api:
     async def browser_status(self, params: "Optional[t.BrowserStatusParams]" = None) -> "t.BrowserStatusResult":
         return await self.call("browser.status", params or {})  # type: ignore[arg-type, return-value]
 
-    async def browser_take_over(self, params: "t.BrowserTakeOverParams") -> "t.BrowserTakeOverResult":
-        return await self.call("browser.take_over", params)  # type: ignore[arg-type, return-value]
+    async def browser_take_over(self, params: "Optional[t.BrowserTakeOverParams]" = None) -> "t.BrowserTakeOverResult":
+        return await self.call("browser.take_over", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_type(self, params: "t.BrowserTypeParams") -> "t.BrowserTypeResult":
         return await self.call("browser.type", params)  # type: ignore[arg-type, return-value]
 
-    async def browser_wait(self, params: "t.BrowserWaitParams") -> "t.BrowserWaitResult":
-        return await self.call("browser.wait", params)  # type: ignore[arg-type, return-value]
+    async def browser_wait(self, params: "Optional[t.BrowserWaitParams]" = None) -> "t.BrowserWaitResult":
+        return await self.call("browser.wait", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_watch(self, params: "Optional[t.BrowserWatchParams]" = None) -> "t.BrowserWatchResult":
         return await self.call("browser.watch", params or {})  # type: ignore[arg-type, return-value]
@@ -313,6 +313,9 @@ class Api:
 
     async def events_subscribe(self, params: "Optional[t.EventsSubscribeParams]" = None) -> "t.EventsSubscribeResult":
         return await self.call("events.subscribe", params or {})  # type: ignore[arg-type, return-value]
+
+    async def events_unsubscribe(self, params: "t.EventsUnsubscribeParams") -> "t.EventsUnsubscribeResult":
+        return await self.call("events.unsubscribe", params)  # type: ignore[arg-type, return-value]
 
     async def events_wait(self, params: "Optional[t.EventsWaitParams]" = None) -> "t.EventsWaitResult":
         return await self.call("events.wait", params or {})  # type: ignore[arg-type, return-value]
@@ -518,8 +521,8 @@ class Api:
     async def preview_mirror(self, params: "t.PreviewMirrorParams") -> "t.PreviewMirrorResult":
         return await self.call("preview.mirror", params)  # type: ignore[arg-type, return-value]
 
-    async def preview_open(self, params: "t.PreviewOpenParams") -> "t.PreviewOpenResult":
-        return await self.call("preview.open", params)  # type: ignore[arg-type, return-value]
+    async def preview_open(self, params: "Optional[t.PreviewOpenParams]" = None) -> "t.PreviewOpenResult":
+        return await self.call("preview.open", params or {})  # type: ignore[arg-type, return-value]
 
     async def preview_profile(self, params: "Optional[t.PreviewProfileParams]" = None) -> "t.PreviewProfileResult":
         return await self.call("preview.profile", params or {})  # type: ignore[arg-type, return-value]
@@ -527,8 +530,8 @@ class Api:
     async def preview_profile_list(self, params: "Optional[t.PreviewProfileListParams]" = None) -> "t.PreviewProfileListResult":
         return await self.call("preview.profile.list", params or {})  # type: ignore[arg-type, return-value]
 
-    async def preview_profile_reset(self, params: "t.PreviewProfileResetParams") -> "t.PreviewProfileResetResult":
-        return await self.call("preview.profile.reset", params)  # type: ignore[arg-type, return-value]
+    async def preview_profile_reset(self, params: "Optional[t.PreviewProfileResetParams]" = None) -> "t.PreviewProfileResetResult":
+        return await self.call("preview.profile.reset", params or {})  # type: ignore[arg-type, return-value]
 
     async def preview_promote(self, params: "t.PreviewPromoteParams") -> "t.PreviewPromoteResult":
         return await self.call("preview.promote", params)  # type: ignore[arg-type, return-value]
@@ -536,8 +539,8 @@ class Api:
     async def preview_status(self, params: "Optional[t.PreviewStatusParams]" = None) -> "t.PreviewStatusResult":
         return await self.call("preview.status", params or {})  # type: ignore[arg-type, return-value]
 
-    async def preview_unmirror(self, params: "t.PreviewUnmirrorParams") -> "t.PreviewUnmirrorResult":
-        return await self.call("preview.unmirror", params)  # type: ignore[arg-type, return-value]
+    async def preview_unmirror(self, params: "Optional[t.PreviewUnmirrorParams]" = None) -> "t.PreviewUnmirrorResult":
+        return await self.call("preview.unmirror", params or {})  # type: ignore[arg-type, return-value]
 
     async def preview_url(self, params: "t.PreviewUrlParams") -> "t.PreviewUrlResult":
         return await self.call("preview.url", params)  # type: ignore[arg-type, return-value]

@@ -17,6 +17,7 @@ libc.workspace = true
 regex.workspace = true
 rand.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 # B4 reverse proxy and the TLS probe. All already in the tree (reqwest/axum), same features.
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

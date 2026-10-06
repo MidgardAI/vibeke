@@ -343,7 +343,7 @@ async fn proxy_mode_for_a_local_preview() {
     assert_eq!(r["machine"], "local");
     let host = r["host"].as_str().unwrap().to_string();
     assert!(
-        host.starts_with(&format!("{handle}-web")) && host.ends_with(".vibeke.localhost"),
+        host.starts_with(&format!("{handle}-")) && host.ends_with(".vibeke.localhost"),
         "{host}"
     );
     let open_url = r["open_url"].as_str().unwrap().to_string();
@@ -373,7 +373,38 @@ async fn proxy_mode_for_a_local_preview() {
     let n = seen.lock().unwrap().len();
     assert_eq!(http(pport, &authority, "/", None).await.0, 401);
     assert_eq!(seen.lock().unwrap().len(), n);
-    // Re-opening keeps the origin; `preview.url` reports it without a credential.
+    // The hostname is `<handle>-<26 random base32 chars>`.
+    let label = host.strip_suffix(".vibeke.localhost").unwrap();
+    assert_eq!(label.rsplit_once('-').unwrap().1.len(), 26, "{host}");
+    // `preview.url` reports the origin to a full-scope client, without a credential.
+    let u = e
+        .call(&full, "preview.url", json!({"preview": handle}))
+        .await
+        .unwrap();
+    assert_eq!(u["proxy_url"], json!(plain));
+    // Another pane never learns the hostname: not from preview.url, preview.status or events.
+    let other = ctx_pane("pane-b");
+    let u = e
+        .call(&other, "preview.url", json!({"preview": handle}))
+        .await
+        .unwrap();
+    assert_eq!(u["proxy_url"], Value::Null, "{u}");
+    let st = e.call(&other, "preview.status", json!({})).await.unwrap();
+    assert_eq!(st["proxy"]["routes"], json!([]), "{st}");
+    let ev = e.events("preview.opened");
+    assert!(!ev.is_empty());
+    let evs = json!(ev).to_string();
+    assert!(!evs.contains("vk_token"), "{ev:?}");
+    assert!(
+        !evs.contains(&host) && !evs.contains("vibeke.localhost"),
+        "{ev:?}"
+    );
+    // Status (full scope): the proxy and its route; no mirror unless explicitly enabled.
+    let st = e.call(&full, "preview.status", json!({})).await.unwrap();
+    assert_eq!(st["proxy"]["port"], json!(pport));
+    assert_eq!(st["proxy"]["routes"][0]["host"], json!(host));
+    assert_eq!(st["mirrors"], json!([]));
+    // Re-opening rotates the origin: a new unguessable host, the old one and its session gone.
     let r2 = e
         .call(
             &full,
@@ -382,43 +413,43 @@ async fn proxy_mode_for_a_local_preview() {
         )
         .await
         .unwrap();
-    assert_eq!(r2["host"], json!(host));
-    let u = e
-        .call(&full, "preview.url", json!({"preview": handle}))
-        .await
-        .unwrap();
-    assert_eq!(u["proxy_url"], json!(plain));
-    // A pane-scoped agent can open it for the human but never receives the credential.
+    let host2 = r2["host"].as_str().unwrap().to_string();
+    assert_ne!(host2, host);
+    assert_eq!(http(pport, &authority, "/", Some(&cookie)).await.0, 421);
+    assert_eq!(r2["session_ttl_s"], json!(8 * 3600));
+    // A pane-scoped agent can open it for the human but never receives the credential; it
+    // learns its own (fresh) hostname and nobody else's.
+    let pa = ctx_pane("pane-a");
     let rp = e
         .call(
-            &ctx_pane("pane-a"),
+            &pa,
             "preview.open",
             json!({"preview": handle, "mode": "proxy", "no_open": true}),
         )
         .await
         .unwrap();
     assert!(rp.get("open_url").is_none(), "{rp}");
-    // Events never carry the token.
-    let ev = e.events("preview.opened");
-    assert!(!ev.is_empty());
-    assert!(!json!(ev).to_string().contains("vk_token"), "{ev:?}");
-    // Status: the proxy and its route; no mirror unless explicitly enabled.
-    let st = e.call(&full, "preview.status", json!({})).await.unwrap();
-    assert_eq!(st["proxy"]["port"], json!(pport));
-    assert_eq!(st["proxy"]["routes"][0]["host"], json!(host));
-    assert_eq!(st["mirrors"], json!([]));
-    // The hostname carries this session's persisted host tag.
-    let tag = session_host_tag(&e.server);
-    assert!(
-        host.ends_with(&format!("-{tag}.vibeke.localhost")),
-        "{host}"
-    );
-    assert_eq!(session_host_tag(&e.server), tag, "stable");
+    let host3 = rp["host"].as_str().unwrap().to_string();
+    assert_ne!(host3, host2);
+    let u = e
+        .call(&pa, "preview.url", json!({"preview": handle}))
+        .await
+        .unwrap();
+    assert!(u["proxy_url"].as_str().unwrap().contains(&host3), "{u}");
+    let u = e
+        .call(&other, "preview.url", json!({"preview": handle}))
+        .await
+        .unwrap();
+    assert_eq!(u["proxy_url"], Value::Null, "{u}");
+    let st = e.call(&pa, "preview.status", json!({})).await.unwrap();
+    assert_eq!(st["proxy"]["routes"][0]["host"], json!(host3));
+    assert_eq!(st["proxy"]["routes"].as_array().unwrap().len(), 1);
     // Forgetting the preview removes its origin.
+    let authority3 = format!("{host3}:{pport}");
     e.call(&full, "preview.forget", json!({"preview": handle}))
         .await
         .unwrap();
-    assert_eq!(http(pport, &authority, "/", Some(&cookie)).await.0, 421);
+    assert_eq!(http(pport, &authority3, "/", None).await.0, 421);
     // Proxy mode needs a preview, not a URL.
     let bad = e
         .call(
@@ -463,7 +494,7 @@ async fn proxy_and_mirror_route_to_a_remote_over_the_bridge() {
         .unwrap();
     assert_eq!(r["machine"], "fakebox");
     let host = r["host"].as_str().unwrap();
-    assert!(host.starts_with("v7-fakebox"), "{host}");
+    assert!(host.starts_with("v7-"), "{host}");
     let (pport, authority, cookie) = login(r["open_url"].as_str().unwrap()).await;
     let (st, head, body) = http(pport, &authority, "/app", Some(&cookie)).await;
     assert_eq!(st, 200, "{head}");
@@ -789,7 +820,6 @@ async fn two_sessions_with_identical_previews_never_share_a_host() {
         opened[1].1["host"].as_str().unwrap(),
     );
     assert_ne!(ha, hb, "two sessions must never share a preview hostname");
-    assert_ne!(session_host_tag(&a.server), session_host_tag(&b.server));
     // One browser cookie jar: log into both. A's cookie is only ever sent to A's host; and
     // even replayed against B's proxy under A's host it is refused (B doesn't serve it).
     let (porta, autha, cka) = login(opened[0].1["open_url"].as_str().unwrap()).await;

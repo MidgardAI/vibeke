@@ -2,27 +2,38 @@
 //!
 //! One HTTP/1.1 listener on `127.0.0.1:<port>` and `[::1]:<port>` (when the machine has IPv6
 //! loopback; if another process holds `[::1]:<port>` the proxy refuses to start, since a
-//! browser may resolve `*.localhost` to `::1` first). Each preview gets its own origin
-//! `http://<handle>-…-<tag>.vibeke.localhost:<port>` (`*.localhost` resolves to loopback in
-//! browsers and is a secure context), selected by the `Host` header; unknown hosts get `421`
-//! (DNS-rebinding defence). `<tag>` is a random per-session component persisted by the server,
-//! so two Vibeke sessions never use the same hostname: cookies are scoped by host, not by
-//! port, and a host shared by two sessions would hand one session's application cookies to
-//! the other.
+//! browser may resolve `*.localhost` to `::1` first). Each preview open gets its own origin
+//! `http://<handle>-<26 base32 chars>.vibeke.localhost:<port>` (`*.localhost` resolves to
+//! loopback in browsers and is a secure context), selected by the `Host` header; unknown hosts
+//! get `421` (DNS-rebinding defence). The 26-character label is 128 random bits, generated
+//! fresh on every open (a re-open rotates it and revokes the old origin's sessions), so two
+//! opens, sessions or users never share a hostname and nobody can guess one.
+//!
+//! **Why unguessable.** No cookie attribute scopes a cookie by port, and browsers send
+//! `Secure` cookies to `http://*.localhost` too: any other local listener serving the same
+//! hostname on another port would receive the session cookie after a same-site navigation.
+//! The defence is that only the opener learns the hostname (the server never shows it to
+//! other pane-scoped callers or puts it in events), and the cookie is bound to the route: its
+//! MAC covers the hostname and the scheme it was issued for, so a cookie minted over `https`
+//! is refused over `http` and the other way round. The residual risk (spec 09 §8): a process
+//! of the same user that learns a hostname some other way can still collect the cookie with a
+//! same-site request and replay it until it expires.
 //!
 //! **Capability.** Opening a preview mints a one-time `vk_token` (60 s). The first navigation
 //! carrying it is answered with a `303` to the same URL (absolute, on the preview's own
 //! origin) without the token and an unguessable per-preview session cookie
-//! (`__Host-vk_preview`: HttpOnly, SameSite=Strict, Secure, host-only, `Path=/`). There is no
-//! non-`Secure` copy: a non-`Secure` cookie can be read by any other local listener that
-//! serves the same hostname on another port. Browsers that drop `Secure` cookies on
+//! (`__Host-vk_preview`: HttpOnly, SameSite=Strict, Secure, host-only, `Path=/`,
+//! `Max-Age` = [`SESSION_TTL`]). Sessions end after [`SESSION_TTL`] (8 h) or [`SESSION_IDLE`]
+//! (1 h without a request); re-authenticating is one `vibeke preview open <h> --proxy`.
+//! There is no non-`Secure` copy. Browsers that drop `Secure` cookies on
 //! `http://*.localhost` cannot use proxy mode (use the browser profile instead). A route with
 //! `tls: true` (`preview.tls_origin`) is served over HTTPS on the same port: [`Proxy::set_tls`]
 //! enables it, a connection starting with a TLS handshake record goes through rustls (a
 //! certificate from the local CA, [`crate::ca`], chosen by SNI for registered `tls` hosts only),
 //! anything else is plain HTTP; the two kinds of route never answer each other's connections. Every
-//! request — including WebSocket upgrades — must carry a session of *that* host. Only SHA-256
-//! digests of tokens and sessions are kept, in memory (a server restart revokes everything).
+//! request — including WebSocket upgrades — must carry a session of *that* host and scheme.
+//! Only SHA-256 digests of tokens and keyed MACs of sessions are kept, in memory (a server
+//! restart revokes everything).
 //!
 //! **Not leakable cross-origin.** All previews share the site `vibeke.localhost`, so SameSite
 //! does not separate them and is not relied on: requests whose `Sec-Fetch-Site` is
@@ -45,6 +56,7 @@
 
 use crate::socks::{BoxFuture, Stream};
 use bytes::Bytes;
+use hmac::{Hmac, Mac};
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::Incoming;
 use hyper::client::conn::http1::SendRequest;
@@ -70,6 +82,10 @@ pub const TOKEN_PARAM: &str = "vk_token";
 /// Parent domain of every preview origin.
 pub const DOMAIN: &str = "vibeke.localhost";
 pub const TOKEN_TTL: Duration = Duration::from_secs(60);
+/// Absolute lifetime of a session (also the cookie's `Max-Age`).
+pub const SESSION_TTL: Duration = Duration::from_secs(8 * 3600);
+/// A session unused for this long ends.
+pub const SESSION_IDLE: Duration = Duration::from_secs(3600);
 const MAX_TOKENS: usize = 16;
 const MAX_SESSIONS: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -77,7 +93,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// One preview origin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Route {
-    /// `v4-web.vibeke.localhost` (no port).
+    /// `v4-<26 base32>.vibeke.localhost` (no port). Chosen by [`Proxy::register`]; whatever
+    /// the caller puts here is replaced.
     pub host: String,
     /// Machine label; `local` (or empty) = this machine.
     pub machine: String,
@@ -126,16 +143,26 @@ fn random_hex() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+struct Session {
+    /// MAC over (scheme, host, cookie value): the cookie is valid for this route only.
+    mac: Digest32,
+    expires: Instant,
+    last_used: Instant,
+}
+
 struct Entry {
     route: Route,
+    /// The pane that opened this origin (`None`: a full-scope client). Only it (and full-scope
+    /// clients) may learn the hostname.
+    opened_by: Option<String>,
     tokens: Vec<(Digest32, Instant)>,
-    sessions: Vec<Digest32>,
+    sessions: Vec<Session>,
 }
 
 #[derive(Default)]
 struct State {
     by_host: HashMap<String, Entry>,
-    /// (machine, preview id) → host: re-opening a preview keeps its origin (and its cookies).
+    /// (machine, preview id) → host of its current origin (a re-open replaces it).
     by_preview: HashMap<(String, String), String>,
 }
 
@@ -149,6 +176,8 @@ pub struct ProxyStats {
 
 pub struct Proxy {
     state: Mutex<State>,
+    /// Per-process key of the session MACs.
+    key: [u8; 32],
     port: AtomicU16,
     upstream: Arc<dyn Upstream>,
     /// TLS for `tls_origin` routes on the same port (see [`Proxy::set_tls`]).
@@ -176,40 +205,26 @@ fn dns_part(s: &str, max: usize) -> String {
     out
 }
 
-/// `<handle>[-<machine>][-<slug>]-<tag>.vibeke.localhost` (one DNS label ≤ 63 bytes). `tag`
-/// is the session's random host tag (see [`session_tag`]), always kept whole, so hostnames
-/// of different sessions never collide. Uniqueness within a session is guaranteed by
-/// [`Proxy::register`], not by this function.
-pub fn hostname_for(handle: &str, machine: Option<&str>, slug: Option<&str>, tag: &str) -> String {
-    let tag = dns_part(tag, 20);
-    let reserve = if tag.is_empty() { 0 } else { tag.len() + 1 };
+/// 128 random bits as 26 lower-case RFC 4648 base32 characters (no padding).
+pub fn random_label() -> String {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let b: [u8; 16] = rand::random();
+    let n = u128::from_be_bytes(b);
+    // 26 × 5 = 130 bits: the top two bits of the first character are always zero.
+    (0..26)
+        .rev()
+        .map(|i| ALPHABET[((n >> (i * 5)) & 31) as usize] as char)
+        .collect()
+}
+
+/// A fresh, unguessable preview hostname: `<handle>-<26 base32 chars>.vibeke.localhost` (one
+/// DNS label of at most 43 bytes). Every call differs; [`Proxy::register`] picks one per open.
+pub fn hostname_for(handle: &str) -> String {
     let mut label = dns_part(handle, 16);
     if label.is_empty() {
         label.push('p');
     }
-    for (part, max) in [(machine, 20usize), (slug, 63)] {
-        if let Some(p) = part {
-            let room = 63usize.saturating_sub(label.len() + 1 + reserve).min(max);
-            let p = dns_part(p, room);
-            if !p.is_empty() {
-                label.push('-');
-                label.push_str(&p);
-            }
-        }
-    }
-    if !tag.is_empty() {
-        label.push('-');
-        label.push_str(&tag);
-    }
-    format!("{label}.{DOMAIN}")
-}
-
-/// A fresh random session host tag (`s` + 9 lower-case hex digits). The server persists one per
-/// session and passes it to [`hostname_for`].
-pub fn session_tag() -> String {
-    let b: [u8; 5] = rand::random();
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("s{}", &hex[..9])
+    format!("{label}-{}.{DOMAIN}", random_label())
 }
 
 /// A cookie name the proxy reserves (`vk_*`, also behind `__Host-`/`__Secure-` prefixes).
@@ -462,6 +477,7 @@ impl Proxy {
     pub fn new(upstream: Arc<dyn Upstream>) -> Arc<Self> {
         Arc::new(Proxy {
             state: Mutex::default(),
+            key: rand::random(),
             port: AtomicU16::new(0),
             upstream,
             tls: Mutex::new(None),
@@ -515,40 +531,26 @@ impl Proxy {
         )
     }
 
-    /// Register (or refresh) a preview's origin. `route.host` is the wanted hostname; the
-    /// returned route carries the host actually used — the existing one for a preview opened
-    /// before, a `-2`, `-3` … variant when another preview holds the name.
-    pub fn register(&self, mut route: Route) -> Route {
+    /// Register a preview's origin for an open by a full-scope client (see
+    /// [`Proxy::register_for`]).
+    pub fn register(&self, route: Route) -> Route {
+        self.register_for(route, None)
+    }
+
+    /// Register a preview's origin for one open: always a fresh random hostname (see
+    /// [`hostname_for`]; `route.host` is ignored). A preview opened before loses its previous
+    /// origin together with its tokens and sessions (re-open = rotation). `opened_by` is the
+    /// pane that opened it (`None` = a full-scope client): [`Proxy::routes_visible_to`] shows
+    /// the hostname to nobody else.
+    pub fn register_for(&self, mut route: Route, opened_by: Option<String>) -> Route {
         let mut st = self.state.lock().unwrap();
         let key = (route.machine.clone(), route.preview.clone());
-        if let Some(h) = st.by_preview.get(&key).cloned()
-            && let Some(e) = st.by_host.get_mut(&h)
-        {
-            if e.route.port != route.port
-                || e.route.scheme != route.scheme
-                || e.route.tls != route.tls
-            {
-                // The preview moved: old sessions don't carry over.
-                e.sessions.clear();
-                e.tokens.clear();
-            }
-            route.host = h;
-            e.route = route.clone();
-            return route;
+        if let Some(old) = st.by_preview.remove(&key) {
+            st.by_host.remove(&old);
         }
-        let base = route.host.to_ascii_lowercase();
-        let (stem, suffix) = base
-            .split_once('.')
-            .map(|(a, b)| (a.to_string(), format!(".{b}")))
-            .unwrap_or((base.clone(), String::new()));
-        let mut host = base.clone();
-        let mut n = 2;
+        let mut host = hostname_for(&route.handle);
         while st.by_host.contains_key(&host) {
-            let tail = format!("-{n}");
-            let mut s = stem.clone();
-            s.truncate(63 - tail.len());
-            host = format!("{s}{tail}{suffix}");
-            n += 1;
+            host = hostname_for(&route.handle);
         }
         route.host = host.clone();
         st.by_preview.insert(key, host.clone());
@@ -556,11 +558,26 @@ impl Proxy {
             host,
             Entry {
                 route: route.clone(),
+                opened_by,
                 tokens: vec![],
                 sessions: vec![],
             },
         );
         route
+    }
+
+    /// Routes whose hostname `viewer` may learn: every route for a full-scope client
+    /// (`None`), only the routes it opened itself for a pane.
+    pub fn routes_visible_to(&self, viewer: Option<&str>) -> Vec<Route> {
+        let st = self.state.lock().unwrap();
+        let mut v: Vec<Route> = st
+            .by_host
+            .values()
+            .filter(|e| viewer.is_none() || e.opened_by.as_deref() == viewer)
+            .map(|e| e.route.clone())
+            .collect();
+        v.sort_by(|a, b| a.host.cmp(&b.host));
+        v
     }
 
     /// Forget a preview's origin (and its sessions).
@@ -663,23 +680,70 @@ impl Proxy {
         }
     }
 
-    fn new_session(&self, host: &str) -> Option<String> {
+    /// The MAC binding a session cookie value to the route (host) and the scheme it was
+    /// issued over.
+    fn session_mac(&self, secure: bool, host: &str, value: &str) -> Digest32 {
+        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(&self.key).expect("any key length");
+        m.update(if secure { b"https\0" } else { b"http\0\0" });
+        m.update(host.as_bytes());
+        m.update(b"\0");
+        m.update(value.as_bytes());
+        m.finalize().into_bytes().into()
+    }
+
+    /// A new session for `host`, bound to the scheme of the connection that exchanged the token.
+    fn new_session(&self, host: &str, secure: bool) -> Option<String> {
+        let v = random_hex();
+        let mac = self.session_mac(secure, host, &v);
         let mut st = self.state.lock().unwrap();
         let e = st.by_host.get_mut(host)?;
+        let now = Instant::now();
+        e.sessions
+            .retain(|s| s.expires > now && now.duration_since(s.last_used) < SESSION_IDLE);
         if e.sessions.len() >= MAX_SESSIONS {
             e.sessions.remove(0);
         }
-        let s = random_hex();
-        e.sessions.push(digest(&s));
-        Some(s)
+        e.sessions.push(Session {
+            mac,
+            expires: now + SESSION_TTL,
+            last_used: now,
+        });
+        Some(v)
     }
 
-    fn session_ok(&self, host: &str, values: &[String]) -> bool {
-        let st = self.state.lock().unwrap();
-        let Some(e) = st.by_host.get(host) else {
+    /// Whether one of `values` is a live session of `host` issued over this scheme (refreshes
+    /// its idle timer).
+    pub(crate) fn session_ok(&self, host: &str, secure: bool, values: &[String]) -> bool {
+        let macs: Vec<Digest32> = values
+            .iter()
+            .map(|v| self.session_mac(secure, host, v))
+            .collect();
+        let mut st = self.state.lock().unwrap();
+        let Some(e) = st.by_host.get_mut(host) else {
             return false;
         };
-        values.iter().any(|v| e.sessions.contains(&digest(v)))
+        let now = Instant::now();
+        e.sessions
+            .retain(|s| s.expires > now && now.duration_since(s.last_used) < SESSION_IDLE);
+        match e.sessions.iter_mut().find(|s| macs.contains(&s.mac)) {
+            Some(s) => {
+                s.last_used = now;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Age every session of `host` by `by` (tests: expiry without waiting).
+    #[cfg(test)]
+    pub(crate) fn age_sessions(&self, host: &str, by: Duration) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(e) = st.by_host.get_mut(host) {
+            for s in &mut e.sessions {
+                s.last_used = s.last_used.checked_sub(by).unwrap_or(s.last_used);
+                s.expires = s.expires.checked_sub(by).unwrap_or(s.expires);
+            }
+        }
     }
 
     fn route(&self, host: &str) -> Option<Route> {
@@ -847,7 +911,7 @@ impl Proxy {
                     &format!("This link was already used or is older than 60 seconds. {how_to}"),
                 );
             }
-            let Some(sess) = self.new_session(&host) else {
+            let Some(sess) = self.new_session(&host, secure) else {
                 return self.deny(StatusCode::UNAUTHORIZED, "Preview closed", &how_to);
             };
             let mut r = Response::new(full(Bytes::new()));
@@ -858,14 +922,17 @@ impl Proxy {
             if let Ok(v) = HeaderValue::from_str(&format!("{own_origin}{target}")) {
                 h.insert(header::LOCATION, v);
             }
-            let c = format!("{COOKIE}={sess}; Path=/; HttpOnly; SameSite=Strict; Secure");
+            let c = format!(
+                "{COOKIE}={sess}; Path=/; Max-Age={}; HttpOnly; SameSite=Strict; Secure",
+                SESSION_TTL.as_secs()
+            );
             if let Ok(v) = HeaderValue::from_str(&c) {
                 h.append(header::SET_COOKIE, v);
             }
             secure_headers(h);
             return r;
         }
-        if !self.session_ok(&host, &session_cookies(req.headers())) {
+        if !self.session_ok(&host, secure, &session_cookies(req.headers())) {
             return self.deny(
                 StatusCode::UNAUTHORIZED,
                 "Preview login required",

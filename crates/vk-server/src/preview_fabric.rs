@@ -3,9 +3,10 @@
 //! - **Reverse proxy** (B4): `preview.open {mode: "proxy"}` registers a per-preview origin on
 //!   the viewing machine's proxy (`vk_preview::proxy`) and hands the user's normal browser a
 //!   one-time tokenized URL. Upstreams are reached directly (this machine's loopback) or over
-//!   this server's bridge link as `tcp:localhost:<port>` channels (remote previews). Hostnames
-//!   carry this session's persisted random host tag, so two sessions never share an origin
-//!   (or its cookies); the configured proxy port is machine-wide and a second session asking
+//!   this server's bridge link as `tcp:localhost:<port>` channels (remote previews). Every
+//!   open gets a fresh unguessable hostname (128 random bits; a re-open rotates it), shown only
+//!   to the caller that opened it and to full-scope clients — never to other panes, never in
+//!   events. The configured proxy port is machine-wide and a second session asking
 //!   for it is refused (no silent fallback to another port). Every forwarded request
 //!   re-checks the preview (local model, or `preview.get` on the remote machine): a forgotten,
 //!   retired or moved preview loses its route and sessions.
@@ -159,26 +160,6 @@ fn port_owner(port: u16) -> Option<String> {
         .then(|| format!("{} (pid {pid})", v["session"].as_str().unwrap_or("?")))
 }
 
-/// This session's random host tag (persisted: hostnames, and the cookies the browser keeps
-/// for them, stay stable across server restarts; another session never gets the same tag).
-pub(crate) fn session_host_tag(server: &Server) -> String {
-    let mut c = server.core.lock().unwrap();
-    if let Some(t) = c
-        .store
-        .kv_get("preview", "proxy_host_tag")
-        .ok()
-        .flatten()
-        .filter(|t| !t.is_empty())
-    {
-        return t;
-    }
-    let t = proxy::session_tag();
-    let mut tx = Tx::new();
-    tx.m.kv("preview", "proxy_host_tag", Some(t.clone()));
-    let _ = c.commit(tx);
-    t
-}
-
 /// Per-preview `tls_origin` (set by `preview.declare {tls_origin}` / a task preview entry),
 /// persisted in the session store; `None` = not set for this preview.
 pub(crate) fn tls_origin_of(server: &Server, preview_id: &str) -> Option<bool> {
@@ -206,34 +187,41 @@ pub(crate) fn set_tls_origin(server: &Server, preview_id: &str, on: bool) {
 /// of a registered `tls` route. Same port as plain HTTP (the proxy tells a TLS handshake from an
 /// HTTP request by the first byte). Never touches a trust store (06 B4; `vibeke preview
 /// trust-ca` is the user's explicit step).
+///
+/// The CA is held as a [`vk_preview::ca::CaStore`]: every handshake re-checks the CA files and a
+/// CA renewed by another process (`trust-ca`, another session) is reloaded, its leaves
+/// re-issued. The returned CA is the one signing right now, so the trust information a caller
+/// reports (path, fingerprint) matches the served chain.
 pub(crate) fn ensure_tls(
     server: &Server,
     proxy: &Arc<Proxy>,
 ) -> Result<Arc<vk_preview::ca::LocalCa>, RpcError> {
-    let mut g = server.previews.tls_ca.lock().unwrap();
-    if let Some(ca) = g.as_ref()
-        && proxy.tls_enabled()
-    {
-        return Ok(ca.clone());
-    }
-    let ca = crate::preview_ca::load().map_err(|e| {
+    let unavailable = |e: vk_preview::ca::CaError| {
         err(
             ErrorKind::Internal,
             format!("tls_origin: the local CA is unavailable: {e}"),
         )
-    })?;
+    };
+    let mut g = server.previews.tls_ca.lock().unwrap();
+    if let Some(store) = g.as_ref()
+        && proxy.tls_enabled()
+    {
+        return store.current().map_err(unavailable);
+    }
+    let store = crate::preview_ca::store().map_err(unavailable)?;
     let weak = Arc::downgrade(proxy);
     proxy.set_tls(vk_preview::ca::server_config(Arc::new(
-        vk_preview::ca::SniResolver::new(ca.clone(), move |host| {
+        vk_preview::ca::SniResolver::new(store.clone(), move |host| {
             weak.upgrade().is_some_and(|p| p.is_tls_host(host))
         }),
     )));
+    let ca = store.current().map_err(unavailable)?;
     tracing::info!(
         ca = %ca.ca_path().display(),
         fingerprint = %ca.fingerprint_sha256(),
         "preview proxy: tls_origin enabled (the CA is not installed anywhere; `vibeke preview trust-ca`)"
     );
-    *g = Some(ca.clone());
+    *g = Some(store);
     Ok(ca)
 }
 
@@ -241,7 +229,7 @@ pub(crate) fn ensure_tls(
 /// port is machine-wide: when it is busy (another session's proxy, or anything else on either
 /// loopback address) the proxy does not start — there is no silent fallback, the user picks
 /// another `proxy_port` (or 0 = ephemeral) for this session. Hostnames are per-session either
-/// way (the host tag), so two sessions never serve previews under the same host.
+/// way (random per open), so two sessions never serve previews under the same host.
 pub(crate) async fn ensure_proxy(server: &Arc<Server>, port: u16) -> Result<Arc<Proxy>, RpcError> {
     let mut g = server.previews.proxy.lock().await;
     if let Some(p) = g.as_ref() {
@@ -302,14 +290,16 @@ pub(crate) fn proxy_port(server: &Server) -> Option<u16> {
         .map(|p| p.port())
 }
 
-pub(crate) async fn proxy_status(server: &Server) -> Value {
+/// `preview.status.proxy`: `routes` lists only the origins `ctx` may know (all for a
+/// full-scope client, the ones it opened itself for a pane).
+pub(crate) async fn proxy_status(server: &Server, ctx: &Ctx) -> Value {
     let g = server.previews.proxy.lock().await;
     match g.as_ref() {
         None => Value::Null,
         Some(p) => json!({
             "port": p.port(),
             "tls": p.tls_enabled(),
-            "routes": p.routes(),
+            "routes": p.routes_visible_to(ctx.pane_scope.as_deref()),
             "stats": p.stats(),
         }),
     }
@@ -346,16 +336,18 @@ fn machine_label(server: &Server, machine: &str) -> String {
     }
 }
 
-/// `proxy_url` for `preview.url` (no side effects: only an origin that already exists).
+/// `proxy_url` for `preview.url` (no side effects: only an origin that already exists, and
+/// only one `ctx` opened itself unless it is a full-scope client).
 pub(crate) async fn existing_proxy_url(
     server: &Server,
+    ctx: &Ctx,
     machine: &str,
     pv: &Preview,
 ) -> Option<String> {
     let label = machine_label(server, machine);
     let g = server.previews.proxy.lock().await;
     let p = g.as_ref()?;
-    p.routes()
+    p.routes_visible_to(ctx.pane_scope.as_deref())
         .into_iter()
         .find(|r| r.machine == label && r.preview == pv.id)
         .map(|r| p.url(&r.host, &pv.path, None))
@@ -385,8 +377,10 @@ fn open_in_default_browser(url: &str) -> Result<bool, RpcError> {
 /// `preview.open {preview, mode: "proxy" | proxy: true, no_open?}` (B4).
 ///
 /// Result: `{opened_in: "proxy", url, proxy_url, host, proxy_port, machine, preview, opened,
-/// token_ttl_s, open_url?}`. `open_url` (the one-time tokenized URL) is returned only to
-/// full-scope callers: an agent never receives a credential for the user's browser.
+/// token_ttl_s, session_ttl_s, tls_origin, remote_url, caveats, ca?, open_url?}`. `open_url`
+/// (the one-time tokenized URL) is returned only to full-scope callers: an agent never
+/// receives a credential for the user's browser. Every call registers a fresh hostname (the
+/// previous origin of the preview and its sessions are revoked); only this caller learns it.
 pub(crate) async fn open_proxy(
     server: &Arc<Server>,
     ctx: &Ctx,
@@ -401,20 +395,6 @@ pub(crate) async fn open_proxy(
     // reference on the preview's origin (a remote machine's record is not trusted for it).
     let path = vk_tasks::normalize_preview_path(&pv.path)
         .map_err(|e| invalid(format!("preview {}: {e}", pv.handle)))?;
-    let slug = if local {
-        pv.task
-            .as_ref()
-            .and_then(|t| server.with_core(|c| c.task(t).map(|x| x.slug.clone())))
-    } else {
-        None
-    }
-    .or_else(|| pv.label.clone());
-    let wanted = proxy::hostname_for(
-        &pv.handle,
-        (!local).then_some(label.as_str()),
-        slug.as_deref(),
-        &session_host_tag(server),
-    );
     let port = server
         .previews
         .proxy_port_override
@@ -432,20 +412,23 @@ pub(crate) async fn open_proxy(
     } else {
         None
     };
-    let route = proxy.register(Route {
-        host: wanted,
-        machine: label.clone(),
-        preview: pv.id.clone(),
-        handle: pv.handle.clone(),
-        port: pv.port,
-        scheme: if pv.scheme == "https" {
-            "https"
-        } else {
-            "http"
-        }
-        .into(),
-        tls,
-    });
+    let route = proxy.register_for(
+        Route {
+            host: String::new(),
+            machine: label.clone(),
+            preview: pv.id.clone(),
+            handle: pv.handle.clone(),
+            port: pv.port,
+            scheme: if pv.scheme == "https" {
+                "https"
+            } else {
+                "http"
+            }
+            .into(),
+            tls,
+        },
+        ctx.pane_scope.clone(),
+    );
     let token = proxy
         .mint_token(&route.host)
         .ok_or_else(|| err(ErrorKind::Internal, "preview proxy: route vanished"))?;
@@ -467,11 +450,13 @@ pub(crate) async fn open_proxy(
         } else {
             json!({"machine": label, "preview_handle": pv.handle, "preview": pv.id})
         };
-        // Never the token: events are persisted and readable by agents.
+        // Never the token, and never the proxy hostname or URL: events are persisted and
+        // readable by every pane, and the hostname is what keeps the session cookie from other
+        // local listeners (see `vk_preview::proxy`). `url` is the preview's own URL.
         tx.event(
             "preview.opened",
             subj,
-            json!({"url": plain, "opened_in": "proxy", "host": route.host}),
+            json!({"url": open_url_of(pv), "opened_in": "proxy", "tls_origin": tls}),
         );
         let _ = server.commit(&mut c, tx);
     }
@@ -485,6 +470,7 @@ pub(crate) async fn open_proxy(
         "preview": pv.handle,
         "opened": opened,
         "token_ttl_s": proxy::TOKEN_TTL.as_secs(),
+        "session_ttl_s": proxy::SESSION_TTL.as_secs(),
         "tls_origin": tls,
         "remote_url": pv.url,
         "caveats": "Proxy mode rewrites Host/Origin; HMR clients with a hard-coded host/clientPort bypass the proxy, cookies for plain localhost don't apply. Prefer the browser profile (pane/window).",

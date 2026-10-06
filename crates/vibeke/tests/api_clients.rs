@@ -83,8 +83,9 @@ fn ts_key(k: &str) -> String {
     }
 }
 
-/// `results`: optional fields may arrive as `null` (the server serializes unset options).
-fn ts(s: &Value, results: bool, ind: usize) -> String {
+/// The TypeScript type of a schema. Optional (`?`) means "may be absent"; `null` is part of a
+/// type only where the schema says so (`anyOf` with `{type: null}`), exactly like the JSON Schema.
+fn ts(s: &Value, ind: usize) -> String {
     if is_free(s) {
         return "unknown".into();
     }
@@ -104,7 +105,7 @@ fn ts(s: &Value, results: bool, ind: usize) -> String {
     if let Some(a) = arms(s) {
         let mut parts: Vec<String> = vec![];
         for x in a {
-            let t = ts(x, results, ind);
+            let t = ts(x, ind);
             if !parts.contains(&t) {
                 parts.push(t);
             }
@@ -118,7 +119,7 @@ fn ts(s: &Value, results: bool, ind: usize) -> String {
         Some("null") => "null".into(),
         Some("array") => {
             let items = s.get("items").cloned().unwrap_or(Value::Bool(true));
-            let inner = ts(&items, results, ind);
+            let inner = ts(&items, ind);
             let multi = arms(&items).is_some_and(|a| a.len() > 1)
                 || items
                     .get("enum")
@@ -137,10 +138,7 @@ fn ts(s: &Value, results: bool, ind: usize) -> String {
                 let mut out = String::from("{\n");
                 for (k, v) in entries(props) {
                     let opt = !req.contains(&k.as_str());
-                    let mut t = ts(v, results, ind + 1);
-                    if opt && results && !t.contains("null") && t != "unknown" {
-                        t.push_str(" | null");
-                    }
+                    let t = ts(v, ind + 1);
                     let _ = writeln!(
                         out,
                         "{pad}{}{}: {t};",
@@ -151,7 +149,7 @@ fn ts(s: &Value, results: bool, ind: usize) -> String {
                 let _ = write!(out, "{}}}", "  ".repeat(ind));
                 out
             } else if let Some(ap) = s.get("additionalProperties") {
-                format!("{{ [key: string]: {} }}", ts(ap, results, ind))
+                format!("{{ [key: string]: {} }}", ts(ap, ind))
             } else {
                 "Record<string, unknown>".into()
             }
@@ -185,7 +183,7 @@ fn gen_ts(b: &Value) -> String {
     // Shared types.
     let _ = writeln!(o, "// ---- shared types ----\n");
     for (n, d) in entries(&b["$defs"]) {
-        let _ = writeln!(o, "export type {} = {};\n", ts_def_name(n), ts(d, true, 0));
+        let _ = writeln!(o, "export type {} = {};\n", ts_def_name(n), ts(d, 0));
     }
     // Methods.
     let _ = writeln!(o, "// ---- methods ----\n");
@@ -195,16 +193,8 @@ fn gen_ts(b: &Value) -> String {
     for (m, e) in entries(&b["x-methods"]) {
         let p = pascal(m);
         assert!(names.insert(p.clone()), "type name clash for method {m}");
-        let _ = writeln!(
-            o,
-            "export type {p}Params = {};\n",
-            ts(&e["params"], false, 0)
-        );
-        let _ = writeln!(
-            o,
-            "export type {p}Result = {};\n",
-            ts(&e["result"], true, 0)
-        );
+        let _ = writeln!(o, "export type {p}Params = {};\n", ts(&e["params"], 0));
+        let _ = writeln!(o, "export type {p}Result = {};\n", ts(&e["result"], 0));
         let _ = writeln!(
             map,
             "  {}: {{ params: {p}Params; result: {p}Result }};",
@@ -237,12 +227,8 @@ fn gen_ts(b: &Value) -> String {
             names.insert(format!("{p}Subject")),
             "type name clash for event {t}"
         );
-        let _ = writeln!(
-            o,
-            "export type {p}Subject = {};\n",
-            ts(&e["subject"], true, 0)
-        );
-        let _ = writeln!(o, "export type {p}Data = {};\n", ts(&e["data"], true, 0));
+        let _ = writeln!(o, "export type {p}Subject = {};\n", ts(&e["subject"], 0));
+        let _ = writeln!(o, "export type {p}Data = {};\n", ts(&e["data"], 0));
         let _ = writeln!(
             emap,
             "  {}: {{ subject: {p}Subject; data: {p}Data }};",
@@ -275,6 +261,16 @@ struct Py {
     names: BTreeSet<String>,
 }
 
+/// A JSON literal as Python source (`true` → `True`).
+fn py_literal(v: &Value) -> String {
+    match v {
+        Value::Bool(true) => "True".into(),
+        Value::Bool(false) => "False".into(),
+        Value::Null => "None".into(),
+        v => v.to_string(),
+    }
+}
+
 fn py_def_name(n: &str) -> String {
     match n {
         "Event" => "EventRecord".into(),
@@ -302,7 +298,7 @@ impl Py {
             return format!("\"{}\"", py_def_name(n));
         }
         if let Some(c) = s.get("const") {
-            return format!("Literal[{}]", c);
+            return format!("Literal[{}]", py_literal(c));
         }
         if let Some(e) = s.get("enum").and_then(Value::as_array) {
             let v: Vec<String> = e.iter().map(Value::to_string).collect();
@@ -361,15 +357,14 @@ impl Py {
         }
     }
 
+    /// Optional fields are `NotRequired` (may be absent); `Optional[...]` (may be `None`) only
+    /// where the schema includes `null`.
     fn typed_dict(&mut self, name: &str, s: &Value, props: &Value, results: bool) -> String {
         let req = required(s);
         let mut fields = vec![];
         for (k, v) in entries(props) {
             let mut t = self.ty(v, &format!("{name}{}", pascal(k)), results);
             if !req.contains(&k.as_str()) {
-                if results && !t.starts_with("Optional[") && t != "Any" {
-                    t = format!("Optional[{t}]");
-                }
                 t = format!("NotRequired[{t}]");
             }
             fields.push(format!("    {}: {t},", serde_json::to_string(k).unwrap()));
@@ -389,7 +384,9 @@ impl Py {
             self.out.push((n, code));
         } else {
             let t = self.ty(s, &format!("{n}X"), results);
-            self.out.push((n.clone(), format!("{n} = {t}")));
+            // An explicit `TypeAlias`: a quoted forward reference (`X = "Y"`) would otherwise
+            // be a plain string variable to type checkers.
+            self.out.push((n.clone(), format!("{n}: TypeAlias = {t}")));
         }
     }
 }
@@ -412,6 +409,7 @@ fn gen_py(b: &Value) -> (String, String) {
         "NotRequired",
         "Optional",
         "TypedDict",
+        "TypeAlias",
         "Union",
     ] {
         py.names.insert(n.into());
@@ -481,7 +479,7 @@ fn gen_py(b: &Value) -> (String, String) {
     let _ = writeln!(o, "# {GENERATED}");
     let _ = writeln!(
         o,
-        "from __future__ import annotations\n\nfrom typing import Any, Dict, List, Literal, NotRequired, Optional, TypedDict, Union\n"
+        "from __future__ import annotations\n\nfrom typing import Any, Dict, List, Literal, NotRequired, Optional, TypeAlias, TypedDict, Union\n"
     );
     let _ = writeln!(o, "API_VERSION = {}\n", b["x-api"]);
     let _ = writeln!(o, "ERROR_KINDS: Dict[str, Dict[str, Any]] = {{");
@@ -570,11 +568,13 @@ fn client_packages_are_complete_and_versioned_with_the_api() {
         "clients/typescript/src/index.ts",
         "clients/typescript/test/client.test.ts",
         "clients/typescript/examples/status.ts",
+        "clients/typescript/examples/preview_tls.ts",
         "clients/python/pyproject.toml",
         "clients/python/vibeke_client/__init__.py",
         "clients/python/vibeke_client/client.py",
         "clients/python/tests/test_client.py",
         "clients/python/examples/status.py",
+        "clients/python/examples/preview_tls.py",
     ] {
         assert!(root().join(rel).is_file(), "{rel} missing");
     }
@@ -629,18 +629,25 @@ struct Session {
 
 impl Session {
     fn new() -> Self {
-        Session {
-            dir: tempfile::Builder::new()
-                .prefix("vkcli")
-                .tempdir_in("/tmp")
-                .unwrap(),
-        }
+        let dir = tempfile::Builder::new()
+            .prefix("vkcli")
+            .tempdir_in("/tmp")
+            .unwrap();
+        // An ephemeral proxy port (never the machine-wide default); the local CA of the TLS
+        // example lives in this session's state dir.
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[preview]\nproxy_port = 0\n",
+        )
+        .unwrap();
+        Session { dir }
     }
     fn apply(&self, c: &mut Command) {
         let d = self.dir.path();
         c.env("VIBEKE_RUNTIME_DIR", d.join("run"))
             .env("VIBEKE_STATE_DIR", d.join("state"))
             .env("VIBEKE_CONFIG", d.join("config.toml"))
+            .env("VIBEKE_NO_OPEN", "1")
             .env("VIBEKE_SESSION", "default")
             .env("PYTHONDONTWRITEBYTECODE", "1");
         for k in ["VIBEKE", "VIBEKE_SOCKET", "VIBEKE_PANE_TOKEN"] {
@@ -708,6 +715,38 @@ fn check_example_output(who: &str, out: std::process::Output) {
     );
 }
 
+/// The TLS example's output: a proxy open over https with the CA to trust, and `proxy_url`
+/// null before the origin existed.
+fn check_tls_example_output(who: &str, out: std::process::Output, state: &Path) {
+    assert!(
+        out.status.success(),
+        "{who} TLS example failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_string();
+    let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{who}: {e}: {line}"));
+    assert_eq!(v["opened_in"], "proxy", "{who}: {v}");
+    assert_eq!(v["tls_origin"], true, "{who}: {v}");
+    assert_eq!(v["https"], true, "{who}: {v}");
+    assert_eq!(v["has_open_url"], true, "{who}: {v}");
+    assert_eq!(v["proxy_url_before"], Value::Null, "{who}: {v}");
+    assert!(v["session_ttl_s"].as_u64().unwrap() > 0, "{who}: {v}");
+    assert_eq!(
+        v["ca_sha256"].as_str().unwrap().split(':').count(),
+        32,
+        "{who}: {v}"
+    );
+    assert!(
+        Path::new(v["ca_path"].as_str().unwrap()).starts_with(state),
+        "{who}: the CA lives in the session's state dir: {v}"
+    );
+}
+
 #[test]
 fn typescript_and_python_clients_talk_to_a_real_server() {
     let ts = ts_runner();
@@ -730,6 +769,18 @@ fn typescript_and_python_clients_talk_to_a_real_server() {
             .current_dir(root().join("clients/typescript"));
         s.apply(&mut c);
         check_example_output("typescript", run_with_timeout(c, 60));
+        let app = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut c = Command::new(runner[0]);
+        c.args(&runner[1..])
+            .arg("examples/preview_tls.ts")
+            .arg(app.local_addr().unwrap().port().to_string())
+            .current_dir(root().join("clients/typescript"));
+        s.apply(&mut c);
+        check_tls_example_output(
+            "typescript",
+            run_with_timeout(c, 60),
+            &s.dir.path().join("state"),
+        );
     } else {
         eprintln!("skipped typescript: need node >= 22.18 or bun");
     }
@@ -739,6 +790,17 @@ fn typescript_and_python_clients_talk_to_a_real_server() {
             .current_dir(root().join("clients/python"));
         s.apply(&mut c);
         check_example_output("python", run_with_timeout(c, 60));
+        let app = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut c = Command::new(py);
+        c.arg("examples/preview_tls.py")
+            .arg(app.local_addr().unwrap().port().to_string())
+            .current_dir(root().join("clients/python"));
+        s.apply(&mut c);
+        check_tls_example_output(
+            "python",
+            run_with_timeout(c, 60),
+            &s.dir.path().join("state"),
+        );
     } else {
         eprintln!("skipped python: need python3 >= 3.11");
     }
@@ -783,6 +845,68 @@ fn python_client_unit_tests_pass() {
     assert!(
         out.status.success(),
         "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `tsc` for the typecheck test: the package's own `node_modules/.bin/tsc` (after `npm install`
+/// in `clients/typescript`), else one on `PATH`.
+fn tsc() -> Option<PathBuf> {
+    let local = root().join("clients/typescript/node_modules/.bin/tsc");
+    if local.is_file() {
+        return Some(local);
+    }
+    have("tsc", "--version").map(|_| PathBuf::from("tsc"))
+}
+
+/// The TypeScript client, its tests and examples typecheck (`tsc --noEmit`), including the
+/// typed TLS `preview.open` and `task.finish` examples and their `@ts-expect-error` lines (a
+/// mistake the generated types no longer reject fails the check). Skipped without `tsc`.
+#[test]
+fn typescript_client_and_examples_typecheck() {
+    let Some(tsc) = tsc() else {
+        eprintln!("skipped: no tsc (npm install in clients/typescript, or tsc on PATH)");
+        return;
+    };
+    let mut c = Command::new(tsc);
+    c.args(["--noEmit", "-p", "tsconfig.json"])
+        .current_dir(root().join("clients/typescript"));
+    let out = run_with_timeout(c, 180);
+    assert!(
+        out.status.success(),
+        "tsc:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The Python client and its examples typecheck with mypy; in the TLS example every
+/// deliberate mistake must still be an error (`warn_unused_ignores`). Skipped without mypy.
+#[test]
+fn python_client_and_examples_typecheck() {
+    let Some(mypy) = have("mypy", "--version").map(|_| "mypy") else {
+        eprintln!("skipped: mypy not on PATH");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let ini = dir.path().join("mypy.ini");
+    std::fs::write(
+        &ini,
+        "[mypy]\n\n[mypy-preview_tls]\nwarn_unused_ignores = True\n",
+    )
+    .unwrap();
+    let mut c = Command::new(mypy);
+    c.arg("--config-file")
+        .arg(&ini)
+        .arg("--cache-dir")
+        .arg(dir.path().join("cache"))
+        .args(["vibeke_client", "examples"])
+        .current_dir(root().join("clients/python"));
+    let out = run_with_timeout(c, 180);
+    assert!(
+        out.status.success(),
+        "mypy:\n{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );

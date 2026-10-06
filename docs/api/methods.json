@@ -8,7 +8,7 @@
     "proto": 1,
     "min": 1
   },
-  "method_count": 238,
+  "method_count": 239,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -581,8 +581,8 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
-      "params": "{session: string, after_seq?: int}",
-      "result": "object"
+      "params": "{session?: string, browser_session?: string, target?: string}",
+      "result": "{session: string, delivery: string, width: int, height: int, poll: string}"
     },
     {
       "name": "browser.click",
@@ -595,8 +595,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`",
-      "params": "{browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool}",
-      "result": "{}"
+      "params": "{session?: string, browser_session?: string, target?: string, selector?: string, text?: string, x?: number, y?: number, click_count?: int = 1, timeout_ms?: int = 5000}",
+      "result": "{session: string, x: number, y: number, element: {x: number, y: number, width: number, height: number, tag: string, text: string}|null}"
     },
     {
       "name": "browser.close",
@@ -624,7 +624,7 @@
       "milestone": "M3",
       "spec": "`{pane, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?, hard?, text?}` → `{pane}` (`window` → the `preview.open` window result; `pane` → `{pane, profile}`) — for panes rendered by this server. Not from a pane.",
       "params": "{pane: Target, cmd: back|forward|reload|stop|navigate|screenshot|text|window|pane, url?: string, hard?: bool, text?: string}",
-      "result": "object"
+      "result": "{pane: string} | {pane: string, profile: string} | {opened_in: window, url: string, machine: string, profile: string, profile_dir: string, browser: string, browser_kind: string, pid: int, reused: bool, socks_port: int|null, route: string} | {opened_in: default_browser, url: string} | object"
     },
     {
       "name": "browser.console",
@@ -637,8 +637,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session|preview, since_ms?, level?: error|warn|all}` → `{entries: [{ts, level, text, source}]}`",
-      "params": "{browser_session?: string, preview?: Target, since_ms?: int, level?: error|warn|all}",
-      "result": "{entries: [{ts: int, level: string, text: string, source?: string}]}"
+      "params": "{session?: string, browser_session?: string, target?: string, level?: error|warn|warning|all, since_ms?: int, since?: string, limit?: int = 200} | {pane: Target, kind?: all|console|network, level?: string, errors?: bool, failed?: bool, failed_only?: bool, after?: int, since_ms?: int, since?: string, limit?: int}",
+      "result": "{session: string, entries: [{ts: int, level: string, text: string, source: string, url?: any, line?: int|null}]} | {pane: string, entries: [object], last_seq: int, source: local|relayed|none, url: string|null}"
     },
     {
       "name": "browser.detach_screencast",
@@ -651,8 +651,8 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
-      "params": "{session: string}",
-      "result": "object"
+      "params": "{session?: string, browser_session?: string, target?: string}",
+      "result": "{session: string, detached: bool}"
     },
     {
       "name": "browser.diff",
@@ -665,8 +665,8 @@
       ],
       "milestone": "M3",
       "spec": "`{a: blob, b: blob, threshold?}` → `{blob, changed_ratio, regions}` — refuses different `environment.kind` unless `force`",
-      "params": "{a: string, b: string, threshold?: number, force?: bool}",
-      "result": "{blob: string, changed_ratio: number, regions: any}"
+      "params": "{a: string, b: string, threshold?: number|string = 0.1, force?: bool, inline?: bool}",
+      "result": "{a: object, b: object, threshold: number, channel_threshold: any, width: int, height: int, size_mismatch: bool, a_size: {width: int, height: int}, b_size: {width: int, height: int}, changed_pixels: int, total_pixels: int, changed_ratio: number, regions: [{x: int, y: int, width: int, height: int, pixels: int}], regions_total: int, forced: bool, blob: string, path_on_machine: string, bytes: int, data_b64?: string, mime?: string, inline_skipped?: string}"
     },
     {
       "name": "browser.dom",
@@ -679,8 +679,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session|preview, selector?, format?: text|html|a11y}` → `{content}`",
-      "params": "{browser_session?: string, preview?: Target, selector?: string, format?: text|html|a11y}",
-      "result": "{content: string}"
+      "params": "{session?: string, browser_session?: string, target?: string, format?: a11y|accessibility|text|html = a11y, max_bytes?: int, selector?: string}",
+      "result": "{session: string, url: string, format: string, content: string, truncated: bool}"
     },
     {
       "name": "browser.eval",
@@ -693,8 +693,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, expression}` → `{value}` — gated by capability `browser.script`",
-      "params": "{browser_session: string, expression: string}",
-      "result": "{value: any}"
+      "params": "{session?: string, browser_session?: string, target?: string, expression?: string, js?: string}",
+      "result": "{session: string, value: any}"
     },
     {
       "name": "browser.install",
@@ -708,7 +708,7 @@
       "milestone": "M3",
       "spec": "`{confirm?, version?, url?, sha256?}` → without `confirm`: `{plan: {version, platform, url, sha256, checksum_known, dir, binary, installed}, confirm_required: true}`; with `confirm`: downloads, verifies, installs → `{installed, binary, plan}`. Full scope only.",
       "params": "{confirm?: bool, version?: string, url?: string, sha256?: string}",
-      "result": "object"
+      "result": "{plan: {version: string, platform: string, url: string, sha256: string|null, checksum_known: bool, dir: string, binary: string, installed: bool}, confirm_required: bool} | {installed: bool, binary: string, plan: object}"
     },
     {
       "name": "browser.list",
@@ -722,7 +722,7 @@
       "milestone": "M3",
       "spec": "`{}` → `{sessions: [...], browser: <status>, machine}` — only sessions the caller may see.",
       "params": "{}",
-      "result": "{sessions: [object], browser: any, machine: string}"
+      "result": "{sessions: [object], browser: object, machine: string}"
     },
     {
       "name": "browser.navigate",
@@ -735,8 +735,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5)",
-      "params": "{browser_session: string, url?: string, path?: string, wait?: bool}",
-      "result": "{status: int, final_url: string}"
+      "params": "{session?: string, browser_session?: string, target?: string, url?: string, path?: string, wait?: load|domcontentloaded|commit|none|string = load, timeout_ms?: int = 15000}",
+      "result": "{session: string, status: int|null, final_url: string, title: string}"
     },
     {
       "name": "browser.network",
@@ -749,8 +749,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session|preview, failed_only?, since_ms?}` → `{entries: [{ts, method, url, status?, error?, blocked_by_policy?}]}`",
-      "params": "{browser_session?: string, preview?: Target, failed_only?: bool, since_ms?: int}",
-      "result": "{entries: [{ts: int, method: string, url: string, status?: int, error?: string, blocked_by_policy?: bool}]}"
+      "params": "{session?: string, browser_session?: string, target?: string, failed_only?: bool, failed?: bool, since_ms?: int, since?: string, limit?: int = 200} | {pane: Target, kind?: all|console|network, level?: string, errors?: bool, failed?: bool, failed_only?: bool, after?: int, since_ms?: int, since?: string, limit?: int}",
+      "result": "{session: string, entries: [{ts: int, method?: string|null, url?: string, type: string|null, status?: int|null, error?: string|null, mime?: string|null, blocked_reason?: string, blocked_by_policy?: string, layer?: string, duration_ms?: int}]} | {pane: string, entries: [object], last_seq: int, source: local|relayed|none, url: string|null}"
     },
     {
       "name": "browser.open",
@@ -763,8 +763,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool}",
-      "result": "{session: string, session_id: string, owner: {pane: string, pane_handle?: string, run?: string} | {user: string}, preview?: string, url: string, created_ms: int, viewport: {width: int, height: int}, device?: string, previews: own|machine, human_control: bool, screencast: bool, proxy_port?: int, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device?: string, viewport: {width: int, height: int}, dpr: number}, status?: int, final_url?: string, title?: string}"
+      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
+      "result": "BrowserSession"
     },
     {
       "name": "browser.pane.console",
@@ -777,8 +777,8 @@
       ],
       "milestone": "M3",
       "spec": "`{pane, toggle?: true, focus?: false}` → `{pane, pane_handle, browser_pane}` (opened) \\| `{closed, pane_handle, browser_pane}` (toggled off) \\| `{…, existing: true}` (`toggle: false`) — the console/network split: a pane under the browser pane (30 %) running `vibeke browser console --pane <id> --follow`, marked `created_by = \"browser-console:<browser pane id>\"`; closed by the server when its browser pane goes. Not from a pane.",
-      "params": "{pane: Target, toggle?: bool = true, focus?: bool = false}",
-      "result": "object"
+      "params": "{pane?: Target, toggle?: bool = true, focus?: bool = false}",
+      "result": "{closed: string, pane_handle: string, browser_pane: string} | {pane: string, pane_handle: string, browser_pane: string, existing?: bool}"
     },
     {
       "name": "browser.pane.console_push",
@@ -805,8 +805,8 @@
       ],
       "milestone": "M3",
       "spec": "`{pane?, preview? | url?, split?, machine?, focus?: true, focus_client?}` → `{opened_in: \"pane\", pane, pane_handle, tab, url, machine, source_pane}` — on the owning server; `pane` defaults to the preview's pane, then the caller's pane / focused pane. URLs: `http(s)` (`localhost:5173/x` gets `http://`); from a pane only loopback, only next to the caller's own panes, never moving focus. Events `pane.created {kind: \"browser\"}`, `tab.layout_changed`.",
-      "params": "{pane?: Target, preview?: Target, url?: string, split?: right|down|left|up|tab, machine?: string, focus?: bool = true, focus_client?: string}",
-      "result": "{opened_in: string, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
+      "params": "{preview?: Target, url?: string, split?: right|down|left|up|tab|float = right, pane?: Target, machine?: string, device?: string, viewport?: string|{width: int, height: int}, fit?: bool, focus?: bool = true, focus_client?: string}",
+      "result": "{opened_in: pane, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
     },
     {
       "name": "browser.pane.list",
@@ -847,8 +847,8 @@
       ],
       "milestone": "M3",
       "spec": "`{pane, url?, title?, history?, history_index?, device?, viewport?: \"WxH\" \\| \"fit\", fit?}` → `{pane}` — persists navigation reported by the viewing client (remote owners); event `browser.navigated`. `device` (a `vk_browser::devices` preset: `iphone-15`, `pixel-8`, `ipad`, `desktop-1280/1440/1920`) or `viewport` (64..=8192 CSS px per edge) pins the page size (06 B3.2, letterboxed); `viewport: \"fit\"` / `fit: true` unpins; both at once or an unknown name → `invalid_params`; event `browser.viewport_changed {device, viewport}`. Not from a pane.",
-      "params": "{pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string, fit?: bool}",
-      "result": "{pane: Pane}"
+      "params": "{pane: Target, url?: string, title?: string, history?: [string], history_index?: int, device?: string, viewport?: string|{width: int, height: int}, fit?: bool}",
+      "result": "{pane: string}"
     },
     {
       "name": "browser.press",
@@ -861,8 +861,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`",
-      "params": "{browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool}",
-      "result": "{}"
+      "params": "{session?: string, browser_session?: string, target?: string, key: string}",
+      "result": "{session: string, key: string}"
     },
     {
       "name": "browser.release",
@@ -875,7 +875,7 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`.",
-      "params": "{session: string}",
+      "params": "{session?: string, browser_session?: string, target?: string}",
       "result": "{session: string, human_control: bool}"
     },
     {
@@ -889,8 +889,8 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, delivery: \"internal+poll\", width, height}` / `{session, detached}` / `{session, after_seq?}` → `{session, seq, mime: \"image/jpeg\", width, height, received_ms, data_b64 \\| null}` — full scope only. In-process consumers (the Stage 2 browser pane) use `AgentBrowsers::attach_screencast` (latest-wins `watch` channel) and `AgentBrowsers::human_input`.",
-      "params": "{session: string, after_seq?: int}",
-      "result": "object"
+      "params": "{session?: string, browser_session?: string, target?: string, after_seq?: int}",
+      "result": "{session: string, seq: int, mime: string, width: int|null, height: int|null, received_ms: int, data_b64: string} | {session: string, seq: int|null, data_b64: null}"
     },
     {
       "name": "browser.screenshot",
@@ -903,8 +903,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session?|preview?|url?, full_page?, selector?, viewport?, device?}` → `{blob, path_on_machine, width, height, meta: ScreenshotMeta}` — `meta.environment` and `meta.code {task, head_sha, dirty_digest}` per 06 B6; file also written to `$TMPDIR/vibeke-shots/<hash>.png`",
-      "params": "{browser_session?: string, preview?: Target, url?: string, full_page?: bool, selector?: string, viewport?: any, device?: string}",
-      "result": "{blob: string, path_on_machine: string, width: int, height: int, meta: ScreenshotMeta}"
+      "params": "{session?: string, browser_session?: string, target?: string, url?: string, preview?: string, device?: string, viewport?: string|object, dpr?: number, color_scheme?: string, dark?: bool, full_page?: bool, selector?: string, timeout_ms?: int, inline?: bool}",
+      "result": "{session: string|null, id: string, handle: string, blob: string, path_on_machine: string, width: int, height: int, bytes: int, binding: bound|illustrative, label: string, meta: ScreenshotMeta, data_b64?: string, mime?: string, inline_skipped?: string, one_shot?: bool, opened_session?: string, status?: int|null, final_url?: string|null, title?: string|null}"
     },
     {
       "name": "browser.session_close",
@@ -917,8 +917,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session}` → `{}`",
-      "params": "{browser_session: string}",
-      "result": "{}"
+      "params": "{session?: string, browser_session?: string, target?: string}",
+      "result": "{session: string, closed: bool}"
     },
     {
       "name": "browser.session_open",
@@ -931,8 +931,8 @@
       ],
       "milestone": "M3",
       "spec": "`{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run",
-      "params": "{preview?: Target, url?: string, viewport?: {w?: int, h?: int, dpr?: number}, device?: string, color_scheme?: light|dark}",
-      "result": "{browser_session: string}"
+      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
+      "result": "BrowserSession"
     },
     {
       "name": "browser.snapshot",
@@ -960,7 +960,7 @@
       "milestone": "M3",
       "spec": "`{}` → `{browsers: [{profile, dpr, pid, targets, up_ms}], targets: [{pane, owner, url, title, profile, machine, route, running, screencast, viewers, frames, fps, decode_ms, css, frame, history, error}], windowed, tiles_sent, media_bytes}` — the media host's view.",
       "params": "{}",
-      "result": "object"
+      "result": "{running: true, pid: int|null, product: string, binary: string, kind: string, uptime_ms: int, sessions: int, denied: int, profile_dir: string, idle_timeout_ms: int} | {running: false, sessions: int, denied: int, binary: string|null, kind: string|null, profile_dir: string, idle_timeout_ms: int}"
     },
     {
       "name": "browser.take_over",
@@ -973,7 +973,7 @@
       ],
       "milestone": "M3",
       "spec": "`{session}` → `{session, human_control}` — full scope only; events `browser.taken_over` / `browser.released {by}`.",
-      "params": "{session: string}",
+      "params": "{session?: string, browser_session?: string, target?: string}",
       "result": "{session: string, human_control: bool}"
     },
     {
@@ -987,8 +987,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, selector|text|role, text?, key?, submit?}` → `{}`",
-      "params": "{browser_session: string, selector?: string, text?: string, role?: string, key?: string, submit?: bool}",
-      "result": "{}"
+      "params": "{session?: string, browser_session?: string, target?: string, text: string, selector?: string, clear?: bool, submit?: bool, timeout_ms?: int}",
+      "result": "{session: string, typed: int}"
     },
     {
       "name": "browser.wait",
@@ -1001,8 +1001,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, for: load|networkidle|{selector}|{ms}}` → `{}`",
-      "params": "{browser_session: string, for: string | {selector: string} | {ms: int}}",
-      "result": "{}"
+      "params": "{session?: string, browser_session?: string, target?: string, for?: string = load, timeout_ms?: int = 15000}",
+      "result": "{session: string, waited: string}"
     },
     {
       "name": "browser.watch",
@@ -1015,8 +1015,8 @@
       ],
       "milestone": "M3",
       "spec": "`{session \\| agent_pane, pane?, split?: right\\|down\\|left\\|up\\|tab, focus?: true, focus_client?}` → `{opened_in: \"watch\", session, read_only: true, pane, pane_handle, tab, url, machine, source_pane}` — full scope only (`permission_denied` from a pane). `agent_pane` picks that pane's newest open session (`not_found` \"… has no open browser session\"). Creates a browser pane with `watch = <session>` in this server's layout next to `pane` (default: the session's owner pane). The pane is read-only until `BrowserCmd::TakeOver(true)` (render stream), which sets human control held by `pane:<id>` (events `browser.taken_over {by, via: \"watch_pane\"}`); `TakeOver(false)` or closing the pane releases it (`browser.released`). CLI: `vibeke browser watch <session> [--pane p] [--split …] [--machine m]`.",
-      "params": "{session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab, focus?: bool = true, focus_client?: string}",
-      "result": "{opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string}"
+      "params": "{session?: string, agent_pane?: Target, pane?: Target, split?: right|down|left|up|tab|float = right, focus?: bool = true, focus_client?: string}",
+      "result": "{opened_in: string, session: string, read_only: bool, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null}"
     },
     {
       "name": "client.appearance",
@@ -1411,6 +1411,20 @@
       "spec": "`{after?: Cursor, types?: [glob], subjects?: {workspace?, tab?, pane?, run?, task?}, include_snapshot?: false, machine?: label|\"*\"}` → `{subscription_id, at: Cursor}` then notifications",
       "params": "{after?: Cursor|int, types?: [string] | string, subjects?: {workspace?: Target, tab?: Target, pane?: Target, run?: Target, task?: Target}, include_snapshot?: bool = false, machine?: string}",
       "result": "{subscription_id: string, at: Cursor}"
+    },
+    {
+      "name": "events.unsubscribe",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "api"
+      ],
+      "milestone": "M1",
+      "spec": "`{subscription_id}` → `{unsubscribed: bool}` — *as built:* ends a subscription of the same connection (its server task is aborted; pushes already queued may still arrive and clients drop them); idempotent, `false` for an unknown or already finished id; pane scope `open`. Only on a control connection (like `events.subscribe`); a connection's subscriptions end when it closes.",
+      "params": "{subscription_id: string}",
+      "result": "{unsubscribed: bool}"
     },
     {
       "name": "events.wait",
@@ -2296,7 +2310,7 @@
       ],
       "milestone": "M3",
       "spec": "`{port, host?: 127.0.0.1, scheme?: http, path?, label?, pane?, task?}` → `{preview}`",
-      "params": "{port: int, host?: string = '127.0.0.1', scheme?: string = http, path?: string, label?: string, pane?: Target, task?: Target}",
+      "params": "{port: int|string, path?: string = '/', scheme?: http|https = http, label?: string, pane?: Target, task?: Target, tls_origin?: bool}",
       "result": "{preview: Preview}"
     },
     {
@@ -2310,8 +2324,8 @@
       ],
       "milestone": "M3",
       "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion",
-      "params": "{preview: Target}",
-      "result": "{preview: Preview}"
+      "params": "{preview: Target, machine?: string}",
+      "result": "{}"
     },
     {
       "name": "preview.forget",
@@ -2324,7 +2338,7 @@
       ],
       "milestone": "M3",
       "spec": "`{preview}` → `{}`",
-      "params": "{preview: Target}",
+      "params": "{preview: Target, machine?: string}",
       "result": "{}"
     },
     {
@@ -2338,7 +2352,7 @@
       ],
       "milestone": "M3",
       "spec": "`{preview}` → `{preview}`",
-      "params": "{preview: Target}",
+      "params": "{preview: Target, machine?: string}",
       "result": "{preview: Preview}"
     },
     {
@@ -2352,8 +2366,8 @@
       ],
       "milestone": "M3",
       "spec": "`{machine?, task?, pane?, status?: suggested|up|down|all}` → `{previews}` — suggestions only with `status: suggested|all`",
-      "params": "{machine?: string, task?: Target, pane?: Target, status?: suggested|up|down|all}",
-      "result": "{previews: [Preview]}"
+      "params": "{machine?: string, task?: Target, pane?: Target, status?: suggested|declared|up|down|gone|all, all?: bool}",
+      "result": "{previews: [Preview], machine?: string}"
     },
     {
       "name": "preview.mirror",
@@ -2366,8 +2380,8 @@
       ],
       "milestone": "M3",
       "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only",
-      "params": "{preview: Target}",
-      "result": "{local_port: int}"
+      "params": "{preview: Target, machine?: string}",
+      "result": "{machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user, warning: string, url?: string, already?: bool}"
     },
     {
       "name": "preview.open",
@@ -2380,8 +2394,8 @@
       ],
       "milestone": "M3",
       "spec": "`{preview, mode?: profile|proxy, client?: client_id}` → `{opened_in: profile|proxy|default_browser, url}` — profile mode (default) launches/reuses the Vibeke browser profile routed over SOCKS5 to the preview's machine and opens `http://localhost:<port>/<path>`; proxy mode returns a tokenized `*.vibeke.localhost` URL",
-      "params": "{preview: Target, mode?: profile|proxy, client?: string}",
-      "result": "{opened_in: string, url: string}"
+      "params": "{preview?: Target, url?: string, machine?: string, mode?: pane|window|proxy, window?: bool, proxy?: bool, split?: right|down|left|up|tab|float, pane?: Target, focus?: bool = true, device?: string, viewport?: string|{width: int, height: int}, profile?: string, no_open?: bool = false, open?: bool, tls_origin?: bool}",
+      "result": "{opened_in: pane, pane: string, pane_handle: string, tab: string, url: string, machine: string, source_pane: string|null} | {opened_in: window, url: string, machine: string, profile: string, profile_dir: string, browser: string, browser_kind: string, pid: int, reused: bool, socks_port: int|null, route: none|loopback|remote} | {opened_in: default_browser, url: string} | {opened_in: proxy, url: string, proxy_url: string, host: string, proxy_port: int, machine: string, preview: string, opened: bool, token_ttl_s: int, session_ttl_s: int, tls_origin: bool, remote_url: string, caveats: string, ca?: PreviewCa, open_url?: string}"
     },
     {
       "name": "preview.profile",
@@ -2395,7 +2409,7 @@
       "milestone": null,
       "spec": null,
       "params": "{action?: list|reset = list, profile?: string, machine?: string}",
-      "result": "{profiles: [{name: string, path: string, running: bool, pid?: int, machine?: string, route?: string, bytes: int}], root: string} | {profile: string, removed: bool}"
+      "result": "{profiles: [{name: string, path: string, running: bool, pid: int|null, machine: string|null, route: string|null, bytes: int}], root: string} | {profile: string, removed: bool}"
     },
     {
       "name": "preview.profile.list",
@@ -2409,7 +2423,7 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{profiles: [{name: string, path: string, running: bool, pid?: int, machine?: string, route?: string, bytes: int}], root: string}"
+      "result": "{profiles: [{name: string, path: string, running: bool, pid: int|null, machine: string|null, route: string|null, bytes: int}], root: string}"
     },
     {
       "name": "preview.profile.reset",
@@ -2422,7 +2436,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{profile: string, machine?: string}",
+      "params": "{profile?: string, machine?: string}",
       "result": "{profile: string, removed: bool}"
     },
     {
@@ -2436,7 +2450,7 @@
       ],
       "milestone": "M3",
       "spec": "`{preview}` → `{preview}` — accept or hide a discovered suggestion",
-      "params": "{preview: Target}",
+      "params": "{preview: Target, machine?: string}",
       "result": "{preview: Preview}"
     },
     {
@@ -2451,7 +2465,7 @@
       "milestone": "M3",
       "spec": "`{}` → `{socks_port?, browsers: [{profile, machine, route, pid, running}], links: [{machine, connected, bytes_in, bytes_out, rtt_ms}], accepted, rejected}`; `server.status` also carries `preview: {socks_port, browsers, previews}`.",
       "params": "{}",
-      "result": "{socks_port?: int|null, browsers: [object], links: [object], accepted?: int, rejected?: int}"
+      "result": "{socks_port: int|null, browsers: [{profile: string, machine: string, route: string, pid: int, running: bool}], links: [{machine: string, connected: bool, bytes_in: int|null, bytes_out: int|null, rtt_ms: int|null}], accepted: int, rejected: int, proxy: {port: int, tls: bool, routes: [{host: string, machine: string, preview: string, handle: string, port: int, scheme: http|https, tls: bool}], stats: {requests: int, denied: int, websockets: int}}|null, mirrors: [PreviewMirror]}"
     },
     {
       "name": "preview.unmirror",
@@ -2464,8 +2478,8 @@
       ],
       "milestone": "M3",
       "spec": "`{preview}` → `{local_port}` — explicit, unauthenticated raw local port (06 B4); full scope only",
-      "params": "{preview: Target}",
-      "result": "{local_port: int}"
+      "params": "{preview?: Target|int, port?: int, machine?: string}",
+      "result": "{local_port: int, machine: string, preview: string}"
     },
     {
       "name": "preview.url",
@@ -2478,8 +2492,8 @@
       ],
       "milestone": "M3",
       "spec": "`{preview, mode?}` → `{remote_url, profile_url, proxy_url?}` — no side effects (for agents: what URL to tell the human)",
-      "params": "{preview: Target, mode?: profile|proxy}",
-      "result": "{remote_url: string, profile_url: string, proxy_url?: string}"
+      "params": "{preview: Target, machine?: string}",
+      "result": "{remote_url: string, profile_url: string, proxy_url: string|null}"
     },
     {
       "name": "sandbox.allow",
@@ -2549,7 +2563,7 @@
       "milestone": null,
       "spec": null,
       "params": "{}",
-      "result": "{levels: [{level: string, available: bool, detail?: any, hint?: string}], config: object, container: {runtime?: string, docker_sandboxes?: {plugin: any, note: string}, vibeke_linux: any, vibeke_linux_hint: string}}"
+      "result": "{levels: [{level: string, available: bool, detail?: any, hint?: string}], config: object, container: {runtime?: string|null, docker_sandboxes?: {plugin: any, note: string}|null, vibeke_linux: any, vibeke_linux_hint: string}}"
     },
     {
       "name": "sandbox.stop",
@@ -2898,7 +2912,7 @@
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{title, repo: path, base?: ref, isolation?: worktree|none, slug?, branch?, agents?: [{harness, name?, prompt?}], setup?: bool = true, ports?: n, group?}` → `{task, workspace, panes[], runs[]}` — `isolation` is `worktree|none|auto` (default from `tasks.checkout`; `auto` is a worktree); the choice is recorded as `Task.checkout`; `jj_workspace` is refused with `invalid_params` (jj support was removed for v1, 2026-10-06); `task.finish {remove_worktree}` removes the worktree (never for `none`)",
-      "params": "{title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target}",
+      "params": "{title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool}",
       "result": "{task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun]}"
     },
     {
@@ -2972,8 +2986,8 @@
       ],
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{task, remove_worktree?: ask|true|false, delete_branch?: false}` → `{task}`",
-      "params": "{task: Target, remove_worktree?: ask|true|false, delete_branch?: bool = false}",
-      "result": "{task: Task}"
+      "params": "{task: Target, remove_worktree?: ask|bool = false, force?: bool = false, archive?: bool, status?: string}",
+      "result": "{task: Task, job?: any}"
     },
     {
       "name": "task.get",
@@ -2987,7 +3001,7 @@
       "milestone": "M1; remote tasks M3; tracking per 15 T1–T4",
       "spec": "`{task}` → `{task, workspace, runs, previews, collisions[]}`",
       "params": "{task: Target}",
-      "result": "{task: Task, workspace: Workspace|null, runs: [AgentRun], previews: [Preview], collisions: [any]}"
+      "result": "{task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null}"
     },
     {
       "name": "task.list",

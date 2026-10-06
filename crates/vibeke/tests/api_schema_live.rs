@@ -1,13 +1,59 @@
 //! The schema registry against a real server: results of live calls and the payloads of the
 //! events they produce must validate against `vk_server::api_schema`, and the params the test
 //! sends must validate too. Keeps `api_schema.rs` honest about what the handlers return.
+//!
+//! Every value is checked twice: with the registry's own validator and with a real JSON Schema
+//! 2020-12 validator (`jsonschema`) against the *emitted* bundle (`api_schema::bundle()`, the
+//! same document as `docs/api/vibeke-1.schema.json`), so the two can never disagree silently
+//! (e.g. about `null` in optional fields).
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-use vk_server::api_schema::{validate_event, validate_params, validate_result};
+use vk_server::api_schema::{bundle, validate_event, validate_params, validate_result};
+
+/// The emitted schema `s` with the bundle's `$defs`, compiled as JSON Schema 2020-12.
+fn compile(s: &Value, defs: &Value) -> jsonschema::Validator {
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "$schema".into(),
+        json!("https://json-schema.org/draft/2020-12/schema"),
+    );
+    root.insert("$defs".into(), defs.clone());
+    root.insert("allOf".into(), json!([s]));
+    jsonschema::draft202012::new(&Value::Object(root))
+        .unwrap_or_else(|e| panic!("schema does not compile: {e}\n{s}"))
+}
+
+/// JSON Schema 2020-12 problems of `v` against `schema` (with the bundle's `$defs`).
+fn json_schema_problems(schema: &Value, v: &Value) -> Vec<String> {
+    let b = bundle();
+    compile(schema, &b["$defs"])
+        .iter_errors(v)
+        .map(|e| format!("{} at {}", e, e.instance_path()))
+        .collect()
+}
+
+fn method_schema(method: &str, part: &str) -> Value {
+    bundle()["x-methods"][method][part].clone()
+}
+
+fn event_problems_2020(e: &Value) -> Vec<String> {
+    let b = bundle();
+    let mut out = json_schema_problems(&json!({"$ref": "#/$defs/Event"}), e);
+    let t = e["type"].as_str().unwrap_or_default();
+    let ev = &b["x-events"][t];
+    if ev.is_null() {
+        out.push(format!("{t}: not in the bundle"));
+        return out;
+    }
+    out.extend(json_schema_problems(&ev["subject"], &e["subject"]));
+    out.extend(json_schema_problems(&ev["data"], &e["data"]));
+    out
+}
 
 struct Session {
     dir: tempfile::TempDir,
@@ -25,9 +71,19 @@ impl Session {
     fn cmd(&self, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_vibeke"));
         let d = self.dir.path();
+        // An ephemeral proxy port (never the machine-wide default) and no real browser.
+        // Task worktrees inside the session dir, never under the real home.
+        let _ = std::fs::write(
+            d.join("config.toml"),
+            format!(
+                "[preview]\nproxy_port = 0\n\n[tasks]\nroot = \"{}\"\nfetch_before_create = false\n",
+                d.join("worktrees").display()
+            ),
+        );
         c.env("VIBEKE_RUNTIME_DIR", d.join("run"))
             .env("VIBEKE_STATE_DIR", d.join("state"))
-            .env("VIBEKE_CONFIG", d.join("config.toml"));
+            .env("VIBEKE_CONFIG", d.join("config.toml"))
+            .env("VIBEKE_NO_OPEN", "1");
         for k in [
             "VIBEKE",
             "VIBEKE_SOCKET",
@@ -105,10 +161,20 @@ fn live_results_and_events_match_the_registry() {
                 .borrow_mut()
                 .push(format!("{method} params {params}: {p}"));
         }
+        for p in json_schema_problems(&method_schema(method, "params"), &params) {
+            problems
+                .borrow_mut()
+                .push(format!("{method} params {params} (JSON Schema): {p}"));
+        }
         match rpc.call(method, &params) {
             Ok(r) => {
                 for p in validate_result(method, &r) {
                     problems.borrow_mut().push(format!("{method} result: {p}"));
+                }
+                for p in json_schema_problems(&method_schema(method, "result"), &r) {
+                    problems
+                        .borrow_mut()
+                        .push(format!("{method} result (JSON Schema): {p}\n  {r}"));
                 }
                 Some(r)
             }
@@ -251,6 +317,71 @@ fn live_results_and_events_match_the_registry() {
     check(&mut rpc, "git.log", json!({"pane": rpane}));
     check(&mut rpc, "fs.list", json!({"pane": rpane}));
     check(&mut rpc, "fs.read", json!({"pane": rpane, "path": "a.txt"}));
+    // A task with a worktree, finished with a JSON boolean (the typed form of `remove_worktree`).
+    let t = check(
+        &mut rpc,
+        "task.create",
+        json!({"title": "schema task", "repo": repo_s, "setup": false, "root": s.dir.path().join("worktrees").to_string_lossy()}),
+    );
+    if let Some(t) = t {
+        let tid = t["task"]["id"].as_str().unwrap().to_string();
+        let wt = t["task"]["worktree_path"].as_str().map(str::to_string);
+        assert!(
+            wt.as_deref().is_none_or(|w| w.contains("vkschema")),
+            "the task worktree must live in the test's session dir: {wt:?}"
+        );
+        check(&mut rpc, "task.get", json!({"task": tid}));
+        let f = check(
+            &mut rpc,
+            "task.finish",
+            json!({"task": tid, "remove_worktree": true}),
+        );
+        if let (Some(_), Some(wt)) = (f, wt) {
+            let t0 = std::time::Instant::now();
+            while Path::new(&wt).exists() && t0.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert!(
+                !Path::new(&wt).exists(),
+                "remove_worktree: true (a JSON boolean) removes the worktree"
+            );
+        }
+    }
+    // Previews: preview.url before any proxy origin exists (proxy_url: null), a tls_origin
+    // declaration, a TLS proxy open, and the statuses around it.
+    let app = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let app_port = app.local_addr().unwrap().port();
+    let d = check(
+        &mut rpc,
+        "preview.declare",
+        json!({"port": app_port, "path": "/x", "label": "schema", "tls_origin": true}),
+    );
+    let ph = d
+        .as_ref()
+        .map(|d| d["preview"]["handle"].as_str().unwrap().to_string())
+        .unwrap_or_default();
+    let u = check(&mut rpc, "preview.url", json!({"preview": ph}));
+    assert_eq!(
+        u.as_ref().map(|u| u["proxy_url"].clone()),
+        Some(Value::Null)
+    );
+    check(&mut rpc, "preview.get", json!({"preview": ph}));
+    check(&mut rpc, "preview.status", json!({}));
+    let o = check(
+        &mut rpc,
+        "preview.open",
+        json!({"preview": ph, "mode": "proxy", "no_open": true, "tls_origin": true}),
+    );
+    if let Some(o) = &o {
+        assert_eq!(o["opened_in"], "proxy", "{o}");
+        assert_eq!(o["tls_origin"], true, "{o}");
+        assert!(o["ca"]["sha256"].is_string(), "{o}");
+    }
+    check(&mut rpc, "preview.url", json!({"preview": ph}));
+    check(&mut rpc, "preview.status", json!({}));
+    check(&mut rpc, "preview.list", json!({"status": "all"}));
+    check(&mut rpc, "preview.forget", json!({"preview": ph}));
+    drop(app);
     check(&mut rpc, "draft.list", json!({"all": true}));
     check(&mut rpc, "search.query", json!({"q": "hi"}));
     check(&mut rpc, "status.segments", json!({}));
@@ -265,6 +396,12 @@ fn live_results_and_events_match_the_registry() {
                     .borrow_mut()
                     .push(format!("event {} ({}): {p}", e["type"], e["seq"]));
             }
+            for p in event_problems_2020(e) {
+                problems.borrow_mut().push(format!(
+                    "event {} ({}) (JSON Schema): {p}",
+                    e["type"], e["seq"]
+                ));
+            }
         }
     }
     check(
@@ -278,4 +415,134 @@ fn live_results_and_events_match_the_registry() {
         "registry disagrees with the server:\n{}",
         problems.join("\n")
     );
+}
+
+/// The registry's validator agrees with JSON Schema 2020-12 on the emitted schema, on values
+/// that probe the differences that matter: `null` in optional and nullable fields, boolean
+/// literals, enums, unions and missing required fields.
+#[test]
+fn the_registry_validator_matches_the_emitted_schema() {
+    let cases: &[(&str, &str, Value)] = &[
+        (
+            "preview.url",
+            "result",
+            json!({"remote_url": "u", "profile_url": "p", "proxy_url": null}),
+        ),
+        (
+            "preview.url",
+            "result",
+            json!({"remote_url": "u", "profile_url": "p", "proxy_url": "x"}),
+        ),
+        (
+            "preview.url",
+            "result",
+            json!({"remote_url": "u", "profile_url": "p"}),
+        ),
+        (
+            "preview.url",
+            "result",
+            json!({"remote_url": "u", "profile_url": "p", "proxy_url": 1}),
+        ),
+        (
+            "task.finish",
+            "params",
+            json!({"task": "t1", "remove_worktree": true}),
+        ),
+        (
+            "task.finish",
+            "params",
+            json!({"task": "t1", "remove_worktree": "ask"}),
+        ),
+        (
+            "task.finish",
+            "params",
+            json!({"task": "t1", "remove_worktree": "true"}),
+        ),
+        (
+            "task.finish",
+            "params",
+            json!({"task": "t1", "remove_worktree": null}),
+        ),
+        ("events.subscribe", "params", json!({"types": null})),
+        ("events.subscribe", "params", json!({"types": ["a.*"]})),
+        ("pane.get", "result", json!({"pane": {}, "run": null})),
+        (
+            "task.review.request_reviewer",
+            "result",
+            json!({"request": {}, "prompt": "", "prompt_digest": "", "harness": "claude", "subject": "s", "requires_confirmation": true, "label": "", "uses_provider": "", "confirm_with": {"method": "m", "params": {"request": "r", "prompt_digest": "d"}}}),
+        ),
+        (
+            "task.review.request_reviewer",
+            "result",
+            json!({"request": {}, "prompt": "", "prompt_digest": "", "harness": "claude", "subject": "s", "requires_confirmation": "true", "label": "", "uses_provider": "", "confirm_with": {"method": "m", "params": {"request": "r", "prompt_digest": "d"}}}),
+        ),
+        (
+            "preview.open",
+            "params",
+            json!({"preview": "v1", "mode": "window"}),
+        ),
+        (
+            "preview.open",
+            "params",
+            json!({"preview": "v1", "mode": "profile"}),
+        ),
+        (
+            "preview.open",
+            "params",
+            json!({"preview": "v1", "mode": "proxy", "tls_origin": true, "no_open": true}),
+        ),
+        (
+            "preview.declare",
+            "params",
+            json!({"port": 5173, "tls_origin": true}),
+        ),
+        (
+            "preview.declare",
+            "params",
+            json!({"port": 5173, "tls_origin": "yes"}),
+        ),
+    ];
+    for (m, part, v) in cases {
+        let ours = if *part == "result" {
+            validate_result(m, v)
+        } else {
+            validate_params(m, v)
+        };
+        let theirs = json_schema_problems(&method_schema(m, part), v);
+        assert_eq!(
+            ours.is_empty(),
+            theirs.is_empty(),
+            "{m} {part} {v}: registry {ours:?} vs JSON Schema {theirs:?}"
+        );
+    }
+    // And the expected verdicts.
+    let ok = |m: &str, part: &str, v: Value| {
+        json_schema_problems(&method_schema(m, part), &v).is_empty()
+    };
+    assert!(ok(
+        "preview.url",
+        "result",
+        json!({"remote_url": "u", "profile_url": "p", "proxy_url": null})
+    ));
+    assert!(!ok(
+        "task.finish",
+        "params",
+        json!({"task": "t", "remove_worktree": "true"})
+    ));
+    assert!(ok(
+        "task.finish",
+        "params",
+        json!({"task": "t", "remove_worktree": false})
+    ));
+    assert!(!ok("events.subscribe", "params", json!({"types": null})));
+    assert!(!ok(
+        "preview.open",
+        "params",
+        json!({"preview": "v1", "mode": "profile"})
+    ));
+    assert!(ok(
+        "preview.open",
+        "params",
+        json!({"preview": "v1", "mode": "window"})
+    ));
 }

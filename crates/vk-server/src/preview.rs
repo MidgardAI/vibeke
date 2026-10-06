@@ -194,7 +194,8 @@ pub struct Previews {
     /// Test hook: the proxy port to use instead of `[preview] proxy_port`.
     pub(crate) proxy_port_override: Mutex<Option<u16>>,
     /// The per-user local CA once a `tls_origin` preview needed it (B4).
-    pub(crate) tls_ca: Mutex<Option<Arc<vk_preview::ca::LocalCa>>>,
+    /// Held as a [`vk_preview::ca::CaStore`]: a CA renewed by another process is reloaded.
+    pub(crate) tls_ca: Mutex<Option<Arc<vk_preview::ca::CaStore>>>,
     /// Explicit mirrors by local port (B4; never persisted, never automatic).
     pub(crate) mirrors: Mutex<HashMap<u16, crate::preview_fabric::Mirror>>,
 }
@@ -1375,7 +1376,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     // No side effects: `proxy_url` only for an origin that already exists,
                     // and never with a credential.
                     let proxy_url =
-                        crate::preview_fabric::existing_proxy_url(server, &machine, &x).await;
+                        crate::preview_fabric::existing_proxy_url(server, ctx, &machine, &x).await;
                     Ok(
                         json!({"remote_url": x.url, "profile_url": open_url_of(&x), "proxy_url": proxy_url}),
                     )
@@ -1413,7 +1414,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 "links": lv,
                 "accepted": server.previews.accepted.load(Ordering::Relaxed),
                 "rejected": server.previews.rejected.load(Ordering::Relaxed),
-                "proxy": crate::preview_fabric::proxy_status(server).await,
+                "proxy": crate::preview_fabric::proxy_status(server, ctx).await,
                 "mirrors": crate::preview_fabric::mirrors_status(server),
             }))
         }
