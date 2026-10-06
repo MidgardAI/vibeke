@@ -43,6 +43,7 @@ export function BatchCard({ batch, showHost }: { batch: Batch; showHost: boolean
   }
 
   return (
+    <div data-nav-item={`batch:${batch.host_id}:${batch.fingerprint}`} tabIndex={-1} aria-label={t.inbox.batchTitle(batch.items.length, '')}>
     <Card className="animate-in space-y-2.5 p-3.5">
       <div className="flex items-center gap-2 text-[12px] text-muted">
         <Layers className="size-3.5" />
@@ -58,16 +59,17 @@ export function BatchCard({ batch, showHost }: { batch: Batch; showHost: boolean
       </div>
       {result && <Notice tone="warn">{result}</Notice>}
       <div className="flex gap-2">
-        <Button variant="outline" className="flex-1" disabled={!can || busy !== null} busy={busy === 'deny'} icon={<X className="size-4" />} onClick={() => void run('deny')}>
+        <Button variant="outline" className="flex-1" disabled={!can || busy !== null} busy={busy === 'deny'} icon={<X className="size-4" />} data-act="deny" onClick={() => void run('deny')}>
           {t.inbox.denyAll}
         </Button>
-        <Button variant="ok" className="flex-1" disabled={!can || busy !== null} busy={busy === 'allow'} icon={<Check className="size-4" />} onClick={() => void run('allow')}>
+        <Button variant="ok" className="flex-1" disabled={!can || busy !== null} busy={busy === 'allow'} icon={<Check className="size-4" />} data-act="allow" onClick={() => void run('allow')}>
           {t.inbox.allowAll}
         </Button>
       </div>
-      <button type="button" className="flex items-center gap-1 text-[13px] text-accent" onClick={() => setExpanded(true)}>
+      <button type="button" data-act="open" className="flex items-center gap-1 text-[13px] text-accent" onClick={() => setExpanded(true)}>
         <ChevronDown className="size-4" /> {t.inbox.expand}
       </button>
     </Card>
+    </div>
   );
 }

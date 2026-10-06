@@ -5,7 +5,7 @@
 
 import { p256 } from '@noble/curves/nist.js';
 import * as b64 from './b64';
-import { isDashboardHost, type HostManager } from './hosts';
+import { isDashboardHost, type HostManagerApi } from './hosts';
 import { getOrCreateKey, type KeyStore, type PushSubscriptionInfo, type PushSupport } from './platform';
 
 export const VAPID_KEY_NAME = 'device_vapid_private';
@@ -48,7 +48,7 @@ const marker = (sub: PushSubscriptionInfo, keys: VapidKeys): string => `${sub.en
 export type PushSyncState = 'unsupported' | 'off' | 'on' | 'error';
 
 export interface PushSyncOptions {
-  manager: HostManager;
+  manager: Pick<HostManagerApi, 'subscribe' | 'connections'>;
   push: PushSupport | undefined;
   keystore: KeyStore;
   random: (n: number) => Uint8Array;

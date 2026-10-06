@@ -36,14 +36,20 @@ export function usePrefs(): Prefs {
   return useStore(useApp().prefs);
 }
 
-/** Re-render every `ms` (wait-time labels, banners). */
+/**
+ * Re-render every `ms` (wait-time labels, banners). Display-only: paused while the window is
+ * hidden (a closed desktop window or a background tab does no work), caught up when shown.
+ */
 export function useNow(ms = 1000): number {
   const app = useApp();
+  const visible = useStore(app.visible);
   const [now, setNow] = useState(() => app.platform.clock.now());
   useEffect(() => {
+    if (!visible) return;
+    setNow(app.platform.clock.now());
     const id = setInterval(() => setNow(app.platform.clock.now()), ms);
     return () => clearInterval(id);
-  }, [app, ms]);
+  }, [app, ms, visible]);
   return now;
 }
 
@@ -89,16 +95,5 @@ export function useAnswers(): number {
 }
 
 export function useVisible(): boolean {
-  const app = useApp();
-  const lc = app.platform.lifecycle;
-  const [v, setV] = useState(lc.isVisible());
-  useEffect(() => {
-    const a = lc.onVisible(() => setV(true));
-    const b = lc.onHidden(() => setV(false));
-    return () => {
-      a();
-      b();
-    };
-  }, [lc]);
-  return v;
+  return useStore(useApp().visible);
 }

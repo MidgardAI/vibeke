@@ -3,7 +3,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { BellRing, Download, Lock, Plus, Smartphone, Trash2 } from 'lucide-react';
-import { displayName, hostKind, paneTitle, type DeviceInfo, type DevicePrefs, type HostState } from '@vibeke/core';
+import { displayName, hostKind, paneTitle, transportOf, type DeviceInfo, type DevicePrefs, type HostState } from '@vibeke/core';
 import { useAllHosts, useApp, useHosts, useNow, usePrefs } from '../app/hooks';
 import { Button, Card, Dot, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle } from '../components/ui';
 import { t } from '../i18n';
@@ -30,7 +30,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
       <SectionLabel>{title}</SectionLabel>
-      <div className="divide-y divide-border border-y border-border bg-surface">{children}</div>
+      <div className="inset-group divide-y divide-border border-y border-border bg-surface">{children}</div>
     </section>
   );
 }
@@ -40,6 +40,8 @@ export function SettingsScreen() {
   const prefs = usePrefs();
   const hosts = useHosts();
   const allHosts = useAllHosts();
+  const Ext = app.platform.extensions?.settingsSection;
+  const touch = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
   return (
     <div className="pb-10">
       <Group title={t.settings.appearance}>
@@ -72,16 +74,23 @@ export function SettingsScreen() {
         </Row>
       </Group>
 
+      {Ext && <Ext />}
+
       <Group title={t.settings.device}>
         <div className="px-4 py-2">
           <TextField label={t.settings.deviceName} value={prefs.deviceName} onChange={(e) => app.prefs.patch({ deviceName: e.target.value })} maxLength={64} />
         </div>
-        <Row label={t.settings.haptics}>
-          <Toggle label={t.settings.haptics} checked={prefs.haptics} onChange={(v) => app.prefs.patch({ haptics: v })} />
-        </Row>
-        <Row label={t.settings.zenLandscape}>
-          <Toggle label={t.settings.zenLandscape} checked={prefs.zenLandscape} onChange={(v) => app.prefs.patch({ zenLandscape: v })} />
-        </Row>
+        {/* Phone/tablet-only behaviours: not shown where they cannot apply (desktop). */}
+        {app.platform.haptics && (
+          <Row label={t.settings.haptics}>
+            <Toggle label={t.settings.haptics} checked={prefs.haptics} onChange={(v) => app.prefs.patch({ haptics: v })} />
+          </Row>
+        )}
+        {touch && (
+          <Row label={t.settings.zenLandscape}>
+            <Toggle label={t.settings.zenLandscape} checked={prefs.zenLandscape} onChange={(v) => app.prefs.patch({ zenLandscape: v })} />
+          </Row>
+        )}
       </Group>
 
       <Alerts hosts={hosts.filter((h) => h.status !== 'expired')} />
@@ -116,6 +125,7 @@ function PushControl() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const perm = n?.permission() ?? 'unsupported';
+  if (app.platform.localAlerts) return <Row label={t.settings.localAlerts} hint={t.settings.localAlertsHint} />;
   if (state === 'unsupported' || !n) return <Row label={t.settings.push} hint={t.settings.pushUnsupported} />;
   if (n.needsInstallForPush()) return <Row label={t.settings.push} hint={t.settings.iosInstall} />;
   const on = state === 'on';
@@ -241,7 +251,7 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
           ))}
         </div>
       </Row>
-      <Row label={t.settings.pushTest}>
+      {!app.platform.localAlerts && <Row label={t.settings.pushTest}>
         <Button
           size="sm"
           variant="outline"
@@ -256,7 +266,7 @@ function HostAlertPrefs({ h, showName }: { h: HostState; showName: boolean }) {
         >
           {tested ? t.settings.pushTestSent : t.settings.pushTest}
         </Button>
-      </Row>
+      </Row>}
       {err && <div className="px-4 pb-2 text-[12px] text-danger">{err}</div>}
     </div>
   );
@@ -358,8 +368,8 @@ function HostCard({ h }: { h: HostState }) {
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-4 py-2 text-[12px]">
         <dt className="text-muted">{t.settings.scope}</dt>
         <dd>{scope}</dd>
-        <dt className="text-muted">Relay</dt>
-        <dd className="truncate font-mono">{h.record.relay}</dd>
+        <dt className="text-muted">{transportOf(h.record.relay) === 'local' ? t.settings.transport : 'Relay'}</dt>
+        <dd className="truncate font-mono" title={h.record.relay}>{transportOf(h.record.relay) === 'local' ? t.pair.thisComputer : h.record.relay}</dd>
         <dt className="text-muted">Host id</dt>
         <dd className="truncate font-mono">{h.record.host_id}</dd>
         {h.info && (

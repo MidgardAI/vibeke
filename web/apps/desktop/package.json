@@ -1,0 +1,43 @@
+{
+  "name": "@vibeke/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vibeke for macOS, Linux and Windows: your agents and terminals, end-to-end encrypted.",
+  "author": "Vibeke",
+  "type": "module",
+  "main": "out/main/index.cjs",
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.2",
+    "@vibeke/core": "workspace:*",
+    "@vibeke/ui": "workspace:*",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.2",
+    "ws": "^8.22.0"
+  },
+  "homepage": "https://vibeke.dev",
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "build": "bun scripts/build.ts",
+    "start": "electron .",
+    "dist": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs",
+    "dist:dir": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --dir",
+    "dist:mac": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --mac",
+    "dist:linux": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --linux",
+    "dist:win": "bun scripts/build.ts && electron-builder -c electron-builder.config.cjs --win",
+    "test": "bun test test",
+    "e2e": "bun scripts/build.ts && playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "icons": "bun scripts/gen-icons.ts"
+  }
+}

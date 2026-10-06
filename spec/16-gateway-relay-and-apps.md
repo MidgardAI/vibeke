@@ -455,6 +455,7 @@ The JavaScript that runs the app holds the device key and sees plaintext, so who
 | `vk-gateway` / `vibeke-gateway` | §4, §7, §8: pairing with host confirmation, device scopes, op_id cache, normalization, event ring, push triggers, RFC 8291/8292 Web Push in pure Rust (RFC test vector), SSRF guard, revocation; `examples/devclient.rs` is a CLI device for testing. End-to-end test with relay + fake server; smoke-tested against a real server |
 | Server additions | `git.status` / `git.diff` (hostile-config test proves fsmonitor/external diff/textconv never run), `interaction.answer {actor}` with `answer_key`, and retried answers no longer re-deliver |
 | `@vibeke/core` | Noise, channel, RPC, pairing, multi-host manager, inbox ranking/grouping |
+| Desktop (§16) | `web/apps/desktop`: main-process host engine, safeStorage vault, local + relay transports, Connect to this Mac, menu-bar quick approvals, native notifications, ⌘K palette and keyboard navigation (shared with the PWA), pop-out panes, deep links, hardened IPC, packaging; Codex review fixed; unit + real-gateway Electron e2e + memory e2e in CI |
 | Share + handoff (§15) | `share.create`, limit enforcement on every call and event, handoff export/transfer/import with Claude/Codex resume; end-to-end handoff test (thin bundle, patch, untracked files, secret skipped, transcript rewritten + redacted, resume args); app screens for share, hand off and receiving |
 | `@vibeke/ui`, `@vibeke/pwa` | Baseline screens + inbox/quick actions/batches/push built; 136 tests; headless-Chrome smoke against real server + relay + gateway. Not yet verified on real iOS/Android push or device voice input. Transcript turns are `{role, text, ts}` only, so tool calls are not separated yet (server addition needed). |
 
@@ -614,7 +615,7 @@ Moves an agent's work to another host at a **turn boundary**. The app is the cou
 
 ### 16.3 Quality bar
 
-- Cold start to interactive < 1 s on Apple silicon; memory with three hosts connected < 250 MB; no work while hidden beyond open sockets and the event stream.
+- Cold start to interactive < 1 s on Apple silicon (measured 2.2–3.4 s including Playwright attach; not yet met); memory with three hosts connected < 250 MB **physical footprint** (Activity Monitor's figure; measured ~170 MB with the main window, ~200 MB with the popover too, 80 MB with only the menu-bar item) — working set counts shared framework pages per process and sits at 300–400 MB for any Electron app; no work while hidden beyond open sockets and the event stream (display timers pause; hidden popovers are destroyed after 60 s and the main renderer after 10 min closed).
 - Accessibility: full keyboard reachability, focus rings, VoiceOver labels on all controls, reduced-motion respected.
 - Tests: unit tests for the platform layer (IPC validation, key storage, transports), a Playwright-for-Electron smoke test (launch → pair over the local socket against a real gateway → inbox → approve) and `electron-builder --dir` packaging in CI.
 

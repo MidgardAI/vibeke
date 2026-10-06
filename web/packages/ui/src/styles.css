@@ -8,13 +8,16 @@
   --surface-2: #efefec;
   --fg: #1b1c1e;
   --muted: #5f636b;
-  --faint: #9a9ea6;
+  --faint: #6a6e76;
   --border: #dcddd8;
   --accent: #3559d8;
   --accent-fg: #ffffff;
-  --ok: #1f8a4c;
-  --warn: #b26a00;
+  --ok: #1b7a43;
+  --ok-fg: #ffffff;
+  --warn: #965800;
   --danger: #c4372f;
+  --danger-fg: #ffffff;
+  --scrim: rgb(15 16 18 / 0.28);
   --need: rgba(230, 150, 20, 0.12);
   --need-strong: #d98a0b;
   --term-bg: #fbfbf9;
@@ -45,13 +48,16 @@
   --surface-2: #1f2125;
   --fg: #e6e7e9;
   --muted: #a1a5ad;
-  --faint: #6c7079;
+  --faint: #8b9099;
   --border: #2a2c31;
   --accent: #7b9bff;
   --accent-fg: #0b0c0e;
   --ok: #4cc27c;
+  --ok-fg: #0b0c0e;
   --warn: #e3a53a;
   --danger: #ff6b61;
+  --danger-fg: #0b0c0e;
+  --scrim: rgb(0 0 0 / 0.5);
   --need: rgba(227, 165, 58, 0.13);
   --need-strong: #e3a53a;
   --term-bg: #0b0c0e;
@@ -82,13 +88,16 @@
     --surface-2: #1f2125;
     --fg: #e6e7e9;
     --muted: #a1a5ad;
-    --faint: #6c7079;
+    --faint: #8b9099;
     --border: #2a2c31;
     --accent: #7b9bff;
     --accent-fg: #0b0c0e;
     --ok: #4cc27c;
+    --ok-fg: #0b0c0e;
     --warn: #e3a53a;
     --danger: #ff6b61;
+    --danger-fg: #0b0c0e;
+    --scrim: rgb(0 0 0 / 0.5);
     --need: rgba(227, 165, 58, 0.13);
     --need-strong: #e3a53a;
     --term-bg: #0b0c0e;
@@ -124,8 +133,10 @@
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
   --color-ok: var(--ok);
+  --color-ok-fg: var(--ok-fg);
   --color-warn: var(--warn);
   --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
   --color-need: var(--need);
   --color-need-strong: var(--need-strong);
   --color-term-bg: var(--term-bg);
@@ -229,7 +240,33 @@ mark.find-hit.current {
   }
 }
 .animate-in {
-  animation: vk-in 0.18s ease-out;
+  animation: vk-in 0.14s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Dialog panels (palette): a quick scale-in, like a macOS sheet. */
+@keyframes vk-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-pop {
+  animation: vk-pop 0.12s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Modal scrim (components/dialog.tsx). */
+.vk-scrim {
+  background: var(--scrim);
+  animation: vk-fade 0.12s ease-out;
+}
+@keyframes vk-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 @keyframes vk-sheet {
@@ -241,7 +278,13 @@ mark.find-hit.current {
   }
 }
 .animate-sheet {
-  animation: vk-sheet 0.2s ease-out;
+  animation: vk-sheet 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (min-width: 640px) {
+  /* Centred panels on wide screens pop rather than slide up from the bottom edge. */
+  .animate-sheet {
+    animation: vk-pop 0.12s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
 }
 
 /* Markdown */
@@ -327,4 +370,86 @@ mark.find-hit.current {
 }
 .tk-pun {
   color: var(--muted);
+}
+
+/* Grouped lists: edge-to-edge on phones, inset rounded groups (macOS/iPadOS style) when wider. */
+@media (min-width: 640px) {
+  .inset-group {
+    margin-inline: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+}
+
+/* Keyboard selection (j/k): a ring on the selected card or row. */
+[data-nav-item] {
+  outline: none;
+  scroll-margin: 12px;
+  border-radius: 1rem;
+}
+[data-nav-item][data-selected] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button[data-nav-item] {
+  border-radius: 0;
+}
+button[data-nav-item][data-selected] {
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Desktop shells: a system accent colour when the OS provides one. */
+:root[data-accent] {
+  --accent: var(--system-accent);
+  --accent-fg: #ffffff;
+}
+
+/* macOS inset title bar (traffic lights over the content): headers are drag regions with room
+   for the window buttons; their controls stay clickable. */
+:root[data-titlebar="inset"] .titlebar {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+  min-height: 44px;
+}
+:root[data-titlebar="inset"] .titlebar :is(button, a, input, select, textarea, [role="button"], [role="radiogroup"]) {
+  -webkit-app-region: no-drag;
+}
+:root[data-titlebar="inset"] .titlebar-inset {
+  padding-left: 80px;
+}
+
+/* Wide layout sidebar. Desktop shells with native vibrancy make it see-through. */
+.sidebar {
+  background: color-mix(in srgb, var(--surface-2) 70%, var(--bg));
+}
+:root[data-vibrancy] body {
+  background: transparent;
+}
+:root[data-vibrancy] .sidebar {
+  background: transparent;
+}
+:root[data-vibrancy] .app-content {
+  background: var(--bg);
+}
+
+/* The quick-approvals popover: a translucent sheet over native vibrancy. */
+:root[data-surface="quick"] body {
+  background: transparent;
+}
+:root[data-surface="quick"] .quick-root {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+}
+:root:not([data-vibrancy])[data-surface="quick"] .quick-root {
+  background: var(--bg);
 }

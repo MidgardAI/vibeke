@@ -48,6 +48,18 @@ export function CardHeader({ item, showHost }: { item: InboxItem; showHost: bool
       <span className="min-w-0 flex-1 truncate">{parts.join(' · ')}</span>
       <span className="shrink-0 tabular-nums">{t.inbox.waiting(shortDuration(now - it.opened_at_ms))}</span>
       {it.kind === 'approval' && <RiskBadge risk={interactionRisk(it)} />}
+      {item.pane && (
+        <button
+          type="button"
+          data-act="open"
+          aria-label={t.inbox.openPane}
+          title={t.inbox.openPane}
+          className="-my-1 -mr-1 inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent"
+          onClick={() => navigate({ name: 'pane', host: item.host_id, pane: item.pane!.id, view: 'term' })}
+        >
+          <ExternalLink className="size-3.5" />
+        </button>
+      )}
     </div>
   );
 }
@@ -226,7 +238,7 @@ export function InteractionCard({
   };
 
   return (
-    <div className={cx('relative', leaving && 'animate-leave')}>
+    <div className={cx('relative', leaving && 'animate-leave')} data-nav-item={key} tabIndex={-1} aria-label={it.title}>
       {dx !== 0 && (
         <div
           className={cx(
@@ -265,11 +277,13 @@ export function InteractionCard({
                 className={cx('flex-1', preselect === 'deny' && 'border-danger! text-danger!')}
                 disabled={disabled}
                 icon={<X className="size-4" />}
+                data-act="deny"
+                aria-keyshortcuts="d"
                 onClick={() => decide('deny')}
               >
                 {t.inbox.deny}
               </Button>
-              <Button variant="outline" className="flex-1" disabled={disabled} onClick={() => decide('allow_always')}>
+              <Button variant="outline" className="flex-1" disabled={disabled} data-act="allow_always" aria-keyshortcuts="Shift+A" onClick={() => decide('allow_always')}>
                 {t.inbox.allowAlways}
               </Button>
               <Button
@@ -277,17 +291,19 @@ export function InteractionCard({
                 className={cx('flex-1', preselect === 'allow' && 'outline-2 outline-offset-2 outline-ok')}
                 disabled={disabled}
                 icon={<Check className="size-4" />}
+                data-act="allow"
+                aria-keyshortcuts="a"
                 onClick={() => decide('allow')}
               >
                 {t.inbox.allow}
               </Button>
             </div>
           )}
-          {canSwipe && !locked && <div className="text-center text-[11px] text-faint">{t.inbox.swipeHint}</div>}
+          {canSwipe && !locked && <div className="text-center text-[11px] text-faint pointer-fine:hidden">{t.inbox.swipeHint}</div>}
           {view && <DeliveryLine view={view} error={local?.error} onOpenPane={openPane} onRefresh={refresh} />}
         </div>
       </Card>
-      <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={t.inbox.confirmTitle}>
+      <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={t.inbox.confirmTitle} role="alertdialog">
         <div className="space-y-3">
           <p className="text-sm">{t.inbox.confirmHigh(it.action?.command ? `\`${it.action.command}\`` : it.title)}</p>
           {it.action?.command && <pre className="term max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-xl border border-border p-2 text-[12px]">{it.action.command}</pre>}
@@ -410,10 +426,10 @@ function PlanBody({ it, disabled, locked, onApprove, onChanges }: { it: Interact
         </div>
       ) : (
         <div className="flex gap-2">
-          <Button className="flex-1" variant="outline" disabled={disabled} onClick={() => setAsking(true)}>
+          <Button className="flex-1" variant="outline" disabled={disabled} data-act="deny" onClick={() => setAsking(true)}>
             {t.inbox.requestChanges}
           </Button>
-          <Button className="flex-1" variant="ok" disabled={disabled} icon={<Check className="size-4" />} onClick={onApprove}>
+          <Button className="flex-1" variant="ok" disabled={disabled} icon={<Check className="size-4" />} data-act="allow" onClick={onApprove}>
             {t.inbox.approve}
           </Button>
         </div>

@@ -13,6 +13,7 @@ import {
   History,
   Maximize2,
   Minimize2,
+  PictureInPicture2,
   MoreVertical,
   OctagonX,
   Search,
@@ -42,6 +43,8 @@ import { usePaneActions } from './actions';
 import { ActionBelt, type BeltTab } from './belt';
 import { Composer } from './composer';
 import { useMirror } from './use-mirror';
+import { useSurface } from '../../app/surface';
+import { useWide } from '../../app/shell';
 
 export function PaneScreen({ host, pane, view }: { host: string; pane: string; view: PaneView }) {
   return <PaneInner key={`${host}/${pane}`} hostId={host} paneId={pane} view={view} />;
@@ -88,6 +91,8 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
   const [dockOpen, setDockOpen] = useState(true);
   const [zenManual, setZen] = useState(false);
   const landscape = useLandscape();
+  const surface = useSurface();
+  const popOut = surface === 'full' ? app.platform.windows?.popOutPane : undefined;
   const zen = zenManual || (prefs.zenLandscape && landscape);
   const cards = inbox.filter((it) => it.host_id === hostId && it.interaction.pane === paneId);
   const plain = useMemo(() => stripAnsi(mirror.text), [mirror.text]);
@@ -120,17 +125,38 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
       {!zen && (
         <>
           <Header
-            onBack={() => goBack({ name: 'panes' })}
+            onBack={surface === 'pane' ? undefined : () => goBack({ name: 'panes' })}
             title={title}
             sub={sub}
             right={
               <>
-                <IconButton label={t.pane.prev} disabled={!nb.prev} onClick={() => nb.prev && navigate({ name: 'pane', host: hostId, pane: nb.prev.pane.id, view }, { replace: true })}>
-                  <ChevronLeft className="size-5" />
+                <IconButton
+                  label={t.pane.find}
+                  data-find
+                  aria-keyshortcuts="/"
+                  onClick={() => {
+                    if (view !== 'term') setView('term');
+                    setFindOpen(true);
+                  }}
+                >
+                  <Search className="size-5" />
                 </IconButton>
-                <IconButton label={t.pane.next} disabled={!nb.next} onClick={() => nb.next && navigate({ name: 'pane', host: hostId, pane: nb.next.pane.id, view }, { replace: true })}>
-                  <ChevronRight className="size-5" />
-                </IconButton>
+                {popOut && (
+                  <IconButton label={t.palette.popOut} onClick={() => popOut(hostId, paneId)}>
+                    <PictureInPicture2 className="size-5" />
+                  </IconButton>
+                )}
+                {/* A pop-out window stays on its pane: no previous / next there. */}
+                {surface !== 'pane' && (
+                  <>
+                    <IconButton label={t.pane.prev} disabled={!nb.prev} onClick={() => nb.prev && navigate({ name: 'pane', host: hostId, pane: nb.prev.pane.id, view }, { replace: true })}>
+                      <ChevronLeft className="size-5" />
+                    </IconButton>
+                    <IconButton label={t.pane.next} disabled={!nb.next} onClick={() => nb.next && navigate({ name: 'pane', host: hostId, pane: nb.next.pane.id, view }, { replace: true })}>
+                      <ChevronRight className="size-5" />
+                    </IconButton>
+                  </>
+                )}
                 <IconButton label={t.more} onClick={() => setMenu(true)}>
                   <MoreVertical className="size-5" />
                 </IconButton>
@@ -216,7 +242,7 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
                 {dockOpen ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
               </button>
               {dockOpen && (
-                <div className="max-h-[45vh] space-y-2 overflow-y-auto px-2 pb-2">
+                <div className="max-h-[45vh] space-y-2 overflow-y-auto px-2 pb-2" data-nav-list>
                   {cards.map((c) => (
                     <InteractionCard key={c.interaction.id} item={c} />
                   ))}
@@ -324,12 +350,17 @@ function PaneInner({ hostId, paneId, view }: { hostId: string; paneId: string; v
   );
 }
 
-function Header({ onBack, title, sub, right }: { onBack(): void; title: string; sub: string; right?: ReactNode }) {
+function Header({ onBack, title, sub, right }: { onBack?: () => void; title: string; sub: string; right?: ReactNode }) {
+  const wide = useWide();
   return (
-    <div className="flex items-center gap-1 px-1 py-1">
-      <IconButton label={t.back} onClick={onBack}>
-        <ArrowLeft className="size-5" />
-      </IconButton>
+    <div className={cx('titlebar flex items-center gap-1 px-1 py-1', !wide && 'titlebar-inset')}>
+      {onBack ? (
+        <IconButton label={t.back} onClick={onBack}>
+          <ArrowLeft className="size-5" />
+        </IconButton>
+      ) : (
+        <span className="w-3" />
+      )}
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-semibold">{title}</div>
         {sub && <div className={cx('truncate text-[12px] text-muted')}>{sub}</div>}

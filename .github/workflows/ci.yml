@@ -15,3 +15,40 @@ jobs:
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
       - run: mise run ci
+  web:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+      - run: bun run build:desktop
+  desktop:
+    # Real-gateway Electron tests and packaging (spec 16 §16.3); macOS runners have a display.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p vibeke
+      - working-directory: web
+        run: bun install --frozen-lockfile
+      - working-directory: web
+        run: bun run test:desktop
+      - working-directory: web
+        run: bun run e2e:desktop
+        env:
+          VIBEKE_BIN: ${{ github.workspace }}/target/debug/vibeke
+      - working-directory: web
+        run: bun run dist:desktop -- --dir
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"

@@ -257,7 +257,7 @@ export function Composer({
           onClick={() => void send()}
           className={cx(
             'inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-transparent disabled:opacity-40',
-            armed ? 'bg-danger text-white' : 'bg-accent text-accent-fg',
+            armed ? 'bg-danger text-danger-fg' : 'bg-accent text-accent-fg',
           )}
         >
           {sending ? <Loader2 className="size-5 animate-spin" /> : <Send className="size-4.5" />}

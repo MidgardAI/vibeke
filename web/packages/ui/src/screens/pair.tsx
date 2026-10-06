@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Link2, QrCode, ShieldCheck } from 'lucide-react';
-import { ChannelError, PairingError, hostKind, linkExpired, parseLink, type PairingLink } from '@vibeke/core';
+import { ChannelError, PairingError, hostKind, linkExpired, parseLink, transportOf, type PairingLink } from '@vibeke/core';
 import { useAllHosts, useApp, usePrefs } from '../app/hooks';
 import { QrScanner, qrScanSupported } from '../components/qr-scanner';
 import { Button, Card, Notice, Spinner, TextField } from '../components/ui';
@@ -78,6 +78,9 @@ export function PairScreen({ d }: { d: string | null }) {
   const share = link?.share;
   const replacesOwn = !!share && !!existing && hostKind(existing.record) === 'device';
   const fp = app.deviceFingerprint();
+  const local = link ? transportOf(link.relay) === 'local' : false;
+  const unreachable = local && !app.platform.localTransport;
+  const Panel = app.platform.extensions?.pairPanel;
 
   const start = async () => {
     if (!link) return;
@@ -112,15 +115,16 @@ export function PairScreen({ d }: { d: string | null }) {
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
             <dt className="text-muted">{t.pair.hostName}</dt>
             <dd className="font-medium">{link.name}</dd>
-            <dt className="text-muted">{t.pair.relay}</dt>
-            <dd className="truncate font-mono text-[12px]">{link.relay}</dd>
+            <dt className="text-muted">{local ? t.settings.transport : t.pair.relay}</dt>
+            <dd className="truncate font-mono text-[12px]" title={link.relay}>{local ? t.pair.thisComputer : link.relay}</dd>
           </dl>
           <div className="text-[12px] text-muted">{t.pair.expires(clockTime(link.exp * 1000))}</div>
           {replacesOwn ? <Notice tone="warn">{t.pair.replacesOwn}</Notice> : known && <Notice>{t.pair.alreadyPaired}</Notice>}
           {expired && <Notice tone="danger">{t.pair.errors.expired}</Notice>}
+          {unreachable && <Notice tone="warn">{t.pair.localOnly}</Notice>}
 
-          {/* Invitations are bearer links: nobody confirms a fingerprint on the host side. */}
-          {!share && (
+          {/* Invitations and local links are bearer links: nobody confirms a fingerprint on the host side. */}
+          {!share && !local && (
             <div className="rounded-2xl border border-border bg-bg p-4 text-center">
               <div className="text-[12px] uppercase tracking-wide text-faint">{t.pair.checkFingerprint}</div>
               <div className="mt-1 font-mono text-3xl font-semibold tracking-wider">{phase.k === 'pending' ? phase.fingerprint : fp}</div>
@@ -131,7 +135,7 @@ export function PairScreen({ d }: { d: string | null }) {
             <>
               <TextField label={t.pair.deviceName} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
               {phase.k === 'error' && <Notice tone="danger">{phase.message}</Notice>}
-              <Button variant="primary" size="lg" block disabled={expired} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
+              <Button variant="primary" size="lg" block disabled={expired || unreachable} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
                 {share ? t.pair.accept : t.pair.start}
               </Button>
             </>
@@ -143,6 +147,8 @@ export function PairScreen({ d }: { d: string | null }) {
           )}
         </Card>
       ) : (
+        <>
+        {Panel && <Panel />}
         <Card className="space-y-4 p-4">
           <p className="text-sm text-muted">{t.pair.intro}</p>
           {parsed.error && <Notice tone="danger">{parsed.error}</Notice>}
@@ -154,7 +160,7 @@ export function PairScreen({ d }: { d: string | null }) {
               }}
             />
           ) : (
-            qrScanSupported() && (
+            qrScanSupported() && app.platform.qrScan !== false && (
               <Button block variant="secondary" icon={<QrCode className="size-5" />} onClick={() => setScan(true)}>
                 {t.pair.scan}
               </Button>
@@ -173,6 +179,7 @@ export function PairScreen({ d }: { d: string | null }) {
             </Button>
           </form>
         </Card>
+        </>
       )}
     </div>
   );

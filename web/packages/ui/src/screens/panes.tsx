@@ -31,7 +31,7 @@ export function PanesScreen() {
   };
 
   return (
-    <div className="pb-4">
+    <div className="pb-4" data-nav-list>
       <div className="flex items-center gap-2 px-4 pt-3">
         {tree.needYou.length > 0 ? (
           <button type="button" onClick={jumpFirst} className="flex h-9 items-center gap-2 rounded-full bg-need px-3 text-[13px] font-medium">
@@ -51,7 +51,7 @@ export function PanesScreen() {
       {tree.pinned.length > 0 && (
         <section>
           <SectionLabel>{t.panes.pinned}</SectionLabel>
-          <div className="divide-y divide-border border-y border-border bg-surface">
+          <div className="inset-group divide-y divide-border border-y border-border bg-surface">
             {tree.pinned.map((r) => (
               <PaneRowView key={r.key} row={r} showHost={multi} />
             ))}
@@ -62,14 +62,14 @@ export function PanesScreen() {
       {tree.hosts.map((g) => (
         <section key={g.host.record.host_id}>
           {multi && (
-            <div className="flex items-center gap-2 px-4 pb-1 pt-5 text-[13px] font-semibold">
+            <div className="flex items-center gap-2 px-4 pb-1 pt-5 text-[13px] font-semibold sm:px-8">
               <Dot tone={g.host.status === 'online' ? 'ok' : g.host.status === 'connecting' ? 'warn' : 'danger'} />
               {g.host.info?.host_name ?? g.host.record.name}
               {g.needsYou > 0 && <span className="text-[12px] font-normal text-muted">· {t.crew.needYou(g.needsYou)}</span>}
             </div>
           )}
-          {!g.host.dashboard && <div className="px-4 py-3 text-sm text-muted">{g.host.status === 'online' ? t.loading : t.conn.hostOffline}</div>}
-          {g.host.dashboard && g.rows.length === 0 && <div className="px-4 py-3 text-sm text-muted">{t.panes.empty}</div>}
+          {!g.host.dashboard && <div className="px-4 py-3 text-sm text-muted sm:px-8">{g.host.status === 'online' ? t.loading : t.conn.hostOffline}</div>}
+          {g.host.dashboard && g.rows.length === 0 && <div className="px-4 py-3 text-sm text-muted sm:px-8">{t.panes.empty}</div>}
           {g.workspaces.map((w) =>
             w.tabs.length === 0 ? null : (
               <div key={w.workspace.id}>
@@ -77,7 +77,7 @@ export function PanesScreen() {
                   {displayName(w.workspace)}
                   {w.workspace.branch && <span className="ml-1.5 normal-case tracking-normal text-faint">⎇ {w.workspace.branch}</span>}
                 </SectionLabel>
-                <div className="border-y border-border bg-surface">
+                <div className="inset-group border-y border-border bg-surface">
                   {w.tabs.map((tg, i) => (
                     <div key={tg.tab.id} className={cx(i > 0 && 'border-t-4 border-bg')}>
                       {w.tabs.length > 1 && (
@@ -108,7 +108,7 @@ export function FocusScreen() {
   const hosts = useHosts();
   if (tree.needYou.length === 0) return <Empty title={t.focus.empty} hint={t.focus.emptyHint} />;
   return (
-    <div className="divide-y divide-border border-y border-border bg-surface mt-3">
+    <div className="inset-group divide-y divide-border border-y border-border bg-surface mt-3" data-nav-list>
       {tree.needYou.map((r) => (
         <PaneRowView key={r.key} row={r} showHost={hosts.length > 1} />
       ))}

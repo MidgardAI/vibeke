@@ -42,6 +42,9 @@ function harness(rec: HostRecord = record) {
     sockets: [] as MemSocket[],
     hello: {} as Record<string, unknown>,
     puts: [] as HostRecord[],
+    /** While true, `dashboard.get` answers only when its gate is released (in any order). */
+    gated: false,
+    gates: [] as { at: number; release(): void }[],
   };
   const platform = testPlatform((sock) => {
     if (state.refuse === 'offline') return false;
@@ -55,8 +58,11 @@ function harness(rec: HostRecord = record) {
         switch (method) {
           case 'hello':
             return { host_name: 'devbox', device_id: 'd1', scope: 'full', server_version: '0.1.0', features: [], ...state.hello };
-          case 'dashboard.get':
-            return dashboard(state.at);
+          case 'dashboard.get': {
+            const d = dashboard(state.at);
+            if (!state.gated) return d;
+            return new Promise((resolve) => state.gates.push({ at: d.at, release: () => resolve(d) }));
+          }
           case 'events.subscribe':
             return params.after !== undefined && state.resetOnResume && params.after !== state.at ? { at: state.at, reset: true } : { at: state.at };
           default:
@@ -178,6 +184,59 @@ describe('HostManager', () => {
     await platform.clock.advance(1000);
     await flush(20);
     expect(calls.map((c) => c[0])).toEqual(['hello', 'events.subscribe']);
+    mgr.stop();
+  });
+
+  test('overlapping refreshes are coalesced and never regress the dashboard (20 → 10)', async () => {
+    const { mgr, h, methods, state, platform } = harness();
+    await mgr.start();
+    await flush(20);
+    const seen: number[] = [];
+    h().subscribe(() => seen.push(h().getSnapshot().dashboard?.at ?? -1));
+    state.gated = true;
+    // A refresh is in flight (snapshot at 10) when events arrive and more refreshes are asked for.
+    const first = h().refresh();
+    await flush();
+    expect(state.gates.length).toBe(1);
+    state.at = 20;
+    state.ctx!.notify('event', { seq: 11, ts: 0, type: 'interaction.opened', subject: {}, data: {} });
+    await flush();
+    await platform.clock.advance(300); // the debounced refresh joins the one in flight
+    const second = h().refresh();
+    await flush();
+    expect(state.gates.length).toBe(1); // still one request on the wire
+    state.gates.shift()!.release();
+    await flush(10);
+    // The follow-up fetch (issued after the events) runs once and lands at 20.
+    expect(state.gates.length).toBe(1);
+    expect(state.gates[0]!.at).toBe(20);
+    state.gates.shift()!.release();
+    await Promise.all([first, second]);
+    expect(h().getSnapshot().dashboard?.at).toBe(20);
+    expect(methods().filter((m) => m === 'dashboard.get').length).toBe(3); // connect + 2
+    for (let i = 1; i < seen.length; i++) expect(seen[i]!).toBeGreaterThanOrEqual(seen[i - 1]!);
+    mgr.stop();
+  });
+
+  test('an older dashboard response arriving last is ignored', async () => {
+    const { mgr, h, state } = harness();
+    await mgr.start();
+    await flush(20);
+    state.gated = true;
+    // A refresh (at 10) is in flight when events.reset resyncs the same connection (at 20).
+    void h().refresh();
+    await flush();
+    state.at = 20;
+    state.ctx!.notify('events.reset', {});
+    await flush();
+    expect(state.gates.map((g) => g.at)).toEqual([10, 20]);
+    state.gates[1]!.release(); // the newer response first
+    await flush(10);
+    expect(h().getSnapshot().dashboard?.at).toBe(20);
+    state.gates[0]!.release(); // then the older one
+    await flush(10);
+    expect(h().getSnapshot().dashboard?.at).toBe(20);
+    expect(h().getSnapshot().cursor).toBe(20);
     mgr.stop();
   });
 

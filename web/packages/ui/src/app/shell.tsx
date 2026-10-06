@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Activity, FileDiff, Inbox, Layers, Settings, Users } from 'lucide-react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Activity, FileDiff, Inbox, Keyboard, Layers, Plus, Settings, Users } from 'lucide-react';
 import { useApp, useHosts, useInboxItems, useNow, useTree } from './hooks';
-import { Button, IconButton, cx } from '../components/ui';
+import { emitUi, isMacLike } from './keyboard';
+import { Button, Dot, IconButton, cx } from '../components/ui';
+import { keyLabel } from '../lib/shortcuts';
 import { t } from '../i18n';
 import { BannerTracker } from '../lib/banner';
 import { useStore } from '../lib/store';
@@ -58,7 +60,7 @@ export function Toasts() {
           role="status"
           className={cx(
             'animate-in pointer-events-auto max-w-sm rounded-xl px-3.5 py-2 text-[13px] shadow-lg',
-            x.tone === 'error' ? 'bg-danger text-white' : x.tone === 'ok' ? 'bg-ok text-white' : x.tone === 'warn' ? 'bg-warn text-black' : 'bg-fg text-bg',
+            x.tone === 'error' ? 'bg-danger text-danger-fg' : x.tone === 'ok' ? 'bg-ok text-ok-fg' : x.tone === 'warn' ? 'bg-warn text-black' : 'bg-fg text-bg',
           )}
         >
           {x.text}
@@ -100,7 +102,90 @@ export function TabBar({ active }: { active?: Tab }) {
   );
 }
 
-export function TopBar({ title, route }: { title: string; route: Route }) {
+/** True while the window is wide enough for the sidebar layout (desktop, iPad landscape). */
+export const WideContext = createContext(false);
+export const useWide = (): boolean => useContext(WideContext);
+
+export function useMediaQuery(query: string): boolean {
+  const mq = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(query) : null;
+  const [v, setV] = useState(mq?.matches ?? false);
+  useEffect(() => {
+    if (!mq) return;
+    const f = () => setV(mq.matches);
+    f();
+    mq.addEventListener('change', f);
+    return () => mq.removeEventListener('change', f);
+  }, [query]);
+  return v;
+}
+
+function SideItem({ label, icon, active, badge, onClick, hint }: { label: string; icon: ReactNode; active: boolean; badge?: number; onClick(): void; hint?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? 'page' : undefined}
+      title={hint ? `${label} (${hint})` : label}
+      className={cx(
+        'group flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13.5px] focus-visible:outline-2 focus-visible:outline-accent',
+        active ? 'bg-fg/10 font-medium text-fg' : 'text-fg/80 hover:bg-fg/5',
+      )}
+    >
+      <span className={cx('shrink-0', active ? 'text-accent' : 'text-muted')}>{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {!!badge && <span className="min-w-5 rounded-full bg-need-strong px-1.5 text-center text-[11px] font-semibold leading-[18px] text-black">{badge > 99 ? '99+' : badge}</span>}
+      {!badge && hint && <span className="hidden text-[11px] text-faint group-hover:inline">{hint}</span>}
+    </button>
+  );
+}
+
+/** Sidebar navigation for wide windows (replaces the bottom tab bar). */
+export function Sidebar({ route }: { route: Route }) {
+  const app = useApp();
+  const items = useInboxItems();
+  const tree = useTree();
+  const mac = isMacLike(app.platform.mac);
+  const k = (n: number) => keyLabel(mac, `mod+${n}`);
+  return (
+    <nav aria-label={t.nav.label} className="sidebar flex w-60 shrink-0 flex-col border-r border-border">
+      <div className="titlebar flex h-11 shrink-0 items-center justify-end px-3" />
+      <div className="space-y-0.5 px-2">
+        <SideItem label={t.tabs.inbox} icon={<Inbox className="size-4" />} active={route.name === 'inbox' || route.name === 'interaction'} badge={items.length} hint={k(1)} onClick={() => navigate({ name: 'inbox' })} />
+        <SideItem label={t.tabs.panes} icon={<Layers className="size-4" />} active={route.name === 'panes' || route.name === 'pane'} hint={k(2)} onClick={() => navigate({ name: 'panes' })} />
+        <SideItem label={t.tabs.focus} icon={<Activity className="size-4" />} active={route.name === 'focus'} badge={tree.needYou.length} hint={k(3)} onClick={() => navigate({ name: 'focus' })} />
+        <SideItem label={t.tabs.changes} icon={<FileDiff className="size-4" />} active={route.name === 'changes'} hint={k(4)} onClick={() => navigate({ name: 'changes' })} />
+      </div>
+      <div className="mt-5 flex items-center px-4 pb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">
+        <span className="flex-1">{t.nav.hosts}</span>
+        <button type="button" aria-label={t.settings.pairAnother} title={t.settings.pairAnother} className="rounded p-0.5 text-muted hover:text-fg" onClick={() => navigate({ name: 'pair', d: null })}>
+          <Plus className="size-3.5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2">
+        {tree.hosts.map((g) => (
+          <button
+            key={g.host.record.host_id}
+            type="button"
+            onClick={() => navigate({ name: 'crew' })}
+            className="flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-fg/80 hover:bg-fg/5"
+          >
+            <Dot tone={g.host.status === 'online' ? 'ok' : g.host.status === 'connecting' ? 'warn' : 'danger'} />
+            <span className="min-w-0 flex-1 truncate">{g.host.info?.host_name ?? g.host.record.name}</span>
+            {g.needsYou > 0 && <span className="text-[11px] font-semibold text-need-strong">{g.needsYou}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="space-y-0.5 border-t border-border p-2">
+        <SideItem label={t.crew.title} icon={<Users className="size-4" />} active={route.name === 'crew'} onClick={() => navigate({ name: 'crew' })} />
+        <SideItem label={t.settings.title} icon={<Settings className="size-4" />} active={route.name === 'settings'} hint={mac ? '⌘,' : undefined} onClick={() => navigate({ name: 'settings' })} />
+        <SideItem label={t.keys.title!} icon={<Keyboard className="size-4" />} active={false} hint="?" onClick={() => emitUi('shortcuts')} />
+      </div>
+    </nav>
+  );
+}
+
+export function TopBar({ title, route, column }: { title: string; route: Route; column?: string }) {
+  const wide = useWide();
   const hosts = useHosts();
   const label = useMemo(() => {
     if (hosts.length === 1) {
@@ -110,17 +195,23 @@ export function TopBar({ title, route }: { title: string; route: Route }) {
     return hosts.length ? `${hosts.filter((h) => h.status === 'online').length}/${hosts.length}` : '';
   }, [hosts]);
   return (
-    <header className="flex items-center gap-2 px-4 pb-1 pt-2">
+    <header className={cx('titlebar pb-2 pt-3', !wide && 'titlebar-inset')}>
+      <div className={cx('flex items-center gap-2 px-4', column)}>
       <div className="min-w-0 flex-1">
-        <div className="text-lg font-semibold leading-tight">{title}</div>
+        <h1 className="text-[22px] font-bold leading-tight tracking-tight">{title}</h1>
         {label && <div className="truncate text-[12px] text-muted">{label}</div>}
       </div>
-      <IconButton label={t.crew.title} active={route.name === 'crew'} onClick={() => navigate({ name: 'crew' })}>
-        <Users className="size-5" />
-      </IconButton>
-      <IconButton label={t.settings.title} active={route.name === 'settings'} onClick={() => navigate({ name: 'settings' })}>
-        <Settings className="size-5" />
-      </IconButton>
+      {!wide && (
+        <>
+          <IconButton label={t.crew.title} active={route.name === 'crew'} onClick={() => navigate({ name: 'crew' })}>
+            <Users className="size-5" />
+          </IconButton>
+          <IconButton label={t.settings.title} active={route.name === 'settings'} onClick={() => navigate({ name: 'settings' })}>
+            <Settings className="size-5" />
+          </IconButton>
+        </>
+      )}
+      </div>
     </header>
   );
 }

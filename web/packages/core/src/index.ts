@@ -13,3 +13,6 @@ export * from './push';
 export * from './rpc';
 export * from './handoff';
 export * from './transcript';
+export * from './alerts';
+export * from './redact';
+export * from './transport';

@@ -79,6 +79,8 @@ export interface KV {
   get(key: string): string | null;
   set(key: string, value: string): void;
   remove(key: string): void;
+  /** Changes made elsewhere (another window/tab of the same origin). Returns an unsubscribe. */
+  watch?(key: string, cb: (value: string | null) => void): () => void;
 }
 
 const KEY = 'vibeke.prefs';
@@ -86,6 +88,8 @@ const KEY = 'vibeke.prefs';
 export class PrefsStore extends ValueStore<Prefs> {
   constructor(private readonly kv: KV) {
     super(parsePrefs(kv.get(KEY)));
+    // Another window changed prefs (theme, pins…): adopt them without writing back.
+    kv.watch?.(KEY, (raw) => this.set(parsePrefs(raw)));
   }
   patch(p: Partial<Prefs>): void {
     this.set({ ...this.get(), ...p });

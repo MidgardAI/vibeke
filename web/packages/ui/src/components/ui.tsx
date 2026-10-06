@@ -1,10 +1,11 @@
-// Primitives. Every clickable control with a label is a Button; the only floating layer is Sheet.
+// Primitives. Every clickable control with a label is a Button; floating layers are Dialogs (Sheet).
 // State changes repaint only (borders are reserved transparent), so rows never jump.
 
-import { useEffect, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { useId, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
 import { Loader2, X } from 'lucide-react';
 import type { Risk } from '@vibeke/core';
 import { t } from '../i18n';
+import { Dialog } from './dialog';
 
 export const cx = (...c: (string | false | null | undefined)[]): string => c.filter(Boolean).join(' ');
 
@@ -15,8 +16,8 @@ const VARIANTS: Record<Variant, string> = {
   primary: 'border-transparent bg-accent text-accent-fg',
   secondary: 'border-transparent bg-surface-2 text-fg',
   ghost: 'border-transparent bg-transparent text-fg',
-  danger: 'border-transparent bg-danger text-white',
-  ok: 'border-transparent bg-ok text-white',
+  danger: 'border-transparent bg-danger text-danger-fg',
+  ok: 'border-transparent bg-ok text-ok-fg',
   outline: 'border-border bg-transparent text-fg',
 };
 const SIZES: Record<Size, string> = {
@@ -213,7 +214,7 @@ export function Empty({ title, hint, icon, action }: { title: string; hint?: str
 
 export function SectionLabel({ children, right }: { children: ReactNode; right?: ReactNode }) {
   return (
-    <div className="flex items-center justify-between px-4 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-wide text-faint">
+    <div className="flex items-center justify-between px-4 pb-1.5 pt-5 text-[11px] font-semibold uppercase tracking-wide text-faint sm:px-8">
       <span>{children}</span>
       {right}
     </div>
@@ -224,34 +225,32 @@ export function Card({ children, className }: { children: ReactNode; className?:
   return <div className={cx('rounded-2xl border border-border bg-surface', className)}>{children}</div>;
 }
 
-/** The only floating layer: a bottom sheet with a scrim. */
-export function Sheet({ open, onClose, title, children }: { open: boolean; onClose(): void; title?: ReactNode; children: ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    ref.current?.focus();
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  if (!open) return null;
+/**
+ * The standard floating layer: a bottom sheet on narrow screens, a centred panel on wide ones.
+ * A modal `Dialog` (focus trapped, background inert, focus restored on close).
+ */
+export function Sheet({ open, onClose, title, children, role }: { open: boolean; onClose(): void; title?: ReactNode; children: ReactNode; role?: 'dialog' | 'alertdialog' }) {
+  const titleId = useId();
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end" role="dialog" aria-modal="true">
-      <button type="button" aria-label={t.close} className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div
-        ref={ref}
-        tabIndex={-1}
-        className="animate-sheet relative max-h-[88vh] overflow-y-auto rounded-t-3xl border-t border-border bg-surface pb-safe outline-none"
-      >
-        <div className="sticky top-0 z-10 flex items-center gap-2 bg-surface px-4 pb-2 pt-3">
-          <div className="min-w-0 flex-1 truncate text-base font-semibold">{title}</div>
-          <IconButton label={t.close} onClick={onClose} className="-mr-2">
-            <X className="size-5" />
-          </IconButton>
-        </div>
-        <div className="px-4 pb-4">{children}</div>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      role={role}
+      labelledBy={title ? titleId : undefined}
+      label={title ? undefined : t.close}
+      className="fixed inset-0 z-50 flex flex-col justify-end sm:items-center sm:justify-center sm:p-6"
+      panelClassName="animate-sheet relative max-h-[88vh] w-full overflow-y-auto rounded-t-3xl border-t border-border bg-surface pb-safe shadow-2xl outline-none sm:max-h-[80vh] sm:max-w-lg sm:rounded-2xl sm:border sm:pb-0"
+    >
+      <div className="sticky top-0 z-10 flex items-center gap-2 bg-surface px-5 pb-2 pt-4">
+        <h2 id={titleId} className="min-w-0 flex-1 truncate text-[17px] font-semibold tracking-tight">
+          {title}
+        </h2>
+        <IconButton label={t.close} onClick={onClose} className="-mr-2 text-muted hover:text-fg">
+          <X className="size-5" />
+        </IconButton>
       </div>
-    </div>
+      <div className="px-5 pb-5">{children}</div>
+    </Dialog>
   );
 }
 

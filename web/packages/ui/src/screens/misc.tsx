@@ -1,13 +1,15 @@
 // Small screens: Crew (hosts), deep-link interaction and run routes, tour, idle lock.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { ArrowLeft, Server } from 'lucide-react';
 import { useApp, useHost, useHosts, useInboxItems, usePrefs, useTree } from '../app/hooks';
 import { InteractionCard } from '../components/interaction-card';
+import { Dialog } from '../components/dialog';
 import { Button, Card, Dot, Empty, IconButton, Spinner } from '../components/ui';
 import { t } from '../i18n';
 import { useStore } from '../lib/store';
 import { navigate } from '../router';
+import { useWide } from '../app/shell';
 
 export function CrewScreen() {
   const app = useApp();
@@ -50,9 +52,10 @@ export function InteractionRoute({ host, id, preselect }: { host: string; id: st
   const h = useHost(host);
   const item = items.find((x) => x.host_id === host && x.interaction.id === id);
   const done = h?.dashboard?.interactions.find((i) => i.id === id);
+  const wide = useWide();
   return (
     <div className="flex h-full flex-col pt-safe">
-      <div className="flex items-center gap-1 px-1 py-1">
+      <div className={`titlebar flex items-center gap-1 px-1 py-1 ${wide ? '' : 'titlebar-inset'}`}>
         <IconButton label={t.back} onClick={() => navigate({ name: 'inbox' })}>
           <ArrowLeft className="size-5" />
         </IconButton>
@@ -95,20 +98,26 @@ export function Tour() {
   const app = useApp();
   const prefs = usePrefs();
   const [i, setI] = useState(0);
+  const titleId = useId();
   if (prefs.tourDone) return null;
   const steps = t.tour.steps;
   const step = steps[i]!;
   const last = i === steps.length - 1;
   const finish = () => app.prefs.patch({ tourDone: true });
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-black/40 sm:items-center sm:justify-center">
-      <div className="animate-sheet w-full rounded-t-3xl bg-surface p-5 pb-safe sm:max-w-md sm:rounded-3xl">
+    <Dialog
+      open
+      onClose={finish}
+      labelledBy={titleId}
+      className="fixed inset-0 z-50 flex items-end sm:items-center sm:justify-center sm:p-6"
+      panelClassName="animate-sheet w-full rounded-t-3xl bg-surface p-6 pb-safe shadow-2xl outline-none sm:max-w-md sm:rounded-2xl sm:border sm:border-border"
+    >
         <div className="mb-3 flex gap-1">
           {steps.map((_, j) => (
             <span key={j} className={`h-1 flex-1 rounded-full ${j <= i ? 'bg-accent' : 'bg-surface-2'}`} />
           ))}
         </div>
-        <h2 className="text-lg font-semibold">{step.title}</h2>
+        <h2 id={titleId} className="text-lg font-semibold tracking-tight">{step.title}</h2>
         <p className="mt-2 text-[15px] text-muted">{step.body}</p>
         <div className="mt-5 flex gap-2 pb-2">
           <Button variant="ghost" onClick={finish}>
@@ -139,8 +148,7 @@ export function Tour() {
             </Button>
           )}
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -172,10 +180,18 @@ export function IdleLockOverlay() {
   const app = useApp();
   const locked = useStore(app.locked);
   const [catching, setCatching] = useState(false);
-  if (!locked && !catching) return null;
+  const titleId = useId();
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-4 bg-bg/95 p-8 text-center backdrop-blur">
-      <div className="text-xl font-semibold">{catching ? t.lock.catchingUp : t.lock.title}</div>
+    <Dialog
+      open={locked || catching}
+      onClose={() => {}}
+      dismissable={false}
+      role="alertdialog"
+      labelledBy={titleId}
+      className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-bg/95 p-8 text-center backdrop-blur"
+      panelClassName="flex flex-col items-center gap-4 outline-none"
+    >
+      <h2 id={titleId} className="text-xl font-semibold tracking-tight">{catching ? t.lock.catchingUp : t.lock.title}</h2>
       {!catching && <div className="max-w-xs text-sm text-muted">{t.lock.body}</div>}
       {catching ? (
         <Spinner className="size-6" />
@@ -183,6 +199,7 @@ export function IdleLockOverlay() {
         <Button
           variant="primary"
           size="lg"
+          data-autofocus
           onClick={async () => {
             setCatching(true);
             app.locked.set(false);
@@ -193,6 +210,6 @@ export function IdleLockOverlay() {
           {t.lock.resume}
         </Button>
       )}
-    </div>
+    </Dialog>
   );
 }

@@ -19,7 +19,7 @@ export function InboxScreen() {
 
   const entries = retainer.current.update(
     items,
-    (host, id) => hosts.find((h) => h.record.host_id === host)?.dashboard?.interactions.find((i) => i.id === id),
+    (host, id) => hosts.find((h) => h.record.host_id === host)?.dashboard?.interactions.find((i) => i.id === id) ?? app.finals.get(`${host}/${id}`),
     (key) => app.answers.get(key),
     now,
   );
@@ -46,7 +46,7 @@ export function InboxScreen() {
     return <Empty icon={<InboxIcon className="size-10" />} title={t.inbox.empty} hint={t.inbox.emptyHint} />;
   }
   return (
-    <div className="space-y-3 px-3 py-3">
+    <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list>
       {rows.map((r) => (
         <div key={r.key}>{r.node}</div>
       ))}

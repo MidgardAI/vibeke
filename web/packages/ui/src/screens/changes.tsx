@@ -93,6 +93,8 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t.changes.filter}
+          data-find-input
+          aria-keyshortcuts="/"
           className="h-9 w-full rounded-xl border border-border bg-surface px-3 text-[14px] placeholder:text-faint"
         />
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
@@ -135,7 +137,7 @@ export function ChangesPanel({ only }: { only?: { host: string; pane: string } }
             {st.clean ? (
               <div className="px-4 text-[13px] text-muted">{t.changes.clean}</div>
             ) : (
-              <div className="divide-y divide-border border-y border-border bg-surface">
+              <div className="inset-group divide-y divide-border border-y border-border bg-surface">
                 {files.map((f) => (
                   <FileRow key={f.path} f={f} onClick={() => setOpen({ repo: key, path: f.path })} />
                 ))}

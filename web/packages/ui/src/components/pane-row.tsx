@@ -84,6 +84,7 @@ export function PaneRowView({ row, showHost }: { row: PaneRow; showHost?: boolea
           r.needsYou && 'bg-need',
         )}
         data-needs-you={r.needsYou || undefined}
+        data-nav-item={r.key}
         id={`row-${r.key}`}
       >
         <span className="text-muted">{r.run ? <Bot className="size-4.5" /> : <SquareTerminal className="size-4.5" />}</span>

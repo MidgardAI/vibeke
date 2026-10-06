@@ -148,7 +148,7 @@ export interface ConnectionOptions {
 const REFRESH_PREFIXES = ['agent.', 'interaction.', 'pane.', 'tab.', 'workspace.', 'task.', 'notification.', 'session.'];
 const UNAUTHORIZED_LIMIT = 3;
 
-export class HostConnection {
+export class HostConnection implements HostConnectionApi {
   private state: HostState;
   private readonly listeners = new Set<() => void>();
   private readonly eventListeners = new Set<(e: AppEvent) => void>();
@@ -168,6 +168,14 @@ export class HostConnection {
    */
   private dirtyRev = 0;
   private cleanRev = 0;
+  /** The in-flight refresh loop (and the connection it runs on); see `refresh`. */
+  private refreshing: Promise<void> | null = null;
+  private refreshingRpc: RpcClient | null = null;
+  private refreshAgain = false;
+  private refreshId = 0;
+  /** `dashboard.get` requests issued / the newest one applied (stale responses are dropped). */
+  private dashIssued = 0;
+  private dashApplied = 0;
 
   constructor(
     record: HostRecord,
@@ -255,15 +263,51 @@ export class HostConnection {
     return rpc.request(method, params as Record<string, unknown>, { ...opts, mutating: MUTATING_METHODS.has(method) });
   }
 
-  /** Refetch the dashboard now. */
-  async refresh(): Promise<void> {
+  /**
+   * Refetch the dashboard. Serialized per connection: a call while a fetch is in flight does not
+   * start a second one; it marks a follow-up and resolves when a fetch issued after the call has
+   * landed, so events arriving mid-request are never lost and responses never overtake.
+   */
+  refresh(): Promise<void> {
     const rpc = this.rpc;
-    if (!rpc || !isDashboardHost(this.state.record)) return;
+    if (!rpc || !isDashboardHost(this.state.record)) return Promise.resolve();
+    if (this.refreshing && this.refreshingRpc === rpc) {
+      this.refreshAgain = true;
+      return this.refreshing;
+    }
+    const id = ++this.refreshId;
+    const loop = (async () => {
+      try {
+        do {
+          this.refreshAgain = false;
+          await this.fetchDashboard(rpc);
+        } while (this.refreshAgain && rpc === this.rpc);
+      } finally {
+        if (this.refreshId === id) {
+          this.refreshing = null;
+          this.refreshingRpc = null;
+        }
+      }
+    })();
+    this.refreshing = loop;
+    this.refreshingRpc = rpc;
+    return loop;
+  }
+
+  /**
+   * One `dashboard.get`. Requests are numbered when issued; a response is applied only if nothing
+   * issued later (a resync on the same connection) has been applied already, so an older snapshot
+   * can never replace a newer one.
+   */
+  private async fetchDashboard(rpc: RpcClient): Promise<Dashboard | null> {
     const rev = this.dirtyRev;
+    const seq = ++this.dashIssued;
     const d = normalizeDashboard(await rpc.request('dashboard.get', {}));
-    if (rpc !== this.rpc) return;
+    if (rpc !== this.rpc || seq < this.dashApplied) return null;
+    this.dashApplied = seq;
     this.cleanRev = rev;
     this.set({ dashboard: d });
+    return d;
   }
 
   private get dashboardStale(): boolean {
@@ -355,12 +399,11 @@ export class HostConnection {
         return;
       }
     }
-    const rev = this.dirtyRev;
-    const d = normalizeDashboard(await rpc.request('dashboard.get', {}));
-    if (rpc !== this.rpc) return;
-    this.cleanRev = rev;
-    this.set({ dashboard: d, cursor: d.at });
-    await rpc.request('events.subscribe', { after: d.at });
+    // A newer snapshot may have landed meanwhile (a refresh issued later): subscribe at that one.
+    const at = (await this.fetchDashboard(rpc))?.at ?? (rpc === this.rpc ? this.state.dashboard?.at : undefined);
+    if (at === undefined) return;
+    this.set({ cursor: at });
+    await rpc.request('events.subscribe', { after: at });
   }
 
   /** Go `expired` at the record's `until` instead of letting the gateway's refusals look like a revoke. */
@@ -460,12 +503,39 @@ export class HostConnection {
   }
 }
 
+/**
+ * What screens need from one host connection. `HostConnection` implements it; shells that run
+ * the connections elsewhere (Electron: the main process) hand the UI a proxy with the same shape.
+ */
+export interface HostConnectionApi {
+  readonly id: string;
+  getSnapshot(): HostState;
+  subscribe(cb: () => void): () => void;
+  request<M extends AppMethod>(
+    method: M,
+    params: AppApi[M]['params'] & { op_id?: string },
+    opts?: Omit<RequestOptions, 'mutating'>,
+  ): Promise<AppApi[M]['result']>;
+  refresh(): Promise<void>;
+  reconnectNow(): void;
+}
+
+/** What screens need from the set of paired hosts (`HostManager` or a proxy of it). */
+export interface HostManagerApi {
+  getSnapshot(): readonly HostState[];
+  subscribe(cb: () => void): () => void;
+  get(hostId: string): HostConnectionApi | undefined;
+  connections(): HostConnectionApi[];
+  remove(hostId: string): Promise<void>;
+  stop(): void;
+}
+
 export interface HostManagerOptions extends ConnectionOptions {
   store: HostStore;
 }
 
 /** All paired hosts. `getSnapshot` returns a stable array until something changes. */
-export class HostManager {
+export class HostManager implements HostManagerApi {
   private readonly conns = new Map<string, HostConnection>();
   private readonly listeners = new Set<() => void>();
   private readonly unsubs = new Map<string, () => void>();

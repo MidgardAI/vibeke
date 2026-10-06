@@ -84,6 +84,12 @@ const kv = {
       /* ignore */
     }
   },
+  // Another tab changed it (prefs stay in sync across tabs).
+  watch(k: string, cb: (v: string | null) => void) {
+    const f = (e: StorageEvent) => e.key === k && cb(e.newValue);
+    window.addEventListener('storage', f);
+    return () => window.removeEventListener('storage', f);
+  },
 };
 
 const standalone = (): boolean =>
