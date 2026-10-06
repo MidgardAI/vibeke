@@ -258,7 +258,7 @@ pub async fn latency(g: &vk_cli::Global, args: &[String]) -> i32 {
         .expect("render socket");
     let (rd, mut wr) = tokio::io::split(s2);
     let mut rd = BufReader::new(rd);
-    let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id":"latency","caps":{"max_fps":1000}}});
+    let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id":"latency","protocol":vk_proto::render::PROTOCOL,"caps":{"max_fps":1000}}});
     wr.write_all(format!("{req}\n").as_bytes()).await.unwrap();
     let mut line = String::new();
     rd.read_line(&mut line).await.unwrap();
@@ -460,7 +460,7 @@ pub async fn bandwidth(g: &vk_cli::Global, args: &[String]) -> i32 {
     let (rd, wr) = tokio::io::split(r);
     let mut rd = BufReader::new(rd);
     let mut w = tokio::io::BufWriter::new(wr);
-    let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id":"bw","remote":true,"caps":{"max_fps":60}}});
+    let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id":"bw","remote":true,"protocol":vk_proto::render::PROTOCOL,"caps":{"max_fps":60}}});
     w.write_all(format!("{req}\n").as_bytes()).await.unwrap();
     w.flush().await.unwrap();
     let mut line = String::new();

@@ -592,8 +592,11 @@ pub async fn discover(server: &Arc<Server>, cfg: &PreviewConfig) {
         tokio::task::spawn_blocking(move || {
             let mut out: Vec<(String, sockets::Listener)> = Vec::new();
             for (pane, root) in roots {
+                // The agent harness's own listeners (Codex app-server, Claude Code's IDE
+                // bridge) are not dev servers; processes it starts still are.
                 let pids: Vec<u32> = vk_hold::procinfo::tree(root, 8)
                     .into_iter()
+                    .filter(|i| !vk_preview::is_harness_process(&i.argv))
                     .map(|i| i.pid)
                     .collect();
                 for l in sockets::listeners(&pids) {
@@ -635,7 +638,7 @@ pub async fn discover(server: &Arc<Server>, cfg: &PreviewConfig) {
         let probes = futures::future::join_all(
             candidates
                 .iter()
-                .map(|(_, l)| probe::is_http(Some(l.addr), l.port, Duration::from_secs(1))),
+                .map(|(_, l)| probe::is_web_page(Some(l.addr), l.port, Duration::from_secs(1))),
         )
         .await;
         let promote = cfg.auto_discover == "promote";
@@ -790,7 +793,7 @@ fn on_found_url(server: &Arc<Server>, cfg: &PreviewConfig, pane: &str, f: scan::
             up = if f.scheme == "https" {
                 probe::tcp_alive(None, f.port).await
             } else {
-                probe::is_http(None, f.port, Duration::from_secs(1)).await
+                probe::is_web_page(None, f.port, Duration::from_secs(1)).await
             };
             if up {
                 break;

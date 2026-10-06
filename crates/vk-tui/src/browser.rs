@@ -124,16 +124,65 @@ impl BrowserUi {
     }
 }
 
+/// What the TUI knows about where its host terminal is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostEnv {
+    pub term_program: String,
+    /// `LC_TERMINAL` (iTerm2 sets it and ssh forwards `LC_*`, unlike `TERM_PROGRAM`).
+    pub lc_terminal: String,
+    /// `XTVERSION` reply (`iTerm2 3.5.4`, `ghostty 1.2.0`, …).
+    pub xtversion: Option<String>,
+    /// Running inside an SSH session (`SSH_CONNECTION`/`SSH_TTY`/`SSH_CLIENT`): the host
+    /// terminal is on another machine.
+    pub ssh: bool,
+}
+
+impl HostEnv {
+    pub fn from_env(xtversion: Option<&str>) -> HostEnv {
+        let var = |k: &str| std::env::var(k).unwrap_or_default();
+        HostEnv {
+            term_program: var("TERM_PROGRAM"),
+            lc_terminal: var("LC_TERMINAL"),
+            xtversion: xtversion.map(str::to_string),
+            ssh: ["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"]
+                .iter()
+                .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())),
+        }
+    }
+
+    pub fn is_iterm2(&self) -> bool {
+        self.term_program == "iTerm.app"
+            || self.lc_terminal == "iTerm2"
+            || self
+                .xtversion
+                .as_deref()
+                .is_some_and(|x| x.to_ascii_lowercase().starts_with("iterm2"))
+    }
+}
+
+/// The graphics decision table: (kitty placeholders, kitty shm, iTerm2 whole-frame images).
+/// iTerm2 accepts kitty transmissions but not unicode-placeholder placement, so it always gets
+/// the OSC 1337 whole-frame path. A host terminal behind SSH can't map this machine's shared
+/// memory (or read its temp files): direct transmission only, whatever the probe answered.
+pub fn decide_gfx(g: &vk_browser::probe::GraphicsCaps, env: &HostEnv) -> (bool, bool, bool) {
+    let iterm = env.is_iterm2();
+    let kitty = g.kitty_graphics && !iterm;
+    let shm = kitty && g.kitty_shm == Some(true) && !env.ssh;
+    (kitty, shm, iterm)
+}
+
 /// Fold the graphics probe into host capabilities.
-pub fn host_caps(g: &vk_browser::probe::GraphicsCaps) -> HostCaps {
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+pub fn host_caps(g: &vk_browser::probe::GraphicsCaps, xtversion: Option<&str>) -> HostCaps {
+    let env = HostEnv::from_env(xtversion);
+    let (kitty_graphics, kitty_shm, iterm2_images) = decide_gfx(g, &env);
     let (cw, ch) = crate::term::cell_px()
         .or_else(|| g.cell_px.map(|(w, h)| (w as u16, h as u16)))
         .unwrap_or((0, 0));
     HostCaps {
-        kitty_graphics: g.kitty_graphics,
-        kitty_shm: g.kitty_graphics && g.kitty_shm == Some(true),
-        iterm2_images: !g.kitty_graphics && term_program == "iTerm.app",
+        kitty_graphics,
+        kitty_shm,
+        iterm2_images,
+        host_remote: env.ssh,
         cell_w: cw,
         cell_h: ch,
         dpr_x100: dpr_x100(ch),
@@ -616,11 +665,13 @@ pub fn after_write(app: &mut App, out: &mut Vec<u8>) {
             let Some(pm) = app.browser.panes.get_mut(&pid) else {
                 continue;
             };
-            if !pm.canvas_dirty
-                || pm
-                    .last_inline
-                    .is_some_and(|t| t.elapsed() < INLINE_INTERVAL)
-            {
+            // A host terminal behind SSH gets half the rate (each frame is a whole PNG).
+            let interval = if app.caps.host_remote {
+                INLINE_INTERVAL * 2
+            } else {
+                INLINE_INTERVAL
+            };
+            if !pm.canvas_dirty || pm.last_inline.is_some_and(|t| t.elapsed() < interval) {
                 continue;
             }
             let Some(c) = &pm.canvas else { continue };

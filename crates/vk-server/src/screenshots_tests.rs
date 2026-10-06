@@ -206,6 +206,7 @@ impl Env {
             checkout: None,
             runtime: None,
             probe_runtime: false,
+            document: None,
         }
     }
 
@@ -338,19 +339,44 @@ async fn build_server(status: &'static str, header: Option<String>, body: String
     port
 }
 
+/// The captured document (as the browser reports it around the pixels), loaded after now.
+fn doc(href: &str, build: Option<Value>) -> Option<DocumentCapture> {
+    let u = url::Url::parse(href).unwrap();
+    Some(DocumentCapture::Same(DocumentIdentity {
+        href: href.into(),
+        origin: u.origin().ascii_serialization(),
+        title: Some("page".into()),
+        time_origin_ms: Some(vk_store::now_ms() as f64 + 1000.0),
+        build,
+    }))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn running_build_probe_decides_binding() {
     let e = Env::new();
     let code = capture_code_state(&e.repo).unwrap();
     let data = png(2, 2, |_, _| [0, 0, 0, 255]);
 
-    // The app serves the checkout state it was built from (`vibeke screenshot code-state`).
+    // The app serves the checkout state it was built from (`vibeke screenshot code-state`),
+    // which started before the captured page was loaded.
     let port = build_server("200 OK", None, serde_json::to_string(&code).unwrap()).await;
     e.put_preview("v1", port, None);
     let mut i = e.inputs("pane-a", EnvKind::RemoteHeadless);
     i.url = format!("http://localhost:{port}/page");
     i.preview = Some("v1".into());
     i.probe_runtime = true;
+    i.document = doc(&i.url, None);
+    // Without the captured document's identity the probe can't vouch for these pixels.
+    let mut no_doc = i.clone();
+    no_doc.document = None;
+    let m = e.shot(&data, no_doc).await;
+    assert_eq!(m.runtime.source, "probe");
+    assert_eq!(m.binding, Binding::Illustrative);
+    assert!(
+        m.binding_reason.contains("identity is unknown"),
+        "{}",
+        m.binding_reason
+    );
     let m = e.shot(&data, i.clone()).await;
     assert_eq!(m.runtime.status, RuntimeStatus::Known);
     assert_eq!(m.runtime.source, "probe");
@@ -368,15 +394,21 @@ async fn running_build_probe_decides_binding() {
         m.binding_reason
     );
 
-    // Header form on a 404 body.
+    // Header form on a 404 body: it carries no start time, so the server's build can't be
+    // tied to a page loaded earlier → illustrative; the same identity in the page binds.
     let head = git(&e.repo, &["rev-parse", "HEAD"]);
     let port2 = build_server("404 Not Found", Some(head.clone()), "{}".into()).await;
     e.put_preview("v2", port2, None);
     let mut i2 = i.clone();
     i2.url = format!("http://127.0.0.1:{port2}/");
     i2.preview = Some("v2".into());
-    let m = e.shot(&data, i2).await;
+    i2.document = doc(&i2.url, None);
+    let m = e.shot(&data, i2.clone()).await;
     assert_eq!(m.runtime.source, "header");
+    assert_eq!(m.binding, Binding::Illustrative, "{}", m.binding_reason);
+    i2.document = doc(&i2.url, Some(json!(head.clone())));
+    let m = e.shot(&data, i2).await;
+    assert_eq!(m.runtime.source, "page");
     assert_eq!(m.binding, Binding::Bound, "{}", m.binding_reason);
 
     // Not a preview port → never probed.
@@ -384,6 +416,7 @@ async fn running_build_probe_decides_binding() {
     let mut i3 = i.clone();
     i3.url = format!("http://localhost:{port3}/");
     i3.preview = None;
+    i3.document = doc(&i3.url, None);
     let m = e.shot(&data, i3).await;
     assert_eq!(m.runtime.status, RuntimeStatus::Unknown);
     assert!(
@@ -402,9 +435,193 @@ async fn running_build_probe_decides_binding() {
     e.put_preview("v4", port4, None);
     let mut i4 = i.clone();
     i4.url = format!("http://localhost:{port4}/");
+    i4.document = doc(&i4.url, None);
     let m = e.shot(&data, i4).await;
     assert_eq!(m.runtime.status, RuntimeStatus::Unknown);
     assert!(m.binding_reason.contains("Build not verified"));
+}
+
+/// An identity server on `addr` whose `/__vibeke_build` answer depends on the `Host` header.
+async fn identity_server(
+    l: tokio::net::TcpListener,
+    answer: impl Fn(&str) -> String + Send + Sync + 'static,
+) {
+    let answer = Arc::new(answer);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else {
+                return;
+            };
+            let answer = answer.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let host = req
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Host: "))
+                    .unwrap_or("")
+                    .to_string();
+                let body = answer(&host);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+}
+
+/// Codex review finding 7: the binding is the captured document's. Loaded A / serving B,
+/// navigation during capture, different loopback addresses on one port and virtual hosts on
+/// one port are each attributed correctly; uncertainty is illustrative.
+#[tokio::test(flavor = "multi_thread")]
+async fn binding_is_the_captured_documents() {
+    let e = Env::new();
+    let data = png(2, 2, |_, _| [0, 0, 0, 255]);
+    let a = capture_code_state(&e.repo).unwrap();
+    let a_json = serde_json::to_value(&a).unwrap();
+
+    // Loaded A (the page says so), then checkout and server moved to B without a reload.
+    std::fs::write(e.repo.join("app.js"), "b\n").unwrap();
+    git(&e.repo, &["commit", "-qam", "b"]);
+    let b = capture_code_state(&e.repo).unwrap();
+    let b_body = serde_json::to_string(&b).unwrap();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let bb = b_body.clone();
+    identity_server(l, move |_| bb.clone()).await;
+    e.put_preview("v1", port, None);
+    let mut i = e.inputs("pane-a", EnvKind::RemoteHeadless);
+    i.url = format!("http://localhost:{port}/");
+    i.preview = Some("v1".into());
+    i.probe_runtime = true;
+    i.document = doc(&i.url, Some(a_json.clone()));
+    let m = e.shot(&data, i.clone()).await;
+    assert_eq!(m.runtime.source, "page");
+    assert_eq!(m.runtime.head_sha, a.head_sha);
+    assert_eq!(
+        m.binding,
+        Binding::Illustrative,
+        "A's pixels never bind to B"
+    );
+    assert_eq!(
+        m.document.as_ref().map(|d| d.href.as_str()),
+        Some(i.url.as_str())
+    );
+    // Same, but the page carries no identity: the server reports B, which started after the
+    // page was loaded → can't be the page's build.
+    let mut stale = i.clone();
+    stale.document = Some(DocumentCapture::Same(DocumentIdentity {
+        href: i.url.clone(),
+        origin: format!("http://localhost:{port}"),
+        title: None,
+        time_origin_ms: Some((b.captured_at_ms - 60_000) as f64),
+        build: None,
+    }));
+    let m = e.shot(&data, stale).await;
+    assert_eq!(m.runtime.source, "probe");
+    assert_eq!(m.binding, Binding::Illustrative, "{}", m.binding_reason);
+    assert!(m.binding_reason.contains("since the page was loaded"));
+    // A page loaded after B started binds through the probe.
+    let mut fresh = i.clone();
+    fresh.document = doc(&i.url, None);
+    let m = e.shot(&data, fresh).await;
+    assert_eq!(m.binding, Binding::Bound, "{}", m.binding_reason);
+
+    // Navigation during the capture.
+    let before =
+        json!({"href": i.url, "origin": format!("http://localhost:{port}"), "time_origin_ms": 1.0});
+    let after = json!({"href": format!("{}other", i.url), "origin": format!("http://localhost:{port}"), "time_origin_ms": 2.0});
+    let mut nav = i.clone();
+    nav.document = DocumentCapture::from_reads(Some(&before), Some(&after));
+    assert!(matches!(nav.document, Some(DocumentCapture::Changed(_))));
+    let m = e.shot(&data, nav).await;
+    assert_eq!(m.binding, Binding::Illustrative);
+    assert!(
+        m.runtime
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("navigated")
+    );
+    assert!(m.document.is_none());
+
+    // Different loopback addresses on one port: each origin is probed exactly. The current
+    // build (B) serves on the alternative address, a stale one (A) on 127.0.0.1.
+    let a_body = serde_json::to_string(&a).unwrap();
+    for alt in ["127.0.0.2", "::1"] {
+        let alt_ip: std::net::IpAddr = alt.parse().unwrap();
+        let (l1, l2) = loop {
+            let l1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let p = l1.local_addr().unwrap().port();
+            match tokio::net::TcpListener::bind((alt_ip, p)).await {
+                Ok(l2) => break (Some(l1), Some(l2)),
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(_) => break (None, None), // address not configured here (127.0.0.2 on macOS)
+            }
+        };
+        let (Some(l1), Some(l2)) = (l1, l2) else {
+            assert!(
+                !cfg!(target_os = "linux") || alt == "::1",
+                "{alt} should exist on Linux"
+            );
+            continue;
+        };
+        let p = l1.local_addr().unwrap().port();
+        let ab = a_body.clone();
+        identity_server(l1, move |_| ab.clone()).await;
+        let bb = b_body.clone();
+        identity_server(l2, move |_| bb.clone()).await;
+        e.put_preview(&format!("va{p}"), p, None);
+        let host = if alt.contains(':') {
+            format!("[{alt}]")
+        } else {
+            alt.to_string()
+        };
+        let mut j = i.clone();
+        j.preview = None;
+        j.url = format!("http://{host}:{p}/");
+        j.document = doc(&j.url, None);
+        let m = e.shot(&data, j.clone()).await;
+        assert_eq!(
+            m.runtime.head_sha, b.head_sha,
+            "{alt}: probed the wrong address"
+        );
+        assert_eq!(m.binding, Binding::Bound, "{alt}: {}", m.binding_reason);
+        j.url = format!("http://127.0.0.1:{p}/");
+        j.document = doc(&j.url, None);
+        let m = e.shot(&data, j).await;
+        assert_eq!(m.runtime.head_sha, a.head_sha);
+        assert_eq!(m.binding, Binding::Illustrative);
+    }
+
+    // Virtual hosts on one port: `app.localhost` is B, everything else A.
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let vport = l.local_addr().unwrap().port();
+    let (ab, bb) = (a_body.clone(), b_body.clone());
+    identity_server(l, move |host| {
+        if host.starts_with("app.localhost:") {
+            bb.clone()
+        } else {
+            ab.clone()
+        }
+    })
+    .await;
+    e.put_preview("vh", vport, None);
+    let mut v = i.clone();
+    v.preview = None;
+    v.url = format!("http://app.localhost:{vport}/");
+    v.document = doc(&v.url, None);
+    let m = e.shot(&data, v.clone()).await;
+    assert_eq!(m.runtime.head_sha, b.head_sha, "probe sent the wrong Host");
+    assert_eq!(m.binding, Binding::Bound, "{}", m.binding_reason);
+    v.url = format!("http://other.localhost:{vport}/");
+    v.document = doc(&v.url, None);
+    let m = e.shot(&data, v).await;
+    assert_eq!(m.runtime.head_sha, a.head_sha);
+    assert_eq!(m.binding, Binding::Illustrative);
 }
 
 #[tokio::test(flavor = "multi_thread")]

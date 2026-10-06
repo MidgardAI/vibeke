@@ -664,6 +664,24 @@ async fn idle_loop(server: Arc<Server>) {
     }
 }
 
+/// A client connection went away (EOF, crash, error): drop the screencast subscriptions it
+/// held, so the idle collector can close their sessions. (A take-over is a human decision
+/// that outlives the CLI call that made it; `browser.release` ends it.)
+pub fn client_gone(server: &Server, client_id: &str) {
+    let prefix = format!("{client_id}:");
+    let gone: Vec<ScreencastSub> = {
+        let mut subs = server.agent_browser.rpc_subs.lock().unwrap();
+        let keys: Vec<String> = subs
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        keys.iter().filter_map(|k| subs.remove(k)).collect()
+    };
+    // Dropping detaches (and stops the screencast after the last subscriber).
+    drop(gone);
+}
+
 async fn close_session(server: &Arc<Server>, sess: &Arc<Session>, why: &str) {
     if sess.closed.swap(true, Ordering::SeqCst) {
         return;
@@ -2032,6 +2050,11 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
         params["clip"] = json!({"x": 0, "y": 0, "width": w, "height": h, "scale": 1});
         params["captureBeyondViewport"] = json!(true);
     }
+    // The document's own identity, read right before and right after the pixels (a
+    // navigation in between makes the capture illustrative).
+    let doc_before = evaluate(&cdp, sess, crate::screenshots::DOCUMENT_IDENTITY_JS)
+        .await
+        .ok();
     let r = call_timeout(
         &cdp,
         cs,
@@ -2043,17 +2066,25 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
     let png = base64::engine::general_purpose::STANDARD
         .decode(r["data"].as_str().unwrap_or(""))
         .map_err(|e| err(ErrorKind::Internal, format!("screenshot data: {e}")))?;
+    let doc_after = evaluate(&cdp, sess, crate::screenshots::DOCUMENT_IDENTITY_JS)
+        .await
+        .ok();
+    let document =
+        crate::screenshots::DocumentCapture::from_reads(doc_before.as_ref(), doc_after.as_ref());
     let proc_ = server.agent_browser.proc_.lock().await.clone();
     let url = sess.url.lock().unwrap().clone();
-    // Where the page actually is (after redirects) and its title; best effort.
-    let (final_url, title) =
-        match evaluate(&cdp, sess, "({href: location.href, title: document.title})").await {
-            Ok(v) => (
-                v["href"].as_str().map(str::to_string),
-                v["title"].as_str().map(str::to_string),
-            ),
-            Err(_) => (None, None),
-        };
+    // Where the page actually is (after redirects) and its title.
+    let (final_url, title) = match document.as_ref().and_then(|d| d.identity()) {
+        Some(d) => (Some(d.href.clone()), d.title.clone()),
+        None => (
+            doc_after
+                .as_ref()
+                .and_then(|v| v["href"].as_str().map(str::to_string)),
+            doc_after
+                .as_ref()
+                .and_then(|v| v["title"].as_str().map(str::to_string)),
+        ),
+    };
     let taken_by = match &ctx.pane_scope {
         Some(pane) => crate::screenshots::Requester {
             kind: "agent".into(),
@@ -2104,6 +2135,7 @@ async fn screenshot(server: &Arc<Server>, ctx: &Ctx, sess: &Arc<Session>, p: &Va
             checkout: None,
             runtime: None,
             probe_runtime: true,
+            document,
         },
     )
     .await?;

@@ -171,7 +171,7 @@ impl Render {
     fn attach(sock: &Path, id: &str) -> Render {
         let s = UnixStream::connect(sock).expect("connect render socket");
         let mut w = s.try_clone().unwrap();
-        let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id": id, "caps": {"max_fps": 60}}});
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{"client_id": id, "protocol": vk_proto::render::PROTOCOL, "caps": {"max_fps": 60}}});
         w.write_all(format!("{req}\n").as_bytes()).unwrap();
         let mut rd = BufReader::new(s);
         let mut line = String::new();
@@ -245,11 +245,13 @@ impl Render {
     }
     fn state(&mut self, f: impl Fn(&BrowserStatus) -> bool, timeout: Duration) -> BrowserStatus {
         let t0 = Instant::now();
+        let mut last = None;
         loop {
             let left = timeout.saturating_sub(t0.elapsed());
-            assert!(!left.is_zero(), "no matching browser state");
+            assert!(!left.is_zero(), "no matching browser state; last {last:?}");
             match self.rx.recv_timeout(left) {
                 Ok(ServerFrame::BrowserState { state, .. }) if f(&state) => return state,
+                Ok(ServerFrame::BrowserState { state, .. }) => last = Some(state),
                 Ok(ServerFrame::Media(m)) => {
                     self.send(&ClientFrame::MediaAck {
                         pane: m.pane.clone(),
@@ -258,7 +260,7 @@ impl Render {
                     release(&m);
                 }
                 Ok(_) => {}
-                Err(_) => panic!("no matching browser state"),
+                Err(_) => panic!("no matching browser state; last {last:?}"),
             }
         }
     }
@@ -559,12 +561,15 @@ fn browser_pane_real_chromium() {
     let mut r = Render::attach(&s.socket(), "bp-real");
     let t_open = Instant::now();
     r.view(vec![media_pane(&bp, spec, 100, 40)]);
-    let (m, _) = r.media(|m| m.reset, Duration::from_secs(30));
+    let (m, early) = r.media(|m| m.reset, Duration::from_secs(30));
     let first_frame = t_open.elapsed();
     assert_eq!((m.width, m.height), (1600, 1280));
     release(&m);
-    // Wait for the page to load (title from the page is empty; url committed).
-    r.state(|st| st.url == url && !st.loading, Duration::from_secs(20));
+    // Wait for the page to load (title from the page is empty; url committed). The state may
+    // already have arrived before the first frame.
+    if !early.iter().any(|st| st.url == url && !st.loading) {
+        r.state(|st| st.url == url && !st.loading, Duration::from_secs(20));
+    }
     std::thread::sleep(Duration::from_millis(500));
     // Drain.
     while let Ok(f) = r.rx.recv_timeout(Duration::from_millis(300)) {

@@ -317,3 +317,117 @@ fn hidden_pane_frees_its_own_tiles_only() {
     assert!(!exists(&good), "valid tile of a hidden pane leaked");
     assert!(take_output(&mut app).is_empty());
 }
+
+// ---- user-found bug B: iTerm2 (local and over SSH), Ghostty over SSH -------------------------
+
+fn probe(kitty: bool, shm: bool) -> vk_browser::probe::GraphicsCaps {
+    vk_browser::probe::GraphicsCaps {
+        kitty_graphics: kitty,
+        kitty_shm: Some(shm),
+        ..Default::default()
+    }
+}
+
+fn env(term_program: &str, lc_terminal: &str, xt: Option<&str>, ssh: bool) -> HostEnv {
+    HostEnv {
+        term_program: term_program.into(),
+        lc_terminal: lc_terminal.into(),
+        xtversion: xt.map(str::to_string),
+        ssh,
+    }
+}
+
+/// (kitty placeholders, kitty shm, iTerm2 whole frame) for each host setup.
+#[test]
+fn graphics_decision_table() {
+    // iTerm2 3.5 answers the kitty query, but can't place unicode placeholders.
+    let iterm_probe = probe(true, true);
+    assert_eq!(
+        decide_gfx(&iterm_probe, &env("iTerm.app", "iTerm2", None, false)),
+        (false, false, true),
+        "iTerm2 local"
+    );
+    // Over SSH: TERM_PROGRAM isn't forwarded; LC_TERMINAL is, and XTVERSION answers.
+    assert_eq!(
+        decide_gfx(&iterm_probe, &env("", "iTerm2", None, true)),
+        (false, false, true),
+        "iTerm2 over ssh (LC_TERMINAL)"
+    );
+    assert_eq!(
+        decide_gfx(&iterm_probe, &env("", "", Some("iTerm2 3.5.4"), true)),
+        (false, false, true),
+        "iTerm2 over ssh (XTVERSION)"
+    );
+    // iTerm2 without kitty support at all: still the whole-frame path.
+    assert_eq!(
+        decide_gfx(&probe(false, false), &env("iTerm.app", "", None, false)),
+        (false, false, true)
+    );
+    // Ghostty: placeholders; shm only when the host terminal is on this machine.
+    let ghostty = probe(true, true);
+    assert_eq!(
+        decide_gfx(&ghostty, &env("ghostty", "", Some("ghostty 1.2.0"), false)),
+        (true, true, false),
+        "Ghostty local"
+    );
+    assert_eq!(
+        decide_gfx(&ghostty, &env("", "", Some("ghostty 1.2.0"), true)),
+        (true, false, false),
+        "Ghostty over ssh: no t=s whatever the probe said"
+    );
+    // Neither.
+    assert_eq!(
+        decide_gfx(
+            &probe(false, false),
+            &env("Apple_Terminal", "", None, false)
+        ),
+        (false, false, false)
+    );
+}
+
+/// The iTerm2 path composes tiles into one frame image and draws it as a single OSC 1337
+/// image over the pane's content area (no kitty commands, no placeholders).
+#[test]
+fn iterm2_draws_the_whole_frame_as_one_image() {
+    let (mut app, mut rxs) = setup(1);
+    app.caps.kitty_graphics = false;
+    app.caps.kitty_shm = false;
+    app.caps.iterm2_images = true;
+    update_views(&mut app);
+    while rxs[0].try_recv().is_ok() {}
+    let px = vec![200u8; PX];
+    let tiles: Vec<MediaTile> = (0..3)
+        .map(|i| MediaTile {
+            col: (i * 4) as u16,
+            ..tile(i, TileData::Rgba(px.clone()))
+        })
+        .collect();
+    on_media(&mut app, 0, frame(tiles));
+    let pm = &app.browser.panes["bp"];
+    let c = pm.canvas.as_ref().expect("whole-frame canvas");
+    assert_eq!((c.width, c.height), (640, 736));
+    // Tile 2 (cells 8..12) landed at x = 128..192 in the canvas.
+    let at = |x: u32, y: u32| c.data[((y * c.width + x) * 4) as usize];
+    assert_eq!(at(130, 10), 200);
+    assert_eq!(at(300, 10), 0, "untouched area stays blank");
+    assert!(take_output(&mut app).is_empty(), "no kitty commands");
+    let mut out = Vec::new();
+    after_write(&mut app, &mut out);
+    let s = String::from_utf8_lossy(&out);
+    assert_eq!(s.matches("\x1b]1337;File=inline=1").count(), 1, "one image");
+    let r = app
+        .pane_rects()
+        .into_iter()
+        .find(|(p, _)| p == "bp")
+        .unwrap()
+        .1;
+    assert!(
+        s.contains(&format!("width={};height={}", r.w, r.h - 1)),
+        "spans the content area: {s:.200}"
+    );
+    // Latest-wins at a bounded rate: a second frame right away is not drawn yet.
+    on_media(&mut app, 0, frame(vec![tile(0, TileData::Rgba(px))]));
+    let mut out = Vec::new();
+    after_write(&mut app, &mut out);
+    assert!(!String::from_utf8_lossy(&out).contains("1337"));
+}

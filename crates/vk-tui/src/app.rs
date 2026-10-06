@@ -356,16 +356,14 @@ pub async fn attach_stream(
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
     let req = json!({"jsonrpc":"2.0","id":1,"method":"render.attach","params":{
-        "client_id": client_id, "remote": remote,
+        "client_id": client_id, "remote": remote, "protocol": vk_proto::render::PROTOCOL,
         "caps": {"max_fps": if remote { 60 } else { 120 }, "kitty_keyboard": true, "osc52": true, "truecolor": true}}});
     wr.write_all(format!("{req}\n").as_bytes()).await?;
     wr.flush().await?;
     let mut line = String::new();
     rd.read_line(&mut line).await?;
     let v: Value = serde_json::from_str(&line).context("render.attach reply")?;
-    if let Some(e) = v.get("error") {
-        anyhow::bail!("render.attach: {e}");
-    }
+    vk_proto::render::check_attach_reply(&v).map_err(|e| anyhow::anyhow!(e))?;
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientFrame>();
     let _ = inc.send(Incoming::Connected(idx, tx));
     let inc2 = inc.clone();
@@ -446,7 +444,7 @@ async fn run_inner(
                     .is_ok_and(|c| c.contains("truecolor") || c.contains("24bit")),
             sync_update: probe.sync_update,
             undercurl: probe.kitty_keyboard,
-            ..crate::browser::host_caps(&gcaps)
+            ..crate::browser::host_caps(&gcaps, probe.xtversion.as_deref())
         },
         matches!(probe.osc52, crate::caps::Osc52::Allowed),
         probe.kitty_keyboard,

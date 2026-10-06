@@ -6,7 +6,43 @@ use crate::input::{KeyEvent, MouseEvent};
 use crate::model::{ClientFocus, SessionModel};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: u32 = 1;
+/// Render protocol version. Frames and the model are postcard-encoded, and postcard is
+/// positional: a new struct field (even `#[serde(default)]`, even `None`) shifts everything
+/// after it, so any change to a type reachable from [`ServerFrame`]/[`ClientFrame`] bumps
+/// this, and `render.attach` refuses a client whose version differs (`version_mismatch`).
+///
+/// - 1: before Goal 03 (no browser panes).
+/// - 2: `Pane.browser`, media frames (`ServerFrame::Media`/`BrowserState`, sent in parts that
+///   share a `seq`, only the first with `reset`), `ClientFrame::MediaView`/`MediaAck`/`Browser`.
+pub const PROTOCOL: u32 = 2;
+
+/// `render.attach` error kind when client and server speak different render protocols.
+pub const VERSION_MISMATCH: &str = "version_mismatch";
+
+/// Client side of the negotiation: the `render.attach` reply must carry our [`PROTOCOL`]
+/// (an older server answers with its own number, or without one). Returns an error message
+/// with an upgrade hint otherwise.
+pub fn check_attach_reply(reply: &serde_json::Value) -> Result<(), String> {
+    if let Some(e) = reply.get("error") {
+        return Err(format!(
+            "render.attach: {}",
+            e.get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("refused")
+        ));
+    }
+    let theirs = reply
+        .get("result")
+        .and_then(|r| r.get("protocol"))
+        .and_then(|p| p.as_u64())
+        .unwrap_or(1);
+    if theirs != PROTOCOL as u64 {
+        return Err(format!(
+            "{VERSION_MISMATCH}: the server speaks render protocol {theirs}, this client {PROTOCOL}; upgrade the older side (`vibeke machine upgrade <machine>` for a remote, or restart the server from this build)"
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Color {

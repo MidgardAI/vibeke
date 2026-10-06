@@ -15,6 +15,9 @@ pub mod model;
 pub mod render;
 pub mod rpc;
 
+#[cfg(test)]
+mod compat_tests;
+
 /// Control API version string (01 §7.3).
 pub const API_VERSION: &str = "vibeke/1";
 
