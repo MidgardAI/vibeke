@@ -1,0 +1,57 @@
+id = "fullerzz.sesh"
+name = "Sesh for Herdr"
+version = "0.14.0"
+min_herdr_version = "0.8.2"
+description = "Sesh-style smart workspace/session manager for Herdr"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = [
+  "go",
+  "build",
+  "-ldflags=-X=github.com/fullerzz/herdr-plugin-sesh/internal/app.Version=0.14.0",
+  "-o",
+  "bin/",
+  "./cmd/herdr-sesh",
+]
+
+[[startup]]
+command = ["./bin/herdr-sesh", "plugin", "watch-history"]
+
+[[events]]
+on = "workspace.focused"
+command = ["./bin/herdr-sesh", "plugin", "watch-history"]
+
+[[events]]
+on = "workspace.closed"
+command = ["./bin/herdr-sesh", "plugin", "watch-history"]
+
+[[actions]]
+id = "open-picker"
+title = "Open Sesh Picker"
+contexts = ["workspace", "pane"]
+command = ["./bin/herdr-sesh", "plugin", "open-picker"]
+
+[[actions]]
+id = "last"
+title = "Switch to Previous Workspace"
+contexts = ["workspace", "pane"]
+command = ["./bin/herdr-sesh", "last"]
+
+[[panes]]
+id = "picker"
+title = "Sesh Picker"
+placement = "overlay"
+command = ["./bin/herdr-sesh", "picker"]
+
+[[actions]]
+id = "open-settings"
+title = "Sesh Settings"
+contexts = ["workspace", "pane"]
+command = ["./bin/herdr-sesh", "plugin", "open-settings"]
+
+[[panes]]
+id = "settings"
+title = "Sesh Settings"
+placement = "overlay"
+command = ["./bin/herdr-sesh", "config", "edit"]

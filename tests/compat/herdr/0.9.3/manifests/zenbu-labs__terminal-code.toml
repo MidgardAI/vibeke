@@ -1,0 +1,17 @@
+id = "zenbu-labs.tode"
+name = "Terminal Code"
+version = "0.1.1"
+min_herdr_version = "0.8.2"
+description = "Open VS Code inside herdr"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bash", "-c", "set -o pipefail; curl -fsSL https://tode.sh/install | bash"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-split"
+title = "Open terminal-code (right split)"
+description = "Split the focused pane and open terminal-code in it"
+contexts = ["global"]
+command = ["bash", "open-split.sh"]

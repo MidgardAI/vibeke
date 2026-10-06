@@ -762,15 +762,27 @@ impl Default for Render {
 #[serde(default)]
 pub struct Compat {
     pub herdr_env: bool,
+    /// Legacy spelling of `[compat.herdr] enabled`.
     pub herdr_socket: bool,
+    /// The Herdr compatibility listener (07 §8.3, M5).
+    pub herdr: CompatHerdr,
 }
 impl Default for Compat {
     fn default() -> Self {
         Compat {
             herdr_env: true,
             herdr_socket: false,
+            herdr: CompatHerdr::default(),
         }
     }
+}
+
+/// `[compat.herdr]`: the public Herdr-compatible socket. Off by default; plugin brokers work
+/// regardless. The socket never lives on Herdr's own path.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CompatHerdr {
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

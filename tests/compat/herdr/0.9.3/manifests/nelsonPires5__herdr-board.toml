@@ -1,0 +1,45 @@
+# herdr-plugin.toml — manifest for the herdr-board plugin.
+#
+# herdr-board is a kanban board that sits above herdr spaces: cards are prompts,
+# columns are pipeline stages, and moving a card into an `auto` column dispatches
+# a real AI coding agent into a visible herdr pane. This manifest wires the board
+# TUI into herdr as an overlay pane plus a keybindable action to summon it.
+#
+# Field reference validated against `herdr plugin` in Herdr 0.9.0. The manifest
+# enforces the install-time version floor; runtime requires socket protocol 22
+# and accepts any Herdr version that speaks it (0.9.0 is the reference).
+id = "herdr-board"
+name = "Herdr Board"
+version = "0.18.0"
+description = "Kanban board for AI coding agents: cards are prompts, columns are pipeline stages; moving a card dispatches an agent into a herdr pane."
+min_herdr_version = "0.9.0"
+platforms = ["linux", "macos"]
+
+# Build the `board` binary at install time (idempotent: cargo no-ops when nothing
+# changed). Produces target/release/board, which the pane command below runs.
+[[build]]
+command = ["./scripts/build.sh"]
+
+# Copy the built CLI to a stable user PATH location. This must remain separate
+# from install.sh, whose plugin-link, skill, and keybinding changes are intended
+# only for explicit local-development installs.
+[[build]]
+command = ["./scripts/install-cli.sh"]
+
+# The kanban TUI, spawned by Herdr in an overlay pane. `overlay` is accepted by
+# Herdr 0.9.0 / protocol 22. The same binary auto-starts the boardd daemon if it
+# is not already running.
+[[panes]]
+id = "board"
+title = "Board"
+placement = "overlay"
+command = ["./target/release/board", "tui"]
+
+# Summon the board — bind this to a key via a [[keys.command]] in
+# ~/.config/herdr/config.toml (see README). The launcher is idempotent
+# (open-or-focus, toggle-off on repeat), mirroring herdr-file-viewer's launcher.
+[[actions]]
+id = "open-board"
+title = "Open board"
+description = "Open the herdr-board kanban as an overlay pane (focus/toggle if already open)."
+command = ["bash", "scripts/open-board.sh"]

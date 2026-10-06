@@ -72,6 +72,12 @@ flag, as above.
 
 - Anything the importer cannot place is listed as `skipped` in its report. Read the report.
 - Herdr plugins are inventoried, not activated. Plugin support arrives later.
+  Partial support (M5 first slice): `vibeke plugin install <dir>` or `vibeke plugin link <dir>`
+  registers an unchanged Herdr plugin in Vibeke's own registry. Then `vibeke plugin trust <id>
+  --legacy` shows everything the plugin can run and grants trust. Actions (`vibeke plugin action
+  run`), event hooks and startup hooks then work, and callbacks reach Vibeke through a private
+  `herdr` launcher. Plugin panes, popups, link handlers and git installs are not supported yet.
+  Your Herdr registry is never read or changed.
 - Running agent processes in Herdr stay in Herdr. Vibeke recreates the layout and offers resume,
   it does not take over live processes.
 

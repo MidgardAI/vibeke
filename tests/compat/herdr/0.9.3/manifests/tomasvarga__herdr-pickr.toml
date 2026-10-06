@@ -1,0 +1,40 @@
+id = "pickr"
+name = "herdr-pickr"
+version = "0.1.2"
+min_herdr_version = "0.7.0"
+description = "Ctrl+click a PR/MR link → pick a reviewer (tuicr · hunk · diff · browser), with an optional AI first pass."
+platforms = ["macos", "linux"]
+
+# Runs on `herdr plugin install` (NOT on `herdr plugin link`).
+[[build]]
+command = ["bash", "install.sh"]
+
+# link click → open the chooser overlay
+[[actions]]
+id = "route"
+title = "Review PR (pickr)"
+command = ["bash", "bin/pickr-open"]
+
+# toggle auto-route (bind a key to pickr.toggle-auto in your herdr config)
+[[actions]]
+id = "toggle-auto"
+title = "pickr: toggle auto-route"
+command = ["bash", "bin/pickr-toggle"]
+
+[[panes]]
+id = "chooser"
+title = "pickr"
+placement = "overlay"
+command = ["bash", "bin/pickr-chooser"]
+
+[[link_handlers]]
+id = "github-pr"
+title = "Review GitHub PR (pickr)"
+pattern = "^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+([/#?].*)?$"
+action = "route"
+
+[[link_handlers]]
+id = "gitlab-mr"
+title = "Review GitLab MR (pickr)"
+pattern = "^https://gitlab\\.com/.+/-/merge_requests/[0-9]+([/#?].*)?$"
+action = "route"

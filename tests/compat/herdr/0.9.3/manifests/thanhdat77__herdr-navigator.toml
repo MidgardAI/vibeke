@@ -1,0 +1,42 @@
+id = "herdr-navigator"
+name = "Herdr Navigator"
+version = "0.3.6"
+min_herdr_version = "0.7.3"
+description = "Jump to any Herdr workspace, agent, project, session, remote, directory, or action from one fuzzy navigator."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[actions]]
+id = "open"
+title = "Herdr Navigator: open"
+contexts = ["workspace", "global"]
+command = ["./target/release/herdr-navigator", "open"]
+
+[[actions]]
+id = "open-side"
+title = "Herdr Navigator: side pane"
+contexts = ["workspace", "global"]
+command = ["./target/release/herdr-navigator", "open-side"]
+
+[[actions]]
+id = "jump-back"
+title = "Herdr Navigator: jump back"
+contexts = ["workspace", "global"]
+command = ["./target/release/herdr-navigator", "jump-back"]
+
+[[panes]]
+id = "picker"
+title = "Herdr Navigator"
+placement = "overlay"
+command = ["./target/release/herdr-navigator", "ui"]
+
+# Persistent side pane variant: stays open after Enter, toggled by the open-side
+# action (launch-or-focus, close when already focused). Title must stay in sync
+# with SIDE_PANE_LABEL in src/main.rs.
+[[panes]]
+id = "picker-side"
+title = "Navigator Side"
+placement = "split"
+command = ["./target/release/herdr-navigator", "ui", "--side"]

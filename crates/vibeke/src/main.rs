@@ -25,6 +25,8 @@ usage:
   vibeke focus <pane|url>         focus a pane in the active client (vibeke://focus?…)
   vibeke layout export|apply|list declarative layouts ([layouts.<name>] in config)
   vibeke import herdr [--config] [--session] [--dry-run]
+  vibeke plugin list|install|link|trust|enable|disable|action|logs   Herdr-compatible plugins (partial)
+  vibeke compat herdr <args>      Herdr CLI shim against Vibeke (partial); compat install-shim|status
   vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
   vibeke mcp                      stdio MCP server (previews + headless browser) for agent harnesses
   vibeke browser open|navigate|click|type|press|eval|screenshot|snapshot|console|network|close|list|install
@@ -149,6 +151,19 @@ fn main() {
         // Runs in the pane: drives an ACP agent over stdio (04 §6.6). Sync, no runtime.
         std::process::exit(vk_server::agents::acp::host_main(&args[1..]));
     }
+    // Invoked as `herdr` (the private plugin launcher or `vibeke compat install-shim`): the
+    // Herdr-compatible CLI shim, never a real Herdr (07 §8.2).
+    if std::env::args().next().is_some_and(|a| {
+        std::path::Path::new(&a)
+            .file_name()
+            .is_some_and(|n| n == "herdr")
+    }) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(rt.block_on(vk_cli::compat::herdr_main(args)));
+    }
     let g = match parse_global(&mut args) {
         Ok(g) => g,
         Err(e) => {
@@ -214,6 +229,8 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("ssh") => commands::ssh(&g, &args[1..]).await,
         Some("notify") => commands::notify(&g, &args[1..]).await,
         Some("import") => commands::import(&g, &args[1..]).await,
+        Some("plugin") => vk_cli::compat::plugin_cmd(&g, &args[1..]).await,
+        Some("compat") => vk_cli::compat::compat_cmd(&g, &args[1..]).await,
         Some("integration") => commands::integration(&g, &args[1..]).await,
         Some("doctor") => commands::doctor(&g, &args[1..]).await,
         Some("update") => commands::update(&g, &args[1..]).await,

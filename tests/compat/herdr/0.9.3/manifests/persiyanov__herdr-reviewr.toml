@@ -1,0 +1,54 @@
+id = "persiyanov.reviewr"
+name = "reviewr"
+version = "0.45.0"
+# 0.9.0 first resolves a relative pane `command[0]` against the plugin root on every OS, which
+# every command below relies on (docs/herdr-api-notes.md).
+min_herdr_version = "0.9.0"
+platforms = ["macos", "linux", "windows"]
+description = "Review agent-written diffs beside the chat and add line comments to the agent input."
+
+# Install downloads this platform's binary from the release into bin/; `plugin link` skips it.
+# Windows runs the PowerShell twin, since `bash` there can be WSL's, which would fetch Linux's.
+[[build]]
+platforms = ["macos", "linux"]
+command = ["bash", "herdr/install.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "herdr/install.ps1"]
+
+# Every command runs `bin/herdr-reviewr` itself, the actions and the event hook as `--action <id>`,
+# so one id works on every OS with no shell between.
+[[panes]]
+id = "pane"
+title = "reviewr"
+placement = "split"
+command = ["bin/herdr-reviewr"]
+
+[[actions]]
+id = "toggle"
+title = "reviewr: toggle pane"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-reviewr", "--action", "toggle"]
+
+[[actions]]
+id = "open"
+title = "reviewr: open pane"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-reviewr", "--action", "open"]
+
+[[actions]]
+id = "close"
+title = "reviewr: close pane"
+contexts = ["pane", "workspace"]
+command = ["bin/herdr-reviewr", "--action", "close"]
+
+# Auto-open a reviewr pane when a worktree workspace is born (gated by auto_open; see
+# `src/actions.rs`).
+[[events]]
+on = "worktree.created"
+command = ["bin/herdr-reviewr", "--action", "auto-open"]
+
+[[events]]
+on = "worktree.opened"
+command = ["bin/herdr-reviewr", "--action", "auto-open"]

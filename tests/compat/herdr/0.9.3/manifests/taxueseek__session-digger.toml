@@ -1,0 +1,109 @@
+# Herdr Plugin Manifest for session-digger
+# Portable multi-agent session mining — no machine-specific paths in runtime.
+# https://github.com/taxueseek/session-digger
+
+id = "taxueseek.session-digger"
+name = "Session Digger"
+version = "0.9.27"
+min_herdr_version = "0.7.0"
+description = "跨环境会话挖掘 v0.9.6：搜索/模糊检索/统计/趋势/本机使用回顾(reflect)/技能差距。stdlib Python，路径自适应。"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["python3", "-m", "compileall", "-q", "scripts/"]
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+[[actions]]
+id = "sd-search"
+title = "搜索历史会话"
+contexts = ["workspace"]
+command = ["bash", "scripts/herdr-search.sh"]
+
+[[actions]]
+id = "sd-fuzzy-search"
+title = "模糊搜索会话 (fzf)"
+contexts = ["workspace"]
+command = ["bash", "scripts/herdr-fuzzy-search.sh"]
+
+[[actions]]
+id = "sd-sessions"
+title = "列出最近会话"
+contexts = ["workspace"]
+command = ["bash", "scripts/herdr-sessions.sh", "20"]
+
+[[actions]]
+id = "sd-stats"
+title = "会话统计"
+contexts = ["workspace"]
+command = ["python3", "scripts/sd-recall.py", "stats"]
+
+[[actions]]
+id = "sd-trend"
+title = "话题趋势分析"
+contexts = ["workspace"]
+command = ["python3", "scripts/trend-engine.py", "period-over-period", "--unit", "week", "--lookback", "4"]
+
+[[actions]]
+id = "sd-skill-gap"
+title = "Skill 差距检测（会话痛点）"
+contexts = ["workspace"]
+command = ["python3", "scripts/skill-gap-finder.py", "analyze", "--min-occurrences", "3"]
+
+[[actions]]
+id = "sd-skill-health"
+title = "Skill 资产自检（路由/硬编码/安装漂移）"
+contexts = ["workspace"]
+command = ["python3", "scripts/skill-health.py"]
+
+[[actions]]
+id = "sd-reindex"
+title = "重建搜索索引"
+contexts = ["workspace"]
+command = ["python3", "scripts/index-builder.py", "build", "--agent", "cross"]
+
+# ---------------------------------------------------------------------------
+# Panes
+# ---------------------------------------------------------------------------
+
+[[panes]]
+id = "sd-stats-pane"
+title = "Session Digger · 统计"
+placement = "overlay"
+command = ["python3", "scripts/herdr-stats-pane.py"]
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+[[events]]
+on = "worktree.created"
+command = ["bash", "scripts/herdr-event.sh", "worktree.created"]
+
+[[events]]
+on = "worktree.removed"
+command = ["bash", "scripts/herdr-event.sh", "worktree.removed"]
+
+# ---------------------------------------------------------------------------
+# Keys (enable in ~/.config/herdr/config.toml if needed)
+# ---------------------------------------------------------------------------
+
+[[keys.command]]
+key = "prefix+d"
+type = "plugin_action"
+command = "sd-stats"
+description = "会话统计"
+
+[[keys.command]]
+key = "prefix+s"
+type = "plugin_action"
+command = "sd-fuzzy-search"
+description = "模糊搜索会话"
+
+[[keys.command]]
+key = "prefix+t"
+type = "plugin_action"
+command = "sd-trend"
+description = "话题趋势分析"

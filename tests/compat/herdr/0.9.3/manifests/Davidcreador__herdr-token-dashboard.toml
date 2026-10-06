@@ -1,0 +1,37 @@
+id = "dave.token-dashboard"
+name = "Token Dashboard"
+version = "0.2.0"
+min_herdr_version = "0.7.0"
+description = "Live token spend dashboard + cost notifications for Herdr agent panes"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["./scripts/build.sh"]
+platforms = ["macos", "linux"]
+
+# Dashboard pane: opens a Bubble Tea TUI that polls herdr pane list,
+# reads agent session files, and renders per-pane cost/token breakdown.
+[[panes]]
+id = "dashboard"
+title = "Token Dashboard"
+placement = "tab"
+command = ["./bin/token-dashboard"]
+
+# Event hook: fires when any pane's agent status changes (idle/working/blocked/done).
+# The binary reads HERDR_PLUGIN_EVENT_JSON, looks up the pane's agent session,
+# extracts cost, and calls `herdr notification show` when agent goes done.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["./bin/token-dashboard", "--notify"]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open Token Dashboard"
+contexts = ["workspace"]
+command = ["./bin/token-dashboard", "--open"]
+
+[[keys.command]]
+key = "prefix+$"
+type = "plugin_action"
+command = "dave.token-dashboard.open-dashboard"
+description = "open token dashboard"

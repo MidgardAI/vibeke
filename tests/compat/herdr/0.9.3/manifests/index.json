@@ -1,0 +1,1833 @@
+{
+ "source_record": "plugin catalog snapshot 2026-10-06",
+ "catalog": "https://assets.herdr.dev/plugins/index.json",
+ "catalog_generated_at": "2026-10-06T02:30:32.713Z",
+ "catalog_sha256": "ecd17c34bc8b1200e342059f5dd74c33d78828df6c8a4024eeab63134d421149",
+ "note": "Verbatim herdr-plugin.toml files at the pinned commits; each sha256 equals the source record entry. Retrieved during the 2026-10-06 plugin review; building these fixtures used no network access.",
+ "manifests": [
+  {
+   "rank": 1,
+   "repository": "zenbu-labs/terminal-browser",
+   "plugin_id": "zenbu-labs.terminal-browser",
+   "source_commit": "1346bbe7d7d857e9ab99db11c06fa3d8f717ac49",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/zenbu-labs/terminal-browser/1346bbe7d7d857e9ab99db11c06fa3d8f717ac49/herdr-plugin/herdr-plugin.toml",
+   "sha256": "9bbc743cc4f3d5017016691a4f7a9a387065bcf5267ed0166ea0aa2cf48a60e8",
+   "fixture": "zenbu-labs__terminal-browser.toml",
+   "actions": [
+    "open-split"
+   ],
+   "events": []
+  },
+  {
+   "rank": 2,
+   "repository": "zenbu-labs/terminal-code",
+   "plugin_id": "zenbu-labs.tode",
+   "source_commit": "66441668de5fbe142d97ec395ee4f2bd115c5cab",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/zenbu-labs/terminal-code/66441668de5fbe142d97ec395ee4f2bd115c5cab/herdr-plugin/herdr-plugin.toml",
+   "sha256": "e6d95d2625e7dcb1df6d2226281d9529a4e1c9b9a6e920f6bbbfc63ca4f5009f",
+   "fixture": "zenbu-labs__terminal-code.toml",
+   "actions": [
+    "open-split"
+   ],
+   "events": []
+  },
+  {
+   "rank": 3,
+   "repository": "openclaw/crabbox",
+   "plugin_id": "crabbox",
+   "source_commit": "383c6ab828b29335853419c7476d304610d9f126",
+   "manifest_path": "plugins/herdr/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/openclaw/crabbox/383c6ab828b29335853419c7476d304610d9f126/plugins/herdr/herdr-plugin.toml",
+   "sha256": "e8427db34720e88389bcf645de35165fb11103b8585d574d18aac57093d3e3db",
+   "fixture": "openclaw__crabbox.toml",
+   "actions": [
+    "boxes",
+    "warmup",
+    "prewarm",
+    "connect",
+    "run-job",
+    "doctor"
+   ],
+   "events": []
+  },
+  {
+   "rank": 5,
+   "repository": "furkankly/zoetrope",
+   "plugin_id": "furkankly.zoetrope",
+   "source_commit": "b1f31dd26bd4e9e513885e39edb78d0850a5d1fe",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/furkankly/zoetrope/b1f31dd26bd4e9e513885e39edb78d0850a5d1fe/herdr-plugin/herdr-plugin.toml",
+   "sha256": "07c1ba1f87bfde19a02272c8e0c43901ec72b25025aa2b1fe6fa4c00ef9a90bf",
+   "fixture": "furkankly__zoetrope.toml",
+   "actions": [
+    "open",
+    "open-split",
+    "open-tab",
+    "setup-keys",
+    "remove-keys"
+   ],
+   "events": []
+  },
+  {
+   "rank": 6,
+   "repository": "persiyanov/herdr-reviewr",
+   "plugin_id": "persiyanov.reviewr",
+   "source_commit": "3ffca7b4dd4ba99171649e9fbdc22e0144ed0e36",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/persiyanov/herdr-reviewr/3ffca7b4dd4ba99171649e9fbdc22e0144ed0e36/herdr-plugin.toml",
+   "sha256": "af18de9cb8ec37d6cbd075d6b009f76e7914b8940cdea640a8067746917e92bd",
+   "fixture": "persiyanov__herdr-reviewr.toml",
+   "actions": [
+    "toggle",
+    "open",
+    "close"
+   ],
+   "events": [
+    "worktree.created",
+    "worktree.opened"
+   ]
+  },
+  {
+   "rank": 7,
+   "repository": "smarzban/herdr-file-viewer",
+   "plugin_id": "herdr-file-viewer",
+   "source_commit": "a7de0242a8626d38b56d1e831a3f3f23726eaa43",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/smarzban/herdr-file-viewer/a7de0242a8626d38b56d1e831a3f3f23726eaa43/herdr-plugin.toml",
+   "sha256": "ce3efec3006c9c777cad07597369621684285a271a8a4bb24e8e34b11c37960e",
+   "fixture": "smarzban__herdr-file-viewer.toml",
+   "actions": [
+    "open-file-viewer",
+    "open-file-viewer-windows",
+    "open-file-viewer-tab",
+    "open-file-viewer-tab-windows",
+    "open-file-viewer-at",
+    "open-file-viewer-at-tab"
+   ],
+   "events": []
+  },
+  {
+   "rank": 8,
+   "repository": "plannotator/herdr-annotate",
+   "plugin_id": "annotate",
+   "source_commit": "cbba4732229191347ff5128e3da71f64474a6a49",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/plannotator/herdr-annotate/cbba4732229191347ff5128e3da71f64474a6a49/herdr-plugin.toml",
+   "sha256": "2f2b4c8ff2ec7e671b96c9b0afde6fce392e1bab45364f2701d84da04a15b2d3",
+   "fixture": "plannotator__herdr-annotate.toml",
+   "actions": [
+    "capture",
+    "copy-context",
+    "copy-archive",
+    "paste-archive",
+    "send-archive",
+    "manage",
+    "open",
+    "open-link",
+    "last",
+    "last-newest",
+    "terminal"
+   ],
+   "events": []
+  },
+  {
+   "rank": 9,
+   "repository": "eliasstravik/herdr-projects",
+   "plugin_id": "herdr-projects",
+   "source_commit": "4e4548c3c43888e6be1c96906215998f07dc63f0",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/eliasstravik/herdr-projects/4e4548c3c43888e6be1c96906215998f07dc63f0/herdr-plugin.toml",
+   "sha256": "97b67e86eda7a464dde891bdb3af025afa2aac3ba41220e7a07dd1ad27330ba6",
+   "fixture": "eliasstravik__herdr-projects.toml",
+   "actions": [
+    "new",
+    "open",
+    "open-popup",
+    "focus",
+    "unfocus",
+    "adopt-workspace",
+    "pause",
+    "resume",
+    "configure",
+    "doctor"
+   ],
+   "events": []
+  },
+  {
+   "rank": 10,
+   "repository": "devswha/herdr-web-ui",
+   "plugin_id": "devswha.herdr-web-ui",
+   "source_commit": "e8bc403145a9a607e3161a016c122c42be510467",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/devswha/herdr-web-ui/e8bc403145a9a607e3161a016c122c42be510467/herdr-plugin.toml",
+   "sha256": "d71143848c3f23b80396acb8f181962d0610c89cf65108b4a2201b26573dfc1b",
+   "fixture": "devswha__herdr-web-ui.toml",
+   "actions": [
+    "start",
+    "start-windows",
+    "stop",
+    "stop-windows",
+    "status",
+    "status-windows",
+    "phone",
+    "phone-windows"
+   ],
+   "events": []
+  },
+  {
+   "rank": 11,
+   "repository": "ZingerLittleBee/Heeler",
+   "plugin_id": "heeler",
+   "source_commit": "f69e4f645a427b62fd309197c516e50c6c2ad841",
+   "manifest_path": "plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ZingerLittleBee/Heeler/f69e4f645a427b62fd309197c516e50c6c2ad841/plugin/herdr-plugin.toml",
+   "sha256": "917ee79d0e6da6fc4bb68c2663dcb912456542e6c146887977721987125ab270",
+   "fixture": "ZingerLittleBee__Heeler.toml",
+   "actions": [
+    "pair"
+   ],
+   "events": [
+    "pane.agent_status_changed",
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 12,
+   "repository": "alexarthurs/herdr-sidebar",
+   "plugin_id": "herdr-sidebar",
+   "source_commit": "ee47651974bd1cc0fc7e3bd182dbfaf151b3c243",
+   "manifest_path": "plugins/herdr-sidebar/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/alexarthurs/herdr-sidebar/ee47651974bd1cc0fc7e3bd182dbfaf151b3c243/plugins/herdr-sidebar/herdr-plugin.toml",
+   "sha256": "dd961afd580ded535d8b81d3daab3bf51e451747f32186e7ad3d904ccc8cdc99",
+   "fixture": "alexarthurs__herdr-sidebar.toml",
+   "actions": [
+    "open-sidebar",
+    "open-sidebar-windows",
+    "open-git",
+    "open-git-windows",
+    "show-explorer",
+    "show-explorer-windows",
+    "show-search",
+    "show-search-windows",
+    "show-git",
+    "show-git-windows",
+    "quick-open",
+    "quick-open-windows",
+    "redeploy",
+    "update",
+    "update-windows",
+    "refresh-sidebars",
+    "refresh-sidebars-windows",
+    "redeploy-windows"
+   ],
+   "events": [
+    "pane.focused",
+    "pane.focused",
+    "tab.created",
+    "tab.created",
+    "workspace.created",
+    "workspace.created",
+    "workspace.focused",
+    "workspace.focused",
+    "tab.focused",
+    "tab.focused"
+   ]
+  },
+  {
+   "rank": 13,
+   "repository": "dcolinmorgan/herdr-remote",
+   "plugin_id": "herdr-remote.relay",
+   "source_commit": "0c16aca2005f3f5d2dfbbc7602a0d938ed986396",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/dcolinmorgan/herdr-remote/0c16aca2005f3f5d2dfbbc7602a0d938ed986396/herdr-plugin.toml",
+   "sha256": "8c43e8a81f81760f2ac8c4a1f315ec01f63c7107242d362263f753979a2ff80c",
+   "fixture": "dcolinmorgan__herdr-remote.toml",
+   "actions": [],
+   "events": [
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 14,
+   "repository": "eugenioenko/ttt",
+   "plugin_id": "ttt.editor",
+   "source_commit": "1d6a3a677ce88cc37c9000124bb0550e7255d64d",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/eugenioenko/ttt/1d6a3a677ce88cc37c9000124bb0550e7255d64d/herdr-plugin/herdr-plugin.toml",
+   "sha256": "cdcadcf8375d7e8a9aff3e8aceec5245f4c7e628953f7f67332f396f95737abc",
+   "fixture": "eugenioenko__ttt.toml",
+   "actions": [
+    "open",
+    "open-worktree"
+   ],
+   "events": []
+  },
+  {
+   "rank": 15,
+   "repository": "cloudmanic/herdr-plus",
+   "plugin_id": "cloudmanic.herdr-plus",
+   "source_commit": "f38df3570bea8f7ca71dc1ba11bce3b123d14402",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/cloudmanic/herdr-plus/f38df3570bea8f7ca71dc1ba11bce3b123d14402/herdr-plugin.toml",
+   "sha256": "23b25f7d2aefd01e33a2745e76e155d04d973b45d0c50f720498a80bafd84ee7",
+   "fixture": "cloudmanic__herdr-plus.toml",
+   "actions": [
+    "projects",
+    "projects-windows",
+    "quick-actions",
+    "quick-actions-windows",
+    "ping",
+    "ping-windows"
+   ],
+   "events": [
+    "worktree.created",
+    "worktree.created",
+    "worktree.opened",
+    "worktree.opened"
+   ]
+  },
+  {
+   "rank": 16,
+   "repository": "osolmaz/pi-workflows",
+   "plugin_id": "osolmaz.pi-workflows",
+   "source_commit": "7937df1a6b4f12bfce2e7ada2842d5556dd95f72",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/osolmaz/pi-workflows/7937df1a6b4f12bfce2e7ada2842d5556dd95f72/herdr-plugin.toml",
+   "sha256": "02a840de01c528c655a5fd0dc60f3628eb36923ccda2cb14d3a21f3da0340308",
+   "fixture": "osolmaz__pi-workflows.toml",
+   "actions": [],
+   "events": []
+  },
+  {
+   "rank": 17,
+   "repository": "0cv/herdr-mobile-relay",
+   "plugin_id": "herdr-mobile-relay.events",
+   "source_commit": "62115683986384468e53ed01ec993745749c09f7",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/0cv/herdr-mobile-relay/62115683986384468e53ed01ec993745749c09f7/herdr-plugin.toml",
+   "sha256": "f4c4e5026913dc7c52a65e3595643891b8cb0d090843e942a04fcddf7521a467",
+   "fixture": "0cv__herdr-mobile-relay.toml",
+   "actions": [
+    "setup",
+    "quick-start",
+    "install-service",
+    "setup-link",
+    "change-hostname",
+    "configure-app-deploy",
+    "stable-teardown",
+    "uninstall",
+    "status"
+   ],
+   "events": [
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 18,
+   "repository": "powerfooI/roamgate",
+   "plugin_id": "roamgate",
+   "source_commit": "8de13620a3e9d22c7c40f95f01dd08b45d06b886",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/powerfooI/roamgate/8de13620a3e9d22c7c40f95f01dd08b45d06b886/herdr-plugin.toml",
+   "sha256": "3bd643a3cdb55e9e38366ea7e26cbb5a4b315673f339360154e0504b5af0cd8a",
+   "fixture": "powerfooI__roamgate.toml",
+   "actions": [
+    "start",
+    "restart",
+    "status",
+    "url",
+    "version",
+    "uninstall"
+   ],
+   "events": []
+  },
+  {
+   "rank": 19,
+   "repository": "uwuclxdy/clauth",
+   "plugin_id": "clauth",
+   "source_commit": "da771e3e6145c2b84ad46dbe0ba991a799dbb86c",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/uwuclxdy/clauth/da771e3e6145c2b84ad46dbe0ba991a799dbb86c/herdr-plugin/herdr-plugin.toml",
+   "sha256": "d426f1d3cef80a52271a6b85f9b81589ada9db8188fb3c17bebeb235b28a1c29",
+   "fixture": "uwuclxdy__clauth.toml",
+   "actions": [
+    "open",
+    "which"
+   ],
+   "events": [
+    "pane.agent_detected",
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 20,
+   "repository": "ChmaraX/herdr-nvim",
+   "plugin_id": "chmarax.herdr-nvim",
+   "source_commit": "5e849b5377fd409d2fd4be159c9c9fa36c251f7a",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ChmaraX/herdr-nvim/5e849b5377fd409d2fd4be159c9c9fa36c251f7a/herdr-plugin.toml",
+   "sha256": "d704858c3f41b23f67365ce7b0f818e1f2b7e62f353540af6dc54afa6e3b284b",
+   "fixture": "ChmaraX__herdr-nvim.toml",
+   "actions": [
+    "toggle",
+    "pick-file",
+    "open-link"
+   ],
+   "events": [
+    "tab.closed",
+    "workspace.closed"
+   ]
+  },
+  {
+   "rank": 21,
+   "repository": "nikok6/herdr-mirror",
+   "plugin_id": "mirror",
+   "source_commit": "195398c1275f9f3d18ddff70282149005a2bec01",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/nikok6/herdr-mirror/195398c1275f9f3d18ddff70282149005a2bec01/herdr-plugin.toml",
+   "sha256": "f352f1c0c4569b7b4ca457d6542477667575f16a8ea267eda9cc333ac2ed0c38",
+   "fixture": "nikok6__herdr-mirror.toml",
+   "actions": [
+    "start",
+    "pause",
+    "status",
+    "once",
+    "remote-new-workspace",
+    "new-workspace-pick",
+    "remote-new-tab",
+    "remote-split-right",
+    "remote-split-down",
+    "hide",
+    "show",
+    "restore",
+    "teardown"
+   ],
+   "events": [
+    "workspace.focused",
+    "workspace.created",
+    "tab.created",
+    "pane.created"
+   ]
+  },
+  {
+   "rank": 22,
+   "repository": "nicosuave/memex",
+   "plugin_id": "nicosuave.memex",
+   "source_commit": "61194bf8f951afe4a4e00887bd63220a76952618",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/nicosuave/memex/61194bf8f951afe4a4e00887bd63220a76952618/herdr-plugin.toml",
+   "sha256": "44455b7053fb51595b4c86be1c21183df6ad31248f33f0bc5e099b080d75f8bc",
+   "fixture": "nicosuave__memex.toml",
+   "actions": [
+    "desk",
+    "toggle",
+    "palette",
+    "recent-here",
+    "resume-last",
+    "index",
+    "web"
+   ],
+   "events": []
+  },
+  {
+   "rank": 23,
+   "repository": "kryptamine/herdr-auto-title",
+   "plugin_id": "herdr.auto-title",
+   "source_commit": "0cf776db9a9450f1b190b4f3d787674c7a9d3ddb",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/kryptamine/herdr-auto-title/0cf776db9a9450f1b190b4f3d787674c7a9d3ddb/herdr-plugin.toml",
+   "sha256": "2c40be56b9c55d9ab718ee14bdaf412745f8b662565f56afd25ae719670c4aa9",
+   "fixture": "kryptamine__herdr-auto-title.toml",
+   "actions": [
+    "restart"
+   ],
+   "events": []
+  },
+  {
+   "rank": 24,
+   "repository": "qu8n/herdr-automatic-rename",
+   "plugin_id": "herdr-automatic-rename",
+   "source_commit": "1db6c41b208b2b28b8e8784b79425e3f7177efa2",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/qu8n/herdr-automatic-rename/1db6c41b208b2b28b8e8784b79425e3f7177efa2/herdr-plugin.toml",
+   "sha256": "d61ed4dd2d1ca8678fb7340c8ba597187dd5151f6259379af0fc593980012a79",
+   "fixture": "qu8n__herdr-automatic-rename.toml",
+   "actions": [
+    "reset",
+    "doctor",
+    "clear"
+   ],
+   "events": [
+    "workspace.created",
+    "workspace.closed",
+    "workspace.renamed",
+    "workspace.moved",
+    "workspace.reordered",
+    "worktree.created",
+    "worktree.opened",
+    "worktree.removed",
+    "tab.created",
+    "tab.closed",
+    "tab.renamed",
+    "tab.moved",
+    "tab.focused",
+    "pane.focused",
+    "pane.agent_detected",
+    "pane.agent_status_changed",
+    "pane.closed",
+    "pane.exited",
+    "pane.moved",
+    "pane.created"
+   ]
+  },
+  {
+   "rank": 25,
+   "repository": "smarzban/tsk",
+   "plugin_id": "herdr-tsk",
+   "source_commit": "911c942c024ff584fb3a74219eac847672ccd44a",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/smarzban/tsk/911c942c024ff584fb3a74219eac847672ccd44a/herdr-plugin.toml",
+   "sha256": "976ead375cdfdc9c1dd825c8ea7cf8e2f9224409ce5df530166cabc11f4e68ea",
+   "fixture": "smarzban__tsk.toml",
+   "actions": [
+    "open-board",
+    "open-board-windows",
+    "quick-capture",
+    "quick-capture-windows"
+   ],
+   "events": []
+  },
+  {
+   "rank": 26,
+   "repository": "thanhdat77/herdr-navigator",
+   "plugin_id": "herdr-navigator",
+   "source_commit": "313b753b1f98f802b7d861430a13cb95a86e8dd3",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/thanhdat77/herdr-navigator/313b753b1f98f802b7d861430a13cb95a86e8dd3/herdr-plugin.toml",
+   "sha256": "837a0363fbb4c210acff1ddc54cca3f9387f7998a982dcce0584f87c36ff6ccc",
+   "fixture": "thanhdat77__herdr-navigator.toml",
+   "actions": [
+    "open",
+    "open-side",
+    "jump-back"
+   ],
+   "events": []
+  },
+  {
+   "rank": 27,
+   "repository": "devashish2203/herdr-worktrunk",
+   "plugin_id": "worktrunk",
+   "source_commit": "77e91a9b5429c0296cd883300b4b1d4664e9edd6",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/devashish2203/herdr-worktrunk/77e91a9b5429c0296cd883300b4b1d4664e9edd6/herdr-plugin.toml",
+   "sha256": "a8d841bbf572927a943e279000c82ebcde653bff33e8e407af144e2752ca483e",
+   "fixture": "devashish2203__herdr-worktrunk.toml",
+   "actions": [
+    "open",
+    "open-current",
+    "open-with-remotes",
+    "remove",
+    "merge",
+    "merge-no-squash"
+   ],
+   "events": []
+  },
+  {
+   "rank": 28,
+   "repository": "nelsonPires5/herdr-board",
+   "plugin_id": "herdr-board",
+   "source_commit": "d7a67470309c378778e388982bda67eee6dc1a58",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/nelsonPires5/herdr-board/d7a67470309c378778e388982bda67eee6dc1a58/herdr-plugin.toml",
+   "sha256": "423fde5f8b5ebd2dcb2fce2e0022f5d15c32e6f29c6d33efc182e87118e0226c",
+   "fixture": "nelsonPires5__herdr-board.toml",
+   "actions": [
+    "open-board"
+   ],
+   "events": []
+  },
+  {
+   "rank": 29,
+   "repository": "levi-qiao/herdr-agent-usage",
+   "plugin_id": "herdr-agent-usage",
+   "source_commit": "a8408399117ed76abde8641cc5e4fd844a678307",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/levi-qiao/herdr-agent-usage/a8408399117ed76abde8641cc5e4fd844a678307/herdr-plugin.toml",
+   "sha256": "22546118c1d6f7031e2a7eb4ffeadb8fbf48617bbed4c74c42afd021b63a5d92",
+   "fixture": "levi-qiao__herdr-agent-usage.toml",
+   "actions": [
+    "refresh",
+    "configure",
+    "open-settings",
+    "toggle-agent-order",
+    "uninstall"
+   ],
+   "events": [
+    "pane.agent_detected",
+    "pane.agent_status_changed",
+    "pane.focused",
+    "workspace.focused",
+    "tab.focused",
+    "pane.closed",
+    "pane.moved",
+    "tab.closed",
+    "tab.moved"
+   ]
+  },
+  {
+   "rank": 30,
+   "repository": "jhochenbaum/herdr-hunk-diff",
+   "plugin_id": "jhochenbaum.hunkdiff",
+   "source_commit": "47146a058858b4a7a116992aaae643436d80e7ab",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/jhochenbaum/herdr-hunk-diff/47146a058858b4a7a116992aaae643436d80e7ab/herdr-plugin.toml",
+   "sha256": "c8a65c1b70d3c5bacf5ecc8f3fc687587d92750f13165c7922441b1d106735e8",
+   "fixture": "jhochenbaum__herdr-hunk-diff.toml",
+   "actions": [
+    "review",
+    "review:staged",
+    "review:branch",
+    "review:commit",
+    "send-review",
+    "reload",
+    "close-review",
+    "setup-keys",
+    "remove-keys",
+    "review:stash",
+    "next-comment",
+    "prev-comment",
+    "install-pager",
+    "uninstall-pager"
+   ],
+   "events": [
+    "pane.agent_status_changed",
+    "pane.exited",
+    "pane.closed",
+    "worktree.removed"
+   ]
+  },
+  {
+   "rank": 31,
+   "repository": "hhdebb/herdr-radar",
+   "plugin_id": "hhdebb.herdr-radar",
+   "source_commit": "1ba8cc4a3900191c9f1f4f850398c7dd10212df2",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/hhdebb/herdr-radar/1ba8cc4a3900191c9f1f4f850398c7dd10212df2/herdr-plugin.toml",
+   "sha256": "3ec57771de7e1a7bf6435439858c57b1ac3565630f6fb75b9525969075efc40f",
+   "fixture": "hhdebb__herdr-radar.toml",
+   "actions": [
+    "configure",
+    "install-font",
+    "uninstall-font",
+    "unconfigure",
+    "refresh",
+    "state-start",
+    "state-stop",
+    "view-toggle",
+    "view-flip",
+    "view-native",
+    "settings"
+   ],
+   "events": [
+    "pane.agent_detected"
+   ]
+  },
+  {
+   "rank": 32,
+   "repository": "yuk1ty/herdr-spreader",
+   "plugin_id": "herdr-spreader",
+   "source_commit": "206ae55aff2de0828623ea4e8fc9c6ab28519935",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/yuk1ty/herdr-spreader/206ae55aff2de0828623ea4e8fc9c6ab28519935/herdr-plugin.toml",
+   "sha256": "77d8285e61b310d4235a71fe79e4a2d282b7c07b6ebedbac1cef2e2034805de6",
+   "fixture": "yuk1ty__herdr-spreader.toml",
+   "actions": [
+    "apply"
+   ],
+   "events": []
+  },
+  {
+   "rank": 33,
+   "repository": "arronKler/pairfob",
+   "plugin_id": "pairfob",
+   "source_commit": "4f04056d4c0a5afa12fa4d6e278d51308cdd910e",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/arronKler/pairfob/4f04056d4c0a5afa12fa4d6e278d51308cdd910e/herdr-plugin.toml",
+   "sha256": "07f79d49d8f62174c506b05fea2c7c294c8504407f22c0c8bbe23614ef812a6c",
+   "fixture": "arronKler__pairfob.toml",
+   "actions": [
+    "pair",
+    "doctor",
+    "start",
+    "stop",
+    "update"
+   ],
+   "events": []
+  },
+  {
+   "rank": 34,
+   "repository": "paulbkim-dev/vim-herdr-navigation",
+   "plugin_id": "vim-herdr-navigation",
+   "source_commit": "79679dacc791f70fc34de8b29a3cf9706c0f5b2f",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/paulbkim-dev/vim-herdr-navigation/79679dacc791f70fc34de8b29a3cf9706c0f5b2f/herdr-plugin.toml",
+   "sha256": "7b2dcc02df8458194670844eb0da34508677d8d7135dad5f498790bd44e18323",
+   "fixture": "paulbkim-dev__vim-herdr-navigation.toml",
+   "actions": [
+    "left",
+    "down",
+    "up",
+    "right"
+   ],
+   "events": []
+  },
+  {
+   "rank": 35,
+   "repository": "nidhi-singh02/agent-router",
+   "plugin_id": "nidhi-singh02.agent-router",
+   "source_commit": "fb24d06a62fb33a92c7836b4920ae9f4b1216c63",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/nidhi-singh02/agent-router/fb24d06a62fb33a92c7836b4920ae9f4b1216c63/herdr-plugin.toml",
+   "sha256": "7a3965f881da633161a1cd89e3a0498428c10dd826e0e38c09d2939657039ad4",
+   "fixture": "nidhi-singh02__agent-router.toml",
+   "actions": [
+    "route",
+    "status",
+    "sessions",
+    "resume-latest",
+    "usage-refresh"
+   ],
+   "events": []
+  },
+  {
+   "rank": 36,
+   "repository": "aemrebarut/herdr-dagr",
+   "plugin_id": "herdr-dagr",
+   "source_commit": "52991f9a95a2b8c11518ed66f9530d938c1ba254",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/aemrebarut/herdr-dagr/52991f9a95a2b8c11518ed66f9530d938c1ba254/herdr-plugin.toml",
+   "sha256": "8d0e6da72efa613a5fdd298c31f5d90fb35c4c1eb3fd9c030053344509aea3e6",
+   "fixture": "aemrebarut__herdr-dagr.toml",
+   "actions": [
+    "open-dagr",
+    "open-dagr-down",
+    "open-dagr-up",
+    "open-dagr-left",
+    "open-dagr-right",
+    "open-dagr-windows",
+    "open-dagr-down-windows",
+    "open-dagr-up-windows",
+    "open-dagr-left-windows",
+    "open-dagr-right-windows"
+   ],
+   "events": []
+  },
+  {
+   "rank": 37,
+   "repository": "osolmaz/ghzinga",
+   "plugin_id": "dutifuldev.ghzinga",
+   "source_commit": "6ed5266b20dd9eba362b84b982907a49111b519d",
+   "manifest_path": "plugins/herdr/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/osolmaz/ghzinga/6ed5266b20dd9eba362b84b982907a49111b519d/plugins/herdr/herdr-plugin.toml",
+   "sha256": "fb944f81c8a77eda989f43bf7ea8fab3bf3293c214bcb72677abd2ad7275cf5a",
+   "fixture": "osolmaz__ghzinga.toml",
+   "actions": [
+    "open"
+   ],
+   "events": []
+  },
+  {
+   "rank": 38,
+   "repository": "robbyrussell/herdr-ohmyzsh",
+   "plugin_id": "ohmyzsh.shell",
+   "source_commit": "bbc072ada531e6306276900a866a4b44a9b92e74",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/robbyrussell/herdr-ohmyzsh/bbc072ada531e6306276900a866a4b44a9b92e74/herdr-plugin.toml",
+   "sha256": "759dca85085a3557b2559f1f2a10027c6e21e65dbea55a70f9ef135c2d07ed71",
+   "fixture": "robbyrussell__herdr-ohmyzsh.toml",
+   "actions": [
+    "reload-all",
+    "install"
+   ],
+   "events": []
+  },
+  {
+   "rank": 39,
+   "repository": "iurysza/herdr-tab-smart-rename",
+   "plugin_id": "tab-smart-rename",
+   "source_commit": "bb3c1f64a1400bf4bb4bfb1e5ecbbef5222ecc02",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/iurysza/herdr-tab-smart-rename/bb3c1f64a1400bf4bb4bfb1e5ecbbef5222ecc02/herdr-plugin.toml",
+   "sha256": "db93a535756ee57a673df856eff5cdfae2b4021d2ec550c22121b87f428d31d1",
+   "fixture": "iurysza__herdr-tab-smart-rename.toml",
+   "actions": [
+    "start",
+    "stop",
+    "status",
+    "setup",
+    "configure-ai",
+    "configure-prompt",
+    "check-ai",
+    "rename-now",
+    "rename-all",
+    "reset-tab",
+    "reset-pane",
+    "reset-workspace"
+   ],
+   "events": []
+  },
+  {
+   "rank": 40,
+   "repository": "permgps/herdr-telegram-agents",
+   "plugin_id": "permgps.telegram-agents",
+   "source_commit": "3042e3a778bd397faabe4f194c3d37f0bb6ba45f",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/permgps/herdr-telegram-agents/3042e3a778bd397faabe4f194c3d37f0bb6ba45f/herdr-plugin.toml",
+   "sha256": "ea4c9a54ab2c10e989ccbc631c8134190de45c876c71fb816dc06c2e2762b4f9",
+   "fixture": "permgps__herdr-telegram-agents.toml",
+   "actions": [
+    "setup",
+    "start",
+    "stop",
+    "restart",
+    "status",
+    "resync",
+    "logs",
+    "doctor",
+    "send-test"
+   ],
+   "events": []
+  },
+  {
+   "rank": 41,
+   "repository": "aigorahub/herdr-lantern",
+   "plugin_id": "aigora.lantern",
+   "source_commit": "e356848f0a50159cf3a1386125fa38d94e5fe702",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/aigorahub/herdr-lantern/e356848f0a50159cf3a1386125fa38d94e5fe702/herdr-plugin.toml",
+   "sha256": "8cbf0950223fda15d2beee36ce851fe940cad28f73b830183180cd5d3f2587f8",
+   "fixture": "aigorahub__herdr-lantern.toml",
+   "actions": [
+    "open",
+    "evening"
+   ],
+   "events": []
+  },
+  {
+   "rank": 42,
+   "repository": "lmilojevicc/herdr-splits.nvim",
+   "plugin_id": "herdr-splits",
+   "source_commit": "94f30cf4e9ac76ddf185a3acd0977be728fa4106",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/lmilojevicc/herdr-splits.nvim/94f30cf4e9ac76ddf185a3acd0977be728fa4106/herdr-plugin.toml",
+   "sha256": "fb1a7e8a1753fce365a8cde850b833819f72ecd2d52dcbeb425507a58f746780",
+   "fixture": "lmilojevicc__herdr-splits.nvim.toml",
+   "actions": [
+    "nav-left",
+    "nav-down",
+    "nav-up",
+    "nav-right",
+    "resize-left",
+    "resize-down",
+    "resize-up",
+    "resize-right"
+   ],
+   "events": []
+  },
+  {
+   "rank": 43,
+   "repository": "iurysza/termscope",
+   "plugin_id": "termscope",
+   "source_commit": "d5774a74a47e3b6890506aef94b696d6b669cb50",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/iurysza/termscope/d5774a74a47e3b6890506aef94b696d6b669cb50/herdr-plugin.toml",
+   "sha256": "685134c500074122004ddf379c097e782739d7fbca8d4e9bb19f86bb9d8ae41d",
+   "fixture": "iurysza__termscope.toml",
+   "actions": [
+    "open",
+    "open-links"
+   ],
+   "events": []
+  },
+  {
+   "rank": 44,
+   "repository": "JonasBaeumer/herdr-file-annotator",
+   "plugin_id": "jonasbaeumer.file-annotator",
+   "source_commit": "f906f26bb4370983cf15254892b59ecd26eb50c8",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/JonasBaeumer/herdr-file-annotator/f906f26bb4370983cf15254892b59ecd26eb50c8/herdr-plugin.toml",
+   "sha256": "254a81d303b2021597fbf43ffa0437234a2528f54f1d7b4c54841877775470ac",
+   "fixture": "JonasBaeumer__herdr-file-annotator.toml",
+   "actions": [],
+   "events": []
+  },
+  {
+   "rank": 45,
+   "repository": "lamngockhuong/termote",
+   "plugin_id": "lamngockhuong.termote",
+   "source_commit": "e98ec496be11f605f6cfe65f13bad1ef872ad720",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/lamngockhuong/termote/e98ec496be11f605f6cfe65f13bad1ef872ad720/herdr-plugin/herdr-plugin.toml",
+   "sha256": "b3952401aa91542d1d978199b5cda2a0078cc8179a7196c46186be8a826d1e5f",
+   "fixture": "lamngockhuong__termote.toml",
+   "actions": [
+    "panel",
+    "panel-windows",
+    "open",
+    "open-windows",
+    "copy",
+    "copy-windows",
+    "start",
+    "start-windows",
+    "stop",
+    "stop-windows",
+    "restart",
+    "restart-windows"
+   ],
+   "events": []
+  },
+  {
+   "rank": 46,
+   "repository": "fkiene/llmtrim-herdr",
+   "plugin_id": "llmtrim.proxy",
+   "source_commit": "88ed6fbeab1cfc1224bece3744b207659bc1123b",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/fkiene/llmtrim-herdr/88ed6fbeab1cfc1224bece3744b207659bc1123b/herdr-plugin.toml",
+   "sha256": "467e822b034ae02d7038da03734e5dac83ad8163590f5f67a70ce90e39664e9d",
+   "fixture": "fkiene__llmtrim-herdr.toml",
+   "actions": [
+    "open-dashboard",
+    "open-dashboard-win",
+    "summary",
+    "summary-win",
+    "diagnose"
+   ],
+   "events": [
+    "workspace.created",
+    "workspace.created",
+    "pane.agent_detected",
+    "pane.agent_detected",
+    "workspace.closed",
+    "workspace.closed"
+   ]
+  },
+  {
+   "rank": 47,
+   "repository": "andrewchng/herdr-sessionizer",
+   "plugin_id": "sessionizer",
+   "source_commit": "c3a7c88a5a79f7515471650d2fcbe6cded6b6a44",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/andrewchng/herdr-sessionizer/c3a7c88a5a79f7515471650d2fcbe6cded6b6a44/herdr-plugin.toml",
+   "sha256": "90c1b78ce7a1724404dfb5c4813d08249c070770ce65398df477da1ec640693d",
+   "fixture": "andrewchng__herdr-sessionizer.toml",
+   "actions": [
+    "open",
+    "worktree-open"
+   ],
+   "events": []
+  },
+  {
+   "rank": 48,
+   "repository": "lararosekelley/dotfiles",
+   "plugin_id": "default-session",
+   "source_commit": "94c0610b8be6e9a76840e868b8e2980530789c1b",
+   "manifest_path": "content/.config/herdr/local-plugins/default-session/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/lararosekelley/dotfiles/94c0610b8be6e9a76840e868b8e2980530789c1b/content/.config/herdr/local-plugins/default-session/herdr-plugin.toml",
+   "sha256": "f3981368554533f8ea77c0dd437b31304556ef552e13ca09783fe6e593afb2a9",
+   "fixture": "lararosekelley__dotfiles.toml",
+   "actions": [
+    "apply",
+    "tab-move-left",
+    "tab-move-right",
+    "rehydrate",
+    "balance",
+    "toggle-mouse"
+   ],
+   "events": [
+    "workspace.created"
+   ]
+  },
+  {
+   "rank": 49,
+   "repository": "jeffarese/herdr-bar",
+   "plugin_id": "herdr-bar",
+   "source_commit": "0250955e090c5f76d61093026e580d5d3b7ffa51",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/jeffarese/herdr-bar/0250955e090c5f76d61093026e580d5d3b7ffa51/herdr-plugin.toml",
+   "sha256": "ea83005a5850a1855ea384bb0a2334f702ac8fe669e756361b83fed36f385d1f",
+   "fixture": "jeffarese__herdr-bar.toml",
+   "actions": [
+    "open",
+    "start-titles",
+    "stop-titles"
+   ],
+   "events": [
+    "pane.agent_detected"
+   ]
+  },
+  {
+   "rank": 50,
+   "repository": "NathanFlurry/herdr-plugin-jj-workspace",
+   "plugin_id": "nathanflurry.jj-workspace",
+   "source_commit": "ee71c3ce112ce97b494f4f77a92ac8589df12274",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/NathanFlurry/herdr-plugin-jj-workspace/ee71c3ce112ce97b494f4f77a92ac8589df12274/herdr-plugin.toml",
+   "sha256": "91d242182228e98929b1f1c49ffc5854fd4bc67673a75a107e0d2b4f2294eaa1",
+   "fixture": "NathanFlurry__herdr-plugin-jj-workspace.toml",
+   "actions": [
+    "new",
+    "new-tab",
+    "remove"
+   ],
+   "events": []
+  },
+  {
+   "rank": 51,
+   "repository": "razajamil/herdr-plugin-workspace-manager",
+   "plugin_id": "herdr-plugin-workspace-manager",
+   "source_commit": "8302970a088b8dff4aca9a3d9034907d66be80a7",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/razajamil/herdr-plugin-workspace-manager/8302970a088b8dff4aca9a3d9034907d66be80a7/herdr-plugin.toml",
+   "sha256": "9448f7ed0b3edcedb6c1d82242d44777e9b12964e36f5a8f4333416e7aa6955e",
+   "fixture": "razajamil__herdr-plugin-workspace-manager.toml",
+   "actions": [
+    "apply",
+    "validate",
+    "remove-gone"
+   ],
+   "events": [
+    "worktree.created",
+    "workspace.created",
+    "workspace.focused"
+   ]
+  },
+  {
+   "rank": 52,
+   "repository": "speardragon/herdr-plugin-manager",
+   "plugin_id": "ray.plugin-manager",
+   "source_commit": "e4fef2693728a36cbb389af033a389cad2257869",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/speardragon/herdr-plugin-manager/e4fef2693728a36cbb389af033a389cad2257869/herdr-plugin.toml",
+   "sha256": "055486133eedcbc8465d21e2da2095d75d05e9b4d126edfa528c3904479db8dd",
+   "fixture": "speardragon__herdr-plugin-manager.toml",
+   "actions": [
+    "open"
+   ],
+   "events": []
+  },
+  {
+   "rank": 53,
+   "repository": "fullerzz/herdr-plugin-sesh",
+   "plugin_id": "fullerzz.sesh",
+   "source_commit": "2c9a57c88ee89bfe9171c6161001559f1a757e1c",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/fullerzz/herdr-plugin-sesh/2c9a57c88ee89bfe9171c6161001559f1a757e1c/herdr-plugin.toml",
+   "sha256": "0aab77fc19ade14952b4743653dcc8384407abb8ef608eecc2b6cd636c83cdc6",
+   "fixture": "fullerzz__herdr-plugin-sesh.toml",
+   "actions": [
+    "open-picker",
+    "last",
+    "open-settings"
+   ],
+   "events": [
+    "workspace.focused",
+    "workspace.closed"
+   ]
+  },
+  {
+   "rank": 54,
+   "repository": "senna-lang/herdr-agent-usage",
+   "plugin_id": "usagebar",
+   "source_commit": "0539af4e6aa2d1914c2fce2fb1fde9f0cdaa76ec",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/senna-lang/herdr-agent-usage/0539af4e6aa2d1914c2fce2fb1fde9f0cdaa76ec/herdr-plugin.toml",
+   "sha256": "8a0f886f307533837f4b61227e93517c87937914b1b2c4edf451cfc1199c5c1e",
+   "fixture": "senna-lang__herdr-agent-usage.toml",
+   "actions": [
+    "refresh",
+    "open-limits",
+    "setup",
+    "enable-toast",
+    "check-updates"
+   ],
+   "events": [
+    "pane.agent_status_changed",
+    "pane.agent_status_changed",
+    "pane.focused",
+    "pane.focused"
+   ]
+  },
+  {
+   "rank": 55,
+   "repository": "deimantasnork/captains-deck",
+   "plugin_id": "herdr-firstmate-flow",
+   "source_commit": "06c8284b1a8e17b7ec0acaa8d32c3bcbb23ec9c3",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/deimantasnork/captains-deck/06c8284b1a8e17b7ec0acaa8d32c3bcbb23ec9c3/herdr-plugin.toml",
+   "sha256": "096ad38b8eb9c540d45c0fe664e17eab2d1ce1fb44e0e898df7af0aa2490d8ec",
+   "fixture": "deimantasnork__captains-deck.toml",
+   "actions": [
+    "open-flow",
+    "open-captain-deck"
+   ],
+   "events": []
+  },
+  {
+   "rank": 56,
+   "repository": "oborchers/proqi",
+   "plugin_id": "proqi",
+   "source_commit": "694ae1738edeb9e9610fdf1375e22ef600e8cf9e",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/oborchers/proqi/694ae1738edeb9e9610fdf1375e22ef600e8cf9e/herdr-plugin.toml",
+   "sha256": "14df2b9f0c1c8fd7b029eee1f150ce0d0ecbd875a76628f130f627824c3759da",
+   "fixture": "oborchers__proqi.toml",
+   "actions": [
+    "toggle"
+   ],
+   "events": []
+  },
+  {
+   "rank": 57,
+   "repository": "JanTvrdik/herdr-command-palette",
+   "plugin_id": "jt.command-palette",
+   "source_commit": "eab940018c2135ac23718efa11e23e9dddcd2a75",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/JanTvrdik/herdr-command-palette/eab940018c2135ac23718efa11e23e9dddcd2a75/herdr-plugin.toml",
+   "sha256": "6fd8e0eda786246d87cea8db4602e0d182f5ac894b509c0db5669a6821f5a2d7",
+   "fixture": "JanTvrdik__herdr-command-palette.toml",
+   "actions": [
+    "open"
+   ],
+   "events": []
+  },
+  {
+   "rank": 58,
+   "repository": "ragamo/herdr-flock",
+   "plugin_id": "flock.farm",
+   "source_commit": "e9a8f3ecca7304f3f868765194edf334242696a3",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ragamo/herdr-flock/e9a8f3ecca7304f3f868765194edf334242696a3/herdr-plugin.toml",
+   "sha256": "0a86e37de2cc30e964438f775d7135e0c8362cd4eb31ac5f8b61b58eee884b3a",
+   "fixture": "ragamo__herdr-flock.toml",
+   "actions": [
+    "open"
+   ],
+   "events": []
+  },
+  {
+   "rank": 59,
+   "repository": "Crokily/herdr-lazygit",
+   "plugin_id": "herdr-lazygit",
+   "source_commit": "ac955e59caae5cbc34b74ccf949e11f085269b4d",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/Crokily/herdr-lazygit/ac955e59caae5cbc34b74ccf949e11f085269b4d/herdr-plugin.toml",
+   "sha256": "45e2b53c15f8790384f800430fbdcd97883024c33a0240c938fa8362a8203255",
+   "fixture": "Crokily__herdr-lazygit.toml",
+   "actions": [
+    "open",
+    "open-tab"
+   ],
+   "events": []
+  },
+  {
+   "rank": 60,
+   "repository": "ntindle/herdr-resurrect",
+   "plugin_id": "ntindle.herdr-resurrect",
+   "source_commit": "109a9376549e29646c77fdfb7ed8ba456a9d6617",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ntindle/herdr-resurrect/109a9376549e29646c77fdfb7ed8ba456a9d6617/herdr-plugin.toml",
+   "sha256": "ba6086b5d724ce4626d9ba820997aa205163aefa5c034995e39dd8d0f3c258d0",
+   "fixture": "ntindle__herdr-resurrect.toml",
+   "actions": [
+    "save",
+    "restore",
+    "restore-preview",
+    "snapshots",
+    "save-space",
+    "open-space",
+    "delete-space"
+   ],
+   "events": [
+    "workspace.created",
+    "workspace.closed",
+    "pane.created",
+    "pane.closed",
+    "pane.exited",
+    "pane.agent_detected"
+   ]
+  },
+  {
+   "rank": 61,
+   "repository": "rjyo/herdr-window-title-sync",
+   "plugin_id": "rjyo.window-title-sync",
+   "source_commit": "b07f1140b7308d66487b2f4be546c0c7db065569",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/rjyo/herdr-window-title-sync/b07f1140b7308d66487b2f4be546c0c7db065569/herdr-plugin.toml",
+   "sha256": "61ccdf8a4a916e47013d0ac69f974fb9e8cfb89dd0c484cb45e0a51a816e9c90",
+   "fixture": "rjyo__herdr-window-title-sync.toml",
+   "actions": [
+    "refresh"
+   ],
+   "events": [
+    "workspace.focused",
+    "workspace.renamed",
+    "workspace.updated",
+    "tab.focused",
+    "tab.renamed",
+    "pane.focused",
+    "pane.agent_detected",
+    "pane.agent_status_changed",
+    "pane.moved",
+    "pane.created",
+    "pane.closed"
+   ]
+  },
+  {
+   "rank": 62,
+   "repository": "miiraheart/herdr-beads",
+   "plugin_id": "herdr-beads",
+   "source_commit": "bef9e42a2dc915be65d87d96a8843301d3457a83",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/miiraheart/herdr-beads/bef9e42a2dc915be65d87d96a8843301d3457a83/herdr-plugin.toml",
+   "sha256": "9137ddd47b2905cc12a739e5e4c2ca2fc6b0b8a27f31471d0977c70b9af479fe",
+   "fixture": "miiraheart__herdr-beads.toml",
+   "actions": [
+    "open-dock",
+    "open-board",
+    "redeploy"
+   ],
+   "events": [
+    "tab.created"
+   ]
+  },
+  {
+   "rank": 63,
+   "repository": "ImArtisann/zed-herdr",
+   "plugin_id": "artisann.zed-herdr",
+   "source_commit": "8835ffd92e7c8f4fd0c74c039ac947b27fb912e3",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ImArtisann/zed-herdr/8835ffd92e7c8f4fd0c74c039ac947b27fb912e3/herdr-plugin.toml",
+   "sha256": "b067827e60ff37a8401f4375b3cb5ff29f62a3e6e953c4cf567c40b6725d84bb",
+   "fixture": "ImArtisann__zed-herdr.toml",
+   "actions": [
+    "toggle"
+   ],
+   "events": [
+    "workspace.created",
+    "workspace.focused"
+   ]
+  },
+  {
+   "rank": 64,
+   "repository": "madarco/agentbox-herdr-plugin",
+   "plugin_id": "agentbox",
+   "source_commit": "d92b7bb57a9a4c618881d2598f1c4a71decdbc04",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/madarco/agentbox-herdr-plugin/d92b7bb57a9a4c618881d2598f1c4a71decdbc04/herdr-plugin.toml",
+   "sha256": "3449945fa39e76ddf954f4497d1e2b28cfc016286484526f3213d1fdddf2b438",
+   "fixture": "madarco__agentbox-herdr-plugin.toml",
+   "actions": [
+    "boxes",
+    "new",
+    "link"
+   ],
+   "events": []
+  },
+  {
+   "rank": 65,
+   "repository": "taxueseek/session-digger",
+   "plugin_id": "taxueseek.session-digger",
+   "source_commit": "e8f6465c76052adcae4781adfed0de59bddda1bf",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/taxueseek/session-digger/e8f6465c76052adcae4781adfed0de59bddda1bf/herdr-plugin.toml",
+   "sha256": "3bba9fbb0be5299dbb95ee25108efd03c723ab196d08e61f2d10b30cb81378ea",
+   "fixture": "taxueseek__session-digger.toml",
+   "actions": [
+    "sd-search",
+    "sd-fuzzy-search",
+    "sd-sessions",
+    "sd-stats",
+    "sd-trend",
+    "sd-skill-gap",
+    "sd-skill-health",
+    "sd-reindex"
+   ],
+   "events": [
+    "worktree.created",
+    "worktree.removed"
+   ]
+  },
+  {
+   "rank": 66,
+   "repository": "eliasstravik/herdr-agent-progress",
+   "plugin_id": "agent-progress",
+   "source_commit": "7f3a3fe4f197686703749f65d48bc281caca5df8",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/eliasstravik/herdr-agent-progress/7f3a3fe4f197686703749f65d48bc281caca5df8/herdr-plugin.toml",
+   "sha256": "e99800fb9cef58d7ba02f4e608d2debdbbeaa08125ea09df9d6b607647ea3ac5",
+   "fixture": "eliasstravik__herdr-agent-progress.toml",
+   "actions": [
+    "start",
+    "stop",
+    "configure",
+    "activate",
+    "doctor",
+    "unconfigure"
+   ],
+   "events": []
+  },
+  {
+   "rank": 67,
+   "repository": "speardragon/herdr-yazi",
+   "plugin_id": "ray.file-explorer",
+   "source_commit": "54aa4e6dff480189630fa3593146cdcc2768ade9",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/speardragon/herdr-yazi/54aa4e6dff480189630fa3593146cdcc2768ade9/herdr-plugin.toml",
+   "sha256": "1f0dd05328f544385cbd3cf26f9bd03c4e9e9ccf39a9580da617162e03415463",
+   "fixture": "speardragon__herdr-yazi.toml",
+   "actions": [
+    "open",
+    "open-tab"
+   ],
+   "events": []
+  },
+  {
+   "rank": 68,
+   "repository": "aorumbayev/herdr-workflows",
+   "plugin_id": "herdr-workflows",
+   "source_commit": "140de99b7fa43b10dc2a294e0667c62fa2f763dd",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/aorumbayev/herdr-workflows/140de99b7fa43b10dc2a294e0667c62fa2f763dd/herdr-plugin.toml",
+   "sha256": "b666677655118e6a5f0042de3986d3827166a89570c143dd450d8ef0fe2fdbdf",
+   "fixture": "aorumbayev__herdr-workflows.toml",
+   "actions": [
+    "launch"
+   ],
+   "events": []
+  },
+  {
+   "rank": 69,
+   "repository": "Unayung/herdr-watch",
+   "plugin_id": "herdr-watch",
+   "source_commit": "782f9d1e15e76e9bc17965074cb9aa87681ee4bf",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/Unayung/herdr-watch/782f9d1e15e76e9bc17965074cb9aa87681ee4bf/herdr-plugin.toml",
+   "sha256": "8d36079182bd24d4d10486aa2e82b719907c528f5bbd02b845bf634e3b3f0299",
+   "fixture": "Unayung__herdr-watch.toml",
+   "actions": [
+    "install-hooks",
+    "remove-hooks"
+   ],
+   "events": []
+  },
+  {
+   "rank": 70,
+   "repository": "yankewei/herdr-focus-notify",
+   "plugin_id": "herdr-focus-notify",
+   "source_commit": "ed73afc2af6a943ee1f2b205d8df671dd042d3de",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/yankewei/herdr-focus-notify/ed73afc2af6a943ee1f2b205d8df671dd042d3de/herdr-plugin.toml",
+   "sha256": "9b60d3e772ac51becdee55df013ec64284c061b2b729ba61cd146d32d5c7194a",
+   "fixture": "yankewei__herdr-focus-notify.toml",
+   "actions": [
+    "test",
+    "clear-terminal-bindings"
+   ],
+   "events": [
+    "pane.agent_status_changed",
+    "pane.focused"
+   ]
+  },
+  {
+   "rank": 71,
+   "repository": "natori-hrj/herdr-lazy",
+   "plugin_id": "herdr-lazy",
+   "source_commit": "8caad442f3710be6aff6872b03069068a931b38f",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/natori-hrj/herdr-lazy/8caad442f3710be6aff6872b03069068a931b38f/herdr-plugin.toml",
+   "sha256": "9dbac9a23666aaef411aeca6d4aa3f96ec9f36740646ccf4625b3e30f79ae567",
+   "fixture": "natori-hrj__herdr-lazy.toml",
+   "actions": [
+    "probe",
+    "init",
+    "sync",
+    "update",
+    "manage",
+    "starter"
+   ],
+   "events": [
+    "worktree.created",
+    "worktree.opened"
+   ]
+  },
+  {
+   "rank": 72,
+   "repository": "tdi/herdr-worktree-setup",
+   "plugin_id": "tdi.worktree-setup",
+   "source_commit": "c13ef573452b211b6097ddd0ce197be88e9a4b53",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/tdi/herdr-worktree-setup/c13ef573452b211b6097ddd0ce197be88e9a4b53/herdr-plugin.toml",
+   "sha256": "df46e7daf994000b091992ac0933982f27dc6417ec3e06a18d7acd20d1b6a4c8",
+   "fixture": "tdi__herdr-worktree-setup.toml",
+   "actions": [],
+   "events": [
+    "worktree.created"
+   ]
+  },
+  {
+   "rank": 73,
+   "repository": "Tyru5/herdr-floax",
+   "plugin_id": "herdr-floax",
+   "source_commit": "d6b283110c2e455fb3782595549895a840585e2b",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/Tyru5/herdr-floax/d6b283110c2e455fb3782595549895a840585e2b/herdr-plugin.toml",
+   "sha256": "78ec9b1717be2d6298f7505c37d61cb340b6865f326d311f3bd9125a0798afec",
+   "fixture": "Tyru5__herdr-floax.toml",
+   "actions": [
+    "toggle"
+   ],
+   "events": []
+  },
+  {
+   "rank": 74,
+   "repository": "junghan0611/entwurf",
+   "plugin_id": "junghan0611.entwurf",
+   "source_commit": "6932a011674c6f027f285ea54881c4a4790da8a9",
+   "manifest_path": "plugins/herdr/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/junghan0611/entwurf/6932a011674c6f027f285ea54881c4a4790da8a9/plugins/herdr/herdr-plugin.toml",
+   "sha256": "28a8bf8c8930a3bfa7cac83c0dc183c774da03cb7a653ad45a06ce8789dae3a4",
+   "fixture": "junghan0611__entwurf.toml",
+   "actions": [],
+   "events": []
+  },
+  {
+   "rank": 75,
+   "repository": "plannotator/herdr-plannotator",
+   "plugin_id": "official.plannotator",
+   "source_commit": "e10b969ea1655dbfce25d1464eef6f27c790bb79",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/plannotator/herdr-plannotator/e10b969ea1655dbfce25d1464eef6f27c790bb79/herdr-plugin.toml",
+   "sha256": "0c8be66b6ee9cea0ad8bb82600e0eb8c7efc79981387f98085fbaf74aa2616cf",
+   "fixture": "plannotator__herdr-plannotator.toml",
+   "actions": [
+    "configure",
+    "doctor",
+    "unconfigure"
+   ],
+   "events": []
+  },
+  {
+   "rank": 76,
+   "repository": "Davidcreador/herdr-token-dashboard",
+   "plugin_id": "dave.token-dashboard",
+   "source_commit": "1ab8ba4311043c489e610889ce52093f8ec7c8dc",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/Davidcreador/herdr-token-dashboard/1ab8ba4311043c489e610889ce52093f8ec7c8dc/herdr-plugin.toml",
+   "sha256": "db5a79d1aa5ff7f4c90e97c99e34b4859f5d543069908aefdee6034147943271",
+   "fixture": "Davidcreador__herdr-token-dashboard.toml",
+   "actions": [
+    "open-dashboard"
+   ],
+   "events": [
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 77,
+   "repository": "rmarganti/herdr-pluck",
+   "plugin_id": "rmarganti.herdr-pluck",
+   "source_commit": "1a6302384098f21835e2964637d39dddc989bc1d",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/rmarganti/herdr-pluck/1a6302384098f21835e2964637d39dddc989bc1d/herdr-plugin.toml",
+   "sha256": "9cf8e3e432de21c7408b766ce841e7af092e85390d373cab7d47b9a447cad7eb",
+   "fixture": "rmarganti__herdr-pluck.toml",
+   "actions": [
+    "pluck",
+    "open-url"
+   ],
+   "events": []
+  },
+  {
+   "rank": 78,
+   "repository": "0xGosu/herdr-auto-pilot",
+   "plugin_id": "herd-auto-prompter",
+   "source_commit": "aa63af3b1d824632889ffce8a512f6bdff6fbc3e",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/0xGosu/herdr-auto-pilot/aa63af3b1d824632889ffce8a512f6bdff6fbc3e/herdr-plugin.toml",
+   "sha256": "7e3be48be21391c415aad9ef6eb43fd9fea83d85aa37107ce4316575b63784af",
+   "fixture": "0xGosu__herdr-auto-pilot.toml",
+   "actions": [
+    "pause",
+    "resume",
+    "status"
+   ],
+   "events": [
+    "pane.agent_detected",
+    "workspace.created"
+   ]
+  },
+  {
+   "rank": 79,
+   "repository": "caioniehues/herdmates",
+   "plugin_id": "caioniehues.herdmates",
+   "source_commit": "f149455e5e20906e8bdf3b053dc36f63e4dac985",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/caioniehues/herdmates/f149455e5e20906e8bdf3b053dc36f63e4dac985/herdr-plugin.toml",
+   "sha256": "e009f48551775bbb013ccf4e4ce1210f176e0acd8a94d59d57858d74557d5c4e",
+   "fixture": "caioniehues__herdmates.toml",
+   "actions": [],
+   "events": []
+  },
+  {
+   "rank": 80,
+   "repository": "StructuPath/herdr-browser",
+   "plugin_id": "structupath.browser",
+   "source_commit": "182a62c82c867050bf08444d2db61a49f9fd0fe8",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/StructuPath/herdr-browser/182a62c82c867050bf08444d2db61a49f9fd0fe8/herdr-plugin.toml",
+   "sha256": "6b8a05b2b7f513803ec68bfa1f6413350e038b5355e1287a4ca2d3d9fdc4c432",
+   "fixture": "StructuPath__herdr-browser.toml",
+   "actions": [
+    "open",
+    "close",
+    "browse",
+    "record-start",
+    "record-stop"
+   ],
+   "events": []
+  },
+  {
+   "rank": 81,
+   "repository": "termaxa/termaxa",
+   "plugin_id": "termaxa.gate",
+   "source_commit": "3ce573ce0e018abd1d8490bc53b890bbed966d6d",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/termaxa/termaxa/3ce573ce0e018abd1d8490bc53b890bbed966d6d/herdr-plugin/herdr-plugin.toml",
+   "sha256": "bc504b3be52f0eb9e2b4dd3c1d0f6bbec94c7d28566702a1ac033661d8f40c95",
+   "fixture": "termaxa__termaxa.toml",
+   "actions": [
+    "gate-claude",
+    "gate-codex",
+    "record"
+   ],
+   "events": [
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 82,
+   "repository": "AVGVSTVS96/herdr-drovr",
+   "plugin_id": "drovr",
+   "source_commit": "03f38edba501f63d3f7044fc99cf3ae55438401e",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/AVGVSTVS96/herdr-drovr/03f38edba501f63d3f7044fc99cf3ae55438401e/herdr-plugin.toml",
+   "sha256": "42023f5fc6789f32c21f3fbe27c520b63f10d0032b18163c042346d5a4f80e90",
+   "fixture": "AVGVSTVS96__herdr-drovr.toml",
+   "actions": [
+    "move-tab",
+    "move-pane"
+   ],
+   "events": []
+  },
+  {
+   "rank": 83,
+   "repository": "ribbons-digital/pi-herd",
+   "plugin_id": "ribbons-digital.pi-herd",
+   "source_commit": "32118724933f6cebd9231098919ac47bd73f4cff",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ribbons-digital/pi-herd/32118724933f6cebd9231098919ac47bd73f4cff/herdr-plugin.toml",
+   "sha256": "b9134dd568864bc681152af2317759dcc727a88133485b7b54af342fc3b1c38d",
+   "fixture": "ribbons-digital__pi-herd.toml",
+   "actions": [
+    "doctor",
+    "start",
+    "status",
+    "collect",
+    "cleanup"
+   ],
+   "events": []
+  },
+  {
+   "rank": 84,
+   "repository": "wyattjoh/herdr-plugin-gh-pr",
+   "plugin_id": "gh-pr",
+   "source_commit": "6fe22de9a90c569f2186595cfddc3707f55ba1bd",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/wyattjoh/herdr-plugin-gh-pr/6fe22de9a90c569f2186595cfddc3707f55ba1bd/herdr-plugin.toml",
+   "sha256": "c93c43b63cdf219247fc623f8fccdb24cb16890052397c4d7fb8bd1200dc002b",
+   "fixture": "wyattjoh__herdr-plugin-gh-pr.toml",
+   "actions": [
+    "refresh",
+    "open-pr"
+   ],
+   "events": [
+    "pane.focused",
+    "worktree.opened",
+    "worktree.created"
+   ]
+  },
+  {
+   "rank": 85,
+   "repository": "aimdevlee/herdr-nvim-nav",
+   "plugin_id": "herdr-nvim-nav",
+   "source_commit": "ec047fd6d8d0269d54a34e9405af28d8aad4c8f0",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/aimdevlee/herdr-nvim-nav/ec047fd6d8d0269d54a34e9405af28d8aad4c8f0/herdr-plugin.toml",
+   "sha256": "3a5564de00edd3c8eabe547e5e5c34b1f159477b06a5ceab7733c1502bd67329",
+   "fixture": "aimdevlee__herdr-nvim-nav.toml",
+   "actions": [
+    "left",
+    "down",
+    "up",
+    "right"
+   ],
+   "events": []
+  },
+  {
+   "rank": 86,
+   "repository": "alexarthurs/herdr-notes",
+   "plugin_id": "herdr-notes",
+   "source_commit": "d0a8e67f6083ed41dd4fe25e546ed6404767c6be",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/alexarthurs/herdr-notes/d0a8e67f6083ed41dd4fe25e546ed6404767c6be/herdr-plugin.toml",
+   "sha256": "04918bab61f9b27b2dda7efe10848dfaec7b3aa29861132e188d0f8e3cd15bf8",
+   "fixture": "alexarthurs__herdr-notes.toml",
+   "actions": [
+    "open-notes",
+    "open-notes-windows"
+   ],
+   "events": []
+  },
+  {
+   "rank": 87,
+   "repository": "beyondlex/herdr-recent-navigator",
+   "plugin_id": "beyondlex.herdr-recent-navigator",
+   "source_commit": "30a2a7198535460436529bfc20caa57f4f0b478c",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/beyondlex/herdr-recent-navigator/30a2a7198535460436529bfc20caa57f4f0b478c/herdr-plugin.toml",
+   "sha256": "ef70f819a0eaacd531e9684c1ebc9a66e845f8a01508c08a3bbbb8f8714deed0",
+   "fixture": "beyondlex__herdr-recent-navigator.toml",
+   "actions": [
+    "open",
+    "focus-workspaces",
+    "focus-tabs",
+    "focus-agents",
+    "focus-panes",
+    "focus-all",
+    "focus-previous-tab",
+    "focus-previous-pane",
+    "focus-previous-agent"
+   ],
+   "events": [
+    "workspace.focused",
+    "pane.focused",
+    "tab.focused"
+   ]
+  },
+  {
+   "rank": 88,
+   "repository": "ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay",
+   "plugin_id": "ez-corp.space-usage",
+   "source_commit": "9872a499181b5a52472da3f74b9c567d3898069f",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ezcorp-org/herdr-pc-ram-and-cpu-usage-overlay/9872a499181b5a52472da3f74b9c567d3898069f/herdr-plugin.toml",
+   "sha256": "5219131eaa774cf2ec940b6b9b7c16ffae3d1e63976b2696eaa32b09722930b1",
+   "fixture": "ezcorp-org__herdr-pc-ram-and-cpu-usage-overlay.toml",
+   "actions": [
+    "report",
+    "monitor",
+    "icons",
+    "status-toggle",
+    "status-enable",
+    "status-disable"
+   ],
+   "events": [
+    "workspace.focused"
+   ]
+  },
+  {
+   "rank": 89,
+   "repository": "lmilojevicc/seshagy",
+   "plugin_id": "seshagy",
+   "source_commit": "4d9a89d007fbd4dd7e28a4b27f09d299aabe5061",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/lmilojevicc/seshagy/4d9a89d007fbd4dd7e28a4b27f09d299aabe5061/herdr-plugin.toml",
+   "sha256": "68bae70b8f7c762f7025dc2f8e68a4dd26498f868f055f28463de145e35446de",
+   "fixture": "lmilojevicc__seshagy.toml",
+   "actions": [],
+   "events": []
+  },
+  {
+   "rank": 90,
+   "repository": "tomasvarga/herdr-pickr",
+   "plugin_id": "pickr",
+   "source_commit": "e393ef593e44d2497f43d20aa7b0e4a26ea3d445",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/tomasvarga/herdr-pickr/e393ef593e44d2497f43d20aa7b0e4a26ea3d445/herdr-plugin.toml",
+   "sha256": "324888789c822bfa1a22b60cd74b301b9bad5d1ff016ccc382699ed948799e16",
+   "fixture": "tomasvarga__herdr-pickr.toml",
+   "actions": [
+    "route",
+    "toggle-auto"
+   ],
+   "events": []
+  },
+  {
+   "rank": 91,
+   "repository": "ivanarama/PromptPilot",
+   "plugin_id": "promptpilot",
+   "source_commit": "b2b3a87ebcc27b98ccda22f936c62776cb65f509",
+   "manifest_path": "herdr-plugin/herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ivanarama/PromptPilot/b2b3a87ebcc27b98ccda22f936c62776cb65f509/herdr-plugin/herdr-plugin.toml",
+   "sha256": "9f661ec24699b4f292dd7e237193e1b795306282e5c51903ce0d6953978815cb",
+   "fixture": "ivanarama__PromptPilot.toml",
+   "actions": [
+    "enqueue"
+   ],
+   "events": []
+  },
+  {
+   "rank": 92,
+   "repository": "sanirudh17/herdr-agent-handoff",
+   "plugin_id": "agent-handoff",
+   "source_commit": "2f2baf9c79f511b1d69815b7d9535f254b3d4e5c",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/sanirudh17/herdr-agent-handoff/2f2baf9c79f511b1d69815b7d9535f254b3d4e5c/herdr-plugin.toml",
+   "sha256": "6713b11002916d7d4f148f28c14c449659e2a949085345ed58035d83421f605c",
+   "fixture": "sanirudh17__herdr-agent-handoff.toml",
+   "actions": [
+    "handoff",
+    "handoff-split",
+    "handoff-tab",
+    "handoff-headless",
+    "setup-keys"
+   ],
+   "events": []
+  },
+  {
+   "rank": 93,
+   "repository": "tdi/herdr-worktree-from-linear",
+   "plugin_id": "tdi.worktree-from-linear",
+   "source_commit": "e7fb804e99874902d5cf426303801e932cfdfff0",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/tdi/herdr-worktree-from-linear/e7fb804e99874902d5cf426303801e932cfdfff0/herdr-plugin.toml",
+   "sha256": "ee66326bf443dfc88179b8bd9511ddc1d08bd7a94188b5114bc83641941641af",
+   "fixture": "tdi__herdr-worktree-from-linear.toml",
+   "actions": [
+    "pick"
+   ],
+   "events": []
+  },
+  {
+   "rank": 94,
+   "repository": "third774/herdr-last-workspace",
+   "plugin_id": "third774.last-workspace",
+   "source_commit": "8b55ebf15deaa52b49ff1c2500aab0c19c729420",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/third774/herdr-last-workspace/8b55ebf15deaa52b49ff1c2500aab0c19c729420/herdr-plugin.toml",
+   "sha256": "ee07451edaf695b2a847f3822d76ed079925f781bd47730b4f0c3fd0aa422727",
+   "fixture": "third774__herdr-last-workspace.toml",
+   "actions": [
+    "toggle"
+   ],
+   "events": [
+    "workspace.focused",
+    "workspace.closed"
+   ]
+  },
+  {
+   "rank": 95,
+   "repository": "Tomyail/herdr-connect",
+   "plugin_id": "herdr.connect",
+   "source_commit": "14b14c2552e265ee26eedc07a58d97f1f4eeebb2",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/Tomyail/herdr-connect/14b14c2552e265ee26eedc07a58d97f1f4eeebb2/herdr-plugin.toml",
+   "sha256": "8b22d8162ceeece9acd78eea4f2e2f5aac4ef34f51133d90ab21d465986fde91",
+   "fixture": "Tomyail__herdr-connect.toml",
+   "actions": [
+    "doctor",
+    "pair",
+    "service-status"
+   ],
+   "events": []
+  },
+  {
+   "rank": 96,
+   "repository": "wyattjoh/herdr-plugin-renamer",
+   "plugin_id": "herdr-plugin-renamer",
+   "source_commit": "e8d6dcd1fe1443c75175ea57ae86a09d30b66af6",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/wyattjoh/herdr-plugin-renamer/e8d6dcd1fe1443c75175ea57ae86a09d30b66af6/herdr-plugin.toml",
+   "sha256": "e2db2eadcff9b6fd083e998a2226248214c7d66bc10563655e6e178f0f4f52ec",
+   "fixture": "wyattjoh__herdr-plugin-renamer.toml",
+   "actions": [],
+   "events": [
+    "pane.agent_status_changed"
+   ]
+  },
+  {
+   "rank": 97,
+   "repository": "IvoryHeart/herdr-world",
+   "plugin_id": "ivoryheart.herdr-world",
+   "source_commit": "dc681f039f989eb5baf8a6f31b0aaae1c70abeb4",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/IvoryHeart/herdr-world/dc681f039f989eb5baf8a6f31b0aaae1c70abeb4/herdr-plugin.toml",
+   "sha256": "8cb85f7c7f8ca1a9eefd896799d523b462899711b9d6a64b3059c0bc089fbeae",
+   "fixture": "IvoryHeart__herdr-world.toml",
+   "actions": [
+    "start",
+    "restart",
+    "status",
+    "url",
+    "version",
+    "uninstall"
+   ],
+   "events": []
+  },
+  {
+   "rank": 98,
+   "repository": "ogulcancelik/herdr-plugin-github-start",
+   "plugin_id": "ogulcancelik.github-start",
+   "source_commit": "a254543224f748bc048ad2d8178846ccd752b4c3",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/ogulcancelik/herdr-plugin-github-start/a254543224f748bc048ad2d8178846ccd752b4c3/herdr-plugin.toml",
+   "sha256": "395cbc72aef69fe8024bdd1f70dc7601fa3befcc91097c3b80a7bcbf4a66a5d3",
+   "fixture": "ogulcancelik__herdr-plugin-github-start.toml",
+   "actions": [
+    "open"
+   ],
+   "events": []
+  },
+  {
+   "rank": 99,
+   "repository": "hmu332233/herdr-f1",
+   "plugin_id": "dev.minung.herdr-f1",
+   "source_commit": "9af4d2af82da1fe71b3ef8a8d31ba0edf3c326b0",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/hmu332233/herdr-f1/9af4d2af82da1fe71b3ef8a8d31ba0edf3c326b0/herdr-plugin.toml",
+   "sha256": "1277aebeb052c9d4017c36981b3536cc4fc3ece81eec59902a20c5ae5ff53800",
+   "fixture": "hmu332233__herdr-f1.toml",
+   "actions": [
+    "open",
+    "stop"
+   ],
+   "events": []
+  },
+  {
+   "rank": 100,
+   "repository": "bayoudhi/herdr-shell-progress",
+   "plugin_id": "bayoudhi.shell-progress",
+   "source_commit": "6c728dcea9432e22559d4f36d2921a662ade98df",
+   "manifest_path": "herdr-plugin.toml",
+   "manifest_url": "https://raw.githubusercontent.com/bayoudhi/herdr-shell-progress/6c728dcea9432e22559d4f36d2921a662ade98df/herdr-plugin.toml",
+   "sha256": "63696af809197db9680266d6f543d8ee8e5183021aefe582c9a51b4b9fd2c3ab",
+   "fixture": "bayoudhi__herdr-shell-progress.toml",
+   "actions": [
+    "print-snippet"
+   ],
+   "events": []
+  }
+ ]
+}

@@ -1,0 +1,27 @@
+id = "official.plannotator"
+name = "Plannotator"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Review Plannotator plans and changes inside Herdr."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bun", "install", "--frozen-lockfile"]
+
+[[actions]]
+id = "configure"
+title = "Configure Plannotator for Herdr"
+contexts = ["global"]
+command = ["bun", "run", "src/actions/configure.ts"]
+
+[[actions]]
+id = "doctor"
+title = "Check Plannotator Herdr integration"
+contexts = ["global"]
+command = ["bun", "run", "src/actions/doctor.ts"]
+
+[[actions]]
+id = "unconfigure"
+title = "Remove Plannotator Herdr integration"
+contexts = ["global"]
+command = ["bun", "run", "src/actions/unconfigure.ts"]

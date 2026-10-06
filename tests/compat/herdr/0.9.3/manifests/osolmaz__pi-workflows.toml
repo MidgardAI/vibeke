@@ -1,0 +1,12 @@
+id = "osolmaz.pi-workflows"
+name = "pi-workflows"
+version = "0.17.6"
+min_herdr_version = "0.7.0"
+description = "Open the active pi-workflows run in piw from a managed Herdr pane."
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "piw"
+title = "piw"
+placement = "split"
+command = ["node", "plugins/herdr/viewer.mjs"]

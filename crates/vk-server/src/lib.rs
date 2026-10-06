@@ -7,6 +7,7 @@ pub mod agent_browser;
 pub mod agents;
 pub mod api;
 pub mod browser_pane;
+pub mod compat;
 pub mod core;
 pub mod gateway_api;
 pub mod git_api;

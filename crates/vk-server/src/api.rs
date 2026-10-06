@@ -372,7 +372,7 @@ pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<
     Ok(())
 }
 
-async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
+pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
     authorize(server, ctx, method, p)?;
     crate::search::authorize_read(server, ctx, method, p)?;
     if let Some(r) = crate::parity::api(server, ctx, method, p).await {
@@ -402,6 +402,11 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
         return r;
     }
     if let Some(r) = crate::git_api::api(server, ctx, method, p).await {
+        return r;
+    }
+    if (method.starts_with("plugin.") || method.starts_with("compat."))
+        && let Some(r) = crate::compat::api(server, ctx, method, p).await
+    {
         return r;
     }
     match method {
@@ -434,6 +439,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                     .chain(crate::browser_pane::METHODS)
                     .chain(crate::parity::METHODS)
                     .chain(crate::screenshots::METHODS)
+                    .chain(crate::compat::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))

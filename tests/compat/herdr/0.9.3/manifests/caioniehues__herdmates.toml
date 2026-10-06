@@ -1,0 +1,15 @@
+id = "caioniehues.herdmates"
+name = "Herdmates"
+version = "3.2.0"
+min_herdr_version = "0.7.4"
+description = "Claude Code agent teams, native in herdr — teammux shim (takeover default), hook-driven signal engine + recorder, sidebar tokens"
+platforms = ["linux", "macos"]
+
+[[build]]
+# Issue #101: `cargo install` builds release itself, so this one hook
+# both builds and puts a bare-argv0-resolvable `herdmates` on PATH at
+# `~/.local/bin` (confirmed on PATH, matches where `herdr` itself
+# lives). herdr spawns argv directly (no shell) — a literal "~" in
+# argv would never expand and would create a literal ./~ directory, so
+# this goes through `sh -c`, not a bare argv array.
+command = ["sh", "-c", "cargo install --path . --root \"$HOME/.local\""]

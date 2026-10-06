@@ -1,0 +1,28 @@
+id = "drovr"
+name = "drovr"
+version = "0.4.8"
+min_herdr_version = "0.7.4"
+description = "Drive your herd: move the focused tab or pane, live agents included, anywhere with an fzf picker."
+platforms = ["linux", "macos"]
+
+# Headless; invoked by keybindings (see README).
+[[actions]]
+id = "move-tab"
+title = "Move tab to workspace…"
+contexts = ["tab"]
+command = ["node", "--import", "./compile-cache.js", "open-picker.ts", "tab"]
+
+[[actions]]
+id = "move-pane"
+title = "Move pane to tab…"
+contexts = ["pane"]
+command = ["node", "--import", "./compile-cache.js", "open-picker.ts", "pane"]
+
+# Keep direct opens consistent with the action-launched picker.
+[[panes]]
+id = "picker"
+title = "drovr"
+placement = "popup"
+width = 64
+height = 28
+command = ["node", "--import", "./compile-cache.js", "pick-and-move.ts"]

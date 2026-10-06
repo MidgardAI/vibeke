@@ -1,0 +1,100 @@
+id = "herdr-agent-usage"
+name = "Herdr Agent Usage"
+version = "1.6.3"
+min_herdr_version = "0.9.0"
+description = "Credential-scoped AI quota and context for Claude, Codex, Grok, Agy, OpenCode, Pi, omp, Devin, Muse, and Cursor."
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[startup]]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" startup --provider all"]
+
+[[actions]]
+id = "refresh"
+title = "Refresh agent quota"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" refresh --provider all --force"]
+
+[[actions]]
+id = "configure"
+title = "Install / repair agent quota"
+command = ["sh", "-c", "\"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" configure --apply && herdr server reload-config && exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" startup --provider all"]
+
+[[actions]]
+id = "open-settings"
+title = "Open agent quota settings"
+command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin herdr-agent-usage --entrypoint settings --focus"]
+
+[[actions]]
+id = "toggle-agent-order"
+title = "Toggle agent order (quota / tabs)"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" toggle-order"]
+
+[[actions]]
+id = "uninstall"
+title = "Uninstall agent quota configuration"
+command = ["sh", "-c", "\"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" configure --uninstall && herdr server reload-config"]
+
+[[events]]
+id = "agent-quota-refresh"
+on = "pane.agent_detected"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" event"]
+
+[[events]]
+id = "agent-quota-status-refresh"
+on = "pane.agent_status_changed"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" event"]
+
+[[events]]
+id = "focused-agent-quota-refresh"
+on = "pane.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" focus"]
+
+[[events]]
+id = "focused-workspace-agent-quota-refresh"
+on = "workspace.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" focus"]
+
+[[events]]
+id = "focused-tab-agent-quota-refresh"
+on = "tab.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" focus"]
+
+[[events]]
+id = "closed-pane-agent-quota-layout"
+on = "pane.closed"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" layout"]
+
+[[events]]
+id = "moved-pane-agent-quota-layout"
+on = "pane.moved"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" layout"]
+
+[[events]]
+id = "closed-tab-agent-quota-layout"
+on = "tab.closed"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" layout"]
+
+[[events]]
+id = "moved-tab-agent-quota-layout"
+on = "tab.moved"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" layout"]
+
+[[panes]]
+id = "dashboard"
+title = "Agent quota"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" dashboard"]
+placement = "popup"
+
+[[panes]]
+id = "settings"
+title = "Agent quota settings"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-agent-usage\" settings"]
+placement = "popup"
+# Every option on screen at once. The default half-size popup is 24 rows and
+# the list plus controls needs 33 interior rows, so without this the agents
+# section opens below the fold.
+# Herdr clamps to the terminal, and the pane still scrolls when it has to.
+width = 78
+height = 37
