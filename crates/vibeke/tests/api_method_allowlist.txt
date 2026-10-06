@@ -12,7 +12,6 @@ agent.interrupt
 agent.manifests_reload
 agent.read
 agent.release
-agent.resume
 agent.send_keys
 agent.spawn
 blob.abort
