@@ -454,6 +454,37 @@ pub fn propose_review_base(
     })
 }
 
+/// The checkout's current branch (`None` when detached or unborn).
+pub fn current_branch(repo: &Path) -> Option<String> {
+    gitcmd::run(repo, &["symbolic-ref", "-q", "--short", "HEAD"])
+        .ok()
+        .filter(|b| !b.is_empty())
+}
+
+/// The repository's default branch, resolved locally without fetching (§5): the target of
+/// `origin/HEAD` (the local branch of that name when it exists, else the remote-tracking ref),
+/// otherwise a local `main` or `master`.
+pub fn default_branch(repo: &Path) -> Option<String> {
+    let local = |b: &str| rev_parse(repo, &format!("refs/heads/{b}")).is_ok();
+    if let Ok(r) = gitcmd::run(
+        repo,
+        &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"],
+    ) && let Some(b) = r.strip_prefix("origin/")
+        && !b.is_empty()
+    {
+        if local(b) {
+            return Some(b.to_string());
+        }
+        if rev_parse(repo, &format!("refs/remotes/{r}")).is_ok() {
+            return Some(r);
+        }
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|b| local(b))
+        .map(str::to_string)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStat {
     pub path: String,
@@ -551,11 +582,24 @@ fn parse_numstat_z(out: &[u8]) -> DiffStat {
 
 /// `git diff base head` from immutable objects, truncated to `max_bytes` (char boundary).
 pub fn diff_text(subject: &ChangeSubject, max_bytes: usize) -> Result<DiffText, SubjectError> {
+    diff_text_path(subject, None, max_bytes)
+}
+
+/// [`diff_text`] limited to one path (literal pathspec) when `path` is given.
+pub fn diff_text_path(
+    subject: &ChangeSubject,
+    path: Option<&str>,
+    max_bytes: usize,
+) -> Result<DiffText, SubjectError> {
     require_immutable(subject)?;
     let repo = Path::new(&subject.repo.root);
     let mut args = vec!["diff"];
     args.extend(DIFF_FLAGS);
     args.extend([subject.base_sha.as_str(), subject.head_sha.as_str()]);
+    let spec = path.map(|p| format!(":(literal){p}"));
+    if let Some(spec) = &spec {
+        args.extend(["--", spec.as_str()]);
+    }
     let out = gitcmd::run_bytes(repo, &args)?;
     let full = String::from_utf8_lossy(&out);
     let (t, truncated) = truncate_utf8(&full, max_bytes);
@@ -704,6 +748,11 @@ mod tests {
         assert!(!d.truncated);
         let d = diff_text(&s, 10).unwrap();
         assert!(d.truncated && d.text.len() <= 10);
+        // One path only.
+        let d = diff_text_path(&s, Some("a.txt"), 1 << 20).unwrap();
+        assert!(d.text.contains("+two") && !d.text.contains("bin.dat"));
+        let d = diff_text_path(&s, Some("missing.txt"), 1 << 20).unwrap();
+        assert!(d.text.is_empty());
         // The live file is untouched.
         assert_eq!(
             std::fs::read_to_string(r.root().join("a.txt")).unwrap(),
@@ -834,6 +883,21 @@ mod tests {
         assert_eq!(p.reason, BaseReason::HeadFallback);
         assert!(p.warnings.iter().any(|w| w.contains("omitted")));
         assert!(p.warnings.iter().any(|w| w.contains("origin/nope")));
+
+        // Default branch: local main/master, or origin/HEAD's target.
+        assert_eq!(current_branch(r.root()).as_deref(), Some("feature"));
+        assert_eq!(default_branch(r.root()).as_deref(), Some("main"));
+        r.git(&["branch", "-q", "-m", "main", "trunk"]);
+        assert_eq!(default_branch(r.root()), None);
+        r.git(&["update-ref", "refs/remotes/origin/trunk", &main2]);
+        r.git(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/trunk",
+        ]);
+        assert_eq!(default_branch(r.root()).as_deref(), Some("trunk"));
+        r.git(&["branch", "-q", "-D", "trunk"]);
+        assert_eq!(default_branch(r.root()).as_deref(), Some("origin/trunk"));
     }
 
     #[test]
