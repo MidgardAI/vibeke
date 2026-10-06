@@ -20,6 +20,10 @@ const MAX_DEPTH: usize = 6;
 pub struct State {
     /// A sidebar drag in progress: (machine, workspace, start row).
     pub drag: Option<(usize, String, u16)>,
+    /// A group row pressed (a click toggles, a drag reorders): (machine, group, start row).
+    pub group_drag: Option<(usize, String, u16)>,
+    /// The row a dragged group is over (drop marker).
+    pub group_over: Option<u16>,
 }
 
 /// Aggregate agent counts of a set of workspaces.
@@ -162,6 +166,17 @@ fn push_group(app: &App, mi: usize, g: &Group, depth: usize, rows: &mut Vec<Side
     segs.extend(badges(app, c));
     if g.collapsed && c.total == 0 && !g.workspaces.is_empty() {
         segs.push((format!(" ({})", g.workspaces.len()), t.dim()));
+    }
+    // Being dragged to a new place (08 §2.1).
+    if app
+        .parity
+        .groups
+        .group_drag
+        .as_ref()
+        .is_some_and(|(m, id, _)| *m == mi && *id == g.id)
+        && app.parity.groups.group_over.is_some()
+    {
+        segs.push((" ⇅ moving".into(), t.bold(t.accent)));
     }
     rows.push(SideRow {
         segs,
@@ -403,23 +418,119 @@ pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
     true
 }
 
-/// Sidebar mouse: a click on a group row toggles it; dragging a workspace/agent row onto a
-/// group row moves the workspace into that group, onto an ungrouped workspace takes it out.
+/// Where dropping group `gid` on group row `target` puts it (`group.move {group, parent,
+/// index}`): next to `target` among `target`'s siblings, after it when dragged downwards and
+/// before it when dragged upwards. `None` when `target` is `gid` itself or inside it.
+pub fn drop_position(
+    groups: &[Group],
+    gid: &str,
+    target: &str,
+    downwards: bool,
+) -> Option<(Option<String>, usize)> {
+    if gid == target || members_groups(groups, gid).contains(target) {
+        return None;
+    }
+    let t = groups.iter().find(|g| g.id == target)?;
+    let parent = t
+        .parent
+        .clone()
+        .filter(|p| groups.iter().any(|g| &g.id == p));
+    let mut sibs: Vec<&Group> = groups
+        .iter()
+        .filter(|g| {
+            g.id != gid
+                && g.parent
+                    .clone()
+                    .filter(|p| groups.iter().any(|x| &x.id == p))
+                    == parent
+        })
+        .collect();
+    sibs.sort_by(|a, b| a.order.total_cmp(&b.order));
+    let i = sibs.iter().position(|g| g.id == target)?;
+    Some((parent, if downwards { i + 1 } else { i }))
+}
+
+/// Group ids nested anywhere under `gid`.
+fn members_groups(groups: &[Group], gid: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut stack = vec![(gid.to_string(), 0usize)];
+    while let Some((id, depth)) = stack.pop() {
+        if depth > MAX_DEPTH {
+            continue;
+        }
+        for c in groups.iter().filter(|c| c.parent.as_deref() == Some(&id)) {
+            if out.insert(c.id.clone()) {
+                stack.push((c.id.clone(), depth + 1));
+            }
+        }
+    }
+    out
+}
+
+/// Release of a group drag at row `y` (started at `from`): a click toggles the group, a drop
+/// on another group row of the same machine reorders (08 §2.1).
+fn drop_group(app: &mut App, mi: usize, gid: &str, from: u16, y: u16, row: Option<&SideRow>) {
+    if from == y {
+        collapse(app, mi, gid, None);
+        return;
+    }
+    let Some((tm, target)) = row.and_then(|r| r.group.clone()) else {
+        return;
+    };
+    if tm != mi {
+        app.toast("groups move within their own machine only");
+        return;
+    }
+    match drop_position(&app.machines[mi].model.groups, gid, &target, y > from) {
+        Some((parent, index)) => app.command_on(
+            mi,
+            "group.move",
+            json!({"group": gid, "parent": parent, "index": index}),
+            Pending::Parity(Reply::Ignore),
+        ),
+        None if gid != target => app.toast("a group can't move into itself"),
+        None => {}
+    }
+}
+
+/// Sidebar mouse: a click on a group row toggles it; dragging a group row onto another group
+/// row reorders the groups (`group.move`); dragging a workspace/agent row onto a group row moves
+/// the workspace into that group, onto an ungrouped workspace takes it out.
 pub fn on_mouse(app: &mut App, me: &MouseEvent) -> bool {
     let (x, y) = (me.column, me.row);
     let in_sidebar = crate::chrome::in_sidebar(app, x);
     if !in_sidebar {
         if matches!(me.kind, MouseEventKind::Up(_)) {
             app.parity.groups.drag = None;
+            app.parity.groups.group_drag = None;
         }
         return false;
     }
     let rows = crate::draw::sidebar_rows(app);
     let row = y.checked_sub(1).and_then(|i| rows.get(i as usize));
+    if let Some((mi, gid, from)) = app.parity.groups.group_drag.clone() {
+        match me.kind {
+            MouseEventKind::Drag(CtButton::Left) => {
+                app.parity.groups.group_over = Some(y);
+                app.dirty = true;
+                return true;
+            }
+            MouseEventKind::Up(CtButton::Left) => {
+                app.parity.groups.group_drag = None;
+                app.parity.groups.group_over = None;
+                drop_group(app, mi, &gid, from, y, row);
+                app.dirty = true;
+                return true;
+            }
+            _ => {}
+        }
+    }
     match me.kind {
         MouseEventKind::Down(CtButton::Left) => {
             if let Some((mi, gid)) = row.and_then(|r| r.group.clone()) {
-                collapse(app, mi, &gid, None);
+                // A click (release on the same row) toggles; a drag reorders.
+                app.parity.groups.group_drag = Some((mi, gid, y));
+                app.parity.groups.group_over = None;
                 return true;
             }
             app.parity.groups.drag = row

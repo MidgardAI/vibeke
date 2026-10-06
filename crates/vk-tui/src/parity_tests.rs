@@ -260,7 +260,10 @@ fn groups_mouse_click_toggles_and_drag_moves() {
         .position(|r| r.target.as_ref().is_some_and(|t| t.1 == "p1"))
         .unwrap() as u16
         + 1;
+    // A click (press and release on the row) toggles; the press alone may start a drag.
     app.on_mouse(mouse(MouseEventKind::Down(CtButton::Left), 2, gy));
+    assert!(commands(&mut rx[0]).is_empty());
+    app.on_mouse(mouse(MouseEventKind::Up(CtButton::Left), 2, gy));
     let c = commands(&mut rx[0]);
     assert_eq!(c[0].1["method"], "group.collapse");
     app.machines[0].model.groups[0].collapsed = false;
@@ -273,6 +276,89 @@ fn groups_mouse_click_toggles_and_drag_moves() {
     assert_eq!(c.len(), 1, "{c:?}");
     assert_eq!(c[0].1["method"], "group.add");
     assert_eq!(c[0].1["params"], json!({"group": "g1", "workspace": "w1"}));
+}
+
+/// Three top-level groups a, b, c (orders 1..3) plus `a`'s child `a1`.
+fn three_groups(app: &mut App) {
+    let g = |id: &str, parent: Option<&str>, order: f64, ws: &[&str]| Group {
+        id: id.into(),
+        handle: id.into(),
+        name: format!("grp-{id}"),
+        parent: parent.map(str::to_string),
+        collapsed: false,
+        order,
+        workspaces: ws.iter().map(|w| w.to_string()).collect(),
+    };
+    app.machines[0].model.groups = vec![
+        g("a", None, 1.0, &["w1"]),
+        g("b", None, 2.0, &["w2"]),
+        g("c", None, 3.0, &["w3"]),
+        g("a1", Some("a"), 1.0, &[]),
+    ];
+    app.config.ui.sidebar.attention_section = false;
+}
+
+fn group_y(app: &App, id: &str) -> u16 {
+    crate::draw::sidebar_rows(app)
+        .iter()
+        .position(|r| r.group.as_ref().is_some_and(|g| g.1 == id))
+        .unwrap() as u16
+        + 1
+}
+
+#[test]
+fn group_drop_position_orders_among_siblings_and_refuses_cycles() {
+    let (mut app, _rx) = setup(false);
+    three_groups(&mut app);
+    let gs = &app.machines[0].model.groups;
+    // Down onto c: after it; up onto a: before it.
+    assert_eq!(
+        crate::groups::drop_position(gs, "a", "c", true),
+        Some((None, 2))
+    );
+    assert_eq!(
+        crate::groups::drop_position(gs, "c", "a", false),
+        Some((None, 0))
+    );
+    // Onto a child group: becomes its sibling (under the same parent).
+    assert_eq!(
+        crate::groups::drop_position(gs, "c", "a1", true),
+        Some((Some("a".into()), 1))
+    );
+    // Never into itself or below itself.
+    assert_eq!(crate::groups::drop_position(gs, "a", "a", true), None);
+    assert_eq!(crate::groups::drop_position(gs, "a", "a1", true), None);
+}
+
+#[test]
+fn group_drag_reorders_with_group_move_and_shows_the_moving_row() {
+    let (mut app, mut rx) = setup(false);
+    three_groups(&mut app);
+    let (ay, cy) = (group_y(&app, "a"), group_y(&app, "c"));
+    app.on_mouse(mouse(MouseEventKind::Down(CtButton::Left), 2, ay));
+    app.on_mouse(mouse(MouseEventKind::Drag(CtButton::Left), 2, cy));
+    // Drawn while dragging.
+    let t = text(&app);
+    let line = t.lines().find(|l| l.contains("grp-a ")).unwrap();
+    assert!(line.contains("⇅ moving"), "{t}");
+    assert!(commands(&mut rx[0]).is_empty(), "nothing sent mid-drag");
+    app.on_mouse(mouse(MouseEventKind::Up(CtButton::Left), 2, cy));
+    let c = commands(&mut rx[0]);
+    assert_eq!(c.len(), 1, "{c:?}");
+    assert_eq!(c[0].1["method"], "group.move");
+    assert_eq!(
+        c[0].1["params"],
+        json!({"group": "a", "parent": null, "index": 2})
+    );
+    assert!(app.parity.groups.group_drag.is_none());
+    assert!(!text(&app).contains("⇅ moving"));
+    // Dropping a group into its own child is refused locally.
+    let (ay, a1y) = (group_y(&app, "a"), group_y(&app, "a1"));
+    app.on_mouse(mouse(MouseEventKind::Down(CtButton::Left), 2, ay));
+    app.on_mouse(mouse(MouseEventKind::Drag(CtButton::Left), 2, a1y));
+    app.on_mouse(mouse(MouseEventKind::Up(CtButton::Left), 2, a1y));
+    assert!(commands(&mut rx[0]).is_empty());
+    assert!(text(&app).contains("can't move into itself"));
 }
 
 // ---- floats ---------------------------------------------------------------------------------

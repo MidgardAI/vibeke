@@ -422,6 +422,23 @@ fn attr_params(attrs: u16, p: &mut Vec<String>) {
     }
 }
 
+/// One SGR sequence that sets `style` from a reset (`ESC [ 0 ; … m`), at full fidelity (no host
+/// degradation): for text written to files, such as the edit-scrollback editor copy.
+pub fn sgr(style: Style) -> String {
+    let mut p = vec!["0".to_string()];
+    attr_params(style.attrs, &mut p);
+    if style.fg != Color::Default {
+        push_color(&mut p, style.fg, Slot::Fg);
+    }
+    if style.bg != Color::Default {
+        push_color(&mut p, style.bg, Slot::Bg);
+    }
+    if style.ul != Color::Default && style.attrs & attr::ANY_UNDERLINE != 0 {
+        push_color(&mut p, style.ul, Slot::Ul);
+    }
+    format!("\x1b[{}m", p.join(";"))
+}
+
 struct StrSink<'a>(&'a mut Vec<u8>);
 
 impl std::fmt::Write for StrSink<'_> {

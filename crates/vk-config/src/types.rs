@@ -300,6 +300,10 @@ impl Default for Keys {
 #[serde(default)]
 pub struct CopyMode {
     pub mode: CopyModeKind,
+    /// `edit_scrollback`'s editor file keeps colours and attributes (SGR) for the rows this
+    /// client can get styled: in-memory scrollback and the screen (03 §11.3). Archived rows are
+    /// stored as text and stay plain.
+    pub editor_include_ansi: bool,
     /// Per-key overrides (key → action).
     #[serde(flatten)]
     pub overrides: BTreeMap<String, String>,

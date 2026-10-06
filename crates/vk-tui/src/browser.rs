@@ -1524,8 +1524,16 @@ pub fn open_url(app: &mut App, mi: usize, pane: &str, url: &str) {
     );
 }
 
-/// Open a preview as a browser pane next to `source` (window fallback without graphics).
+/// Open a preview as configured for its workspace (`[preview] mode` and `pane_split`, a trusted
+/// repo's `[preview]` layered over the user's, 08 §11.1): a browser pane next to `source`
+/// (window fallback without graphics), a profile window, or the proxy URL.
 pub fn open_preview(app: &mut App, mi: usize, p: &Preview, source: Option<String>) {
+    let cfg = crate::repo_preview::for_preview(app, mi, p);
+    match cfg.mode {
+        vk_config::PreviewMode::Window => return preview_window(app, mi, p),
+        vk_config::PreviewMode::Proxy => return preview_proxy(app, mi, p),
+        vk_config::PreviewMode::Pane => {}
+    }
     crate::preview_ui::clear(app, mi, &p.handle);
     if gfx(app) == Gfx::None {
         let local = app.machines.iter().position(|m| m.local).unwrap_or(mi);
@@ -1542,7 +1550,7 @@ pub fn open_preview(app: &mut App, mi: usize, p: &Preview, source: Option<String
         );
         return;
     }
-    let mut params = json!({"preview": p.id, "split": "right", "focus": true});
+    let mut params = json!({"preview": p.id, "split": cfg.pane_split.as_str(), "focus": true});
     if let Some(s) = source {
         params["pane"] = json!(s);
     }
@@ -1601,7 +1609,7 @@ fn take_target(app: &mut App) -> Option<(usize, Preview)> {
 }
 
 /// Open a preview in a window of the profile browser (always, whatever the terminal can draw).
-fn preview_window(app: &mut App, mi: usize, p: &Preview) {
+pub(crate) fn preview_window(app: &mut App, mi: usize, p: &Preview) {
     crate::preview_ui::clear(app, mi, &p.handle);
     let (local, target) = local_target(app, mi, p);
     app.command_on(

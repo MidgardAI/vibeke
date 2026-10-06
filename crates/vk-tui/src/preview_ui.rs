@@ -97,6 +97,8 @@ fn wanted(app: &App) -> Vec<(usize, Preview)> {
     crate::browser::preview_entries(app)
         .into_iter()
         .filter(|(mi, _)| app.machines[*mi].local)
+        // `[preview] inline_thumbnails` (a trusted repo's value for its previews, 08 §11.1).
+        .filter(|(mi, p)| crate::repo_preview::for_preview(app, *mi, p).inline_thumbnails)
         .collect()
 }
 

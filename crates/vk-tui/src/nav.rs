@@ -6,7 +6,8 @@
 //! - **Command palette** (`prefix+:`): every keymap action, the browser actions, TUI commands,
 //!   custom `[[keys.command]]` entries and live entries (watch an agent's browser session),
 //!   each with a description and its current binding; recently used first.
-//! - **Goto** (`prefix+g`): workspaces, tabs, panes/agents and tasks, ranked by fuzzy score,
+//! - **Goto** (`prefix+g`): workspaces, tabs, panes/agents, tasks, previews (`%`) and machines
+//!   (`^`, with more than one connected), ranked by fuzzy score,
 //!   then this client's recent targets, then urgency. Searches titles, repo/cwd, branch, the
 //!   harness's native session id, agent names and harnesses.
 //! - **Recent history** per client (`<state>/<session>/nav-<client>.json`; the client name is
@@ -531,6 +532,23 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "sidebar_width_reset",
         "Sidebar width back to the config value",
     ),
+    (
+        "agent_list",
+        "Agents on every machine, most urgent first (jump)",
+    ),
+    (
+        "elevation_requests",
+        "Review a pane's request for elevated access (approve/deny)",
+    ),
+    ("tab_renumber", "Renumber this workspace's tabs 1..n"),
+    (
+        "task_recreate",
+        "Recreate the checkout of a task marked missing",
+    ),
+    (
+        "task_forget",
+        "Forget a task marked missing (nothing on disk is touched)",
+    ),
     ("new_task", "New task (git worktree)"),
     ("preview_list", "Previews"),
     ("cancel_transfer", "Cancel file transfers"),
@@ -743,6 +761,10 @@ pub fn palette_entries(app: &App) -> Vec<PaletteEntry> {
             e.disabled = disabled;
         }
     }
+    // Tasks whose checkout went missing: recreate / forget each (05 §4).
+    for (id, desc) in crate::taskbadge::palette_entries(app) {
+        push(&mut out, id, desc, None);
+    }
     // A trusted repo's `[[keys.command]]` entries (08 §11.1).
     for (id, desc, b) in crate::trust::palette_entries(app) {
         push(&mut out, id, desc, b);
@@ -883,7 +905,7 @@ pub fn palette_key(app: &mut App, ev: KeyEvent, filter: String, sel: usize) {
 }
 
 /// Draw a list popup row: highlighted label, then a dim right-aligned note.
-fn list_row(
+pub(crate) fn list_row(
     g: &mut Grid,
     at: SRect,
     segs: Vec<(String, Style)>,
@@ -926,7 +948,12 @@ fn list_row(
     }
 }
 
-fn list_frame(app: &App, g: &mut Grid, title: &str, filter: &str) -> (u16, u16, u16, u16) {
+pub(crate) fn list_frame(
+    app: &App,
+    g: &mut Grid,
+    title: &str,
+    filter: &str,
+) -> (u16, u16, u16, u16) {
     let area = app.pane_area();
     let w = 90u16.min(area.w.saturating_sub(2)).max(20);
     let h = 22u16.min(area.h.saturating_sub(1)).max(6);
@@ -991,6 +1018,10 @@ pub enum GotoTarget {
     Tab(String),
     Pane(String),
     Task(String),
+    /// A preview (id) on the entry's machine: enter opens it as configured (08 §6.2).
+    Preview(String),
+    /// A machine (label): enter switches to it.
+    Machine(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1003,7 +1034,7 @@ pub struct GotoEntry {
     pub extra: String,
     /// 0 = nothing; higher = more urgent (open interaction, done).
     pub urgency: u8,
-    /// `@` agent, `#` task, `:` tab, `~` workspace.
+    /// `@` agent, `#` task, `:` tab, `~` workspace, `%` preview, `^` machine.
     pub kind: char,
     pub running: Option<String>,
 }
@@ -1144,6 +1175,73 @@ pub fn goto_entries(app: &App) -> Vec<GotoEntry> {
             });
         }
     }
+    // Previews (06 B2): every machine's, not gone.
+    for (mi, m) in app.machines.iter().enumerate() {
+        let mp = if app.machines.len() > 1 {
+            format!("{}/", m.label)
+        } else {
+            String::new()
+        };
+        for p in m
+            .model
+            .previews
+            .iter()
+            .filter(|p| p.status != vk_proto::model::PreviewStatus::Gone)
+        {
+            let label = p
+                .label
+                .as_deref()
+                .map(|l| format!(" {}", vk_proto::text::escape_controls(l)))
+                .unwrap_or_default();
+            let pane = p
+                .pane
+                .as_ref()
+                .and_then(|id| m.model.panes.iter().find(|x| &x.id == id))
+                .map(|x| format!("{} {}", x.handle, x.display_title()))
+                .unwrap_or_default();
+            out.push(GotoEntry {
+                mi,
+                target: GotoTarget::Preview(p.id.clone()),
+                label: format!("{mp}{} :{}{}{label}", p.handle, p.port, p.path),
+                extra: format!("{} {pane} preview", p.url),
+                urgency: 0,
+                kind: '%',
+                running: None,
+            });
+        }
+    }
+    // Machines, when there is more than one to switch between.
+    if app.machines.len() > 1 {
+        for (mi, m) in app.machines.iter().enumerate() {
+            let agents = m
+                .model
+                .runs
+                .iter()
+                .filter(|r| r.ended_at_ms.is_none())
+                .count();
+            let urgency = m
+                .model
+                .runs
+                .iter()
+                .map(|r| crate::draw::urgency(app, m, r))
+                .max()
+                .unwrap_or(0);
+            let state = if m.connected() {
+                "connected".to_string()
+            } else {
+                m.status.clone()
+            };
+            out.push(GotoEntry {
+                mi,
+                target: GotoTarget::Machine(m.label.clone()),
+                label: format!("{} · {state} · {agents} agent(s)", m.label),
+                extra: "machine".into(),
+                urgency,
+                kind: '^',
+                running: None,
+            });
+        }
+    }
     out
 }
 
@@ -1152,12 +1250,14 @@ fn target_id(t: &GotoTarget) -> &str {
         GotoTarget::Workspace(x)
         | GotoTarget::Tab(x)
         | GotoTarget::Pane(x)
-        | GotoTarget::Task(x) => x,
+        | GotoTarget::Task(x)
+        | GotoTarget::Preview(x)
+        | GotoTarget::Machine(x) => x,
     }
 }
 
 /// Ranked goto entries for `filter` (08 §6.2): kind prefixes `@agent`, `#task`, `:tab`,
-/// `~workspace`, `!state`; then fuzzy score, this client's recency, urgency.
+/// `~workspace`, `%preview`, `^machine`, `!state`; then fuzzy score, this client's recency, urgency.
 pub fn goto_ranked(app: &App, filter: &str) -> Vec<(GotoEntry, Vec<usize>)> {
     let mut kinds: Vec<char> = Vec::new();
     let mut states: Vec<String> = Vec::new();
@@ -1169,7 +1269,7 @@ pub fn goto_ranked(app: &App, filter: &str) -> Vec<(GotoEntry, Vec<usize>)> {
         }
         let mut rest = tok;
         if let Some(c) = tok.chars().next()
-            && matches!(c, '@' | '#' | ':' | '~')
+            && matches!(c, '@' | '#' | ':' | '~' | '%' | '^')
         {
             kinds.push(c);
             rest = &tok[c.len_utf8()..];
@@ -1197,7 +1297,7 @@ pub fn goto_ranked(app: &App, filter: &str) -> Vec<(GotoEntry, Vec<usize>)> {
                 e.running
                     .as_deref()
                     .is_some_and(|r| r.starts_with(st.as_str()))
-                    || (st.starts_with("appr") && e.urgency >= 8 && e.kind != ':')
+                    || (st.starts_with("appr") && e.urgency >= 8 && !matches!(e.kind, ':' | '^'))
             });
             if !ok {
                 continue;
@@ -1250,7 +1350,16 @@ pub fn goto_key(app: &mut App, ev: KeyEvent, filter: String, sel: usize) {
             if let Some(path) = goto_path(&typed) {
                 new_workspace_at(app, &path);
             } else if let Some((e, _)) = ranked.get(i).cloned() {
-                open_split(app, &e);
+                match &e.target {
+                    // A preview's secondary action: a window of the profile browser.
+                    GotoTarget::Preview(id) => {
+                        if let Some(p) = preview_of(app, e.mi, id) {
+                            crate::browser::preview_window(app, e.mi, &p);
+                        }
+                    }
+                    GotoTarget::Machine(_) => app.toast("enter switches to the machine"),
+                    _ => open_split(app, &e),
+                }
             }
         }
         ListKey::Stay(filter, sel) => app.mode = Mode::Popup(Popup::Goto { filter, sel }),
@@ -1314,6 +1423,45 @@ fn entry_cwd(app: &App, e: &GotoEntry) -> Option<String> {
                 .clone()
                 .unwrap_or_else(|| t.repo_root.clone())
         }),
+        GotoTarget::Preview(_) | GotoTarget::Machine(_) => None,
+    }
+}
+
+fn preview_of(app: &App, mi: usize, id: &str) -> Option<vk_proto::model::Preview> {
+    app.machines
+        .get(mi)?
+        .model
+        .previews
+        .iter()
+        .find(|p| p.id == id)
+        .cloned()
+}
+
+/// Switch to machine `mi`: its focused pane, else the first pane of its first tab.
+pub fn switch_machine(app: &mut App, mi: usize) {
+    let m = &app.machines[mi];
+    if !m.connected() {
+        app.toast(format!("{} is {}", m.label, m.status));
+        return;
+    }
+    let pane = m
+        .focus
+        .pane
+        .clone()
+        .filter(|p| m.model.panes.iter().any(|x| &x.id == p))
+        .or_else(|| {
+            m.model.tabs.first().and_then(|t| {
+                t.focused_pane
+                    .clone()
+                    .or_else(|| t.layout.panes().first().cloned())
+            })
+        });
+    match pane {
+        Some(p) => app.focus_pane(mi, &p),
+        None => {
+            app.cur = mi;
+            app.dirty = true;
+        }
     }
 }
 
@@ -1371,6 +1519,14 @@ pub fn jump(app: &mut App, e: &GotoEntry) {
             app.nav.save();
             crate::tasks::open_task(app, mi, t);
         }
+        GotoTarget::Preview(id) => match preview_of(app, mi, id) {
+            Some(p) => {
+                let source = p.pane.clone();
+                crate::browser::open_preview(app, mi, &p, source);
+            }
+            None => app.toast("that preview is gone"),
+        },
+        GotoTarget::Machine(_) => switch_machine(app, mi),
     }
 }
 
@@ -1378,7 +1534,7 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
     let (x, y, w, rows) = list_frame(
         app,
         g,
-        "goto · @agent #task :tab ~workspace !state · > commands · alt+enter split",
+        "goto · @agent #task :tab ~workspace %preview ^machine !state · > commands · alt+enter split",
         filter,
     );
     let t = app.theme;
@@ -1402,6 +1558,8 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
             ('#', _) => "# ",
             (':', _) => ": ",
             ('~', _) => "~ ",
+            ('%', _) => "% ",
+            ('^', _) => "^ ",
             _ => "  ",
         };
         let mut segs = vec![(glyph.to_string(), t.dim())];
@@ -1412,6 +1570,8 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
             GotoTarget::Pane(_) if e.kind == '@' => "agent",
             GotoTarget::Pane(_) => "pane",
             GotoTarget::Task(_) => "task",
+            GotoTarget::Preview(_) => "preview",
+            GotoTarget::Machine(_) => "machine",
         };
         let at = SRect {
             x,

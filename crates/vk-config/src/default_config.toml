@@ -130,9 +130,15 @@ fleet                    = "prefix+shift+m" # fleet grid: every agent on every m
 batch_approvals          = ""               # batch view of equivalent approvals (also `A` on a card)
 setup                    = ""               # onboarding: terminal check, integrations, notifications, theme
 trust_repo               = ""               # review and trust this repo's .vibeke/ (repo-local config)
+agent_list               = "prefix+alt+a"   # every agent on every machine, by attention; enter jumps
+elevation_requests       = "prefix+shift+e" # review a pane's `vibeke auth elevate` request (y/n)
+tab_renumber             = ""               # renumber this workspace's tabs 1..n in order
+task_recreate            = ""               # recreate the checkout of a task marked missing
+task_forget              = ""               # forget a task marked missing (nothing is deleted)
 
 [keys.copy_mode]
 mode = "vi"                           # vi | emacs
+editor_include_ansi = false           # edit_scrollback's editor file keeps colours (in-memory rows)
 # per-key overrides (key = "action", "" unbinds), e.g. y = "copy", "ctrl+e" = "edit_scrollback".
 # Actions: exit cancel left right up down half_page_up half_page_down page_up page_down
 # line_start line_end top bottom view_top view_middle view_bottom word_next word_prev word_end

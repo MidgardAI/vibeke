@@ -111,6 +111,98 @@ pub struct ScrollbackView {
     pub sel: Option<((usize, usize), (usize, usize))>,
     /// The left button is down over the text (a drag extends `sel`).
     pub selecting: bool,
+    /// First in-memory line of the pane (from the archive reply), for styled rows.
+    pub mem_first: Option<u64>,
+    /// `copy_mode.editor_include_ansi`: the styled-rows fetch before the editor opens.
+    pub ansi: Option<AnsiFetch>,
+}
+
+/// Styled in-memory rows for the editor file (`FetchHistory`: the size first, then the rows).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnsiFetch {
+    pub req: u64,
+    /// The size was asked; the rows come next.
+    pub rows_asked: bool,
+    pub argv: Vec<String>,
+}
+
+/// Most in-memory rows fetched with colours.
+pub const ANSI_ROWS: u32 = 20_000;
+
+/// SGR for one row's spans (`trim_end`: drop trailing blanks with a default background, as the
+/// text form trims the line), reset at the end when anything was styled. Control characters in
+/// cell text are dropped so the file never carries other escapes.
+pub fn row_ansi(row: &vk_proto::render::Row, trim_end: bool) -> String {
+    use vk_proto::render::{Color, Style, attr};
+    let mut spans: Vec<(Style, String)> = row
+        .spans
+        .iter()
+        .map(|s| {
+            (
+                s.style,
+                s.text.chars().filter(|c| !c.is_control()).collect(),
+            )
+        })
+        .collect();
+    if trim_end {
+        while let Some(last) = spans.last_mut() {
+            let visible_blank = last.0.bg != Color::Default
+                || last.0.attrs & (attr::INVERSE | attr::ANY_UNDERLINE) != 0;
+            if visible_blank {
+                break;
+            }
+            let n = last.1.trim_end().len();
+            last.1.truncate(n);
+            if !last.1.is_empty() {
+                break;
+            }
+            spans.pop();
+        }
+    }
+    let mut out = String::new();
+    let mut cur = Style::default();
+    for (st, text) in spans {
+        if text.is_empty() {
+            continue;
+        }
+        if st != cur {
+            out.push_str(&crate::screen::sgr(st));
+            cur = st;
+        }
+        out.push_str(&text);
+    }
+    if cur != Style::default() {
+        out.push_str("\x1b[0m");
+    }
+    out
+}
+
+/// The editor file with colours: the same logical lines as [`text_of`] (so `+N` still lands on
+/// the viewer's line), each raw row taken from `styled` (absolute line → row) when its text
+/// matches what the archive read returned, else as plain text.
+pub fn ansi_text(
+    rows: &[(u64, String, bool)],
+    styled: &std::collections::HashMap<u64, vk_proto::render::Row>,
+) -> String {
+    let mut out = String::new();
+    let mut line = String::new();
+    for (i, (n, text, wrapped)) in rows.iter().enumerate() {
+        let last_of_line = !*wrapped || i + 1 == rows.len();
+        let styled_row = styled
+            .get(n)
+            .filter(|r| r.text().trim_end() == text.trim_end());
+        match styled_row {
+            Some(r) => line.push_str(&row_ansi(r, last_of_line)),
+            None if last_of_line => line.push_str(text.trim_end()),
+            None => line.push_str(text),
+        }
+        if last_of_line {
+            out.push_str(&line);
+            out.push('\n');
+            line.clear();
+        }
+    }
+    out
 }
 
 /// Private per-user temp directory for editor copies.
@@ -157,6 +249,8 @@ pub fn open(app: &mut App, goal: Option<u64>) {
         dir: default_dir(),
         sel: None,
         selecting: false,
+        mem_first: None,
+        ansi: None,
     });
     app.mode = Mode::Popup(Popup::Scrollback);
     app.command_on(
@@ -242,6 +336,9 @@ pub fn on_reply(app: &mut App, r: Reply, res: Result<Value, RpcErr>) {
     let got = !fresh.is_empty();
     fresh.append(&mut v.rows);
     v.rows = fresh;
+    if v.mem_first.is_none() {
+        v.mem_first = x.get("mem_first").and_then(Value::as_u64);
+    }
     let more = x.get("more_before").and_then(Value::as_bool) == Some(true);
     if more && got && v.rows.len() < MAX_ROWS {
         let to = v.rows[0].0;
@@ -443,15 +540,130 @@ fn open_editor(app: &mut App) {
         v.message = Some("Set $VISUAL or $EDITOR to open the scrollback in an editor".into());
         return;
     };
-    match write_private(&v.dir, &v.pane, &text_of(v)) {
+    start_editor(app, editor);
+}
+
+/// Open the editor on the viewer's text; with `copy_mode.editor_include_ansi` the styled
+/// in-memory rows are fetched first (`FetchHistory`) and the file keeps their colours.
+pub(crate) fn start_editor(app: &mut App, editor: Vec<String>) {
+    let ansi = app.config.keys.copy_mode.editor_include_ansi;
+    let Some(v) = app.scrollback.as_ref() else {
+        return;
+    };
+    if ansi && v.ansi.is_none() {
+        if v.mem_first.is_some() {
+            let (mi, pane) = (v.machine, v.pane.clone());
+            let req = app.next_req;
+            app.next_req += 1;
+            app.machines[mi].send(vk_proto::render::ClientFrame::FetchHistory {
+                req,
+                pane,
+                start: 0,
+                count: 0,
+            });
+            if let Some(v) = app.scrollback.as_mut() {
+                v.ansi = Some(AnsiFetch {
+                    req,
+                    rows_asked: false,
+                    argv: editor,
+                });
+                v.message = Some("loading colours for the editor…".into());
+            }
+            return;
+        }
+        // An older server doesn't say where memory starts: plain text it is.
+        let text = text_of(v);
+        launch(
+            app,
+            editor,
+            text,
+            "Opened in the editor without colours (the server doesn't report mem_first)",
+        );
+        return;
+    }
+    let text = text_of(v);
+    launch(
+        app,
+        editor,
+        text,
+        "Opened in the editor (a read-only copy, deleted on exit)",
+    );
+}
+
+fn launch(app: &mut App, editor: Vec<String>, text: String, msg: &str) {
+    let Some(v) = app.scrollback.as_mut() else {
+        return;
+    };
+    match write_private(&v.dir, &v.pane, &text) {
         Ok(file) => {
             let argv = editor_argv(&editor, &file, v.top + 1);
-            v.message = Some("Opened in the editor (a read-only copy, deleted on exit)".into());
+            v.message = Some(msg.to_string());
             let mi = v.machine;
             crate::popup_pane::editor(app, mi, argv, file);
         }
         Err(e) => v.message = Some(format!("couldn't write the temp file: {e}")),
     }
+}
+
+/// A `History` frame for the editor's styled-rows fetch; true when it was ours.
+pub(crate) fn on_history(
+    app: &mut App,
+    mi: usize,
+    pane: &str,
+    req: u64,
+    start: u32,
+    total: u32,
+    lines: &[vk_proto::render::Row],
+) -> bool {
+    let Some(v) = app.scrollback.as_ref() else {
+        return false;
+    };
+    let Some(a) = v.ansi.as_ref().filter(|a| a.req == req) else {
+        return false;
+    };
+    if v.machine != mi || v.pane != pane {
+        return false;
+    }
+    if !a.rows_asked && lines.is_empty() && total > 0 {
+        let count = total.min(ANSI_ROWS);
+        let r = app.next_req;
+        app.next_req += 1;
+        app.machines[mi].send(vk_proto::render::ClientFrame::FetchHistory {
+            req: r,
+            pane: pane.to_string(),
+            start: total - count,
+            count,
+        });
+        if let Some(a) = app.scrollback.as_mut().and_then(|v| v.ansi.as_mut()) {
+            a.req = r;
+            a.rows_asked = true;
+        }
+        return true;
+    }
+    // Absolute line of in-memory row k is mem_first + k; the screen follows the history.
+    let base = v.mem_first.unwrap_or(0);
+    let mut styled: std::collections::HashMap<u64, vk_proto::render::Row> = lines
+        .iter()
+        .enumerate()
+        .map(|(k, r)| (base + start as u64 + k as u64, r.clone()))
+        .collect();
+    if let Some(buf) = app.machines[mi].panes.get(pane) {
+        for (j, r) in buf.lines.iter().enumerate() {
+            styled.insert(base + total as u64 + j as u64, r.clone());
+        }
+    }
+    let text = ansi_text(&v.rows, &styled);
+    let argv = a.argv.clone();
+    if let Some(v) = app.scrollback.as_mut() {
+        v.ansi = None;
+    }
+    launch(
+        app,
+        argv,
+        text,
+        "Opened in the editor with colours (a read-only copy, deleted on exit)",
+    );
+    true
 }
 
 /// Run an [`External`] with inherited stdio (the caller suspended the TUI), then delete its file

@@ -1,5 +1,6 @@
 //! Vibeke TUI client (03 §5–§7, §11; 08).
 
+pub mod agent_list;
 pub mod app;
 pub mod appearance;
 pub mod assist;
@@ -16,6 +17,7 @@ pub mod deadline;
 pub mod desk;
 pub mod drafts;
 pub mod draw;
+pub mod elevate;
 pub mod fleet;
 pub mod floats;
 pub mod gallery;
@@ -42,7 +44,9 @@ pub mod popups;
 pub mod preview_ui;
 pub mod push;
 pub mod remote_view;
+pub mod repo_preview;
 pub mod screen;
+pub mod scroll_req;
 pub mod scrollback;
 pub mod search;
 pub mod selection;
@@ -50,6 +54,7 @@ pub mod sidebar;
 pub mod statusbar;
 pub mod sync_input;
 pub mod tabbar;
+pub mod taskbadge;
 pub mod tasks;
 pub mod tasks_t4;
 pub mod term;
