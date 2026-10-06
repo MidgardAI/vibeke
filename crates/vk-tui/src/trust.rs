@@ -27,6 +27,9 @@ pub struct Info {
     pub warnings: Vec<String>,
     pub commands: Vec<vk_config::KeyCommand>,
     pub error: Option<String>,
+    /// A trusted repo's `[preview]` layered over this client's config (08 §11.1); `None` =
+    /// untrusted, no `[preview]` in the file, or invalid (the user's config applies).
+    pub preview: Option<vk_config::Preview>,
 }
 
 impl Info {
@@ -61,6 +64,7 @@ impl Info {
                 })
                 .unwrap_or_default(),
             error: st("error"),
+            preview: None,
         }
     }
 }
@@ -133,7 +137,7 @@ pub fn tick(app: &mut App) {
 pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
     match r {
         Reply::Check { ws, open } => {
-            let info = match res {
+            let mut info = match res {
                 Ok(v) => Info::from_value(&v),
                 Err(e) => {
                     if open {
@@ -145,6 +149,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             let key = (mi, ws.clone());
             if info.file.is_some() && info.trusted {
                 bind(app, mi, &ws, &info);
+                info.preview = crate::repo_preview::layered(app, &info);
             }
             if info.file.is_some()
                 && !info.trusted

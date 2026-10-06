@@ -220,3 +220,164 @@ fn e_queues_the_editor_with_the_text_and_never_runs_it_here() {
         assert!(screen(&app).contains("Set $VISUAL or $EDITOR"));
     }
 }
+
+// ---- copy_mode.editor_include_ansi --------------------------------------------------------------
+
+fn styled(s: &str, fg: vk_proto::render::Color, attrs: u16) -> vk_proto::render::Row {
+    vk_proto::render::Row {
+        spans: vec![
+            vk_proto::render::Span {
+                style: vk_proto::render::Style {
+                    fg,
+                    attrs,
+                    ..Default::default()
+                },
+                text: s.into(),
+                cols: s.chars().count() as u16,
+            },
+            vk_proto::render::Span {
+                style: Default::default(),
+                text: "   ".into(),
+                cols: 3,
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn row_ansi_encodes_styles_trims_and_resets() {
+    use vk_proto::render::{Color, attr};
+    let r = styled("err", Color::Indexed(1), attr::BOLD);
+    assert_eq!(row_ansi(&r, true), "\x1b[0;1;31merr\x1b[0m");
+    // Not trimmed inside a wrapped line.
+    assert_eq!(row_ansi(&r, false), "\x1b[0;1;31merr\x1b[0m   ");
+    // Plain rows carry no escapes; control characters in cells are dropped.
+    let mut p = styled("ok\x1b]52;c;x\x07", Color::Default, 0);
+    p.spans.truncate(1);
+    assert_eq!(row_ansi(&p, true), "ok]52;c;x");
+    assert_eq!(
+        crate::screen::sgr(vk_proto::render::Style {
+            fg: Color::Rgb(1, 2, 3),
+            bg: Color::Indexed(200),
+            ..Default::default()
+        }),
+        "\x1b[0;38;2;1;2;3;48;5;200m"
+    );
+}
+
+#[test]
+fn ansi_text_keeps_the_viewer_lines_and_falls_back_to_text() {
+    use vk_proto::render::Color;
+    let rows = vec![
+        (10, "a ".to_string(), true),
+        (11, "b".to_string(), false),
+        (12, "changed".to_string(), false),
+        (13, "plain  ".to_string(), false),
+    ];
+    let mut map = std::collections::HashMap::new();
+    map.insert(10, styled("a ", Color::Indexed(2), 0));
+    map.insert(11, styled("b", Color::Indexed(3), 0));
+    // The pane scrolled since the archive read: text differs, so the plain text is used.
+    map.insert(12, styled("other", Color::Indexed(1), 0));
+    let out = ansi_text(&rows, &map);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines.len(),
+        join_rows(&rows).len(),
+        "same lines as the viewer"
+    );
+    assert_eq!(lines[0], "\x1b[0;32ma \x1b[0m   \x1b[0;33mb\x1b[0m");
+    assert_eq!(lines[1], "changed");
+    assert_eq!(lines[2], "plain");
+}
+
+#[test]
+fn editor_with_ansi_fetches_styled_rows_then_opens() {
+    use vk_proto::render::{ClientFrame, Color, ServerFrame};
+    let (mut app, mut rx) = fleet();
+    app.config.keys.copy_mode.editor_include_ansi = true;
+    app.machines[0].panes.get_mut("p1").unwrap().lines =
+        vec![styled("line 4", Color::Indexed(2), 0)];
+    app.action("edit_scrollback", None);
+    let (req, _) = only(&commands(&mut rx[0]), "pane.read");
+    let mut p = page(0, 5, 0);
+    p["mem_first"] = json!(2);
+    reply(&mut app, 0, req, p);
+    let dir = tempfile::tempdir().unwrap();
+    app.scrollback.as_mut().unwrap().dir = dir.path().join("priv");
+    start_editor(&mut app, vec!["vim".into()]);
+    assert!(screen(&app).contains("loading colours"));
+    let fetch = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<ClientFrame>| {
+        let mut v = Vec::new();
+        while let Ok(f) = rx.try_recv() {
+            if let ClientFrame::FetchHistory {
+                req, start, count, ..
+            } = f
+            {
+                v.push((req, start, count));
+            }
+        }
+        v
+    };
+    let f = fetch(&mut rx[0]);
+    assert_eq!(f.len(), 1);
+    assert_eq!((f[0].1, f[0].2), (0, 0), "the size first");
+    let history = |app: &mut App, req, start, total, lines| {
+        app.on_frame(
+            0,
+            ServerFrame::History {
+                pane: "p1".into(),
+                req,
+                start,
+                total,
+                lines,
+            },
+        )
+    };
+    history(&mut app, f[0].0, 0, 2, vec![]);
+    let f = fetch(&mut rx[0]);
+    assert_eq!((f[0].1, f[0].2), (0, 2));
+    assert!(app.ux.popups.pending_file.is_none(), "not before the rows");
+    history(
+        &mut app,
+        f[0].0,
+        0,
+        2,
+        vec![
+            styled("line 2", Color::Indexed(1), 0),
+            styled("line 3", Color::Indexed(1), 0),
+        ],
+    );
+    // In a popup on the local machine; the copy has the colours of rows 2-4 only.
+    let file = app.ux.popups.pending_file.as_ref().expect("editor opened");
+    let text = std::fs::read_to_string(file.path()).unwrap();
+    assert_eq!(
+        text,
+        "line 0\nline 1\n\x1b[0;31mline 2\x1b[0m\n\x1b[0;31mline 3\x1b[0m\n\x1b[0;32mline 4\x1b[0m\n"
+    );
+    let (_, p) = only(&commands(&mut rx[0]), "pane.float");
+    assert_eq!(p["command"][0], "vim");
+    assert!(app.scrollback.as_ref().unwrap().ansi.is_none());
+}
+
+#[test]
+fn editor_without_ansi_or_mem_first_writes_plain_text() {
+    let (mut app, mut rx) = fleet();
+    app.config.keys.copy_mode.editor_include_ansi = true;
+    app.action("edit_scrollback", None);
+    let (req, _) = only(&commands(&mut rx[0]), "pane.read");
+    reply(&mut app, 0, req, page(0, 2, 0));
+    let dir = tempfile::tempdir().unwrap();
+    app.scrollback.as_mut().unwrap().dir = dir.path().join("priv");
+    // An older server (no mem_first): no fetch, plain text, and it says why.
+    start_editor(&mut app, vec!["vim".into()]);
+    let file = app.ux.popups.pending_file.as_ref().expect("editor opened");
+    assert_eq!(
+        std::fs::read_to_string(file.path()).unwrap(),
+        "line 0\nline 1\n"
+    );
+    let msg = app.scrollback.as_ref().unwrap().message.clone().unwrap();
+    assert!(msg.contains("without colours"), "{msg}");
+    assert!(commands(&mut rx[0]).iter().any(|c| c.1 == "pane.float"));
+}

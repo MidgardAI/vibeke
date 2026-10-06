@@ -323,6 +323,14 @@ pub enum Popup {
     Fleet,
     /// Repo-local config review (08 §11.1); state in `App::ux.trust`.
     TrustRepo,
+    /// Elevation request review (09 §3.2), replacing the pane area; state in
+    /// `App::ux.elevate`.
+    Elevate,
+    /// Every agent on every machine by attention (`agent_list`, 08 §6.5).
+    Agents {
+        filter: String,
+        sel: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -331,6 +339,11 @@ pub enum Action {
     CloseTab(String),
     CloseWorkspace(String),
     Detach,
+    /// Forget a task marked missing (`task.forget`).
+    ForgetTask {
+        machine: usize,
+        task: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1080,6 +1093,7 @@ impl App {
         crate::parity::on_connected(self, i);
         crate::plugins::on_connected(self, i);
         crate::remote_view::on_connected(self, i);
+        crate::ux::on_connected(self, i);
         // Another client of this session may have crashed since we started: adopt its pending
         // operations (never a live client's) so their outcomes get asked for too.
         let n = self.pending_ops.adopt_orphans();
@@ -1099,6 +1113,7 @@ impl App {
         self.inbox.outstanding.remove(&i);
         crate::tasks::on_disconnect(self, i);
         crate::remote_view::on_disconnected(self, i);
+        crate::taskbadge::on_disconnected(self, i);
         if self.inbox.outstanding.is_empty()
             && let Some(f) = self.inbox.next_after.take()
         {
@@ -1320,6 +1335,10 @@ impl App {
                 total,
                 lines,
             } => {
+                // The edit-scrollback editor's styled rows (`editor_include_ansi`).
+                if crate::scrollback::on_history(self, i, &pane, req, start, total, &lines) {
+                    return;
+                }
                 let mut follow = None;
                 if let Mode::Copy(cm) = &mut self.mode
                     && cm.pane == pane
@@ -2742,6 +2761,7 @@ impl App {
                 self.command("workspace.close", json!({"workspace": w}), Pending::Ignore)
             }
             Action::Detach => self.quit = Some("detached".into()),
+            Action::ForgetTask { machine, task } => crate::taskbadge::forget(self, machine, &task),
         }
     }
 
@@ -3064,10 +3084,16 @@ mod pending_tests {
         while let Ok(f) = rx.try_recv() {
             if let ClientFrame::Command { req, json } = f {
                 let c: Value = serde_json::from_str(&json).unwrap();
-                // The plugin queries every connect makes (crate::plugins) aren't operations.
+                // The queries every connect makes (crate::plugins, crate::elevate) aren't
+                // operations.
                 if !matches!(
                     c["method"].as_str(),
-                    Some("plugin.action.list" | "plugin.link_handler.list" | "compat.ui.state")
+                    Some(
+                        "plugin.action.list"
+                            | "plugin.link_handler.list"
+                            | "compat.ui.state"
+                            | "auth.list"
+                    )
                 ) {
                     v.push((req, c));
                 }

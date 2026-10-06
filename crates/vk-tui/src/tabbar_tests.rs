@@ -111,3 +111,36 @@ fn show_numbers_off_drops_the_number() {
         "{row}"
     );
 }
+
+#[test]
+fn tab_renumber_asks_the_server_for_the_focused_workspace() {
+    let (mut app, mut rxs) = fleet();
+    many_tabs(&mut app, 2);
+    // Palette-only: listed, unbound.
+    let e = crate::nav::palette_entries(&app);
+    let r = e.iter().find(|x| x.id == "tab_renumber").unwrap();
+    assert!(r.binding.is_none());
+    crate::nav::run_palette(&mut app, "tab_renumber");
+    let cmds = commands(&mut rxs[0]);
+    let (req, p) = only(&cmds, "tab.renumber");
+    assert_eq!(p, json!({"workspace": "W1"}));
+    crate::drafts::tests::reply(
+        &mut app,
+        0,
+        req,
+        json!({"tabs": [{"id": "T1"}, {"id": "T2"}, {"id": "T3"}]}),
+    );
+    assert!(screen(&app).contains("tabs renumbered 1..3"));
+    // An older server: explained, nothing else happens.
+    app.action("tab_renumber", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "tab.renumber");
+    crate::drafts::tests::reply_err(&mut app, 0, req, "method_not_found", json!({}));
+    assert!(
+        app.toasts
+            .last()
+            .unwrap()
+            .text
+            .contains("can't renumber tabs yet")
+    );
+    assert!(commands(&mut rxs[0]).is_empty());
+}

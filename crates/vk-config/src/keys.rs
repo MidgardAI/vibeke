@@ -72,6 +72,12 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("batch_approvals", ""),
     ("setup", ""),
     ("trust_repo", ""),
+    // v1 TUI (08 §2.1, §3, §6.5; 09 §3.2).
+    ("agent_list", "prefix+alt+a"),
+    ("elevation_requests", "prefix+shift+e"),
+    ("tab_renumber", ""),
+    ("task_recreate", ""),
+    ("task_forget", ""),
 ];
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty

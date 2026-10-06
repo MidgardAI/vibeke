@@ -44,6 +44,8 @@ pub struct CopyMode {
     keys: Arc<CopyKeys>,
     /// Entered by a mouse drag: releasing copies (copy-on-select) or keeps the selection.
     pub mouse: bool,
+    /// A `pane.scroll_requested` offset to apply once enough history is loaded.
+    want_offset: Option<u32>,
 }
 
 pub enum Outcome {
@@ -105,6 +107,7 @@ impl CopyMode {
             archive: Default::default(),
             keys: CopyKeys::default_arc(),
             mouse: false,
+            want_offset: None,
         }
     }
 
@@ -284,7 +287,62 @@ impl CopyMode {
             self.sel = Some((l + n, c, k));
         }
         let _ = start;
+        if let Some(o) = self.want_offset.take() {
+            self.apply_offset(o);
+        }
         None
+    }
+
+    /// Scroll so the top of the view is `offset` rows above the live screen's first row
+    /// (`pane.scroll_requested`, 07 §2.6). Older in-memory rows are fetched first when the
+    /// offset reaches past what is loaded; the offset is clamped to the history there is.
+    pub fn scroll_to_offset(&mut self, offset: u32) -> Outcome {
+        self.message = None;
+        let start = self.hist + self.archive.rows;
+        if offset as usize <= start {
+            self.apply_offset(offset);
+            return Outcome::Stay;
+        }
+        if self.pending_req.is_some() {
+            // The first history page is on its way: apply once it is in.
+            self.want_offset = Some(offset);
+            return Outcome::Stay;
+        }
+        if !self.archive.active && (self.total_hist as usize) > self.hist {
+            let loaded_from = self.total_hist as usize - self.hist;
+            let floor = self
+                .archive
+                .mem_first
+                .map_or(0, |m| m as usize)
+                .min(loaded_from);
+            let count = (loaded_from - floor).min(20_000) as u32;
+            if count > 0 {
+                self.want_offset = Some(offset);
+                return Outcome::Fetch {
+                    start: loaded_from as u32 - count,
+                    count,
+                };
+            }
+        }
+        self.apply_offset(offset);
+        Outcome::Stay
+    }
+
+    /// [`CopyMode::scroll_to_offset`] for a copy mode whose first history page is still loading.
+    pub fn want_offset(&mut self, offset: u32) {
+        if self.pending_req.is_some() {
+            self.want_offset = Some(offset);
+        } else {
+            self.apply_offset(offset);
+        }
+    }
+
+    fn apply_offset(&mut self, offset: u32) {
+        let start = self.hist + self.archive.rows;
+        self.want_top = false;
+        self.top = start.saturating_sub(offset as usize);
+        self.cy = self.top;
+        self.clamp();
     }
 
     pub fn scroll_up(&mut self, n: usize) {

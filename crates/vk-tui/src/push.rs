@@ -33,6 +33,9 @@ pub const TYPES: &[&str] = &[
     "client.window_title_changed",
     "plugin.registry_changed",
     "plugin.agent_view_changed",
+    // v1 TUI: elevation requests (09 §3.2) and scroll requests (07 §2.6).
+    "auth.elevate_*",
+    "pane.scroll_requested",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -130,6 +133,10 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::plugins::on_title_event(app, i, &v);
         } else if k == "plugin.registry_changed" || k == "plugin.agent_view_changed" {
             crate::plugins::on_registry_event(app, i);
+        } else if k.starts_with("auth.elevate_") {
+            crate::elevate::on_event(app, i, k, &v);
+        } else if k == "pane.scroll_requested" {
+            crate::scroll_req::on_event(app, i, &v);
         }
     }
     if !confirms.is_empty() {

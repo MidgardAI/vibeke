@@ -10,11 +10,49 @@
 //!   moves it there (`tab.move {tab, delta}`; tab numbers stay as they are). A `▏` marks the drop
 //!   slot while dragging.
 //! - `ui.tabs.show_numbers = false` drops the number from labels.
+//! - **`tab renumber`** (palette `tab_renumber`): tab numbers are assigned at creation and change
+//!   only on this explicit action, which asks the server to renumber the focused workspace's
+//!   tabs 1..n in their current order (`tab.renumber {workspace}`). A server without the method
+//!   says so in a toast; nothing changes locally.
 
-use crate::app::{Action, App, Mode, Pending, Popup};
+use crate::app::{Action, App, Mode, Pending, Popup, RpcErr};
 use crossterm::event::{MouseButton as CtButton, MouseEvent, MouseEventKind};
-use serde_json::json;
+use serde_json::{Value, json};
 use vk_proto::model::Tab;
+
+/// Palette / key actions owned here.
+pub fn action(app: &mut App, action: &str) -> bool {
+    if action != "tab_renumber" {
+        return false;
+    }
+    match app.focused_ws() {
+        Some(w) => app.command(
+            "tab.renumber",
+            json!({"workspace": w.id}),
+            Pending::Ux(crate::ux::Reply::Renumber),
+        ),
+        None => app.toast("no focused workspace"),
+    }
+    true
+}
+
+/// The `tab.renumber` reply.
+pub fn on_renumbered(app: &mut App, res: Result<Value, RpcErr>) {
+    match res {
+        Ok(v) => {
+            let n = v["tabs"].as_array().map(|a| a.len()).unwrap_or(0);
+            app.toast(if n > 0 {
+                format!("tabs renumbered 1..{n}")
+            } else {
+                "tabs renumbered".to_string()
+            });
+        }
+        Err(e) if e.is_method_not_found() => {
+            app.toast("this server can't renumber tabs yet (no tab.renumber); upgrade it")
+        }
+        Err(e) => app.toast(format!("✗ tab renumber: {}", e.message)),
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct State {

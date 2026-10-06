@@ -13,6 +13,16 @@
 //! - [`crate::navkeys`]: navigate-mode `/` filter, `t`, `p`; palette argument prompts (08 §6).
 //! - [`crate::mouse_focus`]: `ui.focus_follows_mouse` (08 §5).
 //! - [`crate::sync_input`]: synchronized input (08 §5).
+//!
+//! v1 remainder (spec 08, 09 §3.2):
+//!
+//! - [`crate::elevate`]: the elevation approval view (`auth.elevate` requests, y/n).
+//! - [`crate::scroll_req`]: `pane.scroll_requested` moves this client's view.
+//! - [`crate::tabbar`] `tab_renumber`; [`crate::groups`] group drag reorder.
+//! - [`crate::nav`] goto previews and machines; [`crate::scrollback`] `editor_include_ansi`.
+//! - [`crate::repo_preview`]: a trusted repo's `[preview]`.
+//! - [`crate::taskbadge`]: PR badges and recreate/forget for missing tasks.
+//! - [`crate::agent_list`]: every agent on every machine by attention (`prefix+alt+a`).
 
 use crate::app::{App, Popup, RpcErr};
 use crate::screen::Grid;
@@ -32,6 +42,9 @@ pub struct State {
     pub hover: crate::mouse_focus::State,
     pub sync: crate::sync_input::State,
     pub trust: crate::trust::State,
+    pub elevate: crate::elevate::State,
+    pub scroll: crate::scroll_req::State,
+    pub tasks: crate::taskbadge::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -41,6 +54,10 @@ pub enum Reply {
     Trust(crate::trust::Reply),
     Popup(crate::popup_pane::Reply),
     Batch(crate::batch::Reply),
+    Elevate(crate::elevate::Reply),
+    Tasks(crate::taskbadge::Reply),
+    /// `tab.renumber`.
+    Renumber,
 }
 
 pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) {
@@ -49,7 +66,15 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Trust(r) => crate::trust::on_reply(app, mi, r, res),
         Reply::Popup(r) => crate::popup_pane::on_reply(app, mi, r, res),
         Reply::Batch(r) => crate::batch::on_reply(app, mi, r, res),
+        Reply::Elevate(r) => crate::elevate::on_reply(app, mi, r, res),
+        Reply::Tasks(r) => crate::taskbadge::on_reply(app, mi, r, res),
+        Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
+}
+
+/// After (re)connecting machine `mi`.
+pub fn on_connected(app: &mut App, mi: usize) {
+    crate::elevate::on_connected(app, mi);
 }
 
 /// Palette / key actions owned by 2B modules.
@@ -60,6 +85,10 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::fleet::action(app, action)
         || crate::sync_input::action(app, action)
         || crate::sidebar::action(app, action)
+        || crate::tabbar::action(app, action)
+        || crate::elevate::action(app, action)
+        || crate::agent_list::action(app, action)
+        || crate::taskbadge::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
@@ -135,15 +164,20 @@ pub fn on_tick(app: &mut App) {
     crate::popup_pane::tick(app);
     crate::sync_input::tick(app);
     crate::navkeys::tick(app);
+    crate::elevate::tick(app);
+    crate::scroll_req::tick(app);
+    crate::taskbadge::tick(app, now);
 }
 
 pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::fleet::deadlines(app, now, d);
     crate::mouse_focus::deadlines(app, d);
     crate::sidebar::deadlines(app, now, d);
+    crate::elevate::deadlines(app, d);
+    crate::taskbadge::deadlines(app, d);
 }
 
 /// Navigate-mode keys added by 2B (true when handled).
 pub fn navigate_key(app: &mut App, ev: &KeyEvent, sel: usize) -> bool {
-    crate::navkeys::navigate_key(app, ev, sel)
+    crate::navkeys::navigate_key(app, ev, sel) || crate::taskbadge::navigate_key(app, ev, sel)
 }

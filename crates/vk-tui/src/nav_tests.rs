@@ -702,6 +702,100 @@ fn goto_alt_enter_on_a_path_creates_a_workspace() {
     assert_eq!(goto_path("login"), None);
 }
 
+fn preview_on(app: &mut App, mi: usize) {
+    app.machines[mi].model.previews = vec![
+        serde_json::from_value(json!({
+            "id": "PV", "handle": "v4", "machine": "m0", "pane": "p3", "task": null,
+            "port": 5173, "path": "/app", "label": "vite", "url": "http://localhost:5173/app",
+            "scheme": "http", "status": "up", "source": "banner", "pid": null,
+            "first_seen_ms": 0, "last_seen_ms": 0
+        }))
+        .unwrap(),
+    ];
+}
+
+#[test]
+fn goto_lists_previews_and_enter_opens_them() {
+    let (mut app, mut rxs) = fleet();
+    app.caps.kitty_graphics = true;
+    preview_on(&mut app, 0);
+    // Matched by port, label and URL; `%` narrows to previews.
+    let r = goto_ranked(&app, "5173");
+    assert_eq!(r[0].0.target, GotoTarget::Preview("PV".into()));
+    assert_eq!(r[0].0.label, "v4 :5173/app vite");
+    assert!(goto_ranked(&app, "%").iter().all(|(e, _)| e.kind == '%'));
+    assert_eq!(goto_ranked(&app, "%vite").len(), 1);
+    // A single machine has no machine entries.
+    assert!(goto_ranked(&app, "^").is_empty());
+    // Drawn with its kind.
+    goto_with(&mut app, "%vite");
+    let mut g = Grid::new(120, 40);
+    crate::draw::compose(&app, &mut g);
+    let text = grid_text(&g);
+    assert!(text.contains("%preview ^machine"), "{text}");
+    assert!(text.contains("% v4 :5173/app vite"), "{text}");
+    assert!(text.contains("preview"), "{text}");
+    // enter: a browser pane next to the preview's pane.
+    drain(&mut rxs[0]);
+    app.on_key(kev(Key::Named(NamedKey::Enter)));
+    let cmds = commands(&mut rxs[0]);
+    let c = cmds.iter().find(|c| c.0 == "browser.pane.create").unwrap();
+    assert_eq!(c.1["preview"], "PV");
+    assert_eq!(c.1["pane"], "p3");
+    // alt+enter: the profile browser window.
+    goto_with(&mut app, "%vite");
+    drain(&mut rxs[0]);
+    app.on_key(KeyEvent::new(Key::Named(NamedKey::Enter), Mods::ALT));
+    let cmds = commands(&mut rxs[0]);
+    let c = cmds.iter().find(|c| c.0 == "preview.open").unwrap();
+    assert_eq!(c.1["window"], true);
+}
+
+#[test]
+fn goto_lists_machines_with_several_and_enter_switches() {
+    let (mut app, _rxs) = test_app(2);
+    for m in app.machines.iter_mut() {
+        m.model.workspaces = vec![ws("W1", "api", "/src/api", None)];
+        m.model.tabs = vec![tab("T1", "W1", 1, &["p1"])];
+        m.model.panes = vec![pane("p1", "T1", "W1", "claude")];
+        m.model.runs = vec![test_run("r1", "p1", "claude")];
+    }
+    app.machines[1].label = "devbox".into();
+    let r = goto_ranked(&app, "^devbox");
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].0.target, GotoTarget::Machine("devbox".into()));
+    assert_eq!(r[0].0.mi, 1);
+    assert!(r[0].0.label.starts_with("devbox · connected · 1 agent(s)"));
+    // Machine entries never pass a state filter.
+    app.machines[1]
+        .model
+        .interactions
+        .push(test_interaction("i1", "p1", "rm", 0));
+    assert!(
+        goto_ranked(&app, "!approve")
+            .iter()
+            .all(|(e, _)| e.kind != '^')
+    );
+    goto_with(&mut app, "^devbox");
+    app.on_key(kev(Key::Named(NamedKey::Enter)));
+    assert_eq!(app.cur, 1);
+    assert_eq!(app.focused_pane().as_deref(), Some("p1"));
+    // Offline: says so instead of switching.
+    app.cur = 0;
+    app.machines[1].tx = None;
+    app.machines[1].status = "offline".into();
+    goto_with(&mut app, "^devbox");
+    app.on_key(kev(Key::Named(NamedKey::Enter)));
+    assert_eq!(app.cur, 0);
+    assert!(
+        app.toasts
+            .last()
+            .unwrap()
+            .text
+            .contains("devbox is offline")
+    );
+}
+
 #[test]
 fn goto_hint_and_path_row_draw() {
     let (mut app, _rx) = fleet();

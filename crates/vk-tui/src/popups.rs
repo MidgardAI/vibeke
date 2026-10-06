@@ -150,6 +150,8 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         p @ (Popup::Onboarding | Popup::Batch | Popup::Fleet | Popup::TrustRepo) => {
             crate::ux::popup_key(app, ev, p)
         }
+        Popup::Elevate => crate::elevate::key(app, ev),
+        Popup::Agents { filter, sel } => crate::agent_list::key(app, ev, filter, sel),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -371,6 +373,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                     ("last_workspace", "back to the last workspace"),
                     ("url_hints", "label URLs/IDs in the pane: open or copy"),
                     ("next_attention", "next agent that needs you"),
+                    ("agent_list", "every agent on every machine, by attention"),
                     ("enter_copy_mode", "copy mode (/ search, v select, y yank)"),
                     ("resize_mode", "resize mode"),
                     ("toggle_sidebar", "toggle sidebar"),
@@ -503,6 +506,11 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Scrollback => crate::scrollback::draw(app, g),
             p @ (Popup::Onboarding | Popup::Batch | Popup::Fleet | Popup::TrustRepo) => {
                 crate::ux::popup_draw(app, g, p)
+            }
+            Popup::Elevate => crate::elevate::draw(app, g),
+            Popup::Agents { filter, sel } => {
+                let (x, y) = crate::agent_list::draw(app, g, filter, *sel);
+                return Some((x, y, CursorShape::Bar));
             }
             Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),
             Popup::Peek { pane } => {

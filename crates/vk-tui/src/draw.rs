@@ -472,6 +472,10 @@ fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &m
     if let Some(b) = w.branch.as_deref() {
         segs.push((format!(" ⎇ {b}"), t.dim()));
     }
+    // Task workspaces: missing checkout, cached PR status (05 §4).
+    if let Some(tid) = w.task.as_deref() {
+        segs.extend(crate::taskbadge::segs(app, mi, tid));
+    }
     let ws_panes: Vec<&str> = m
         .model
         .panes
@@ -866,6 +870,10 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
                 t.bold(t.yellow),
             ),
         );
+    }
+    // Elevation requests (09 §3.2): a notice in the chrome only, never over a pane.
+    if let Some(n) = crate::elevate::notice(app) {
+        right.insert(0, (n, t.bold(t.red)));
     }
     let unknown = app.pending_ops.unknown_count();
     if unknown > 0 {
