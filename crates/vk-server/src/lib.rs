@@ -235,8 +235,11 @@ impl Server {
         let mut lost = Vec::new();
         for p in &panes {
             let h = holders.iter().find(|h| h.pane == p.id);
-            let alive =
-                h.is_some_and(|h| std::os::unix::net::UnixStream::connect(&h.socket).is_ok());
+            // Alive = its socket accepts, or its recorded pid is still a holder (a busy or
+            // briefly unreachable holder must be reattached, never respawned over).
+            let alive = h.is_some_and(|h| {
+                vk_hold::holder_alive(std::path::Path::new(&h.socket), h.holder_pid)
+            });
             match (h, alive) {
                 (Some(h), true) => {
                     let (rt, rx) = PaneRt::new(&p.id, p.cols.max(2), p.rows.max(1));
@@ -266,7 +269,23 @@ impl Server {
                         self.agents.end_run(self, &r.id, "holder_lost");
                     }
                 }
-                Err(e) => tracing::warn!(pane = %p.id, error = %e, "respawn failed"),
+                Err(e) => {
+                    // Keep the slot, marked exited/lost, rather than dropping it.
+                    tracing::warn!(pane = %p.id, error = %e, "respawn failed");
+                    let mut c = self.core.lock().unwrap();
+                    if let Some(mut q) = c.pane(&p.id).cloned() {
+                        q.exited = true;
+                        q.recovered = Some("lost".into());
+                        let mut tx = Tx::new();
+                        tx.event(
+                            "pane.exited",
+                            subject_pane(&q),
+                            json!({"code": null, "signal": null, "reason": "holder_lost", "respawn_error": format!("{e:#}")}),
+                        );
+                        tx.pane(q);
+                        let _ = self.commit(&mut c, tx);
+                    }
+                }
             }
         }
         let mut c = self.core.lock().unwrap();
@@ -280,12 +299,28 @@ impl Server {
         Ok(recovered)
     }
 
-    /// A holder vanished while this server was attached to it.
+    /// A holder vanished while this server was attached to it. Called only once the holder
+    /// process is known to be gone (a dropped connection to a live holder reconnects in
+    /// `pane::run`). Respawns a shell in the same layout slot; if that fails the pane stays
+    /// in the layout marked exited/lost, so nothing is silently removed.
     pub fn holder_lost(self: &Arc<Self>, pane_id: &str) {
         self.panes.lock().unwrap().remove(pane_id);
         let Some(p) = self.with_core(|c| c.pane(pane_id).cloned()) else {
             return;
         };
+        let rec = self
+            .with_core(|c| c.store.holders())
+            .ok()
+            .and_then(|hs| hs.into_iter().find(|h| h.pane == pane_id));
+        if let Some(h) = rec
+            && vk_hold::holder_alive(std::path::Path::new(&h.socket), h.holder_pid)
+        {
+            // Defensive: never respawn over a live holder (its socket would refuse the new
+            // one and its agent would be orphaned). Reattach instead.
+            tracing::warn!(pane = %pane_id, "holder still alive; reattaching instead of respawning");
+            self.start_pane(pane_id, p.cols, p.rows, h.socket, h.key, false);
+            return;
+        }
         if let Some(r) = self.with_core(|c| c.run_for_pane(pane_id).cloned()) {
             self.agents.end_run(self, &r.id, "holder_lost");
         }
@@ -295,7 +330,27 @@ impl Server {
             .unwrap_or_else(|| paths::home().to_string_lossy().into_owned());
         if let Err(e) = self.respawn_pane(&p, &cwd) {
             tracing::warn!(pane = %pane_id, error = %e, "respawn after holder loss failed");
-            self.pane_ended(pane_id, "holder_lost");
+            let mut c = self.core.lock().unwrap();
+            if let Some(mut q) = c.pane(pane_id).cloned() {
+                q.exited = true;
+                q.recovered = Some("lost".into());
+                let mut tx = Tx::new();
+                tx.event(
+                    "pane.exited",
+                    subject_pane(&q),
+                    json!({"code": null, "signal": null, "reason": "holder_lost", "respawn_error": format!("{e:#}")}),
+                );
+                tx.pane(q);
+                let _ = self.commit(&mut c, tx);
+            }
+            drop(c);
+            self.notify(
+                "system",
+                Some(pane_id),
+                "pane lost",
+                "its process was lost and a new shell could not be started; close the pane",
+                "normal",
+            );
         } else {
             self.notify(
                 "system",
@@ -336,6 +391,9 @@ impl Server {
         p.recovered = Some("lost".into());
         let mut tx = Tx::new();
         tx.m.holder(&p.id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
+        // The old holder's VT snapshot describes a screen and ring offsets that no longer
+        // exist; a later recovery must not restore it.
+        tx.m.snapshot_delete(&p.id);
         tx.event(
             "pane.recovered",
             subject_pane(&p),
@@ -1101,7 +1159,14 @@ impl Server {
         n
     }
 
-    pub fn store_snapshot(&self, pane: &str, offset: u64, blob: Vec<u8>) -> bool {
+    /// Persist a VT snapshot taken at holder ring `offset` of holder `incarnation`.
+    pub fn store_snapshot(
+        &self,
+        pane: &str,
+        offset: u64,
+        blob: Vec<u8>,
+        incarnation: &str,
+    ) -> bool {
         let mut c = self.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.snapshot(
@@ -1110,6 +1175,7 @@ impl Server {
             vk_term::engine::ENGINE,
             vk_term::engine::ENGINE_VERSION,
             blob,
+            incarnation,
         );
         c.commit(tx).is_ok()
     }

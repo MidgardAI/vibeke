@@ -420,7 +420,7 @@ Frame: `u32 LE length | postcard(enum)` — the postcard enum discriminant is th
 | H→S | 0x07 | `Gap` | `{requested, available_from}` — ring overflowed past `from_offset` |
 | H→S | 0x12 | `Marker` | `{offset, kind: Resize{cols, rows, px_w, px_h} \| InputWritten{input_id} \| ServerDetached \| ServerAttached{epoch}}` — markers are stored in the ring's side index, so replay interleaves resizes with bytes in the exact order they hit the PTY |
 | S→H | 0x08 | `Input` | `{epoch, input_id, bytes}` |
-| H→S | 0x13 | `InputAck` | `{input_id, offset_at_write, status: written|duplicate|child_exited}` — dedupe window: last 4,096 `input_id`s |
+| H→S | 0x13 | `InputAck` | `{input_id, offset_at_write, status: written|duplicate|child_exited|failed}` — sent only after every byte reached the PTY (`failed`: write error or PTY closed with bytes pending; the id leaves the dedupe set). Dedupe window: last 4,096 `input_id`s |
 | S→H | 0x09 | `Resize` | `{epoch, cols, rows, px_w, px_h}` → holder applies `TIOCSWINSZ` and records a `Marker{Resize}` |
 | S→H | 0x0A | `Signal` | `{epoch, sig: INT|TERM|HUP|KILL|WINCH|CONT|STOP, target: fg_pgrp|child}` |
 | S→H | 0x0B | `Status?` | `{}` |

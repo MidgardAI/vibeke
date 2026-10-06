@@ -1177,6 +1177,10 @@ async fn send(server: &Server, ctx: &Ctx, pane: &str, bytes: Vec<u8>) -> Result<
         vk_proto::holder::InputStatus::ChildExited => {
             Err(err(ErrorKind::Conflict, "pane process exited"))
         }
+        vk_proto::holder::InputStatus::Failed => Err(err(
+            ErrorKind::Timeout,
+            "input not confirmed: the pane's program hasn't read it (it may still arrive)",
+        )),
         _ => Ok(()),
     }
 }

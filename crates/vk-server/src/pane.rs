@@ -3,7 +3,7 @@
 
 use crate::Server;
 use anyhow::{Context, Result, bail};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -18,6 +18,11 @@ use vk_term::{Effect, Engine};
 pub const SCROLLBACK: usize = 10_000;
 const SNAPSHOT_IDLE: Duration = Duration::from_secs(2);
 const SNAPSHOT_MAX_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a caller awaiting a holder ack waits. Acks now follow the PTY write, so a
+/// child that isn't reading can legitimately delay them.
+const INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Reconnect backoff cap while a holder is alive but its connection keeps failing.
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 pub struct Screen {
     pub engine: Engine,
@@ -108,11 +113,12 @@ impl PaneRt {
             bytes,
             ack: Some(tx),
         });
-        tokio::time::timeout(Duration::from_secs(5), rx)
+        tokio::time::timeout(INPUT_ACK_TIMEOUT, rx)
             .await
             .ok()
             .and_then(|r| r.ok())
-            .unwrap_or(InputStatus::ChildExited)
+            // No ack in time: the input may still be pending in the holder; not "exited".
+            .unwrap_or(InputStatus::Failed)
     }
 
     pub fn rev(&self) -> u64 {
@@ -136,25 +142,123 @@ pub struct HolderConn {
     pub fresh: bool,
 }
 
+/// Identity of one holder process: a VT snapshot's ring offset only means something for the
+/// holder whose ring it was taken from (01 §1.2). Derived from `HelloOk` (child pid + holder
+/// start time), so holder/1 needs no new field.
+pub fn holder_incarnation(child_pid: u32, started_at_ms: i64) -> String {
+    format!("{child_pid}:{started_at_ms}")
+}
+
+/// Inputs sent to the holder and not yet acknowledged. It outlives a holder connection: after
+/// re-acquiring, every entry is resent with its original id. The holder dedupes ids it
+/// already wrote (and acks a still-pending one when its write completes), so a dropped
+/// connection neither loses nor duplicates input.
+#[derive(Default)]
+struct Ledger {
+    order: VecDeque<u64>,
+    entries: HashMap<u64, (Vec<u8>, Vec<oneshot::Sender<InputStatus>>)>,
+}
+
+impl Ledger {
+    /// Record an input; returns false if the id is already pending (not sent again).
+    fn add(&mut self, id: u64, bytes: &[u8], ack: Option<oneshot::Sender<InputStatus>>) -> bool {
+        if let Some((_, waiters)) = self.entries.get_mut(&id) {
+            waiters.extend(ack);
+            return false;
+        }
+        self.order.push_back(id);
+        self.entries
+            .insert(id, (bytes.to_vec(), ack.into_iter().collect()));
+        true
+    }
+
+    fn complete(&mut self, id: u64, status: InputStatus) {
+        if let Some((_, waiters)) = self.entries.remove(&id) {
+            self.order.retain(|i| *i != id);
+            for w in waiters {
+                let _ = w.send(status);
+            }
+        }
+    }
+
+    fn pending(&self) -> Vec<(u64, Vec<u8>)> {
+        self.order
+            .iter()
+            .filter_map(|id| self.entries.get(id).map(|(b, _)| (*id, b.clone())))
+            .collect()
+    }
+}
+
+/// What one connection attempt learned, kept across reconnects.
+#[derive(Default)]
+struct Attempt {
+    /// Epoch this attempt acquired the lease with (None: failed before acquiring).
+    acquired: Option<u64>,
+    /// Incarnation of the holder seen on the previous successful connection.
+    incarnation: Option<String>,
+}
+
 /// Run a pane until it closes. Recovers from a stored snapshot when not fresh.
+///
+/// A failed holder connection is not a lost holder (review finding 6): while the holder
+/// process is alive the pane reconnects with a higher epoch (backoff capped at 5 s) and is
+/// never respawned or removed. Only a holder that is gone goes to `holder_lost`.
 pub async fn run(
     server: Arc<Server>,
     rt: Arc<PaneRt>,
     mut cmd_rx: mpsc::UnboundedReceiver<PaneCmd>,
-    conn: HolderConn,
+    mut conn: HolderConn,
 ) {
     let id = rt.id.clone();
-    match run_inner(&server, &rt, &mut cmd_rx, conn).await {
-        Ok(reason) => {
-            tracing::info!(pane = %id, reason, "pane ended");
-            server.pane_ended(&id, &reason);
+    let mut ledger = Ledger::default();
+    let mut attempt = Attempt::default();
+    let mut failures: u32 = 0;
+    // Set once this task held the lease; only then can a newer epoch mean "superseded".
+    let mut had_lease = false;
+    loop {
+        attempt.acquired = None;
+        let res = run_inner(&server, &rt, &mut cmd_rx, &conn, &mut ledger, &mut attempt).await;
+        let e = match res {
+            Ok(reason) => {
+                tracing::info!(pane = %id, reason, "pane ended");
+                server.pane_ended(&id, &reason);
+                return;
+            }
+            Err(e) => e,
+        };
+        if let Some(ep) = attempt.acquired {
+            conn.epoch = ep;
+            failures = 0;
+            had_lease = true;
         }
-        Err(e) => {
-            // The holder died without reporting a child exit (crash, kill, reboot): keep the
-            // layout slot with a fresh shell and offer the agent for resume (10 §5.1).
-            tracing::warn!(pane = %id, error = %format!("{e:#}"), "holder lost");
-            server.holder_lost(&id);
+        let rec = server
+            .with_core(|c| c.store.holders())
+            .ok()
+            .and_then(|hs| hs.into_iter().find(|h| h.pane == id));
+        if had_lease
+            && let Some(r) = &rec
+            && r.epoch > conn.epoch
+        {
+            // Fenced by a newer server that took the lease: it owns the pane now.
+            tracing::info!(pane = %id, ours = conn.epoch, theirs = r.epoch, "holder lease superseded");
+            return;
         }
+        let holder_pid = rec.as_ref().and_then(|r| r.holder_pid);
+        if vk_hold::holder_alive(std::path::Path::new(&conn.socket), holder_pid) {
+            failures += 1;
+            let backoff =
+                Duration::from_millis(50u64 << failures.min(7)).min(RECONNECT_BACKOFF_MAX);
+            tracing::warn!(pane = %id, error = %format!("{e:#}"), attempt = failures, ?backoff,
+                "holder connection lost but the holder is alive; reconnecting");
+            tokio::time::sleep(backoff).await;
+            conn.fresh = false;
+            continue;
+        }
+        // The holder died without reporting a child exit (crash, kill, reboot): keep the
+        // layout slot with a fresh shell and offer the agent for resume (10 §5.1).
+        tracing::warn!(pane = %id, error = %format!("{e:#}"), "holder lost");
+        server.holder_lost(&id);
+        return;
     }
 }
 
@@ -162,7 +266,9 @@ async fn run_inner(
     server: &Arc<Server>,
     rt: &Arc<PaneRt>,
     cmd_rx: &mut mpsc::UnboundedReceiver<PaneCmd>,
-    conn: HolderConn,
+    conn: &HolderConn,
+    ledger: &mut Ledger,
+    attempt: &mut Attempt,
 ) -> Result<String> {
     let stream = connect_retry(&conn.socket)
         .await
@@ -187,6 +293,7 @@ async fn run_inner(
         epoch: holder_epoch,
         ring,
         child_pid,
+        started_at_ms,
         ..
     } = hello
     else {
@@ -207,20 +314,45 @@ async fn run_inner(
         FromHolder::Acquired { .. } => {}
         other => bail!("acquire rejected: {other:?}"),
     }
+    attempt.acquired = Some(epoch);
     server.holder_epoch(&rt.id, epoch);
+    let incarnation = holder_incarnation(child_pid, started_at_ms);
+    let same_holder = attempt.incarnation.as_deref() == Some(incarnation.as_str());
+    attempt.incarnation = Some(incarnation.clone());
+    let in_ring = |o: u64| o >= ring.start_offset && o <= ring.end_offset;
 
     // Recovery: snapshot + journal replay (03 §4).
     let mut from = 0;
     let mut method = "fresh";
-    if !conn.fresh {
+    let fed = rt.screen.lock().unwrap().fed_offset;
+    if !conn.fresh && same_holder && in_ring(fed) {
+        // Reconnect to the holder we were attached to: our screen is exact up to `fed`, so
+        // only the bytes we missed are replayed.
+        method = "reconnect";
+        from = fed;
+        let mut sc = rt.screen.lock().unwrap();
+        sc.recovering = true;
+        sc.engine.set_replaying(true);
+    } else if !conn.fresh {
         method = "ring_only";
+        {
+            // Start from a blank screen (a reconnect to a different holder must not mix
+            // screens).
+            let mut sc = rt.screen.lock().unwrap();
+            let (c, r) = (sc.engine.cols(), sc.engine.rows());
+            sc.engine = Engine::new(c, r, SCROLLBACK);
+            sc.fed_offset = 0;
+        }
         let snap = server
             .with_core(|c| c.store.snapshot_for(&rt.id))
             .ok()
             .flatten();
+        // A snapshot is only valid for the holder incarnation it was taken from, at an
+        // offset that this holder's ring can continue from.
         if let Some(s) = snap
             && s.version == vk_term::engine::ENGINE_VERSION
-            && s.offset >= ring.start_offset
+            && s.incarnation.as_deref() == Some(incarnation.as_str())
+            && in_ring(s.offset)
             && let Ok(e) = Engine::restore(&s.blob, SCROLLBACK)
         {
             let mut sc = rt.screen.lock().unwrap();
@@ -245,6 +377,18 @@ async fn run_inner(
         },
     )
     .await?;
+    // Resend every unacknowledged input with its original id (the holder dedupes).
+    for (input_id, bytes) in ledger.pending() {
+        asyncio::write_frame(
+            &mut wr,
+            &ToHolder::Input {
+                epoch,
+                input_id,
+                bytes,
+            },
+        )
+        .await?;
+    }
     wr.flush().await?;
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<FromHolder>();
@@ -261,7 +405,8 @@ async fn run_inner(
         rt: rt.clone(),
         wr,
         epoch,
-        acks: HashMap::new(),
+        ledger: std::mem::take(ledger),
+        incarnation,
         exited: None,
         closing: false,
         last_snapshot: Instant::now(),
@@ -276,22 +421,27 @@ async fn run_inner(
     }
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let result = loop {
-        tokio::select! {
-            f = frame_rx.recv() => {
-                let Some(f) = f else { break Err(anyhow::anyhow!("holder connection closed")) };
-                if let Some(reason) = p.on_frame(f).await? { break Ok(reason) }
-            }
-            c = cmd_rx.recv() => {
-                let Some(c) = c else { break Ok("dropped".to_string()) };
-                p.on_cmd(c).await?;
-            }
-            _ = tick.tick(), if p.snapshot_dirty => {
-                p.maybe_snapshot(false).await?;
+    let result: Result<String> = async {
+        loop {
+            tokio::select! {
+                f = frame_rx.recv() => {
+                    let Some(f) = f else { return Err(anyhow::anyhow!("holder connection closed")) };
+                    if let Some(reason) = p.on_frame(f).await? { return Ok(reason) }
+                }
+                c = cmd_rx.recv() => {
+                    let Some(c) = c else { return Ok("dropped".to_string()) };
+                    p.on_cmd(c).await?;
+                }
+                _ = tick.tick(), if p.snapshot_dirty => {
+                    p.maybe_snapshot(false).await?;
+                }
             }
         }
-    };
+    }
+    .await;
     reader.abort();
+    // Unacknowledged inputs survive into the next connection attempt.
+    *ledger = std::mem::take(&mut p.ledger);
     result
 }
 
@@ -316,7 +466,9 @@ struct PaneLoop {
     rt: Arc<PaneRt>,
     wr: BufWriter<OwnedWriteHalf>,
     epoch: u64,
-    acks: HashMap<u64, oneshot::Sender<InputStatus>>,
+    ledger: Ledger,
+    /// Holder incarnation this connection is attached to (stored with snapshots).
+    incarnation: String,
     exited: Option<(Option<i32>, Option<i32>)>,
     closing: bool,
     last_snapshot: Instant,
@@ -401,7 +553,9 @@ impl PaneLoop {
                         }
                     }
                     self.server.mark_recovered(&self.rt.id, Some(&self.method));
-                    self.nudge().await?;
+                    if self.method != "reconnect" {
+                        self.nudge().await?;
+                    }
                     let rev = self.rt.screen.lock().unwrap().rev;
                     self.rt.rev_tx.send_replace(rev);
                     self.server.screen_dirty.notify_waiters();
@@ -410,11 +564,7 @@ impl PaneLoop {
             }
             FromHolder::InputAck {
                 input_id, status, ..
-            } => {
-                if let Some(tx) = self.acks.remove(&input_id) {
-                    let _ = tx.send(status);
-                }
-            }
+            } => self.ledger.complete(input_id, status),
             FromHolder::Status(st) => {
                 self.server.pane_status(&self.rt.id, &st);
                 *self.rt.status.lock().unwrap() = Some(st);
@@ -554,15 +704,14 @@ impl PaneLoop {
                     }
                     return Ok(());
                 }
-                if let Some(a) = ack {
-                    self.acks.insert(id, a);
+                if self.ledger.add(id, &bytes, ack) {
+                    self.send(&ToHolder::Input {
+                        epoch: self.epoch,
+                        input_id: id,
+                        bytes,
+                    })
+                    .await?;
                 }
-                self.send(&ToHolder::Input {
-                    epoch: self.epoch,
-                    input_id: id,
-                    bytes,
-                })
-                .await?;
             }
             PaneCmd::Resize { cols, rows } => {
                 self.send(&ToHolder::Resize {
@@ -629,9 +778,11 @@ impl PaneLoop {
         let blob = self.rt.screen.lock().unwrap().engine.snapshot();
         let id = self.rt.id.clone();
         let server = self.server.clone();
-        let ok = tokio::task::spawn_blocking(move || server.store_snapshot(&id, offset, blob))
-            .await
-            .unwrap_or(false);
+        let inc = self.incarnation.clone();
+        let ok =
+            tokio::task::spawn_blocking(move || server.store_snapshot(&id, offset, blob, &inc))
+                .await
+                .unwrap_or(false);
         if ok {
             self.send(&ToHolder::Checkpoint {
                 epoch: self.epoch,

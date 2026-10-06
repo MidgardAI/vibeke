@@ -39,6 +39,20 @@ pub struct Session {
     max_fps: u32,
     bg_fps: u32,
     remote: bool,
+    /// Holder acks for this client's inputs, forwarded as `InputAck` by the session loop.
+    acks: mpsc::UnboundedSender<(u64, AckStatus)>,
+}
+
+/// Client-facing status for a holder ack (07 §3.2). `Duplicate` means the bytes were written
+/// once already (e.g. a resend after reconnect), which the client treats as written.
+/// `Failed` (written only partly, child gone) and a vanished pane task are `Unconfirmed`:
+/// the input may or may not have reached the program.
+fn ack_status(st: Option<InputStatus>) -> AckStatus {
+    match st {
+        Some(InputStatus::Written | InputStatus::Duplicate) => AckStatus::Written,
+        Some(InputStatus::ChildExited) => AckStatus::Rejected,
+        Some(InputStatus::Failed) | None => AckStatus::Unconfirmed,
+    }
 }
 
 /// Hash a client input id into the holder's dedupe space, so a client that resends unacked
@@ -69,6 +83,7 @@ where
 {
     let mut wr = BufWriter::with_capacity(256 * 1024, wr);
     let (in_tx, mut in_rx) = mpsc::unbounded_channel::<ClientFrame>();
+    let (ack_tx, mut ack_rx) = mpsc::unbounded_channel::<(u64, AckStatus)>();
     let reader = tokio::spawn(async move {
         while let Ok(f) = asyncio::read_frame::<_, ClientFrame>(&mut rd).await {
             if in_tx.send(f).is_err() {
@@ -107,6 +122,7 @@ where
         max_fps: max_fps.max(1),
         bg_fps: if remote { 1 } else { 4 },
         remote,
+        acks: ack_tx,
     };
     let hello = ServerFrame::Hello {
         protocol: PROTOCOL,
@@ -129,6 +145,12 @@ where
                     if !s.on_client(f, &mut wr).await? { break }
                     while let Ok(f) = in_rx.try_recv() {
                         if !s.on_client(f, &mut wr).await? { return Ok(()) }
+                    }
+                }
+                Some((input_id, status)) = ack_rx.recv() => {
+                    asyncio::write_frame(&mut wr, &ServerFrame::InputAck { input_id, status }).await?;
+                    while let Ok((input_id, status)) = ack_rx.try_recv() {
+                        asyncio::write_frame(&mut wr, &ServerFrame::InputAck { input_id, status }).await?;
                     }
                 }
                 _ = model_rx.changed() => {}
@@ -403,7 +425,9 @@ impl Session {
             tracing::debug!(pane, reason, "input rejected");
             AckStatus::Rejected
         } else if let Some(rt) = self.server.pane_rt(pane) {
-            // Don't wait for the holder ack on the hot path: forward it when it arrives.
+            // Don't wait for the holder ack on the hot path: a small task forwards it to the
+            // session loop once the holder confirms the PTY write (07 §3.2), so the client
+            // can drop the input from its resend ledger.
             let id = holder_input_id(&self.client_id, input_id);
             *rt.last_input.lock().unwrap() = Some(Instant::now());
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -412,14 +436,16 @@ impl Session {
                 bytes,
                 ack: Some(tx),
             });
-            drop(rx); // acks are best-effort for TUI clients; CLI paths await them
-            AckStatus::Written
+            let acks = self.acks.clone();
+            tokio::spawn(async move {
+                let st = rx.await.ok();
+                let _ = acks.send((input_id, ack_status(st)));
+            });
+            return Ok(());
         } else {
             AckStatus::Rejected
         };
-        if status != AckStatus::Written {
-            asyncio::write_frame(wr, &ServerFrame::InputAck { input_id, status }).await?;
-        }
+        asyncio::write_frame(wr, &ServerFrame::InputAck { input_id, status }).await?;
         Ok(())
     }
 
