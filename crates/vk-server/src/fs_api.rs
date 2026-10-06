@@ -219,7 +219,34 @@ async fn diff_revs_at(root: &Path, p: &Value) -> R {
             .collect();
         return Ok(json!({"rev": rev, "files": files, "truncated": truncated}));
     };
-    if is_secret_path(file) {
+    // The file must be exactly one changed path in this comparison: a directory (or any other
+    // pathspec) would otherwise pull in everything beneath it, secrets included.
+    let changed = git(
+        root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-status",
+            "-z",
+            "-M",
+            "--end-of-options",
+            &rev,
+            "--",
+        ],
+    )
+    .await
+    .map(|o| parse_name_status(&o))?;
+    let Some(entry) = changed
+        .iter()
+        .find(|n| n.path == file || n.orig.as_deref() == Some(file))
+    else {
+        return Err(err(
+            ErrorKind::NotFound,
+            "file has no changes in this comparison",
+        ));
+    };
+    if is_secret_path(&entry.path) || entry.orig.as_deref().is_some_and(is_secret_path) {
         return Ok(
             json!({"file": file, "rev": rev, "secret": true, "diff": "", "truncated": false, "binary": false, "untracked": false}),
         );
@@ -265,7 +292,8 @@ fn check_path(path: &str, allow_root: bool) -> Result<bool, RpcError> {
             "path must be a relative path inside the repository",
         ));
     }
-    if path.split('/').any(|c| c == ".git") {
+    // Case-insensitive: on case-insensitive volumes `.GIT` is the same directory.
+    if path.split('/').any(|c| c.eq_ignore_ascii_case(".git")) {
         return Err(err(
             ErrorKind::PermissionDenied,
             "the .git directory is not browsable",
@@ -311,7 +339,7 @@ fn read_dir_nofollow(root: &Path, rel: &str) -> Result<(Vec<Entry>, bool), RpcEr
         // SAFETY: d_name is NUL-terminated within the dirent.
         let name_c = unsafe { CStr::from_ptr((*ent).d_name.as_ptr()) };
         let bytes = name_c.to_bytes();
-        if bytes == b"." || bytes == b".." || bytes == b".git" {
+        if bytes == b"." || bytes == b".." || bytes.eq_ignore_ascii_case(b".git") {
             continue;
         }
         if entries.len() >= MAX_SCAN {
@@ -620,6 +648,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diff_file_must_be_one_changed_path() {
+        let (_t, root) = fixture();
+        // Tracked secrets below an ordinary directory, changed in a commit.
+        std::fs::write(root.join("src/.env"), "TOKEN=1\n").unwrap();
+        std::fs::write(root.join("src/credentials.json"), "{}\n").unwrap();
+        run(&root, &["add", "-f", "src/.env", "src/credentials.json"]);
+        run(&root, &["commit", "-qm", "secrets"]);
+        for p in [
+            json!({"base": "HEAD~1", "file": "src"}),
+            json!({"range": "HEAD~1..HEAD", "file": "src"}),
+        ] {
+            let e = diff_revs_at(&root, &p).await.unwrap_err();
+            assert_eq!(kind(&e), "not_found", "directory selector {p}");
+        }
+        let v = diff_revs_at(&root, &json!({"range": "HEAD~1..HEAD", "file": "src/.env"}))
+            .await
+            .unwrap();
+        assert_eq!(v["secret"], true);
+        assert_eq!(v["diff"], "");
+        // Renaming a secret to an innocent name still counts as a secret change.
+        run(&root, &["mv", "src/credentials.json", "src/plain.txt"]);
+        run(&root, &["commit", "-qm", "rename"]);
+        let v = diff_revs_at(
+            &root,
+            &json!({"range": "HEAD~1..HEAD", "file": "src/plain.txt"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["secret"], true);
+    }
+
+    #[tokio::test]
+    async fn git_dir_is_excluded_case_insensitively() {
+        let (_t, root) = fixture();
+        for path in [".git/config", ".GIT/config", "x/.Git", ".gIt"] {
+            let e = read(root.clone(), json!({"path": path})).await.unwrap_err();
+            assert!(
+                matches!(kind(&e).as_str(), "permission_denied" | "invalid_params"),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn diff_base_and_range() {
         let (_t, root) = fixture();
         // base vs working tree, one file.
@@ -646,12 +718,11 @@ mod tests {
             .collect();
         assert_eq!(files, ["a.txt", "src/lib.rs"]);
         assert_eq!(v["files"][0]["adds"], 1);
-        // secrets never diffed.
-        let v = diff_revs_at(&root, &json!({"base": "HEAD", "file": ".env"}))
+        // An untracked secret isn't part of the comparison at all.
+        let e = diff_revs_at(&root, &json!({"base": "HEAD", "file": ".env"}))
             .await
-            .unwrap();
-        assert_eq!(v["secret"], true);
-        assert_eq!(v["diff"], "");
+            .unwrap_err();
+        assert_eq!(kind(&e), "not_found");
         for p in [
             json!({"range": "a..b..c", "file": "a.txt"}),
             json!({"range": "--output=x..HEAD"}),

@@ -472,6 +472,11 @@ impl Call<'_> {
         p: &Value,
     ) -> Result<(), ApiError> {
         let deny = || ApiError::new("forbidden", "outside what was shared with you");
+        // A selector is resolved on the local machine only: a `machine` parameter could make the
+        // same handle (e.g. a preview id) name something on another machine after the check.
+        if p.get("machine").is_some_and(|m| !m.is_null()) {
+            return Err(deny());
+        }
         match method {
             "tab.create" | "agent.start" if s(p, "pane").is_none() => {
                 if allowed.pane.is_some() || s(p, "workspace") != allowed.workspace.as_deref() {
@@ -489,15 +494,9 @@ impl Call<'_> {
                 }
             }
             "worktree.list" => {
-                // Shares name a pane or their workspace, never a host path.
-                if p.get("cwd").is_some() || p.get("repo").is_some() {
-                    return Err(deny());
-                }
-                if let Some(w) = s(p, "workspace")
-                    && (allowed.pane.is_some() || allowed.workspace.as_deref() != Some(w))
-                {
-                    return Err(deny());
-                }
+                // The list covers the whole repository (sibling checkouts, paths, branches), so
+                // limited devices can't call it at all.
+                return Err(deny());
             }
             "notification.read" => {
                 // Only a notification attached to a shared pane, never "all".
@@ -1804,11 +1803,23 @@ mod workspace_tests {
                 .await
                 .unwrap_or_else(|e| panic!("{m} {p}: {e:?}"));
         }
-        let wt = call
-            .dispatch("worktree.list", json!({"workspace": "w1"}))
-            .await
-            .unwrap();
-        assert_eq!(wt["echo"], json!({"cwd": "/ws1"}));
+        // The repository-wide worktree list would show sibling checkouts: never for shares.
+        forbidden(
+            call.dispatch("worktree.list", json!({"workspace": "w1"}))
+                .await,
+            "worktree.list own workspace",
+        );
+        // A machine selector could re-target an allowed handle elsewhere after the check.
+        forbidden(
+            call.dispatch("preview.get", json!({"preview": "v1", "machine": "other"}))
+                .await,
+            "preview on another machine",
+        );
+        forbidden(
+            call.dispatch("preview.url", json!({"preview": "v1", "machine": "other"}))
+                .await,
+            "preview url on another machine",
+        );
         // Lists are filtered to the limit.
         let a = call.dispatch("attention.list", json!({})).await.unwrap();
         let ids: Vec<&str> = a["items"]
