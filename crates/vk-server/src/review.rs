@@ -1963,7 +1963,8 @@ pub fn build_package(
         "mappings_confirmed": mappings_confirmed,
         "review_notes": notes.iter().map(t4::note_json).collect::<Vec<_>>(),
         "reviewer_runs": t4::reviewer_requests(server, &task.id).iter().map(t4::reviewer_json).collect::<Vec<_>>(),
-        "dependencies": t4::dependencies_json(server, &task.id),
+        // Full view; `task.review.get` re-filters it for pane-scoped callers.
+        "dependencies": t4::dependencies_json(server, &task.id, None),
         "effort": {
             "set": task.effort,
             "heuristic": effort_est,
@@ -2470,7 +2471,12 @@ async fn review_get(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let task = req(p, "task")?;
     authorize_task(server, ctx, task)?;
     let pkg = package(server, task, s(p, "subject")).await?;
-    Ok(pkg.json)
+    let mut j = pkg.json;
+    // Linked tasks outside a pane-scoped caller's workspace are placeholders (15 §11).
+    if let Some(ws) = caller_workspace(server, ctx)? {
+        j["dependencies"] = t4::dependencies_json(server, &pkg.task.id, Some(&ws));
+    }
+    Ok(j)
 }
 
 /// `task.review.diff {task, subject?, path?, max_bytes?}`: the full diff of a committed
@@ -3028,6 +3034,7 @@ fn check_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
 /// so queued → interrupted and running → unknown. Never relaunched (15 §6.3).
 pub fn recover(server: &Arc<Server>) {
     ensure_watcher(server);
+    t4::recover(server);
     let stale: Vec<CheckRunRec> =
         server.with_core(|c| c.store.load::<CheckRunRec>(K_CHECK).unwrap_or_default());
     if stale.is_empty() {

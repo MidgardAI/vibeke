@@ -444,6 +444,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "task",
+        "snapshot-gc",
+        "task.review.snapshot.gc",
+        &["task"],
+        "[task] | --repo path [--dry-run] [--include-unrecorded] — delete snapshot refs no candidate, acceptance, reviewer or running check references; prints what was removed",
+    ),
+    (
+        "task",
         "effort",
         "task.effort.estimate",
         &["task"],
