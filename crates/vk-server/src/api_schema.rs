@@ -50,6 +50,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("sync_input", sync_input::METHODS),
         ("tab_renumber", tab_renumber::METHODS),
         ("task_lifecycle", task_lifecycle::METHODS),
+        ("plugin_native", plugin_native::METHODS),
     ]
 }
 

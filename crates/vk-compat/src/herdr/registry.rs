@@ -178,6 +178,14 @@ impl Status {
 pub struct Registry {
     pub version: u32,
     pub plugins: BTreeMap<String, Entry>,
+    /// Native `vibeke-plugin.toml` plugins (07 §7.1–7.6, [`crate::native`]): kept in the same
+    /// file, lock and generation, but never visible to the Herdr code paths above.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native: BTreeMap<String, crate::native::registry::NativeEntry>,
+    /// Bumped by every committed change ([`Registry::update`]); running sessions reconcile
+    /// committed generations (02 §3 "Plugin state ownership").
+    #[serde(default)]
+    pub generation: u64,
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -185,7 +193,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -213,7 +221,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// A unique grant id (time, pid and a process-local counter).
-fn new_grant_id() -> String {
+pub(crate) fn new_grant_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
@@ -519,16 +527,16 @@ pub fn entry_digest(root: &Path, m: &Manifest) -> String {
 
 /// An advisory lock on `plugins.json.lock` (exclusive for changes, shared for launches),
 /// held while the guard lives.
-struct RegistryLock {
+pub(crate) struct RegistryLock {
     _file: std::fs::File,
 }
 
 impl RegistryLock {
-    fn acquire(dirs: &PluginDirs) -> io::Result<Self> {
+    pub(crate) fn acquire(dirs: &PluginDirs) -> io::Result<Self> {
         Self::acquire_mode(dirs, true)
     }
 
-    fn acquire_mode(dirs: &PluginDirs, exclusive: bool) -> io::Result<Self> {
+    pub(crate) fn acquire_mode(dirs: &PluginDirs, exclusive: bool) -> io::Result<Self> {
         if let Some(d) = dirs.registry.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -581,7 +589,7 @@ fn plugin_root(src: &Path) -> Result<PathBuf, RegistryError> {
     Ok(p)
 }
 
-fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? {
         let e = e?;
@@ -604,7 +612,7 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -666,7 +674,7 @@ pub fn set_tree_writable(root: &Path, writable: bool) -> io::Result<()> {
 }
 
 /// Remove a managed checkout (read-only on disk) completely.
-fn remove_checkout(p: &Path) -> io::Result<()> {
+pub(crate) fn remove_checkout(p: &Path) -> io::Result<()> {
     if std::fs::symlink_metadata(p).is_err() {
         return Ok(());
     }
@@ -676,7 +684,7 @@ fn remove_checkout(p: &Path) -> io::Result<()> {
 
 /// A unique token for checkout directory names (time, pid, counter, and kernel randomness when
 /// available).
-fn nonce() -> String {
+pub(crate) fn nonce() -> String {
     use std::io::Read;
     let mut b = [0u8; 8];
     let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
@@ -909,6 +917,7 @@ impl Registry {
         let _lock = RegistryLock::acquire(dirs)?;
         let mut reg = Registry::load(dirs)?;
         let out = f(&mut reg)?;
+        reg.generation += 1;
         reg.save(dirs)?;
         Ok(out)
     }
@@ -921,6 +930,8 @@ impl Registry {
         let text =
             serde_json::to_vec_pretty(&r).map_err(|e| RegistryError::Corrupt(e.to_string()))?;
         write_private(&dirs.registry, &text)?;
+        // The commit-pinned lock file next to it (09 §6); best effort, never fails a save.
+        let _ = crate::native::lockfile::write(dirs, &r);
         Ok(())
     }
 
@@ -967,6 +978,11 @@ impl Registry {
         staged: Staged,
     ) -> Result<(Entry, Manifest), RegistryError> {
         let m = staged.manifest.clone();
+        if self.native.contains_key(&m.id) {
+            let msg = format!("{} is registered as a native plugin; remove it first", m.id);
+            staged.discard();
+            return Err(RegistryError::Conflict(msg));
+        }
         if let Some(old) = self.plugins.get(&m.id)
             && !old.managed
         {
@@ -1049,6 +1065,12 @@ impl Registry {
     pub fn link(&mut self, path: &Path) -> Result<(Entry, Manifest), RegistryError> {
         let root = plugin_root(path)?;
         let (m, _) = read_manifest(&root)?;
+        if self.native.contains_key(&m.id) {
+            return Err(RegistryError::Conflict(format!(
+                "{} is registered as a native plugin; remove it first",
+                m.id
+            )));
+        }
         if let Some(old) = self.plugins.get(&m.id) {
             if old.managed {
                 return Err(RegistryError::Conflict(format!(

@@ -6,6 +6,7 @@
 
 mod config;
 pub mod herdr;
+pub mod native;
 mod session;
 
 pub use config::{ImportReport, import_config, write_imported};

@@ -16,6 +16,7 @@ pub mod exec;
 pub mod fsafe;
 pub mod gitexec;
 pub mod linux;
+pub mod native_plugin;
 pub mod net;
 pub mod plugin;
 pub mod policy;

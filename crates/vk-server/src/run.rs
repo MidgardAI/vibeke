@@ -76,6 +76,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::desk::start(&server);
     crate::sandbox::restore(&server).await;
     crate::compat::start(&server);
+    crate::plugin_native::start(&server);
     crate::inbox::start(&server);
     crate::config_api::start(&server);
     crate::security::start(&server);
@@ -354,6 +355,8 @@ where
                 match req.method.as_str() {
                     "client.hello" => {
                         if let Some(tok) = req.params.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                            // A native plugin's capability-scoped token (07 §7.3, 09 §3.2).
+                            if let Some(k) = crate::plugin_native::hello(&server, tok) { ctx.kind = k; ctx.pane_scope = None; foreign = false; let _ = out_tx.send(api::handle_line(&server, &ctx, l).await); continue; }
                             // An approved elevation (09 §3.2): full scope, bound to the pane it was
                             // issued to. Never for a pane of another session.
                             let elevated = (!foreign)
@@ -375,7 +378,7 @@ where
                                 }
                             }
                         }
-                        if let Some(k) = req.params.get("kind").and_then(Value::as_str).filter(|_| !ctx.kind.starts_with(crate::auth::ELEVATED_KIND)) { ctx.kind = k.into(); }
+                        if let Some(k) = req.params.get("kind").and_then(Value::as_str).filter(|_| !ctx.kind.starts_with(crate::auth::ELEVATED_KIND) && !crate::plugin_native::is_plugin_kind(&ctx.kind)) { ctx.kind = k.into(); }
                         if let Some(c) = req.params.get("client_id").and_then(Value::as_str) {
                             ctx.client_id = c.into();
                             guard.client_ids.lock().unwrap().push(c.into());

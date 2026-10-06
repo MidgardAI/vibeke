@@ -432,6 +432,7 @@ impl PaneScope {
 pub fn pane_scope_of(method: &str) -> PaneScope {
     if PANE_FORBIDDEN.contains(&method)
         || crate::security::PANE_FORBIDDEN.contains(&method)
+        || crate::plugin_native::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -474,6 +475,7 @@ pub fn is_run_targeted(method: &str) -> bool {
 /// the caller's own pane and panes it created; authorizing actions (answering interactions),
 /// server control and other workspaces' layout are forbidden.
 pub fn authorize(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
+    crate::plugin_native::authorize(server, ctx, method, p)?;
     let Some(scope) = &ctx.pane_scope else {
         return Ok(());
     };
@@ -624,6 +626,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     if let Some(r) = crate::drafts::api(server, ctx, method, p).await {
         return r;
     }
+    // Native plugins (lane 3B): its own methods and the merged shared `plugin.*` views.
+    if (method.starts_with("plugin.") || method.starts_with("ui.") || method == "compat.ui.state")
+        && let Some(r) = Box::pin(crate::plugin_native::api(server, ctx, method, p)).await
+    {
+        return r;
+    }
     if (method.starts_with("plugin.") || method.starts_with("compat."))
         && let Some(r) = crate::compat::api(server, ctx, method, p).await
     {
@@ -672,6 +680,7 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                     .chain(crate::task_lifecycle::METHODS)
                     .chain(crate::task_park::METHODS)
                     .chain(crate::security::METHODS)
+                    .chain(crate::plugin_native::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
