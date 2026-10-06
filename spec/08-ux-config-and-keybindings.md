@@ -264,6 +264,19 @@ Vibeke additions beyond the base set are marked ✚.
 
 Action names: the copy-mode binding is `enter_copy_mode` and the picker is `workspace_picker`, because `[keys.copy_mode]`/`[keys.navigate]` are tables (Goal 01 deviation).
 
+**Previews and browser panes (06 B2/B3.2; Goal 03 Stage 2).** `prefix+o` (`open_notification_target`) keeps its usual meaning while a toast with a target is showing; otherwise it opens the focused pane's preview as a browser pane next to it (a window when the host has no graphics); `open_preview` is the same action without the toast rule. While a **browser pane is focused**, a browser table is consulted before the global one; it overrides keys that mean nothing in a browser pane (copy mode, scrollback editing, sync input). Rebind with `[keys] browser_back = "…"` etc.
+
+| Action (browser pane focused) | Default | Overrides |
+|---|---|---|
+| ✚ browser_address (edit URL) | `prefix+e` | edit_scrollback |
+| ✚ browser_back / browser_forward | `prefix+[` / `prefix+]` | enter_copy_mode / paste_buffer |
+| ✚ browser_reload / browser_hard_reload | `prefix+.` / `prefix+,` | — |
+| ✚ browser_screenshot | `prefix+shift+s` | sync_input |
+| ✚ browser_window (open in window ⇄ back to pane, 06 B3.3) | `prefix+o` | open_notification_target |
+| ✚ browser_console (console/network split) | `prefix+alt+c` | — (not built yet: Stage 3) |
+
+All other keys go to the page except the prefix; direct (non-prefix) bindings such as `ctrl+v` don't apply in a browser pane. Mouse: click the chrome's ←/→/⟳ or its URL; Ctrl/Alt+click a `http://localhost:<port>` URL printed in any pane opens it in a browser pane next to that pane.
+
 \* `rename_pane` is bound to `prefix+shift+p`, so we default `pin_pane` to `prefix+alt+p` (§2.3 references to "pin" use this binding). `vibeke keys check` must report no conflicts on the shipped defaults (CI test).
 
 Mode-local keymaps: `[keys.navigate]`, `[keys.copy_mode]`, `[keys.resize]`, `[keys.card]`. All are rebindable.
