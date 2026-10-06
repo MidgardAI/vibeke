@@ -82,8 +82,20 @@ pub struct State {
 
 #[derive(Debug, Clone)]
 pub enum Reply {
-    Check { ws: String, open: bool },
-    Trusted { ws: String },
+    Check {
+        ws: String,
+        open: bool,
+    },
+    Trusted {
+        ws: String,
+    },
+    /// The fresh trust check before running a repo command: run `command` only when the repo
+    /// is still trusted at the reviewed `digest` and still defines exactly that command.
+    Run {
+        ws: String,
+        command: Box<vk_config::KeyCommand>,
+        digest: Option<String>,
+    },
 }
 
 fn focused(app: &App) -> Option<(usize, String, String)> {
@@ -151,6 +163,45 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 }
                 app.ux.trust.view = Some(key);
                 app.ux.trust.notice = None;
+                app.mode = Mode::Popup(Popup::TrustRepo);
+            }
+        }
+        Reply::Run {
+            ws,
+            command,
+            digest,
+        } => {
+            let info = match res {
+                Ok(v) => Info::from_value(&v),
+                Err(e) => {
+                    app.toast(format!(
+                        "✗ repo command not run: can't re-check trust ({})",
+                        e.message
+                    ));
+                    app.dirty = true;
+                    return;
+                }
+            };
+            let still = info.trusted
+                && info.digest.is_some()
+                && info.digest == digest
+                && info.commands.contains(&command);
+            let key = (mi, ws);
+            if still {
+                app.ux.trust.info.insert(key, info);
+                app.run_key_command(&command);
+            } else {
+                // Changed since it was reviewed: nothing runs until the user trusts the new
+                // content (any change needs a new review).
+                let mut info = info;
+                info.trusted = false;
+                app.ux.trust.info.insert(key.clone(), info);
+                app.toast(
+                    "✗ repo config changed since you trusted it — review it again (:trust_repo)",
+                );
+                app.ux.trust.view = Some(key);
+                app.ux.trust.notice =
+                    Some(".vibeke/ changed since it was trusted; the command did not run".into());
                 app.mode = Mode::Popup(Popup::TrustRepo);
             }
         }
@@ -234,17 +285,30 @@ pub fn action(app: &mut App, action: &str) -> bool {
             app.toast("that repo command works in its own workspace");
             return true;
         }
-        let c = app
+        let cached = app
             .ux
             .trust
             .info
-            .get(&(mi, ws))
-            .filter(|i| i.trusted)
-            .and_then(|info| info.commands.get(i).cloned());
-        match c {
-            Some(c) => app.run_key_command(&c),
-            None => app.toast("repo config is not trusted — :trust_repo"),
-        }
+            .get(&(mi, ws.clone()))
+            .filter(|info| info.trusted)
+            .and_then(|info| Some((info.commands.get(i).cloned()?, info.digest.clone())));
+        let Some((c, digest)) = cached else {
+            app.toast("repo config is not trusted — :trust_repo");
+            return true;
+        };
+        // Re-check trust with the server right before running a repo-provided command (09 §4):
+        // the `.vibeke/` tree may have changed since it was reviewed (a checkout, an agent).
+        let root = focused(app).map(|f| f.2).unwrap_or_default();
+        app.command_on(
+            mi,
+            "policy.trust",
+            json!({"path": root, "check": true}),
+            Pending::Ux(crate::ux::Reply::Trust(Reply::Run {
+                ws,
+                command: Box::new(c),
+                digest,
+            })),
+        );
         return true;
     }
     false

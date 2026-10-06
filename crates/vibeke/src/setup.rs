@@ -3,7 +3,10 @@
 //! written config are the same.
 //!
 //! `vibeke setup` asks on stdin unless `--yes`; nothing touches a harness config without a yes
-//! (the exact diff is printed first), and `--dry-run` writes nothing at all. Non-interactive use:
+//! (the exact diff is printed first), and `--dry-run` writes nothing at all. Consent is never
+//! assumed: without a terminal and without `--yes` nothing is written, and end of input or a
+//! read error at any question means "no" and stops setup (never a prompt's default "yes").
+//! Non-interactive use:
 //! `--install claude,codex|all --notifications native|osc|none --theme NAME --import-herdr --yes`.
 
 use std::io::{BufRead, IsTerminal, Write};
@@ -20,13 +23,36 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Read one answer line (EOF = empty).
-fn ask(prompt: &str) -> String {
+/// Read one answer line; `None` at end of input or on a read error (never an empty answer, so
+/// a closed stdin can't select a prompt's default).
+fn ask_from(input: &mut dyn BufRead, prompt: &str) -> Option<String> {
     print!("{prompt} ");
     let _ = std::io::stdout().flush();
     let mut s = String::new();
-    let _ = std::io::stdin().lock().read_line(&mut s);
-    s.trim().to_string()
+    match input.read_line(&mut s) {
+        Ok(0) | Err(_) => {
+            println!();
+            None
+        }
+        Ok(_) => Some(s.trim().to_string()),
+    }
+}
+
+/// [`ask_from`] on stdin.
+fn ask(prompt: &str) -> Option<String> {
+    ask_from(&mut std::io::stdin().lock(), prompt)
+}
+
+/// The final "Write <config>?" question: `Some(answer)` (enter keeps the default yes, an
+/// explicit answer), `None` at end of input or on a read error, which never writes.
+fn confirm_write(input: &mut dyn BufRead, path: &std::path::Path) -> Option<bool> {
+    ask_from(input, &format!("Write {}? [Y/n]", path.display())).map(|a| yes(&a, true))
+}
+
+/// Setup stopped because input ended: what was answered stays, nothing more is written.
+fn input_closed() -> i32 {
+    eprintln!("vibeke setup: input closed; stopped without writing anything further");
+    EXIT_USAGE
 }
 
 fn yes(answer: &str, default: bool) -> bool {
@@ -37,16 +63,38 @@ fn yes(answer: &str, default: bool) -> bool {
 }
 
 pub fn setup(args: &[String]) -> i32 {
+    let tty = std::io::stdin().is_terminal();
+    setup_with(
+        args,
+        &mut std::io::stdin().lock(),
+        tty,
+        &vk_config::config_path(),
+    )
+}
+
+/// `vibeke setup` reading answers from `input` (`tty`: it is a terminal) and writing `path`.
+pub fn setup_with(
+    args: &[String],
+    input: &mut dyn BufRead,
+    tty: bool,
+    path: &std::path::Path,
+) -> i32 {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{SETUP_USAGE}");
         return EXIT_OK;
     }
     let auto = args.iter().any(|a| a == "--yes" || a == "-y");
     let dry = args.iter().any(|a| a == "--dry-run");
-    let interactive = !auto;
+    if !auto && !dry && !tty {
+        eprintln!(
+            "vibeke setup: stdin is not a terminal and --yes was not given; nothing written. Run it in a terminal, or non-interactively: {SETUP_USAGE}"
+        );
+        return EXIT_USAGE;
+    }
+    let interactive = !auto && tty;
     // 1. Terminal.
     println!("== 1. terminal ==");
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+    if tty && std::io::stdout().is_terminal() {
         match crate::doctor::probe_terminal() {
             Some(p) => {
                 let caps = vk_tui::screen::HostCaps {
@@ -77,10 +125,13 @@ pub fn setup(args: &[String]) -> i32 {
     if let Some(h) = ob::herdr_config() {
         println!("\n== 2. Herdr ==\nfound {}", h.display());
         let import = if interactive {
-            yes(
-                &ask("Import keybindings, theme, sidebar rules and worktree dir? [Y/n]"),
-                true,
-            )
+            let Some(a) = ask_from(
+                input,
+                "Import keybindings, theme, sidebar rules and worktree dir? [Y/n]",
+            ) else {
+                return input_closed();
+            };
+            yes(&a, true)
         } else {
             args.iter().any(|a| a == "--import-herdr")
         };
@@ -128,14 +179,17 @@ pub fn setup(args: &[String]) -> i32 {
         println!("\n{}", r.diff);
         let files: Vec<String> = r.files.iter().map(|p| p.display().to_string()).collect();
         let go = if interactive {
-            yes(
-                &ask(&format!(
+            let Some(a) = ask_from(
+                input,
+                &format!(
                     "Install the {} integration into {}? [y/N]",
                     r.harness.id(),
                     files.join(", ")
-                )),
-                false,
-            )
+                ),
+            ) else {
+                return input_closed();
+            };
+            yes(&a, false)
         } else {
             true
         };
@@ -168,11 +222,15 @@ pub fn setup(args: &[String]) -> i32 {
         }
         None if interactive => {
             let native = ob::native_notifier().unwrap_or("none found");
-            match ask(&format!(
-                "[1] native ({native})  [2] terminal (OSC 9/777)  [3] none — enter keeps native:"
-            ))
-            .as_str()
-            {
+            let Some(a) = ask_from(
+                input,
+                &format!(
+                    "[1] native ({native})  [2] terminal (OSC 9/777)  [3] none — enter keeps native:"
+                ),
+            ) else {
+                return input_closed();
+            };
+            match a.as_str() {
                 "2" | "osc" | "terminal" => "osc".into(),
                 "3" | "none" => "none".into(),
                 _ => "native".into(),
@@ -188,7 +246,10 @@ pub fn setup(args: &[String]) -> i32 {
         Some(t) => t,
         None if interactive => {
             let list = ob::THEMES.join(" | ");
-            let a = ask(&format!("theme ({list}) — enter keeps catppuccin:"));
+            let Some(a) = ask_from(input, &format!("theme ({list}) — enter keeps catppuccin:"))
+            else {
+                return input_closed();
+            };
             if a.is_empty() { "catppuccin".into() } else { a }
         }
         None => "catppuccin".into(),
@@ -196,9 +257,8 @@ pub fn setup(args: &[String]) -> i32 {
     println!("  {theme}");
     choices.theme = Some(theme);
     // 6. Config.
-    let path = vk_config::config_path();
     println!("\n== 6. config: {} ==", path.display());
-    let existing = std::fs::read_to_string(&path).ok();
+    let existing = std::fs::read_to_string(path).ok();
     let text = match ob::starter_config(existing.as_deref(), &choices) {
         Ok(t) => t,
         Err(e) => {
@@ -211,9 +271,16 @@ pub fn setup(args: &[String]) -> i32 {
         println!("dry run: not written");
         return code;
     }
-    let write = !interactive || yes(&ask(&format!("Write {}? [Y/n]", path.display())), true);
+    let write = if interactive {
+        match confirm_write(input, path) {
+            Some(w) => w,
+            None => return input_closed(),
+        }
+    } else {
+        auto
+    };
     if write {
-        match ob::write_config(&path, &text) {
+        match ob::write_config(path, &text) {
             Ok(()) => println!("wrote {}", path.display()),
             Err(e) => {
                 eprintln!("write {}: {e}", path.display());
@@ -285,10 +352,8 @@ pub async fn trust(g: &Global, args: &[String]) -> i32 {
             return EXIT_USAGE;
         }
         if !auto
-            && !yes(
-                &ask("Trust this content (any later change needs a new review)? [y/N]"),
-                false,
-            )
+            && !ask("Trust this content (any later change needs a new review)? [y/N]")
+                .is_some_and(|a| yes(&a, false))
         {
             println!("not trusted");
             return EXIT_OK;
@@ -314,4 +379,67 @@ pub async fn trust(g: &Global, args: &[String]) -> i32 {
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Review batch 2, finding 12: closed stdin and EOF at the final prompt leave both an
+    /// absent and an existing configuration untouched; without a terminal and without
+    /// `--yes` nothing is written. (No scripted answer here can reach a harness install
+    /// question: closed input stops at the first question, whatever it is.)
+    #[test]
+    fn eof_and_closed_stdin_never_write_the_config() {
+        let d = tempfile::tempdir().unwrap();
+        let absent = d.path().join("absent.toml");
+        let existing = d.path().join("existing.toml");
+        let mine = "theme = \"gruvbox\"\n[notifications]\nchannel = \"osc\"\n";
+        std::fs::write(&existing, mine).unwrap();
+        for path in [&absent, &existing] {
+            // Closed stdin, with and without a terminal.
+            for tty in [true, false] {
+                let code = setup_with(&args(&["setup"]), &mut std::io::empty(), tty, path);
+                assert_eq!(code, EXIT_USAGE, "{} tty={tty}", path.display());
+            }
+            // Piped answers without a terminal: refused before any question.
+            let mut answers: &[u8] = b"3\n\ny\n";
+            let code = setup_with(&args(&["setup"]), &mut answers, false, path);
+            assert_eq!(code, EXIT_USAGE);
+        }
+        assert!(!absent.exists(), "no config was created");
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), mine);
+        // EOF (or a read error) at the final question is "no", never the default yes.
+        assert_eq!(confirm_write(&mut std::io::empty(), &absent), None);
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("tty gone"))
+            }
+        }
+        let mut broken = std::io::BufReader::new(Broken);
+        assert_eq!(confirm_write(&mut broken, &absent), None);
+        let mut n: &[u8] = b"n\n";
+        assert_eq!(confirm_write(&mut n, &absent), Some(false));
+        let mut enter: &[u8] = b"\n";
+        assert_eq!(
+            confirm_write(&mut enter, &absent),
+            Some(true),
+            "an explicit enter"
+        );
+        // --yes writes without a terminal (no harness is named, so none is installed).
+        let auto = d.path().join("auto.toml");
+        let code = setup_with(
+            &args(&["setup", "--yes"]),
+            &mut std::io::empty(),
+            false,
+            &auto,
+        );
+        assert_eq!(code, EXIT_OK);
+        assert!(auto.exists());
+    }
 }

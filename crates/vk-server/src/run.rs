@@ -159,6 +159,11 @@ pub fn inside_any_pane(pid: Option<i32>, runtime_root: &std::path::Path) -> bool
             .any(|r| std::path::Path::new(spec).starts_with(r))
     };
     for _ in 0..64 {
+        // A helper this server spawned outside any pane (reached before any holder): ours,
+        // even when this server itself was started from inside a pane.
+        if pid == std::process::id() {
+            return false;
+        }
         let Some(info) = vk_hold::procinfo::info(pid) else {
             return false;
         };
@@ -176,6 +181,102 @@ pub fn inside_any_pane(pid: Option<i32>, runtime_root: &std::path::Path) -> bool
         pid = info.ppid;
     }
     false
+}
+
+/// The pane of *this* session whose token the peer process carries in its environment
+/// (`VIBEKE_PANE_TOKEN`), for a pane process the ancestry walk missed. Best effort: the
+/// environment is not readable on every platform.
+fn env_pane(server: &Server, pid: Option<i32>) -> Option<String> {
+    let pid = pid.filter(|p| *p > 1)? as u32;
+    let env = vk_hold::procinfo::environ(pid);
+    let tok = env
+        .iter()
+        .find(|(k, _)| k == "VIBEKE_PANE_TOKEN")
+        .map(|(_, v)| v.as_str())
+        .filter(|t| !t.is_empty())?;
+    server.pane_for_token(tok)
+}
+
+/// Whether the peer runs inside a pane of *another* session of this installation (09 §3.2):
+/// one of its ancestors is a pane holder under the shared runtime root, or its environment
+/// carries a pane identity (`VIBEKE_PANE_TOKEN` / `VIBEKE_PANE_ULID`) that is not one of ours
+/// and whose socket, if named, lives under the same runtime root. Such a process is nobody's
+/// operator: without a valid token of this session it is refused (never full scope).
+pub fn foreign_pane(server: &Server, pid: Option<i32>) -> bool {
+    let root = server
+        .paths
+        .runtime
+        .parent()
+        .unwrap_or(&server.paths.runtime);
+    if inside_any_pane(pid, root) {
+        return true;
+    }
+    let Some(pid) = pid.filter(|p| *p > 1).map(|p| p as u32) else {
+        return false;
+    };
+    let env = vk_hold::procinfo::environ(pid);
+    let get = |k: &str| {
+        env.iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.is_empty())
+    };
+    let token = get("VIBEKE_PANE_TOKEN");
+    if token.is_none() && get("VIBEKE_PANE_ULID").is_none() {
+        return false;
+    }
+    if token.is_some_and(|t| server.pane_for_token(t).is_some()) {
+        return false;
+    }
+    match get("VIBEKE_SOCKET") {
+        None => true,
+        Some(s) => {
+            let s = std::path::Path::new(s);
+            let roots = [Some(root.to_path_buf()), root.canonicalize().ok()];
+            roots.iter().flatten().any(|r| s.starts_with(r))
+        }
+    }
+}
+
+/// A pane's identity variables. A server spawned from inside a pane (the CLI's auto-start,
+/// `session.create`) must not inherit them: they would make the new server and its helpers look
+/// like that pane to everyone (09 §3.2).
+pub const PANE_IDENTITY_ENV: &[&str] = &[
+    "VIBEKE_PANE_TOKEN",
+    "VIBEKE_ELEVATED_TOKEN",
+    "VIBEKE_PANE_ID",
+    "VIBEKE_PANE_ULID",
+    "VIBEKE_WORKSPACE_ID",
+    "VIBEKE_TAB_ID",
+];
+
+/// Refusal for a connection from a pane of another session that presented no token of ours.
+fn foreign_refusal(method: &str) -> vk_proto::rpc::RpcError {
+    err(
+        ErrorKind::PermissionDenied,
+        format!(
+            "foreign_pane: {method} refused: this process runs inside a pane of another session; present this session's pane token (client.hello {{token}}) or run the command outside any pane"
+        ),
+    )
+    .details(json!({"scope": "foreign_pane"}))
+}
+
+/// Connection-level checks that apply to every method, before dispatch: a pane of another
+/// session without our token gets nothing, and a read-only connection (`client.hello
+/// {readonly: true}`) no mutating method (the catalog's `mutating` flag; unknown methods count
+/// as mutating).
+fn connection_gate(
+    foreign: bool,
+    readonly: bool,
+    method: &str,
+) -> Result<(), vk_proto::rpc::RpcError> {
+    if foreign && method != "client.hello" {
+        return Err(foreign_refusal(method));
+    }
+    if readonly && method != "client.hello" && crate::session_api::is_mutating(method) {
+        return Err(crate::session_api::readonly_refusal(method));
+    }
+    Ok(())
 }
 
 /// Per-connection cleanup that must run however the connection ends (EOF, error, panic
@@ -213,7 +314,9 @@ where
     };
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
-    let ancestry = ancestry_pane(&server, peer_pid);
+    let ancestry = ancestry_pane(&server, peer_pid).or_else(|| env_pane(&server, peer_pid));
+    // A pane of another session (09 §3.2): refused until it presents a token of ours.
+    let mut foreign = ancestry.is_none() && foreign_pane(&server, peer_pid);
     let mut ctx = Ctx {
         client_id: format!("c-{}", &ulid()[20..]),
         kind: if ancestry.is_some() {
@@ -241,16 +344,30 @@ where
                     let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
                     continue;
                 };
+                if req.method != "render.attach"
+                    && let Err(e) = connection_gate(foreign, readonly, &req.method)
+                {
+                    let r = Response::err(req.id.clone().unwrap_or(Value::Null), e);
+                    let _ = out_tx.send(serde_json::to_string(&r)?);
+                    continue;
+                }
                 match req.method.as_str() {
                     "client.hello" => {
                         if let Some(tok) = req.params.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
-                            // An approved elevation (09 §3.2): full scope, bound to the pane it was issued to.
-                            let elevated = crate::auth::elevated_hello(&server, tok, ancestry.as_deref());
+                            // An approved elevation (09 §3.2): full scope, bound to the pane it was
+                            // issued to. Never for a pane of another session.
+                            let elevated = (!foreign)
+                                .then(|| crate::auth::elevated_hello(&server, tok, ancestry.as_deref()))
+                                .flatten();
                             if let Some(k) = &elevated { ctx.pane_scope = None; ctx.kind = k.clone(); }
                             match server.pane_for_token(tok) {
                                 _ if elevated.is_some() => {}
                                 // A token can't widen or switch scope away from the caller's own pane.
-                                Some(p) if ancestry.as_ref().is_none_or(|a| *a == p) => ctx.pane_scope = Some(p),
+                                Some(p) if ancestry.as_ref().is_none_or(|a| *a == p) => {
+                                    ctx.pane_scope = Some(p);
+                                    // A valid pane token of ours: that pane's scope, not foreign.
+                                    foreign = false;
+                                }
                                 _ => {
                                     let r = Response::err(req.id.clone().unwrap_or(Value::Null), err(ErrorKind::PermissionDenied, crate::auth::unknown_token_message(&server, ancestry.as_deref())));
                                     let _ = out_tx.send(serde_json::to_string(&r)?);
@@ -270,7 +387,17 @@ where
                     }
                     "render.attach" => break Some(req),
                     "events.subscribe" => {
-                        if let Some((sid, h)) = subscribe(&server, &req, out_tx.clone())? {
+                        // The same per-call checks as every dispatched method (pane scope,
+                        // revocation, elevation expiry); the subscription re-checks them while
+                        // it runs.
+                        let auth = api::authorize(&server, &ctx, &req.method, &req.params)
+                            .and_then(|()| crate::auth::authorize(&server, &ctx, &req.method));
+                        if let Err(e) = auth {
+                            let r = Response::err(req.id.clone().unwrap_or(Value::Null), e);
+                            let _ = out_tx.send(serde_json::to_string(&r)?);
+                            continue;
+                        }
+                        if let Some((sid, h)) = subscribe(&server, &ctx, &req, out_tx.clone())? {
                             let mut subs = guard.subs.lock().unwrap();
                             subs.retain(|_, h| !h.is_finished());
                             subs.insert(sid, h);
@@ -324,14 +451,21 @@ where
         wr.write_all(b"\n").await?;
     }
     if let Some(req) = attach {
-        if ctx.pane_scope.is_some() {
-            let r = Response::err(
-                req.id.unwrap_or(Value::Null),
-                err(
-                    ErrorKind::PermissionDenied,
-                    "render.attach needs a user client",
-                ),
-            );
+        // A render session runs as the connection's authenticated caller: never a pane, never
+        // a pane of another session, and an elevated caller stays elevated (expiry and
+        // revocation end the session; `auth.elevate.decide` stays refused).
+        let refusal = if ctx.pane_scope.is_some() {
+            Some(err(
+                ErrorKind::PermissionDenied,
+                "render.attach needs a user client",
+            ))
+        } else if foreign {
+            Some(foreign_refusal("render.attach"))
+        } else {
+            crate::auth::authorize(&server, &ctx, "render.attach").err()
+        };
+        if let Some(e) = refusal {
+            let r = Response::err(req.id.unwrap_or(Value::Null), e);
             wr.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
             wr.write_all(b"\n").await?;
             return Ok(());
@@ -395,7 +529,20 @@ where
         if readonly {
             crate::session_api::set_readonly(&client_id, true);
         }
-        let r = render::serve(server.clone(), rd, wr, client_id.clone(), remote, max_fps).await;
+        let auth = render::Auth {
+            kind: ctx.kind.clone(),
+            readonly,
+        };
+        let r = render::serve_as(
+            server.clone(),
+            rd,
+            wr,
+            client_id.clone(),
+            remote,
+            max_fps,
+            auth,
+        )
+        .await;
         if readonly {
             crate::session_api::set_readonly(&client_id, false);
         }
@@ -408,10 +555,12 @@ where
 }
 
 /// `events.subscribe {after?, types?}`: backlog from the outbox, then live events; never silent
-/// loss (overflow closes the subscription with `events.overflow`). Returns the subscription id
+/// loss (overflow closes the subscription with `events.overflow`). A revoked or expired caller's
+/// subscription ends with `events.closed {subscription_id, reason}`. Returns the subscription id
 /// and its task (aborted by `events.unsubscribe` or when the connection ends).
 fn subscribe(
     server: &Arc<Server>,
+    ctx: &Ctx,
     req: &Request,
     out: mpsc::UnboundedSender<String>,
 ) -> Result<Option<(String, tokio::task::AbortHandle)>> {
@@ -445,10 +594,18 @@ fn subscribe(
     ))?);
     let srv = server.clone();
     let ret_id = sub_id.clone();
+    let ctx = ctx.clone();
+    let mut revoked = crate::auth::revocations(server);
     let task = tokio::spawn(async move {
         let notify = |e: &vk_store::Event| {
             serde_json::to_string(&json!({"jsonrpc": "2.0", "method": "events.event", "params": {"subscription_id": sub_id, "event": e}})).unwrap()
         };
+        // Revocation or elevation expiry ends the subscription (09 §3.2): checked before every
+        // delivery and whenever a revocation happens or the elevation's lifetime runs out.
+        let closed = |e: vk_proto::rpc::RpcError| {
+            serde_json::to_string(&json!({"jsonrpc": "2.0", "method": "events.closed", "params": {"subscription_id": sub_id, "reason": e.message}})).unwrap()
+        };
+        let allowed = || crate::auth::authorize(&srv, &ctx, "events.subscribe");
         let mut last = after;
         if replay {
             loop {
@@ -459,6 +616,10 @@ fn subscribe(
                     break;
                 }
                 for e in &batch {
+                    if let Err(err) = allowed() {
+                        let _ = out.send(closed(err));
+                        return;
+                    }
                     last = e.seq;
                     if out.send(notify(e)).is_err() {
                         return;
@@ -469,7 +630,28 @@ fn subscribe(
             last = live_from.unwrap_or(0);
         }
         loop {
-            match rx.recv().await {
+            let expiry = crate::auth::elevation_expiry(&srv, &ctx.kind).map(|ms| {
+                let left = (ms - vk_store::now_ms()).max(0) as u64;
+                tokio::time::Instant::now() + Duration::from_millis(left + 1)
+            });
+            let ev = tokio::select! {
+                ev = rx.recv() => ev,
+                _ = revoked.changed() => {
+                    if let Err(err) = allowed() {
+                        let _ = out.send(closed(err));
+                        return;
+                    }
+                    continue;
+                }
+                _ = async { tokio::time::sleep_until(expiry.unwrap()).await }, if expiry.is_some() => {
+                    if let Err(err) = allowed() {
+                        let _ = out.send(closed(err));
+                        return;
+                    }
+                    continue;
+                }
+            };
+            match ev {
                 Ok(e) => {
                     if e.seq <= last {
                         continue;
@@ -478,6 +660,10 @@ fn subscribe(
                     if !types.is_empty() && !types.iter().any(|g| vk_store::glob_match(g, &e.kind))
                     {
                         continue;
+                    }
+                    if let Err(err) = allowed() {
+                        let _ = out.send(closed(err));
+                        return;
                     }
                     if out.send(notify(&e)).is_err() {
                         return;
@@ -1415,3 +1601,7 @@ async fn task_finish(server: &Arc<Server>, p: &Value) -> R {
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "run_auth_tests.rs"]
+mod auth_tests;

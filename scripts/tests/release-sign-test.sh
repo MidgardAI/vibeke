@@ -88,7 +88,7 @@ mkinstaller() { # <current pub> <next pub> -> $WORK/install.sh
   grep -q "KEY_CURRENT=\"$1\"" "$WORK/install.sh" || fail "could not patch KEY_CURRENT"
 }
 REL="$WORK/rel"
-mkrelease() { # <signing key name>
+mkrelease() { # <signing key name> [binary version] [trusted-comment version] [untrusted comment]
   rm -rf "$REL"; mkdir -p "$REL"
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) NAME=vibeke-macos-aarch64 ;;
@@ -96,15 +96,23 @@ mkrelease() { # <signing key name>
     Linux-aarch64|Linux-arm64) NAME=vibeke-linux-aarch64 ;;
     *) echo "release-sign-test: installer tests need a supported platform, skipping them"; exit 0 ;;
   esac
-  printf '#!/bin/sh\necho "vibeke 0.9.0"\n' >"$REL/$NAME"
+  bv=${2:-0.9.0}; sv=${3:-$bv}
+  printf '#!/bin/sh\necho "vibeke %s"\n' "$bv" >"$REL/$NAME"
   chmod 755 "$REL/$NAME"
   echo "$(shasum -a 256 "$REL/$NAME" | cut -d' ' -f1)  $NAME" >"$REL/SHA256SUMS"
-  [ -z "${1:-}" ] || minisign -S -s "$WORK/$1.key" -m "$REL/SHA256SUMS" -t "vibeke v0.9.0" >/dev/null
+  [ -z "${1:-}" ] || minisign -S -s "$WORK/$1.key" -m "$REL/SHA256SUMS" -t "vibeke v$sv" >/dev/null
+  if [ -n "${4:-}" ]; then
+    sed "1s/.*/untrusted comment: $4/" "$REL/SHA256SUMS.minisig" >"$REL/sig.tmp" && mv "$REL/sig.tmp" "$REL/SHA256SUMS.minisig"
+  fi
 }
-install_run() { # runs the installer into a fresh HOME; extra env via the caller
+install_run() { # runs the installer into a fresh HOME (requesting $WANT, default 0.9.0)
   rm -rf "$WORK/ihome"; mkdir -p "$WORK/ihome"
-  HOME="$WORK/ihome" VIBEKE_INSTALL_FROM="$REL" sh "$WORK/install.sh" >"$WORK/iout" 2>&1
+  install_again "$@"
 }
+install_again() { # the same, into the existing HOME (an upgrade or downgrade attempt)
+  HOME="$WORK/ihome" VIBEKE_VERSION="${WANT:-0.9.0}" VIBEKE_INSTALL_FROM="$REL" sh "$WORK/install.sh" "$@" >"$WORK/iout" 2>&1
+}
+installed() { basename "$(readlink "$WORK/ihome/.local/share/vibeke/current")"; }
 
 mkinstaller "$PUB_A" "$PUB_B"
 mkrelease a
@@ -142,6 +150,46 @@ echo "evil" >>"$REL/$NAME"
 if install_run; then fail "installed a binary that does not match the signed sums"; fi
 ok "binary not matching the signed SHA256SUMS is refused"
 
+# --- version binding (review batch 2, finding 10) ----------------------------------------------
+# Requesting 0.9.0 while the host serves a correctly signed 0.8.0 release: refused, and the
+# installed version is preserved.
+mkrelease a
+install_run || fail "baseline install: $(cat "$WORK/iout")"
+[ "$(installed)" = 0.9.0 ] || fail "baseline version: $(installed)"
+mkrelease a 0.8.0
+if WANT=0.9.0 install_again; then fail "accepted a signed 0.8.0 release for a 0.9.0 request"; fi
+grep -q "signed for 'vibeke v0.8.0', not vibeke v0.9.0" "$WORK/iout" || fail "replay message: $(cat "$WORK/iout")"
+[ "$(installed)" = 0.9.0 ] || fail "replay changed the installed version to $(installed)"
+[ ! -e "$WORK/ihome/.local/share/vibeke/versions/0.8.0" ] || fail "replayed binary staged"
+ok "a replayed older signed release is refused and the installed version kept"
+
+# Only the trusted comment counts: an untrusted comment naming 0.9.0 changes nothing.
+mkrelease a 0.8.0 0.8.0 "vibeke v0.9.0"
+if WANT=0.9.0 install_again; then fail "the untrusted comment was believed"; fi
+[ "$(installed)" = 0.9.0 ] || fail "untrusted comment changed the install"
+ok "the version comes from the verified trusted comment, not the untrusted one"
+
+# Signed for 0.9.0 but the binary is another version: refused (no longer renamed to its own).
+mkrelease a 0.8.0 0.9.0
+if WANT=0.9.0 install_again; then fail "accepted a binary reporting 0.8.0 for 0.9.0"; fi
+grep -q "reports vibeke 0.8.0, not the requested 0.9.0" "$WORK/iout" || fail "mismatch message: $(cat "$WORK/iout")"
+[ "$(installed)" = 0.9.0 ] || fail "mismatch changed the install"
+ok "a binary reporting another version than requested is refused"
+
+# Downgrades need --allow-downgrade (or VIBEKE_ALLOW_DOWNGRADE=1).
+mkrelease a 0.8.0
+if WANT=0.8.0 install_again; then fail "downgraded without --allow-downgrade"; fi
+grep -q "refusing to downgrade from 0.9.0 to 0.8.0" "$WORK/iout" || fail "downgrade message: $(cat "$WORK/iout")"
+[ "$(installed)" = 0.9.0 ] || fail "downgrade attempt changed the install"
+WANT=0.8.0 install_again --allow-downgrade || fail "--allow-downgrade: $(cat "$WORK/iout")"
+[ "$(installed)" = 0.8.0 ] || fail "explicit downgrade not installed: $(installed)"
+ok "downgrades are refused unless --allow-downgrade"
+
+# The opt-in for unsigned releases still binds the binary's version.
+mkrelease "" 0.8.0
+if WANT=0.9.0 VIBEKE_ALLOW_UNSIGNED=1 install_run; then fail "unsigned opt-in skipped the version check"; fi
+ok "unsigned opt-in still requires the requested version"
+
 # --- token: GitHub API asset download, header sent, never printed ---------------------------
 if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   mkrelease a
@@ -155,8 +203,10 @@ class H(http.server.BaseHTTPRequestHandler):
         with open(log, "a") as f:
             f.write("%s\nAuthorization: %s\nAccept: %s\n--\n" % (self.path, self.headers.get("Authorization"), self.headers.get("Accept")))
         base = "http://127.0.0.1:%d" % self.server.server_port
-        if self.path == "/repos/o/r/releases/tags/v0.9.0":
+        if self.path in ("/repos/o/r/releases/tags/v0.9.0", "/repos/o/r/releases/tags/v0.9.2"):
             files = [name, "SHA256SUMS", "SHA256SUMS.minisig"]
+            if self.path.endswith("v0.9.2"):  # asset URLs on another origin than the API base
+                base = "http://localhost:%d" % self.server.server_port
             body = json.dumps({"assets": [{"url": "%s/repos/o/r/releases/assets/%d" % (base, i + 1), "id": i + 1, "name": n} for i, n in enumerate(files)]}, indent=2).encode()
         elif self.path.startswith("/repos/o/r/releases/assets/"):
             n = [name, "SHA256SUMS", "SHA256SUMS.minisig"][int(self.path.rsplit("/", 1)[1]) - 1]
@@ -179,13 +229,22 @@ PY
   PORT=$(cat "$WORK/port")
   mkinstaller "$PUB_A" "$PUB_B"
   rm -rf "$WORK/ihome"; mkdir -p "$WORK/ihome"
-  if ! HOME="$WORK/ihome" VIBEKE_RELEASE_URL="https://github.com/o/r/releases/download/v0.9.0" \
+  if ! HOME="$WORK/ihome" VIBEKE_VERSION=0.9.0 VIBEKE_RELEASE_URL="https://github.com/o/r/releases/download/v0.9.0" \
     VIBEKE_GITHUB_API_URL="http://127.0.0.1:$PORT" VIBEKE_GITHUB_TOKEN="ghp_TESTTOKEN123" \
     sh "$WORK/install.sh" >"$WORK/iout" 2>&1; then fail "token install: $(cat "$WORK/iout")"; fi
   grep -q "Authorization: Bearer ghp_TESTTOKEN123" "$WORK/req.log" || fail "token header not sent: $(cat "$WORK/req.log")"
   grep -q "Accept: application/octet-stream" "$WORK/req.log" || fail "octet-stream Accept not sent"
   grep -q "ghp_TESTTOKEN123" "$WORK/iout" && fail "token printed by the installer"
   ok "private-repo install: asset API with Authorization and octet-stream Accept; token not printed"
+  # A release listing that points assets at another origin never receives the token.
+  : >"$WORK/req.log"
+  rm -rf "$WORK/ihome"; mkdir -p "$WORK/ihome"
+  if HOME="$WORK/ihome" VIBEKE_VERSION=0.9.2 VIBEKE_RELEASE_URL="https://github.com/o/r/releases/download/v0.9.2" \
+    VIBEKE_GITHUB_API_URL="http://127.0.0.1:$PORT" VIBEKE_GITHUB_TOKEN="ghp_TESTTOKEN123" \
+    sh "$WORK/install.sh" >"$WORK/iout" 2>&1; then fail "installed through foreign asset URLs"; fi
+  grep -q "refusing to send the GitHub token" "$WORK/iout" || fail "foreign asset message: $(cat "$WORK/iout")"
+  grep -q "releases/assets" "$WORK/req.log" && fail "an asset request was made: $(cat "$WORK/req.log")"
+  ok "asset URLs on another origin than the API base get no token"
 else
   echo "release-sign-test: python3 or curl missing, skipping the token test"
 fi

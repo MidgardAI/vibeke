@@ -3,11 +3,12 @@
 //! Opened with `A` on an interaction card or the palette (`batch_approvals`); off with
 //! `ui.interactions.batch = false`. Fingerprints only nominate: approvals are grouped only when
 //! they are open, answerable through a **native** channel, of known risk ≤ medium, and agree on
-//! machine, harness, tool, normalized command, resource targets (paths), execution environment
-//! (the pane's isolation level and network profile) and policy scope (the workspace root). The
-//! same rule as `vk_review::attention::batchable`, applied to the model the client has.
-//! Questions, plan reviews, notices, high/unknown risk and keystroke-only approvals are listed as
-//! "answer one by one" and never batched.
+//! machine, harness, tool, the raw command (byte for byte, no normalization), resource targets
+//! (paths), execution environment (the pane's isolation level and network profile) and policy
+//! scope (the workspace root). The same rule as `vk_review::attention::batchable`, applied to
+//! the model the client has. Questions, plan reviews, notices, high/unknown risk,
+//! keystroke-only approvals and compound commands (a comment, a line break, `;`, `&&`, `||`, a
+//! pipe, backticks or `$(`) are listed as "answer one by one" and never batched.
 //!
 //! "Allow all N" revalidates every member against the current model right before sending (still
 //! open, still answerable, still equivalent) and sends one `interaction.answer` per interaction
@@ -42,6 +43,15 @@ pub struct View {
 #[derive(Debug, Clone)]
 pub enum Reply {
     Answered(Id),
+}
+
+/// Whether a command may share a batch at all (08 §8): one plain command. Anything with a
+/// comment (`#`), a line break, `;`, `&&`, `||`, a pipe, backticks or `$(` is answered one by
+/// one, because what a reviewer sees of the first command says nothing reliable about the
+/// rest of another.
+pub fn batch_safe_command(cmd: &str) -> bool {
+    const UNSAFE: &[&str] = &["#", "\n", "\r", ";", "&&", "||", "|", "`", "$("];
+    !UNSAFE.iter().any(|t| cmd.contains(t))
 }
 
 /// Why an interaction can't be batched, or its equivalence key.
@@ -79,13 +89,15 @@ pub fn equivalence(app: &App, mi: usize, it: &Interaction) -> Result<String, &'s
         .and_then(|p| m.model.workspaces.iter().find(|w| w.id == p.workspace))
         .map(|w| w.root_path.clone())
         .unwrap_or_default();
-    let cmd = a
-        .command
-        .as_deref()
-        .unwrap_or(&a.summary)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The raw command, byte for byte: no whitespace normalization (`echo a # rm x` and
+    // `echo a #\nrm x` are different programs), and anything that can chain, comment out or
+    // substitute is never batched at all.
+    let cmd = a.command.as_deref().unwrap_or(&a.summary);
+    if !batch_safe_command(cmd) {
+        return Err(
+            "compound command (comment, newline, ;, &&, ||, |, `…` or $(…)): answer one by one",
+        );
+    }
     let mut paths = a.paths.clone();
     paths.sort();
     paths.dedup();

@@ -175,6 +175,60 @@ fn repo_with_policy(root: &Path, toml: &str) -> PathBuf {
     repo
 }
 
+/// Review batch 2, P2: `[[policy.rule]]` accepted from a trusted `.vibeke/config.toml` is
+/// evaluated (tighten only): its deny overrides a matching user allow; its allow is dropped.
+#[tokio::test(flavor = "multi_thread")]
+async fn trusted_repo_config_policy_rules_tighten_user_allows() {
+    let e = Env::new();
+    e.ok(
+        "policy.add",
+        json!({"rule": {"match": {"tool": "Bash"}, "effect": "allow"}}),
+    )
+    .await;
+    let repo = e.root().join("cfgrepo");
+    std::fs::create_dir_all(repo.join(".vibeke")).unwrap();
+    std::fs::write(
+        repo.join(".vibeke/config.toml"),
+        r#"
+[[policy.rule]]
+match = { tool = "Bash", command_regex = '^git push' }
+effect = "deny"
+
+[[policy.rule]]
+match = { tool = "Edit" }
+effect = "allow"
+"#,
+    )
+    .unwrap();
+    let test = |tool: &str, cmd: &str| json!({"action": {"tool": tool, "command": cmd, "paths": ["a.rs"]}, "scope": {"cwd": repo}});
+    // Untrusted: nothing from the file applies.
+    let t = e.ok("policy.test", test("Bash", "git push --force")).await;
+    assert_eq!(t["effect"], "allow", "{t}");
+    // Trusted: the config-local deny overrides the user's allow.
+    e.ok("policy.trust", json!({"path": repo})).await;
+    let t = e.ok("policy.test", test("Bash", "git push --force")).await;
+    assert_eq!(t["effect"], "deny", "{t}");
+    assert_eq!(t["rule"]["source"], "repo", "{t}");
+    assert!(
+        t["rule"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("repo-config:"),
+        "{t}"
+    );
+    assert_eq!(
+        e.ok("policy.test", test("Bash", "ls")).await["effect"],
+        "allow"
+    );
+    // Its allow rule was dropped (a repo can only tighten).
+    assert_eq!(e.ok("policy.test", test("Edit", "")).await["effect"], "ask");
+    // An edit of the file invalidates trust: the deny no longer applies.
+    std::fs::write(repo.join(".vibeke/config.toml"), "# emptied\n").unwrap();
+    std::fs::write(repo.join(".vibeke/x"), "changed").unwrap();
+    let t = e.ok("policy.test", test("Bash", "git push --force")).await;
+    assert_eq!(t["effect"], "allow", "{t}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_rules_add_list_test_remove_and_repo_policy_only_tightens() {
     let e = Env::new();

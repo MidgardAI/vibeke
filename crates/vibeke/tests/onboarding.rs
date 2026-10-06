@@ -177,22 +177,26 @@ fn setup_non_interactive_installs_only_what_was_named_into_redirected_dirs() {
     assert!(cfg.contains("name = \"terminal\""), "{cfg}");
 }
 
+/// Review batch 2, finding 12: without a terminal and without `--yes`, setup writes nothing,
+/// not even with piped "yes" answers or a closed stdin; existing settings stay as they are.
+/// (The interactive flow on a terminal, including EOF at the final prompt, is covered by the
+/// unit test in `src/setup.rs`.)
 #[test]
-fn setup_interactive_asks_and_defaults_to_no_installs() {
+fn setup_without_a_terminal_or_yes_writes_nothing() {
     let e = Env::new("vksetupi");
-    // Answers: notifications 3 (none), theme default, write yes. No harness on PATH → no
-    // install question.
-    let (code, out, err) = e.run_stdin(&["setup"], "3\n\ny\n");
-    assert_eq!(code, 0, "{out}{err}");
-    assert!(out.contains("== 3. agent integrations =="), "{out}");
-    assert!(out.contains("not on PATH"), "{out}");
-    assert!(!out.contains("Install the"), "{out}");
-    assert!(!e.d().join("h/claude/settings.json").exists());
-    let cfg = std::fs::read_to_string(e.config()).unwrap();
-    assert!(
-        cfg.contains("channel = \"none\"") && cfg.contains("onboarding = false"),
-        "{cfg}"
-    );
+    for input in ["3\n\ny\n", ""] {
+        let (code, out, err) = e.run_stdin(&["setup"], input);
+        assert_ne!(code, 0, "{out}{err}");
+        assert!(err.contains("nothing written"), "{err}");
+        assert!(!e.config().exists(), "config created from {input:?}");
+        assert!(!e.d().join("h/claude/settings.json").exists());
+    }
+    std::fs::create_dir_all(e.config().parent().unwrap()).unwrap();
+    let mine = "theme = \"gruvbox\"\n[notifications]\nchannel = \"osc\"\n";
+    std::fs::write(e.config(), mine).unwrap();
+    let (code, _, _) = e.run_stdin(&["setup"], "");
+    assert_ne!(code, 0);
+    assert_eq!(std::fs::read_to_string(e.config()).unwrap(), mine);
 }
 
 #[test]

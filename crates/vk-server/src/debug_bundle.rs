@@ -39,12 +39,12 @@ pub struct Bundle {
     pub excluded: Vec<String>,
 }
 
-/// Lines redacted for the bundle: the shared patterns plus Vibeke's own token shapes.
+/// Text redacted for the bundle: the shared patterns plus Vibeke's own token shapes, applied
+/// to the whole text at once, so multi-line secrets (PEM private key blocks, whose body lines
+/// look harmless one by one) are removed entirely, and JSON-escaped ones (`\n` inside a
+/// string) too. A truncated block (no END line) is redacted to the end of the text.
 pub fn redact_text(s: &str) -> String {
-    s.lines()
-        .map(|l| vk_redact::redact(l).into_owned())
-        .collect::<Vec<_>>()
-        .join("\n")
+    vk_redact::redact(s).into_owned()
 }
 
 /// Replace every 64-hex run whose blake3 hash is a known pane token hash.
@@ -429,6 +429,76 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!(m[0], ("a.txt".into(), b"hello".to_vec()));
         assert_eq!(m[1].1.len(), 1000);
+    }
+
+    /// Review batch 2, finding 6: a multi-line PEM private key in a log, a pane screen or the
+    /// doctor output leaves none of its body lines in the bundle (also JSON-escaped).
+    #[test]
+    fn multiline_pem_keys_are_removed_from_every_member() {
+        let body = [
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj",
+            "MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu",
+            "NMoSfm76oqFvAp8Gy0iz5sxjZmSnXyCdPEovGhLa0VzMaQ8s+CLOyS56YyCFGeJZ",
+        ];
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+            body.join("\n")
+        );
+        let escaped = format!(
+            "{{\"private_key\": \"-----BEGIN RSA PRIVATE KEY-----\\n{}\\n-----END RSA PRIVATE KEY-----\\n\"}}",
+            body.join("\\n")
+        );
+        let truncated = format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n{}",
+            body[0], body[1]
+        );
+        let root = tempfile::tempdir().unwrap();
+        // The bundle includes the (redacted) config: never the user's real one here.
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            if std::env::var_os("VIBEKE_CONFIG").is_none() {
+                let f = std::env::temp_dir()
+                    .join(format!("vk-bundle-test-{}.toml", std::process::id()));
+                // SAFETY: set once, before this test reads it; other tests set the same
+                // variable only when it is unset.
+                unsafe { std::env::set_var("VIBEKE_CONFIG", f) };
+            }
+        });
+        let paths = Paths {
+            session: "t".into(),
+            runtime: root.path().join("run"),
+            state: root.path().join("state"),
+        };
+        std::fs::create_dir_all(paths.logs()).unwrap();
+        std::fs::write(
+            paths.logs().join("server.log"),
+            format!("before\nkey loaded:\n{pem}\nconfig {escaped}\nafter\n"),
+        )
+        .unwrap();
+        let opts = Options {
+            out: Some(root.path().join("b.tar")),
+            panes: vec![("p1".into(), format!("$ cat id\n{pem}\n$ "))],
+            doctor: Some(format!("doctor\n{truncated}")),
+            ..Default::default()
+        };
+        let b = build(&paths, &opts).unwrap();
+        let members = read_tar(&std::fs::read(&b.path).unwrap());
+        let all: String = members
+            .iter()
+            .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+            .collect();
+        for line in body {
+            assert!(!all.contains(line), "key body line survived: {line}");
+            // Not even a recognizable fragment of it.
+            assert!(!all.contains(&line[..24]), "fragment of {line}");
+        }
+        let log = members
+            .iter()
+            .find(|(n, _)| n == "logs/server.log")
+            .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+            .unwrap();
+        assert!(log.contains("before") && log.contains("after"), "{log}");
+        assert!(log.contains(vk_redact::REDACTED), "{log}");
     }
 
     #[test]

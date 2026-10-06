@@ -581,6 +581,15 @@ pub fn batchable(a: &AttentionItem, b: &AttentionItem) -> bool {
     if a.key.object_id == b.key.object_id || a.machine != b.machine {
         return false;
     }
+    // A compound command (comment, line break, `;`, `&&`, `||`, pipe, backticks, `$(`) is
+    // never batched: what a reviewer sees of one says nothing reliable about another.
+    const UNSAFE: &[&str] = &["#", "\n", "\r", ";", "&&", "||", "|", "`", "$("];
+    if [x, y]
+        .iter()
+        .any(|f| UNSAFE.iter().any(|t| f.normalized_command.contains(t)))
+    {
+        return false;
+    }
     let mut tx = x.resource_targets.clone();
     let mut ty = y.resource_targets.clone();
     tx.sort();
@@ -943,6 +952,20 @@ mod tests {
         assert!(batchable(&a, &b));
         assert!(!batchable(&a, &a), "same object");
         assert!(!batchable(&a, &approval("c", "cargo build")));
+        // Compound commands never batch, not even with an identical twin.
+        for cmd in [
+            "echo a # rm x",
+            "echo a #\nrm x",
+            "a; b",
+            "a && b",
+            "a | b",
+            "a $(b)",
+        ] {
+            assert!(
+                !batchable(&approval("x", cmd), &approval("y", cmd)),
+                "{cmd:?}"
+            );
+        }
 
         let mut q = approval("q", "cargo test");
         q.interaction.as_mut().unwrap().kind = InteractionKind::Question;

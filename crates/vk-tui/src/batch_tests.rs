@@ -42,7 +42,7 @@ fn setup() -> (
         m.model.runs.push(test_run(r, p, "claude"));
     }
     m.model.interactions = vec![
-        approval("i3", "r3", "p3", "pnpm  test", Risk::Low, 10),
+        approval("i3", "r3", "p3", "pnpm test", Risk::Low, 10),
         approval("i4", "r4", "p4", "pnpm test", Risk::Medium, 20),
         approval("i5", "r5", "p5", "pnpm test", Risk::Low, 30),
         approval("i6", "r6", "p6", "rm -rf /", Risk::High, 40),
@@ -60,11 +60,7 @@ fn equivalence_groups_only_safe_native_approvals() {
     let (groups, alone) = super::groups(&app);
     assert_eq!(groups.len(), 1);
     let ids: Vec<&str> = groups[0].1.iter().map(|x| x.1.as_str()).collect();
-    assert_eq!(
-        ids,
-        ["i3", "i4", "i5"],
-        "whitespace-normalized, oldest first"
-    );
+    assert_eq!(ids, ["i3", "i4", "i5"], "identical commands, oldest first");
     let why: Vec<&str> = alone.iter().map(|x| x.1).collect();
     assert!(why.contains(&"high risk"), "{why:?}");
     assert!(why.iter().any(|w| w.contains("questions")), "{why:?}");
@@ -79,6 +75,63 @@ fn equivalence_groups_only_safe_native_approvals() {
         .harness = "codex".into();
     let (groups, _) = super::groups(&app);
     assert!(groups.is_empty(), "{groups:?}");
+}
+
+/// Review batch 2, finding 7: approvals that differ by a comment-terminating newline or by
+/// whitespace (quoted or not) never share a batch; compound commands are never batched; live
+/// revalidation compares the same raw bytes.
+#[test]
+fn commands_differing_by_comments_newlines_or_whitespace_never_share_a_batch() {
+    let (mut app, mut rxs) = setup();
+    let m = &mut app.machines[0];
+    m.model.interactions = vec![
+        approval("i3", "r3", "p3", "echo harmless # rm victim", Risk::Low, 10),
+        approval(
+            "i4",
+            "r4",
+            "p4",
+            "echo harmless #\nrm victim",
+            Risk::Low,
+            20,
+        ),
+        approval("i5", "r5", "p5", "echo 'a  b'", Risk::Low, 30),
+        approval("i6", "r6", "p6", "echo 'a b'", Risk::Low, 40),
+        approval("i7", "r7", "p7", "echo  'a b'", Risk::Low, 50),
+    ];
+    let (groups, alone) = super::groups(&app);
+    assert!(groups.is_empty(), "{groups:?}");
+    let why = |id: &str| alone.iter().find(|x| x.0.1 == id).map(|x| x.1).unwrap();
+    assert!(why("i3").contains("compound"), "{alone:?}");
+    assert!(why("i4").contains("compound"), "{alone:?}");
+    assert_eq!(why("i5"), "nothing equivalent is waiting");
+    for c in [
+        "a; b", "a && b", "a || b", "a | b", "a `b`", "a $(b)", "a\nb", "a\rb", "a # b",
+    ] {
+        assert!(!batch_safe_command(c), "{c:?}");
+    }
+    assert!(batch_safe_command("pnpm test --filter=web"));
+    // Byte-identical plain commands group; one that changes before "allow all" (same length,
+    // different whitespace) is skipped by revalidation.
+    let m = &mut app.machines[0];
+    m.model.interactions[0].action.as_mut().unwrap().command = Some("echo 'a b'".into());
+    let (groups, _) = super::groups(&app);
+    assert_eq!(groups.len(), 1);
+    let ids: Vec<&str> = groups[0].1.iter().map(|x| x.1.as_str()).collect();
+    assert_eq!(ids, ["i3", "i6"]);
+    open(&mut app, None);
+    app.machines[0].model.interactions[0]
+        .action
+        .as_mut()
+        .unwrap()
+        .command = Some("echo 'a\tb'".into());
+    while rxs[0].try_recv().is_ok() {}
+    key(&mut app, Key::Char('a'));
+    let answered: Vec<String> = commands(&mut rxs[0])
+        .iter()
+        .filter(|c| c.1 == "interaction.answer")
+        .map(|c| c.2["interaction"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(answered, ["i6"], "the changed member is not answered");
 }
 
 #[test]

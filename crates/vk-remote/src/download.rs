@@ -2,7 +2,9 @@
 //! optionally from a **private** GitHub repository.
 //!
 //! A GitHub token (`VIBEKE_GITHUB_TOKEN`, else `GITHUB_TOKEN`) is used only for requests to
-//! `github.com` release URLs and the GitHub API. For those, the download goes through the
+//! `github.com` release URLs and the GitHub API: it is sent only over `https` to exactly
+//! `api.github.com`, `github.com` or `objects.githubusercontent.com`, or to exactly the origin of
+//! the configured API base, and never to a URL with userinfo ([`token_allowed`]). For those, the download goes through the
 //! asset API endpoint with `Accept: application/octet-stream`, because the plain
 //! `releases/download/...` URL does not authenticate a private repo. The token never appears on
 //! a command line (curl reads its headers from a config on stdin) and never in an error or log
@@ -61,6 +63,52 @@ pub fn github_api_base() -> String {
         Ok(u) if !u.trim().is_empty() => u.trim().trim_end_matches('/').to_string(),
         _ => "https://api.github.com".to_string(),
     }
+}
+
+/// GitHub hosts a release download may legitimately send the token to.
+pub const GITHUB_TOKEN_HOSTS: &[&str] = &[
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+];
+
+/// Whether the GitHub token may go to `target` (09 §10): the URL is parsed (never a string
+/// prefix: `https://api.github.com.attacker.example` and `https://api.github.com@attacker.example`
+/// are other hosts), it carries no userinfo, and either it is `https` to exactly one of
+/// [`GITHUB_TOKEN_HOSTS`] (default port), or it has exactly the origin (scheme, host, port) of
+/// the configured GitHub API base (`VIBEKE_GITHUB_API_URL`, e.g. GitHub Enterprise or a local
+/// test server).
+pub fn token_allowed(target: &str, api_base: &str) -> bool {
+    let Ok(u) = url::Url::parse(target) else {
+        return false;
+    };
+    if !u.username().is_empty() || u.password().is_some() {
+        return false;
+    }
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    if u.scheme() == "https" && u.port().is_none() && GITHUB_TOKEN_HOSTS.contains(&host) {
+        return true;
+    }
+    let Ok(base) = url::Url::parse(api_base) else {
+        return false;
+    };
+    url_allowed(api_base)
+        && base.username().is_empty()
+        && base.password().is_none()
+        && base.scheme() == u.scheme()
+        && base.host_str() == Some(host)
+        && base.port_or_known_default() == u.port_or_known_default()
+}
+
+/// `token`, if it may be sent to `target` ([`token_allowed`]).
+pub fn token_for<'a>(
+    target: &str,
+    token: Option<&'a Secret>,
+    api_base: &str,
+) -> Option<&'a Secret> {
+    token.filter(|_| token_allowed(target, api_base))
 }
 
 /// A release asset named by its `releases/download` URL.
@@ -204,7 +252,7 @@ pub fn resolve_download(
         "{api_base}/repos/{}/{}/releases/tags/{}",
         asset.owner, asset.repo, asset.tag
     );
-    let body = CurlJob::new(&tag_url, Some(t), false)?
+    let body = CurlJob::new(&tag_url, token_for(&tag_url, Some(t), api_base), false)?
         .run()
         .with_context(|| {
             format!(
@@ -220,8 +268,9 @@ pub fn resolve_download(
 /// Download `url`. With a token and a GitHub release URL, through the asset API endpoint.
 pub fn fetch(url: &str, token: Option<&Secret>, api_base: &str) -> Result<Vec<u8>> {
     let (target, octet) = resolve_download(url, token, api_base)?;
-    // Send the token only where it belongs: the GitHub API (or the configured API base).
-    let send = token.filter(|_| octet || target.starts_with(api_base));
+    // Send the token only where it belongs: GitHub's own hosts or the configured API base,
+    // compared by parsed host, never by string prefix.
+    let send = token_for(&target, token, api_base);
     CurlJob::new(&target, send, octet)?.run().map_err(|e| {
         let hint = if token.is_none() && parse_github_release_url(url).is_some() {
             " (a private release needs GITHUB_TOKEN or VIBEKE_GITHUB_TOKEN)"
@@ -426,6 +475,88 @@ mod tests {
             .and_then(|j| j.run())
             .map_err(|e| e.to_string());
         assert!(hint.is_err());
+    }
+
+    /// Review batch 2, finding 11: lookalike hosts and URLs with userinfo never get the token,
+    /// whatever the configured base looks like; hosts are compared exactly after parsing.
+    #[test]
+    fn lookalike_hosts_and_userinfo_never_get_the_token() {
+        let gh = "https://api.github.com";
+        for bad in [
+            "https://api.github.com.attacker.example/repos/o/r/releases/assets/1",
+            "https://api.github.com@attacker.example/repos/o/r/releases/assets/1",
+            "https://user:pw@api.github.com/repos/o/r/releases/assets/1",
+            "https://token@github.com/o/r/releases/download/v1/x",
+            "http://api.github.com/repos/o/r/releases/assets/1",
+            "https://api.github.com:8443/repos/o/r/releases/assets/1",
+            "https://evilgithub.com/x",
+            "https://github.com.evil/x",
+            "https://objects.githubusercontent.com.evil/x",
+            "not a url",
+        ] {
+            assert!(!token_allowed(bad, gh), "{bad}");
+        }
+        for good in [
+            "https://api.github.com/repos/o/r/releases/assets/1",
+            "https://github.com/o/r/releases/download/v1/x",
+            "https://objects.githubusercontent.com/github-production-release-asset/1",
+        ] {
+            assert!(token_allowed(good, gh), "{good}");
+        }
+        // A configured API base (GitHub Enterprise) is matched by exact origin.
+        let ghe = "https://ghe.example.com/api/v3";
+        assert!(token_allowed(
+            "https://ghe.example.com/api/v3/repos/o/r",
+            ghe
+        ));
+        assert!(!token_allowed(
+            "https://ghe.example.com.attacker.example/api/v3",
+            ghe
+        ));
+        assert!(!token_allowed("https://ghe.example.com:444/api/v3", ghe));
+        assert!(!token_allowed("https://u@ghe.example.com/api/v3", ghe));
+        // A lookalike *configured* base is only ever its own exact origin, not GitHub's.
+        let lookalike = "https://api.github.com.attacker.example";
+        assert!(!token_allowed(
+            "https://api.github.com.attacker.example.evil/x",
+            lookalike
+        ));
+    }
+
+    /// End to end against a header-recording server: a mirror URL (the configured release URL)
+    /// on another origin than the API base, or with userinfo, is fetched without the token.
+    #[test]
+    fn mirrors_and_userinfo_receive_no_authorization_header() {
+        let (base, seen) = server_with_self_url();
+        let t = Secret::new(TOKEN).unwrap();
+        let port = base.rsplit(':').next().unwrap();
+        // The API base is another origin (other port): the mirror gets no token.
+        let _ = fetch(
+            &format!("{base}/repos/o/r/releases/assets/7"),
+            Some(&t),
+            "http://127.0.0.1:9",
+        );
+        // Userinfo on the configured origin itself: still no token.
+        let _ = fetch(
+            &format!("http://x@127.0.0.1:{port}/repos/o/r/releases/assets/7"),
+            Some(&t),
+            &base,
+        );
+        let heads = seen.lock().unwrap().join("\n---\n").to_ascii_lowercase();
+        assert!(
+            heads.contains("get /repos/o/r/releases/assets/7"),
+            "{heads}"
+        );
+        assert!(!heads.contains("bearer"), "{heads}");
+        // Positive control: the exact configured origin gets it.
+        fetch(
+            &format!("{base}/repos/o/r/releases/assets/7"),
+            Some(&t),
+            &base,
+        )
+        .unwrap();
+        let heads = seen.lock().unwrap().join("\n---\n").to_ascii_lowercase();
+        assert!(heads.contains("authorization: bearer"), "{heads}");
     }
 
     #[test]

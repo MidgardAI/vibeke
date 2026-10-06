@@ -159,3 +159,72 @@ fn pane_scope_matrix() {
     // The user's CLI (outside panes) is unrestricted.
     s.json(&["pane", "send-text", &b, "echo from-user\n"]);
 }
+
+/// Review batch 2, finding 2: a process inside a pane of session A that connects straight to
+/// session B's socket without a token of B is refused there (never full scope), for native
+/// methods as well as the Herdr shim: `config.set`, `session.create`, `server.restart` with an
+/// arbitrary executable, layout changes. The user's own CLI outside panes still works on B.
+#[test]
+fn pane_of_another_session_gets_no_scope_without_a_token() {
+    let s = Session::new();
+    let a = s.json(&["workspace", "create", "--cwd", "/tmp"])["root_pane"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let _ = s
+        .cmd(&[
+            "pane",
+            "wait-idle",
+            &a,
+            "--quiet-ms",
+            "700",
+            "--timeout-ms",
+            "10000",
+        ])
+        .output();
+    // Session B, started by the user (outside every pane).
+    s.json(&["--session", "other", "workspace", "list"]);
+    let cfg = s.dir.path().join("config.toml");
+    std::fs::write(&cfg, "# untouched\n").unwrap();
+    let d = s.dir.path();
+    let env = format!(
+        "VIBEKE_RUNTIME_DIR={} VIBEKE_STATE_DIR={} VIBEKE_CONFIG={}",
+        d.join("run").display(),
+        d.join("state").display(),
+        cfg.display()
+    );
+    let calls = [
+        ("config.set", r#"{"key":"ui.theme","value":"evil"}"#),
+        ("session.create", r#"{"name":"spawned"}"#),
+        ("server.restart", r#"{"binary":"/bin/sh"}"#),
+        ("workspace.create", r#"{"name":"intruder"}"#),
+        ("workspace.list", "{}"),
+    ];
+    for (m, p) in calls {
+        // With the token stripped, and with A's token (unknown to B) still in the environment.
+        for strip in ["env -u VIBEKE_PANE_TOKEN", "env"] {
+            let out = s.in_pane(
+                &a,
+                &format!(
+                    "{strip} {env} $VIBEKE_BIN --json --session other api call {m} '{p}' 2>&1 | head -c 300"
+                ),
+            );
+            assert!(
+                out.contains("permission_denied") || out.contains("unknown pane token"),
+                "{m} from a pane of another session ({strip}): {out}"
+            );
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "# untouched\n");
+    let ws = s.json(&["--session", "other", "workspace", "list"]);
+    assert!(
+        !ws.to_string().contains("intruder"),
+        "no workspace was created: {ws}"
+    );
+    assert!(!d.join("run/spawned").exists(), "no session was created");
+    // The user's CLI (outside panes) keeps full scope on B.
+    s.json(&["--session", "other", "workspace", "create", "--cwd", "/tmp"]);
+    let _ = s
+        .cmd(&["--session", "other", "server", "stop", "--kill-panes"])
+        .output();
+}

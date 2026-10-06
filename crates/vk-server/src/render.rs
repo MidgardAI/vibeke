@@ -50,6 +50,26 @@ pub struct Session {
     /// Kitty image hashes whose pixels this client already has (03 §9: once per hash). A
     /// client that evicted pixels sends `Resync` for the pane, which forgets its hashes here.
     images_sent: std::collections::HashSet<String>,
+    /// The authenticated caller of the connection that attached (09 §3.2).
+    auth: Auth,
+}
+
+/// Who a render session runs as: the control connection's authenticated context. An elevated
+/// caller (`kind` = `elevated:…`) keeps its grant identity, so expiry and revocation end the
+/// session and `auth.elevate.decide` stays refused; a read-only caller never leads geometry.
+#[derive(Clone, Debug)]
+pub struct Auth {
+    pub kind: String,
+    pub readonly: bool,
+}
+
+impl Default for Auth {
+    fn default() -> Auth {
+        Auth {
+            kind: "tui".into(),
+            readonly: false,
+        }
+    }
 }
 
 /// Hex form of an image content hash (the render protocol's image key).
@@ -58,7 +78,7 @@ fn image_key(h: &[u8; 16]) -> String {
 }
 
 /// The `render.attach` features this server supports (listed in the attach result).
-pub const FEATURES: &[&str] = &["event_push", "scroll_report"];
+pub const FEATURES: &[&str] = &["event_push", "scroll_report", "sync_input"];
 
 /// Most events replayed for a `Subscribe { after }` (older ones: `events.read`).
 const PUSH_BACKLOG: usize = 1000;
@@ -168,6 +188,16 @@ pub fn holder_input_id(client: &str, id: u64) -> u64 {
     u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap()) & !(1u64 << 63)
 }
 
+/// Whether `pane` runs a live (not ended) agent run right now.
+pub fn live_agent(server: &Server, pane: &str) -> bool {
+    server.with_core(|c| {
+        c.model
+            .runs
+            .iter()
+            .any(|r| r.pane == pane && r.ended_at_ms.is_none())
+    })
+}
+
 pub fn input_modes(server: &Server, pane: &str) -> InputModes {
     match server.pane_rt(pane) {
         Some(rt) => rt.screen.lock().unwrap().engine.input_modes(),
@@ -175,13 +205,30 @@ pub fn input_modes(server: &Server, pane: &str) -> InputModes {
     }
 }
 
+/// [`serve_as`] for a plain (full-scope, read-write) user client.
 pub async fn serve<R, W>(
+    server: Arc<Server>,
+    rd: R,
+    wr: W,
+    client_id: String,
+    remote: bool,
+    max_fps: u32,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    serve_as(server, rd, wr, client_id, remote, max_fps, Auth::default()).await
+}
+
+pub async fn serve_as<R, W>(
     server: Arc<Server>,
     mut rd: R,
     wr: W,
     client_id: String,
     remote: bool,
     max_fps: u32,
+    auth: Auth,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -218,7 +265,11 @@ where
     }
     server.fix_client_focus();
     client_event(&server, "client.attached", &client_id, remote);
-    *server.geometry_leader.lock().unwrap() = Some(client_id.clone());
+    // A read-only observer never takes the geometry lease (it can't resize other clients' PTYs).
+    if !auth.readonly {
+        *server.geometry_leader.lock().unwrap() = Some(client_id.clone());
+    }
+    let mut revoked = crate::auth::revocations(&server);
     let mut s = Session {
         server: server.clone(),
         client_id: client_id.clone(),
@@ -233,6 +284,7 @@ where
         media: crate::browser_pane::MediaSession::new(&server, remote),
         pending_sub: None,
         images_sent: Default::default(),
+        auth,
     };
     let mut push = EventPush::default();
     let hello = ServerFrame::Hello {
@@ -250,9 +302,14 @@ where
         s.send_model(&mut wr).await?;
         wr.flush().await?;
         loop {
-            let deadline = s.next_deadline();
+            let mut deadline = s.next_deadline();
+            if let Some(ms) = crate::auth::elevation_expiry(&server, &s.auth.kind) {
+                let left = Duration::from_millis((ms - vk_store::now_ms()).max(0) as u64 + 1);
+                deadline = deadline.min(tokio::time::Instant::now() + left);
+            }
             let mut got_event = None;
             tokio::select! {
+                _ = revoked.changed() => {}
                 f = in_rx.recv() => {
                     let Some(f) = f else { break };
                     if !s.on_client(f, &mut wr).await? { break }
@@ -279,6 +336,11 @@ where
                     wr.flush().await?;
                     break;
                 }
+            }
+            if let Err(reason) = s.auth_ok() {
+                asyncio::write_frame(&mut wr, &ServerFrame::Goodbye { reason }).await?;
+                wr.flush().await?;
+                break;
             }
             if let Some((types, after)) = s.pending_sub.take() {
                 let backlog = push.subscribe(&s.server, types, after);
@@ -440,8 +502,30 @@ impl Session {
         Ok(())
     }
 
+    /// The attaching caller is still authorized (an elevation that expired or was revoked ends
+    /// the session); `Err` carries the goodbye reason.
+    fn auth_ok(&self) -> Result<(), String> {
+        crate::auth::authorize(&self.server, &self.ctx(), "render.attach").map_err(|e| e.message)
+    }
+
+    /// The API context of commands on this stream: the attaching connection's identity.
+    fn ctx(&self) -> Ctx {
+        Ctx {
+            client_id: self.client_id.clone(),
+            kind: if self.auth.kind.starts_with(crate::auth::ELEVATED_KIND) {
+                self.auth.kind.clone()
+            } else {
+                "tui".into()
+            },
+            pane_scope: None,
+            remote: self.remote,
+        }
+    }
+
     fn touch(&self) {
-        *self.server.geometry_leader.lock().unwrap() = Some(self.client_id.clone());
+        if !self.auth.readonly {
+            *self.server.geometry_leader.lock().unwrap() = Some(self.client_id.clone());
+        }
         if let Some(st) = self.server.clients.lock().unwrap().get_mut(&self.client_id) {
             st.last_active = Some(Instant::now());
         }
@@ -452,6 +536,12 @@ impl Session {
         f: ClientFrame,
         wr: &mut W,
     ) -> Result<bool> {
+        // Every frame runs as the attaching caller: nothing more once its elevation is gone.
+        if let Err(reason) = self.auth_ok() {
+            asyncio::write_frame(wr, &ServerFrame::Goodbye { reason }).await?;
+            wr.flush().await?;
+            return Ok(false);
+        }
         let f = match crate::session_api::readonly_filter(&self.client_id, f) {
             Ok(f) => f,
             Err(reply) => {
@@ -505,6 +595,37 @@ impl Session {
                 // Drops translated into the host inbox are `/vibeke/inbox/…` in a box (06 A11.4).
                 let text = crate::sandbox::paste_text(&self.server, &pane, text);
                 let bytes = encode::encode_paste(&text, &input_modes(&self.server, &pane));
+                self.write_input(input_id, &pane, bytes, wr).await?;
+            }
+            ClientFrame::SyncInput {
+                input_id,
+                pane,
+                input,
+                include_agent,
+            } => {
+                self.touch();
+                // 08 §5: agent exclusion is enforced here, against the live model, not the
+                // client's possibly stale copy.
+                if !include_agent && live_agent(&self.server, &pane) {
+                    tracing::debug!(pane, "synced input dropped: agent pane not included");
+                    asyncio::write_frame(
+                        wr,
+                        &ServerFrame::InputAck {
+                            input_id,
+                            status: AckStatus::Rejected,
+                        },
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+                let modes = input_modes(&self.server, &pane);
+                let bytes = match input {
+                    SyncPayload::Key(key) => encode::encode_key(&key, &modes),
+                    SyncPayload::Paste(text) => {
+                        let text = crate::sandbox::paste_text(&self.server, &pane, text);
+                        encode::encode_paste(&text, &modes)
+                    }
+                };
                 self.write_input(input_id, &pane, bytes, wr).await?;
             }
             ClientFrame::Focus { pane } => {
@@ -578,12 +699,7 @@ impl Session {
                 asyncio::write_frame(wr, &f).await?;
             }
             ClientFrame::Command { req, json } => {
-                let ctx = Ctx {
-                    client_id: self.client_id.clone(),
-                    kind: "tui".into(),
-                    pane_scope: None,
-                    remote: self.remote,
-                };
+                let ctx = self.ctx();
                 let resp = api::handle_line(&self.server, &ctx, &json).await;
                 asyncio::write_frame(wr, &ServerFrame::CommandResult { req, json: resp }).await?;
                 self.focused = self.server.client_focus(&self.client_id).pane;

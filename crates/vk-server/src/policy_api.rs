@@ -329,6 +329,29 @@ pub fn repo_policy(server: &Server, repo: &Path) -> RepoPolicy {
         && kv_map(server, "security", "repo_policy_grants")
             .get(&key)
             .is_some_and(|d| Some(d.as_str()) == digest.as_deref());
+    // `[[policy.rule]]` accepted from a trusted `.vibeke/config.toml` (08 §11.1): tighten only
+    // (`vk_config::repo` keeps `deny`/`ask` and drops `allow` with a warning).
+    match vk_config::repo::load(repo) {
+        Some(Ok(rc)) => {
+            for (i, r) in rc.policy_rules.iter().enumerate() {
+                rp.rules.push(Rule {
+                    id: format!("repo-config:{}", i + 1),
+                    source: "repo".into(),
+                    repo: Some(key.clone()),
+                    tool: r.matcher.tool.clone(),
+                    command_regex: r.matcher.command_regex.clone(),
+                    path_glob: r.matcher.path_glob.clone(),
+                    effect: effect_str(&r.effect),
+                    scope: r.scope.clone(),
+                    ignored: (!rp.trusted)
+                        .then(|| "repository not trusted at its current digest".into()),
+                    ..Rule::default()
+                });
+            }
+        }
+        Some(Err(e)) => rp.errors.push(format!("config.toml: {e}")),
+        None => {}
+    }
     if !rp.exists {
         return rp;
     }
