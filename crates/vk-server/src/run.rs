@@ -970,17 +970,29 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 .await?;
         isolation = b.isolation.clone();
     }
-    let (ws, _tab, pane) = server
-        .create_workspace(
-            &cwd,
-            Some(checkout.slug.clone()),
-            None,
-            p.get("focus")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                .then_some(ctx.client_id.as_str()),
-        )
-        .map_err(internal)?;
+    // The first pane spawns before the task is in the model: hand it the leased-port env.
+    let pre_task = Task {
+        port_range: lease.as_ref().map(|l| (l.start, l.end)),
+        worktree_path: Some(cwd.clone()),
+        ..Default::default()
+    };
+    server
+        .pending_task_env
+        .lock()
+        .unwrap()
+        .insert(id.clone(), crate::preview_fabric::task_port_env(&pre_task));
+    let created = server.create_workspace_for(
+        &cwd,
+        Some(checkout.slug.clone()),
+        None,
+        p.get("focus")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .then_some(ctx.client_id.as_str()),
+        Some(&id),
+    );
+    server.pending_task_env.lock().unwrap().remove(&id);
+    let (ws, _tab, pane) = created.map_err(internal)?;
     let task = Task {
         id: id.clone(),
         handle,

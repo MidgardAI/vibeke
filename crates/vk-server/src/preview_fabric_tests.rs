@@ -638,3 +638,68 @@ async fn task_previews_use_the_lease_and_retire_with_the_task() {
     assert_eq!(left, 0);
     assert!(e.events("preview.gone").len() >= 4);
 }
+
+#[test]
+fn task_panes_get_the_leased_ports_and_other_panes_do_not() {
+    let e = Env::new();
+    let checkout = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(checkout.path().join(".vibeke")).unwrap();
+    std::fs::write(
+        checkout.path().join(".vibeke/task.toml"),
+        "[ports]\nenv = { API_PORT = 3, VITE_PORT = 1, \"BAD-NAME\" = 2, FAR = 99 }\n",
+    )
+    .unwrap();
+    let task = Task {
+        id: "task-env".into(),
+        handle: "k9".into(),
+        title: "t".into(),
+        slug: "env".into(),
+        workspace: Some("ws-task".into()),
+        worktree_path: Some(checkout.path().to_string_lossy().into_owned()),
+        port_range: Some((24100, 24109)),
+        ..Default::default()
+    };
+    {
+        let mut c = e.server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.task(task.clone());
+        e.server.commit(&mut c, tx).unwrap();
+    }
+    let env_of = |ws_task: Option<&str>| {
+        let te = e.server.with_core(|c| e.server.task_env_for(c, ws_task));
+        e.server.pane_env_for("p1", "h1", "t1", "w1", &te)
+    };
+    let get = |env: &[(String, String)], k: &str| {
+        env.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone())
+    };
+    let t = env_of(Some("task-env"));
+    assert_eq!(get(&t, "PORT").as_deref(), Some("24100"));
+    assert_eq!(get(&t, "API_PORT").as_deref(), Some("24103"));
+    assert_eq!(get(&t, "VITE_PORT").as_deref(), Some("24101"));
+    // Not a valid shell name / outside the lease: never exported.
+    assert_eq!(get(&t, "BAD-NAME"), None);
+    assert_eq!(get(&t, "FAR"), None);
+    // Any other pane (plain workspace, or an unknown task) has none of them.
+    for other in [None, Some("no-such-task")] {
+        let o = env_of(other);
+        assert_eq!(get(&o, "PORT"), None);
+        assert_eq!(get(&o, "API_PORT"), None);
+        assert_eq!(get(&o, "VIBEKE").as_deref(), Some("1"));
+    }
+    // A task without a lease gets nothing either.
+    let unleased = Task {
+        port_range: None,
+        ..task
+    };
+    assert!(task_port_env(&unleased).is_empty());
+    // The first pane of a task being created sees the pending env.
+    e.server
+        .pending_task_env
+        .lock()
+        .unwrap()
+        .insert("new".into(), vec![("PORT".into(), "1".into())]);
+    let p = e
+        .server
+        .with_core(|c| e.server.task_env_for(c, Some("new")));
+    assert_eq!(p, vec![("PORT".to_string(), "1".to_string())]);
+}

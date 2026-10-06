@@ -103,6 +103,8 @@ pub enum Pending {
     Parity(crate::parity::Reply),
     /// Herdr plugin surfaces (actions, link handlers, UI state; M5).
     Plugin(crate::plugins::Reply),
+    /// Preview proxy / mirror commands (06 B4).
+    Preview(crate::browser::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -1321,6 +1323,7 @@ impl App {
             Pending::Reconcile { key } => self.on_reconciled(i, &key, res),
             Pending::Parity(r) => crate::parity::on_reply(self, i, r, res),
             Pending::Plugin(r) => crate::plugins::on_reply(self, i, r, res),
+            Pending::Preview(r) => crate::browser::on_reply(self, i, r, res),
         }
     }
 
@@ -1534,6 +1537,7 @@ impl App {
         crate::gateway::tick(self);
         crate::parity::on_tick(self);
         crate::assist::tick(self);
+        crate::browser::tick(self);
         crate::plugins::report_scroll(self, now);
         // Keep spinners/ages in the sidebar fresh once a second.
         if self.machines.iter().any(|m| !m.model.runs.is_empty()) {

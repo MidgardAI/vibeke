@@ -532,6 +532,31 @@ pub(crate) fn unmirror(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(out)
 }
 
+/// Env a task's panes get so a hand-started dev server uses the leased ports: `PORT` and the
+/// `[ports] env` names of the checkout's repo config (offsets into the task's lease).
+pub(crate) fn task_port_env(task: &Task) -> Vec<(String, String)> {
+    let Some((start, end)) = task.port_range else {
+        return vec![];
+    };
+    let ports = task
+        .worktree_path
+        .as_deref()
+        .and_then(|p| repo_preview_config(Path::new(p)).1);
+    let mut env: Vec<(String, String)> = Vec::new();
+    for (name, off) in vk_tasks::port_env_offsets(ports.as_ref()) {
+        // Only names a shell can export, and only offsets inside the lease.
+        let ok = !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !name.starts_with(|c: char| c.is_ascii_digit());
+        let port = u32::from(start) + u32::from(off);
+        if ok && port <= u32::from(end) {
+            env.retain(|(k, _)| k != &name);
+            env.push((name, port.to_string()));
+        }
+    }
+    env
+}
+
 // ---- task previews ----------------------------------------------------------------------------
 
 fn toml_json(path: &Path) -> Option<Value> {

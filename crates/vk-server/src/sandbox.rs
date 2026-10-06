@@ -1310,7 +1310,11 @@ pub async fn prepare_agent(
                 .unwrap_or_default(),
         )
     });
-    let host_env = server.pane_env_for(pane_id, &handle, &tabh, &wsh);
+    let task_env = server.with_core(|c| {
+        let ws_task = c.ws(&pane.workspace).and_then(|w| w.task.clone());
+        server.task_env_for(c, ws_task.as_deref())
+    });
+    let host_env = server.pane_env_for(pane_id, &handle, &tabh, &wsh, &task_env);
     let prepared = b
         .runner
         .runner()

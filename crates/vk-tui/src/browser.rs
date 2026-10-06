@@ -119,6 +119,65 @@ pub struct BrowserUi {
     requested: HashMap<usize, std::collections::HashSet<String>>,
     /// Media frames dropped as malformed (bad geometry or payload sizes).
     pub rejected_frames: u64,
+    /// Active preview mirrors on this machine's server (06 B4), as last reported.
+    pub mirrors: Vec<MirrorInfo>,
+    /// Preview a palette action applies to (set by right-clicking a chip or sidebar row):
+    /// (machine, preview id). Consumed by the next preview action.
+    pub target: Option<(usize, String)>,
+    /// Hands a URL to the OS opener; `None` = [`os_open`]. Tests substitute a recorder.
+    pub opener: Option<fn(&str) -> std::io::Result<()>>,
+    mirrors_polled: Option<Instant>,
+}
+
+/// One active mirror (`preview.mirror`): a remote preview's port bound on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorInfo {
+    /// Machine label of the remote.
+    pub machine: String,
+    pub preview: String,
+    pub handle: String,
+    pub port: u16,
+}
+
+impl MirrorInfo {
+    fn parse(v: &serde_json::Value) -> Option<MirrorInfo> {
+        Some(MirrorInfo {
+            machine: v.get("machine")?.as_str()?.to_string(),
+            preview: v.get("preview")?.as_str()?.to_string(),
+            handle: v.get("preview_handle")?.as_str()?.to_string(),
+            port: u16::try_from(v.get("local_port")?.as_u64()?).ok()?,
+        })
+    }
+}
+
+/// Replies to the preview commands of this module.
+#[derive(Debug, Clone)]
+pub enum Reply {
+    /// `preview.open {proxy: true, no_open: true}`: the result carries the one-time URL.
+    Proxy,
+    Mirror,
+    Unmirror,
+    /// `preview.status`: refresh the mirror list.
+    Mirrors,
+}
+
+/// Open `url` with the OS opener, detached, output discarded. `VIBEKE_NO_OPEN` disables it.
+pub fn os_open(url: &str) -> std::io::Result<()> {
+    if std::env::var_os("VIBEKE_NO_OPEN").is_some() {
+        return Ok(());
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
 
 impl BrowserUi {
@@ -1168,16 +1227,29 @@ pub fn on_mouse(app: &mut App, me: &CtMouse, px: Option<(u32, u32)>) -> bool {
     let (x, y) = (me.column, me.row);
     let down = matches!(me.kind, MouseEventKind::Down(CtButton::Left));
     // Sidebar preview rows.
+    let right = matches!(me.kind, MouseEventKind::Down(CtButton::Right));
     if crate::chrome::in_sidebar(app, x) {
-        if down && let Some((mi, p)) = preview_hit(app, y) {
-            open_preview(app, mi, &p, p.pane.clone());
+        if (down || right)
+            && let Some((mi, p)) = preview_hit(app, y)
+        {
+            if right {
+                preview_menu(app, mi, &p);
+            } else {
+                open_preview(app, mi, &p, p.pane.clone());
+            }
             return true;
         }
         return false;
     }
     if crate::chrome::tab_row(app) == Some(y) {
-        if down && let Some((mi, p)) = chip_hit(app, x) {
-            open_preview(app, mi, &p, p.pane.clone());
+        if (down || right)
+            && let Some((mi, p)) = chip_hit(app, x)
+        {
+            if right {
+                preview_menu(app, mi, &p);
+            } else {
+                open_preview(app, mi, &p, p.pane.clone());
+            }
             return true;
         }
         return false;
@@ -1427,6 +1499,213 @@ pub fn open_preview(app: &mut App, mi: usize, p: &Preview, source: Option<String
     app.command_on(mi, "browser.pane.create", params, Pending::Ignore);
 }
 
+/// The local machine (the one whose server runs windows, the proxy and mirrors) and the
+/// preview's name there: its handle, or `<machine>/<handle>` for a remote's.
+fn local_target(app: &App, mi: usize, p: &Preview) -> (usize, String) {
+    let local = app.machines.iter().position(|m| m.local).unwrap_or(mi);
+    let target = if local == mi {
+        p.handle.clone()
+    } else {
+        format!("{}/{}", app.machines[mi].label, p.handle)
+    };
+    (local, target)
+}
+
+/// The active mirror of preview `p` of machine `mi`, if any.
+pub fn mirror_of<'a>(app: &'a App, mi: usize, p: &Preview) -> Option<&'a MirrorInfo> {
+    let label = &app.machines.get(mi)?.label;
+    app.browser
+        .mirrors
+        .iter()
+        .find(|m| &m.machine == label && m.preview == p.id)
+}
+
+/// The mirror warning badge: `⇄ :5173 mirrored`.
+fn mirror_badge(p: &Preview) -> String {
+    format!("⇄ :{} mirrored", p.port)
+}
+
+/// Right-click on a preview row/chip: make it the target of the preview actions and show them.
+fn preview_menu(app: &mut App, mi: usize, p: &Preview) {
+    app.browser.target = Some((mi, p.id.clone()));
+    crate::nav::open_palette(app, "preview_".into());
+}
+
+/// The preview a palette action applies to: the right-clicked row/chip (consumed), else the
+/// focused pane's best preview.
+fn take_target(app: &mut App) -> Option<(usize, Preview)> {
+    if let Some((mi, id)) = app.browser.target.take() {
+        let found = app
+            .machines
+            .get(mi)
+            .and_then(|m| m.model.previews.iter().find(|p| p.id == id))
+            .filter(|p| p.status != PreviewStatus::Gone)
+            .cloned();
+        if let Some(p) = found {
+            return Some((mi, p));
+        }
+    }
+    let pane = app.focused_pane()?;
+    let cur = app.cur;
+    focused_preview(app, &pane).map(|p| (cur, p))
+}
+
+/// Open a preview in a window of the profile browser (always, whatever the terminal can draw).
+fn preview_window(app: &mut App, mi: usize, p: &Preview) {
+    let (local, target) = local_target(app, mi, p);
+    app.command_on(
+        local,
+        "preview.open",
+        json!({"preview": target, "window": true}),
+        Pending::Toast(format!("opened {} in a window", p.handle)),
+    );
+}
+
+/// Open a preview in the user's normal browser through the reverse proxy (06 B4). The server
+/// returns the one-time URL to this full-scope client (`no_open`: the server never opens it
+/// for us); only this explicit action hands it to the OS opener.
+fn preview_proxy(app: &mut App, mi: usize, p: &Preview) {
+    if app.caps.host_remote {
+        // The proxy listens on the server's loopback; a browser here could not reach it.
+        app.toast(format!(
+            "over ssh: the proxy is on the server's loopback; run `vibeke preview open {} --proxy` there",
+            p.handle
+        ));
+        return;
+    }
+    let (local, target) = local_target(app, mi, p);
+    app.command_on(
+        local,
+        "preview.open",
+        json!({"preview": target, "proxy": true, "no_open": true}),
+        Pending::Preview(Reply::Proxy),
+    );
+}
+
+fn preview_mirror(app: &mut App, mi: usize, p: &Preview) {
+    let (local, target) = local_target(app, mi, p);
+    if local == mi {
+        app.toast(format!(
+            "{} is on this machine already (localhost:{}); mirroring is for remote previews",
+            p.handle, p.port
+        ));
+        return;
+    }
+    app.command_on(
+        local,
+        "preview.mirror",
+        json!({"preview": target}),
+        Pending::Preview(Reply::Mirror),
+    );
+}
+
+fn preview_unmirror(app: &mut App, mi: usize, p: &Preview) {
+    let (local, target) = local_target(app, mi, p);
+    let Some(m) = mirror_of(app, mi, p) else {
+        app.toast(format!("{} is not mirrored", p.handle));
+        return;
+    };
+    let port = m.port;
+    app.command_on(
+        local,
+        "preview.unmirror",
+        json!({"preview": target, "port": port}),
+        Pending::Preview(Reply::Unmirror),
+    );
+}
+
+/// Replies to the preview commands (see [`Reply`]).
+pub fn on_reply(
+    app: &mut App,
+    _mi: usize,
+    r: Reply,
+    res: Result<serde_json::Value, crate::app::RpcErr>,
+) {
+    let v = match res {
+        Ok(v) => v,
+        // A server without the mirror list is not an error worth a toast.
+        Err(_) if matches!(r, Reply::Mirrors) => return,
+        Err(e) => {
+            app.toast(format!("✗ {}", e.message));
+            return;
+        }
+    };
+    match r {
+        Reply::Proxy => {
+            // The tokenized URL goes to the opener and nowhere else: not a toast, not a log.
+            let plain = v["url"].as_str().unwrap_or("the preview").to_string();
+            match v["open_url"].as_str() {
+                Some(url) => {
+                    let open = app.browser.opener.unwrap_or(os_open);
+                    match open(url) {
+                        Ok(()) => {
+                            app.toast(format!("opened {plain} in your browser via the proxy"))
+                        }
+                        Err(_) => app.toast("could not start the OS opener for the proxy URL"),
+                    }
+                }
+                None => app.toast("the server returned no proxy URL for this client"),
+            }
+        }
+        Reply::Mirror => {
+            if let Some(m) = MirrorInfo::parse(&v) {
+                app.toast(format!(
+                    "⇄ mirroring {}/{} on localhost:{} (unauthenticated port; unmirror when done)",
+                    m.machine, m.handle, m.port
+                ));
+                app.browser.mirrors.retain(|x| x.port != m.port);
+                app.browser.mirrors.push(m);
+            }
+        }
+        Reply::Unmirror => {
+            if let Some(port) = v["local_port"].as_u64() {
+                app.browser.mirrors.retain(|x| u64::from(x.port) != port);
+                app.toast(format!("stopped mirroring localhost:{port}"));
+            }
+        }
+        Reply::Mirrors => {
+            let list: Vec<MirrorInfo> = v["mirrors"]
+                .as_array()
+                .map(|a| a.iter().filter_map(MirrorInfo::parse).collect())
+                .unwrap_or_default();
+            app.browser.mirrors = list;
+        }
+    }
+    app.dirty = true;
+}
+
+/// Keep the mirror badge honest about mirrors made elsewhere (CLI): while remote previews or
+/// mirrors exist, ask the local server for its mirror list every 10 s.
+pub fn tick(app: &mut App) {
+    let remote_previews = app.machines.iter().any(|m| {
+        !m.local
+            && m.model
+                .previews
+                .iter()
+                .any(|p| p.status != PreviewStatus::Gone)
+    });
+    if !remote_previews && app.browser.mirrors.is_empty() {
+        return;
+    }
+    if app
+        .browser
+        .mirrors_polled
+        .is_some_and(|t| t.elapsed() < Duration::from_secs(10))
+    {
+        return;
+    }
+    let Some(local) = app.machines.iter().position(|m| m.local && m.connected()) else {
+        return;
+    };
+    app.browser.mirrors_polled = Some(Instant::now());
+    app.command_on(
+        local,
+        "preview.status",
+        json!({}),
+        Pending::Preview(Reply::Mirrors),
+    );
+}
+
 fn address_bar(app: &mut App, pane: &str) {
     let url = app
         .browser
@@ -1521,9 +1800,20 @@ pub fn action_name(app: &mut App, action: &str) -> bool {
             app.toast("console split: not built yet (arrives with `vibeke browser console`, Goal 03 Stage 3)");
         }
         (a, None) if a.starts_with("browser_") => app.toast("no browser pane focused"),
-        ("open_preview", None) => {
-            if !open_focused_preview(app) {
-                app.toast("no preview for this pane");
+        ("open_preview", None) => match take_target(app) {
+            Some((mi, p)) => open_preview(app, mi, &p, p.pane.clone()),
+            None => app.toast("no preview for this pane"),
+        },
+        ("preview_window" | "preview_proxy" | "preview_mirror" | "preview_unmirror", _) => {
+            let Some((mi, p)) = take_target(app) else {
+                app.toast("no preview for this pane (right-click a preview chip or row)");
+                return true;
+            };
+            match action {
+                "preview_window" => preview_window(app, mi, &p),
+                "preview_proxy" => preview_proxy(app, mi, &p),
+                "preview_mirror" => preview_mirror(app, mi, &p),
+                _ => preview_unmirror(app, mi, &p),
             }
         }
         // `prefix+o` (open_notification_target): a pending toast target first, else the
@@ -1545,25 +1835,29 @@ pub fn open_focused_preview(app: &mut App) -> bool {
         return false;
     };
     let cur = app.cur;
-    let best = app.machines[cur]
-        .model
-        .previews
-        .iter()
-        .filter(|p| p.pane.as_deref() == Some(pane.as_str()) && p.status != PreviewStatus::Gone)
-        .min_by_key(|p| match p.status {
-            PreviewStatus::Up => 0,
-            PreviewStatus::Declared => 1,
-            PreviewStatus::Suggested => 2,
-            _ => 3,
-        })
-        .cloned();
-    match best {
+    match focused_preview(app, &pane) {
         Some(p) => {
             open_preview(app, cur, &p, Some(pane));
             true
         }
         None => false,
     }
+}
+
+/// The best live preview of `pane` on the current machine (up, then declared, then suggested).
+fn focused_preview(app: &App, pane: &str) -> Option<Preview> {
+    app.machines[app.cur]
+        .model
+        .previews
+        .iter()
+        .filter(|p| p.pane.as_deref() == Some(pane) && p.status != PreviewStatus::Gone)
+        .min_by_key(|p| match p.status {
+            PreviewStatus::Up => 0,
+            PreviewStatus::Declared => 1,
+            PreviewStatus::Suggested => 2,
+            _ => 3,
+        })
+        .cloned()
 }
 
 // ---- previews in chrome -------------------------------------------------------------------------
@@ -1598,15 +1892,19 @@ pub fn preview_segs(app: &App, mi: usize, p: &Preview) -> Vec<(String, Style)> {
     };
     let suggested = p.status == PreviewStatus::Suggested;
     let text = if suggested { t.dim() } else { t.text() };
-    let mut segs = vec![
-        (format!("  {dot} "), t.s(color)),
-        (
+    let mirrored = mirror_of(app, mi, p).is_some();
+    let mut segs = vec![(format!("  {dot} "), t.s(color))];
+    if mirrored {
+        // Visible warning while the remote port is exposed on this machine's loopback.
+        segs.push((mirror_badge(p), t.bold(t.yellow)));
+    } else {
+        segs.push((
             format!(":{}", p.port),
             if suggested { t.dim() } else { t.bold(t.fg) },
-        ),
-    ];
-    if let Some(l) = &p.label {
-        segs.push((format!(" {l}"), text));
+        ));
+        if let Some(l) = &p.label {
+            segs.push((format!(" {l}"), text));
+        }
     }
     if app.machines.len() > 1 {
         segs.push((format!(" {}", app.machines[mi].label), t.dim()));
@@ -1650,7 +1948,9 @@ pub fn chip_entries(app: &App, tabs_end: u16) -> Vec<(usize, Preview, String, u1
     ps.sort_by_key(|p| p.port);
     for p in ps.into_iter().take(4) {
         let name = p.label.clone().unwrap_or_else(|| "web".into());
-        let label = if p.status == PreviewStatus::Suggested {
+        let label = if mirror_of(app, cur, p).is_some() {
+            format!(" {} ", mirror_badge(p))
+        } else if p.status == PreviewStatus::Suggested {
             format!(" ◉ {name} :{} open? ", p.port)
         } else {
             format!(" ◉ {name} :{} ", p.port)
@@ -1672,11 +1972,12 @@ fn chip_hit(app: &App, x: u16) -> Option<(usize, Preview)> {
 /// Draw the chips into the tab bar.
 pub fn draw_chips(app: &App, g: &mut Grid, tabs_end: u16, limit: u16) {
     let t = &app.theme;
-    for (_, p, label, x0, x1) in chip_entries(app, tabs_end) {
+    for (mi, p, label, x0, x1) in chip_entries(app, tabs_end) {
         if x1 > limit {
             break;
         }
         let st = match p.status {
+            _ if mirror_of(app, mi, &p).is_some() => t.bold(t.yellow),
             PreviewStatus::Up => t.bold(t.green),
             PreviewStatus::Suggested => t.dim(),
             PreviewStatus::Down => t.s(t.red),
@@ -1692,7 +1993,9 @@ pub fn draw_chips(app: &App, g: &mut Grid, tabs_end: u16, limit: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Popup;
     use crate::app::test_app;
+    use serde_json::Value;
     use vk_proto::model::*;
     use vk_proto::render::{MediaTile, PaneModes, Row, Span};
 
@@ -2217,6 +2520,295 @@ mod tests {
                 && j.contains("m1/v4")
                 && j.contains("\"window\":true")),
             "{cmds:?}"
+        );
+    }
+
+    // ---- preview actions: window, proxy, mirror (06 B4) -----------------------------------
+
+    static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_open(url: &str) -> std::io::Result<()> {
+        OPENED.lock().unwrap().push(url.to_string());
+        Ok(())
+    }
+
+    fn cmds_of(rx: &mut tokio::sync::mpsc::UnboundedReceiver<ClientFrame>) -> Vec<Value> {
+        drain(rx)
+            .into_iter()
+            .filter_map(|f| match f {
+                ClientFrame::Command { json, .. } => serde_json::from_str::<Value>(&json).ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A remote machine's preview `v4` (port 5173) on pane `p1`, focused.
+    fn remote_preview_app() -> (
+        App,
+        Vec<tokio::sync::mpsc::UnboundedReceiver<ClientFrame>>,
+        usize,
+    ) {
+        let (mut app, mut rxs, mi) = setup(2);
+        app.machines[mi].model.previews = vec![
+            serde_json::from_value(json!({
+                "id": "PV", "handle": "v4", "machine": "m1", "pane": "p1", "task": null,
+                "port": 5173, "path": "/", "label": "vite", "url": "http://localhost:5173/",
+                "scheme": "http", "status": "up", "source": "banner", "pid": null,
+                "first_seen_ms": 0, "last_seen_ms": 0
+            }))
+            .unwrap(),
+        ];
+        let cur = app.cur;
+        app.focus_pane(cur, "p1");
+        app.browser.opener = Some(record_open);
+        for rx in &mut rxs {
+            drain(rx);
+        }
+        (app, rxs, mi)
+    }
+
+    fn mirror_reply(app: &App, mi: usize) -> Value {
+        json!({
+            "machine": app.machines[mi].label, "preview": "PV", "preview_handle": "v4",
+            "local_port": 5173, "warning": "unauthenticated"
+        })
+    }
+
+    #[test]
+    fn preview_window_and_proxy_actions_go_through_the_local_server() {
+        let (mut app, mut rxs, mi) = remote_preview_app();
+        let label = app.machines[mi].label.clone();
+        assert!(action_name(&mut app, "preview_window"));
+        let c = cmds_of(&mut rxs[0]);
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0]["method"], "preview.open");
+        assert_eq!(c[0]["params"]["preview"], format!("{label}/v4"));
+        assert_eq!(c[0]["params"]["window"], true);
+        assert!(cmds_of(&mut rxs[mi]).is_empty());
+
+        // Proxy: the server is told not to open it; this client opens the one-time URL.
+        assert!(action_name(&mut app, "preview_proxy"));
+        let c = cmds_of(&mut rxs[0]);
+        assert_eq!(c[0]["method"], "preview.open");
+        assert_eq!(c[0]["params"]["proxy"], true);
+        assert_eq!(c[0]["params"]["no_open"], true);
+        assert!(
+            app.machines[0]
+                .pending
+                .values()
+                .any(|p| matches!(p, Pending::Preview(Reply::Proxy)))
+        );
+        OPENED.lock().unwrap().clear();
+        on_reply(
+            &mut app,
+            0,
+            Reply::Proxy,
+            Ok(json!({
+                "url": "http://m1-v4.vibeke.localhost:7000/",
+                "open_url": "http://m1-v4.vibeke.localhost:7000/?vk_token=SECRET",
+            })),
+        );
+        assert_eq!(
+            *OPENED.lock().unwrap(),
+            vec!["http://m1-v4.vibeke.localhost:7000/?vk_token=SECRET".to_string()]
+        );
+        // The token is never shown: the toast names the plain URL only.
+        let shown: String = app.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(
+            shown.contains("vibeke.localhost:7000") && !shown.contains("SECRET"),
+            "{shown}"
+        );
+        // A server that returns no URL (pane scope) opens nothing.
+        OPENED.lock().unwrap().clear();
+        on_reply(&mut app, 0, Reply::Proxy, Ok(json!({"url": "http://x/"})));
+        assert!(OPENED.lock().unwrap().is_empty());
+        // Over ssh nothing is sent or opened: the proxy is on the server's loopback.
+        app.caps.host_remote = true;
+        assert!(action_name(&mut app, "preview_proxy"));
+        assert!(cmds_of(&mut rxs[0]).is_empty());
+        assert!(OPENED.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn mirror_and_unmirror_track_state_and_show_the_badge() {
+        let (mut app, mut rxs, mi) = remote_preview_app();
+        let label = app.machines[mi].label.clone();
+        app.sidebar = true;
+        let text = |app: &App| -> String {
+            let rows = crate::draw::sidebar_rows(app);
+            rows.last()
+                .unwrap()
+                .segs
+                .iter()
+                .map(|(s, _)| s.as_str())
+                .collect()
+        };
+        assert!(!text(&app).contains("mirrored"));
+        assert!(!chip_entries(&app, 10)[0].2.contains("mirrored"));
+
+        assert!(action_name(&mut app, "preview_mirror"));
+        let c = cmds_of(&mut rxs[0]);
+        assert_eq!(c[0]["method"], "preview.mirror");
+        assert_eq!(c[0]["params"]["preview"], format!("{label}/v4"));
+        // Unmirroring something that is not mirrored sends nothing.
+        action_name(&mut app, "preview_unmirror");
+        assert!(cmds_of(&mut rxs[0]).is_empty());
+
+        let reply = mirror_reply(&app, mi);
+        on_reply(&mut app, 0, Reply::Mirror, Ok(reply));
+        assert_eq!(app.browser.mirrors.len(), 1);
+        let row = text(&app);
+        assert!(row.contains("⇄ :5173 mirrored"), "{row}");
+        assert_eq!(chip_entries(&app, 10)[0].2, " ⇄ :5173 mirrored ");
+        // The warning is styled, not just text.
+        let rows = crate::draw::sidebar_rows(&app);
+        let badge = rows
+            .last()
+            .unwrap()
+            .segs
+            .iter()
+            .find(|(s, _)| s.contains("mirrored"))
+            .unwrap();
+        assert_eq!(badge.1, app.theme.bold(app.theme.yellow));
+
+        // Draw: the chip is in the tab bar while the mirror is active.
+        let mut g = crate::screen::Grid::new(80, 24);
+        draw_chips(&app, &mut g, 10, 80);
+        let drawn = crate::tasks::grid_text(&g);
+        assert!(drawn.contains("⇄ :5173 mirrored"), "{drawn}");
+
+        // Unmirror sends the port and drops the badge on success.
+        assert!(action_name(&mut app, "preview_unmirror"));
+        let c = cmds_of(&mut rxs[0]);
+        assert_eq!(c[0]["method"], "preview.unmirror");
+        assert_eq!(c[0]["params"]["port"], 5173);
+        on_reply(
+            &mut app,
+            0,
+            Reply::Unmirror,
+            Ok(json!({"local_port": 5173, "machine": label, "preview": "v4"})),
+        );
+        assert!(app.browser.mirrors.is_empty());
+        assert!(!text(&app).contains("mirrored"));
+        assert!(!chip_entries(&app, 10)[0].2.contains("mirrored"));
+
+        // A refused mirror (port busy) is reported and leaves no badge.
+        on_reply(
+            &mut app,
+            0,
+            Reply::Mirror,
+            Err(crate::app::RpcErr {
+                kind: "conflict".into(),
+                message: "port 5173 is busy on this machine".into(),
+                details: Value::Null,
+            }),
+        );
+        assert!(app.browser.mirrors.is_empty());
+        let shown: String = app.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(shown.contains("busy"), "{shown}");
+    }
+
+    #[test]
+    fn mirror_is_refused_for_a_local_preview_and_polled_state_replaces_the_list() {
+        let (mut app, mut rxs, mi) = remote_preview_app();
+        // Move the preview to the local machine.
+        let pv = app.machines[mi].model.previews.clone();
+        app.machines[mi].model.previews.clear();
+        app.machines[0].model.previews = pv;
+        app.cur = 0;
+        let label = app.machines[0].label.clone();
+        let panes: Vec<_> = app.machines[mi].model.panes.clone();
+        app.machines[0].model.panes = panes;
+        app.machines[0].model.tabs = app.machines[mi].model.tabs.clone();
+        app.machines[0].model.workspaces = app.machines[mi].model.workspaces.clone();
+        app.focus_pane(0, "p1");
+        action_name(&mut app, "preview_mirror");
+        assert!(cmds_of(&mut rxs[0]).is_empty());
+        let shown: String = app.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(shown.contains("remote previews"), "{shown}");
+
+        // `preview.status` lists mirrors made elsewhere (CLI): the list is replaced.
+        on_reply(
+            &mut app,
+            0,
+            Reply::Mirrors,
+            Ok(json!({"mirrors": [
+                {"machine": label, "preview": "PV", "preview_handle": "v4", "local_port": 5173},
+                {"machine": "other", "preview": "X", "preview_handle": "v9", "local_port": 3000},
+            ]})),
+        );
+        assert_eq!(app.browser.mirrors.len(), 2);
+        on_reply(&mut app, 0, Reply::Mirrors, Ok(json!({"mirrors": []})));
+        assert!(app.browser.mirrors.is_empty());
+        // An old server without the call: silently ignored.
+        on_reply(
+            &mut app,
+            0,
+            Reply::Mirrors,
+            Err(crate::app::RpcErr {
+                kind: "method_not_found".into(),
+                message: "no".into(),
+                details: Value::Null,
+            }),
+        );
+        assert!(app.toasts.iter().all(|t| t.text != "✗ no"));
+    }
+
+    #[test]
+    fn right_click_on_a_chip_or_row_targets_the_palette_actions() {
+        let (mut app, mut rxs, mi) = remote_preview_app();
+        app.sidebar = true;
+        // A second preview on another pane: the right-clicked one wins over the focus.
+        let mut other = app.machines[mi].model.previews[0].clone();
+        other.id = "PV2".into();
+        other.handle = "v5".into();
+        other.port = 6006;
+        other.pane = Some("bp".into());
+        app.machines[mi].model.previews.push(other);
+        let rows = crate::draw::sidebar_rows(&app).len() as u16;
+        // Sidebar rows are ordered by port: 5173 then 6006 (last row).
+        let click = |col: u16, row: u16| CtMouse {
+            kind: MouseEventKind::Down(CtButton::Right),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let sx = crate::chrome::sidebar_x(&app).unwrap_or(0);
+        assert!(on_mouse(&mut app, &click(sx + 3, rows), None));
+        assert_eq!(app.browser.target, Some((mi, "PV2".to_string())));
+        match &app.mode {
+            Mode::Popup(Popup::Palette { filter, .. }) => assert_eq!(filter, "preview_"),
+            _ => panic!("palette not open"),
+        }
+        for rx in &mut rxs {
+            drain(rx);
+        }
+        // The palette lists the preview actions for that filter.
+        let ids: Vec<String> = crate::nav::palette_ranked(&app, "preview_")
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        for want in [
+            "preview_window",
+            "preview_proxy",
+            "preview_mirror",
+            "preview_unmirror",
+        ] {
+            assert!(ids.iter().any(|i| i == want), "{want} in {ids:?}");
+        }
+        app.action("preview_window", None);
+        let c = cmds_of(&mut rxs[0]);
+        assert_eq!(
+            c[0]["params"]["preview"],
+            format!("{}/v5", app.machines[mi].label)
+        );
+        // The target is consumed: the next action falls back to the focused pane's preview.
+        assert!(app.browser.target.is_none());
+        app.action("preview_window", None);
+        let c = cmds_of(&mut rxs[0]);
+        assert_eq!(
+            c[0]["params"]["preview"],
+            format!("{}/v4", app.machines[mi].label)
         );
     }
 }
