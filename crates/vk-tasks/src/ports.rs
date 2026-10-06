@@ -107,6 +107,111 @@ struct LeaseFile {
     leases: Vec<Lease>,
 }
 
+/// State of the pool for `vibeke doctor` (05 §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolHealth {
+    /// Aligned blocks that fit in the pool.
+    pub capacity: u32,
+    /// Blocks not overlapped by any live lease.
+    pub free: u32,
+    pub leased: u32,
+    pub ephemeral: Option<(u16, u16)>,
+    /// Human-readable problems: exhaustion, ephemeral overlap, leases that
+    /// fall outside the pool or overlap each other.
+    pub warnings: Vec<String>,
+}
+
+/// The OS's ephemeral (outgoing connection) port range, if it can be read:
+/// `/proc/sys/net/ipv4/ip_local_port_range` on Linux, `sysctl` on macOS.
+pub fn ephemeral_range() -> Option<(u16, u16)> {
+    #[cfg(target_os = "linux")]
+    {
+        let t = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").ok()?;
+        let mut it = t.split_whitespace().filter_map(|x| x.parse().ok());
+        Some((it.next()?, it.next()?))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let get = |k: &str| -> Option<u16> {
+            let o = std::process::Command::new("sysctl")
+                .args(["-n", k])
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&o.stdout).trim().parse().ok()
+        };
+        Some((
+            get("net.inet.ip.portrange.first")?,
+            get("net.inet.ip.portrange.last")?,
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Pure health computation: see [`PoolHealth`]. A pool is *exhausted* when no
+/// free block is left and *low* when at most one tenth remains.
+pub fn pool_health(pool: PortPool, leases: &[Lease], ephemeral: Option<(u16, u16)>) -> PoolHealth {
+    let blocks: Vec<u16> = pool.candidates().collect();
+    let capacity = blocks.len() as u32;
+    let b = pool.block;
+    let free = blocks
+        .iter()
+        .filter(|&&s| !leases.iter().any(|l| l.start < s + b && s <= l.end))
+        .count() as u32;
+    let mut warnings = Vec::new();
+    if let Some((lo, hi)) = ephemeral
+        && pool.start <= hi
+        && lo <= pool.end
+    {
+        warnings.push(format!(
+            "tasks.port_pool {}-{} overlaps the OS ephemeral port range {lo}-{hi}: the kernel may hand pool ports to outgoing connections",
+            pool.start, pool.end
+        ));
+    }
+    if capacity == 0 {
+        warnings.push(format!(
+            "tasks.port_pool {}-{} holds no aligned block of {} ports",
+            pool.start, pool.end, pool.block
+        ));
+    } else if free == 0 {
+        warnings.push(format!(
+            "port range exhausted: all {capacity} blocks of {} ports are leased; new tasks will start without ports (finish tasks or widen tasks.port_pool)",
+            pool.block
+        ));
+    } else if free * 10 <= capacity {
+        warnings.push(format!(
+            "port range nearly exhausted: {free} of {capacity} blocks free"
+        ));
+    }
+    for l in leases {
+        if l.start < pool.start || l.end > pool.end {
+            warnings.push(format!(
+                "lease {}-{} of task {} lies outside tasks.port_pool {}-{} (the pool was changed)",
+                l.start, l.end, l.task_id, pool.start, pool.end
+            ));
+        }
+    }
+    for (i, a) in leases.iter().enumerate() {
+        for c in &leases[i + 1..] {
+            if a.start <= c.end && c.start <= a.end {
+                warnings.push(format!(
+                    "leases {}-{} (task {}) and {}-{} (task {}) overlap",
+                    a.start, a.end, a.task_id, c.start, c.end, c.task_id
+                ));
+            }
+        }
+    }
+    PoolHealth {
+        capacity,
+        free,
+        leased: leases.len() as u32,
+        ephemeral,
+        warnings,
+    }
+}
+
 /// Handle on the machine-wide lease table in `dir`.
 #[derive(Debug, Clone)]
 pub struct PortLeases {
@@ -205,6 +310,16 @@ impl PortLeases {
     /// (and re-owned by the caller). Ports in the block are bind-tested on
     /// 127.0.0.1 first; occupied blocks are skipped.
     pub fn lease(&self, req: &LeaseRequest) -> Result<Lease> {
+        self.lease_sized(req, self.pool.block)
+    }
+
+    /// Like [`lease`](Self::lease) with a block size of `block` ports
+    /// (`[ports] count` of the repo's task file), aligned to that size.
+    pub fn lease_sized(&self, req: &LeaseRequest, block: u16) -> Result<Lease> {
+        let pool = PortPool {
+            block: block.clamp(1, self.pool.end - self.pool.start + 1),
+            ..self.pool
+        };
         let _g = self.lock()?;
         let mut f = self.load()?;
         f.leases.retain(is_live);
@@ -215,8 +330,8 @@ impl PortLeases {
             self.store(&f)?;
             return Ok(l);
         }
-        let b = self.pool.block;
-        for s in self.pool.candidates() {
+        let b = pool.block;
+        for s in pool.candidates() {
             let e = s + b - 1;
             if f.leases.iter().any(|l| l.start <= e && s <= l.end) {
                 continue;
@@ -290,6 +405,11 @@ impl PortLeases {
             self.store(&f)?;
         }
         Ok(dead)
+    }
+
+    /// Pool health for `vibeke doctor` (reads the live leases).
+    pub fn health(&self) -> Result<PoolHealth> {
+        Ok(pool_health(self.pool, &self.list()?, ephemeral_range()))
     }
 
     pub fn state_dir(&self) -> &Path {

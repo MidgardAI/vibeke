@@ -670,6 +670,9 @@ pub struct Tasks {
     pub copy_files: Vec<String>,
     pub cleanup: Cleanup,
     pub best_of_n: BestOfN,
+    /// Per-repo overrides of the repo's `.vibeke/task.toml` (05 §5), keyed by
+    /// `origin` URL or repo path: `[tasks.repos."github.com/acme/app"]`.
+    pub repos: BTreeMap<String, TaskRepoOverride>,
 }
 impl Default for Tasks {
     fn default() -> Self {
@@ -689,6 +692,7 @@ impl Default for Tasks {
             copy_files: vec![s(".env"), s(".env.local")],
             cleanup: Cleanup::default(),
             best_of_n: BestOfN::default(),
+            repos: BTreeMap::new(),
         }
     }
 }
@@ -716,6 +720,62 @@ impl Default for Cleanup {
 #[serde(default)]
 pub struct BestOfN {
     pub suffix: String,
+}
+
+/// `[tasks.repos."<remote or path>"]`: the same tables as `.vibeke/task.toml`.
+/// Whatever is set replaces the repo's value (lists, scalars) or merges per
+/// key (`env`, `ports.env`). User config is trusted: commands set here run
+/// without the repo-trust prompt.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskRepoOverride {
+    pub files: TaskFiles,
+    pub deps: TaskDeps,
+    pub setup: TaskSetup,
+    pub ports: TaskPorts,
+    pub env: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskFiles {
+    pub copy: Vec<String>,
+    pub link: Vec<String>,
+    pub clone: Vec<String>,
+    pub ignore_missing: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DepsStrategy {
+    Auto,
+    Clone,
+    Install,
+    None,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskDeps {
+    pub strategy: Option<DepsStrategy>,
+    pub install: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskSetup {
+    pub script: Option<String>,
+    pub run: Vec<String>,
+    pub timeout: Option<String>,
+    pub start_agents_on_failure: Option<bool>,
+    pub parallel_agent: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskPorts {
+    pub count: Option<u16>,
+    pub env: BTreeMap<String, u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

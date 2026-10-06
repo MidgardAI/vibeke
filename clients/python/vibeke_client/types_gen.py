@@ -250,6 +250,14 @@ LayoutNode: TypeAlias = Union["LayoutNodeXV0", "LayoutNodeXV1"]
 
 LayoutSpec: TypeAlias = Dict[str, Any]
 
+MaterializedFile = TypedDict("MaterializedFile", {
+    "path": str,
+    "outcome": Literal["copied", "linked", "cloned", "missing", "exists", "rejected", "failed"],
+    "method": NotRequired[Optional[str]],
+    "hash": NotRequired[Optional[str]],
+    "error": NotRequired[Optional[str]],
+})
+
 Notification = TypedDict("Notification", {
     "id": str,
     "kind": str,
@@ -286,6 +294,22 @@ Pane = TypedDict("Pane", {
 })
 
 PolicyRule: TypeAlias = Dict[str, Any]
+
+PrLookupPr = TypedDict("PrLookupPr", {
+    "number": int,
+    "state": str,
+    "is_draft": bool,
+    "review_decision": Optional[str],
+    "checks": Literal["none", "pending", "passing", "failing"],
+    "url": str,
+    "label": str,
+})
+
+PrLookup = TypedDict("PrLookup", {
+    "kind": Literal["pr", "no_pr", "unavailable"],
+    "pr": NotRequired["PrLookupPr"],
+    "reason": NotRequired[str],
+})
 
 Preview = TypedDict("Preview", {
     "id": str,
@@ -3873,11 +3897,28 @@ TaskCreateParams = TypedDict("TaskCreateParams", {
     "fetch": NotRequired[bool],
 })
 
+TaskCreateResultSetupCommandsItem = TypedDict("TaskCreateResultSetupCommandsItem", {
+    "source": str,
+    "command": str,
+})
+
+TaskCreateResultSetup = TypedDict("TaskCreateResultSetup", {
+    "pane": Optional[str],
+    "status": Optional[str],
+    "agents_pending": bool,
+    "commands": List["TaskCreateResultSetupCommandsItem"],
+})
+
 TaskCreateResult = TypedDict("TaskCreateResult", {
     "task": "Task",
     "workspace": "Workspace",
     "panes": List["Pane"],
     "runs": List["AgentRun"],
+    "copied": NotRequired[List[str]],
+    "files": NotRequired[List["MaterializedFile"]],
+    "deps": NotRequired[Any],
+    "setup": NotRequired["TaskCreateResultSetup"],
+    "warnings": NotRequired[List[str]],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4017,6 +4058,7 @@ TaskGetResultBranchStatusV0 = TypedDict("TaskGetResultBranchStatusV0", {
 TaskGetResult = TypedDict("TaskGetResult", {
     "task": "Task",
     "branch_status": Optional["TaskGetResultBranchStatusV0"],
+    "pr": NotRequired[Optional["PrLookup"]],
 })
 
 TaskListParams = TypedDict("TaskListParams", {
@@ -4026,6 +4068,51 @@ TaskListParams = TypedDict("TaskListParams", {
 
 TaskListResult = TypedDict("TaskListResult", {
     "tasks": List["Task"],
+})
+
+TaskPrParams = TypedDict("TaskPrParams", {
+    "task": "Target",
+    "refresh": NotRequired[bool],
+})
+
+TaskPrResult = TypedDict("TaskPrResult", {
+    "task": str,
+    "pr": "PrLookup",
+})
+
+TaskReconcileParams = TypedDict("TaskReconcileParams", {
+    "repo": NotRequired[str],
+})
+
+TaskReconcileResultReportsItemMissingItem = TypedDict("TaskReconcileResultReportsItemMissingItem", {
+    "task_id": str,
+    "path": str,
+    "reason": str,
+})
+
+TaskReconcileResultReportsItemBranchMovedItem = TypedDict("TaskReconcileResultReportsItemBranchMovedItem", {
+    "task_id": str,
+    "path": str,
+    "expected": Optional[str],
+    "actual": Optional[str],
+})
+
+TaskReconcileResultReportsItemOrphansItem = TypedDict("TaskReconcileResultReportsItemOrphansItem", {
+    "path": str,
+    "kind": str,
+    "branch": Optional[str],
+})
+
+TaskReconcileResultReportsItem = TypedDict("TaskReconcileResultReportsItem", {
+    "repo": str,
+    "missing": List["TaskReconcileResultReportsItemMissingItem"],
+    "branch_moved": List["TaskReconcileResultReportsItemBranchMovedItem"],
+    "orphans": List["TaskReconcileResultReportsItemOrphansItem"],
+})
+
+TaskReconcileResult = TypedDict("TaskReconcileResult", {
+    "reports": List["TaskReconcileResultReportsItem"],
+    "cursor": NotRequired["Cursor"],
 })
 
 TaskReviewAcceptParamsExceptionsItem = TypedDict("TaskReviewAcceptParamsExceptionsItem", {
@@ -4270,6 +4357,26 @@ TaskReviewStartReviewerResult = TypedDict("TaskReviewStartReviewerResult", {
     "binding": Dict[str, Any],
     "note": NotRequired[str],
     "replayed": NotRequired[bool],
+    "cursor": NotRequired["Cursor"],
+})
+
+TaskSetupParams = TypedDict("TaskSetupParams", {
+    "task": "Target",
+    "setup_script": NotRequired[str],
+})
+
+TaskSetupResultCommandsItem = TypedDict("TaskSetupResultCommandsItem", {
+    "source": str,
+    "command": str,
+})
+
+TaskSetupResult = TypedDict("TaskSetupResult", {
+    "task": str,
+    "started": bool,
+    "pane": Optional[str],
+    "setup_status": Optional[str],
+    "commands": List["TaskSetupResultCommandsItem"],
+    "needs_trust": bool,
     "cursor": NotRequired["Cursor"],
 })
 
@@ -4666,6 +4773,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.finish": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.pr": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "task.reconcile": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "task.review.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.candidates": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "task.review.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -4676,6 +4785,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "task.review.snapshot": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.snapshot.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.review.start_reviewer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "task.setup": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "task.sync": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "theme.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "theme.set_mode": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -5685,6 +5795,15 @@ TabRenamedData = TypedDict("TabRenamedData", {
     "title": Optional[str],
 })
 
+TaskAgentsWithheldSubject = TypedDict("TaskAgentsWithheldSubject", {
+    "task": str,
+})
+
+TaskAgentsWithheldData = TypedDict("TaskAgentsWithheldData", {
+    "reason": str,
+    "hint": str,
+})
+
 TaskBindingChangedSubject = TypedDict("TaskBindingChangedSubject", {
     "task": str,
     "run": str,
@@ -5695,6 +5814,16 @@ TaskBindingChangedData = TypedDict("TaskBindingChangedData", {
     "state": str,
     "reason": NotRequired[str],
     "offers": NotRequired[List[str]],
+})
+
+TaskBranchChangedSubject = TypedDict("TaskBranchChangedSubject", {
+    "task": str,
+})
+
+TaskBranchChangedData = TypedDict("TaskBranchChangedData", {
+    "path": str,
+    "expected": Optional[str],
+    "actual": Optional[str],
 })
 
 TaskCreatedSubject = TypedDict("TaskCreatedSubject", {
@@ -5717,6 +5846,15 @@ TaskDependencyChangedSubject = TypedDict("TaskDependencyChangedSubject", {
 TaskDependencyChangedData = TypedDict("TaskDependencyChangedData", {
     "action": Literal["added", "removed"],
     "kind": str,
+})
+
+TaskFilesMaterializedSubject = TypedDict("TaskFilesMaterializedSubject", {
+    "task": str,
+})
+
+TaskFilesMaterializedData = TypedDict("TaskFilesMaterializedData", {
+    "files": List["MaterializedFile"],
+    "deps": Any,
 })
 
 TaskFinishedSubject = TypedDict("TaskFinishedSubject", {
@@ -5763,16 +5901,69 @@ TaskMessageSendingSubject = TypedDict("TaskMessageSendingSubject", {
 
 TaskMessageSendingData: TypeAlias = Dict[str, Any]
 
+TaskMissingSubject = TypedDict("TaskMissingSubject", {
+    "task": str,
+})
+
+TaskMissingData = TypedDict("TaskMissingData", {
+    "path": str,
+    "reason": str,
+    "hint": str,
+})
+
+TaskRecoveredSubject = TypedDict("TaskRecoveredSubject", {
+    "task": str,
+})
+
+TaskRecoveredData = TypedDict("TaskRecoveredData", {
+    "path": Optional[str],
+})
+
+TaskSetupFailedSubject = TypedDict("TaskSetupFailedSubject", {
+    "task": str,
+})
+
+TaskSetupFailedData = TypedDict("TaskSetupFailedData", {
+    "status": str,
+    "exit_code": NotRequired[Optional[int]],
+    "duration_ms": NotRequired[int],
+    "log": NotRequired[str],
+    "pane": NotRequired[Optional[str]],
+})
+
 TaskSetupFinishedSubject = TypedDict("TaskSetupFinishedSubject", {
     "task": str,
 })
 
 TaskSetupFinishedData = TypedDict("TaskSetupFinishedData", {
     "status": str,
+    "exit_code": NotRequired[Optional[int]],
+    "duration_ms": NotRequired[int],
+    "log": NotRequired[str],
+    "pane": NotRequired[Optional[str]],
+})
+
+TaskSetupStartedSubject = TypedDict("TaskSetupStartedSubject", {
+    "task": str,
+})
+
+TaskSetupStartedDataCommandsItem = TypedDict("TaskSetupStartedDataCommandsItem", {
+    "source": str,
+    "command": str,
+})
+
+TaskSetupStartedData = TypedDict("TaskSetupStartedData", {
+    "commands": List["TaskSetupStartedDataCommandsItem"],
+    "pane": Optional[str],
 })
 
 TaskSetupUntrustedSubject = TypedDict("TaskSetupUntrustedSubject", {
     "task": str,
+})
+
+TaskSetupUntrustedDataCommandsItem = TypedDict("TaskSetupUntrustedDataCommandsItem", {
+    "source": str,
+    "command": str,
 })
 
 TaskSetupUntrustedData = TypedDict("TaskSetupUntrustedData", {
@@ -5780,6 +5971,7 @@ TaskSetupUntrustedData = TypedDict("TaskSetupUntrustedData", {
     "digest": str,
     "script": str,
     "hint": str,
+    "commands": NotRequired[List["TaskSetupUntrustedDataCommandsItem"]],
 })
 
 TaskStatusChangedSubject = TypedDict("TaskStatusChangedSubject", {
@@ -5860,6 +6052,17 @@ WorktreeOpenedData = TypedDict("WorktreeOpenedData", {
     "branch": Optional[str],
     "repo_root": str,
     "created_workspace": NotRequired[Any],
+})
+
+WorktreeOrphanFoundSubject = TypedDict("WorktreeOrphanFoundSubject", {
+    "repo": str,
+})
+
+WorktreeOrphanFoundData = TypedDict("WorktreeOrphanFoundData", {
+    "path": str,
+    "kind": str,
+    "branch": Optional[str],
+    "hint": str,
 })
 
 WorktreeRemovedSubject = TypedDict("WorktreeRemovedSubject", {
@@ -5976,15 +6179,22 @@ EVENT_TYPES = (
     "tab.layout_changed",
     "tab.moved",
     "tab.renamed",
+    "task.agents_withheld",
     "task.binding_changed",
+    "task.branch_changed",
     "task.created",
     "task.dependency_changed",
+    "task.files_materialized",
     "task.finished",
     "task.intent_updated",
     "task.message_delivery_unknown",
     "task.message_prepared",
     "task.message_sending",
+    "task.missing",
+    "task.recovered",
+    "task.setup_failed",
     "task.setup_finished",
+    "task.setup_started",
     "task.setup_untrusted",
     "task.status_changed",
     "task.tracked",
@@ -5996,5 +6206,6 @@ EVENT_TYPES = (
     "workspace.renamed",
     "worktree.created",
     "worktree.opened",
+    "worktree.orphan_found",
     "worktree.removed",
 )

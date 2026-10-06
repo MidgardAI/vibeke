@@ -421,6 +421,8 @@ Answer = {decision: allow|allow_always|deny|string|null, choices?: [any], text?:
 Interaction = {id: string, handle: string, run: string, pane: string, kind: string, status: string, title: string, body_md: string|null, action: object|null, questions: [object], plan_md: string|null, answer_channel: string, native_ref: string|null, source: string, confidence: number, answerable: bool, gate: bool, decision_rev: int, delivery: string, delivery_error: string|null, answer: Answer|null, answered_by: string|null, answer_key?: string|null, opened_at_ms: int, answered_at_ms: int|null}
 PolicyRule = object
 Notification = {id: string, kind: string, pane: string|null, title: string, body: string, urgency: string, created_at_ms: int, read: bool, channels?: [string]}
+MaterializedFile = {path: string, outcome: copied|linked|cloned|missing|exists|rejected|failed, method?: string|null, hash?: string|null, error?: string|null}
+PrLookup = {kind: pr|no_pr|unavailable, pr?: {number: int, state: string, is_draft: bool, review_decision: string|null, checks: none|pending|passing|failing, url: string, label: string}, reason?: string}
 Task = {id: string, handle: string, title: string, slug: string, workspace: string|null, repo_root: string, worktree_path: string|null, branch: string|null, base_ref: string|null, port_range: [int]|null, status: string, setup_status: string|null, created_at_ms: int, ownership?: owned|attached, owner_machine?: string, intent_revision?: int|null, priority?: int|null, rev?: int, review_label?: string|null, effort?: string|null, isolation?: Isolation, checkout?: string|null, rate_limit?: RateLimitInfo|null}
 Preview = {id: string, handle: string, machine: string, pane: string|null, task: string|null, port: int, path: string, label: string|null, url: string, scheme: string, status: suggested|declared|up|down|gone, source: declared|listener|output_url|banner, pid: int|null, first_seen_ms: int, last_seen_ms: int, pane_handle?: string|null, task_handle?: string|null}
 PreviewCa = {path: string, sha256: string, spki_sha256: string, trust: string}
@@ -543,9 +545,12 @@ interaction.cancel :: {interaction: Target} => {interaction: Interaction}
 
 # --- tasks, worktrees ---
 task.list :: {status?: string, repo?: string} => {tasks: [Task]}
-task.get :: {task: Target} => {task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null}
+task.get :: {task: Target} => {task: Task, branch_status: {branch: string|null, ahead: int, behind: int, dirty_files: int, upstream: string|null, compared_to: string|null}|null, pr?: PrLookup|null}
 task.create :: {title: string, repo: string, base?: string, isolation?: worktree|none|auto, slug?: string, branch?: string, agents?: [{harness: string, name?: string, prompt?: string}], setup?: bool = true, ports?: int, group?: Target, root?: string, branch_template?: string, fetch?: bool}
-  => {task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun]}
+  => {task: Task, workspace: Workspace, panes: [Pane], runs: [AgentRun], copied?: [string], files?: [MaterializedFile], deps?: any, setup?: {pane: string|null, status: string|null, agents_pending: bool, commands: [{source: string, command: string}]}, warnings?: [string]}
+task.setup :: {task: Target, setup_script?: string} => {task: string, started: bool, pane: string|null, setup_status: string|null, commands: [{source: string, command: string}], needs_trust: bool}
+task.pr :: {task: Target, refresh?: bool = false} => {task: string, pr: PrLookup}
+task.reconcile :: {repo?: string} => {reports: [{repo: string, missing: [{task_id: string, path: string, reason: string}], branch_moved: [{task_id: string, path: string, expected: string|null, actual: string|null}], orphans: [{path: string, kind: string, branch: string|null}]}]}
 task.finish :: {task: Target, remove_worktree?: ask|bool = false, force?: bool = false, archive?: bool, status?: string} => {task: Task, job?: any}
 worktree.list :: {repo?: string, cwd?: string} => {worktrees: [{path: string, branch: string|null, head: string, task?: string|null, workspace?: string|null, locked: bool, prunable: bool}]}
 worktree.create :: {repo?: string, cwd?: string, branch: string, path?: string, base?: string, open?: bool, focus?: bool = false} => {worktree: any, workspace?: Workspace}
@@ -852,8 +857,16 @@ policy.rule_matched :: {interaction: string} => {effect: string|null}
 policy.repo_trusted :: {} => {repo: string, digest: string, devcontainer_digest?: string|null}
 task.created :: {task: string, workspace: string} => {title: string, branch: string|null, path: string|null}
 task.status_changed :: {task: string} => {status: string}
-task.setup_finished :: {task: string} => {status: string}
-task.setup_untrusted :: {task: string} => {repo: string, digest: string, script: string, hint: string}
+task.files_materialized :: {task: string} => {files: [MaterializedFile], deps: any}
+task.setup_started :: {task: string} => {commands: [{source: string, command: string}], pane: string|null}
+task.setup_finished :: {task: string} => {status: string, exit_code?: int|null, duration_ms?: int, log?: string, pane?: string|null}
+task.setup_failed :: {task: string} => {status: string, exit_code?: int|null, duration_ms?: int, log?: string, pane?: string|null}
+task.setup_untrusted :: {task: string} => {repo: string, digest: string, script: string, hint: string, commands?: [{source: string, command: string}]}
+task.agents_withheld :: {task: string} => {reason: string, hint: string}
+task.missing :: {task: string} => {path: string, reason: string, hint: string}
+task.recovered :: {task: string} => {path: string|null}
+task.branch_changed :: {task: string} => {path: string, expected: string|null, actual: string|null}
+worktree.orphan_found :: {repo: string} => {path: string, kind: string, branch: string|null, hint: string}
 task.tracked :: {task: string, run: string} => {intent_revision: int, binding: string, start_turn: any}
 task.intent_updated :: {task: string} => {revision: int, previous: any}
 task.binding_changed :: {task: string, run: string, binding: string} => {state: string, reason?: string, offers?: [string]}

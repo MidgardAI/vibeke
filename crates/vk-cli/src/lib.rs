@@ -542,6 +542,27 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &["task"],
         "[--remove-worktree] [--force]",
     ),
+    (
+        "task",
+        "setup",
+        "task.setup",
+        &["task"],
+        "run the task's setup again (after `policy trust`); shows the setup pane",
+    ),
+    (
+        "task",
+        "pr",
+        "task.pr",
+        &["task"],
+        "[--refresh] pull request status through gh (cached 60 s; needs gh installed and logged in)",
+    ),
+    (
+        "task",
+        "reconcile",
+        "task.reconcile",
+        &[],
+        "[--repo r] compare tasks with the worktrees on disk (marks missing, reports orphans, deletes nothing)",
+    ),
     ("worktree", "list", "worktree.list", &[], "[--cwd d]"),
     (
         "worktree",

@@ -424,3 +424,42 @@ fn jj_values_are_refused() {
         assert!(d.message.contains("jj"), "{}", d.message);
     }
 }
+
+#[test]
+fn task_repo_overrides_parse_and_validate() {
+    let (c, w) = parse(
+        r#"
+[tasks.repos."github.com/acme/app"]
+files = { clone = ["node_modules"], link = ["data"], ignore_missing = false }
+deps = { strategy = "clone", install = "pnpm i" }
+setup = { run = ["pnpm db:migrate"], timeout = "10m", parallel_agent = true }
+ports = { count = 20, env = { PORT = 0 } }
+env = { DATABASE_URL = "postgres://x/app_{slug_underscored}" }
+"#,
+    )
+    .unwrap();
+    assert_eq!(w, vec![]);
+    let o = &c.tasks.repos["github.com/acme/app"];
+    assert_eq!(o.files.clone, vec!["node_modules"]);
+    assert_eq!(o.deps.strategy, Some(DepsStrategy::Clone));
+    assert_eq!(o.setup.parallel_agent, Some(true));
+    assert_eq!(o.ports.count, Some(20));
+    assert!(c.tasks.repos.len() == 1 && Config::default().tasks.repos.is_empty());
+
+    for bad in [
+        "[tasks.repos.x.ports]\ncount = 0\n",
+        "[tasks.repos.x.ports]\ncount = 60000\n",
+        "[tasks.repos.x.setup]\ntimeout = \"soon\"\n",
+        "[tasks.repos.x.deps]\nstrategy = \"magic\"\n",
+    ] {
+        assert!(parse(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn task_repo_override_unknown_keys_warn() {
+    let (_, w) = parse("[tasks.repos.x.files]\nbogus = 1\n[tasks.repos.x]\nnope = 2\n").unwrap();
+    let keys: Vec<_> = w.iter().map(|w| w.key.as_str()).collect();
+    assert!(keys.contains(&"tasks.repos.x.files.bogus"), "{keys:?}");
+    assert!(keys.contains(&"tasks.repos.x.nope"), "{keys:?}");
+}

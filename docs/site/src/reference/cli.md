@@ -155,6 +155,9 @@ Top-level commands: `vibeke` / `vibeke attach` (attach the TUI, spawning the ser
 | `message-status` | `<message>` | `task.message.get` |  |
 | `operation` | `<idempotency_key>` | `task.operation.get` | look up a mutation receipt |
 | `finish` | `<task>` | `task.finish` | [--remove-worktree] [--force] |
+| `setup` | `<task>` | `task.setup` | run the task's setup again (after `policy trust`); shows the setup pane |
+| `pr` | `<task>` | `task.pr` | [--refresh] pull request status through gh (cached 60 s; needs gh installed and logged in) |
+| `reconcile` | - | `task.reconcile` | [--repo r] compare tasks with the worktrees on disk (marks missing, reports orphans, deletes nothing) |
 
 ## `vibeke sandbox`
 

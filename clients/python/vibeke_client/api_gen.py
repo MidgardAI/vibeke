@@ -656,6 +656,12 @@ class Api:
     async def task_list(self, params: "Optional[t.TaskListParams]" = None) -> "t.TaskListResult":
         return await self.call("task.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def task_pr(self, params: "t.TaskPrParams") -> "t.TaskPrResult":
+        return await self.call("task.pr", params)  # type: ignore[arg-type, return-value]
+
+    async def task_reconcile(self, params: "Optional[t.TaskReconcileParams]" = None) -> "t.TaskReconcileResult":
+        return await self.call("task.reconcile", params or {})  # type: ignore[arg-type, return-value]
+
     async def task_review_accept(self, params: "t.TaskReviewAcceptParams") -> "t.TaskReviewAcceptResult":
         return await self.call("task.review.accept", params)  # type: ignore[arg-type, return-value]
 
@@ -685,6 +691,9 @@ class Api:
 
     async def task_review_start_reviewer(self, params: "t.TaskReviewStartReviewerParams") -> "t.TaskReviewStartReviewerResult":
         return await self.call("task.review.start_reviewer", params)  # type: ignore[arg-type, return-value]
+
+    async def task_setup(self, params: "t.TaskSetupParams") -> "t.TaskSetupResult":
+        return await self.call("task.setup", params)  # type: ignore[arg-type, return-value]
 
     async def task_sync(self, params: "t.TaskSyncParams") -> "t.TaskSyncResult":
         return await self.call("task.sync", params)  # type: ignore[arg-type, return-value]

@@ -304,6 +304,7 @@ fn setup_opts(wt: &Path, log: &Path, lease: Option<Lease>) -> SetupOptions {
     SetupOptions {
         worktree: wt.to_path_buf(),
         script: ".vibeke/setup.sh".into(),
+        commands: vec![],
         task_id: "k7".into(),
         lease,
         extra_env: vec![("EXTRA".into(), "yes".into())],
