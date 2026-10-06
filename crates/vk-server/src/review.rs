@@ -1574,6 +1574,9 @@ fn with_aliases(mut j: Value) -> Value {
         .unwrap_or_default();
     for mut c in j["claims"].as_array().cloned().unwrap_or_default() {
         c["category"] = json!("claim");
+        if c["text"].is_null() {
+            c["text"] = c["command"].clone();
+        }
         observed.push(c);
     }
     j["revision"] = j["package_revision"].clone();
@@ -2748,12 +2751,13 @@ mod alias_tests {
             "intent": {"criteria": [{"id": "c1", "text": "Preserve SSO"}]},
             "assessment": {"criteria": [{"criterion_id": "c1", "status": "missing", "required": true, "evaluation": "check", "evidence_refs": []}], "blockers": []},
             "observed_commands": [{"command": "cargo test"}],
-            "claims": [{"text": "tests pass"}],
+            "claims": [{"command": "tests pass"}],
         }));
         assert_eq!(j["revision"], 4);
         assert_eq!(j["criteria"][0]["text"], "Preserve SSO");
         assert_eq!(j["criteria"][0]["needs_exception"], true);
         assert_eq!(j["observed"][1]["category"], "claim");
+        assert_eq!(j["observed"][1]["text"], "tests pass");
         assert_eq!(j["subject"]["accept_capable"], true);
     }
 }
