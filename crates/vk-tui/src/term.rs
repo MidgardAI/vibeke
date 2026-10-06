@@ -18,12 +18,41 @@ use std::time::{Duration, Instant};
 static KITTY_PUSHED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Query the host and wait (≤ 200 ms) for replies, ending at the DA1 sentinel.
-pub fn probe() -> ProbeResult {
+/// Query the host and wait (≤ 200 ms) for replies, ending at the DA1 sentinel. Also probes
+/// kitty graphics (direct and shared memory), cell/window pixel size and SGR-pixels mouse for
+/// browser panes (03 §6.1, 06 B3.2).
+pub fn probe() -> (ProbeResult, vk_browser::probe::GraphicsCaps) {
     let env = EnvHints::from_env();
     let mut out = std::io::stdout();
-    let _ = out.write_all(&caps::probe_queries());
+    // A 3-byte shm object for the `t=s` probe; a host that supports it reads and unlinks it.
+    let shm_name = format!("/vkp-{:x}", std::process::id());
+    let shm_ok = vk_browser::kitty::shm::write(&shm_name, &[0, 0, 0]).is_ok();
+    let extra = graphics_queries(shm_ok.then_some(shm_name.as_str()));
+    let _ = out.write_all(&caps::probe_queries_with(&extra));
     let _ = out.flush();
+    let (r, buf) = read_replies(&env);
+    if shm_ok {
+        vk_browser::kitty::shm::unlink(&shm_name);
+    }
+    let g = vk_browser::probe::GraphicsCaps::from_replies(&vk_browser::probe::parse_replies(&buf));
+    (r, g)
+}
+
+/// The browser-pane probe batch without its own DA1 (the shared sentinel follows).
+pub fn graphics_queries(shm_name: Option<&str>) -> Vec<u8> {
+    use vk_browser::probe as p;
+    let mut v = p::kitty_query_direct(p::ID_DIRECT);
+    if let Some(n) = shm_name {
+        v.extend(p::kitty_query_shm(p::ID_SHM, n));
+    }
+    v.extend_from_slice(p::CELL_SIZE_QUERY);
+    v.extend_from_slice(p::WINDOW_SIZE_QUERY);
+    v.extend_from_slice(p::TEXT_AREA_CELLS_QUERY);
+    v.extend(p::decrqm(1016));
+    v
+}
+
+fn read_replies(env: &EnvHints) -> (ProbeResult, Vec<u8>) {
     let mut buf = Vec::new();
     let deadline = Instant::now() + Duration::from_millis(200);
     let mut stdin = std::io::stdin();
@@ -47,13 +76,24 @@ pub fn probe() -> ProbeResult {
             Ok(0) | Err(_) => break,
             Ok(k) => buf.extend_from_slice(&chunk[..k]),
         }
-        let r = caps::parse_replies(&buf, &env);
+        let r = caps::parse_replies(&buf, env);
         if r.complete {
-            return r;
+            return (r, buf);
         }
     }
-    caps::parse_replies(&buf, &env)
+    (caps::parse_replies(&buf, env), buf)
 }
+
+/// SGR-pixels mouse reporting (DECSET 1016) on or off; enabled only while a browser pane is
+/// visible (pixel-precise clicks, 06 B3.2).
+pub fn sgr_pixels(on: bool) {
+    let mut out = std::io::stdout();
+    let _ = out.write_all(if on { b"\x1b[?1016h" } else { b"\x1b[?1016l" });
+    let _ = out.flush();
+    PIXELS.store(on, Ordering::SeqCst);
+}
+
+static PIXELS: AtomicBool = AtomicBool::new(false);
 
 pub fn enter(kitty: bool) -> std::io::Result<()> {
     let mut out = std::io::stdout();
@@ -93,6 +133,9 @@ pub fn leave() {
     if KITTY_PUSHED.swap(false, Ordering::SeqCst) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
+    if PIXELS.swap(false, Ordering::SeqCst) {
+        let _ = out.write_all(b"\x1b[?1016l");
+    }
     let _ = out.write_all(b"\x1b[>4;0m\x1b[0 q\x1b[?25h\x1b[0m");
     let _ = execute!(
         out,
@@ -119,4 +162,13 @@ pub fn install_panic_hook() {
 
 pub fn size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
+}
+
+/// Cell size in pixels from TIOCGWINSZ (`ws_xpixel / cols`), when the host reports it.
+pub fn cell_px() -> Option<(u16, u16)> {
+    let w = crossterm::terminal::window_size().ok()?;
+    if w.width == 0 || w.height == 0 || w.columns == 0 || w.rows == 0 {
+        return None;
+    }
+    Some((w.width / w.columns, w.height / w.rows))
 }

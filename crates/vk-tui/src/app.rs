@@ -159,9 +159,17 @@ pub enum PromptKind {
     RenamePane,
     NewWorkspace,
     Command,
-    AgentReply { pane: String },
-    CardText { interaction: String },
+    AgentReply {
+        pane: String,
+    },
+    CardText {
+        interaction: String,
+    },
     TaskTitle,
+    /// The browser pane's address bar.
+    BrowserUrl {
+        pane: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +317,8 @@ pub struct App {
     /// Surfaces to return to when a nested one closes (inbox → card/task, peek → track).
     pub return_to: Vec<Popup>,
     pub ui_seq: u64,
+    /// Browser panes on this client (06 B3.2).
+    pub browser: crate::browser::BrowserUi,
 }
 
 pub struct Opts {
@@ -403,10 +413,10 @@ pub struct MachineSpec {
 /// Run the TUI until detach or the last machine goes away.
 pub async fn run(opts: Opts, machines: Vec<MachineSpec>) -> Result<String> {
     term::raw()?;
-    let probe = term::probe();
+    let (probe, gcaps) = term::probe();
     term::install_panic_hook();
     term::enter(probe.kitty_keyboard)?;
-    let result = run_inner(opts, machines, probe).await;
+    let result = run_inner(opts, machines, probe, gcaps).await;
     term::leave();
     result
 }
@@ -415,6 +425,7 @@ async fn run_inner(
     opts: Opts,
     specs: Vec<MachineSpec>,
     probe: crate::caps::ProbeResult,
+    gcaps: vk_browser::probe::GraphicsCaps,
 ) -> Result<String> {
     let client_id = format!("tui-{}-{}", std::process::id(), rand_suffix());
     let (inc_tx, mut inc_rx) = mpsc::unbounded_channel::<Incoming>();
@@ -427,10 +438,12 @@ async fn run_inner(
         client_id.clone(),
         HostCaps {
             truecolor: probe.truecolor
+                || gcaps.kitty_graphics
                 || std::env::var("COLORTERM")
                     .is_ok_and(|c| c.contains("truecolor") || c.contains("24bit")),
             sync_update: probe.sync_update,
             undercurl: probe.kitty_keyboard,
+            ..crate::browser::host_caps(&gcaps)
         },
         matches!(probe.osc52, crate::caps::Osc52::Allowed),
         probe.kitty_keyboard,
@@ -585,6 +598,7 @@ impl App {
             task_runs_rev: HashMap::new(),
             return_to: Vec::new(),
             ui_seq: 1,
+            browser: Default::default(),
         }
     }
 }
@@ -774,6 +788,7 @@ impl App {
     }
 
     pub(crate) fn on_connected(&mut self, i: usize) {
+        crate::browser::on_connected(self, i);
         crate::inbox::on_connected(self, i);
         self.reconcile(i);
     }
@@ -825,6 +840,10 @@ impl App {
     }
 
     fn send_key(&mut self, ev: KeyEvent) {
+        if crate::browser::focused_browser(self).is_some() {
+            crate::browser::send_key(self, ev);
+            return;
+        }
         let Some(pane) = self.focused_pane() else {
             return;
         };
@@ -1069,6 +1088,10 @@ impl App {
             }
             ServerFrame::CommandResult { req, json } => self.on_command_result(i, req, &json),
             ServerFrame::Pong { .. } => {}
+            ServerFrame::Media(m) => crate::browser::on_media(self, i, *m),
+            ServerFrame::BrowserState { pane, state } => {
+                crate::browser::on_state(self, i, pane, state)
+            }
             ServerFrame::Goodbye { reason } => {
                 self.machines[i].status = if reason.contains("stop") {
                     "stopped".into()
@@ -1305,6 +1328,7 @@ impl App {
             Event::Paste(text) => self.on_paste(text),
             Event::Mouse(me) => self.on_mouse(me),
             Event::Resize(c, r) => {
+                crate::browser::on_resize(self);
                 self.size = (c, r);
                 self.prev = Grid::new(0, 0);
             }
@@ -1350,7 +1374,10 @@ impl App {
                     self.mode = Mode::Prefix(Instant::now());
                     return;
                 }
-                if let Some(b) = self.keymap.direct(&ev).cloned() {
+                // Direct bindings never steal keys from a focused browser page.
+                if let Some(b) = self.keymap.direct(&ev).cloned()
+                    && crate::browser::focused_browser(self).is_none()
+                {
                     if b.action == "remote_image_paste" && !self.m().local {
                         crate::upload::image_paste(self);
                         return;
@@ -1387,7 +1414,8 @@ impl App {
                     self.send_key(ev);
                     return;
                 }
-                if let Some(b) = self.keymap.prefixed(&ev).cloned() {
+                if crate::browser::prefix_key(self, &ev) {
+                } else if let Some(b) = self.keymap.prefixed(&ev).cloned() {
                     self.action(&b.action, b.index);
                 } else if matches!(ev.key, Key::Named(NamedKey::Escape)) {
                 } else {
@@ -1439,6 +1467,9 @@ impl App {
             Mode::Normal => {}
             _ => return,
         }
+        if crate::browser::on_paste(self, &text) {
+            return;
+        }
         let Some(pane) = self.focused_pane() else {
             return;
         };
@@ -1468,6 +1499,10 @@ impl App {
     }
 
     fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
+        let (me, px) = crate::browser::cellify(self, me);
+        if crate::browser::on_mouse(self, &me, px) {
+            return;
+        }
         let (x, y) = (me.column, me.row);
         // Sidebar clicks.
         if self.sidebar && x < self.sidebar_w {
@@ -1546,6 +1581,9 @@ impl App {
     // ---- actions --------------------------------------------------------------------------
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
+        if crate::browser::action_name(self, action) {
+            return;
+        }
         let pane = self.focused_pane();
         let tab = self.focused_tab();
         let ws = self.focused_ws();
@@ -2137,6 +2175,7 @@ impl App {
                 let mi = self.cur;
                 self.answer(mi, &interaction, json!({"decision": "deny", "text": v}));
             }
+            PromptKind::BrowserUrl { pane } => crate::browser::navigate(self, &pane, &v),
             PromptKind::Command => {
                 let mut it = v.splitn(2, ' ');
                 let action = it.next().unwrap_or("").replace('-', "_");
@@ -2194,10 +2233,13 @@ impl App {
     fn draw(&mut self) -> Result<()> {
         self.dirty = false;
         self.send_view_hints(false);
+        crate::browser::update_views(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);
-        let mut out = Vec::with_capacity(16 * 1024);
+        // Browser tile images first; their placeholder cells follow in the grid diff.
+        let mut out = crate::browser::take_output(self);
+        out.reserve(16 * 1024);
         if !self.caps.sync_update {
             out.extend_from_slice(b"\x1b[?25l");
         }
@@ -2207,6 +2249,7 @@ impl App {
             None => out.extend_from_slice(b"\x1b[?25l"),
         }
         self.prev = grid;
+        crate::browser::after_write(self, &mut out);
         let mut stdout = std::io::stdout();
         stdout.write_all(&out)?;
         stdout.flush()?;

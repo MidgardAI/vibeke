@@ -94,12 +94,41 @@ pub struct Pane {
     pub pinned: bool,
     pub created_by: String,
     pub recovered: Option<String>,
+    /// Set for a browser pane (06 B3.2): a non-PTY pane whose content is a live Chromium
+    /// viewport rendered on the viewing client's machine. Last field (postcard is positional).
+    #[serde(default)]
+    pub browser: Option<BrowserPane>,
 }
 
 impl Pane {
     pub fn display_title(&self) -> &str {
         self.title.as_deref().unwrap_or(&self.auto_title)
     }
+    pub fn is_browser(&self) -> bool {
+        self.browser.is_some()
+    }
+}
+
+/// Persisted state of a browser pane (06 B3.2 "Lifecycle"). The pane lives in the layout of
+/// the machine that owns its tab; the Chromium that renders it runs on the viewing client's
+/// machine, which reports navigation back so the URL and history survive restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserPane {
+    /// Last committed URL; the page reloads here after a server restart or reattach.
+    pub url: String,
+    /// Machine whose loopback `localhost` means (the route target). Empty = the machine that
+    /// owns this pane.
+    pub machine: String,
+    /// Task whose profile to use when `preview.profile_scope = "task"`.
+    pub task: Option<String>,
+    /// Preview id this pane was opened for.
+    pub preview: Option<String>,
+    /// Pane the browser was opened next to.
+    pub source_pane: Option<String>,
+    /// Navigation history (most recent last, capped) and the current index into it.
+    pub history: Vec<String>,
+    pub history_index: u32,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

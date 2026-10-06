@@ -207,6 +207,22 @@ impl Grid {
         used as u16
     }
 
+    /// Write one cell holding `text` (a single grapheme, e.g. a kitty unicode placeholder with
+    /// its diacritics) without re-measuring it.
+    pub fn put_grapheme(&mut self, x: u16, y: u16, text: &str, style: Style) {
+        if x < self.cols && y < self.rows {
+            self.put_cell(
+                x,
+                y,
+                Cell {
+                    text: CellText::new(text),
+                    width: 1,
+                    style,
+                },
+            );
+        }
+    }
+
     /// Blit a pane row. Returns the columns written; cells right of the row's content are left
     /// untouched (pane rows normally cover the full pane width).
     pub fn put_row(&mut self, x: u16, y: u16, row: &Row, max_cols: u16) -> u16 {
@@ -228,6 +244,19 @@ pub struct HostCaps {
     pub truecolor: bool,
     pub sync_update: bool,
     pub undercurl: bool,
+    /// Kitty graphics (`a=q` answered OK): browser panes draw with unicode placeholders.
+    pub kitty_graphics: bool,
+    /// Kitty shared-memory transmission (`t=s`) works (local host only).
+    pub kitty_shm: bool,
+    /// iTerm2 inline images (OSC 1337), the fallback when kitty graphics are missing.
+    pub iterm2_images: bool,
+    /// Host cell size in device pixels (`CSI 16 t` or TIOCGWINSZ), 0 = unknown.
+    pub cell_w: u16,
+    pub cell_h: u16,
+    /// Device pixel ratio × 100 (browser viewport sizing, 06 B3.2).
+    pub dpr_x100: u16,
+    /// SGR-pixels mouse (DECSET 1016) is supported.
+    pub sgr_pixels: bool,
 }
 
 /// Nearest xterm-256 palette index for an RGB colour.
@@ -541,6 +570,13 @@ mod tests {
         truecolor: true,
         sync_update: false,
         undercurl: true,
+        kitty_graphics: false,
+        kitty_shm: false,
+        iterm2_images: false,
+        cell_w: 0,
+        cell_h: 0,
+        dpr_x100: 0,
+        sgr_pixels: false,
     };
 
     fn st(fg: Color, attrs: u16) -> Style {

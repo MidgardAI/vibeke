@@ -68,6 +68,8 @@ pub struct PreviewConfig {
     pub browser: String,
     /// profile | default (local-machine previews in the system browser).
     pub local_browser: String,
+    /// Headless Chromium for browser panes (06 B3.2); "" = Playwright headless shell.
+    pub pane_browser: String,
 }
 
 impl Default for PreviewConfig {
@@ -80,6 +82,7 @@ impl Default for PreviewConfig {
             allow_remote_egress: true,
             browser: String::new(),
             local_browser: "profile".into(),
+            pane_browser: String::new(),
         }
     }
 }
@@ -128,6 +131,10 @@ struct ManagedBrowser {
     /// procinfo start time (pid-reuse guard).
     start: u64,
     dir: String,
+    /// A headless browser driving browser panes (06 B3.2). Not re-adopted after a restart:
+    /// its debugging pipe ended with the old server.
+    #[serde(default)]
+    headless: bool,
 }
 
 /// What a successful peer check grants.
@@ -264,7 +271,46 @@ fn default_link(server: &Server, machine: &str) -> Option<Link> {
     Some(Link::new(target, &server.opts.session))
 }
 
-fn is_local_machine(server: &Server, m: &str) -> bool {
+/// Track a browser-pane Chromium (06 B3.2) so the SOCKS peer check accepts its process tree.
+pub(crate) fn register_browser(
+    server: &Server,
+    profile: &str,
+    machine: &str,
+    route: &str,
+    pid: u32,
+    dir: &std::path::Path,
+) {
+    let start = vk_hold::procinfo::info(pid).map(|i| i.start).unwrap_or(0);
+    server.previews.browsers.lock().unwrap().insert(
+        profile.to_string(),
+        ManagedBrowser {
+            profile: profile.to_string(),
+            machine: machine.to_string(),
+            route: route.to_string(),
+            root_pid: pid,
+            start,
+            dir: dir.to_string_lossy().into_owned(),
+            headless: true,
+        },
+    );
+}
+
+pub(crate) fn unregister_browser(server: &Server, profile: &str, pid: u32) {
+    let mut b = server.previews.browsers.lock().unwrap();
+    if b.get(profile).is_some_and(|x| x.root_pid == pid) {
+        b.remove(profile);
+    }
+}
+
+/// The live browser on `profile`: (root pid, headless).
+pub(crate) fn running_browser(server: &Server, profile: &str) -> Option<(u32, bool)> {
+    server
+        .previews
+        .running(profile)
+        .map(|b| (b.root_pid, b.headless))
+}
+
+pub(crate) fn is_local_machine(server: &Server, m: &str) -> bool {
     m.is_empty() || m == "local" || m == server.opts.machine
 }
 
@@ -307,7 +353,8 @@ pub fn start(server: &Arc<Server>) {
     // pid, same start time, and still running on our profile directory.
     let mut adopted = false;
     for b in browsers {
-        let ok = alive(b.root_pid, b.start)
+        let ok = !b.headless
+            && alive(b.root_pid, b.start)
             && vk_hold::procinfo::argv(b.root_pid)
                 .iter()
                 .any(|a| a == &format!("--user-data-dir={}", b.dir));
@@ -371,7 +418,7 @@ fn apply_model(c: &mut Core, p: Preview) {
 }
 
 /// Persist changed previews (with optional events) and apply them to the model.
-fn commit_previews(server: &Server, items: Vec<(Preview, Option<&'static str>)>) {
+pub(crate) fn commit_previews(server: &Server, items: Vec<(Preview, Option<&'static str>)>) {
     if items.is_empty() {
         return;
     }
@@ -1000,7 +1047,7 @@ fn preview_json(c: &Core, p: &Preview) -> Value {
     v
 }
 
-fn find_local(server: &Server, target: &str) -> Result<Preview, RpcError> {
+pub(crate) fn find_local(server: &Server, target: &str) -> Result<Preview, RpcError> {
     server
         .with_core(|c| {
             c.model
@@ -1040,7 +1087,7 @@ fn split_target(server: &Server, p: &Value, target: &str) -> (String, String) {
 }
 
 /// Call a method on a remote machine's server over this server's link.
-async fn remote_call(server: &Server, machine: &str, method: &str, params: Value) -> R {
+pub(crate) async fn remote_call(server: &Server, machine: &str, method: &str, params: Value) -> R {
     let unavailable =
         |e: String| err(ErrorKind::RemoteUnavailable, e).details(json!({"machine": machine}));
     let link = server
@@ -1078,7 +1125,7 @@ async fn remote_call(server: &Server, machine: &str, method: &str, params: Value
 }
 
 /// `http(s)://host[:port]/…` → host (brackets stripped), or None if not http(s).
-fn url_host(url: &str) -> Option<String> {
+pub(crate) fn url_host(url: &str) -> Option<String> {
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
@@ -1095,7 +1142,7 @@ fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then_some(host)
 }
 
-fn open_url_of(p: &Preview) -> String {
+pub(crate) fn open_url_of(p: &Preview) -> String {
     let u = p.url.replace("://0.0.0.0", "://localhost");
     if url_host(&u).is_some() {
         u
@@ -1105,6 +1152,9 @@ fn open_url_of(p: &Preview) -> String {
 }
 
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
+    if method.starts_with("browser.") {
+        return crate::browser_pane::api(server, ctx, method, p).await;
+    }
     if !method.starts_with("preview.") {
         return None;
     }
@@ -1381,28 +1431,21 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
     Ok(json!({}))
 }
 
-fn profiles_root() -> PathBuf {
+pub(crate) fn profiles_root() -> PathBuf {
     browser::profiles_root(&crate::paths::state_root())
 }
 
-fn profile_for(cfg: &PreviewConfig, machine_label: &str, task: Option<&str>) -> String {
+pub(crate) fn profile_for(cfg: &PreviewConfig, machine_label: &str, task: Option<&str>) -> String {
     match (cfg.profile_scope.as_str(), task) {
         ("task", Some(t)) => browser::profile_name(&format!("task-{t}")),
         _ => browser::profile_name(machine_label),
     }
 }
 
-async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+pub(crate) async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let cfg = PreviewConfig::load();
     let window =
         b(p, "window").unwrap_or(false) || (cfg.mode == "window" && s(p, "split").is_none());
-    if !window {
-        return Err(err(
-            ErrorKind::Unsupported,
-            "the browser pane arrives in Goal 03 Stage 2; open in a window with --window",
-        )
-        .details(json!({"fallback": "window"})));
-    }
     // Resolve what to open and on which machine (`vibeke preview open <url>` passes the URL
     // positionally as `preview`).
     let url_param = s(p, "url").or_else(|| {
@@ -1435,6 +1478,10 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     } else {
         return Err(invalid("preview.open needs `preview` or `url`"));
     };
+    if !window {
+        return crate::browser_pane::open_pane(server, ctx, p, &machine, preview.as_ref(), &url)
+            .await;
+    }
     // Open-URL rules (09 §7): http(s) only; from a pane, only loopback.
     let host = url_host(&url).ok_or_else(|| invalid("only http(s) URLs can be opened"))?;
     if ctx.pane_scope.is_some() && !vk_remote::is_loopback_host(&host) {
@@ -1466,7 +1513,11 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         return Ok(json!({"opened_in": "default_browser", "url": url}));
     }
     let task = preview.as_ref().and_then(|x| x.task.clone());
-    let profile = profile_for(&cfg, &machine_label, task.as_deref());
+    // The browser pane's window handover passes its profile (task profiles included).
+    let profile = s(p, "profile")
+        .filter(|x| ctx.pane_scope.is_none() && browser::valid_profile_name(x))
+        .map(str::to_string)
+        .unwrap_or_else(|| profile_for(&cfg, &machine_label, task.as_deref()));
     let route = if cfg.profile_route == "remote" {
         "remote"
     } else {
@@ -1502,6 +1553,15 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         extra_args: vec![],
     };
     let log = server.paths.logs().join(format!("browser-{profile}.log"));
+    // A headless browser-pane Chromium on this profile hands it over to the window (06 B3.3:
+    // a profile can be open in only one process).
+    if server
+        .previews
+        .running(&profile)
+        .is_some_and(|r| r.headless)
+    {
+        crate::browser_pane::release_profile(server, &profile).await;
+    }
     let running = server.previews.running(&profile);
     let reused = running.is_some();
     if let Some(r) = &running
@@ -1537,6 +1597,7 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                     root_pid: pid,
                     start,
                     dir: dir.to_string_lossy().into_owned(),
+                    headless: false,
                 },
             );
             persist_browsers(server);
@@ -1692,6 +1753,7 @@ async fn test_register(server: &Arc<Server>, p: &Value) -> R {
             root_pid: pid,
             start,
             dir: String::new(),
+            headless: false,
         },
     );
     Ok(json!({"socks_port": port}))

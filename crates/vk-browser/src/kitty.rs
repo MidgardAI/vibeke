@@ -410,6 +410,16 @@ pub fn zlib(data: &[u8], level: u32) -> Vec<u8> {
     e.finish().expect("in-memory finish")
 }
 
+/// Inflate a zlib stream (the client side of `o=z` tiles).
+pub fn unzlib(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(data)
+        .read_to_end(&mut out)
+        .context("inflate")?;
+    Ok(out)
+}
+
 /// Write `ESC _ G <control> ; <base64 payload> ESC \`, split into chunks of at most
 /// [`CHUNK`] base64 bytes. Only the first chunk carries the control keys; every chunk but the
 /// last has `m=1`, the last `m=0`. Follow-up chunks repeat `q=` so replies stay suppressed.

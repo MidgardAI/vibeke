@@ -11,6 +11,7 @@
 //! - [`input`]: logical key events (`vk_proto::input::KeyEvent`) → CDP `Input.*` commands.
 
 pub mod cdp;
+pub mod fake;
 pub mod frame;
 pub mod input;
 pub mod kitty;

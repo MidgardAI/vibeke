@@ -200,6 +200,139 @@ pub enum ServerFrame {
     Goodbye {
         reason: String,
     },
+    /// Media channel (03 §5, 06 B3.2): changed tiles of a browser pane, latest-wins per pane,
+    /// sent after cell frames and only for panes this client reported visible
+    /// (`ClientFrame::MediaView`). Acked with `ClientFrame::MediaAck`.
+    Media(Box<MediaFrame>),
+    /// Browser pane chrome state (URL, loading, history buttons, environment label).
+    BrowserState {
+        pane: String,
+        state: BrowserStatus,
+    },
+}
+
+/// Changed tiles of one browser pane frame. Tiles are cell-aligned: tile `index` covers
+/// `tile_cols × tile_rows` cells starting at cell (`col`, `row`) of the pane's content area;
+/// edge tiles may be smaller. Tiles not listed are unchanged since the last frame this client
+/// received for the pane, except after `reset` (geometry changed: every tile is included).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaFrame {
+    pub pane: String,
+    pub seq: u64,
+    /// Frame size in device pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Host cell size (device px) the tile grid was cut for.
+    pub cell_w: u16,
+    pub cell_h: u16,
+    pub tile_cols: u16,
+    pub tile_rows: u16,
+    /// Grid size in tiles.
+    pub grid_cols: u16,
+    pub grid_rows: u16,
+    pub reset: bool,
+    pub tiles: Vec<MediaTile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaTile {
+    pub index: u32,
+    /// Top-left cell of the tile inside the pane content area.
+    pub col: u16,
+    pub row: u16,
+    /// Cells covered (edge tiles may be narrower/shorter).
+    pub cols: u16,
+    pub rows: u16,
+    /// Pixel size.
+    pub w: u32,
+    pub h: u32,
+    pub data: TileData,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TileData {
+    /// POSIX shared memory object holding `len` bytes of RGBA (same machine only). The host
+    /// terminal unlinks it after reading (kitty `t=s`); a client that drops the tile unlinks it.
+    Shm { name: String, len: u32 },
+    /// zlib-compressed RGBA (kitty `o=z`).
+    ZlibRgba(Vec<u8>),
+    /// Raw RGBA.
+    Rgba(Vec<u8>),
+}
+
+/// What the browser pane's one-row chrome shows (06 B3.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserStatus {
+    pub url: String,
+    pub title: String,
+    pub loading: bool,
+    pub can_back: bool,
+    pub can_forward: bool,
+    /// `laptop chromium → devbox loopback`.
+    pub env: String,
+    /// The profile is open in a headful window (06 B3.3); the pane shows no frames.
+    pub windowed: bool,
+    pub error: Option<String>,
+    /// One-shot message for a toast (screenshot saved, …).
+    pub notice: Option<String>,
+    /// CSS viewport size.
+    pub css_w: u32,
+    pub css_h: u32,
+}
+
+/// A browser pane visible on the client, with the geometry the viewport follows (06 B3.2
+/// "Crisp sizing"): content cells × host cell px, at `dpr`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaPane {
+    pub pane: String,
+    /// Label of the machine that owns the pane (its layout and persisted state) when that is
+    /// not the server receiving this; empty = this server. A remote owner is also the route
+    /// target: `localhost` means that machine.
+    pub owner: String,
+    /// The pane's persisted browser state as the owner reported it.
+    pub spec: crate::model::BrowserPane,
+    /// Content area in cells (pane rect minus the chrome row).
+    pub cols: u16,
+    pub rows: u16,
+    /// Host cell size in device pixels and the device pixel ratio.
+    pub cell_w: u16,
+    pub cell_h: u16,
+    pub dpr: f32,
+}
+
+/// Input and commands for a browser pane, sent to the server that renders it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BrowserCmd {
+    Key(KeyEvent),
+    /// Paste / IME commit → `Input.insertText`.
+    Text(String),
+    /// Mouse in CSS px of the viewport.
+    Mouse {
+        kind: crate::input::MouseKind,
+        button: crate::input::MouseButton,
+        x: f32,
+        y: f32,
+        mods: crate::input::Mods,
+        clicks: u8,
+    },
+    /// Wheel with pixel deltas (CSS px).
+    Wheel {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        mods: crate::input::Mods,
+    },
+    Navigate(String),
+    Back,
+    Forward,
+    Reload {
+        hard: bool,
+    },
+    Stop,
+    /// Hand the profile to a headful window (true) or back to the pane (false) (06 B3.3).
+    Window(bool),
+    Screenshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,4 +389,135 @@ pub enum ClientFrame {
         nonce: u64,
     },
     Detach,
+    /// Browser panes visible in this client (replaces the previous set). Panes not listed get
+    /// no media frames; a pane no client shows stops its screencast.
+    MediaView {
+        panes: Vec<MediaPane>,
+        /// The client can hand shared-memory tiles to its host (same machine as this server and
+        /// the host supports kitty `t=s`).
+        shm: bool,
+        /// The host reports key releases (kitty keyboard event types).
+        key_releases: bool,
+    },
+    MediaAck {
+        pane: String,
+        seq: u64,
+    },
+    Browser {
+        input_id: u64,
+        pane: String,
+        cmd: BrowserCmd,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::{decode, encode};
+    use crate::model::BrowserPane;
+
+    fn rt_server(f: &ServerFrame) -> ServerFrame {
+        decode(&encode(f).unwrap()[4..]).unwrap()
+    }
+
+    fn rt_client(f: &ClientFrame) -> ClientFrame {
+        decode(&encode(f).unwrap()[4..]).unwrap()
+    }
+
+    #[test]
+    fn media_frames_roundtrip_postcard() {
+        let f = ServerFrame::Media(Box::new(MediaFrame {
+            pane: "P1".into(),
+            seq: 7,
+            width: 1600,
+            height: 1280,
+            cell_w: 16,
+            cell_h: 32,
+            tile_cols: 4,
+            tile_rows: 2,
+            grid_cols: 25,
+            grid_rows: 20,
+            reset: true,
+            tiles: vec![
+                MediaTile {
+                    index: 0,
+                    col: 0,
+                    row: 0,
+                    cols: 4,
+                    rows: 2,
+                    w: 64,
+                    h: 64,
+                    data: TileData::Shm {
+                        name: "/vkb-1".into(),
+                        len: 16384,
+                    },
+                },
+                MediaTile {
+                    index: 26,
+                    col: 4,
+                    row: 2,
+                    cols: 4,
+                    rows: 2,
+                    w: 64,
+                    h: 64,
+                    data: TileData::ZlibRgba(vec![1, 2, 3]),
+                },
+            ],
+        }));
+        assert_eq!(rt_server(&f), f);
+        let st = ServerFrame::BrowserState {
+            pane: "P1".into(),
+            state: BrowserStatus {
+                url: "http://localhost:5173/".into(),
+                env: "laptop chromium → devbox loopback".into(),
+                can_back: true,
+                ..Default::default()
+            },
+        };
+        assert_eq!(rt_server(&st), st);
+        let c = ClientFrame::MediaView {
+            panes: vec![MediaPane {
+                pane: "P1".into(),
+                owner: "devbox".into(),
+                spec: BrowserPane {
+                    url: "http://localhost:5173/".into(),
+                    history: vec!["http://localhost:5173/".into()],
+                    ..Default::default()
+                },
+                cols: 80,
+                rows: 23,
+                cell_w: 16,
+                cell_h: 32,
+                dpr: 2.0,
+            }],
+            shm: true,
+            key_releases: true,
+        };
+        assert_eq!(rt_client(&c), c);
+        let k = ClientFrame::Browser {
+            input_id: 3,
+            pane: "P1".into(),
+            cmd: BrowserCmd::Wheel {
+                x: 10.5,
+                y: 20.0,
+                dx: 0.0,
+                dy: 40.0,
+                mods: crate::input::Mods::empty(),
+            },
+        };
+        assert_eq!(rt_client(&k), k);
+    }
+
+    /// New variants are appended, so existing postcard discriminants are unchanged.
+    #[test]
+    fn existing_discriminants_stable() {
+        let g = ServerFrame::Goodbye { reason: "x".into() };
+        assert_eq!(encode(&g).unwrap()[4], 11);
+        assert_eq!(encode(&ClientFrame::Detach).unwrap()[4], 11);
+        let m = ClientFrame::MediaAck {
+            pane: String::new(),
+            seq: 0,
+        };
+        assert_eq!(encode(&m).unwrap()[4], 13);
+    }
 }
