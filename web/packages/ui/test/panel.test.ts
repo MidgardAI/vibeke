@@ -6,14 +6,23 @@ import {
   baseCandidates,
   baseRoute,
   closeFileRoute,
+  RefreshRevision,
   commitRange,
   commitRoute,
+  diffReload,
   diffSource,
+  isKnownRootCommit,
+  listReload,
+  markRootCommit,
+  onRootCommits,
+  resolvedSource,
+  rootFallback,
   fileDiffParams,
   fileRoute,
   listParams,
   showsCentreDiff,
 } from '../src/screens/workspace/panel/routes';
+import { revFile, workFile } from '../src/screens/workspace/panel/changes-data';
 
 const f = (path: string, adds = 0, dels = 0): TreeInput => ({ path, adds, dels });
 const shape = (nodes: readonly TreeNode<TreeInput>[]): unknown =>
@@ -75,6 +84,84 @@ describe('changes header totals', () => {
   test('sum adds and dels over files', () => {
     expect(totals([f('a', 1900, 600), f('b', 0, 84), { path: 'c.bin', adds: null, dels: null }])).toEqual({ adds: 1900, dels: 684, files: 3 });
     expect(totals([])).toEqual({ adds: 0, dels: 0, files: 0 });
+  });
+});
+
+describe('change files', () => {
+  test('untracked text files carry line counts into the rows and the header total', () => {
+    const files = [
+      workFile({ path: 'src/a.ts', x: '.', y: 'M', kind: 'modified', adds: 2, dels: 1, binary: false }),
+      workFile({ path: 'src/new.ts', x: '?', y: '?', kind: 'untracked', adds: 18, dels: 0, binary: false }),
+      workFile({ path: 'img.png', x: '?', y: '?', kind: 'untracked', adds: null, dels: null, binary: true }),
+    ];
+    expect(files[1]).toMatchObject({ letter: '?', adds: 18, dels: 0, binary: false });
+    expect(files[2]).toMatchObject({ letter: '?', binary: true });
+    expect(totals(files)).toEqual({ adds: 20, dels: 1, files: 3 });
+    const tree = buildFileTree(files);
+    expect(shape(tree)).toEqual([{ 'src/ +20 -1': ['a.ts +2 -1', 'new.ts +18 -0'] }, 'img.png +0 -0']);
+  });
+
+  test('commit / base listings carry status letters and rename sources', () => {
+    expect(revFile({ path: 'b.ts', adds: 1, dels: 1, binary: false, status: 'R', orig_path: 'a.ts' })).toMatchObject({ letter: 'R', orig_path: 'a.ts' });
+    expect(revFile({ path: 'c.ts', adds: 3, dels: 0, binary: false, status: 'A', orig_path: null })).toMatchObject({ letter: 'A', orig_path: null });
+    expect(revFile({ path: 'd.ts', adds: 0, dels: 4, binary: false, status: 'D' }).letter).toBe('D');
+    for (const st of ['M', 'C', 'T'] as const) expect(revFile({ path: 'x', binary: false, status: st }).letter).toBe(st);
+    // Older hosts send no status: no square.
+    expect(revFile({ path: 'e.ts', adds: 1, dels: 0, binary: false })).toMatchObject({ letter: null, orig_path: null });
+  });
+});
+
+describe('refresh revisions', () => {
+  test('every new status answer moves the revision, even with the same counts; so does a manual refresh', () => {
+    const rev = new RefreshRevision();
+    const s1 = { files: [{ path: 'a', adds: 1, dels: 0 }] };
+    const s2 = { files: [{ path: 'a', adds: 1, dels: 0 }] }; // same names and counts, new answer
+    expect(rev.next(null, 0)).toBe(0);
+    expect(rev.next(null, 0)).toBe(0); // re-render: unchanged
+    expect(rev.next(s1, 0)).toBe(1);
+    expect(rev.next(s1, 0)).toBe(1);
+    expect(rev.next(s2, 0)).toBe(2);
+    expect(rev.next(s2, 1)).toBe(3); // manual refresh
+  });
+
+  test('base listings and open diffs follow the revision; commits only a manual refresh', () => {
+    const work = diffSource({ commit: null, base: null });
+    const base = diffSource({ commit: null, base: 'main' });
+    const commit = diffSource({ commit: 'abc', base: null });
+    expect(listReload(work, 5, 1)).toBeNull();
+    expect(listReload(base, 5, 1)).toBe(5);
+    expect(listReload(commit, 5, 1)).toBe(1);
+    expect(diffReload(work, 5, 1)).toBe(5);
+    expect(diffReload(base, 5, 1)).toBe(5); // a base comparison's open diff refetches too
+    expect(diffReload(commit, 5, 1)).toBe(1);
+  });
+});
+
+describe('root commits', () => {
+  test('known roots resolve to the empty tree for every view (panel, centre, direct route)', () => {
+    let changes = 0;
+    const off = onRootCommits(() => changes++);
+    const route = { commit: 'r00t', base: null };
+    expect(resolvedSource('h1', 'p1', route)).toEqual({ kind: 'commit', sha: 'r00t', range: 'r00t^..r00t' });
+    expect(resolvedSource('h1', null, route).kind).toBe('commit');
+    markRootCommit('h1', 'p1', 'r00t');
+    markRootCommit('h1', 'p1', 'r00t'); // once
+    expect(changes).toBe(1);
+    expect(isKnownRootCommit('h1', 'p1', 'r00t')).toBe(true);
+    expect(isKnownRootCommit('h1', 'p2', 'r00t')).toBe(false);
+    const src = resolvedSource('h1', 'p1', route);
+    expect(src).toEqual({ kind: 'commit', sha: 'r00t', range: `${EMPTY_TREE}..r00t` });
+    expect(fileDiffParams('p1', src, 'README.md')).toEqual({ pane: 'p1', range: `${EMPTY_TREE}..r00t`, file: 'README.md' });
+    expect(resolvedSource('h1', 'p1', { commit: null, base: 'main' })).toEqual({ kind: 'base', base: 'main' });
+    off();
+  });
+
+  test('a failing parent range falls back to the empty tree once', () => {
+    const src = diffSource({ commit: 'abc', base: null });
+    const alt = rootFallback(src)!;
+    expect(alt).toEqual({ kind: 'commit', sha: 'abc', range: `${EMPTY_TREE}..abc` });
+    expect(rootFallback(alt)).toBeNull();
+    expect(rootFallback(diffSource({ commit: null, base: 'main' }))).toBeNull();
   });
 });
 

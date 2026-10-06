@@ -596,7 +596,7 @@ export const en = {
     truncatedDir: 'Showing the first entries only',
     unsupported: 'Update the host to see this',
     closeDiff: 'Close diff',
-    status: { M: 'Modified', A: 'Added', D: 'Deleted', R: 'Renamed', U: 'Conflicted', '?': 'Untracked' } as Record<string, string>,
+    status: { M: 'Modified', A: 'Added', D: 'Deleted', R: 'Renamed', C: 'Copied', T: 'Type changed', U: 'Conflicted', '?': 'Untracked' } as Record<string, string>,
   },
 
   conv: {

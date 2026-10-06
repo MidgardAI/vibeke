@@ -104,6 +104,8 @@ export class TestHost {
       CLAUDE_CONFIG_DIR: join(home, '.claude'),
       CODEX_HOME: join(home, '.codex'),
       TMPDIR: d('tmp'),
+      // Opt-in for debug builds whose worker stacks overflow (`RUST_MIN_STACK=… bun run e2e`).
+      ...(process.env.RUST_MIN_STACK ? { RUST_MIN_STACK: process.env.RUST_MIN_STACK } : {}),
     };
   }
 

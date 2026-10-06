@@ -8,14 +8,13 @@ import { buildFileTree, fileOrder } from '../../../lib/file-tree';
 import { navigate, type WorkspaceRoute } from '../../../router';
 import { useChangeFiles } from './changes-data';
 import { DiffPane } from './diff-pane';
-import { diffSource } from './routes';
 
 export default function CentreDiff({ route }: { route: WorkspaceRoute }) {
   const rows = useWorkspaceRows();
   const row = rows.find((r) => r.host === route.host && r.workspace.id === route.workspace);
   const pane = selectedPane(route, row);
-  const src = diffSource(route);
-  const data = useChangeFiles(route.host, pane, src, { poll: false });
+  const data = useChangeFiles(route.host, pane, route, { poll: false });
+  const src = data.src;
   const ordered = useMemo(() => {
     const by = new Map(data.files.map((f) => [f.path, f]));
     return fileOrder(buildFileTree(data.files))
@@ -31,7 +30,7 @@ export default function CentreDiff({ route }: { route: WorkspaceRoute }) {
       src={src}
       path={route.file}
       files={ordered}
-      reload={data.signature}
+      reload={data.diffReload}
       onPath={(p) => navigate({ ...route, file: p }, { replace: true })}
       onClose={() => navigate({ ...route, file: null, view: null }, { replace: true })}
     />

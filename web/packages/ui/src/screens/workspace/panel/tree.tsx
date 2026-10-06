@@ -163,6 +163,8 @@ const STATUS_TONE: Record<string, string> = {
   '?': 'text-add',
   D: 'text-del',
   R: 'text-info',
+  C: 'text-info',
+  T: 'text-need',
   U: 'text-del',
 };
 

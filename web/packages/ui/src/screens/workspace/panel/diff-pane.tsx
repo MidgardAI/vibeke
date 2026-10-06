@@ -42,7 +42,7 @@ export function DiffPane({
   path: string;
   /** Files in tree order (prev/next). */
   files: readonly DiffFile[];
-  /** Changes when the source may have changed (status poll): refetch quietly. */
+  /** Moves when the source may have changed (new status, manual refresh): refetch quietly. */
   reload?: unknown;
   onPath(path: string): void;
   onBack?(): void;
@@ -84,7 +84,7 @@ export function DiffPane({
     return () => {
       live = false;
     };
-  }, [host, pane, key, src.kind === 'work' ? reload : null]);
+  }, [host, pane, key, reload]);
 
   const { dir, name } = splitPath(path);
   const prev = i > 0 ? files[i - 1] : undefined;

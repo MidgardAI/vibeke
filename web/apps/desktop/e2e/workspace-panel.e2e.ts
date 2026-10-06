@@ -37,10 +37,10 @@ const write = (cwd: string, files: Record<string, string>) => {
 const lines = (n: number, f: (i: number) => string) => Array.from({ length: n }, (_, i) => f(i)).join('\n') + '\n';
 
 /** A repo with three commits and uncommitted edits spread over nested folders. */
-function repo(name: string): { pane: string; cwd: string } {
+function repo(name: string): { pane: string; cwd: string; git: (...args: string[]) => string } {
   const cwd = join(host.root, name);
   mkdirSync(cwd, { recursive: true });
-  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.email=e2e@example.com', '-c', 'user.name=e2e', ...args], { cwd, env: host.env, stdio: 'ignore' });
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'user.email=e2e@example.com', '-c', 'user.name=e2e', ...args], { cwd, env: host.env, encoding: 'utf8' });
   git('init', '-q', '-b', 'feat/homepage-hero');
   write(cwd, {
     'README.md': `# ${name}\n\nThe website.\n`,
@@ -58,6 +58,11 @@ function repo(name: string): { pane: string; cwd: string } {
   write(cwd, { 'src/routes/index.tsx': 'export default function Index() {\n  return <main>Agents, in one place</main>;\n}\n', 'docs/plan.md': '# Plan\n' });
   git('add', '.');
   git('commit', '-q', '-m', 'Render the hero on the index route');
+  git('mv', 'docs/plan.md', 'docs/roadmap.md');
+  git('commit', '-q', '-m', 'Rename the plan to the roadmap');
+  // The branch tracks a local `main` at the root commit (a base to compare with).
+  git('branch', 'main', git('rev-list', '--max-parents=0', 'HEAD').trim());
+  git('branch', '--set-upstream-to=main');
   // Uncommitted work.
   write(cwd, {
     'src/app.ts': 'export const answer = 42;\nexport const hero = "Agents, in one place";\n',
@@ -70,7 +75,7 @@ function repo(name: string): { pane: string; cwd: string } {
   });
   rmSync(join(cwd, 'src/components/mockup/legacy-tabs.tsx'));
   const r = JSON.parse(host.cli(['workspace', 'create', '--cwd', cwd, '--name', name]));
-  return { pane: r.root_pane.handle as string, cwd };
+  return { pane: r.root_pane.handle as string, cwd, git };
 }
 
 async function resize(page: Page, width: number, height: number) {
@@ -108,8 +113,18 @@ test('right panel: changes tree, diff, commits, files, phone layout', async () =
   await expect(item(/^components/)).toBeVisible();
   await expect(item(/^legacy-tabs\.tsx/)).toBeVisible();
   await expect(tree.getByRole('treeitem')).toHaveCount(12);
-  // Header totals = the sum of the files.
-  await expect(panel.getByTestId('changes-total')).toContainText(/\+\d+/);
+  // Untracked text files carry line counts (dels 0), and the header total = the sum of the files.
+  await expect(item(/^atoms\.tsx/)).toContainText('+18');
+  await expect(item(/^atoms\.tsx/).getByRole('img', { name: 'Untracked' })).toBeVisible();
+  await expect(item(/^window\.tsx/)).toContainText('+3');
+  const tracked = site
+    .git('diff', '--numstat', 'HEAD')
+    .trim()
+    .split('\n')
+    .map((l) => l.split('\t').map(Number))
+    .reduce((t, [a, d]) => [t[0]! + a!, t[1]! + d!], [0, 0]);
+  const untracked = 18 + 3 + 1; // atoms.tsx, window.tsx, .gitignore
+  await expect(panel.getByTestId('changes-total')).toHaveText(`+${tracked[0]! + untracked}−${tracked[1]}`);
   await expect(panel.getByRole('button', { name: 'Compare' })).toContainText('Uncommitted');
   await expect(panel.getByRole('button', { name: 'Branches' }).or(panel.getByText('feat/homepage-hero'))).toBeVisible();
 
@@ -148,6 +163,9 @@ test('right panel: changes tree, diff, commits, files, phone layout', async () =
   await expect(panel.locator('[data-diff-scroll]')).toContainText('export const answer = 42;', { timeout: 15_000 });
   await expect(panel.locator('[data-diff-scroll] .tk-kw').first()).toBeVisible();
   await shoot(app, page, 'panel-diff');
+  // An edit that keeps the line counts still reaches the open diff (next status poll).
+  write(site.cwd, { 'src/app.ts': 'export const answer = 43;\nexport const hero = "Agents, in one place";\n' });
+  await expect(panel.locator('[data-diff-scroll]')).toContainText('export const answer = 43;', { timeout: 12_000 });
   await panel.getByRole('button', { name: 'Next file' }).click();
   await expect(page).not.toHaveURL(/file=src%2Fapp\.ts/);
   await panel.getByRole('button', { name: 'Back', exact: true }).click();
@@ -163,15 +181,55 @@ test('right panel: changes tree, diff, commits, files, phone layout', async () =
   await expect(item(/^index\.tsx/)).toBeVisible({ timeout: 15_000 });
   await expect(item(/^plan\.md/)).toBeVisible();
   await expect(tree.getByRole('treeitem', { name: /^app\.ts/ })).toHaveCount(0);
+  // Status squares on a commit's files, like the uncommitted tree.
+  await expect(item(/^index\.tsx/).getByRole('img', { name: 'Modified' })).toBeVisible();
+  await expect(item(/^plan\.md/).getByRole('img', { name: 'Added' })).toBeVisible();
+  await page.mouse.move(5, 450);
   await shoot(app, page, 'panel-commits');
   await item(/^index\.tsx/).click();
   await expect(panel.locator('[data-diff-scroll]')).toContainText('Agents, in one place', { timeout: 15_000 });
   await panel.getByRole('button', { name: 'Back', exact: true }).click();
-  // The root commit diffs against the empty tree.
+  // A rename shows its square and where it came from.
+  await commits.getByRole('listitem').filter({ hasText: 'Rename the plan' }).click();
+  await expect(item(/^roadmap\.md/)).toContainText('from docs/plan.md', { timeout: 15_000 });
+  await expect(item(/^roadmap\.md/).getByRole('img', { name: 'Renamed' })).toBeVisible();
+  // The root commit diffs against the empty tree — in the panel and in the centre view.
   await commits.getByRole('listitem').filter({ hasText: 'Scaffold the website' }).click();
+  await expect(item(/^package\.json/)).toBeVisible({ timeout: 15_000 });
+  await expect(item(/^package\.json/).getByRole('img', { name: 'Added' })).toBeVisible();
+  await item(/^package\.json/).click({ modifiers: ['Alt'] });
+  await expect(page).toHaveURL(/view=diff/);
+  await expect(page.locator('[data-diff-scroll]').filter({ hasText: '"private": true' })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Close diff' }).click();
+  // A direct route to a root commit's file in the centre (fresh renderer, nothing cached).
+  const rootSha = site.git('rev-list', '--max-parents=0', 'HEAD').trim();
+  await page.evaluate((sha) => {
+    const path = location.hash.split('?')[0];
+    location.hash = `${path}?commit=${sha}&file=README.md&view=diff`;
+    location.reload();
+  }, rootSha);
+  await expect(page.locator('[data-diff-scroll]').filter({ hasText: 'The website.' })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('button', { name: 'Close diff' }).click();
   await expect(item(/^package\.json/)).toBeVisible({ timeout: 15_000 });
   await panel.getByRole('button', { name: 'Back to changes' }).click();
   await expect(page).not.toHaveURL(/commit=/);
+  await expect(item(/^atoms\.tsx/)).toBeVisible();
+
+  // vs base: the listing compares with `main` (incl. the working tree); a manual refresh brings an
+  // edit that keeps the counts into the open diff.
+  await panel.getByRole('button', { name: 'Compare' }).click();
+  await page.getByRole('menuitem', { name: 'vs main' }).click();
+  await expect(page).toHaveURL(/base=main/);
+  await expect(item(/^roadmap\.md/).getByRole('img', { name: 'Added' })).toBeVisible({ timeout: 15_000 });
+  await item(/^app\.ts/).click();
+  await expect(panel.locator('[data-diff-scroll]')).toContainText('export const answer = 43;', { timeout: 15_000 });
+  write(site.cwd, { 'src/app.ts': 'export const answer = 44;\nexport const hero = "Agents, in one place";\n' });
+  await panel.getByRole('button', { name: 'Refresh' }).click();
+  await expect(panel.locator('[data-diff-scroll]')).toContainText('export const answer = 44;', { timeout: 3_000 });
+  await panel.getByRole('button', { name: 'Back', exact: true }).click();
+  await panel.getByRole('button', { name: 'Compare' }).click();
+  await page.getByRole('menuitem', { name: 'Uncommitted' }).click();
+  await expect(page).not.toHaveURL(/base=/);
   await expect(item(/^atoms\.tsx/)).toBeVisible();
 
   // Files: lazy folders, ignored entries dimmed, the read-only viewer.

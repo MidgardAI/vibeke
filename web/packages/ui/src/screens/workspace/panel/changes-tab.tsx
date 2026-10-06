@@ -17,7 +17,7 @@ import { CommitsSection, isRootCommit, useGitLog } from './commits';
 import { DiffPane, type DiffFile } from './diff-pane';
 import { Menu, type MenuItem } from './menu';
 import { toggled, usePersistedSet } from './persist';
-import { baseCandidates, baseRoute, closeFileRoute, commitRoute, diffSource, fileRoute } from './routes';
+import { baseCandidates, baseRoute, closeFileRoute, commitRoute, fileRoute, markRootCommit } from './routes';
 import { StatusSquare, TreeList, type TreeItem } from './tree';
 
 const go = (r: WorkspaceRoute) => navigate(r, { replace: true });
@@ -33,8 +33,13 @@ export function ChangesTab({ route, pane }: { route: WorkspaceRoute; pane: strin
   const [commitsOpen, setCommitsOpen] = usePersistedSet(`${host}/${route.workspace}/commits`);
   const showCommits = commitsOpen.has('open') || !!route.commit;
   const log = useGitLog(host, pane, turns);
-  const src = diffSource(route, route.commit ? isRootCommit(log, route.commit) : false);
-  const data = useChangeFiles(host, pane, src);
+  // The log knows the root commit up front (no failed `sha^` first): share it with the centre view.
+  const logRoot = !!route.commit && isRootCommit(log, route.commit);
+  useEffect(() => {
+    if (logRoot && route.commit) markRootCommit(host, pane, route.commit);
+  }, [logRoot, host, pane, route.commit]);
+  const data = useChangeFiles(host, pane, route);
+  const src = data.src;
   const st = data.status;
 
   const [collapsed, setCollapsed] = usePersistedSet(`${host}/${route.workspace}/tree`);
@@ -73,8 +78,15 @@ export function ChangesTab({ route, pane }: { route: WorkspaceRoute; pane: strin
         depth,
         dir: false,
         parent,
-        name: node.name,
-        title: `${node.path}\n${t.panel.openHint}`,
+        name: f.orig_path ? (
+          <>
+            {node.name}
+            <span className="ml-1.5 text-xs text-faint">{t.panel.renamedFrom(f.orig_path)}</span>
+          </>
+        ) : (
+          node.name
+        ),
+        title: [node.path, f.orig_path ? `${t.panel.status[f.letter ?? 'R'] ?? ''} ${t.panel.renamedFrom(f.orig_path)}`.trim() : null, t.panel.openHint].filter(Boolean).join('\n'),
         icon: <FileIcon path={node.path} />,
         active: route.file === node.path,
         trailing: f.binary ? <span className="text-2xs text-faint">bin</span> : <DiffCount adds={node.adds} dels={node.dels} />,
@@ -147,7 +159,7 @@ export function ChangesTab({ route, pane }: { route: WorkspaceRoute; pane: strin
         </div>
       )}
       {inlineFile ? (
-        <DiffPane host={host} pane={pane} src={src} path={inlineFile} files={ordered} reload={data.signature} onPath={(p) => go(fileRoute(route, p))} onBack={() => go(closeFileRoute(route))} />
+        <DiffPane host={host} pane={pane} src={src} path={inlineFile} files={ordered} reload={data.diffReload} onPath={(p) => go(fileRoute(route, p))} onBack={() => go(closeFileRoute(route))} />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           {data.error && (
@@ -169,8 +181,15 @@ export function ChangesTab({ route, pane }: { route: WorkspaceRoute; pane: strin
       )}
       <CommitsSection
         log={log}
-        open={showCommits}
+        // An open diff gets the height; the list folds to its header until the diff closes.
+        open={showCommits && !inlineFile}
         onToggle={() => {
+          // Folded under an open diff: expanding closes the diff and shows the list.
+          if (inlineFile) {
+            go(closeFileRoute(route));
+            if (!showCommits) setCommitsOpen(toggled(commitsOpen, 'open', true));
+            return;
+          }
           if (showCommits && route.commit) go(commitRoute(route, null));
           setCommitsOpen(toggled(commitsOpen, 'open', !showCommits));
         }}

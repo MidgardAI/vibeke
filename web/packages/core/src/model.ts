@@ -283,6 +283,10 @@ export interface GitRevFile {
   dels?: number | null;
   binary: boolean;
   secret?: boolean;
+  /** git's name-status letter (A added, M modified, D deleted, R renamed, C copied, T type change). */
+  status?: 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | null;
+  /** Source path of a rename / copy. */
+  orig_path?: string | null;
 }
 
 /** `git.diff {pane, base | range}` without `file`: the files that differ. */
