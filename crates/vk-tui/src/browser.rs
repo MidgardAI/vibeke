@@ -2188,6 +2188,7 @@ mod tests {
         app.caps.cell_h = 32;
         app.caps.dpr_x100 = 200;
         app.sidebar = false;
+        app.ux.sidebar.hide_rail = true;
         app.size = (81, 25);
         (app, rxs, mi)
     }

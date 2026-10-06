@@ -109,6 +109,8 @@ pub enum Pending {
     Preview(crate::browser::Reply),
     /// Remote link upkeep: event head and the reconnect replay (06 A7).
     Remote(crate::remote_view::Reply),
+    /// Batch 2B surfaces (fleet, trust, popups, batch approvals).
+    Ux(crate::ux::Reply),
 }
 
 /// A JSON-RPC error from a machine (07 canonical errors).
@@ -210,6 +212,10 @@ pub enum PromptKind {
         mi: usize,
         tab: String,
     },
+    /// The argument of a palette action (`split: size?`, 08 §6.3).
+    ActionArg {
+        action: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +315,14 @@ pub enum Popup {
     /// Local files pasted/dropped onto a browser pane: confirm before the page gets them
     /// (06 B3.2).
     BrowserDrop(Box<crate::browser_io::DropAsk>),
+    /// First-run onboarding / `:setup` (08 §9); state in `App::ux.onboarding`.
+    Onboarding,
+    /// Batch approvals (08 §8); state in `App::ux.batch`.
+    Batch,
+    /// Fleet grid (08 §6.6); state in `App::ux.fleet`.
+    Fleet,
+    /// Repo-local config review (08 §11.1); state in `App::ux.trust`.
+    TrustRepo,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -430,6 +444,8 @@ pub struct App {
     pub copy_keys: std::sync::Arc<crate::copykeys::CopyKeys>,
     /// Remote links: frame pacing by ack, reconnect replay (06 A7).
     pub remote: crate::remote_view::State,
+    /// Batch 2B (spec 08): onboarding, trust, batch, fleet, tabs, sidebar, popups, sync input.
+    pub ux: crate::ux::State,
 }
 
 pub struct Opts {
@@ -644,6 +660,11 @@ async fn run_inner(
     }
     // Host appearance from the startup probe (OSC 11 / `CSI ? 996 n`, theme auto).
     crate::appearance::on_detect(&mut app, crate::appearance::startup());
+    crate::sidebar::load(
+        &mut app,
+        crate::sidebar::width_path(&opts.session, &crate::nav::client_key()),
+    );
+    crate::onboarding::maybe_open(&mut app);
     let mut events = EventStream::new();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
@@ -820,6 +841,7 @@ impl App {
             external: None,
             copy_keys,
             remote: Default::default(),
+            ux: Default::default(),
         }
     }
 }
@@ -1131,9 +1153,11 @@ impl App {
         let id = self.input_id();
         self.m().send(ClientFrame::Key {
             input_id: id,
-            pane,
-            key: ev,
+            pane: pane.clone(),
+            key: ev.clone(),
         });
+        // Synchronized input (08 §5).
+        crate::sync_input::mirror_key(self, &pane, &ev);
     }
 
     pub(crate) fn focus_pane(&mut self, machine: usize, pane: &str) {
@@ -1431,6 +1455,7 @@ impl App {
             Pending::Plugin(r) => crate::plugins::on_reply(self, i, r, res),
             Pending::Preview(r) => crate::browser::on_reply(self, i, r, res),
             Pending::Remote(r) => crate::remote_view::on_reply(self, i, r, res),
+            Pending::Ux(r) => crate::ux::on_reply(self, i, r, res),
         }
     }
 
@@ -1666,6 +1691,7 @@ impl App {
         crate::plugins::report_scroll(self, now);
         crate::selection::tick(self, now);
         crate::remote_view::release_due(self, now);
+        crate::ux::on_tick(self);
     }
 
     /// A deadline woke the loop: repaint when a redraw-only one passed (an age label, the
@@ -1700,6 +1726,7 @@ impl App {
         crate::selection::deadlines(self, &mut d);
         crate::remote_view::deadlines(self, &mut d);
         crate::osc::deadlines(self, now, &mut d);
+        crate::ux::deadlines(self, now, &mut d);
         d
     }
 
@@ -1785,6 +1812,7 @@ impl App {
                 // Direct bindings never steal keys from a focused browser page.
                 if let Some(b) = self.keymap.direct(&ev).cloned()
                     && crate::browser::focused_browser(self).is_none()
+                    && crate::ux::binding_active(self, &b.action)
                 {
                     if b.action == "remote_image_paste" && !self.m().local {
                         crate::upload::image_paste(self);
@@ -1900,6 +1928,7 @@ impl App {
             }
         }
         let id = self.input_id();
+        crate::sync_input::mirror_paste(self, &pane, &text);
         self.m().send(ClientFrame::Paste {
             input_id: id,
             pane,
@@ -1909,6 +1938,10 @@ impl App {
 
     pub(crate) fn on_mouse(&mut self, me: crossterm::event::MouseEvent) {
         let (me, px) = crate::browser::cellify(self, me);
+        // Moving/resizing a popup by its frame (08 §5).
+        if crate::popup_pane::on_mouse(self, &me) {
+            return;
+        }
         // Plugin popups are modal; overlay headers and popup frames are chrome.
         if crate::plugins::on_mouse(self, me.column, me.row) {
             return;
@@ -1916,6 +1949,10 @@ impl App {
         // A selection drag in progress follows the pointer past the pane (03 §11.1); the
         // scrollback viewer selects over its own text.
         if crate::selection::on_active_drag(self, &me) || crate::scrollback::on_mouse(self, &me) {
+            return;
+        }
+        // Tab drag/overflow/middle-click, sidebar border and rail, focus follows mouse (08).
+        if crate::ux::on_mouse(self, &me) {
             return;
         }
         // Float frames (move/resize/raise), group rows and drags, the status bar.
@@ -2016,7 +2053,7 @@ impl App {
     // ---- actions --------------------------------------------------------------------------
 
     pub fn action(&mut self, action: &str, index: Option<usize>) {
-        if crate::plugins::action(self, action) {
+        if crate::plugins::action(self, action) || crate::ux::action(self, action) {
             return;
         }
         if crate::browser::action_name(self, action) || crate::parity::action(self, action) {
@@ -2295,16 +2332,28 @@ impl App {
             a if a.starts_with("command:") => {
                 let i: usize = a[8..].parse().unwrap_or(usize::MAX);
                 if let Some(c) = self.config.keys.command.get(i).cloned() {
-                    self.run_key_command(&c);
+                    if crate::ux::command_active(self, &c) {
+                        self.run_key_command(&c);
+                    } else {
+                        self.toast(format!(
+                            "{}: only for {}",
+                            c.title.clone().unwrap_or_else(|| c.command.clone()),
+                            c.when.clone().unwrap_or_default()
+                        ));
+                    }
                 }
             }
             other => self.toast(format!("{other}: not available yet")),
         }
     }
 
-    fn run_key_command(&mut self, c: &vk_config::KeyCommand) {
+    pub(crate) fn run_key_command(&mut self, c: &vk_config::KeyCommand) {
         if c.kind == vk_config::CommandType::PluginAction {
             crate::plugins::run_key_command(self, c);
+            return;
+        }
+        // Popups and floats (08 §5).
+        if crate::popup_pane::run_key_command(self, c) {
             return;
         }
         let Some(pane) = self.focused_pane() else {
@@ -2428,11 +2477,8 @@ impl App {
     }
 
     fn cur_card(&mut self, mi: usize, interaction: &str) {
-        self.cur = mi;
-        self.mode = Mode::Popup(Popup::Card {
-            interaction: interaction.to_string(),
-            sel: 0,
-        });
+        // `ui.interaction_overlay` decides (08 §8).
+        crate::popup_pane::open_card(self, mi, interaction);
     }
 
     pub fn answer(&mut self, mi: usize, interaction: &str, params: Value) {
@@ -2448,7 +2494,7 @@ impl App {
     }
 
     fn navigate_key(&mut self, ev: KeyEvent, sel: usize) {
-        if crate::groups::navigate_key(self, &ev, sel) {
+        if crate::ux::navigate_key(self, &ev, sel) || crate::groups::navigate_key(self, &ev, sel) {
             return;
         }
         let rows = draw::sidebar_targets(self);
@@ -2673,6 +2719,7 @@ impl App {
             k @ (PromptKind::GroupNew { .. }
             | PromptKind::GroupRename { .. }
             | PromptKind::LayoutSave { .. }) => crate::parity::submit_prompt(self, k, v),
+            PromptKind::ActionArg { action } => crate::navkeys::run_with_arg(self, &action, &v),
             PromptKind::Command => {
                 let mut it = v.splitn(2, ' ');
                 let action = it.next().unwrap_or("").replace('-', "_");
@@ -2736,6 +2783,7 @@ impl App {
         crate::pane_images::before_draw(self);
         crate::nav::observe(self);
         crate::plugins::observe(self);
+        crate::sidebar::fit(self);
         let (cols, rows) = self.size;
         let mut grid = Grid::new(cols, rows);
         let cursor = draw::compose(self, &mut grid);

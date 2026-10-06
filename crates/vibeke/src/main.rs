@@ -11,6 +11,7 @@ mod doctor;
 mod idle;
 mod integration;
 mod remote;
+mod setup;
 
 pub use remote::specs as remote_specs;
 
@@ -27,6 +28,8 @@ usage:
   vibeke focus <pane|url>         focus a pane in the active client (vibeke://focus?…)
   vibeke layout export|apply|list declarative layouts ([layouts.<name>] in config)
   vibeke import herdr [--config] [--session] [--dry-run]
+  vibeke setup [--yes] [--dry-run] [--install …] onboarding: terminal check, integrations, notifications, theme, config
+  vibeke trust [path] [--yes] [--check]   review and trust a repo's .vibeke/ (repo-local config)
   vibeke plugin list|install|link|trust|enable|disable|action|logs   Herdr-compatible plugins (partial)
   vibeke compat herdr <args>      Herdr CLI shim against Vibeke (partial); compat install-shim|status
   vibeke integration install|status|uninstall|doctor|capabilities|update <harness|all> [--mcp]
@@ -272,6 +275,8 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
         Some("update") => commands::update(&g, &args[1..]).await,
         Some("config") => commands::config(&g, &args[1..]),
         Some("keys") => commands::keys(&g, &args[1..]),
+        Some("setup") => setup::setup(&args[1..]),
+        Some("trust") => setup::trust(&g, &args[1..]).await,
         Some("machine") => remote::machine(&g, &args[1..]).await,
         Some("attach-file") => remote::attach_file(&g, &args[1..]).await,
         Some("agent")

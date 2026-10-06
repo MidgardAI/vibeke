@@ -188,10 +188,11 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
     let m = &app.machines[mi];
     let t = &app.theme;
     let (g, label, color, inferred) = run_state(app, m, r);
-    let name = r.name.clone().unwrap_or_else(|| r.harness.clone());
+    // `[[ui.sidebar.token]]` rules rename/recolour the name (08 §2.4).
+    let (name, name_style) = crate::sidebar::styled_name(app, mi, r, &label);
     let mut segs = vec![
         (format!("{indent}{} ", harness_icon(&r.harness)), t.s(color)),
-        (format!("{name} "), t.text()),
+        (format!("{name} "), name_style),
     ];
     // A run is as contained as its pane (13 §2.2): enforced inside sandbox/container/vm.
     let iso = m
@@ -218,7 +219,13 @@ fn agent_row(app: &App, mi: usize, r: &AgentRun, indent: &str) -> SideRow {
     } else {
         g
     };
-    segs.push((format!("{glyph} "), t.bold(color)));
+    // A working agent's glyph pulses with `ui.animate` (08 §2.2).
+    let gst = if r.execution.value == Execution::Working && glyph.starts_with('●') {
+        crate::sidebar::working_style(app, t.bold(color))
+    } else {
+        t.bold(color)
+    };
+    segs.push((format!("{glyph} "), gst));
     // A tracked task's review label is its own small marker; it never replaces "done".
     if let Some(tid) = crate::tasks::task_for_run(app, mi, r) {
         let label = m
@@ -307,7 +314,9 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
                 ..Default::default()
             });
             for (_, mi, r) in need {
-                rows.push(agent_row(app, mi, r, " "));
+                if !crate::sidebar::hidden(app, mi, r) {
+                    rows.push(agent_row(app, mi, r, " "));
+                }
             }
             rows.push(SideRow {
                 segs: vec![],
@@ -370,6 +379,11 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
             });
         }
     }
+    // Navigate-mode `/` filter (08 §6.1): matching selectable rows only.
+    if crate::navkeys::filter(app).is_some() {
+        crate::navkeys::apply_filter(app, &mut rows);
+        return rows;
+    }
     // Previews (06 B2): last section, so `browser::preview_hit` can map rows back.
     let previews = crate::browser::preview_entries(app);
     if !previews.is_empty() {
@@ -392,6 +406,7 @@ pub fn sidebar_rows(app: &App) -> Vec<SideRow> {
 }
 
 /// One workspace row plus its agent (and optional shell pane) rows, indented by group depth.
+/// Task workspaces nest under their source repo's workspace (`ui.sidebar.nest_tasks`).
 pub(crate) fn workspace_rows(
     app: &App,
     mi: usize,
@@ -399,6 +414,13 @@ pub(crate) fn workspace_rows(
     depth: usize,
     rows: &mut Vec<SideRow>,
 ) {
+    if crate::sidebar::nested_elsewhere(app, mi, w) {
+        return;
+    }
+    workspace_rows_at(app, mi, w, depth, rows);
+}
+
+fn workspace_rows_at(app: &App, mi: usize, w: &Workspace, depth: usize, rows: &mut Vec<SideRow>) {
     let t = &app.theme;
     let m = &app.machines[mi];
     let pad = "  ".repeat(depth);
@@ -480,7 +502,12 @@ pub(crate) fn workspace_rows(
         ..Default::default()
     });
     for r in &runs {
-        rows.push(agent_row(app, mi, r, &format!("{pad}    ")));
+        if !crate::sidebar::hidden(app, mi, r) {
+            rows.push(agent_row(app, mi, r, &format!("{pad}    ")));
+        }
+    }
+    for c in crate::sidebar::task_children(app, mi, w) {
+        workspace_rows_at(app, mi, c, depth + 1, rows);
     }
     if app.config.ui.sidebar.show_shell_panes {
         for p in m
@@ -532,14 +559,19 @@ pub fn sidebar_hit(app: &App, y: u16) -> Option<(usize, String)> {
         .and_then(|r| r.target)
 }
 
-/// Tab bar entries with their x ranges.
+/// Tab bar entries with their x ranges (the visible ones when the bar overflows).
 fn tab_entries(app: &App) -> Vec<(Tab, String, u16, u16)> {
+    tab_layout(app).entries
+}
+
+/// The tab bar laid out for the main area: visible entries and overflow arrows (08 §3).
+pub fn tab_layout(app: &App) -> crate::tabbar::Laid {
     let m = app.m();
     let Some(ws) = &m.focus.workspace else {
-        return vec![];
+        return Default::default();
     };
-    let mut x = crate::chrome::main_x(app).0 + 1;
-    let mut out = Vec::new();
+    let (mx, mw) = crate::chrome::main_x(app);
+    let mut raw = Vec::new();
     for t in m.model.tabs.iter().filter(|t| &t.workspace == ws) {
         let title = t.title.clone().unwrap_or_else(|| {
             let fp = t
@@ -581,12 +613,21 @@ fn tab_entries(app: &App) -> Vec<(Tab, String, u16, u16)> {
         let prog = crate::osc::progress_in(app, app.cur, &ids)
             .map(|p| format!(" {}", crate::osc::progress_bar(app, p).0))
             .unwrap_or_default();
-        let label = format!(" {}{} {}{zoom}{prog} ", glyph, t.number, title);
+        let sync = crate::sync_input::tab_badge(app, &t.id);
+        let label = if app.config.ui.tabs.show_numbers {
+            format!(" {}{} {}{zoom}{prog}{sync} ", glyph, t.number, title)
+        } else {
+            let g = if glyph.is_empty() {
+                String::new()
+            } else {
+                format!("{glyph} ")
+            };
+            format!(" {g}{title}{zoom}{prog}{sync} ")
+        };
         let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
-        out.push((t.clone(), label, x, x + w));
-        x += w + 1;
+        raw.push((t.clone(), label, w));
     }
-    out
+    crate::tabbar::layout(app, raw, mx + 1, mx + mw)
 }
 
 /// First column after the last tab entry.
@@ -669,6 +710,8 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             g.put_str(bx, y, "│", t.border(false), 1);
         }
     }
+    // The collapsed sidebar's urgency rail (08 §2.4).
+    crate::sidebar::draw_rail(app, g);
     // Tab bar, top or bottom (08 §3); hidden draws no row.
     let (tx, tw) = crate::chrome::main_x(app);
     let right = right_cluster(app);
@@ -683,13 +726,24 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             t.text(),
         );
         let focused_tab = app.m().focus.tab.clone();
-        for (tab, label, x, _) in tab_entries(app) {
+        let laid = tab_layout(app);
+        for (tab, label, x, _) in &laid.entries {
             let st = if Some(&tab.id) == focused_tab.as_ref() {
                 t.rev()
             } else {
                 t.dim()
             };
-            g.put_str(x, ty, &label, st, (tx + tw).saturating_sub(x));
+            g.put_str(*x, ty, label, st, (tx + tw).saturating_sub(*x));
+        }
+        // Overflow arrows and the drag drop marker (08 §3).
+        if let Some(x) = laid.left {
+            g.put_str(x, ty, "‹", t.bold(t.accent), 1);
+        }
+        if let Some(x) = laid.right {
+            g.put_str(x, ty, "›", t.bold(t.accent), 1);
+        }
+        if let Some(x) = crate::tabbar::drop_marker(app, &laid) {
+            g.put_str(x, ty, "▏", t.bold(t.accent), 1);
         }
         // Preview chips for the focused tab's panes (06 B2).
         crate::browser::draw_chips(app, g, tabs_end(app), tx + tw);
@@ -737,6 +791,8 @@ pub fn compose(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
         crate::floats::draw_frame(app, g, f, focused.as_deref() == Some(f.pane.as_str()));
         draw_pane_at(app, g, &f.pane, f.inner, focused.as_deref(), &mut cursor);
     }
+    // An open popup dims what is under it (08 §5).
+    crate::popup_pane::dim(app, g);
     // Plugin overlays and popups on top of everything in the pane area (M5).
     for s in crate::plugins::surfaces(app) {
         if cursor.is_some_and(|(x, y, _)| s.outer.contains(x, y)) {
@@ -777,9 +833,19 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
     match &app.mode {
         Mode::Prefix(_) => right.push((" PREFIX ".into(), t.rev())),
         Mode::Copy(_) => right.push((" COPY ".into(), t.rev())),
-        Mode::Navigate { .. } => right.push((" NAV ".into(), t.rev())),
+        Mode::Navigate { .. } => match &app.ux.nav.filter {
+            Some(f) => right.push((
+                format!(" NAV /{f}{} ", if app.ux.nav.typing { "▏" } else { "" }),
+                t.rev(),
+            )),
+            None => right.push((" NAV ".into(), t.rev())),
+        },
         Mode::Resize => right.push((" RESIZE ".into(), t.rev())),
         _ => {}
+    }
+    // Synchronized input: bright badge (08 §5).
+    if let Some(b) = crate::sync_input::badge(app) {
+        right.insert(0, (b, t.rev()));
     }
     if let Some(up) = crate::upload::status(app) {
         right.insert(0, (format!(" {up} "), t.s(t.yellow)));

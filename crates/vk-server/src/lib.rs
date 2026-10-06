@@ -27,6 +27,7 @@ pub mod preview_ca;
 pub mod preview_console;
 pub mod preview_fabric;
 pub mod render;
+pub mod repo_config;
 pub mod review;
 pub mod run;
 pub mod sandbox;
@@ -38,6 +39,7 @@ pub mod term_effects;
 pub mod theme;
 pub mod timers;
 pub mod tracking;
+pub mod user_popup;
 
 #[cfg(test)]
 mod scope_catalog_tests;

@@ -7,6 +7,7 @@ mod load;
 #[macro_use]
 mod types;
 mod preview;
+pub mod repo;
 mod units;
 mod watch;
 
@@ -23,6 +24,7 @@ pub use preview::{
     AutoDiscover, BrowserExternal, LocalBrowser, PREVIEW_KEYS, PROFILE_BROWSERS, PaneLocation,
     PaneSplit, Preview, PreviewMode, ProfileRoute, ProfileScope, ScreenshotFormat, parse_viewport,
 };
+pub use repo::{REPO_CONFIG, RepoConfig};
 pub use types::*;
 pub use units::{ByteSize, Dur, PortRange};
 pub use watch::{ConfigWatcher, ReloadEvent, watch};

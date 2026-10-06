@@ -732,7 +732,7 @@ async fn check_integrations(r: &mut Report) {
     }
 }
 
-fn probe_terminal() -> Option<vk_tui::caps::ProbeResult> {
+pub(crate) fn probe_terminal() -> Option<vk_tui::caps::ProbeResult> {
     use std::io::Write;
     use vk_tui::caps::{EnvHints, parse_replies, probe_queries};
     crossterm::terminal::enable_raw_mode().ok()?;

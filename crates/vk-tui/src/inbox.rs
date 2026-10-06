@@ -754,11 +754,8 @@ pub fn open_item(app: &mut App, it: &Item, focus: bool) {
                 app.mode = Mode::Normal;
             }
         } else {
-            app.cur = mi;
-            app.mode = Mode::Popup(Popup::Card {
-                interaction: int,
-                sel: 0,
-            });
+            // `ui.interaction_overlay` decides (08 §8).
+            crate::popup_pane::open_card(app, mi, &int);
         }
         return;
     }
