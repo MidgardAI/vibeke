@@ -657,6 +657,104 @@ fn bound_run(server: &Server, pane: &str, h: Harness) -> AgentRun {
     run
 }
 
+/// pi/omp extension signals (integrations/pi-extension/PROTOCOL.md) onto the hook vocabulary.
+fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
+    let tool_name = |t: &str| match t {
+        "write" => "Write".to_string(),
+        "edit" | "multi_edit" => "Edit".to_string(),
+        "bash" => "Bash".to_string(),
+        other => other.to_string(),
+    };
+    let call = p.get("call_id").cloned().unwrap_or(Value::Null);
+    match event {
+        "SessionStart" => on_signal(server, pane, h, "SessionStart", p),
+        "TurnStarted" => on_signal(server, pane, h, "UserPromptSubmit", &json!({"prompt": p.get("prompt_preview")})),
+        "Working" | "Settling" => {
+            let run = bound_run(server, pane, h);
+            set_execution(server, &run.id, Execution::Working, StateSource::Structured, 1.0, (event == "Settling").then(|| "settling".to_string()));
+        }
+        "TurnEnded" => on_signal(server, pane, h, "Stop", &json!({"last_assistant_message": p.get("last_message")})),
+        "ToolStarted" => {
+            let t = tool_name(p.get("tool").and_then(Value::as_str).unwrap_or(""));
+            on_signal(server, pane, h, "PreToolUse", &json!({"tool_name": t, "tool_input": p.get("input"), "tool_use_id": call}));
+        }
+        "ToolEnded" => {
+            let t = tool_name(p.get("tool").and_then(Value::as_str).unwrap_or(""));
+            let ev = if p.get("ok").and_then(Value::as_bool).unwrap_or(true) { "PostToolUse" } else { "PostToolUseFailure" };
+            on_signal(server, pane, h, ev, &json!({"tool_name": t, "tool_use_id": call, "tool_input": {"file_path": p.get("file_path")}}));
+        }
+        "Error" => {
+            let msg = p.get("message").and_then(Value::as_str).unwrap_or("error");
+            if p.get("rate_limited").and_then(Value::as_bool).unwrap_or(false) {
+                on_signal(server, pane, h, "StopFailure", &json!({"error_type": "rate_limit"}));
+            } else if !p.get("retrying").and_then(Value::as_bool).unwrap_or(false) {
+                on_signal(server, pane, h, "StopFailure", &json!({"error_type": msg}));
+            }
+        }
+        "Compacting" => {
+            let ev = if p.get("phase").and_then(Value::as_str) == Some("end") { "PostCompact" } else { "PreCompact" };
+            on_signal(server, pane, h, ev, p);
+        }
+        "SessionEnded" => on_signal(server, pane, h, "SessionEnd", p),
+        "Usage" => {}
+        "ApprovalRequested" => {
+            // omp's own approval dialog: observe only; answering happens in the pane (or via
+            // the dialog bridge when omp routes it through uiContext).
+            let run = bound_run(server, pane, h);
+            let native = call.as_str().map(str::to_string);
+            if server.with_core(|c| c.model.interactions.iter().any(|i| i.run == run.id && i.native_ref == native && i.status == InteractionStatus::Open)) {
+                return;
+            }
+            let tool = p.get("tool").and_then(Value::as_str).unwrap_or("tool").to_string();
+            let reason = p.get("reason").and_then(Value::as_str).map(str::to_string);
+            let mut c = server.core.lock().unwrap();
+            let handle = c.next_interaction_handle();
+            let mut it = harness::interaction_from_hook(Harness::Claude, "PermissionRequest", &json!({"tool_name": tool, "tool_input": {"command": reason}})).expect("approval");
+            it.handle = handle;
+            it.run = run.id.clone();
+            it.pane = pane.to_string();
+            it.native_ref = native;
+            it.answerable = false;
+            it.answer_channel = AnswerChannel::None;
+            let mut tx = Tx::new();
+            tx.counters = true;
+            tx.event("interaction.opened", json!({"interaction": it.id, "pane": pane, "run": run.id}), json!({"kind": "approval", "source": "structured", "harness": h.id(), "answerable": false}));
+            tx.interaction(it.clone());
+            let _ = server.commit(&mut c, tx);
+            drop(c);
+            notify_interaction(server, &it, &run);
+        }
+        "ApprovalResolved" | "DialogResolved" => {
+            let run = bound_run(server, pane, h);
+            let key = p.get("call_id").or_else(|| p.get("dialog_id")).and_then(Value::as_str).map(str::to_string);
+            let id = server.with_core(|c| c.model.interactions.iter().find(|i| i.run == run.id && i.native_ref == key).map(|i| i.id.clone()));
+            if let Some(id) = id {
+                resolve(server, &id, InteractionStatus::ResolvedElsewhere, "answered in pane");
+            }
+        }
+        "Snapshot" => {
+            // Reconnect repair (DESIGN §2): replace our view of the run.
+            if let Some(sid) = p.get("session_id").and_then(Value::as_str) {
+                on_signal(server, pane, h, "SessionStart", &json!({"session_id": sid, "transcript_path": p.get("session_file"), "model": p.get("model")}));
+            }
+            let run = bound_run(server, pane, h);
+            let streaming = p.get("is_streaming").and_then(Value::as_bool).unwrap_or(false);
+            set_execution(server, &run.id, if streaming { Execution::Working } else { Execution::Idle }, StateSource::Structured, 1.0, None);
+            let open: Vec<String> = p.get("open_approvals").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.get("call_id").and_then(Value::as_str).map(str::to_string)).collect()).unwrap_or_default();
+            let stale: Vec<String> = server.with_core(|c| {
+                c.model.interactions.iter().filter(|i| i.run == run.id && i.status == InteractionStatus::Open && i.native_ref.as_ref().is_some_and(|r| !open.contains(r) && !r.starts_with("dlg")) && i.answer_channel == AnswerChannel::None).map(|i| i.id.clone()).collect()
+            });
+            for id in stale {
+                resolve(server, &id, InteractionStatus::ResolvedElsewhere, "not pending after reconnect");
+            }
+            for a in p.get("open_approvals").and_then(Value::as_array).cloned().unwrap_or_default() {
+                on_extension_signal(server, pane, h, "ApprovalRequested", &a);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
     let run = bound_run(server, pane, h);
     let sid = p.get("session_id").and_then(Value::as_str);
@@ -1856,7 +1954,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             resume_run(server, &run, pane).await
         }
         "agent.harnesses" => {
-            let list: Vec<Value> = [Harness::Claude, Harness::Codex]
+            let list: Vec<Value> = [Harness::Claude, Harness::Codex, Harness::Pi, Harness::Omp]
                 .iter()
                 .map(|h| json!({"id": h.id(), "display": h.display(), "capabilities": h.capabilities(), "version_detected": harness::version(*h)}))
                 .collect();
@@ -1968,7 +2066,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             let event = s(p, "event").unwrap_or("").to_string();
             let payload = p.get("payload").cloned().unwrap_or(Value::Null);
             if method == "adapter.signal" {
-                on_signal(server, &pane, h, &event, &payload);
+                if matches!(h, Harness::Pi | Harness::Omp) {
+                    on_extension_signal(server, &pane, h, &event, &payload);
+                } else {
+                    on_signal(server, &pane, h, &event, &payload);
+                }
                 Ok(json!({}))
             } else {
                 gate(server, &pane, h, &event, &payload).await

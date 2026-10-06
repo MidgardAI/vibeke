@@ -67,7 +67,9 @@ pub fn evaluate(h: Harness, screen: &str) -> ScreenMatch {
     let mut m = ScreenMatch::default();
     let text = tail.join("\n");
     let working = match h {
-        Harness::Claude => text.contains("esc to interrupt") || text.contains("Esc to interrupt"),
+        Harness::Claude | Harness::Pi | Harness::Omp => {
+            text.contains("esc to interrupt") || text.contains("Esc to interrupt") || text.contains("Working...")
+        }
         Harness::Codex => {
             text.contains("esc to interrupt")
                 || text.contains("Esc to interrupt")
@@ -219,6 +221,14 @@ pub fn keys_for(h: Harness, d: &Dialog, it: &Interaction, answer: &Answer) -> Op
         (Harness::Codex, Some(k)) => vec![k.to_string()],
         // Claude selects and confirms on the digit.
         (Harness::Claude, _) => vec![n.to_string()],
+        // pi/omp generic select dialogs: arrows to the target row, then enter (best effort).
+        (Harness::Pi | Harness::Omp, _) => {
+            let delta = n as i32 - d.pointer.unwrap_or(1) as i32;
+            let key = if delta >= 0 { "down" } else { "up" };
+            let mut k: Vec<String> = (0..delta.unsigned_abs()).map(|_| key.to_string()).collect();
+            k.push("enter".into());
+            k
+        }
         (Harness::Codex, None) => vec![n.to_string(), "enter".into()],
     })
 }
