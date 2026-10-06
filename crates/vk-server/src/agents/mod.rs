@@ -541,7 +541,7 @@ impl Agents {
     }
 }
 
-fn new_run(
+pub(crate) fn new_run(
     c: &mut Core,
     pane: &str,
     h: Harness,

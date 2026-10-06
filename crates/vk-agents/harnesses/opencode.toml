@@ -77,3 +77,11 @@ confidence = 0.75
 
 [ui]
 interrupt_keys = ["esc"]
+
+# 13 §5/§7/§8: what a contained run needs. Unverified against a live OpenCode.
+[sandbox.network]
+allow = ["api.anthropic.com", "api.openai.com", "openrouter.ai", "opencode.ai", "models.dev"]
+
+[auth]
+env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
+files = ["~/.local/share/opencode/auth.json"]

@@ -6,6 +6,7 @@
 //! The crate is server-agnostic: `vk-server` owns task/pane state, Interactions and the per-pane
 //! broker; this crate generates profiles, wraps spawn commands and enforces egress.
 
+pub mod boxops;
 pub mod config;
 pub mod container;
 pub mod creds;

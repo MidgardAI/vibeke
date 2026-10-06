@@ -1159,6 +1159,7 @@ async fn task_create(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             "the vm isolation level ships in M4; use --isolate sandbox",
         ));
     }
+    crate::sandbox::extras::check_task_host_yolo(server, &iso_req, &info.root, p)?;
     let cfg = task_cfg(p);
     let creq = vk_tasks::CreateRequest {
         repo: info.root.clone(),
@@ -1493,6 +1494,7 @@ async fn start_agents(
             yolo,
             isolate: Some(level),
             network: None,
+            ..Default::default()
         };
         runs.push(
             crate::agents::start_in_pane_opts(

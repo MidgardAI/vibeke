@@ -57,3 +57,12 @@ id = "working"
 state = "working"
 any = ['esc to interrupt', 'Esc to interrupt', 'Working\.\.\.']
 confidence = 0.8
+
+# 13 §5/§7/§8: what a contained run needs (data; projection rules for pi are built in).
+[sandbox.network]
+allow = ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai"]
+
+[auth]
+env = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"]
+files = ["~/.pi/agent/auth.json"]
+home_env = "PI_CODING_AGENT_DIR"

@@ -779,6 +779,8 @@ impl Session {
             crate::sync_input::mirror(&self.server, pane, &bytes);
             let id = holder_input_id(&self.client_id, input_id);
             *rt.last_input.lock().unwrap() = Some(Instant::now());
+            // Typing into an idle-suspended (paused) box wakes it (13 §11).
+            crate::sandbox::extras::touch_pane(&self.server, pane);
             let (tx, rx) = tokio::sync::oneshot::channel();
             rt.send(crate::pane::PaneCmd::Input {
                 id,

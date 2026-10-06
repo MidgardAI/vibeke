@@ -1062,4 +1062,5 @@ Built in M2 (see the *Implemented (M2)* notes above): manifests + registry + rep
 - Hermes: detection paths, `--resume`, `hermes acp`; the Vibeke Hermes plugin (`~/.hermes/plugins/vibeke-agent-state/`) is not written — Hermes is screen + self-report only.
 - ACP: real agents' option kinds, `loadSession` resume, `usage` reporting; `terminal/*` is offered on the headless path only (fake agent tested), not by the pane-hosted host.
 - Golden corpus: all fixtures are synthetic; capabilities are still not generated from golden coverage; no recorder, mock LLM or nightly drift CI.
-- Not started from the M2 list: Codex display-only daemon observer + linking, `[sandbox]`/`[auth]` manifest sections, external adapter protocol (§3.4), Cursor/Copilot/… screen manifests (§6.7).
+- `[sandbox]` (`read`, `write`, `[sandbox.network] allow`) and `[auth]` (`env`, `files`, `home_env`) manifest sections: built (lane 2E, 13 §15.1), filled for every built-in, honoured only from built-in and user manifests (stripped from repo and remote-channel manifests).
+- Not started from the M2 list: Codex display-only daemon observer + linking, external adapter protocol (§3.4), Cursor/Copilot/… screen manifests (§6.7).
