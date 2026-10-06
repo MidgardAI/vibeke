@@ -1,0 +1,32 @@
+# Built-in manifest: Hermes Agent (spec 04 §5.3). Screen + self-report only: Vibeke's Hermes
+# plugin (full lifecycle over `adapter.signal`) is not built yet, so this is observe-only.
+schema = 1
+id = "hermes"
+name = "Hermes Agent"
+
+[detect]
+priority = 100
+[[detect.process]]
+interpreter = ["python", "python3"]
+script_regex = '(/hermes(_agent|-agent)?/|/bin/hermes$)'
+[[detect.process]]
+exe_basename = ["hermes"]
+
+[version]
+command = ["hermes", "--version"]
+
+[launch]
+argv = ["hermes"]
+session_id_format = "none"
+prompt_arg = "none"
+acp_argv = ["hermes", "acp"]                   # [verify M2]
+
+[resume]
+argv = ["hermes", "--resume", "{resume_id}"]   # [verify M2]
+
+[integration]
+transports = ["self_report", "screen"]
+headless = "acp"
+
+[screen]
+manifest = "generic-repl"

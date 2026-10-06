@@ -4,6 +4,7 @@
 
 pub mod fingerprint;
 pub mod install;
+pub mod manifest;
 pub mod risk;
 pub(crate) mod shell;
 

@@ -1,0 +1,29 @@
+# Built-in screen-only manifest for REPL-style agents (no detection rules): referenced by
+# `[screen] manifest = "generic-repl"` and used for self-reported harnesses Vibeke doesn't know.
+schema = 1
+id = "generic-repl"
+name = "Generic REPL agent"
+
+[screen]
+rows = 25
+[[screen.rules]]
+id = "numbered_dialog"
+opens = "approval"
+any = ['(?i)(allow|approve|proceed|confirm|do you want to|run this)[^?\n]*\?']
+confidence = 0.6
+title_regex = '(?i)((allow|approve|proceed|confirm|do you want to|run this)[^?\n]*\?)'
+[screen.rules.dialog]
+accelerators = "digits"
+confirm = "enter"
+
+[[screen.rules]]
+id = "working"
+state = "working"
+any = ['(?i)esc to (interrupt|cancel)', '(?i)thinking…', '(?i)working\.\.\.']
+confidence = 0.6
+
+[[screen.rules]]
+id = "prompt"
+state = "idle"
+any = ['(?m)^\s*(>|❯|›)\s*$']
+confidence = 0.5

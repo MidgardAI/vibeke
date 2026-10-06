@@ -1,0 +1,43 @@
+# Built-in manifest: oh-my-pi (spec 04 §6.3). Inherits pi's screen rules and transports.
+schema = 1
+id = "omp"
+name = "oh-my-pi"
+extends = "pi"
+
+[detect]
+priority = 100
+[[detect.process]]
+exe_basename = ["omp"]
+[[detect.process]]
+interpreter = ["node", "bun"]
+script_regex = 'oh-my-pi'
+
+[version]
+command = ["omp", "--version"]
+validated = ">=17.0.0, <18.0.0"
+
+[launch]
+argv = ["omp"]
+argv_with_session = []
+session_id_format = "none"
+
+[resume]
+argv = ["omp", "--resume", "{resume_id}"]
+
+[integration]
+install = "builtin:omp"
+headless = "rpc-ui"
+
+[[capabilities]]
+versions = ">=17.0.0, <18.0.0"
+mode = "tui"
+observe = true
+answer_native = ["extension_dialog"]
+reconcile = true
+resume = true
+survive_disconnect = true
+
+[yolo]
+always = false
+flags = ["--yolo"]
+pairs = [["--approval", "off"]]
