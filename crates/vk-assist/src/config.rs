@@ -100,7 +100,7 @@ impl Default for AssistConfig {
             background_enabled: false,
             background_summaries: false,
             stall_notices: false,
-            background_interval_seconds: 900,
+            background_interval_seconds: 300,
             stall_repeat_threshold: 3,
             result_cache: false,
             keychain_backend: "off".into(),
@@ -955,7 +955,7 @@ mod tests {
         assert!(!d.background_enabled && !d.background_summaries && !d.stall_notices);
         assert!(!d.result_cache && !d.remote_sources);
         assert_eq!(d.keychain_backend, "off");
-        assert_eq!(d.background_interval_seconds, 900);
+        assert_eq!(d.background_interval_seconds, 300);
         assert_eq!(d.stall_repeat_threshold, 3);
         assert!(AssistConfig::from_json(json!({"background_enabled": "yes"})).is_err());
         let p: Profile = serde_json::from_value(

@@ -64,6 +64,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
                     hk.housekeeping();
                     let _ = hk.with_core(|c| c.store.prune(7, 365));
                     hk.archive_retention();
+                    crate::assist::sweep(&hk);
                     prune_at += hour;
                 }
             }
@@ -79,6 +80,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
     crate::inbox::start(&server);
     crate::config_api::start(&server);
     crate::security::start(&server);
+    crate::assist::start(&server);
     let sd = server.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -270,7 +272,7 @@ where
                     }
                     "render.attach" => break Some(req),
                     "events.subscribe" => {
-                        if let Some((sid, h)) = subscribe(&server, &req, out_tx.clone())? {
+                        if let Some((sid, h)) = subscribe(&server, &req, out_tx.clone(), ctx.pane_scope.is_some())? {
                             let mut subs = guard.subs.lock().unwrap();
                             subs.retain(|_, h| !h.is_finished());
                             subs.insert(sid, h);
@@ -414,6 +416,7 @@ fn subscribe(
     server: &Arc<Server>,
     req: &Request,
     out: mpsc::UnboundedSender<String>,
+    pane_scoped: bool,
 ) -> Result<Option<(String, tokio::task::AbortHandle)>> {
     let id = req.id.clone().unwrap_or(Value::Null);
     let p = req.params.clone();
@@ -471,10 +474,19 @@ fn subscribe(
         loop {
             match rx.recv().await {
                 Ok(e) => {
-                    if e.seq <= last {
-                        continue;
+                    if e.seq == 0 {
+                        // A transient notification (`assistant.delta`): not outbox history, so
+                        // it never moves the cursor, and generated text goes to full-scope
+                        // subscribers only (14 §9).
+                        if pane_scoped && e.kind.starts_with("assistant.") {
+                            continue;
+                        }
+                    } else {
+                        if e.seq <= last {
+                            continue;
+                        }
+                        last = e.seq;
                     }
-                    last = e.seq;
                     if !types.is_empty() && !types.iter().any(|g| vk_store::glob_match(g, &e.kind))
                     {
                         continue;

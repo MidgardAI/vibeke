@@ -147,6 +147,13 @@ impl Cache {
         self.entries.clear();
         n
     }
+
+    /// Remove entries created before `ms` (`forget --before`).
+    pub fn purge_before(&mut self, ms: i64) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|e| e.created_ms >= ms);
+        before - self.entries.len()
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +281,19 @@ mod tests {
         assert!(c.get("k3", 0).is_none());
         assert!(c.get("k2", 0).is_some());
         assert_eq!(c.purge_all(), 1);
+        let mut early = entry("a", "/a", 10_000);
+        early.created_ms = 300;
+        c.put(early);
+        let mut late = entry("b", "/a", 10_000);
+        late.created_ms = 500;
+        c.put(late);
+        assert_eq!(c.purge_before(100), 0);
+        assert_eq!(
+            c.purge_before(400),
+            1,
+            "only entries created before the cutoff"
+        );
+        assert!(c.get("b", 0).is_some());
     }
 
     #[test]

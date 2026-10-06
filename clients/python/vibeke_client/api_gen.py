@@ -83,6 +83,9 @@ class Api:
     async def api_schema(self, params: "Optional[t.ApiSchemaParams]" = None) -> "t.ApiSchemaResult":
         return await self.call("api.schema", params or {})  # type: ignore[arg-type, return-value]
 
+    async def assistant_background(self, params: "Optional[t.AssistantBackgroundParams]" = None) -> "t.AssistantBackgroundResult":
+        return await self.call("assistant.background", params or {})  # type: ignore[arg-type, return-value]
+
     async def assistant_cancel(self, params: "t.AssistantCancelParams") -> "t.AssistantCancelResult":
         return await self.call("assistant.cancel", params)  # type: ignore[arg-type, return-value]
 
@@ -101,6 +104,9 @@ class Api:
     async def assistant_list(self, params: "Optional[t.AssistantListParams]" = None) -> "t.AssistantListResult":
         return await self.call("assistant.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def assistant_models(self, params: "Optional[t.AssistantModelsParams]" = None) -> "t.AssistantModelsResult":
+        return await self.call("assistant.models", params or {})  # type: ignore[arg-type, return-value]
+
     async def assistant_providers(self, params: "Optional[t.AssistantProvidersParams]" = None) -> "t.AssistantProvidersResult":
         return await self.call("assistant.providers", params or {})  # type: ignore[arg-type, return-value]
 
@@ -112,6 +118,9 @@ class Api:
 
     async def assistant_status(self, params: "Optional[t.AssistantStatusParams]" = None) -> "t.AssistantStatusResult":
         return await self.call("assistant.status", params or {})  # type: ignore[arg-type, return-value]
+
+    async def assistant_test(self, params: "Optional[t.AssistantTestParams]" = None) -> "t.AssistantTestResult":
+        return await self.call("assistant.test", params or {})  # type: ignore[arg-type, return-value]
 
     async def attention_list(self, params: "Optional[t.AttentionListParams]" = None) -> "t.AttentionListResult":
         return await self.call("attention.list", params or {})  # type: ignore[arg-type, return-value]

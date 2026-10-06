@@ -810,12 +810,20 @@ export type ApiSchemaResult = {
   schema: Record<string, unknown>;
 };
 
+export type AssistantBackgroundParams = {
+  action?: "status" | "tick";
+};
+
+export type AssistantBackgroundResult = unknown;
+
 export type AssistantCancelParams = {
   request: string;
 };
 
 export type AssistantCancelResult = {
   request: Record<string, unknown>;
+  detached?: boolean;
+  note?: string;
   cursor?: Cursor;
 };
 
@@ -831,6 +839,7 @@ export type AssistantConfirmResult = {
 
 export type AssistantConsentParams = {
   workspace?: Target;
+  remote_workspace?: string;
   connection?: string;
   profile?: string;
   classes?: ("selected_text" | "structured_state" | "review_package" | "screen")[];
@@ -845,8 +854,10 @@ export type AssistantConsentResult = {
 };
 
 export type AssistantGenerateParams = {
-  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate";
+  operation: "suggest_task_details" | "review_summary" | "pane_title" | "briefing" | "handoff" | "effort_estimate" | "navigate" | "decision_card" | "stall_notice" | "background_summary" | "task_title";
   profile?: string;
+  priority?: "interactive" | "background";
+  stream?: boolean;
   idempotency_key?: string;
   retry_of?: string;
   inputs?: Record<string, unknown>;
@@ -855,12 +866,15 @@ export type AssistantGenerateParams = {
   pane?: Target;
   task?: Target;
   workspace?: Target;
+  interaction?: Target;
+  query?: string;
+  remote_sources?: Record<string, unknown>[];
   include_screen?: boolean;
 };
 
 export type AssistantGenerateResult = {
   request: Record<string, unknown>;
-  preview: {
+  preview?: {
     digest: string;
     system?: string;
     user?: string;
@@ -876,9 +890,15 @@ export type AssistantGenerateResult = {
     omitted?: unknown;
     redactions?: unknown;
     notice?: string;
+    priority?: string;
+    coverage_notes?: string[];
   };
-  requires_confirmation: boolean;
-  confirm_with?: Record<string, unknown>;
+  requires_confirmation?: boolean;
+  confirm_with?: Record<string, unknown> | null;
+  deduplicated?: boolean;
+  coalesced?: boolean;
+  cached?: boolean;
+  note?: string;
   cursor?: Cursor;
 };
 
@@ -900,6 +920,31 @@ export type AssistantListResult = {
   requests: Record<string, unknown>[];
 };
 
+export type AssistantModelsParams = {
+  connection?: string;
+  profile?: string;
+  refresh?: boolean;
+};
+
+export type AssistantModelsResult = {
+  connection: string;
+  adapter: string;
+  provenance: "live" | "cached" | "bundled";
+  refreshed_at_ms: number | null;
+  models: {
+    id: string;
+    display_name?: string | null;
+    created?: string | null;
+    capabilities: Record<string, unknown>;
+  }[];
+  note: string;
+  endpoint_host?: string;
+  execution_machine?: string;
+  current_model?: string | null;
+  current_capabilities?: Record<string, unknown> | null;
+  explicit_model?: string;
+};
+
 export type AssistantProvidersParams = Record<string, unknown>;
 
 export type AssistantProvidersResult = {
@@ -913,6 +958,12 @@ export type AssistantProvidersResult = {
   }[];
   profiles: Record<string, unknown>[];
   default_profile?: string | null;
+  coordinator_note?: string;
+  targets?: {
+    name: string;
+    adapter: string;
+    endpoint: string;
+  }[];
 };
 
 export type AssistantPurgeParams = {
@@ -928,6 +979,7 @@ export type AssistantPurgeResult = {
 
 export type AssistantRevokeParams = {
   workspace?: Target;
+  remote_workspace?: string;
   connection?: string;
 };
 
@@ -955,6 +1007,44 @@ export type AssistantStatusResult = {
     reserved: unknown;
     remaining: unknown;
   };
+  background?: boolean;
+  background_detail?: Record<string, unknown>;
+  scheduler?: {
+    capacity: number;
+    running: number;
+    waiting: number;
+  };
+  capabilities?: Record<string, unknown> | null;
+  cache?: {
+    enabled: boolean;
+    entries: number;
+  };
+  remote_sources?: boolean;
+  keychain_backend?: string;
+};
+
+export type AssistantTestParams = {
+  profile?: string;
+  probe?: ("streaming" | "json_schema")[] | string;
+};
+
+export type AssistantTestResult = {
+  ok: boolean;
+  id: string;
+  profile: string;
+  connection: string;
+  adapter: string;
+  model: string;
+  endpoint_host: string;
+  execution_machine: string;
+  latency_ms: number;
+  attempts: number;
+  usage: Record<string, unknown>;
+  estimated_cost_usd?: number | null;
+  counted: boolean;
+  error?: Record<string, unknown> | null;
+  probes: Record<string, unknown>[];
+  cursor?: Cursor;
 };
 
 export type AttentionListParams = {
@@ -4805,16 +4895,19 @@ export interface Methods {
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
   "api.methods": { params: ApiMethodsParams; result: ApiMethodsResult };
   "api.schema": { params: ApiSchemaParams; result: ApiSchemaResult };
+  "assistant.background": { params: AssistantBackgroundParams; result: AssistantBackgroundResult };
   "assistant.cancel": { params: AssistantCancelParams; result: AssistantCancelResult };
   "assistant.confirm": { params: AssistantConfirmParams; result: AssistantConfirmResult };
   "assistant.consent": { params: AssistantConsentParams; result: AssistantConsentResult };
   "assistant.generate": { params: AssistantGenerateParams; result: AssistantGenerateResult };
   "assistant.get": { params: AssistantGetParams; result: AssistantGetResult };
   "assistant.list": { params: AssistantListParams; result: AssistantListResult };
+  "assistant.models": { params: AssistantModelsParams; result: AssistantModelsResult };
   "assistant.providers": { params: AssistantProvidersParams; result: AssistantProvidersResult };
   "assistant.purge": { params: AssistantPurgeParams; result: AssistantPurgeResult };
   "assistant.revoke": { params: AssistantRevokeParams; result: AssistantRevokeResult };
   "assistant.status": { params: AssistantStatusParams; result: AssistantStatusResult };
+  "assistant.test": { params: AssistantTestParams; result: AssistantTestResult };
   "attention.list": { params: AttentionListParams; result: AttentionListResult };
   "attention.update": { params: AttentionUpdateParams; result: AttentionUpdateResult };
   "audit.search": { params: AuditSearchParams; result: AuditSearchResult };
@@ -5083,16 +5176,19 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
   "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
+  "assistant.background": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.confirm": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.consent": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.generate": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.get": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "assistant.models": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.providers": { mutating: false, scope: "full", paneScope: "forbidden" },
   "assistant.purge": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.revoke": { mutating: true, scope: "full", paneScope: "forbidden" },
   "assistant.status": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "assistant.test": { mutating: true, scope: "full", paneScope: "forbidden" },
   "attention.list": { mutating: false, scope: "pane", paneScope: "open" },
   "attention.update": { mutating: true, scope: "full", paneScope: "forbidden" },
   "audit.search": { mutating: false, scope: "full", paneScope: "forbidden" },
@@ -5503,12 +5599,33 @@ export type AssistantConsentGrantedSubject = {
 export type AssistantConsentGrantedData = unknown;
 
 export type AssistantConsentRevokedSubject = {
-  workspace: string;
+  workspace?: string;
+  remote_workspace?: string;
 };
 
 export type AssistantConsentRevokedData = {
   grants: number;
   cancelled: number;
+};
+
+export type AssistantDeltaSubject = {
+  assistant_request: string;
+};
+
+export type AssistantDeltaData = {
+  request: string;
+  seq: number;
+  text: string;
+};
+
+export type AssistantModelsRefreshedSubject = {
+  assistant_connection: string;
+};
+
+export type AssistantModelsRefreshedData = {
+  adapter: string;
+  endpoint_host: string;
+  models: number;
 };
 
 export type AssistantPurgedSubject = Record<string, unknown>;
@@ -5518,11 +5635,38 @@ export type AssistantPurgedData = {
   reason: string;
 };
 
+export type AssistantRequestCreatedSubject = {
+  assistant_request: string;
+};
+
+export type AssistantRequestCreatedData = unknown;
+
 export type AssistantRequestFinishedSubject = {
   assistant_request: string;
 };
 
 export type AssistantRequestFinishedData = unknown;
+
+export type AssistantRequestStartedSubject = {
+  assistant_request: string;
+};
+
+export type AssistantRequestStartedData = unknown;
+
+export type AssistantStallNoticeSubject = {
+  assistant_request: string;
+  run?: unknown;
+};
+
+export type AssistantStallNoticeData = {
+  request: string;
+};
+
+export type AssistantTestFinishedSubject = {
+  assistant_connection: string;
+};
+
+export type AssistantTestFinishedData = unknown;
 
 export type AttentionPreferenceChangedSubject = {
   key: {
@@ -6774,8 +6918,14 @@ export interface EventMap {
   "agent.usage": { subject: AgentUsageSubject; data: AgentUsageData };
   "assistant.consent_granted": { subject: AssistantConsentGrantedSubject; data: AssistantConsentGrantedData };
   "assistant.consent_revoked": { subject: AssistantConsentRevokedSubject; data: AssistantConsentRevokedData };
+  "assistant.delta": { subject: AssistantDeltaSubject; data: AssistantDeltaData };
+  "assistant.models_refreshed": { subject: AssistantModelsRefreshedSubject; data: AssistantModelsRefreshedData };
   "assistant.purged": { subject: AssistantPurgedSubject; data: AssistantPurgedData };
+  "assistant.request_created": { subject: AssistantRequestCreatedSubject; data: AssistantRequestCreatedData };
   "assistant.request_finished": { subject: AssistantRequestFinishedSubject; data: AssistantRequestFinishedData };
+  "assistant.request_started": { subject: AssistantRequestStartedSubject; data: AssistantRequestStartedData };
+  "assistant.stall_notice": { subject: AssistantStallNoticeSubject; data: AssistantStallNoticeData };
+  "assistant.test_finished": { subject: AssistantTestFinishedSubject; data: AssistantTestFinishedData };
   "attention.preference_changed": { subject: AttentionPreferenceChangedSubject; data: AttentionPreferenceChangedData };
   "audit.recorded": { subject: AuditRecordedSubject; data: AuditRecordedData };
   "auth.elevate_denied": { subject: AuthElevateDeniedSubject; data: AuthElevateDeniedData };

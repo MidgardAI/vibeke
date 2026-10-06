@@ -36,9 +36,9 @@ libc.workspace = true
 crossterm.workspace = true
 rustix.workspace = true
 vk-term = { workspace = true }
+vk-assist = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 # api_schema_live: validate live results with a real JSON Schema 2020-12 validator (no network resolvers).
 jsonschema = { version = "0.58", default-features = false }
-vk-assist = { workspace = true }

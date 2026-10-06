@@ -424,6 +424,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                     return EXIT_USAGE;
                 }
             };
+            vk_cli::preset(noun, verb, &mut params);
             let mut g = g;
             if vk_cli::runs_on_viewing_machine(method)
                 && let Some(m) = g.machine.take()

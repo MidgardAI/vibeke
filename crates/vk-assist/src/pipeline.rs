@@ -60,7 +60,7 @@ pub struct Out {
 pub async fn run(
     job: Job<'_>,
     mut gate: impl FnMut(Attempt) -> Result<(), AssistError>,
-    sink: Option<&mut dyn FnMut(&str)>,
+    sink: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Out {
     let native = job.mode.native_schema.is_some();
     let o1 = provider::generate_with(

@@ -239,7 +239,7 @@ pub fn identity(machine: &str, session: &str, kind: &str, object: &Value) -> Str
     let mut ids: Vec<String> = vec![];
     if let Some(o) = object.as_object() {
         for (k, v) in o {
-            if matches!(k.as_str(), "machine" | "session") {
+            if matches!(k.as_str(), "machine" | "session" | "cursor") {
                 continue;
             }
             match v {

@@ -727,7 +727,7 @@ pub async fn generate_with(
     deadline: Instant,
     mode: &Mode,
     mut gate: impl FnMut(u32) -> Result<(), AssistError>,
-    mut sink: Option<&mut dyn FnMut(&str)>,
+    mut sink: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Outcome {
     let mut out = Outcome {
         result: Err(err(Category::ProviderUnavailable, "not attempted")),
@@ -847,7 +847,7 @@ async fn stream_body(
     adapter: Adapter,
     mut resp: reqwest::Response,
     mut out: Outcome,
-    mut sink: Option<&mut dyn FnMut(&str)>,
+    mut sink: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Outcome {
     let mut dec = StreamDecoder::new(adapter);
     let mut nothing = |_: &str| {};
