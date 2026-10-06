@@ -622,6 +622,55 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "agent calls fail with human_control until release",
     ),
     ("browser", "release", "browser.release", &["session"], ""),
+    (
+        "browser",
+        "diff",
+        "browser.diff",
+        &["a", "b"],
+        "<shotA> <shotB> [--threshold 0.1] [--force] [--out diff.png] — changed ratio, regions, diff image",
+    ),
+    (
+        "screenshot",
+        "list",
+        "screenshot.list",
+        &[],
+        "[--task t] [--preview v4] [--run r] [--since 1h] [--limit 50]",
+    ),
+    (
+        "screenshot",
+        "get",
+        "screenshot.get",
+        &["id"],
+        "<sN|id> [--out f.png] — environment, code state, running build, binding, path",
+    ),
+    (
+        "screenshot",
+        "open",
+        "screenshot.open",
+        &["id"],
+        "<sN|id> — copy to a local temp file and open it",
+    ),
+    (
+        "screenshot",
+        "diff",
+        "browser.diff",
+        &["a", "b"],
+        "<shotA> <shotB> [--threshold 0.1] [--force] [--out diff.png]",
+    ),
+    (
+        "screenshot",
+        "delete",
+        "screenshot.delete",
+        &["id"],
+        "<sN|id> [--force] (human only; --force for screenshots in an accepted review)",
+    ),
+    (
+        "screenshot",
+        "code-state",
+        "screenshot.code_state",
+        &["path"],
+        "[dir] — this checkout's code state as JSON (serve it at /__vibeke_build); runs locally",
+    ),
     ("api", "methods", "api.methods", &[], "list API methods"),
     ("client", "list", "client.list", &[], ""),
 ];
@@ -790,6 +839,15 @@ fn adjust(method: &str, p: &mut Value) {
         "browser.network" => {
             if let Some(f) = o.remove("failed") {
                 o.insert("failed_only".into(), f);
+            }
+        }
+        "browser.diff" | "screenshot.get" | "screenshot.open" | "screenshot.delete" => {
+            for k in ["a", "b", "id"] {
+                if let Some(v) = o.get_mut(k)
+                    && (v.is_number() || v.is_boolean())
+                {
+                    *v = Value::String(v.to_string());
+                }
             }
         }
         "interaction.answer" => {
@@ -996,6 +1054,28 @@ pub fn pretty(method: &str, v: &Value) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
+        "screenshot.list" => rows("screenshots")
+            .iter()
+            .map(|m| {
+                let code = match (
+                    m["code"]["head_sha"].as_str(),
+                    m["code"]["dirty_state"].as_str(),
+                ) {
+                    (Some(h), Some("dirty")) => format!("{}+dirty", &h[..h.len().min(7)]),
+                    (Some(h), _) => h[..h.len().min(7)].to_string(),
+                    _ => "-".into(),
+                };
+                format!(
+                    "{:<5} {:<36} {:<12} {:<14} {}",
+                    m["handle"].as_str().unwrap_or(""),
+                    m["label"].as_str().unwrap_or(""),
+                    m["binding"].as_str().unwrap_or(""),
+                    code,
+                    m["final_url"].as_str().or(m["url"].as_str()).unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         "pane.read" | "agent.read" => v["text"].as_str().unwrap_or("").to_string(),
         _ => serde_json::to_string_pretty(v).unwrap_or_default(),
     }
@@ -1007,12 +1087,28 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     adjust(method, &mut params);
-    // `browser screenshot --out f.png`: fetch the image inline and write it here (the server
-    // never writes to caller-chosen paths).
-    let out = (method == "browser.screenshot")
+    // `browser screenshot|diff --out f.png`, `screenshot get --out`: fetch the image inline and
+    // write it here (the server never writes to caller-chosen paths). `screenshot open` writes
+    // a temp file and opens it.
+    let images = matches!(
+        method,
+        "browser.screenshot" | "browser.diff" | "screenshot.get" | "screenshot.open"
+    );
+    let mut out = images
         .then(|| params.as_object_mut().and_then(|o| o.remove("out")))
         .flatten()
         .and_then(|v| v.as_str().map(PathBuf::from));
+    let open = method == "screenshot.open";
+    if open && out.is_none() {
+        let dir = std::env::temp_dir().join("vibeke-screenshots");
+        let _ = std::fs::create_dir_all(&dir);
+        let name = params
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("screenshot")
+            .replace(['/', '\\'], "_");
+        out = Some(dir.join(format!("{name}.png")));
+    }
     if out.is_some() {
         params["inline"] = json!(true);
     }
@@ -1036,6 +1132,9 @@ where
                             return EXIT_API;
                         }
                         v["out"] = json!(path);
+                        if open {
+                            v["opened"] = json!(open_locally(path));
+                        }
                     }
                     None => {
                         eprintln!(
@@ -1059,6 +1158,50 @@ where
         Err(e) => {
             print_error(&e);
             exit_code_for(&e)
+        }
+    }
+}
+
+/// Open a local file with the platform opener (`open` / `xdg-open`). `VIBEKE_NO_OPEN=1` (tests,
+/// headless sessions) only reports the path. Returns whether an opener was started.
+fn open_locally(path: &std::path::Path) -> bool {
+    if std::env::var_os("VIBEKE_NO_OPEN").is_some() {
+        return false;
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+/// `vibeke screenshot code-state [dir]`: the checkout's code state (06 B6 `CodeState`) as JSON,
+/// computed locally with read-only git. A dev/build script can serve this at
+/// `/__vibeke_build` so screenshots of that build become `bound` (15 §6.4).
+pub fn code_state(args: &[String]) -> i32 {
+    let dir = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    match vk_review::screenshot::capture_code_state(&dir) {
+        Ok(c) => {
+            println!("{}", serde_json::to_string(&c).unwrap_or_default());
+            EXIT_OK
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                json!({"error": {"kind": "not_a_checkout", "message": e.to_string(), "path": dir}})
+            );
+            EXIT_API
         }
     }
 }

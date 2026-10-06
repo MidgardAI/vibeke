@@ -37,3 +37,4 @@ futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }

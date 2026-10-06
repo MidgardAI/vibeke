@@ -18,8 +18,10 @@
 //! - [`install`]: `vibeke browser install` (pinned Chrome for Testing, SHA-256 verified).
 //! - [`snapshot`]: accessibility-tree text snapshots.
 //! - [`fake`]: a fake CDP browser for tests.
+//! - [`diff`]: visual diff of two screenshots (Stage 4, 06 B6).
 
 pub mod cdp;
+pub mod diff;
 pub mod fake;
 pub mod frame;
 pub mod headless;

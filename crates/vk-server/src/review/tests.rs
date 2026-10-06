@@ -2257,3 +2257,128 @@ async fn authorize_rejects_a_definition_the_user_did_not_see() {
     )
     .await;
 }
+
+// ---- Goal 03 Stage 4: screenshots as evidence (15 §6.4) ---------------------------------------
+
+fn shot_inputs(
+    pane: &str,
+    runtime: Option<vk_review::screenshot::RuntimeIdentity>,
+) -> crate::screenshots::ShotInputs {
+    use crate::screenshots::*;
+    ShotInputs {
+        environment: Environment {
+            kind: EnvKind::RemoteHeadless,
+            machine: "testbox".into(),
+            runner: "host".into(),
+            browser: "HeadlessChrome/153.0".into(),
+            browser_version: Some("153.0".into()),
+            viewport: Viewport {
+                width: 1440,
+                height: 900,
+            },
+            dpr: 1.0,
+            color_scheme: None,
+            device: None,
+            fresh_context: true,
+            profile: None,
+        },
+        url: "http://localhost:5173/".into(),
+        final_url: None,
+        title: None,
+        preview: None,
+        session: Some("b1".into()),
+        taken_by: Requester {
+            kind: "agent".into(),
+            pane: Some(pane.into()),
+            run: None,
+            client: None,
+        },
+        full_page: false,
+        selector: None,
+        checkout: None,
+        runtime,
+        probe_runtime: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn screenshots_are_browser_evidence_and_never_satisfy_checks() {
+    let e = Env::new();
+    e.add_run("r1", &e.repo);
+    put_pane(&e, "pane-r1", "ws1");
+    e.turn("r1", "Make the save button blue", &[], "ok");
+    let task = track(
+        &e,
+        "r1",
+        json!([{"text": "Tests pass", "checks": ["unit"]}, "Button looks right"]),
+    )
+    .await;
+    e.write("status.txt", "pass\n");
+    e.commit("blue button");
+    let png = vk_browser::fake::PNG_1X1;
+    // No running-build identity → illustrative.
+    let ill = crate::screenshots::record_screenshot(&e.server, png, shot_inputs("pane-r1", None))
+        .await
+        .unwrap();
+    assert_eq!(ill.run.as_deref(), Some("r1"));
+    assert_eq!(ill.binding, vk_review::screenshot::Binding::Illustrative);
+    // The running build reports exactly this checkout → bound.
+    let code = vk_review::screenshot::capture_code_state(&e.repo).unwrap();
+    let rt = vk_review::screenshot::RuntimeIdentity::from_report(
+        &serde_json::to_value(&code).unwrap(),
+        "caller",
+        now(),
+    );
+    let bound = crate::screenshots::record_screenshot(&e.server, png, shot_inputs("pane-r1", rt))
+        .await
+        .unwrap();
+    assert_eq!(bound.binding, vk_review::screenshot::Binding::Bound);
+
+    let pkg = review(&e, &task).await;
+    let shots = pkg["screenshots"].as_array().unwrap();
+    assert_eq!(shots.len(), 2, "{shots:#?}");
+    let row = |id: &str| shots.iter().find(|s| s["id"] == id).unwrap().clone();
+    let (ri, rb) = (row(&ill.id), row(&bound.id));
+    assert_eq!(ri["category"], "browser");
+    assert_eq!(ri["binding_here"], "illustrative");
+    assert_eq!(ri["supports"], "nothing");
+    assert!(ri["note"].as_str().unwrap().contains("Build not verified"));
+    assert_eq!(rb["binding_here"], "bound");
+    assert_eq!(rb["subject_match"], "this_revision");
+    assert_eq!(rb["supports"], "human_review_only");
+    assert_eq!(rb["label"], "testbox · headless · fresh context");
+    // Screenshots never satisfy the check criterion…
+    let c = criterion(&pkg, "Tests pass");
+    assert_ne!(c["status"], "supported", "{c}");
+    let refs = c["evidence_refs"].as_array().unwrap();
+    assert!(!refs.contains(&json!(ill.id)) && !refs.contains(&json!(bound.id)));
+    // …and the bound one supports the human criterion without passing it.
+    let h = criterion(&pkg, "Button looks right");
+    assert_eq!(h["status"], "needs_judgment", "{h}");
+    let refs = h["evidence_refs"].as_array().unwrap();
+    assert!(refs.contains(&json!(bound.id)));
+    assert!(!refs.contains(&json!(ill.id)));
+    assert_ne!(pkg["label"], "ready_for_review");
+
+    // A new commit: the bound screenshot shows another revision now → illustrative here.
+    e.write("status.txt", "pass\nmore\n");
+    e.commit("more");
+    let pkg = review(&e, &task).await;
+    let rb = pkg["screenshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == bound.id)
+        .unwrap()
+        .clone();
+    assert_eq!(rb["binding"], "bound");
+    assert_eq!(rb["binding_here"], "illustrative");
+    assert_eq!(rb["subject_match"], "other_revision");
+    let h = criterion(&pkg, "Button looks right");
+    assert!(
+        !h["evidence_refs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(bound.id))
+    );
+}

@@ -183,6 +183,17 @@ fn acceptances_of(c: &Core, task: &str) -> Vec<AcceptanceRec> {
         .unwrap_or_default()
 }
 
+/// Every recorded acceptance of a task (current and outdated), for screenshot retention
+/// (06 B6: evidence referenced by an acceptance is retained, 15 §11).
+pub fn acceptances_for(server: &Server, task: &str) -> Vec<ReviewAcceptance> {
+    server.with_core(|c| {
+        acceptances_of(c, task)
+            .into_iter()
+            .map(|a| a.acceptance)
+            .collect()
+    })
+}
+
 fn bindings_of(c: &Core, task: &str) -> Vec<TaskRunBinding> {
     let mut v: Vec<TaskRunBinding> = c
         .store
@@ -1574,6 +1585,16 @@ pub fn build_package(
     for cl in &claims {
         evidence.push(Evidence::from_observed(cl, None));
     }
+    // Screenshots (06 B6, §6.4): `browser` evidence, illustrative unless bound to the subject.
+    let bound_runs: Vec<String> = bs.iter().map(|b| b.run_id.clone()).collect();
+    let (shot_evidence, screenshots) = crate::screenshots::review_evidence(
+        server,
+        &task.id,
+        &bound_runs,
+        selected.as_ref(),
+        intent.as_ref(),
+    );
+    evidence.extend(shot_evidence);
 
     let snap = server.with_core(|c| live_snap(c));
     let (mut live, live_token) = live_from(&snap, &task.id, &bs, cands.checkout.as_deref());
@@ -1882,6 +1903,7 @@ pub fn build_package(
         "historical_only": cands.checkout.is_none() || !sources_verified,
         "observed_commands": observed.iter().map(command_json).collect::<Vec<_>>(),
         "claims": claims.iter().map(command_json).collect::<Vec<_>>(),
+        "screenshots": screenshots,
         "checks": check_json,
         "check_runs": runs.iter().map(|r| &r.run).collect::<Vec<_>>(),
         "assessment": assessment,

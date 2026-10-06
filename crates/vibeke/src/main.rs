@@ -204,6 +204,9 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        Some("screenshot") if args.get(1).map(String::as_str) == Some("code-state") => {
+            vk_cli::code_state(&args[2..])
+        }
         Some("debug") if args.get(1).map(String::as_str) == Some("latency") => {
             debug::latency(&g, &args[2..]).await
         }

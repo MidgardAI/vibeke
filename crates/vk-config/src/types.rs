@@ -115,7 +115,7 @@ pub struct Config {
     pub render: Render,
     pub compat: Compat,
     pub update: Update,
-    /// Sections owned by other crates (`collision`, `isolation`, `preview`, `security`,
+    /// Sections owned by other crates (`collision`, `isolation`, `preview`, `screenshots`, `security`,
     /// `plugins`), preserved verbatim so they are not reported as unknown.
     #[serde(skip_deserializing)]
     pub extra: BTreeMap<String, toml::Value>,
