@@ -38,6 +38,7 @@ export function Composer({
   interactions = null,
   more,
   onSent,
+  placeholder,
 }: {
   hostId: string;
   actions: PaneActions;
@@ -52,6 +53,8 @@ export function Composer({
   /** Content of the ⋯ popover (keys, quick replies, slash commands). */
   more?: ReactNode;
   onSent?: () => void;
+  /** Overrides the agent / shell placeholder (e.g. typing into an agent's own terminal). */
+  placeholder?: string;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const roomy = useMediaQuery('(min-width: 640px)');
@@ -247,7 +250,7 @@ export function Composer({
             ref={taRef}
             value={text}
             rows={1}
-            aria-label={isAgent ? t.composer2.placeholder : t.composer2.placeholderShell}
+            aria-label={placeholder ?? (isAgent ? t.composer2.placeholder : t.composer2.placeholderShell)}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
             onKeyDown={(e) => {
@@ -256,7 +259,7 @@ export function Composer({
                 void send();
               }
             }}
-            placeholder={isAgent ? (roomy ? t.composer2.placeholder : t.composer2.placeholderShort) : t.composer2.placeholderShell}
+            placeholder={placeholder ?? (isAgent ? (roomy ? t.composer2.placeholder : t.composer2.placeholderShort) : t.composer2.placeholderShell)}
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}

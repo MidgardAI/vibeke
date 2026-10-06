@@ -7,6 +7,7 @@ import { displayName, hostKind, paneTitle, transportOf, type DeviceInfo, type De
 import { useAllHosts, useApp, useHosts, useNow, usePrefs } from '../app/hooks';
 import { Button, Card, Dot, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle } from '../components/ui';
 import { t } from '../i18n';
+import { AGENT_VIEWS } from '../lib/agent-view';
 import { errorMessage } from '../lib/answer';
 import { clockTime, whenText } from '../lib/format';
 import { DEFAULT_QUICK_REPLIES } from '../lib/harness';
@@ -51,6 +52,30 @@ export function SettingsScreen() {
             value={prefs.theme}
             onChange={(v) => app.prefs.patch({ theme: v })}
             options={(['system', 'light', 'dark'] as const).map((v) => ({ value: v, label: t.settings.themes[v]! }))}
+          />
+        </Row>
+        <Row
+          label={t.settings.agentView}
+          hint={
+            <>
+              {t.settings.agentViewHint}
+              {Object.keys(prefs.agentViews).length > 0 && (
+                <>
+                  {' '}
+                  {t.settings.agentViewOverrides(Object.keys(prefs.agentViews).length)} ·{' '}
+                  <button type="button" className="vk-focus rounded-sm text-accent hover:underline" onClick={() => app.prefs.patch({ agentViews: {} })}>
+                    {t.settings.agentViewReset}
+                  </button>
+                </>
+              )}
+            </>
+          }
+        >
+          <Segmented
+            label={t.settings.agentView}
+            value={prefs.agentView}
+            onChange={(v) => app.prefs.patch({ agentView: v })}
+            options={AGENT_VIEWS.map((v) => ({ value: v, label: t.settings.agentViews[v]! }))}
           />
         </Row>
         <Row label={t.settings.termFont}>

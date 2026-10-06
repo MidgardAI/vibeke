@@ -154,4 +154,6 @@ export type UiCommand =
   | 'settings'
   | 'pair'
   | 'back'
-  | 'pop-out';
+  | 'pop-out'
+  /** Flip the current workspace's agent view (conversation ↔ terminal). */
+  | 'agent-view';

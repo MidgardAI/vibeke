@@ -94,14 +94,14 @@ function PaneWindow() {
   }, [route, app, own]);
   return (
     <div className="flex h-full flex-col">
-      {own && route.name === 'pane' ? <PaneWindowBody host={route.host} pane={route.pane} rows={rows} /> : <Spinner />}
+      {own && route.name === 'pane' ? <PaneWindowBody host={route.host} pane={route.pane} show={route.show ?? null} rows={rows} /> : <Spinner />}
       <Toasts />
       <KeyboardLayer surface="pane" />
     </div>
   );
 }
 
-function PaneWindowBody({ host, pane, rows }: { host: string; pane: string; rows: ReturnType<typeof useWorkspaceRows> }) {
+function PaneWindowBody({ host, pane, show, rows }: { host: string; pane: string; show: string | null; rows: ReturnType<typeof useWorkspaceRows> }) {
   const ws = workspaceOfPane(rows, host, pane);
   const hostState = useHosts().find((h) => h.record.host_id === host);
   if (!ws) {
@@ -112,7 +112,7 @@ function PaneWindowBody({ host, pane, rows }: { host: string; pane: string; rows
       </div>
     );
   }
-  return <WorkspaceScreen route={workspaceRoute(host, ws.workspace.id, { pane })} locked />;
+  return <WorkspaceScreen route={workspaceRoute(host, ws.workspace.id, { pane, show })} locked />;
 }
 
 function Main() {

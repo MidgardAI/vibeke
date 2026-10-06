@@ -107,7 +107,7 @@ export function resolveLegacy(route: Route, rows: readonly WorkspaceRow[], last:
     case 'pane': {
       const ws = workspaceOfPane(rows, route.host, route.pane);
       if (!ws) return null;
-      return workspaceRoute(ws.host, ws.workspace.id, { pane: route.pane, panel: route.view === 'changes' ? 'changes' : null });
+      return workspaceRoute(ws.host, ws.workspace.id, { pane: route.pane, panel: route.view === 'changes' ? 'changes' : null, show: route.show ?? null });
     }
     case 'panes':
     case 'focus': {

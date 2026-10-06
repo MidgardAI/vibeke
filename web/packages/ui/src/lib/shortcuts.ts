@@ -13,6 +13,7 @@ export type ShortcutAction =
   | { type: 'panel' }
   | { type: 'sidebar' }
   | { type: 'changes' }
+  | { type: 'agentView' }
   | { type: 'find' }
   | { type: 'palette' }
   | { type: 'help' };
@@ -60,6 +61,7 @@ function mapKey(e: KeyLike, ctx: KeyContext): ShortcutAction | null {
     if (k === 'k' && !e.shiftKey) return { type: 'palette' };
     if (k === '\\' && !e.shiftKey) return { type: 'sidebar' };
     if (k === 'e' && e.shiftKey) return { type: 'changes' };
+    if (k === 't' && e.shiftKey) return { type: 'agentView' };
     const n = Number(e.key);
     if (!e.shiftKey && Number.isInteger(n) && n >= 1 && n <= NUMBERED.length) return NUMBERED[n - 1]!;
     return null;
@@ -114,6 +116,7 @@ export const SHORTCUTS: readonly { keys: string[]; what: string }[] = [
   { keys: ['mod+3'], what: 'panel' },
   { keys: ['mod+shift+e'], what: 'changes' },
   { keys: ['mod+\\'], what: 'sidebar' },
+  { keys: ['mod+shift+t'], what: 'agentView' },
   { keys: ['mod+4'], what: 'settings' },
   { keys: ['/'], what: 'find' },
   { keys: ['?'], what: 'help' },

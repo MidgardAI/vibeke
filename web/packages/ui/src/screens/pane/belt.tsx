@@ -35,8 +35,9 @@ export function ActionBelt({
   harness: string | null;
   canType: boolean;
   onInsert(text: string): void;
-  zen: boolean;
-  setZen(v: boolean): void;
+  /** Zen (screen only) where the host screen offers it; omitted = no Zen row. */
+  zen?: boolean;
+  setZen?(v: boolean): void;
 }) {
   const tabs: { id: BeltTab; label: string; hide?: boolean }[] = [
     { id: 'keys', label: t.belt.keys, hide: !canType },
@@ -258,7 +259,7 @@ function AgentPanel({ actions, harness, onInsert }: { actions: PaneActions; harn
   );
 }
 
-function DisplayPanel({ zen, setZen }: { zen: boolean; setZen(v: boolean): void }) {
+function DisplayPanel({ zen, setZen }: { zen?: boolean; setZen?(v: boolean): void }) {
   const app = useApp();
   const prefs = usePrefs();
   return (
@@ -290,10 +291,12 @@ function DisplayPanel({ zen, setZen }: { zen: boolean; setZen(v: boolean): void 
           options={(['s', 'm', 'l'] as const).map((v) => ({ value: v, label: t.settings.sizes[v]! }))}
         />
       </div>
-      <div className="flex items-center justify-between">
-        <span className="text-sm">{t.pane.zen}</span>
-        <Toggle label={t.pane.zen} checked={zen} onChange={setZen} />
-      </div>
+      {setZen && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm">{t.pane.zen}</span>
+          <Toggle label={t.pane.zen} checked={!!zen} onChange={setZen} />
+        </div>
+      )}
     </div>
   );
 }

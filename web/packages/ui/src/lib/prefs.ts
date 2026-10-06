@@ -2,6 +2,7 @@
 // key-value storage (localStorage in the PWA). Push privacy and notify toggles live on each host
 // (`prefs.get/set`), DND is host-wide.
 
+import { MAX_VIEW_OVERRIDES, isAgentView, withViewOverride, type AgentView } from './agent-view';
 import { ValueStore } from './store';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -36,6 +37,10 @@ export interface Prefs {
   showDone: boolean;
   /** Sidebar host filter (host id), null = all hosts. */
   hostFilter: string | null;
+  /** How agents are shown by default: the structured conversation or the agent's own terminal. */
+  agentView: AgentView;
+  /** Per-workspace overrides of `agentView`, keyed `<host>/<workspace>`. */
+  agentViews: Record<string, AgentView>;
 }
 
 export const PANEL_MIN = 320;
@@ -60,6 +65,8 @@ export const DEFAULT_PREFS: Prefs = {
   collapsed: [],
   showDone: true,
   hostFilter: null,
+  agentView: 'conversation',
+  agentViews: {},
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -90,6 +97,12 @@ export function parsePrefs(raw: string | null): Prefs {
   if (typeof v.panelWidth === 'number' && Number.isFinite(v.panelWidth)) p.panelWidth = Math.round(Math.min(PANEL_MAX, Math.max(PANEL_MIN, v.panelWidth)));
   if (Array.isArray(v.collapsed)) p.collapsed = v.collapsed.filter((x): x is string => typeof x === 'string').slice(0, 20);
   if (typeof v.hostFilter === 'string') p.hostFilter = v.hostFilter;
+  if (isAgentView(v.agentView)) p.agentView = v.agentView;
+  if (isObj(v.agentViews)) {
+    const m: Record<string, AgentView> = {};
+    for (const [k, view] of Object.entries(v.agentViews).slice(-MAX_VIEW_OVERRIDES)) if (isAgentView(view)) m[k] = view;
+    p.agentViews = m;
+  }
   if (Array.isArray(v.pins)) p.pins = v.pins.filter((x): x is string => typeof x === 'string').slice(0, 200);
   if (isObj(v.seenDone)) {
     const s: Record<string, number> = {};
@@ -130,6 +143,10 @@ export class PrefsStore extends ValueStore<Prefs> {
   toggleCollapsed(id: string): void {
     const c = this.get().collapsed;
     this.patch({ collapsed: c.includes(id) ? c.filter((x) => x !== id) : [...c, id] });
+  }
+  /** Show agents of `host/workspace` as `view` on this device; null = back to the default. */
+  setWorkspaceView(host: string, workspace: string, view: AgentView | null): void {
+    this.patch({ agentViews: withViewOverride(this.get().agentViews, host, workspace, view) });
   }
   markSeen(runKey: string, doneRev: number): void {
     if (this.get().seenDone[runKey] === doneRev) return;

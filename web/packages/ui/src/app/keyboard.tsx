@@ -7,6 +7,7 @@ import { dialogOpen } from '../components/dialog';
 import { NewSheet } from '../components/new-sheet';
 import { Sheet } from '../components/ui';
 import { t } from '../i18n';
+import { agentViewCommands, type AgentView } from '../lib/agent-view';
 import { listNav, type NavAct } from '../lib/list-nav';
 import { SHORTCUTS, keyLabel, shortcutFor, type ShortcutAction } from '../lib/shortcuts';
 import type { PaneRow } from '../lib/tree';
@@ -30,6 +31,20 @@ export function isMacLike(explicit?: boolean): boolean {
 const bus = new Set<(cmd: UiCommand) => void>();
 export function emitUi(cmd: UiCommand): void {
   for (const f of [...bus]) f(cmd);
+}
+
+/** What a workspace screen is asked to show its agents as (`default` clears the override). */
+export type AgentViewRequest = AgentView | 'toggle' | 'default';
+const viewBus = new Set<(r: AgentViewRequest) => void>();
+/** The mounted workspace screen listens; returns an unsubscribe. */
+export function onAgentViewRequest(cb: (r: AgentViewRequest) => void): () => void {
+  viewBus.add(cb);
+  return () => viewBus.delete(cb);
+}
+/** Ask the workspace on screen to switch its agent view; false when none is mounted. */
+export function requestAgentView(r: AgentViewRequest): boolean {
+  for (const f of [...viewBus]) f(r);
+  return viewBus.size > 0;
 }
 
 type SheetState = { kind: 'new' } | { kind: 'share'; row: PaneRow } | { kind: 'handoff'; row: PaneRow } | null;
@@ -131,6 +146,8 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
           return surface === 'full' && actionsRef.current.sidebar();
         case 'changes':
           return surface === 'full' && actionsRef.current.changes();
+        case 'agentView':
+          return surface !== 'quick' && requestAgentView('toggle');
         case 'next':
           return listNav.move(1);
         case 'prev':
@@ -212,6 +229,8 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
           case 'pop-out':
             if (paneHost && paneId) app.platform.windows?.popOutPane?.(paneHost, paneId);
             return;
+          case 'agent-view':
+            return void requestAgentView('toggle');
         }
     };
     bus.add(handle);
@@ -255,12 +274,20 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
         out.unshift(c('handoff', t.palette.handoff, () => setSheet({ kind: 'handoff', row: paneRow }), undefined, 'move'));
         out.unshift(c('share', t.palette.share, () => setSheet({ kind: 'share', row: paneRow }), undefined, 'invite'));
       }
+      // Agent view of the pane's workspace (only where it has agents).
+      const ws = paneRow.pane.workspace;
+      const hasAgent = ws && tree.all.some((r) => r.host === paneRow.host && r.pane.workspace === ws && r.run);
+      if (ws && hasAgent) {
+        const titles = { 'view-conversation': t.palette.showAsConversation, 'view-terminal': t.palette.showAsTerminal, 'view-default': t.palette.viewDefault };
+        for (const v of agentViewCommands(prefs, paneRow.host, ws))
+          out.push(c(v.id, titles[v.id], () => requestAgentView(v.request), v.flip ? keyLabel(mac, 'mod+shift+t') : undefined, 'agent view conversation terminal tui chat'));
+      }
       const pop = app.platform.windows?.popOutPane;
       if (pop && surface === 'full') out.unshift(c('popout', t.palette.popOut, () => pop(paneRow.host, paneRow.pane.id), mac ? '⇧⌘O' : 'Ctrl+Shift+O', 'window'));
     }
     for (const x of app.platform.extensions?.commands?.() ?? []) out.push({ id: `x:${x.id}`, group: 'command', title: x.title, sub: x.hint, keywords: x.keywords, run: x.run });
     return out;
-  }, [mac, prefs.theme, paneRow, app, surface]);
+  }, [mac, prefs.theme, prefs.agentView, prefs.agentViews, paneRow, tree, app, surface]);
 
   if (surface === 'quick') {
     return <CheatSheet open={help} onClose={() => setHelp(false)} mac={mac} />;

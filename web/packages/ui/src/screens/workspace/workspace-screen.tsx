@@ -1,15 +1,17 @@
 // The workspace centre (spec 16 §9.1): a title bar (title, muted repo, ⋯; Preview, Share, Hand
 // off, panel toggle), the tab strip (agents, their terminals, shells, previews) and the selected
-// tab — an agent's conversation with the composer, a terminal mirror, or a preview. An agent
-// opens on its conversation; panes without an agent open on the terminal.
+// tab — an agent's conversation with the composer, a terminal mirror (key belt, composer typing
+// into the pane), or a preview. An agent opens on the workspace's agent view (conversation by
+// default, or the agent's own terminal UI; lib/agent-view.ts); panes without an agent open on the
+// terminal.
 // `locked` (a popped-out pane window): only the bound pane's tabs, no sidebar or panel controls,
 // and switching tabs stays inside the window.
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { MonitorPlay, MoreHorizontal, OctagonX, PanelRight, Pencil, PictureInPicture2, Plus, Search, Send, Server, Share2, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, MonitorPlay, MoreHorizontal, OctagonX, PanelRight, Pencil, PictureInPicture2, Plus, RotateCcw, Search, Send, Server, Share2, Trash2 } from 'lucide-react';
 import { groupBatches, hostKind, type InboxItem } from '@vibeke/core';
 import { useApp, useHost, useHosts, useInboxItems, usePrefs } from '../../app/hooks';
-import { emitUi, isMacLike } from '../../app/keyboard';
+import { emitUi, isMacLike, onAgentViewRequest, type AgentViewRequest } from '../../app/keyboard';
 import { effectivePanel, layoutModeFor, rememberTab, selectedPane, togglePanelRoute, useWorkspaceRows } from '../../app/selection';
 import { MenuButton as SidebarButton, useMediaQuery, useWide } from '../../app/shell';
 import { useSurface } from '../../app/surface';
@@ -18,6 +20,7 @@ import { InteractionCard } from '../../components/interaction-card';
 import { NewSheet } from '../../components/new-sheet';
 import { Button, Empty, IconButton, Notice, Sheet, Spinner, TextField, cx } from '../../components/ui';
 import { t } from '../../i18n';
+import { agentViewFor, hasViewOverride, otherView, paneTabId, showFor, tabBody, type AgentView } from '../../lib/agent-view';
 import { errorMessage } from '../../lib/answer';
 import { composerShowsStop } from '../../lib/guards';
 import { TAB_PANEL_ID, tabDomId } from '../../lib/tabs-nav';
@@ -28,7 +31,7 @@ import { runKey } from '../../lib/tree';
 import type { WorkspaceRow } from '../../lib/workspaces';
 import { navigate, type WorkspaceRoute } from '../../router';
 import { HandoffSheet } from '../handoff';
-import { usePaneActions } from '../pane/actions';
+import { usePaneActions, type PaneActions } from '../pane/actions';
 import { ActionBelt, type BeltTab } from '../pane/belt';
 import { Composer } from '../pane/composer';
 import { ShareSheet } from '../share';
@@ -84,11 +87,9 @@ export function WorkspaceScreen({ route, locked = false }: { route: WorkspaceRou
   return <Workspace route={route} row={row} current={current} locked={locked} />;
 }
 
-/** The tab the route selects (`show` = `term` / `preview:<id>`; else the pane's default). */
-export function currentTabId(current: PaneRow, show: string | null | undefined): string {
-  if (show?.startsWith('preview:')) return `p:${show.slice('preview:'.length)}`;
-  if (show === 'term' || !current.run) return `t:${current.pane.id}`;
-  return `a:${current.pane.id}`;
+/** The tab the route selects (`show` = `term` / `conversation` / `preview:<id>`; else the pane's default). */
+export function currentTabId(current: PaneRow, show: string | null | undefined, view: AgentView = 'conversation'): string {
+  return paneTabId(current.pane.id, !!current.run, show, view);
 }
 
 function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row: WorkspaceRow; current: PaneRow; locked: boolean }) {
@@ -105,22 +106,56 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
   const online = host?.status === 'online';
   const full = scope === 'full' && online;
   const previews = useMemo(() => workspacePreviews(row, host?.dashboard?.previews), [row, host?.dashboard?.previews]);
-  const allTabs = useMemo(() => workspaceTabs(row, previews), [row, previews]);
+  const view = agentViewFor(prefs, row.host, row.workspace.id);
+  const overridden = hasViewOverride(prefs, row.host, row.workspace.id);
+  const allTabs = useMemo(() => workspaceTabs(row, previews, view), [row, previews, view]);
   const tabs = locked ? allTabs.filter((x) => x.pane?.pane.id === current.pane.id && x.kind !== 'preview') : allTabs;
-  const tabId = currentTabId(current, show);
+  const tabId = currentTabId(current, show, view);
   const tab: WsTab | null = allTabs.find((x) => x.id === tabId) ?? null;
+  const body = tabBody(tabId, view);
+  const hasAgents = locked ? !!current.run : row.panes.some((p) => p.run);
+  /** What the toggle shows as on: the agent body on screen, else the workspace's view. */
+  const shownView: AgentView = current.run && body !== 'preview' ? body : view;
   const [findOpen, setFindOpen] = useState(false);
   const [sheet, setSheet] = useState<null | 'new' | 'share' | 'handoff' | 'rename-pane' | 'close-pane' | 'rename-tab' | 'close-tab'>(null);
 
   const select = useCallback(
     (x: WsTab) => {
-      const s = x.kind === 'preview' ? `preview:${x.preview!.id}` : x.kind === 'term' && x.pane?.run ? 'term' : null;
+      const s =
+        x.kind === 'preview'
+          ? `preview:${x.preview!.id}`
+          : x.kind === 'term' && x.pane?.run
+            ? showFor('terminal', view)
+            : x.kind === 'conv'
+              ? showFor('conversation', view)
+              : null;
       if (locked) return setLocalShow(s);
       navigate({ ...route, pane: x.pane?.pane.id ?? route.pane, show: s, view: null }, { replace: true });
     },
-    [locked, route],
+    [locked, route, view],
   );
-  const openTerminal = () => select({ id: `t:${current.pane.id}`, kind: 'term', pane: current, preview: null, label: '', title: '', secondary: true, status: null });
+  const openTerminal = () => {
+    const s = showFor('terminal', view);
+    if (locked) return setLocalShow(s);
+    navigate({ ...route, pane: current.pane.id, show: s, view: null }, { replace: true });
+  };
+
+  /**
+   * Switch the workspace's agent view on this device (null = back to the default) and show it:
+   * the selected agent's primary tab, or the first agent's when a shell or preview is selected.
+   */
+  const setView = (v: AgentView | null) => {
+    app.prefs.setWorkspaceView(row.host, row.workspace.id, v);
+    if (locked) return setLocalShow(null);
+    const target = current.run ? current : row.panes.find((p) => p.run);
+    if (target) navigate({ ...route, pane: target.pane.id, show: null, view: null }, { replace: true });
+  };
+  const viewReq = useRef<(r: AgentViewRequest) => void>(() => {});
+  viewReq.current = (r) => {
+    if (!hasAgents) return;
+    setView(r === 'toggle' ? otherView(shownView) : r === 'default' ? null : r);
+  };
+  useEffect(() => onAgentViewRequest((r) => viewReq.current(r)), []);
 
   const panelMode = layoutModeFor(typeof window === 'undefined' ? 1440 : window.innerWidth);
   const panelOpen = !locked && !!effectivePanel(route, prefs, panelMode);
@@ -170,7 +205,8 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
 
   const wsMenu: (MenuItem | 'sep' | false)[] = [
     { label: t.tabs2.renamePane, icon: <Pencil />, disabled: !full, onSelect: () => setSheet('rename-pane') },
-    tab?.kind === 'term' && { label: t.tabs2.findInTerminal, icon: <Search />, onSelect: () => setFindOpen(true) },
+    hasAgents && overridden && { label: t.tabs2.useDefaultView(t.settings.agentViews[prefs.agentView]!), icon: <RotateCcw />, onSelect: () => setView(null) },
+    body === 'terminal' && { label: t.tabs2.findInTerminal, icon: <Search />, onSelect: () => setFindOpen(true) },
     !!popOut && { label: t.palette.popOut, icon: <PictureInPicture2 />, onSelect: () => popOut(row.host, current.pane.id) },
     narrow && canShare && { label: t.tabs2.share, icon: <Share2 />, onSelect: () => setSheet('share') },
     narrow && canShare && { label: t.tabs2.handoff, icon: <Send />, onSelect: () => setSheet('handoff') },
@@ -197,7 +233,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
         {titleBlock}
         <MenuButton label={t.tabs2.workspaceMenu} icon={<MoreHorizontal />} align={narrow ? 'right' : 'left'} items={wsMenu} />
         {!narrow && <span className="flex-1" />}
-        {tab?.kind === 'term' && (
+        {body === 'terminal' && (
           <IconButton label={t.pane.find} data-find aria-keyshortcuts="/" onClick={() => setFindOpen(true)} className={cx(narrow && 'hidden')}>
             <Search />
           </IconButton>
@@ -227,6 +263,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
         onNewTerminal={full ? () => void newTerminal() : undefined}
         tabMenu={tabMenu}
         locked={locked}
+        viewToggle={hasAgents ? { value: shownView, mac, onChange: (v) => setView(v) } : null}
       />
       <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={tab && tabs.some((x) => x.id === tab.id) ? tabDomId(tab.id) : undefined} className="flex min-h-0 flex-1 flex-col">
         {!locked && showsCentreDiff(route) ? (
@@ -246,7 +283,7 @@ function Workspace({ route, row, current, locked }: { route: WorkspaceRoute; row
             key={`${row.host}/${current.pane.id}`}
             hostId={row.host}
             row={current}
-            mode={tab?.kind === 'agent' ? 'agent' : 'term'}
+            mode={current.run && body === 'conversation' ? 'conversation' : 'terminal'}
             findOpen={findOpen}
             setFindOpen={setFindOpen}
             onOpenTerminal={openTerminal}
@@ -309,7 +346,8 @@ function PaneBody({
 }: {
   hostId: string;
   row: PaneRow;
-  mode: 'agent' | 'term';
+  /** `conversation` (agents only) or `terminal` (the pane's own screen, an agent's TUI too). */
+  mode: AgentView;
   findOpen: boolean;
   setFindOpen(v: boolean): void;
   onOpenTerminal(): void;
@@ -322,13 +360,18 @@ function PaneBody({
   const online = host?.status === 'online';
   const canType = scope === 'full' && online;
   const working = run?.execution.value === 'working' || run?.execution.value === 'starting';
+  const term = mode === 'terminal';
   const [refreshKey, setRefreshKey] = useState(0);
   const burstRef = useRef<(() => void) | null>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const onSent = useCallback(() => {
     burstRef.current?.();
     setRefreshKey((k) => k + 1);
   }, []);
-  const actions = usePaneActions(hostId, row.pane.id, run, scope, onSent);
+  const paneActions = usePaneActions(hostId, row.pane.id, run, scope, onSent);
+  // The terminal types into the pane (`pane.send_text` + Enter), even when an agent runs there:
+  // the user is talking to the agent's own interface, not prompting it through the host.
+  const actions = useMemo<PaneActions>(() => (term ? { ...paneActions, text: (s, o) => paneActions.text(s, { ...o, raw: true }) } : paneActions), [paneActions, term]);
   const [text, setText] = useState('');
   const [belt, setBelt] = useState<BeltTab | null>(null);
   const [noEcho, setNoEcho] = useState(false);
@@ -339,21 +382,62 @@ function PaneBody({
     if (run) app.prefs.markSeen(runKey(hostId, run.id), run.done_rev);
   }, [run?.id, run?.done_rev]);
 
-  const approvals = cards.length > 0 ? <Approvals items={cards} /> : null;
+  /** Typing focus: the composer's text box (clicking the screen puts the caret there). */
+  const focusComposer = useCallback(() => {
+    composerRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus({ preventScroll: true });
+  }, []);
+  // Switching to the terminal on a pointer device: ready to type.
+  useEffect(() => {
+    if (!term || !canType) return;
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return;
+    const active = document.activeElement;
+    // Keep focus where the user put it (a tab being walked with the arrow keys, a field…); only
+    // from nowhere or from the view toggle does typing focus move to the composer.
+    if (active && active !== document.body && !active.closest('[data-view-toggle]')) return;
+    focusComposer();
+  }, [term, canType]);
+
+  const beltEl = (
+    <ActionBelt
+      tab={term ? belt : (belt ?? 'keys')}
+      setTab={setBelt}
+      actions={actions}
+      harness={run?.harness ?? null}
+      canType={canType}
+      onInsert={(s) => setText((cur) => (cur ? `${cur} ${s}` : s))}
+    />
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {mode === 'agent' && run ? (
-        <Conversation hostId={hostId} pane={row.pane.id} run={run} cwd={run.cwd ?? row.pane.cwd} refreshKey={refreshKey} onOpenTerminal={onOpenTerminal} tail={approvals} />
+      {mode === 'conversation' && run ? (
+        <Conversation
+          hostId={hostId}
+          pane={row.pane.id}
+          run={run}
+          cwd={run.cwd ?? row.pane.cwd}
+          refreshKey={refreshKey}
+          onOpenTerminal={onOpenTerminal}
+          tail={cards.length > 0 ? <Approvals items={cards} /> : null}
+        />
       ) : (
         <>
-          <TerminalTab hostId={hostId} pane={row.pane.id} working={working} findOpen={findOpen} setFindOpen={setFindOpen} onNoEcho={setNoEcho} burstRef={burstRef} />
-          {approvals && <div className="max-h-[45vh] shrink-0 space-y-2 overflow-y-auto border-t border-border px-3 py-2">{approvals}</div>}
+          <TerminalTab
+            hostId={hostId}
+            pane={row.pane.id}
+            working={working}
+            findOpen={findOpen}
+            setFindOpen={setFindOpen}
+            onNoEcho={setNoEcho}
+            burstRef={burstRef}
+            onActivate={canType ? focusComposer : undefined}
+          />
+          {cards.length > 0 && <ApprovalDock items={cards} />}
         </>
       )}
       <div className="shrink-0 pb-safe">
         <div className="mx-auto w-full max-w-[780px] space-y-1 px-3 empty:hidden sm:px-4">
-          {mode === 'term' && noEcho && canType && <Notice tone="warn">{t.composer.password}</Notice>}
+          {term && noEcho && canType && <Notice tone="warn">{t.composer.password}</Notice>}
           {!online && <Notice tone="warn">{t.composer.offline}</Notice>}
           {online && scope === 'view' && <Notice>{t.composer.readOnly}</Notice>}
           {online && scope === 'approve' && (
@@ -370,31 +454,45 @@ function PaneBody({
             </Notice>
           )}
         </div>
+        {/* Terminal: the key belt stays on screen (keys, quick replies, agent commands). */}
+        {term && <div data-belt>{beltEl}</div>}
         {canType && (
-          <Composer
-            hostId={hostId}
-            actions={actions}
-            text={text}
-            setText={setText}
-            isAgent={!!run && mode === 'agent'}
-            sttAvailable={host?.info?.features.includes('stt') ?? false}
-            run={run}
-            interactions={host?.dashboard?.interactions}
-            more={
-              <ActionBelt
-                tab={belt ?? 'keys'}
-                setTab={setBelt}
-                actions={actions}
-                harness={run?.harness ?? null}
-                canType={canType}
-                onInsert={(s) => setText((cur) => (cur ? `${cur} ${s}` : s))}
-                zen={false}
-                setZen={() => {}}
-              />
-            }
-          />
+          <div ref={composerRef}>
+            <Composer
+              hostId={hostId}
+              actions={actions}
+              text={text}
+              setText={setText}
+              isAgent={!!run && !term}
+              placeholder={term && run ? t.composer2.placeholderTerm : undefined}
+              sttAvailable={host?.info?.features.includes('stt') ?? false}
+              run={run}
+              interactions={host?.dashboard?.interactions}
+              more={term ? undefined : beltEl}
+            />
+          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Approvals under the terminal: a collapsible dock, so they are never lost behind the screen. */
+function ApprovalDock({ items }: { items: InboxItem[] }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="shrink-0 border-t border-border bg-bg" data-approval-dock>
+      <button type="button" aria-expanded={open} className="vk-focus flex h-9 w-full items-center gap-2 px-3 text-sm font-medium" onClick={() => setOpen(!open)}>
+        <span className="size-2 rounded-full bg-need-strong" />
+        {t.pane.cards(items.length)}
+        <span className="flex-1" />
+        {open ? <ChevronDown className="size-4 text-muted" /> : <ChevronUp className="size-4 text-muted" />}
+      </button>
+      {open && (
+        <div className="max-h-[40vh] overflow-y-auto px-3 pb-2">
+          <Approvals items={items} />
+        </div>
+      )}
     </div>
   );
 }

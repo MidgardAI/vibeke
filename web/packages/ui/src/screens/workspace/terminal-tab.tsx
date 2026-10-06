@@ -1,5 +1,6 @@
 // A pane's terminal as a workspace tab: the polled screen mirror with find (/ or ⌘F), an offline
-// note with the last screen's age, and the password-prompt warning for the composer.
+// note with the last screen's age, and the password-prompt warning for the composer. Clicking the
+// screen (without selecting text) hands typing focus to the composer.
 
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
@@ -20,6 +21,7 @@ export function TerminalTab({
   setFindOpen,
   onNoEcho,
   burstRef,
+  onActivate,
 }: {
   hostId: string;
   pane: string;
@@ -30,6 +32,8 @@ export function TerminalTab({
   onNoEcho(v: boolean): void;
   /** Filled with the mirror's burst (fast polls after a send). */
   burstRef: { current: (() => void) | null };
+  /** A click on the screen that selected nothing: focus the composer. */
+  onActivate?: () => void;
 }) {
   const prefs = usePrefs();
   const host = useHost(hostId);
@@ -89,7 +93,16 @@ export function TerminalTab({
         </div>
       )}
       {!online && mirror.at && <Notice tone="warn" className="m-2">{t.pane.offlineMirror(ago(mirror.at, now))}</Notice>}
-      <div className="relative min-h-0 flex-1">
+      <div
+        className="relative min-h-0 flex-1"
+        data-terminal-screen
+        onMouseUp={(e) => {
+          if (!onActivate || e.button !== 0) return;
+          const sel = window.getSelection?.();
+          if (sel && !sel.isCollapsed && sel.toString()) return;
+          onActivate();
+        }}
+      >
         {mirror.text ? (
           <TerminalMirror
             text={mirror.text}

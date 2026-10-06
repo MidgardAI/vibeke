@@ -1,5 +1,5 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
-// `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|preview:<id>`, push deep links from the gateway
+// `?panel=changes|files|off&file=…&commit=…&base=…&view=diff&show=term|conversation|preview:<id>`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`) and the pairing link `#/pair?d=…`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
 // parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
@@ -24,7 +24,11 @@ export interface WorkspaceRoute {
   base?: string | null;
   /** `diff`: the centre shows `file`'s diff (from `commit` / `base` when set) as a transient view. */
   view?: 'diff' | null;
-  /** The tab's centre: null = default (conversation for agents), `term`, or `preview:<id>`. */
+  /**
+   * The tab's centre: null = the pane's default (agents: the workspace's agent view, see
+   * lib/agent-view.ts), `term` / `conversation` (an agent's terminal or conversation), or
+   * `preview:<id>`.
+   */
   show?: string | null;
 }
 
@@ -35,7 +39,7 @@ export type Route =
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
   | WorkspaceRoute
-  | { name: 'pane'; host: string; pane: string; view: PaneView }
+  | { name: 'pane'; host: string; pane: string; view: PaneView; show?: string | null }
   | { name: 'interaction'; host: string; id: string; preselect: 'allow' | 'deny' | null }
   | { name: 'run'; host: string; run: string }
   | { name: 'not_found'; path: string };
@@ -98,7 +102,8 @@ export function parseRoute(hash: string): Route {
     case 'h':
       if (b && c === 'p' && d) {
         const view: PaneView = e === 'history' || e === 'changes' ? e : 'term';
-        return { name: 'pane', host: b, pane: d, view };
+        const show = opt('show');
+        return show ? { name: 'pane', host: b, pane: d, view, show } : { name: 'pane', host: b, pane: d, view };
       }
       break;
     case 'i':
@@ -147,7 +152,7 @@ export function formatRoute(r: Route): string {
       return `#/w/${enc(r.host)}/${enc(r.workspace)}${r.pane ? `/t/${enc(r.pane)}` : ''}${qs ? `?${qs}` : ''}`;
     }
     case 'pane':
-      return `#/h/${enc(r.host)}/p/${enc(r.pane)}${r.view === 'term' ? '' : `/${r.view}`}`;
+      return `#/h/${enc(r.host)}/p/${enc(r.pane)}${r.view === 'term' ? '' : `/${r.view}`}${r.show ? `?show=${enc(r.show)}` : ''}`;
     case 'interaction':
       return `#/i/${enc(r.host)}/${enc(r.id)}${r.preselect ? `?do=${r.preselect}` : ''}`;
     case 'run':
