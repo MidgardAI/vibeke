@@ -385,6 +385,7 @@ pub fn on_media(app: &mut App, mi: usize, m: MediaFrame) {
             Gfx::Kitty => {
                 let mut h = Header::new(id, PixelFormat::Rgba, t.w, t.h);
                 h.virtual_cells = Some((t.cols.max(1), t.rows.max(1)));
+                h.placement = Some(1);
                 h.quiet = 2;
                 match &t.data {
                     TileData::Shm { name, len } if shm_ok => {

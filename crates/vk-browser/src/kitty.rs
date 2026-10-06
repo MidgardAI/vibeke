@@ -360,6 +360,9 @@ pub struct Header {
     pub zlib: bool,
     /// `U=1,c=,r=`: create a virtual placement of `cols × rows` cells.
     pub virtual_cells: Option<(u16, u16)>,
+    /// `p=`: placement id, so re-sending a tile replaces its virtual placement instead of
+    /// adding another one.
+    pub placement: Option<u32>,
     /// `q=`: 0 all replies, 1 errors only, 2 none.
     pub quiet: u8,
 }
@@ -374,6 +377,7 @@ impl Header {
             height,
             zlib: false,
             virtual_cells: None,
+            placement: None,
             quiet: 2,
         }
     }
@@ -398,6 +402,9 @@ impl Header {
         }
         if let Some((c, r)) = self.virtual_cells {
             s.push_str(&format!(",U=1,c={c},r={r}"));
+            if let Some(p) = self.placement {
+                s.push_str(&format!(",p={p}"));
+            }
         }
         s
     }

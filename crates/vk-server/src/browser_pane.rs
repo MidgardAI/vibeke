@@ -579,8 +579,18 @@ pub fn view(server: &Arc<Server>, sub: u64, notify: &Arc<Notify>, panes: &[Media
                 t.clone()
             } else {
                 let remote_owner = !mp.owner.is_empty();
+                // A remote owner's record may only start the page on that machine's loopback
+                // (fall back to the latest loopback URL in its history).
                 let (url, error) = if initial_url_ok(&mp.spec.url, remote_owner) {
                     (mp.spec.url.clone(), None)
+                } else if let Some(u) = mp
+                    .spec
+                    .history
+                    .iter()
+                    .rev()
+                    .find(|u| *u != "about:blank" && initial_url_ok(u, remote_owner))
+                {
+                    (u.clone(), None)
                 } else {
                     (
                         "about:blank".to_string(),
@@ -2101,6 +2111,11 @@ pub async fn open_pane(
 pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
         "browser.pane.create" => create_pane(server, ctx, p),
+        "browser.pane.update" | "browser.command" if ctx.pane_scope.is_some() => Err(err(
+            ErrorKind::PermissionDenied,
+            format!("{method} is not allowed from a pane"),
+        )
+        .details(json!({"scope": "pane"}))),
         "browser.pane.update" => {
             let pane = match s(p, "pane") {
                 Some(x) => x,

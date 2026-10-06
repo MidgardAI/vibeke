@@ -2084,6 +2084,11 @@ impl App {
     }
 
     fn prompt_key(&mut self, ev: KeyEvent, mut p: Prompt) {
+        if ev.kind == KeyKind::Release {
+            // Kitty hosts report releases; only presses type.
+            self.mode = Mode::Prompt(p);
+            return;
+        }
         match ev.key {
             Key::Named(NamedKey::Escape) => {}
             Key::Named(NamedKey::Enter) => self.submit_prompt(p),

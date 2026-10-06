@@ -494,3 +494,45 @@ pub struct Preview {
     pub first_seen_ms: i64,
     pub last_seen_ms: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pane records stored before browser panes existed load with `browser: None`; browser panes
+    /// round-trip through JSON (the store) and postcard (the render stream).
+    #[test]
+    fn browser_pane_persistence() {
+        let old = serde_json::json!({
+            "id": "P", "handle": "w1:p1", "tab": "T", "workspace": "W", "title": null,
+            "auto_title": "zsh", "cwd": "/tmp", "cols": 80, "rows": 24, "child_pid": 1,
+            "fg_cmdline": [], "exited": false, "exit_code": null, "unread": false,
+            "marked_unread": false, "pinned": false, "created_by": "user", "recovered": null
+        });
+        let p: Pane = serde_json::from_value(old).unwrap();
+        assert!(p.browser.is_none() && !p.is_browser());
+        let mut b = p.clone();
+        b.child_pid = None;
+        b.browser = Some(BrowserPane {
+            url: "http://localhost:5173/".into(),
+            machine: String::new(),
+            task: Some("K".into()),
+            preview: Some("V".into()),
+            source_pane: Some("P".into()),
+            history: vec!["http://localhost:5173/".into()],
+            history_index: 0,
+            title: "app".into(),
+        });
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["browser"]["url"], "http://localhost:5173/");
+        let back: Pane = serde_json::from_value(j).unwrap();
+        assert_eq!(back, b);
+        let m = SessionModel {
+            panes: vec![p, b.clone()],
+            ..Default::default()
+        };
+        let bytes = crate::frame::encode(&m).unwrap();
+        let back: SessionModel = crate::frame::decode(&bytes[4..]).unwrap();
+        assert_eq!(back.panes[1], b);
+    }
+}

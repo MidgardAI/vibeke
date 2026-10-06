@@ -413,6 +413,7 @@ async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R
                 crate::agents::METHODS
                     .iter()
                     .chain(crate::preview::METHODS)
+                    .chain(crate::browser_pane::METHODS)
                     .map(|(n, m)| json!({"name": n, "mutating": m})),
             );
             Ok(json!({"methods": v}))
