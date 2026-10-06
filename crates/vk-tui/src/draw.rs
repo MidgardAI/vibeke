@@ -438,7 +438,13 @@ pub(crate) fn workspace_rows(
         ),
         (w.display_name().to_string(), name_style),
     ];
-    if let Some(b) = &w.branch {
+    // jj bookmark / change of the workspace's focused pane wins over the recorded branch (a
+    // jj checkout's "branch" is a bookmark that may not exist yet, 05 §4).
+    let jj = target
+        .as_ref()
+        .and_then(|pid| m.model.panes.iter().find(|p| &p.id == pid))
+        .and_then(|p| p.jj.as_deref());
+    if let Some(b) = jj.or(w.branch.as_deref()) {
         segs.push((format!(" ⎇ {b}"), t.dim()));
     }
     if !bg.is_empty() {
@@ -473,6 +479,9 @@ pub(crate) fn workspace_rows(
             let mut segs = vec![(format!("{pad}    {}", p.display_title()), t.dim())];
             if let Some(gl) = isolation_glyph(app, &p.isolation) {
                 segs.push((format!(" {gl}"), t.s(t.accent)));
+            }
+            if let Some(b) = &p.jj {
+                segs.push((format!(" ⎇ {b}"), t.dim()));
             }
             rows.push(SideRow {
                 segs,

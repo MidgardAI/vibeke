@@ -30,6 +30,7 @@ pub mod search;
 pub mod theme;
 pub mod timers;
 pub mod tracking;
+pub mod vcs;
 
 #[cfg(test)]
 mod scope_catalog_tests;
@@ -710,6 +711,7 @@ impl Server {
             recovered: None,
             isolation,
             browser: None,
+            jj: None,
         };
         tx.m.holder(&id, &socket, &key, 0, Some(holder_pid), Some(child_pid));
         tx.event(

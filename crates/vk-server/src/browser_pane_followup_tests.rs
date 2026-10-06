@@ -88,6 +88,7 @@ impl Env {
             recovered: None,
             isolation: Default::default(),
             browser,
+            jj: None,
         };
         let mut c = self.server.core.lock().unwrap();
         let mut tx = Tx::new();
