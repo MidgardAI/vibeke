@@ -64,7 +64,7 @@ choice_enum!(RemoteWrite { AskOnce = "ask_once", Allow = "allow", Deny = "deny" 
 choice_enum!(MouseSelectInApps { Modifier = "modifier", Always = "always" } default Modifier);
 choice_enum!(PasteTranslate { PathsOnly = "paths_only", Embedded = "embedded", Ask = "ask", Off = "off" } default PathsOnly);
 choice_enum!(AltgrMode { Auto = "auto", Text = "text", Chord = "chord" } default Auto);
-choice_enum!(ShiftEnterLegacy { Cr = "cr", Lf = "lf" } default Cr);
+choice_enum!(ShiftEnterLegacy { Cr = "cr", Lf = "lf" } default Lf);
 choice_enum!(CopyModeKind { Vi = "vi", Emacs = "emacs" } default Vi);
 choice_enum!(CommandType { Shell = "shell", Pane = "pane", Popup = "popup", Float = "float", PluginAction = "plugin_action" } default Shell);
 choice_enum!(InteractionOverlay { Off = "off", Unfocused = "unfocused", Always = "always" } default Unfocused);
@@ -285,7 +285,7 @@ impl Default for Keys {
             prefix_timeout_ms: 1500,
             prefix_passthrough: true,
             altgr_mode: AltgrMode::Auto,
-            shift_enter_legacy: ShiftEnterLegacy::Cr,
+            shift_enter_legacy: ShiftEnterLegacy::Lf,
             copy_mode: CopyMode::default(),
             navigate: BTreeMap::new(),
             resize: BTreeMap::new(),

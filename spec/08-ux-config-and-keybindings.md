@@ -446,7 +446,7 @@ prefix             = "ctrl+b"
 prefix_timeout_ms  = 1500
 prefix_passthrough = true
 altgr_mode         = "auto"           # auto | text | chord (auto = text: AltGr keys type their character, 03 §7.1)
-shift_enter_legacy = "cr"             # cr | lf
+shift_enter_legacy = "lf"             # lf | cr (lf: newline in agent TUIs without kitty keys)
 # … action = "binding" entries as in §10.2
 [keys.copy_mode]
 mode = "vi"                           # vi | emacs

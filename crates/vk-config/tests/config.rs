@@ -463,3 +463,14 @@ fn task_repo_override_unknown_keys_warn() {
     assert!(keys.contains(&"tasks.repos.x.files.bogus"), "{keys:?}");
     assert!(keys.contains(&"tasks.repos.x.nope"), "{keys:?}");
 }
+
+#[test]
+fn shift_enter_defaults_to_a_newline_for_legacy_apps() {
+    // Agent TUIs (Claude Code, Codex) never enable kitty keys inside a pane, so the default must
+    // send `\n` (their newline key) rather than `\r` (submit).
+    let c = vk_config::Config::default();
+    assert!(matches!(
+        c.keys.shift_enter_legacy,
+        vk_config::ShiftEnterLegacy::Lf
+    ));
+}

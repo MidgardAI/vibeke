@@ -1940,7 +1940,7 @@ async fn deliver_keystrokes(
         .unwrap()
         .locks
         .insert(it.pane.clone(), Instant::now());
-    let modes = rt.screen.lock().unwrap().engine.input_modes();
+    let modes = crate::render::input_modes(server, &it.pane);
     let mut bytes = Vec::new();
     for k in &keys {
         if let Ok(ev) = vk_term::keygrammar::parse_key(k) {

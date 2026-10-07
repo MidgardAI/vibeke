@@ -259,7 +259,7 @@ Each pane's app negotiates its own keyboard mode (kitty flags stack via `CSI > f
 |---|---|---|---|
 | kitty flags ≥ 1 | `CSI 13;2u` | distinct (`CSI 105;5u` vs `\t`) | `CSI 120;3u` |
 | modifyOtherKeys 2 | `CSI 27;2;13~` | distinct | `CSI 27;3;120~` |
-| legacy | `\r` (or `\n` if `keys.shift_enter_legacy = "lf"`) | identical `\t` | `ESC x` |
+| legacy | `\n` by default (`keys.shift_enter_legacy = "lf"`, so agent TUIs that never enable kitty keys get a newline), `\r` with `"cr"` | identical `\t` | `ESC x` |
 
 This avoids the class of bugs where Shift+Enter or modified keys are lost or mangled depending on host terminal. The **host** only needs to tell the client what was pressed; the **pane** gets what it asked for. Release events are sent only to apps that requested event types.
 

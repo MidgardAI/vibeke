@@ -74,7 +74,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # prefix_timeout_ms  = 1500
 # prefix_passthrough = true
 # altgr_mode         = "auto"           # auto | text | chord
-# shift_enter_legacy = "cr"             # cr | lf
+# shift_enter_legacy = "lf"             # lf | cr: shift+enter for apps without kitty keys (lf = newline in agent TUIs)
 # Action bindings. "prefix+x" needs the prefix. A chord without it is a direct binding.
 # "" unbinds. Ranges: "prefix+1..9".
 # help                     = "prefix+?"
