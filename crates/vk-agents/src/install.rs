@@ -1783,7 +1783,7 @@ mod tests {
         assert_eq!(trust("SessionEnd"), Some(Trust::Untrusted));
         assert_eq!(trust("SessionStart"), Some(Trust::Untrusted));
         assert!(
-            st.todo[0].starts_with("9 Vibeke hook(s) untrusted"),
+            st.todo[0].starts_with("10 Vibeke hook(s) untrusted"),
             "{:?}",
             st.todo
         );

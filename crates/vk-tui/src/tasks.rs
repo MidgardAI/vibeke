@@ -12,6 +12,7 @@ use crate::screen::{Grid, Rect as SRect};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthStr;
 use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::model::*;
 use vk_proto::render::Style;
@@ -3146,24 +3147,51 @@ pub fn draw_task(app: &App, g: &mut Grid) {
         );
         return;
     }
+    // The key hints wrap onto as many rows as they need: a clipped hint line would hide the
+    // keys at its end (the lane screens add several).
+    let keys = wrap_keys(&task_keys(v), r.w.saturating_sub(2) as usize);
+    let keys_h = (keys.len() as u16)
+        .min(bottom.saturating_sub(y).max(1) / 2)
+        .max(1);
+    let content_end = (bottom + 1).saturating_sub(keys_h);
     let lines = task_lines(app, v, w);
-    let rows = bottom.saturating_sub(y) as usize;
+    let rows = content_end.saturating_sub(y) as usize;
     let max_scroll = lines.len().saturating_sub(rows);
     let skip = (v.scroll as usize).min(max_scroll);
     for (s, stl) in lines.into_iter().skip(skip) {
-        if y >= bottom {
+        if y >= content_end {
             break;
         }
         g.put_str(r.x + 1, y, &s, stl, r.w.saturating_sub(2));
         y += 1;
     }
-    g.put_str(
-        r.x + 1,
-        bottom,
-        &task_keys(v),
-        t.dim(),
-        r.w.saturating_sub(2),
-    );
+    for (i, k) in keys.iter().take(keys_h as usize).enumerate() {
+        g.put_str(
+            r.x + 1,
+            content_end + i as u16,
+            k,
+            t.dim(),
+            r.w.saturating_sub(2),
+        );
+    }
+}
+
+/// Breaks a ` · `-separated hint line into rows of at most `width` columns, never inside a hint.
+fn wrap_keys(keys: &str, width: usize) -> Vec<String> {
+    let mut rows: Vec<String> = vec![];
+    for k in keys.split(" · ") {
+        match rows.last_mut() {
+            Some(last)
+                if UnicodeWidthStr::width(last.as_str()) + 3 + UnicodeWidthStr::width(k)
+                    <= width =>
+            {
+                last.push_str(" · ");
+                last.push_str(k);
+            }
+            _ => rows.push(k.to_string()),
+        }
+    }
+    rows
 }
 
 pub fn draw_track(app: &App, g: &mut Grid) {
