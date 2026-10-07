@@ -527,7 +527,8 @@ fn zlib_ok() -> bool {
     // Vibeke's own engine (libghostty-vt) rejects dynamic-Huffman `o=z` streams (Goal 03
     // Stage 0); nested Vibeke and `VIBEKE_KITTY_ZLIB=0` get raw RGBA.
     std::env::var("VIBEKE_KITTY_ZLIB").map_or(true, |v| v != "0")
-        && std::env::var("TERM_PROGRAM").map_or(true, |v| v != "vibeke")
+        // Nested inside a Vibeke pane (the terminal identity is inherited, so check `VIBEKE`).
+        && std::env::var("VIBEKE").map_or(true, |v| v != "1")
 }
 
 /// Upper bounds for a media frame (device px), whatever the pane size.

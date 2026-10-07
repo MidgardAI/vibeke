@@ -73,7 +73,8 @@ pub struct State {
 /// tiles do).
 fn zlib_ok() -> bool {
     std::env::var("VIBEKE_KITTY_ZLIB").map_or(true, |v| v != "0")
-        && std::env::var("TERM_PROGRAM").map_or(true, |v| v != "vibeke")
+        // Nested inside a Vibeke pane (the terminal identity is inherited, so check `VIBEKE`).
+        && std::env::var("VIBEKE").map_or(true, |v| v != "1")
 }
 
 /// `ServerFrame::Image`.

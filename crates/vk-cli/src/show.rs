@@ -31,6 +31,11 @@ pub fn detect(env: &dyn Fn(&str) -> Option<String>, tty: bool) -> Mode {
         return Mode::Text;
     }
     let get = |k: &str| env(k).unwrap_or_default();
+    // Inside a Vibeke pane the terminal identity is the client's (it may say iTerm2), but the
+    // pane is drawn by Vibeke's engine, which shows kitty graphics and not OSC 1337.
+    if get("VIBEKE") == "1" {
+        return Mode::Kitty;
+    }
     let iterm = get("LC_TERMINAL") == "iTerm2" || get("TERM_PROGRAM") == "iTerm.app";
     if iterm {
         return Mode::Iterm;
@@ -247,5 +252,14 @@ mod tests {
         assert!(t.contains("illustrative: no checkout"));
         assert!(t.contains("image: /state/blobs/ab/abc.png"));
         assert!(!describe(&shot, true).contains("image:"));
+    }
+
+    #[test]
+    fn inside_a_vibeke_pane_uses_kitty_graphics_whatever_the_client_is() {
+        assert_eq!(
+            detect(&env(&[("VIBEKE", "1"), ("LC_TERMINAL", "iTerm2")]), true),
+            Mode::Kitty
+        );
+        assert_eq!(detect(&env(&[("VIBEKE", "1")]), false), Mode::Text);
     }
 }

@@ -727,8 +727,11 @@ impl Server {
         };
         set(&mut env, "TERM", "xterm-256color".into());
         set(&mut env, "COLORTERM", "truecolor".into());
-        set(&mut env, "TERM_PROGRAM", "vibeke".into());
-        set(&mut env, "TERM_PROGRAM_VERSION", vk_proto::VERSION.into());
+        // The terminal identity (`TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `LC_TERMINAL`,
+        // `LC_TERMINAL_VERSION`) is inherited from the client's environment, not
+        // replaced: agent TUIs (Claude Code) pick their keyboard protocol from it, and an unknown
+        // `TERM_PROGRAM=vibeke` made them fall back to legacy keys (no shift+enter). `VIBEKE=1`
+        // and `VIBEKE_SOCKET` tell programs they run inside Vibeke.
         set(&mut env, "VIBEKE", "1".into());
         set(
             &mut env,
