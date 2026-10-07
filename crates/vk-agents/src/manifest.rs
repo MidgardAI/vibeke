@@ -2478,7 +2478,7 @@ mod dsl_tests {
 [[screen.rules]]
 id = \"focused_input\"
 state = \"idle\"
-any = ['^> ']
+any = ['(?m)^> ']
 cursor_in_region = true
 rows = 3
 [[screen.rules]]

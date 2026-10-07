@@ -226,6 +226,7 @@ async fn predict_all(
                 let Ok((files, committed)) = mg::changed_files(wt, t.base_ref.as_deref()) else {
                     continue;
                 };
+                let dirty = mg::dirty_files(wt).unwrap_or_default();
                 changes.push(mg::Changed {
                     task: t.id.clone(),
                     handle: t.handle.clone(),
@@ -233,6 +234,7 @@ async fn predict_all(
                     head: gitx::rev_parse(wt, "HEAD").ok(),
                     committed,
                     files,
+                    dirty,
                 });
             }
             let ids: HashSet<&str> = changes.iter().map(|c| c.task.as_str()).collect();

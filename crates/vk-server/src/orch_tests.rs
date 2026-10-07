@@ -494,10 +494,12 @@ async fn claims_prediction_and_the_queue_work_on_real_worktrees() {
     )
     .await;
     assert_eq!(q1["position"], 1);
+    // k2's b.txt edit was committed with "two"; an uncommitted change on top of it would not
+    // be merged, so the queue refuses it unless allowed.
+    std::fs::write(w2.join("b.txt"), "b1\n").unwrap();
     let dirty = fail(&srv, "merge.queue.add", json!({"task": "k2"})).await;
     assert_eq!(kind(&dirty), "conflict");
     assert_eq!(dirty.data.details["reason"], "dirty_worktree");
-    std::fs::write(w2.join("b.txt"), "b1\n").unwrap();
     let q2 = ok(
         &srv,
         "merge.queue.add",
@@ -635,8 +637,42 @@ fn seed_run(srv: &Server, id: &str, pane: &str, harness: &str, cwd: &str) {
     srv.commit(&mut c, tx).unwrap();
 }
 
-#[tokio::test]
-async fn learned_policy_suggests_accepts_and_dismisses() {
+/// Run `body` on its own runtime thread and fail (instead of hanging) if it does not finish in
+/// `limit`: a core-lock re-entry deadlocks a std mutex, which no async timeout can interrupt.
+fn with_deadline<F: std::future::Future<Output = ()> + Send + 'static>(
+    limit: std::time::Duration,
+    body: F,
+) {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    let (done, rx) = channel::<()>();
+    let h = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(body);
+        let _ = done.send(());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(()) => h.join().unwrap(),
+        Err(RecvTimeoutError::Disconnected) => {
+            if let Err(p) = h.join() {
+                std::panic::resume_unwind(p);
+            }
+        }
+        Err(RecvTimeoutError::Timeout) => panic!("did not finish within {limit:?} (deadlock?)"),
+    }
+}
+
+#[test]
+fn learned_policy_suggests_accepts_and_dismisses() {
+    with_deadline(
+        std::time::Duration::from_secs(60),
+        learned_policy_suggests_accepts_and_dismisses_body(),
+    );
+}
+
+async fn learned_policy_suggests_accepts_and_dismisses_body() {
     let (d, srv) = server();
     enable_all(&srv);
     let ws = d.path().join("app");

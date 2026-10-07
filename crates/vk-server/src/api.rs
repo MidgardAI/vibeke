@@ -691,43 +691,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             )
         }
         "api.methods" => {
-            let mut v: Vec<Value> = METHODS
+            // One source of truth: the same tables that drive shapes, scopes and read-only gates.
+            let v: Vec<Value> = crate::api_schema::method_tables()
                 .iter()
+                .flat_map(|(_, t)| t.iter())
                 .map(|(n, m)| json!({"name": n, "mutating": m}))
                 .collect();
-            v.extend(
-                crate::agents::METHODS
-                    .iter()
-                    .chain(crate::preview::METHODS)
-                    .chain(crate::sandbox::METHODS)
-                    .chain(crate::agent_browser::METHODS)
-                    .chain(crate::browser_pane::METHODS)
-                    .chain(crate::parity::METHODS)
-                    .chain(crate::screenshots::METHODS)
-                    .chain(crate::desk::METHODS)
-                    .chain(crate::drafts::METHODS)
-                    .chain(crate::assist::METHODS)
-                    .chain(crate::compat::METHODS)
-                    .chain(crate::session_api::METHODS)
-                    .chain(crate::config_api::METHODS)
-                    .chain(crate::blob_api::METHODS)
-                    .chain(crate::blob_store::METHODS)
-                    .chain(crate::hardening::METHODS)
-                    .chain(crate::machines::METHODS)
-                    .chain(crate::items::METHODS)
-                    .chain(crate::pane_api::METHODS)
-                    .chain(crate::sync_input::METHODS)
-                    .chain(crate::tab_renumber::METHODS)
-                    .chain(crate::task_lifecycle::METHODS)
-                    .chain(crate::task_park::METHODS)
-                    .chain(crate::security::METHODS)
-                    .chain(crate::plugin_native::METHODS)
-                    .chain(crate::orch::METHODS)
-                    .chain(crate::review::pr::METHODS)
-                    .chain(crate::review::interval::METHODS)
-                    .chain(crate::collision::METHODS)
-                    .map(|(n, m)| json!({"name": n, "mutating": m})),
-            );
             Ok(json!({"methods": v}))
         }
         "api.schema" => {

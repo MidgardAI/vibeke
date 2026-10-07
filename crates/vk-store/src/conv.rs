@@ -484,6 +484,30 @@ impl ConvIndex {
         Ok(n)
     }
 
+    /// Rows a forget of these sessions plus (with `before_ms`) a prune would delete; a row
+    /// matching both is counted once. Deletes nothing (dry runs).
+    pub fn count_forgettable(&self, sessions: &[String], before_ms: Option<i64>) -> Result<u64> {
+        let mut conds: Vec<String> = Vec::new();
+        let mut args: Vec<rusqlite::types::Value> = Vec::new();
+        if !sessions.is_empty() {
+            let marks = vec!["?"; sessions.len()].join(",");
+            conds.push(format!("session IN ({marks})"));
+            args.extend(sessions.iter().map(|s| s.clone().into()));
+        }
+        if let Some(b) = before_ms {
+            conds.push("ts < ?".into());
+            args.push(b.into());
+        }
+        if conds.is_empty() {
+            return Ok(0);
+        }
+        let sql = format!("SELECT COUNT(*) FROM conv_fts WHERE {}", conds.join(" OR "));
+        let n: i64 = self
+            .conn
+            .query_row(&sql, rusqlite::params_from_iter(args), |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
     /// (sources, indexed rows, tombstoned sessions).
     pub fn stats(&self) -> Result<(u64, u64, u64)> {
         let one = |sql: &str| -> Result<u64> {
@@ -580,7 +604,18 @@ mod tests {
         assert_eq!(sessions[0].session, "s-b", "most recent first");
         assert_eq!(ix.turns("s-a", None, 2, 2).unwrap().len(), 1);
 
+        // The dry-run count matches what forget + prune delete, counting overlaps once.
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(ix.count_forgettable(&[], None).unwrap(), 0);
+        assert_eq!(ix.count_forgettable(&s(&["s-a"]), None).unwrap(), 2);
+        assert_eq!(ix.count_forgettable(&s(&["s-a"]), Some(150)).unwrap(), 2);
+        assert_eq!(ix.count_forgettable(&s(&["s-b"]), Some(150)).unwrap(), 2);
+        assert_eq!(ix.count_forgettable(&[], Some(400)).unwrap(), 3);
+        assert_eq!(ix.count_forgettable(&s(&["nope"]), None).unwrap(), 0);
+        assert_eq!(ix.stats().unwrap().1, 3, "counting deletes nothing");
+
         assert_eq!(ix.forget_session("s-a", true, 1).unwrap(), 2);
+        assert_eq!(ix.count_forgettable(&s(&["s-a"]), None).unwrap(), 0);
         assert_eq!(find(&ix, &|_| {}).len(), 1);
         assert!(ix.forgotten().unwrap().contains("s-a"));
         assert_eq!(ix.prune(400).unwrap(), 1);

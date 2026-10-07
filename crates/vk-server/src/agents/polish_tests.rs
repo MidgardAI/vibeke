@@ -149,10 +149,20 @@ async fn tailer_writes_turn_records_items_totals_and_reconciles_approvals() {
     let item = item.expect("tool item");
     assert_eq!(item.command.as_deref(), Some("cargo test"));
     assert!(item.ended_at_ms.is_some());
+    // A closed interaction leaves the live model; its record stays in the store.
+    assert!(
+        e.server
+            .with_core(|c| c.interaction(&approval).cloned())
+            .is_none()
+    );
     let it = e
         .server
-        .with_core(|c| c.interaction(&approval).cloned())
-        .unwrap();
+        .with_core(|c| {
+            c.store
+                .find::<Interaction>("interaction", &approval)
+                .unwrap()
+        })
+        .expect("closed interaction record");
     assert_eq!(it.status, InteractionStatus::ResolvedElsewhere);
 
     // Nothing new: a second pass is a no-op, never a duplicate record.

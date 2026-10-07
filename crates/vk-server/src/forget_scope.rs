@@ -482,7 +482,24 @@ async fn forget_desk(server: &Arc<Server>, user: &Ctx, scope: &Scope, dry: bool)
             .collect(),
     };
     if dry {
-        return json!({"calls": calls.len(), "rows": Value::Null});
+        // Count the rows the calls would delete, so a scope with nothing left reads as empty
+        // (`vibeke forget` then says "nothing to forget" instead of asking to delete nothing).
+        let (mut sessions, mut workspaces, mut before) = (vec![], vec![], None);
+        for c in &calls {
+            if let Some(x) = c["session"].as_str() {
+                sessions.push(x.to_string());
+            }
+            if let Some(x) = c["workspace"].as_str() {
+                workspaces.push(x.to_string());
+            }
+            if let Some(x) = c["before"].as_i64() {
+                before = Some(x);
+            }
+        }
+        let rows = crate::desk::forget_count(server, sessions, workspaces, before)
+            .await
+            .ok();
+        return json!({"calls": calls.len(), "rows": rows});
     }
     let mut rows = 0u64;
     let mut errors = vec![];

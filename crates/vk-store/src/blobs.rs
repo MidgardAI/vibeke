@@ -591,7 +591,8 @@ mod tests {
         assert!(s.find(&hb).is_some(), "dry run removes nothing");
         // Too young: nothing goes.
         let young = s.gc(&refs, crate::now_ms(), 86_400_000, false);
-        assert_eq!((young.removed, young.kept_young), (0, 3));
+        // b and d (a is referenced, c is not collectable).
+        assert_eq!((young.removed, young.kept_young), (0, 2));
         let r = s.gc(&refs, far, 86_400_000, false);
         assert_eq!(r.removed, 2);
         assert!(s.find(&ha).is_some() && s.find(&hc).is_some());

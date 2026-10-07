@@ -1417,6 +1417,26 @@ async fn forget(server: &Arc<Server>, p: &Value) -> R {
     Ok(json!({"rows_deleted": rows, "sessions_forgotten": tombstoned}))
 }
 
+/// How many index rows `desk.forget` calls for these sessions, workspaces and cutoff would
+/// delete (the `vibeke forget` dry run). Deletes nothing and emits nothing.
+pub(crate) async fn forget_count(
+    server: &Arc<Server>,
+    sessions: Vec<String>,
+    workspaces: Vec<String>,
+    before: Option<i64>,
+) -> Result<u64, vk_proto::rpc::RpcError> {
+    with_index(server, move |ix| {
+        let mut all = sessions;
+        for w in &workspaces {
+            all.extend(ix.sessions_in_workspace(w)?);
+        }
+        all.sort();
+        all.dedup();
+        ix.count_forgettable(&all, before)
+    })
+    .await
+}
+
 async fn status(server: &Arc<Server>) -> R {
     let cfg = config(server);
     let cfg2 = cfg.clone();

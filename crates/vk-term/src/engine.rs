@@ -291,8 +291,9 @@ pub struct Engine {
     last_exit: Option<i32>,
     /// Content hashes of cropped images by (image id, generation, source rect).
     image_hashes: RefCell<ImageHashes>,
-    /// DCS tmux passthrough unwrap (`terminal.allow_passthrough`, 03 §8); `None` = off.
-    passthrough: Option<crate::passthrough::Unwrap>,
+    /// DCS tmux passthrough unwrap (`terminal.allow_passthrough`, 03 §8); when off it drops wrappers whole.
+    passthrough: crate::passthrough::Unwrap,
+    allow_passthrough: bool,
 }
 
 // SAFETY: the libghostty-vt handles are plain heap objects without thread affinity; `Engine`
@@ -692,7 +693,8 @@ impl Engine {
             write_chunk: usize::MAX,
             last_exit: None,
             image_hashes: RefCell::new(std::collections::HashMap::new()),
-            passthrough: None,
+            passthrough: crate::passthrough::Unwrap::discarding(),
+            allow_passthrough: false,
         };
         e.configure_graphics();
         e.set_line_limit();
@@ -1263,26 +1265,24 @@ impl Engine {
     /// `terminal.allow_passthrough` (03 §8): unwrap DCS tmux passthrough so the payload is
     /// processed as if the program wrote it directly.
     pub fn set_allow_passthrough(&mut self, on: bool) {
-        match (on, self.passthrough.is_some()) {
-            (true, false) => self.passthrough = Some(Default::default()),
-            (false, true) => self.passthrough = None,
-            _ => {}
+        if on != self.allow_passthrough {
+            self.allow_passthrough = on;
+            self.passthrough = if on {
+                Default::default()
+            } else {
+                crate::passthrough::Unwrap::discarding()
+            };
         }
     }
 
     pub fn allow_passthrough(&self) -> bool {
-        self.passthrough.is_some()
+        self.allow_passthrough
     }
 
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<Effect>) {
-        let unwrapped;
-        let bytes = match self.passthrough.as_mut() {
-            Some(u) => {
-                unwrapped = u.feed(bytes);
-                unwrapped.as_slice()
-            }
-            None => bytes,
-        };
+        // Allowed: the payload is unwrapped; off: the wrapper and payload are dropped.
+        let unwrapped = self.passthrough.feed(bytes);
+        let bytes = unwrapped.as_slice();
         self.tracked.clear();
         self.tracker.feed(bytes, &mut self.tracked);
         for t in std::mem::take(&mut self.tracked) {

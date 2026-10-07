@@ -45,6 +45,10 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("session_api", session_api::METHODS),
         ("config_api", config_api::METHODS),
         ("blob_api", blob_api::METHODS),
+        ("blob_store", blob_store::METHODS),
+        ("hardening", hardening::METHODS),
+        ("machines", machines::METHODS),
+        ("items", items::METHODS),
         ("pane_api", pane_api::METHODS),
         ("task_park", task_park::METHODS),
         ("security", security::METHODS),
@@ -1486,6 +1490,7 @@ mod tests {
             r#"\.event(?:_by)?\(\s*"([a-z_]+\.[a-z_.]+)"|Some\("(preview\.[a-z_]+)"\)"#,
         )
         .unwrap();
+        let inline_tests = regex::Regex::new(r"(?m)^#\[cfg\(test\)\]\s*mod [a-z_]+\s*\{").unwrap();
         let reg = registry();
         let mut missing = std::collections::BTreeSet::new();
         for f in &files {
@@ -1494,7 +1499,28 @@ mod tests {
             if name.contains("tests") {
                 continue;
             }
-            let text = std::fs::read_to_string(f).unwrap();
+            let mut text = std::fs::read_to_string(f).unwrap();
+            // Inline `#[cfg(test)] mod … { … }` blocks emit throwaway names too: cut each one
+            // out, to its matching brace.
+            while let Some(m) = inline_tests.find(&text) {
+                let (start, body) = (m.start(), m.end());
+                let mut depth = 1usize;
+                let mut end = text.len();
+                for (i, ch) in text[body..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = body + i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                text.replace_range(start..end, "");
+            }
             for c in re.captures_iter(&text) {
                 let t = c.get(1).or_else(|| c.get(2)).unwrap().as_str();
                 if !reg.events.contains_key(t) {

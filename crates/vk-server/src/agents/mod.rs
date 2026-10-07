@@ -2680,6 +2680,20 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         // ---- interactions -------------------------------------------------------------------
         "interaction.list" => {
             let status = s(p, "status").unwrap_or("open");
+            // `run` / `workspace` narrow the list (07 §4). A run that is no longer live still
+            // matches its id, so closed interactions of an ended run can be listed.
+            let run_filter: Option<String> = s(p, "run").map(|t| {
+                resolve_run(server, ctx, Some(t))
+                    .map(|r| r.id)
+                    .unwrap_or_else(|_| t.to_string())
+            });
+            let ws_filter: Option<String> = match s(p, "workspace") {
+                Some(t) => match crate::api::resolve_ws(server, ctx, Some(t)) {
+                    Ok(w) => Some(w.id),
+                    Err(e) => return Some(Err(e)),
+                },
+                None => None,
+            };
             let mut list: Vec<Value> = server.with_core(|c| {
                 let mut v: Vec<Interaction> = c
                     .model
@@ -2696,6 +2710,18 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                             .load_closed::<Interaction>("interaction", 100)
                             .unwrap_or_default(),
                     );
+                }
+                if let Some(r) = &run_filter {
+                    v.retain(|i| &i.run == r);
+                }
+                if let Some(w) = &ws_filter {
+                    v.retain(|i| {
+                        c.pane(&i.pane).map(|p| &p.workspace).or_else(|| {
+                            c.run(&i.run)
+                                .and_then(|r| c.pane(&r.pane))
+                                .map(|p| &p.workspace)
+                        }) == Some(w)
+                    });
                 }
                 v.sort_by_key(|i| i.opened_at_ms);
                 v.iter()

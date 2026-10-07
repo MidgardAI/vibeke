@@ -49,8 +49,9 @@ struct ExInner {
     pressure_sent: HashMap<(String, &'static str), Instant>,
     /// Boxes paused by idle suspend.
     paused: HashSet<String>,
-    /// Boxes Vibeke itself stopped or removed (not a crash).
-    expected_down: HashSet<String>,
+    /// Boxes Vibeke itself stopped or removed (not a crash), with when that was decided: a
+    /// `Running` state read that began before then (a poll racing the stop) does not cancel it.
+    expected_down: HashMap<String, Instant>,
     /// Runs already nudged towards a sandbox.
     suggested: HashSet<String>,
     listening: bool,
@@ -495,23 +496,32 @@ async fn relaunch(server: &Arc<Server>, p: &Value) -> R {
     };
     let h =
         crate::agents::Harness::from_id(&run.harness).ok_or_else(|| invalid("unknown harness"))?;
-    // Stop the host process (interrupt, then its process group), keep the shell.
-    let ctx = crate::drafts::user_ctx();
-    let _ = Box::pin(crate::api::dispatch(
-        server,
-        &ctx,
-        "agent.interrupt",
-        &json!({"target": run.id}),
-    ))
-    .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    if let Some(st) = server
+    // Stop the host process (interrupt, then its process group), keep the shell. With the
+    // pane's own shell already in front there is nothing to stop, and the interrupt (a bare ESC)
+    // would reach the shell's line editor instead: zsh reads ESC plus the next byte as one meta
+    // key, which ate the first character of the launch line below.
+    let shell_in_front = server
         .pane_rt(&run.pane)
         .and_then(|rt| rt.status.lock().unwrap().clone())
-        && let Some(g) = st.fg_pgid.filter(|g| *g != st.child_pid && *g > 1)
-    {
-        // SAFETY: signalling a process group of a pane this server owns.
-        unsafe { libc::killpg(g as i32, libc::SIGTERM) };
+        .is_some_and(|st| st.fg_pgid == Some(st.child_pid));
+    if !shell_in_front {
+        let ctx = crate::drafts::user_ctx();
+        let _ = Box::pin(crate::api::dispatch(
+            server,
+            &ctx,
+            "agent.interrupt",
+            &json!({"target": run.id}),
+        ))
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if let Some(st) = server
+            .pane_rt(&run.pane)
+            .and_then(|rt| rt.status.lock().unwrap().clone())
+            && let Some(g) = st.fg_pgid.filter(|g| *g != st.child_pid && *g > 1)
+        {
+            // SAFETY: signalling a process group of a pane this server owns.
+            unsafe { libc::killpg(g as i32, libc::SIGTERM) };
+        }
     }
     server.agents.end_run(server, &run.id, "relaunched");
     // Wait for the pane's shell to be back in the foreground.
@@ -590,9 +600,12 @@ fn container_task_boxes(server: &Server) -> Vec<Arc<TaskBox>> {
 }
 
 /// Vibeke stops/removes `key` on purpose (sandbox stop/remove, park, finish): not a crash.
+/// Call it before the stop (so a state read during the stop is not taken for a crash) and
+/// again once the stop returned: a `Running` read that began before that second call (one
+/// racing the stop) then cannot cancel the expectation.
 pub fn expect_down(server: &Server, key: &str) {
     let mut i = server.sandbox.extras.inner.lock().unwrap();
-    i.expected_down.insert(key.to_string());
+    i.expected_down.insert(key.to_string(), Instant::now());
     i.paused.remove(key);
 }
 
@@ -647,19 +660,20 @@ async fn poll_states(server: &Arc<Server>, boxes: &[Arc<TaskBox>], c: &Isolation
     let states = tokio::task::spawn_blocking(move || {
         bs.iter()
             .map(|b| {
+                let at = Instant::now();
                 let st = match &b.runner {
                     BoxRunner::Container(c) => c.b().state(),
                     _ => BoxState::Other,
                 };
-                (b.clone(), st)
+                (b.clone(), st, at)
             })
             .collect::<Vec<_>>()
     })
     .await
     .unwrap_or_default();
     let idle_after = c.idle_suspend_after();
-    for (b, st) in states {
-        observe_state(server, &b, st, idle_after).await;
+    for (b, st, at) in states {
+        observe_state_at(server, &b, st, idle_after, at).await;
     }
 }
 
@@ -670,13 +684,28 @@ pub async fn observe_state(
     st: BoxState,
     idle_after: Option<Duration>,
 ) {
+    observe_state_at(server, b, st, idle_after, Instant::now()).await;
+}
+
+/// Feed one state whose read began at `read_at`.
+async fn observe_state_at(
+    server: &Arc<Server>,
+    b: &Arc<TaskBox>,
+    st: BoxState,
+    idle_after: Option<Duration>,
+    read_at: Instant,
+) {
     let key = b.key.clone();
     match st {
         BoxState::Running => {
             let idle = box_idle(server, b, idle_after);
             let suspend = {
                 let mut i = server.sandbox.extras.inner.lock().unwrap();
-                i.expected_down.remove(&key);
+                // Running again after Vibeke stopped it: a later disappearance is a crash. A read
+                // that began before the stop was decided says nothing about after it.
+                if i.expected_down.get(&key).is_some_and(|t| *t <= read_at) {
+                    i.expected_down.remove(&key);
+                }
                 i.paused.remove(&key);
                 let w = i.watch.entry(key.clone()).or_default();
                 w.seen_running = true;
@@ -700,7 +729,7 @@ pub async fn observe_state(
         BoxState::Missing | BoxState::Stopped => {
             let lost = {
                 let mut i = server.sandbox.extras.inner.lock().unwrap();
-                let expected = i.expected_down.contains(&key);
+                let expected = i.expected_down.contains_key(&key);
                 let w = i.watch.entry(key.clone()).or_default();
                 let was = w.seen_running;
                 w.seen_running = false;
@@ -958,7 +987,7 @@ fn runner_lost(server: &Arc<Server>, b: &TaskBox, since_ms: i64, st: BoxState) {
         .lock()
         .unwrap()
         .expected_down
-        .insert(b.key.clone());
+        .insert(b.key.clone(), Instant::now());
     emit(
         server,
         "sandbox.runner_lost",
@@ -1191,6 +1220,7 @@ pub async fn on_task_parked(server: &Arc<Server>, task: &str) {
     })
     .await;
     if matches!(r, Ok(Ok(()))) {
+        expect_down(server, &b.key);
         emit(
             server,
             "sandbox.suspended",

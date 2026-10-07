@@ -994,7 +994,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "task",
-        "forget",
+        "review-forget",
         "task.review.forget",
         &[],
         "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
@@ -3258,16 +3258,23 @@ fn forget_also_summary(also: &Value) -> Option<String> {
     .filter(|(_, c)| *c > 0)
     .map(|(k, c)| format!("{c} {k}"))
     .collect();
-    let desk = n(&also["desk"]["calls"]) > 0;
-    if parts.is_empty() && !desk {
+    // `rows` is the dry run's count; a server that only reports `calls` (or could not count)
+    // gets the unquantified line, so desk rows are never silently skipped.
+    let desk = match also["desk"]["rows"].as_u64() {
+        Some(0) => None,
+        Some(r) => Some(format!("{r} session desk rows")),
+        None if n(&also["desk"]["calls"]) > 0 => Some("matching session desk rows".to_string()),
+        None => None,
+    };
+    if parts.is_empty() && desk.is_none() {
         return None;
     }
     let mut s = parts.join(", ");
-    if desk {
+    if let Some(d) = desk {
         if !s.is_empty() {
             s.push_str(", ");
         }
-        s.push_str("matching session desk rows");
+        s.push_str(&d);
     }
     Some(s)
 }

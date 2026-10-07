@@ -38,6 +38,9 @@ class Api:
     async def agent_interrupt(self, params: "t.AgentInterruptParams") -> "t.AgentInterruptResult":
         return await self.call("agent.interrupt", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_items(self, params: "Optional[t.AgentItemsParams]" = None) -> "t.AgentItemsResult":
+        return await self.call("agent.items", params or {})  # type: ignore[arg-type, return-value]
+
     async def agent_limits(self, params: "Optional[t.AgentLimitsParams]" = None) -> "t.AgentLimitsResult":
         return await self.call("agent.limits", params or {})  # type: ignore[arg-type, return-value]
 
@@ -88,6 +91,9 @@ class Api:
 
     async def agent_turn_usage(self, params: "Optional[t.AgentTurnUsageParams]" = None) -> "t.AgentTurnUsageResult":
         return await self.call("agent.turn_usage", params or {})  # type: ignore[arg-type, return-value]
+
+    async def agent_turns(self, params: "t.AgentTurnsParams") -> "t.AgentTurnsResult":
+        return await self.call("agent.turns", params)  # type: ignore[arg-type, return-value]
 
     async def agent_wait(self, params: "t.AgentWaitParams") -> "t.AgentWaitResult":
         return await self.call("agent.wait", params)  # type: ignore[arg-type, return-value]
@@ -179,6 +185,9 @@ class Api:
     async def blob_commit(self, params: "t.BlobCommitParams") -> "t.BlobCommitResult":
         return await self.call("blob.commit", params)  # type: ignore[arg-type, return-value]
 
+    async def blob_gc(self, params: "Optional[t.BlobGcParams]" = None) -> "t.BlobGcResult":
+        return await self.call("blob.gc", params or {})  # type: ignore[arg-type, return-value]
+
     async def blob_get(self, params: "t.BlobGetParams") -> "t.BlobGetResult":
         return await self.call("blob.get", params)  # type: ignore[arg-type, return-value]
 
@@ -187,6 +196,9 @@ class Api:
 
     async def blob_stat(self, params: "t.BlobStatParams") -> "t.BlobStatResult":
         return await self.call("blob.stat", params)  # type: ignore[arg-type, return-value]
+
+    async def blob_stats(self, params: "Optional[t.BlobStatsParams]" = None) -> "t.BlobStatsResult":
+        return await self.call("blob.stats", params or {})  # type: ignore[arg-type, return-value]
 
     async def browser_attach_screencast(self, params: "Optional[t.BrowserAttachScreencastParams]" = None) -> "t.BrowserAttachScreencastResult":
         return await self.call("browser.attach_screencast", params or {})  # type: ignore[arg-type, return-value]
@@ -529,6 +541,18 @@ class Api:
 
     async def layout_list(self, params: "Optional[t.LayoutListParams]" = None) -> "t.LayoutListResult":
         return await self.call("layout.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def machine_get(self, params: "t.MachineGetParams") -> "t.MachineGetResult":
+        return await self.call("machine.get", params)  # type: ignore[arg-type, return-value]
+
+    async def machine_list(self, params: "Optional[t.MachineListParams]" = None) -> "t.MachineListResult":
+        return await self.call("machine.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def machine_remove(self, params: "t.MachineRemoveParams") -> "t.MachineRemoveResult":
+        return await self.call("machine.remove", params)  # type: ignore[arg-type, return-value]
+
+    async def machine_upsert(self, params: "t.MachineUpsertParams") -> "t.MachineUpsertResult":
+        return await self.call("machine.upsert", params)  # type: ignore[arg-type, return-value]
 
     async def merge_predict(self, params: "Optional[t.MergePredictParams]" = None) -> "t.MergePredictResult":
         return await self.call("merge.predict", params or {})  # type: ignore[arg-type, return-value]
@@ -884,6 +908,9 @@ class Api:
     async def session_create(self, params: "t.SessionCreateParams") -> "t.SessionCreateResult":
         return await self.call("session.create", params)  # type: ignore[arg-type, return-value]
 
+    async def session_info(self, params: "Optional[t.SessionInfoParams]" = None) -> "t.SessionInfoResult":
+        return await self.call("session.info", params or {})  # type: ignore[arg-type, return-value]
+
     async def session_list(self, params: "Optional[t.SessionListParams]" = None) -> "t.SessionListResult":
         return await self.call("session.list", params or {})  # type: ignore[arg-type, return-value]
 
@@ -901,6 +928,12 @@ class Api:
 
     async def status_segments(self, params: "Optional[t.StatusSegmentsParams]" = None) -> "t.StatusSegmentsResult":
         return await self.call("status.segments", params or {})  # type: ignore[arg-type, return-value]
+
+    async def storage_prune(self, params: "Optional[t.StoragePruneParams]" = None) -> "t.StoragePruneResult":
+        return await self.call("storage.prune", params or {})  # type: ignore[arg-type, return-value]
+
+    async def storage_status(self, params: "Optional[t.StorageStatusParams]" = None) -> "t.StorageStatusResult":
+        return await self.call("storage.status", params or {})  # type: ignore[arg-type, return-value]
 
     async def tab_close(self, params: "t.TabCloseParams") -> "t.TabCloseResult":
         return await self.call("tab.close", params)  # type: ignore[arg-type, return-value]

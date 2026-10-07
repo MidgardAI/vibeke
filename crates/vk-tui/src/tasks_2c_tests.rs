@@ -102,7 +102,12 @@ fn human_review_needs_a_note_for_a_failure_and_sends_the_subject() {
         f.criteria,
         vec![("c-h".to_string(), "Looks right".to_string())]
     );
-    assert!(screen(&app).contains(HUMAN_NOTE));
+    // The note wraps at the pane width: its first words and its last word are on screen.
+    let scr = screen(&app);
+    let words: Vec<&str> = HUMAN_NOTE.split(' ').collect();
+    let head = words[..12].join(" ");
+    assert!(scr.contains(&head), "{head:?} missing: {scr}");
+    assert!(scr.contains(words[words.len() - 1]), "{scr}");
     // `n` (does not meet it) needs a note: enter without one is refused locally.
     app.on_key(ch('n'));
     app.on_key(named(NamedKey::Enter));

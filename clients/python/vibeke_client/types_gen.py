@@ -866,6 +866,19 @@ AgentInterruptResult = TypedDict("AgentInterruptResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentItemsParams = TypedDict("AgentItemsParams", {
+    "turn": NotRequired[str],
+    "run": NotRequired["Target"],
+    "kind": NotRequired["ItemKind"],
+    "after_seq": NotRequired[int],
+    "limit": NotRequired[int],
+})
+
+AgentItemsResult = TypedDict("AgentItemsResult", {
+    "items": List["Item"],
+    "next_after_seq": Optional[int],
+})
+
 AgentLimitsParams: TypeAlias = Dict[str, Any]
 
 AgentLimitsResultLimitsItem = TypedDict("AgentLimitsResultLimitsItem", {
@@ -1121,6 +1134,18 @@ AgentTurnUsageResult = TypedDict("AgentTurnUsageResult", {
     "turn_count": int,
     "totals": "AgentTurnUsageResultTotals",
     "usage": Any,
+})
+
+AgentTurnsParams = TypedDict("AgentTurnsParams", {
+    "run": "Target",
+    "after_seq": NotRequired[int],
+    "limit": NotRequired[int],
+})
+
+AgentTurnsResult = TypedDict("AgentTurnsResult", {
+    "run": str,
+    "turns": List["Turn"],
+    "next_after_seq": Optional[int],
 })
 
 AgentWaitParams = TypedDict("AgentWaitParams", {
@@ -1718,6 +1743,23 @@ BlobCommitResult = TypedDict("BlobCommitResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+BlobGcParams = TypedDict("BlobGcParams", {
+    "dry_run": NotRequired[bool],
+    "older_than_days": NotRequired[int],
+})
+
+BlobGcResult = TypedDict("BlobGcResult", {
+    "dry_run": bool,
+    "older_than_days": int,
+    "removed": int,
+    "bytes": int,
+    "kept_referenced": int,
+    "kept_young": int,
+    "kept_uncollectable": int,
+    "hashes": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
 BlobGetParamsRange = TypedDict("BlobGetParamsRange", {
     "offset": NotRequired[int],
     "length": NotRequired[int],
@@ -1759,6 +1801,15 @@ BlobStatResult = TypedDict("BlobStatResult", {
     "size": int,
     "created_at": int,
     "refs": int,
+    "path": str,
+})
+
+BlobStatsParams: TypeAlias = Dict[str, Any]
+
+BlobStatsResult = TypedDict("BlobStatsResult", {
+    "count": int,
+    "bytes": int,
+    "by_source": Dict[str, Any],
     "path": str,
 })
 
@@ -3783,6 +3834,48 @@ LayoutListResultXV1 = TypedDict("LayoutListResultXV1", {
 
 LayoutListResult: TypeAlias = Union["LayoutListResultXV0", "LayoutListResultXV1"]
 
+MachineGetParams = TypedDict("MachineGetParams", {
+    "machine": "Target",
+})
+
+MachineGetResult = TypedDict("MachineGetResult", {
+    "machine": "Machine",
+})
+
+MachineListParams: TypeAlias = Dict[str, Any]
+
+MachineListResult = TypedDict("MachineListResult", {
+    "machines": List["Machine"],
+    "local": str,
+})
+
+MachineRemoveParams = TypedDict("MachineRemoveParams", {
+    "machine": "Target",
+})
+
+MachineRemoveResult = TypedDict("MachineRemoveResult", {
+    "removed": str,
+    "cursor": "Cursor",
+})
+
+MachineUpsertParams = TypedDict("MachineUpsertParams", {
+    "label": str,
+    "kind": NotRequired[Literal["ssh", "quic"]],
+    "id": NotRequired[str],
+    "address": NotRequired[str],
+    "os": NotRequired[str],
+    "arch": NotRequired[str],
+    "vibeke_version": NotRequired[str],
+    "status": NotRequired[Literal["connected", "connecting", "degraded", "offline"]],
+    "reason": NotRequired[str],
+})
+
+MachineUpsertResult = TypedDict("MachineUpsertResult", {
+    "machine": "Machine",
+    "created": bool,
+    "cursor": "Cursor",
+})
+
 MergePredictParams = TypedDict("MergePredictParams", {
     "repo": NotRequired[str],
     "tasks": NotRequired[List[str]],
@@ -5675,6 +5768,14 @@ SessionCreateResult = TypedDict("SessionCreateResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+SessionInfoParams: TypeAlias = Dict[str, Any]
+
+SessionInfoResult = TypedDict("SessionInfoResult", {
+    "session": "SessionInfo",
+    "machine": Optional["Machine"],
+    "cursor": "Cursor",
+})
+
 SessionListParams: TypeAlias = Dict[str, Any]
 
 SessionListResult = TypedDict("SessionListResult", {
@@ -5804,6 +5905,69 @@ StatusSegmentsResult = TypedDict("StatusSegmentsResult", {
     "focus": Any,
     "appearance": "Appearance",
     "client_side": List[str],
+})
+
+StoragePruneParams: TypeAlias = Dict[str, Any]
+
+StoragePruneResult = TypedDict("StoragePruneResult", {
+    "events_aged": int,
+    "events_capped": int,
+    "events_remaining": int,
+    "stream_removed": int,
+    "blobs_removed": int,
+    "blob_bytes": int,
+    "cursor": NotRequired["Cursor"],
+})
+
+StorageStatusParams: TypeAlias = Dict[str, Any]
+
+StorageStatusResultDb = TypedDict("StorageStatusResultDb", {
+    "path": str,
+    "bytes": int,
+})
+
+StorageStatusResultEventsRetention = TypedDict("StorageStatusResultEventsRetention", {
+    "sync_days": int,
+    "history_days": int,
+    "max_rows": int,
+    "blob_days": int,
+})
+
+StorageStatusResultEvents = TypedDict("StorageStatusResultEvents", {
+    "count": int,
+    "first_seq": int,
+    "last_seq": int,
+    "retention": "StorageStatusResultEventsRetention",
+})
+
+StorageStatusResultBackupsItem = TypedDict("StorageStatusResultBackupsItem", {
+    "name": str,
+    "schema_version": int,
+    "created_at": int,
+    "bytes": int,
+})
+
+StorageStatusResultBlobs = TypedDict("StorageStatusResultBlobs", {
+    "count": int,
+    "bytes": int,
+})
+
+StorageStatusResultCursor = TypedDict("StorageStatusResultCursor", {
+    "machine_uuid": str,
+    "session_uuid": str,
+    "log_epoch": str,
+})
+
+StorageStatusResult = TypedDict("StorageStatusResult", {
+    "degraded": Optional[str],
+    "ephemeral": int,
+    "archive_rows_skipped": int,
+    "db": "StorageStatusResultDb",
+    "events": "StorageStatusResultEvents",
+    "backups": List["StorageStatusResultBackupsItem"],
+    "keep_backups": int,
+    "blobs": "StorageStatusResultBlobs",
+    "cursor": "StorageStatusResultCursor",
 })
 
 TabCloseParams = TypedDict("TabCloseParams", {
@@ -7317,6 +7481,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.harnesses": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.interrupt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.items": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "agent.limits": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.manifest_pin": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -7334,6 +7499,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.turn_usage": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "agent.turns": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "agent.wait": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.methods": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "api.schema": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -7364,9 +7530,11 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "blob.append": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.begin": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.commit": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "blob.gc": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "blob.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "blob.put": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "blob.stat": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "blob.stats": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "browser.attach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.click": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "browser.close": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -7481,6 +7649,10 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "layout.export": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "layout.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "layout.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "machine.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "machine.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "machine.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "machine.upsert": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "merge.predict": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "merge.queue.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "merge.queue.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -7599,12 +7771,15 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "server.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "server.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "session.create": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "session.info": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "session.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "session.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "session.snapshot": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "session.stop": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "state.forget": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "status.segments": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "storage.prune": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "storage.status": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "tab.close": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "tab.create": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "tab.floats": {"mutating": True, "scope": "pane", "pane_scope": "open"},

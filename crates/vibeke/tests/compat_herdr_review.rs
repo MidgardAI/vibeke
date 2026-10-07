@@ -347,7 +347,16 @@ fn the_shim_never_talks_to_a_socket_that_is_not_a_registered_broker() {
         }
     });
     let brokers = s_.env_path("run/default/herdr-compat/brokers");
-    std::fs::create_dir_all(&brokers).unwrap();
+    // 0700 like the server makes them: the client refuses a runtime dir others can read, which
+    // would end the `server stop` below before the shim's own refusal is reached.
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&brokers)
+            .unwrap();
+    }
     // Traversal that lexically starts with the runtime root.
     let traversal = brokers.join("../../../../fake-herdr/herdr.sock");
     // A symlink inside the broker dir, even when listed in the broker registry.
