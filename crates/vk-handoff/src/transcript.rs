@@ -310,25 +310,23 @@ pub fn install_transcript_in(
                 std::fs::symlink_metadata(dir.join(format!("{id}.jsonl"))).is_ok()
                     || std::fs::symlink_metadata(dir.join(id)).is_ok()
             };
-            let mut id = session.to_string();
-            let mut tries = 0;
-            while taken(&id) {
-                tries += 1;
-                if tries > 16 {
-                    return Err(std::io::Error::other("no free session id"));
-                }
-                id = new_session_id();
-            }
-            let fresh = |t: String| {
+            std::fs::create_dir_all(&dir)?;
+            let fresh = |t: &str, id: &str| {
                 if id == session {
-                    t
+                    t.to_string()
                 } else {
-                    rewrite_session(&t, session, &id)
+                    rewrite_session(t, session, id)
                 }
             };
-            std::fs::create_dir_all(&dir)?;
-            let dest = dir.join(format!("{id}.jsonl"));
-            write_new(&dest, &fresh(text))?;
+            // The transcript file is created with `create_new`, so an import of the same session
+            // running at the same time can't take it between the check and the write.
+            let (id, dest) = claim_session(session, |id| {
+                if taken(id) {
+                    return Ok(None);
+                }
+                let dest = dir.join(format!("{id}.jsonl"));
+                write_new(&dest, &fresh(&text, id)).map(|()| Some(dest))
+            })?;
             let mut not_written = Vec::new();
             let side = work.join("sidechain");
             if std::fs::symlink_metadata(&side).is_ok_and(|m| m.is_dir()) {
@@ -336,7 +334,7 @@ pub fn install_transcript_in(
                 for rel in files_under(&side, MAX_SIDECHAIN_FILES)? {
                     let r = (|| -> std::io::Result<()> {
                         let raw = std::fs::read_to_string(side.join(&rel))?;
-                        let t = fresh(rewrite_paths(&raw, &pairs));
+                        let t = fresh(&rewrite_paths(&raw, &pairs), &id);
                         std::fs::create_dir_all(&sdir)?;
                         create_new_under(&sdir, &rel, 0o600)?.write_all(t.as_bytes())
                     })();
@@ -368,28 +366,28 @@ pub fn install_transcript_in(
             // `codex resume <id>` finds the rollout by the id at the end of its file name
             // anywhere below `sessions/`, so an id that exists there gets a fresh one.
             let sessions = home.join("sessions");
-            let id = if codex_session_exists(&sessions, session) {
-                new_session_id()
-            } else {
-                session.to_string()
-            };
-            let mut dest = home.join(rel);
-            let text = if id == session {
-                text
-            } else {
-                // The id is the last occurrence in the name (`rollout-<ts>-<id>.jsonl`).
-                let at = name.rfind(session).unwrap_or_default();
-                dest.set_file_name(format!(
-                    "{}{id}{}",
-                    &name[..at],
-                    &name[at + session.len()..]
-                ));
-                rewrite_codex_session(&text, session, &id)
-            };
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            write_new(&dest, &text)?;
+            let (id, dest) = claim_session(session, |id| {
+                if codex_session_exists(&sessions, id) {
+                    return Ok(None);
+                }
+                let mut dest = home.join(rel);
+                let text = if id == session {
+                    text.clone()
+                } else {
+                    // The id is the last occurrence in the name (`rollout-<ts>-<id>.jsonl`).
+                    let at = name.rfind(session).unwrap_or_default();
+                    dest.set_file_name(format!(
+                        "{}{id}{}",
+                        &name[..at],
+                        &name[at + session.len()..]
+                    ));
+                    rewrite_codex_session(&text, session, id)
+                };
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                write_new(&dest, &text).map(|()| Some(dest))
+            })?;
             Ok(Some(Installed {
                 resume_args: resume_args("codex", Some(&id)).unwrap_or_default(),
                 session: id,
@@ -399,6 +397,26 @@ pub fn install_transcript_in(
         }
         _ => Ok(None),
     }
+}
+
+/// Install under `session`, else under fresh ids: `try_id` returns `None` when the id is taken
+/// and creates the file with `create_new` otherwise; a file that appeared since the check
+/// (`AlreadyExists`, another import of the same session) counts as taken too.
+fn claim_session(
+    session: &str,
+    mut try_id: impl FnMut(&str) -> std::io::Result<Option<PathBuf>>,
+) -> std::io::Result<(String, PathBuf)> {
+    let mut id = session.to_string();
+    for _ in 0..16 {
+        match try_id(&id) {
+            Ok(Some(dest)) => return Ok((id, dest)),
+            Ok(None) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        id = new_session_id();
+    }
+    Err(std::io::Error::other("no free session id"))
 }
 
 fn write_new(dest: &Path, text: &str) -> std::io::Result<()> {
@@ -649,6 +667,77 @@ mod tests {
             "only the session id"
         );
         assert_eq!(std::fs::read_to_string(&other_day).unwrap(), "original\n");
+    }
+
+    #[test]
+    fn a_session_file_that_appears_after_the_check_gets_a_fresh_id() {
+        let t = tempfile::tempdir().unwrap();
+        let mut n = 0;
+        // The first id's file appears between the check and the create (another import).
+        let (id, dest) = claim_session("s1", |id| {
+            n += 1;
+            let dest = t.path().join(format!("{id}.jsonl"));
+            if n == 1 {
+                std::fs::write(&dest, "theirs").unwrap();
+            }
+            write_new(&dest, "mine").map(|()| Some(dest))
+        })
+        .unwrap();
+        assert_ne!(id, "s1");
+        assert!(valid_session_id(&id));
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(t.path().join("s1.jsonl")).unwrap(),
+            "theirs"
+        );
+        // Other errors are errors.
+        let e = claim_session("s1", |_| Err(std::io::Error::other("disk full"))).unwrap_err();
+        assert_eq!(e.to_string(), "disk full");
+        assert!(claim_session("s1", |_| Ok(None)).is_err());
+    }
+
+    #[test]
+    fn concurrent_installs_of_one_session_all_resume() {
+        let t = tempfile::tempdir().unwrap();
+        let (cwd, root) = (Path::new("/dst/wt/app"), Path::new("/dst/wt"));
+        let (cwork, cm) = claude_work(t.path());
+        let chome = t.path().join("claude");
+        let xwork = t.path().join("x");
+        std::fs::create_dir(&xwork).unwrap();
+        let s1 = "0199aaaa-bbbb-4ccc-8ddd-eeeeffff0002";
+        std::fs::write(
+            xwork.join("transcript.jsonl"),
+            format!(
+                "{}\n",
+                json!({"type": "session_meta", "payload": {"id": s1}})
+            ),
+        )
+        .unwrap();
+        let xm = Manifest {
+            harness: Some("codex".into()),
+            session_id: Some(s1.into()),
+            transcript_rel: Some(format!("sessions/2026/10/07/rollout-t-{s1}.jsonl")),
+            ..Default::default()
+        };
+        let xhome = t.path().join("codex");
+        for (home, m, work) in [(&chome, &cm, &cwork), (&xhome, &xm, &xwork)] {
+            let got: Vec<Installed> = std::thread::scope(|sc| {
+                let hs: Vec<_> = (0..8)
+                    .map(|_| sc.spawn(|| install_transcript_in(home, m, work, cwd, root)))
+                    .collect();
+                hs.into_iter()
+                    .map(|h| h.join().unwrap().unwrap().expect("resumable"))
+                    .collect()
+            });
+            let mut ids: Vec<&str> = got.iter().map(|i| i.session.as_str()).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), 8, "every import has its own session: {ids:?}");
+            for i in &got {
+                assert!(i.path.is_file());
+                assert_eq!(i.resume_args.last(), Some(&i.session));
+            }
+        }
     }
 
     #[test]
