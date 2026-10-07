@@ -2,7 +2,7 @@
 // server + gateway (temp HOME / XDG / runtime dirs, so nothing touches the user's own session).
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
@@ -133,11 +133,25 @@ export class TestHost {
   }
   logs: Record<string, string> = {};
 
+  private serverPid = 0;
+
   async start(): Promise<void> {
     this.spawn(['--session', this.session, 'server', 'start'], 'server');
+    // Wait for the socket before asking anything: a CLI call that finds no server starts a
+    // detached one, which would race this server, outlive `server stop`, and keep writing into
+    // the scratch root after teardown (its command line does not name the root, so nothing kills it).
+    const socket = join(this.env.VIBEKE_RUNTIME_DIR!, this.session, 'vibeke.sock');
     await this.until(() => {
       try {
-        return JSON.parse(this.cli(['server', 'status'])).pid > 0;
+        return statSync(socket).isSocket();
+      } catch {
+        return false;
+      }
+    }, 20_000, 'server socket did not appear');
+    await this.until(() => {
+      try {
+        this.serverPid = Number(JSON.parse(this.cli(['server', 'status'])).pid) || 0;
+        return this.serverPid > 0;
       } catch {
         return false;
       }
@@ -177,24 +191,63 @@ export class TestHost {
     return JSON.parse(this.cli(['interaction', 'list', '--status', status])).interactions;
   }
 
+  /**
+   * Stop the server (with its pane holders) and the gateway, wait until every process that can
+   * write into the scratch root is gone, then delete it. Deleting while a holder, the server or a
+   * pane shell (which saves its history into HOME when its terminal goes away) is still exiting
+   * races their last writes and fails with ENOTEMPTY.
+   */
   async stop(): Promise<void> {
-    try {
-      this.cli(['server', 'stop']);
-    } catch {
-      // already down
+    // `server stop` never starts a server (unlike `server status`), so it is safe to repeat until
+    // nothing answers on the socket any more.
+    for (let i = 0; i < 20; i++) {
+      try {
+        this.cli(['server', 'stop', '--kill-panes']);
+      } catch {
+        break; // not running
+      }
+      await sleep(200);
     }
-    for (const p of this.procs) if (p.exitCode === null) p.kill('SIGTERM');
-    await new Promise((r) => setTimeout(r, 300));
-    for (const p of this.procs) if (p.exitCode === null) p.kill('SIGKILL');
-    // Pane holders (one process per pane) live under the runtime dir.
-    killUnder(this.env.VIBEKE_RUNTIME_DIR!);
-    killUnder(this.root);
-    rmSync(this.root, { recursive: true, force: true });
+    const serverPid = this.serverPid;
+    const running = () => this.procs.filter((p) => p.exitCode === null && p.signalCode === null);
+    const settle = async (ms: number) => {
+      const end = Date.now() + ms;
+      while (running().length && Date.now() < end) await sleep(50);
+    };
+    // The server exits on its own after `server stop`; the gateway needs a signal.
+    await settle(5_000);
+    for (const p of running()) p.kill('SIGTERM');
+    await settle(3_000);
+    for (const p of running()) p.kill('SIGKILL');
+    await settle(3_000);
+    // Pane holders (one process per pane) and anything else whose command line names the root.
+    const killed = [...killUnder(this.env.VIBEKE_RUNTIME_DIR!), ...killUnder(this.root)];
+    await waitGone(serverPid ? [serverPid, ...killed] : killed, 5_000);
+    // Pane shells do not name the root on their command line; they exit once their holder's
+    // terminal closes, so give their last writes a moment instead of failing the teardown.
+    rmSync(this.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 
-/** Kill processes whose command line mentions `dir` (pane holders, shells started there). */
-function killUnder(dir: string): void {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function waitGone(pids: number[], ms: number): Promise<void> {
+  const end = Date.now() + ms;
+  while (pids.some(alive) && Date.now() < end) await sleep(50);
+}
+
+/** SIGKILL processes whose command line mentions `dir` (pane holders, shells started there); returns their pids. */
+function killUnder(dir: string): number[] {
+  const killed: number[] = [];
   try {
     const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
     for (const line of out.split('\n')) {
@@ -202,6 +255,7 @@ function killUnder(dir: string): void {
       if (m && m[2]!.includes(dir) && Number(m[1]) !== process.pid) {
         try {
           process.kill(Number(m[1]), 'SIGKILL');
+          killed.push(Number(m[1]));
         } catch {
           /* gone */
         }
@@ -210,6 +264,7 @@ function killUnder(dir: string): void {
   } catch {
     /* ps unavailable */
   }
+  return killed;
 }
 
 export const readLog = (p: string): string => (existsSync(p) ? readFileSync(p, 'utf8') : '');
