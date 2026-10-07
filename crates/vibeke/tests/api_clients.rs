@@ -869,6 +869,18 @@ fn typescript_client_and_examples_typecheck() {
         eprintln!("skipped: no tsc (npm install in clients/typescript, or tsc on PATH)");
         return;
     };
+    // tsconfig names the `node` types; a `tsc` without `@types/node` next to it (a bare global
+    // install, as on CI runners) can't check anything, so skip like a missing `tsc`.
+    let has_node_types = [
+        root().join("clients/typescript/node_modules/@types/node"),
+        root().join("web/node_modules/@types/node"),
+    ]
+    .iter()
+    .any(|p| p.is_dir());
+    if !has_node_types {
+        eprintln!("skipped: no @types/node (npm install in clients/typescript)");
+        return;
+    }
     let mut c = Command::new(tsc);
     c.args(["--noEmit", "-p", "tsconfig.json"])
         .current_dir(root().join("clients/typescript"));
