@@ -165,7 +165,14 @@ impl Session {
         let v = self
             .api("interaction.list", json!({"run": run, "status": "open"}))
             .unwrap();
-        v["interactions"].as_array().cloned().unwrap_or_default()
+        // `interaction.list` has no run filter: keep the run's own.
+        v["interactions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i["run"] == run)
+            .collect()
     }
     fn events(&self, ty: &str) -> Vec<Value> {
         let v = self

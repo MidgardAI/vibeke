@@ -1683,8 +1683,12 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
         &acp_argv,
     );
     let argv = isolated_argv(h, iso, argv, &cfg);
+    // A shared run's relay authenticates to the mux with a secret handed to it alone.
     let argv = match shared_codex_socket(server, h, kind, iso, &cfg) {
-        Some(sock) => codex_mux::relay_argv(&server.opts.bin, &sock, argv),
+        Some(sock) => {
+            let key = codex_mux::issue_key(&sock, &pane_id).map_err(internal)?;
+            codex_mux::relay_argv(&server.opts.bin, &sock, &key, argv)
+        }
         None => argv,
     };
     cmd.extend(argv.iter().cloned());

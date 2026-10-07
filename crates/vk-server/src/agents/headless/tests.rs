@@ -1628,6 +1628,7 @@ fn codex_isolated_args_and_relay_argv() {
     let relay = codex_mux::relay_argv(
         std::path::Path::new("/bin/vibeke"),
         std::path::Path::new("/run/codex-mux.sock"),
+        "pane1",
         argv,
     );
     assert_eq!(
@@ -1637,6 +1638,8 @@ fn codex_isolated_args_and_relay_argv() {
             "codex-mux",
             "--socket",
             "/run/codex-mux.sock",
+            "--key",
+            "pane1",
             "--",
             "codex",
             "app-server"
