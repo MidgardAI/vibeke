@@ -152,7 +152,8 @@ pub async fn dispatch(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) 
         | "handoff.incoming.get"
         | "handoff.accept"
         | "handoff.decline"
-        | "handoff.resume" => incoming(gw, dev, method, p).await,
+        | "handoff.resume"
+        | "handoff.prefs" => incoming(gw, dev, method, p).await,
         _ => Err(err("method_not_found", method)),
     }
 }
@@ -636,6 +637,8 @@ async fn incoming(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) -> A
     let keys: &[&str] = match method {
         "handoff.incoming.list" => &[],
         "handoff.incoming.get" | "handoff.decline" | "handoff.resume" => &["id"],
+        // Read, or set whether the user's own handoffs may import without asking.
+        "handoff.prefs" => &["always_ask"],
         "handoff.accept" => &[
             "id",
             "repo",

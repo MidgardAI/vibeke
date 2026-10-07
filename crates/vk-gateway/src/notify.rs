@@ -100,7 +100,9 @@ pub async fn run(gw: Arc<Gateway>) {
                         if urgency == "low" || kind.starts_with("interaction") || kind.contains("approval") { continue; }
                         let title = data.get("title").and_then(|t| t.as_str()).unwrap_or("Vibeke").to_string();
                         let id = data.get("id").and_then(|i| i.as_str()).unwrap_or("n").to_string();
-                        open.items.insert(format!("note:{id}"), Item { title, url: "#/inbox".into(), urgent: false, pane: subject.get("pane").and_then(|p| p.as_str()).map(str::to_string) });
+                        // Incoming handoffs open the host's handoff list in the app.
+                        let url = if kind == "handoff" { format!("#/handoffs/{}", gw.keys.host_id()) } else { "#/inbox".into() };
+                        open.items.insert(format!("note:{id}"), Item { title, url, urgent: false, pane: subject.get("pane").and_then(|p| p.as_str()).map(str::to_string) });
                         send(&gw, &open, false).await;
                         open.items.remove(&format!("note:{id}"));
                     }
