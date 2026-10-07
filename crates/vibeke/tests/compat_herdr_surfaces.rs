@@ -381,8 +381,12 @@ fn popup_and_overlay_from_a_trusted_plugin() {
     let surf = vk_tui::plugins::surfaces_in(&r.model.panes, tab, AREA);
     assert_eq!(surf[0].outer, AREA, "full-area layer");
     assert_eq!(surf[0].inner.h, AREA.h - 1);
-    wait_for("overlay env", 15000, || st.join("ov-env.txt").exists());
-    assert!(read(&st.join("ov-env.txt")).contains(&format!("HERDR_PANE_ID={ov_handle}")));
+    // The shell creates the file before `sort` writes it: wait for the content, not the file.
+    wait_for("overlay env", 15000, || {
+        read(&st.join("ov-env.txt")).contains("HERDR_PLUGIN_ID=")
+    });
+    let env = read(&st.join("ov-env.txt"));
+    assert!(env.contains(&format!("HERDR_PANE_ID={ov_handle}")), "{env}");
     // Its command exits: it closes by itself and the focus comes back.
     r.until("overlay closed after its command exited", |m, f| {
         !m.panes.iter().any(|p| p.id == ov.id) && f == Some(root_id.as_str())
