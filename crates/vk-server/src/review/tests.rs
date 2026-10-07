@@ -1981,8 +1981,14 @@ async fn cached_ready_is_invalidated_by_live_changes() {
     };
     back_to_ready().await;
 
-    // A turn starts on the bound run.
+    // A turn starts on the bound run. The live watcher downgrades on its own; only then is the
+    // attention list read: `attention.list` queues refreshes of stale tasks, and a refresh
+    // landing first would downgrade without the live path (it did on Linux, where it is fast).
     e.set_exec("r1", Execution::Working);
+    wait_until("downgrade after turn start", || {
+        review_label(&e, &task).as_deref() == Some("review_available")
+    })
+    .await;
     let v = ok(&e, "attention.list", json!({})).await;
     let item = v["items"]
         .as_array()
@@ -1998,14 +2004,12 @@ async fn cached_ready_is_invalidated_by_live_changes() {
             .starts_with("Ready for your review"),
         "{item}"
     );
-    wait_until("downgrade after turn start", || {
-        review_label(&e, &task).as_deref() == Some("review_available")
-    })
-    .await;
     assert!(
         events(&e, "review.label_changed")
             .iter()
-            .any(|ev| ev["data"]["reason"] == "live_state_changed")
+            .any(|ev| ev["data"]["reason"] == "live_state_changed"),
+        "{:?}",
+        events(&e, "review.label_changed")
     );
     e.set_exec("r1", Execution::Idle);
     wait_until("refresh settled", || !refresh_pending(&task)).await;
