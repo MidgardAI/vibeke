@@ -535,11 +535,19 @@ command = ["sh", "-c", "herdr agent view-clear > \"$HERDR_PLUGIN_STATE_DIR/clear
             "--state",
             "idle",
         ]);
-        let agents = s_.herdr(&["agent", "list"]);
-        let target = agents["agents"][0]["agent_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        // The report is applied asynchronously; on a slow runner the first list can be empty.
+        let t0 = std::time::Instant::now();
+        let target = loop {
+            let agents = s_.herdr(&["agent", "list"]);
+            if let Some(id) = agents["agents"][0]["agent_id"].as_str() {
+                break id.to_string();
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "agent never listed: {agents}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
         write(&state.join("target"), &target);
         target
     };

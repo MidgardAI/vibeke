@@ -179,13 +179,25 @@ pub async fn server(g: &Global, args: &[String]) -> i32 {
             if verb != "status" {
                 g2.no_spawn = true;
             }
-            {
+            let code = {
                 let gr = &g2;
                 crate::with_client(gr, |mut c| async move {
                     vk_cli::run_api(&mut c, gr, method, params).await
                 })
                 .await
+            };
+            // `server.stop` answers before the server exits: wait until it no longer accepts
+            // connections, so `vibeke server stop && vibeke …` never reaches the dying server.
+            if verb == "stop" && code == EXIT_OK && g.machine.is_none() {
+                let socket = client::socket_path(&g.session, g.socket.as_deref());
+                for _ in 0..200 {
+                    if tokio::net::UnixStream::connect(&socket).await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
             }
+            code
         }
     }
 }
