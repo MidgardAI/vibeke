@@ -2067,12 +2067,18 @@ pub async fn start_in_pane_opts(
         return Err(err(ErrorKind::Conflict, "pane_busy")
             .details(json!({"reason": "an agent already runs in this pane"})));
     }
-    let session_id = h.preassign_session_id();
+    let (preassigned, session_id) = match h.caller_session(args) {
+        Some(resumed) => (None, resumed),
+        None => {
+            let s = h.preassign_session_id();
+            (s.clone(), s)
+        }
+    };
     let launch = crate::sandbox::prepare_agent(
         server,
         pane,
         h.id(),
-        h.launch_argv(session_id.as_deref(), args, prompt),
+        h.launch_argv(preassigned.as_deref(), args, prompt),
         opts,
     )
     .await?;

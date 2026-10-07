@@ -233,6 +233,31 @@ impl Harness {
                 .map(|_| uuid_v4()),
         }
     }
+    /// The session `args` already choose (`claude --resume <id>` / `--continue`, `pi --session <id>`):
+    /// `Some(id)` when named, `Some(None)` when not. No id is preassigned then: Claude refuses
+    /// `--session-id` together with `--resume` or `--continue`.
+    pub fn caller_session(&self, args: &[String]) -> Option<Option<String>> {
+        let (named, unnamed): (&[&str], &[&str]) = match self {
+            Harness::Claude => (&["--resume", "-r"], &["--continue", "-c"]),
+            Harness::Pi => (&["--session"], &[]),
+            _ => return None,
+        };
+        for (i, a) in args.iter().enumerate() {
+            if unnamed.contains(&a.as_str()) {
+                return Some(None);
+            }
+            if let Some(id) = named
+                .iter()
+                .find_map(|f| a.strip_prefix(f)?.strip_prefix('='))
+            {
+                return Some(Some(id.to_string()));
+            }
+            if named.contains(&a.as_str()) {
+                return Some(args.get(i + 1).filter(|n| !n.starts_with('-')).cloned());
+            }
+        }
+        None
+    }
     pub fn launch_argv(
         &self,
         session: Option<&str>,
@@ -1561,6 +1586,26 @@ mod m2_tests {
         assert!(mybot.answer_native(InteractionKind::Approval));
         assert!(validated(mybot, "0.0.1"));
         assert!(Harness::all().contains(&mybot));
+    }
+
+    #[test]
+    fn resume_args_suppress_the_preassigned_session() {
+        let c = Harness::Claude;
+        assert_eq!(
+            c.caller_session(&a(&["--resume", "abc"])),
+            Some(Some("abc".into()))
+        );
+        assert_eq!(
+            c.caller_session(&a(&["--resume=abc"])),
+            Some(Some("abc".into()))
+        );
+        assert_eq!(c.caller_session(&a(&["-c"])), Some(None));
+        assert_eq!(c.caller_session(&a(&["--model", "opus"])), None);
+        assert_eq!(
+            Harness::Pi.caller_session(&a(&["--session", "p"])),
+            Some(Some("p".into()))
+        );
+        assert_eq!(Harness::Codex.caller_session(&a(&["resume", "x"])), None);
     }
 
     #[test]
