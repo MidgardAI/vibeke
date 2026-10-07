@@ -1182,6 +1182,7 @@ async fn a_real_provider_refuses_unfiltered_network_profiles() {
         Some("t1"),
         &co,
         vk_sandbox::NetworkProfile::Dev,
+        &[],
         true,
     )
     .await
@@ -1190,6 +1191,90 @@ async fn a_real_provider_refuses_unfiltered_network_profiles() {
     assert_eq!(kind(&e), "unsupported");
     assert!(e.message.contains("not enforced"), "{}", e.message);
     assert!(cmd.argvs().is_empty(), "nothing was run");
+}
+
+/// Final review P1 3: a VM's workspace is the checkout, mounted writable. The checkout is
+/// registered for host git hardening, so a guest that plants a clean filter in `.git/config`
+/// gets nothing executed by host-side task status; `.git` is mounted read-only where the
+/// provider nests mounts (not Tart, which would link through the host checkout).
+#[tokio::test]
+async fn vm_checkout_git_metadata_never_executes_on_the_host() {
+    let (d, srv, root) = vm_server();
+    let co = repo(d.path());
+    let task = "vtask01JABCDEFGHJKMNPQRS1";
+    let mut r = crate::sandbox::IsoRequest {
+        level: vk_sandbox::IsolationLevel::Vm,
+        network: vk_sandbox::NetworkProfile::Open,
+        ..Default::default()
+    };
+    r.yolo = true;
+    crate::sandbox::prepare_box(&srv, task, Some(task), &co, r)
+        .await
+        .unwrap();
+    assert!(vk_tasks::is_contained(&co), "registered for host hardening");
+    // The guest writes through its workspace mount.
+    let ws = std::fs::read_dir(root.join("vms"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("disk/workspace"))
+        .find(|p| p.exists())
+        .expect("vm workspace");
+    let marker = d.path().join("pwned");
+    let mut cfg = std::fs::read_to_string(ws.join(".git/config")).unwrap();
+    cfg.push_str(&format!(
+        "[filter \"evil\"]\n\tclean = touch {}\n\tsmudge = cat\n\trequired = true\n",
+        marker.display()
+    ));
+    std::fs::write(ws.join(".git/config"), cfg).unwrap();
+    std::fs::write(ws.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+    std::fs::write(ws.join("a.txt"), "changed by the guest\n").unwrap();
+    let _ = vk_tasks::branch_status(&co, Some("main"));
+    assert!(!marker.exists(), "host task status ran the guest's filter");
+    // Control: unhardened git in the same checkout would have run it.
+    vk_tasks::unregister_contained_checkout(&co);
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(&co)
+        .args(["status", "--porcelain"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output();
+    assert!(marker.exists(), "control: the planted filter is live");
+}
+
+#[test]
+fn vm_protect_mounts_cover_git_except_on_tart() {
+    let d = tempfile::tempdir().unwrap();
+    let co = d.path().join("co");
+    std::fs::create_dir_all(co.join(".git")).unwrap();
+    std::fs::create_dir_all(co.join(".githooks")).unwrap();
+    let prot = vec![
+        co.join(".githooks"),
+        co.join("missing"),
+        d.path().join("outside"),
+    ];
+    for kind in [
+        vk_sandbox::vm::VmProviderKind::Fake,
+        vk_sandbox::vm::VmProviderKind::Lima,
+    ] {
+        let mut s = vk_sandbox::vm::VmSpec::new("x");
+        crate::orch_vm::protect_mounts(&mut s, kind, &co, &prot);
+        let got: Vec<_> = s
+            .mounts
+            .iter()
+            .map(|m| (m.target.clone(), m.read_only))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (format!("{}/.git", vk_sandbox::vm::VM_WORKSPACE), true),
+                (format!("{}/.githooks", vk_sandbox::vm::VM_WORKSPACE), true),
+            ]
+        );
+    }
+    let mut s = vk_sandbox::vm::VmSpec::new("x");
+    crate::orch_vm::protect_mounts(&mut s, vk_sandbox::vm::VmProviderKind::Tart, &co, &prot);
+    assert!(s.mounts.is_empty());
 }
 
 #[test]

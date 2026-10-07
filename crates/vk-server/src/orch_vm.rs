@@ -98,6 +98,40 @@ fn spec_of(c: &vk_sandbox::config::VmConfig, name: &str, checkout: Option<&Path>
     s
 }
 
+/// Read-only mounts over what host git trusts inside the writable checkout (13 §6): the
+/// checkout's `.git` directory and every protected directory ([`vk_sandbox::gitexec`]), at
+/// their place under the workspace mount. Only for providers that mount nested shares (Lima,
+/// the fake); Tart links shares into place through the guest, which would write the link into
+/// the host checkout — there host git hardening (the registered checkout) is the protection.
+pub(crate) fn protect_mounts(
+    spec: &mut VmSpec,
+    kind: VmProviderKind,
+    checkout: &Path,
+    protected: &[PathBuf],
+) {
+    if kind == VmProviderKind::Tart {
+        return;
+    }
+    let mut dirs = vec![checkout.join(".git")];
+    dirs.extend(protected.iter().cloned());
+    for d in dirs {
+        let Ok(rel) = d.strip_prefix(checkout) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() || !d.is_dir() || spec.mounts.iter().any(|m| m.host == d) {
+            continue;
+        }
+        spec.mounts.push(VmMount {
+            host: d.clone(),
+            target: Path::new(vm::VM_WORKSPACE)
+                .join(rel)
+                .to_string_lossy()
+                .into_owned(),
+            read_only: true,
+        });
+    }
+}
+
 fn template_spec(c: &vk_sandbox::config::VmConfig) -> TemplateSpec {
     TemplateSpec {
         image: c.image.clone(),
@@ -141,6 +175,7 @@ pub async fn build_runner(
     task: Option<&str>,
     checkout: &Path,
     network: NetworkProfile,
+    protected: &[PathBuf],
     start: bool,
 ) -> Result<VmBoxRunner, vk_proto::rpc::RpcError> {
     let c = gate(server)?;
@@ -157,11 +192,13 @@ pub async fn build_runner(
     }
     let name = vm_name(key);
     let m = VmManager::new(be.clone(), &server.paths.state);
-    let (task_s, checkout_p, c2, name2) = (
+    let (task_s, checkout_p, c2, name2, prot, kind) = (
         task.map(str::to_string),
         checkout.to_path_buf(),
         c.clone(),
         name.clone(),
+        protected.to_vec(),
+        be.kind(),
     );
     tokio::task::spawn_blocking(move || -> Result<(), vk_proto::rpc::RpcError> {
         let exists = m.backend().state(&name2).is_ok();
@@ -175,7 +212,8 @@ pub async fn build_runner(
         if !start {
             return Err(err(ErrorKind::NotFound, format!("vm {name2} is gone")));
         }
-        let spec = spec_of(&c2, &name2, Some(&checkout_p));
+        let mut spec = spec_of(&c2, &name2, Some(&checkout_p));
+        protect_mounts(&mut spec, kind, &checkout_p, &prot);
         if c2.template {
             let ts = template_spec(&c2);
             let tpl = m

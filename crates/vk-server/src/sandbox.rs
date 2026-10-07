@@ -442,9 +442,10 @@ pub async fn prepare_box_opts(
     // Container boxes see the code at their own workdir; the trust dialog is pre-accepted there.
     let code = container::code_mode(req.code.as_deref(), &cfg, task.is_some());
     // The contained process can write the checkout itself (sandbox level, container worktree
-    // mode): it must not be $HOME, `/` or contain protected state (13 §5), and the files host
-    // git executes from it are write-protected (13 §6).
-    let writes_checkout = req.level == IsolationLevel::Sandbox
+    // mode, a VM — its workspace is the checkout, mounted writable): it must not be $HOME, `/`
+    // or contain protected state (13 §5), the files host git executes from it are
+    // write-protected where the provider can, and host git in it runs hardened (13 §6).
+    let writes_checkout = matches!(req.level, IsolationLevel::Sandbox | IsolationLevel::Vm)
         || (req.level == IsolationLevel::Container && code == "worktree");
     if req.level != IsolationLevel::Host {
         vk_sandbox::policy::check_checkout(&home, &checkout, &hidden_paths())
@@ -633,8 +634,16 @@ pub async fn prepare_box_opts(
                     vk_sandbox::VmRunner.check().unwrap_err().to_string(),
                 ));
             }
-            let r = crate::orch_vm::build_runner(server, key, task, &checkout, req.network, start)
-                .await?;
+            let r = crate::orch_vm::build_runner(
+                server,
+                key,
+                task,
+                &checkout,
+                req.network,
+                &protected,
+                start,
+            )
+            .await?;
             let prov = r.provider();
             (BoxRunner::Vm(Box::new(r)), prov)
         }
