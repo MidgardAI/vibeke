@@ -412,7 +412,10 @@ fn leases_basic_idempotent_release() {
 #[test]
 fn leases_exhaustion_and_busy_port_skip() {
     let tmp = tempfile::tempdir().unwrap();
-    let small = PortPool::parse("40000-40019", 10).unwrap();
+    // Ports nothing else is using right now: a fixed range collides with other listeners on a
+    // busy CI runner, and the lease code (correctly) skips busy ports.
+    let base = free_block(20);
+    let small = PortPool::parse(&format!("{base}-{}", base + 19), 10).unwrap();
     let pl = PortLeases::new(tmp.path(), small);
     let a = pl.lease(&LeaseRequest::new("a", "s")).unwrap();
     let _b = pl.lease(&LeaseRequest::new("b", "s")).unwrap();
@@ -761,4 +764,14 @@ fn setup_after_create_end_to_end() {
             .trim(),
         format!("p={}", lease.start)
     );
+}
+
+/// The first of `n` consecutive free loopback ports, aligned to 10 (the pool's block size),
+/// searched from a pid-dependent start so parallel test processes don't pick the same range.
+fn free_block(n: u16) -> u16 {
+    let start = 41_000 + (std::process::id() % 400) as u16 * 20;
+    (0..1_000u16)
+        .map(|i| 41_000 + (start - 41_000 + i * 20) % 16_000)
+        .find(|&b| (b..b + n).all(|p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok()))
+        .expect("no free port block")
 }

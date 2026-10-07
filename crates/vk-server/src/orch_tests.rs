@@ -1311,12 +1311,13 @@ async fn vm_checkout_git_metadata_never_executes_on_the_host() {
     std::fs::write(ws.join("a.txt"), "changed by the guest\n").unwrap();
     let _ = vk_tasks::branch_status(&co, Some("main"));
     assert!(!marker.exists(), "host task status ran the guest's filter");
-    // Control: unhardened git in the same checkout would have run it.
+    // Control: unhardened git in the same checkout would have run it. `git add` always runs
+    // the clean filter (`git status` skips it while the stat data still matches the index).
     vk_tasks::unregister_contained_checkout(&co);
     let _ = Command::new("git")
         .arg("-C")
         .arg(&co)
-        .args(["status", "--porcelain"])
+        .args(["add", "a.txt"])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output();
