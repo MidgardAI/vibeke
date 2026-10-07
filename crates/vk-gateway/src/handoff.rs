@@ -1,62 +1,36 @@
 //! Handoff (spec 16 §15.2): export an agent's work at a turn boundary as a bundle, carry it
 //! through the app, import it on another host as a new worktree and resume the agent there.
 //!
-//! The bundle is a zstd-compressed tar: `manifest.json`, `repo.bundle` (optional), `changes.patch`,
-//! `untracked/<path>` and `transcript.jsonl` (optional).
+//! Bundle format, unpacking and the repository-side import live in `vk-handoff`; this module does
+//! the export, the transfer and the server calls around the import.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use vk_handoff::{
+    MAX_BUNDLE, MAX_UNTRACKED, Manifest, Skipped, clean, expand_home, git, git_line, hash_file,
+    known_harness, regular_under, safe_relative, same_remote, secret_path,
+};
+
+pub use vk_handoff::claude_project_dir;
 
 use crate::Gateway;
 use crate::api::{ApiError, ApiResult, normalize};
 use crate::state::{Device, now_s};
 
-const MAX_BUNDLE: u64 = 200 * 1024 * 1024;
 const MAX_CHUNK: u64 = 4 * 1024 * 1024;
-const MAX_UNTRACKED: u64 = 5 * 1024 * 1024;
 const TTL: Duration = Duration::from_secs(3600);
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Manifest {
-    pub v: u32,
-    pub source_host: String,
-    pub repo_name: String,
-    pub origin: Option<String>,
-    pub branch: Option<String>,
-    pub head: String,
-    /// `thin` | `full` | `none` (HEAD already on a remote).
-    pub bundle: String,
-    /// Working directory relative to the repository root.
-    pub cwd_rel: String,
-    pub source_cwd: String,
-    pub source_root: String,
-    pub harness: Option<String>,
-    pub session_id: Option<String>,
-    /// `resume_argv` without the program name.
-    pub resume_args: Vec<String>,
-    /// Path of the transcript relative to the harness home (`projects/...` or `sessions/...`).
-    pub transcript_rel: Option<String>,
-    pub last_message: Option<String>,
-    pub untracked: Vec<String>,
-    pub skipped: Vec<Skipped>,
-    pub redactions: usize,
-    pub created_at: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Skipped {
-    pub path: String,
-    pub reason: String,
+impl From<vk_handoff::Error> for ApiError {
+    fn from(e: vk_handoff::Error) -> Self {
+        ApiError::new(e.kind, e.message)
+    }
 }
 
 enum Dir {
@@ -74,21 +48,64 @@ struct Entry {
     size: u64,
     created: Instant,
     dir: Dir,
+    /// A chunk write or the import is running outside the lock.
+    busy: bool,
 }
 
 static ENTRIES: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 
+/// Runs `f` under the lock; files of expired entries are removed after it is released.
 fn with_entries<T>(f: impl FnOnce(&mut HashMap<String, Entry>) -> T) -> T {
-    let mut g = ENTRIES.lock().unwrap();
-    let m = g.get_or_insert_with(HashMap::new);
-    m.retain(|_, e| {
-        let keep = e.created.elapsed() < TTL;
-        if !keep {
-            let _ = std::fs::remove_file(&e.path);
+    let mut expired = Vec::new();
+    let r = {
+        let mut g = ENTRIES.lock().unwrap();
+        let m = g.get_or_insert_with(HashMap::new);
+        m.retain(|_, e| {
+            let keep = e.busy || e.created.elapsed() < TTL;
+            if !keep {
+                expired.push(e.path.clone());
+            }
+            keep
+        });
+        f(m)
+    };
+    for p in expired {
+        let _ = std::fs::remove_file(p);
+    }
+    r
+}
+
+fn remove_entry(id: &str, owner: &str) {
+    let e = with_entries(|m| {
+        if m.get(id).is_some_and(|e| e.owner == owner) {
+            m.remove(id)
+        } else {
+            None
         }
-        keep
     });
-    f(m)
+    if let Some(e) = e {
+        let _ = std::fs::remove_file(e.path);
+    }
+}
+
+/// Remove files in the handoffs directory that no entry refers to. Entries live in memory, so at
+/// startup everything there is left over from before a restart.
+pub fn sweep(gw: &Gateway) {
+    let Ok(d) = dir(gw) else { return };
+    let live: Vec<PathBuf> = with_entries(|m| m.values().map(|e| e.path.clone()).collect());
+    for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if live.contains(&p) {
+            continue;
+        }
+        let r = match e.file_type() {
+            Ok(t) if t.is_dir() => std::fs::remove_dir_all(&p),
+            _ => std::fs::remove_file(&p),
+        };
+        if let Err(x) = r {
+            tracing::warn!("handoff sweep: {}: {x}", p.display());
+        }
+    }
 }
 
 /// Side effects re-check that the device is still authorized (spec 16 §4.6).
@@ -108,23 +125,26 @@ fn s<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
     p.get(k).and_then(|v| v.as_str())
 }
 
+/// Disk work off the async threads.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| err("internal", e.to_string()))?
+        .map_err(|e| err("internal", e.to_string()))
+}
+
 pub async fn dispatch(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) -> ApiResult {
     match method {
         "handoff.export" => export(gw, dev, p).await,
-        "handoff.read" => read(dev, p),
+        "handoff.read" => read(dev, p).await,
         "handoff.discard" => {
-            let id = s(p, "id").unwrap_or("");
-            with_entries(|m| {
-                if m.get(id).is_some_and(|e| e.owner == dev.id)
-                    && let Some(e) = m.remove(id)
-                {
-                    let _ = std::fs::remove_file(e.path);
-                }
-            });
+            remove_entry(s(p, "id").unwrap_or(""), &dev.id);
             Ok(json!({}))
         }
         "handoff.begin" => begin(gw, dev, p),
-        "handoff.write" => write(dev, p),
+        "handoff.write" => write(dev, p).await,
         "handoff.finish" => finish(gw, dev, p).await,
         _ => Err(err("method_not_found", method)),
     }
@@ -139,167 +159,6 @@ fn dir(gw: &Gateway) -> Result<PathBuf, ApiError> {
         let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
     }
     Ok(d)
-}
-
-// ---------------------------------------------------------------------------------------------
-// git
-
-/// Run git on this host. Same hardening as the server's git methods: repo-configured programs
-/// never run (spec 16 §7.7).
-/// `-c filter.<name>.{clean,smudge,process}=` for every configured filter driver (reading config
-/// runs nothing; an empty command disables the filter).
-async fn filter_overrides(dir: &Path) -> Vec<String> {
-    let out = tokio::process::Command::new("git")
-        .args([
-            "config",
-            "--null",
-            "--name-only",
-            "--get-regexp",
-            r"^filter\.",
-        ])
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await;
-    let Ok(out) = out else { return Vec::new() };
-    let mut names: Vec<String> = out
-        .stdout
-        .split(|&b| b == 0)
-        .filter_map(|k| {
-            String::from_utf8_lossy(k)
-                .strip_prefix("filter.")
-                .and_then(|r| r.rsplit_once('.'))
-                .map(|(n, _)| n.to_string())
-        })
-        .collect();
-    names.sort();
-    names.dedup();
-    names
-        .iter()
-        .flat_map(|n| {
-            ["clean", "smudge", "process"]
-                .iter()
-                .flat_map(move |k| ["-c".to_string(), format!("filter.{n}.{k}=")])
-                .chain(["-c".to_string(), format!("filter.{n}.required=false")])
-        })
-        .collect()
-}
-
-async fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, ApiError> {
-    let filters = filter_overrides(dir).await;
-    let out = tokio::time::timeout(
-        Duration::from_secs(120),
-        tokio::process::Command::new("git")
-            .arg("--literal-pathspecs")
-            .args(&filters)
-            .args([
-                "-c",
-                "submodule.recurse=false",
-                "-c",
-                "diff.ignoreSubmodules=all",
-                "-c",
-                "status.submoduleSummary=false",
-            ])
-            .args([
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "diff.external=",
-                "-c",
-                "core.pager=cat",
-                "-c",
-                "color.ui=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-            ])
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_EXTERNAL_DIFF")
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| {
-        err(
-            "timeout",
-            format!("git {} timed out", args.first().unwrap_or(&"")),
-        )
-    })?
-    .map_err(|e| err("unsupported", format!("git: {e}")))?;
-    if out.status.success() {
-        Ok(out.stdout)
-    } else {
-        Err(err(
-            "conflict",
-            format!(
-                "git {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        ))
-    }
-}
-
-async fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
-    git(dir, args)
-        .await
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn secret_path(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
-    name == ".env"
-        || name.starts_with(".env.")
-        || [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"]
-            .iter()
-            .any(|e| name.ends_with(e))
-        || ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]
-            .iter()
-            .any(|k| name.starts_with(k))
-        || matches!(
-            name.as_str(),
-            "credentials"
-                | "credentials.json"
-                | "auth.json"
-                | ".netrc"
-                | ".npmrc"
-                | ".pypirc"
-                | ".git-credentials"
-        )
-}
-
-fn safe_relative(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains('\0')
-        && path
-            .split('/')
-            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
-        && Path::new(path)
-            .components()
-            .all(|c| matches!(c, Component::Normal(_)))
-}
-
-/// Regular file below `root`, no symlink at any component.
-fn regular_under(root: &Path, rel: &str) -> Option<std::fs::Metadata> {
-    let mut p = root.to_path_buf();
-    for c in Path::new(rel).components() {
-        p.push(c);
-        let md = std::fs::symlink_metadata(&p).ok()?;
-        if md.file_type().is_symlink() {
-            return None;
-        }
-    }
-    std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -382,7 +241,7 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         {
             Ok(_) => "thin",
             Err(e) if e.message.contains("empty bundle") => "none",
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     } else {
         git(
@@ -439,7 +298,7 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         }
     }
 
-    // Transcript, redacted line by line.
+    // Transcript (and Claude's sidechain files), redacted line by line.
     let (harness, session_id) = (
         s(&run, "harness").map(str::to_string),
         s(&run, "harness_session_id").map(str::to_string),
@@ -457,33 +316,16 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     let mut redactions = 0;
     let mut transcript_rel = None;
     if let Some(tp) = s(&run, "transcript_path") {
-        let rel = transcript_relative(harness.as_deref().unwrap_or(""), tp);
-        if let (Some(rel), Ok(text)) = (rel, std::fs::read_to_string(tp)) {
-            let mut out = String::with_capacity(text.len());
-            for line in text.lines() {
-                // Keep untouched lines byte-for-byte; only rewrite lines that had secrets.
-                let red = match serde_json::from_str::<Value>(line) {
-                    Ok(mut v) => {
-                        let before = v.to_string();
-                        vk_redact::redact_json(&mut v);
-                        let after = v.to_string();
-                        if after == before {
-                            line.to_string()
-                        } else {
-                            after
-                        }
-                    }
-                    Err(_) => vk_redact::redact(line).to_string(),
-                };
-                if red != line {
-                    redactions += 1;
-                }
-                out.push_str(&red);
-                out.push('\n');
-            }
-            std::fs::write(w.join("transcript.jsonl"), out)
-                .map_err(|e| err("internal", e.to_string()))?;
+        let (h, tp, w2) = (
+            harness.clone().unwrap_or_default(),
+            PathBuf::from(tp),
+            w.clone(),
+        );
+        if let Some((rel, n)) =
+            blocking(move || vk_handoff::export_transcript(&h, &tp, &w2)).await?
+        {
             transcript_rel = Some(rel);
+            redactions = n;
         }
     }
 
@@ -520,11 +362,11 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     let out_path = dir(gw)?.join(format!("{id}.out.tar.zst"));
     let (root2, w2, m2, out2) = (root.clone(), w.clone(), manifest.clone(), out_path.clone());
     let bundle_present = bundle_kind != "none";
-    tokio::task::spawn_blocking(move || pack(&out2, &w2, &root2, &m2, bundle_present))
-        .await
-        .map_err(|e| err("internal", e.to_string()))?
-        .map_err(|e| err("internal", e.to_string()))?;
-    let (size, sha) = hash_file(&out_path).map_err(|e| err("internal", e.to_string()))?;
+    let (size, sha) = blocking(move || {
+        vk_handoff::pack(&out2, &w2, &root2, &m2, bundle_present)?;
+        hash_file(&out2)
+    })
+    .await?;
     if size > MAX_BUNDLE {
         let _ = std::fs::remove_file(&out_path);
         return Err(err("too_large", "handoff bundle exceeds 200 MiB"));
@@ -538,6 +380,7 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
                 size,
                 created: Instant::now(),
                 dir: Dir::Out,
+                busy: false,
             },
         )
     });
@@ -545,85 +388,10 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     Ok(json!({"id": id, "size": size, "sha256": sha, "manifest": manifest}))
 }
 
-fn transcript_relative(harness: &str, path: &str) -> Option<String> {
-    let marker = match harness {
-        "claude" => "/projects/",
-        "codex" => "/sessions/",
-        _ => return None,
-    };
-    path.rfind(marker).map(|i| path[i + 1..].to_string())
-}
-
-fn pack(out: &Path, work: &Path, root: &Path, m: &Manifest, bundle: bool) -> std::io::Result<()> {
-    let f = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(out)?;
-    let enc = zstd::Encoder::new(f, 3)?;
-    let mut tar = tar::Builder::new(enc);
-    tar.follow_symlinks(false);
-    let add_bytes = |tar: &mut tar::Builder<_>, name: &str, data: &[u8]| -> std::io::Result<()> {
-        let mut h = tar::Header::new_gnu();
-        h.set_size(data.len() as u64);
-        h.set_mode(0o644);
-        h.set_entry_type(tar::EntryType::Regular);
-        h.set_cksum();
-        tar.append_data(&mut h, name, data)
-    };
-    add_bytes(&mut tar, "manifest.json", &serde_json::to_vec_pretty(m)?)?;
-    if bundle {
-        tar.append_path_with_name(work.join("repo.bundle"), "repo.bundle")?;
-    }
-    tar.append_path_with_name(work.join("changes.patch"), "changes.patch")?;
-    if work.join("transcript.jsonl").exists() {
-        tar.append_path_with_name(work.join("transcript.jsonl"), "transcript.jsonl")?;
-    }
-    for rel in &m.untracked {
-        let mut data = Vec::new();
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let f = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(root.join(rel))?;
-            if !f.metadata()?.is_file() {
-                return Err(std::io::Error::other(format!(
-                    "{rel} is not a regular file"
-                )));
-            }
-            f
-        }
-        .take(MAX_UNTRACKED + 1)
-        .read_to_end(&mut data)?;
-        add_bytes(&mut tar, &format!("untracked/{rel}"), &data)?;
-    }
-    tar.into_inner()?.finish()?.sync_all()
-}
-
-fn hash_file(p: &Path) -> std::io::Result<(u64, String)> {
-    let mut f = std::fs::File::open(p)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    let mut n = 0u64;
-    loop {
-        let r = f.read(&mut buf)?;
-        if r == 0 {
-            break;
-        }
-        n += r as u64;
-        h.update(&buf[..r]);
-    }
-    Ok((n, hex(&h.finalize())))
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
 // ---------------------------------------------------------------------------------------------
 // transfer
 
-fn read(dev: &Device, p: &Value) -> ApiResult {
+async fn read(dev: &Device, p: &Value) -> ApiResult {
     let id = s(p, "id").unwrap_or("");
     let offset = p.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
     let len = p
@@ -635,13 +403,14 @@ fn read(dev: &Device, p: &Value) -> ApiResult {
         Some(e) if e.owner == dev.id && matches!(e.dir, Dir::Out) => Ok((e.path.clone(), e.size)),
         _ => Err(err("not_found", "no such handoff")),
     })?;
-    let mut f = std::fs::File::open(&path).map_err(|e| err("internal", e.to_string()))?;
-    f.seek(SeekFrom::Start(offset.min(size)))
-        .map_err(|e| err("internal", e.to_string()))?;
-    let mut buf = Vec::new();
-    f.take(len)
-        .read_to_end(&mut buf)
-        .map_err(|e| err("internal", e.to_string()))?;
+    let buf = blocking(move || {
+        let mut f = std::fs::File::open(&path)?;
+        f.seek(SeekFrom::Start(offset.min(size)))?;
+        let mut buf = Vec::new();
+        f.take(len).read_to_end(&mut buf)?;
+        Ok(buf)
+    })
+    .await?;
     let eof = offset + buf.len() as u64 >= size;
     Ok(json!({"data_b64": B64.encode(&buf), "eof": eof, "size": size}))
 }
@@ -685,14 +454,15 @@ fn begin(gw: &Gateway, dev: &Device, p: &Value) -> ApiResult {
                     sha256: sha,
                     manifest: Box::new(manifest),
                 },
+                busy: false,
             },
         )
     });
     Ok(json!({"id": id}))
 }
 
-fn write(dev: &Device, p: &Value) -> ApiResult {
-    let id = s(p, "id").unwrap_or("");
+async fn write(dev: &Device, p: &Value) -> ApiResult {
+    let id = s(p, "id").unwrap_or("").to_string();
     let offset = p
         .get("offset")
         .and_then(|v| v.as_u64())
@@ -703,27 +473,42 @@ fn write(dev: &Device, p: &Value) -> ApiResult {
     if data.len() as u64 > MAX_CHUNK {
         return Err(err("too_large", "chunks are at most 4 MiB"));
     }
-    with_entries(|m| {
+    let n = data.len() as u64;
+    let path = with_entries(|m| {
         let e = m
-            .get_mut(id)
+            .get_mut(&id)
             .filter(|e| e.owner == dev.id)
             .ok_or_else(|| err("not_found", "no such handoff"))?;
         let Dir::In { expected_size, .. } = &e.dir else {
             return Err(err("not_found", "no such handoff"));
         };
+        if e.busy {
+            return Err(err("conflict", "another write is in progress"));
+        }
         if offset != e.size {
             return Err(err("conflict", format!("expected offset {}", e.size)));
         }
-        if e.size + data.len() as u64 > *expected_size {
+        if e.size + n > *expected_size {
             return Err(err("too_large", "more data than announced"));
         }
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&e.path)
-            .map_err(|x| err("internal", x.to_string()))?;
+        e.busy = true;
+        Ok(e.path.clone())
+    })?;
+    // Truncate to the offset first, so a failed write can simply be retried.
+    let wrote = blocking(move || {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path)?;
+        f.set_len(offset)?;
+        f.seek(SeekFrom::Start(offset))?;
         f.write_all(&data)
-            .map_err(|x| err("internal", x.to_string()))?;
-        e.size += data.len() as u64;
+    })
+    .await;
+    with_entries(|m| {
+        let e = m
+            .get_mut(&id)
+            .ok_or_else(|| err("not_found", "no such handoff"))?;
+        e.busy = false;
+        wrote?;
+        e.size += n;
         Ok(json!({"received": e.size}))
     })
 }
@@ -733,9 +518,9 @@ fn write(dev: &Device, p: &Value) -> ApiResult {
 
 async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     let id = s(p, "id").unwrap_or("").to_string();
-    let (path, manifest) = with_entries(|m| {
+    let (path, manifest, sha) = with_entries(|m| {
         let e = m
-            .get(&id)
+            .get_mut(&id)
             .filter(|e| e.owner == dev.id)
             .ok_or_else(|| err("not_found", "no such handoff"))?;
         let Dir::In {
@@ -746,18 +531,54 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         else {
             return Err(err("not_found", "no such handoff"));
         };
+        if e.busy {
+            return Err(err("conflict", "this handoff is busy"));
+        }
         if e.size != *expected_size {
             return Err(err(
                 "conflict",
                 format!("received {} of {} bytes", e.size, expected_size),
             ));
         }
-        Ok((e.path.clone(), (manifest.clone(), sha256.clone())))
+        let r = (e.path.clone(), manifest.clone(), sha256.clone());
+        e.busy = true;
+        Ok(r)
     })?;
-    let (manifest, sha) = manifest;
-    let (_, got) = hash_file(&path).map_err(|e| err("internal", e.to_string()))?;
+    let r = import(gw, dev, p, &path, &manifest, &sha).await;
+    match &r {
+        Ok(_) => remove_entry(&id, &dev.id),
+        Err(_) => with_entries(|m| {
+            if let Some(e) = m.get_mut(&id) {
+                e.busy = false;
+            }
+        }),
+    }
+    r
+}
+
+async fn import(
+    gw: &Arc<Gateway>,
+    dev: &Device,
+    p: &Value,
+    path: &Path,
+    manifest: &Manifest,
+    sha: &str,
+) -> ApiResult {
+    let p2 = path.to_path_buf();
+    let (_, got) = blocking(move || hash_file(&p2)).await?;
     if got != sha {
         return Err(err("conflict", "checksum mismatch; send the handoff again"));
+    }
+
+    // A teammate's invitation never chooses where work lands.
+    let teammate = dev.kind == "handoff";
+    for k in ["repo_path", "worktree_path", "branch"] {
+        if teammate && s(p, k).is_some() {
+            return Err(err(
+                "forbidden",
+                "a handoff invitation cannot choose where work lands",
+            ));
+        }
     }
 
     // Unpack (regular files only, relative paths only).
@@ -765,46 +586,14 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         .prefix("import-")
         .tempdir_in(dir(gw)?)
         .map_err(|e| err("internal", e.to_string()))?;
-    let w = work.path().to_path_buf();
-    let p2 = path.clone();
-    let packed: Manifest = tokio::task::spawn_blocking(move || unpack(&p2, &w))
+    let (p2, w2) = (path.to_path_buf(), work.path().to_path_buf());
+    let packed: Manifest = tokio::task::spawn_blocking(move || vk_handoff::unpack(&p2, &w2))
         .await
         .map_err(|e| err("internal", e.to_string()))?
         .map_err(|e| err("invalid_params", format!("bad bundle: {e}")))?;
-    // The manifest the user reviewed must be exactly the one inside the bundle.
-    if serde_json::to_value(&packed).ok() != serde_json::to_value(&*manifest).ok() {
-        return Err(err("conflict", "manifest does not match the bundle"));
-    }
-    if packed.head.len() != 40 || !packed.head.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(ApiError::invalid("head must be a full commit id"));
-    }
-    let w = work.path();
-    if packed.bundle != "none" {
-        // The bundle's advertised HEAD must be that commit.
-        let heads = git(
-            w,
-            &[
-                "bundle",
-                "list-heads",
-                w.join("repo.bundle").to_str().unwrap_or_default(),
-            ],
-        )
-        .await?;
-        if !String::from_utf8_lossy(&heads)
-            .lines()
-            .any(|l| l.starts_with(&packed.head))
-        {
-            return Err(err("conflict", "bundle HEAD does not match the manifest"));
-        }
-    }
+    vk_handoff::verify(&packed, manifest)?;
 
     // Find the repository.
-    if dev.kind == "handoff" && s(p, "repo_path").is_some() {
-        return Err(err(
-            "forbidden",
-            "a handoff invitation cannot choose where work lands",
-        ));
-    }
     let root = match s(p, "repo_path") {
         Some(rp) => git_line(&expand_home(rp), &["rev-parse", "--show-toplevel"])
             .await
@@ -819,128 +608,21 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
             details: json!({"origin": packed.origin, "repo_name": packed.repo_name}),
         })?,
     };
-
-    // Objects → commit.
-    let commit = packed.head.clone();
-    if packed.bundle != "none" {
-        let b = w.join("repo.bundle");
-        let bs = b.to_str().unwrap_or_default();
-        if git(&root, &["fetch", "--no-tags", bs, "HEAD"])
-            .await
-            .is_err()
-        {
-            git(&root, &["fetch", "--no-tags", "origin"]).await?;
-            git(&root, &["fetch", "--no-tags", bs, "HEAD"]).await?;
-        }
-    } else if git(&root, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
-        .await
-        .is_err()
-    {
-        git(&root, &["fetch", "--no-tags", "origin"]).await?;
-    }
-    git(&root, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
-        .await
-        .map_err(|_| err("conflict", "the handed-off commit is not available"))?;
-
-    // Worktree on a new branch.
-    let base_branch = packed.branch.clone().unwrap_or_else(|| "detached".into());
-    let slug: String = base_branch
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let parent = root.parent().unwrap_or(&root).to_path_buf();
-    let repo_name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "repo".into());
-    let (mut wt, mut br) = (
-        parent.join(format!("{repo_name}-handoff-{slug}")),
-        format!("handoff/{base_branch}"),
-    );
-    for n in 2..100 {
-        let exists = git(
-            &root,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{br}"),
-            ],
-        )
-        .await
-        .is_ok();
-        if !wt.exists() && !exists {
-            break;
-        }
-        wt = parent.join(format!("{repo_name}-handoff-{slug}-{n}"));
-        br = format!("handoff/{base_branch}-{n}");
-    }
-    git(
+    let wt_choice = s(p, "worktree_path").map(expand_home);
+    let imported = vk_handoff::import(
+        work.path(),
+        &packed,
         &root,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            &br,
-            wt.to_str().unwrap_or_default(),
-            &commit,
-        ],
+        wt_choice.as_deref(),
+        s(p, "branch"),
     )
     .await?;
-
-    let patch = w.join("changes.patch");
-    if std::fs::metadata(&patch).map(|m| m.len()).unwrap_or(0) > 0 {
-        git(
-            &wt,
-            &[
-                "apply",
-                "--binary",
-                "--whitespace=nowarn",
-                patch.to_str().unwrap_or_default(),
-            ],
-        )
-        .await?;
-    }
-    for rel in &packed.untracked {
-        if !safe_relative(rel) {
-            continue;
-        }
-        // The patch may have created symlinks: never write through one.
-        if let Err(e) = write_new_file(&wt, rel, &w.join("untracked").join(rel)) {
-            tracing::warn!("handoff: skipped {rel}: {e}");
-        }
-    }
-    if !packed.cwd_rel.is_empty() && !safe_relative(&packed.cwd_rel) {
-        return Err(ApiError::invalid(
-            "manifest cwd is not a relative path inside the repository",
-        ));
-    }
-
-    // Transcript → where the harness resumes from, with paths rewritten.
-    // The cwd must resolve inside the worktree (the patch could have made it a symlink).
-    let new_cwd = match wt.join(&packed.cwd_rel).canonicalize() {
-        Ok(c)
-            if !packed.cwd_rel.is_empty()
-                && c.is_dir()
-                && wt.canonicalize().is_ok_and(|w| c.starts_with(&w)) =>
-        {
-            c
-        }
-        _ => wt.clone(),
-    };
-    let resumed = match install_transcript(&packed, w, &new_cwd, &wt) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("handoff transcript: {e}");
-            false
-        }
-    };
+    let (wt, br, new_cwd, resumed) = (
+        &imported.worktree,
+        &imported.branch,
+        &imported.cwd,
+        imported.resumed,
+    );
 
     // Workspace + agent.
     still_authorized(gw, dev)?;
@@ -958,9 +640,8 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let mut result = json!({"workspace": ws.pointer("/workspace/id"), "pane": pane, "worktree": wt, "branch": br, "resumed": resumed,
-                            "skipped": packed.skipped});
+                            "skipped": packed.skipped, "not_written": imported.not_written});
     // A teammate's invitation stages the work; only the host's owner starts agents on it.
-    let teammate = dev.kind == "handoff";
     let start = !teammate
         && p.get("start_agent")
             .and_then(|v| v.as_bool())
@@ -1004,7 +685,7 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         );
         let mut params = json!({"pane": pane, "harness": harness, "prompt": note});
         // Rebuilt from the harness and a validated session id; never the manifest's argv.
-        if resumed && let Some(args) = resume_args(&harness, packed.session_id.as_deref()) {
+        if let Some(args) = imported.resume_args.as_ref().filter(|_| resumed) {
             params["args"] = json!(args);
         }
         still_authorized(gw, dev)?;
@@ -1017,69 +698,8 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
             Err(e) => result["agent_error"] = e.to_json(),
         }
     }
-    with_entries(|m| {
-        if let Some(e) = m.remove(&id) {
-            let _ = std::fs::remove_file(e.path);
-        }
-    });
     gw.state.audit(&json!({"ts": now_s(), "event": "handoff.imported", "device": dev.id, "from": packed.source_host, "worktree": wt}));
     Ok(result)
-}
-
-/// Caps the decoded stream as a whole, so tar metadata (PAX sizes, long names) can't expand it.
-struct Budget<R> {
-    inner: R,
-    left: u64,
-}
-
-impl<R: Read> Read for Budget<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.left == 0 {
-            return Err(std::io::Error::other("bundle expands too much"));
-        }
-        let n = buf.len().min(self.left.min(usize::MAX as u64) as usize);
-        let r = self.inner.read(&mut buf[..n])?;
-        self.left -= r as u64;
-        Ok(r)
-    }
-}
-
-fn unpack(bundle: &Path, out: &Path) -> std::io::Result<Manifest> {
-    let mut dec = zstd::Decoder::new(std::fs::File::open(bundle)?)?;
-    dec.window_log_max(27)?; // ≤ 128 MiB decoder window
-    let mut ar = tar::Archive::new(Budget {
-        inner: dec,
-        left: 4 * MAX_BUNDLE,
-    });
-    let mut entries = 0usize;
-    for entry in ar.entries()? {
-        let mut e = entry?;
-        entries += 1;
-        if entries > 100_000 {
-            return Err(std::io::Error::other("too many entries"));
-        }
-        if e.header().entry_type() != tar::EntryType::Regular {
-            return Err(std::io::Error::other("only regular files are allowed"));
-        }
-        let rel = e.path()?.to_string_lossy().to_string();
-        if !safe_relative(&rel) || rel.len() > 4096 {
-            return Err(std::io::Error::other(format!("unsafe path {rel}")));
-        }
-        if e.size() > MAX_BUNDLE {
-            return Err(std::io::Error::other("entry too large"));
-        }
-        let dest = out.join(&rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut f = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&dest)?;
-        std::io::copy(&mut e, &mut f)?;
-    }
-    let m: Manifest = serde_json::from_slice(&std::fs::read(out.join("manifest.json"))?)?;
-    Ok(m)
 }
 
 async fn find_repo(gw: &Gateway, m: &Manifest) -> Option<PathBuf> {
@@ -1110,338 +730,4 @@ async fn find_repo(gw: &Gateway, m: &Manifest) -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// `git@github.com:a/b.git` ≡ `https://github.com/a/b`.
-/// `(host, path)` of a git remote: URL form `scheme://[user@]host[:port]/path` or scp form
-/// `[user@]host:path`. Host is case-insensitive; the path is not.
-fn remote_parts(u: &str) -> Option<(String, String)> {
-    let u = u.trim();
-    // Local repositories: an absolute path or file:// URL, compared exactly.
-    if let Some(path) = u
-        .strip_prefix("file://")
-        .or(u.starts_with('/').then_some(u))
-    {
-        let path = path.trim_end_matches('/').trim_end_matches(".git");
-        return (!path.is_empty()).then(|| (String::new(), path.to_string()));
-    }
-    let (host, path) = if let Some((_, rest)) = u.split_once("://") {
-        let (authority, path) = rest.split_once('/')?;
-        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-        let host = host.split(':').next()?;
-        (host, path)
-    } else {
-        let (left, path) = u.split_once(':')?;
-        if left.contains('/') {
-            return None; // a local path, not scp syntax
-        }
-        (left.rsplit_once('@').map_or(left, |(_, h)| h), path)
-    };
-    if host.is_empty() || host.contains('@') {
-        return None;
-    }
-    let path = path.trim_matches('/').trim_end_matches(".git").to_string();
-    (!path.is_empty() && !path.contains('@')).then(|| (host.to_ascii_lowercase(), path))
-}
-
-fn same_remote(a: &str, b: &str) -> bool {
-    matches!((remote_parts(a), remote_parts(b)), (Some(x), Some(y)) if x == y)
-}
-
-fn expand_home(p: &str) -> PathBuf {
-    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
-        (Some(rest), Some(h)) => PathBuf::from(h).join(rest),
-        _ if p == "~" => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        _ => PathBuf::from(p),
-    }
-}
-
-fn harness_home(harness: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    match harness {
-        "claude" => Some(
-            std::env::var_os("CLAUDE_CONFIG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".claude")),
-        ),
-        "codex" => Some(
-            std::env::var_os("CODEX_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".codex")),
-        ),
-        _ => None,
-    }
-}
-
-pub fn claude_project_dir(cwd: &Path) -> String {
-    cwd.display()
-        .to_string()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
-
-/// Returns whether the harness can resume from the installed transcript.
-fn install_transcript(
-    m: &Manifest,
-    work: &Path,
-    new_cwd: &Path,
-    new_root: &Path,
-) -> std::io::Result<bool> {
-    let src = work.join("transcript.jsonl");
-    let (Some(h), Some(rel), true) = (
-        m.harness.as_deref(),
-        m.transcript_rel.as_deref(),
-        src.exists(),
-    ) else {
-        return Ok(false);
-    };
-    let Some(session) = m.session_id.as_deref().filter(|id| valid_session_id(id)) else {
-        return Ok(false);
-    };
-    if resume_args(h, Some(session)).is_none() {
-        return Ok(false);
-    }
-    let Some(home) = harness_home(h) else {
-        return Ok(false);
-    };
-    let raw = std::fs::read_to_string(&src)?;
-    if raw
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .any(|l| serde_json::from_str::<Value>(l).is_err())
-    {
-        return Err(std::io::Error::other("transcript is not JSON lines"));
-    }
-    let text = raw
-        .replace(&m.source_cwd, &new_cwd.display().to_string())
-        .replace(&m.source_root, &new_root.display().to_string());
-    let file = Path::new(rel)
-        .file_name()
-        .ok_or_else(|| std::io::Error::other("bad transcript path"))?;
-    let dest = match h {
-        "claude" => home
-            .join("projects")
-            .join(claude_project_dir(new_cwd))
-            .join(format!("{session}.jsonl")),
-        "codex" => {
-            // Only a session file below `sessions/`, never e.g. `config.toml`.
-            let name = file.to_string_lossy();
-            if !safe_relative(rel)
-                || !rel.starts_with("sessions/")
-                || !name.ends_with(".jsonl")
-                || !name.contains(session)
-            {
-                return Err(std::io::Error::other("bad transcript path"));
-            }
-            home.join(rel)
-        }
-        _ => return Ok(false),
-    };
-    if dest.exists() {
-        return Err(std::io::Error::other(format!(
-            "{} already exists",
-            dest.display()
-        )));
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&dest)?
-        .write_all(text.as_bytes())?;
-    Ok(true)
-}
-
-fn known_harness(h: &str) -> bool {
-    matches!(h, "claude" | "codex" | "pi" | "omp")
-}
-
-fn valid_session_id(id: &str) -> bool {
-    (1..=128).contains(&id.len())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
-/// Resume argv for a harness, built locally (spec 16 §15.2).
-fn resume_args(harness: &str, session: Option<&str>) -> Option<Vec<String>> {
-    let id = session.filter(|id| valid_session_id(id))?;
-    match harness {
-        "claude" => Some(vec!["--resume".into(), id.into()]),
-        "codex" => Some(vec!["resume".into(), id.into()]),
-        _ => None,
-    }
-}
-
-/// Text from a manifest shown to people or agents: no control characters, bounded length.
-fn clean(s: &str, max: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max).collect()
-}
-
-/// Create `root/rel` from `src` without following symlinks in any existing component and without
-/// replacing anything.
-fn write_new_file(root: &Path, rel: &str, src: &Path) -> std::io::Result<()> {
-    let mut p = root.to_path_buf();
-    let parts: Vec<&str> = rel.split('/').collect();
-    for d in &parts[..parts.len() - 1] {
-        p.push(d);
-        match std::fs::symlink_metadata(&p) {
-            Ok(md) if md.file_type().is_symlink() || !md.is_dir() => {
-                return Err(std::io::Error::other("path crosses a symlink or file"));
-            }
-            Ok(_) => {}
-            Err(_) => std::fs::create_dir(&p)?,
-        }
-    }
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut out = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(root.join(rel))?;
-    std::io::copy(&mut std::fs::File::open(src)?, &mut out)?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn remotes_compare() {
-        assert!(same_remote(
-            "git@github.com:demo/vibeke.git",
-            "https://github.com/MidgardAI/vibeke"
-        ));
-        assert!(same_remote(
-            "https://GitHub.com/demo/vibeke/",
-            "ssh://git@github.com/MidgardAI/vibeke.git"
-        ));
-        assert!(
-            !same_remote(
-                "https://github.com/the maintainer/vibeke",
-                "https://github.com/MidgardAI/vibeke"
-            ),
-            "paths are case-sensitive"
-        );
-        assert!(!same_remote(
-            "https://evil.example/path@github.com/org/repo",
-            "git@github.com:org/repo.git"
-        ));
-        assert!(!same_remote(
-            "git@github.com:demo/vibeke.git",
-            "git@github.com:demo/other.git"
-        ));
-    }
-
-    #[test]
-    fn claude_dirs() {
-        assert_eq!(
-            claude_project_dir(Path::new("/Users/demo/code/vibeke")),
-            "-Users-demo-code-vibeke"
-        );
-        assert_eq!(claude_project_dir(Path::new("/a/b.c")), "-a-b-c");
-        assert_eq!(
-            transcript_relative("claude", "/h/.claude/projects/-a/x.jsonl").as_deref(),
-            Some("projects/-a/x.jsonl")
-        );
-        assert_eq!(
-            transcript_relative("codex", "/h/.codex/sessions/2026/10/06/r.jsonl").as_deref(),
-            Some("sessions/2026/10/06/r.jsonl")
-        );
-    }
-}
-
-#[cfg(test)]
-mod hardening_tests {
-    use super::*;
-
-    #[test]
-    fn resume_args_are_rebuilt_not_trusted() {
-        assert_eq!(
-            resume_args("claude", Some("abc-123")),
-            Some(vec!["--resume".into(), "abc-123".into()])
-        );
-        assert_eq!(
-            resume_args("codex", Some("u1")),
-            Some(vec!["resume".into(), "u1".into()])
-        );
-        assert_eq!(
-            resume_args("claude", Some("x --dangerously-skip-permissions")),
-            None
-        );
-        assert_eq!(resume_args("claude", Some("../../etc")), None);
-        assert_eq!(resume_args("evil", Some("x")), None);
-    }
-
-    #[test]
-    fn codex_transcript_stays_in_sessions() {
-        let t = tempfile::tempdir().unwrap();
-        let work = t.path().join("w");
-        std::fs::create_dir(&work).unwrap();
-        std::fs::write(work.join("transcript.jsonl"), "{}\n").unwrap();
-        // SAFETY: test-local env; only this test reads CODEX_HOME.
-        unsafe { std::env::set_var("CODEX_HOME", t.path().join("codex")) };
-        let mut m = Manifest {
-            harness: Some("codex".into()),
-            session_id: Some("s1".into()),
-            ..Default::default()
-        };
-        m.transcript_rel = Some("config.toml".into());
-        assert!(install_transcript(&m, &work, t.path(), t.path()).is_err());
-        m.transcript_rel = Some("sessions/../config.toml".into());
-        assert!(install_transcript(&m, &work, t.path(), t.path()).is_err());
-        m.transcript_rel = Some("sessions/2026/10/06/rollout-x-s1.jsonl".into());
-        assert!(install_transcript(&m, &work, t.path(), t.path()).unwrap());
-    }
-
-    #[test]
-    fn untracked_writes_never_follow_symlinks() {
-        let t = tempfile::tempdir().unwrap();
-        let root = t.path().join("wt");
-        let outside = t.path().join("outside");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
-        let src = t.path().join("src");
-        std::fs::write(&src, "x").unwrap();
-        assert!(write_new_file(&root, "link/pwned", &src).is_err());
-        assert!(!outside.join("pwned").exists());
-        write_new_file(&root, "a/b/c.txt", &src).unwrap();
-        assert!(
-            write_new_file(&root, "a/b/c.txt", &src).is_err(),
-            "never replaces"
-        );
-    }
-}
-
-#[cfg(test)]
-mod remote_tests {
-    use super::*;
-
-    #[test]
-    fn remote_matching() {
-        assert!(same_remote("/srv/git/repo.git", "file:///srv/git/repo"));
-        assert!(!same_remote("/srv/git/repo", "/srv/git/other"));
-        assert!(!same_remote(
-            "https://github.com/the maintainer/vibeke",
-            "https://github.com/MidgardAI/vibeke"
-        ));
-        assert!(same_remote(
-            "https://GitHub.com/demo/vibeke/",
-            "git@github.com:demo/vibeke.git"
-        ));
-        assert!(!same_remote(
-            "https://evil.example/path@github.com/org/repo",
-            "git@github.com:org/repo.git"
-        ));
-    }
 }

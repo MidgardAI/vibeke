@@ -1,0 +1,468 @@
+//! The repository-side import: commit → new worktree on a new branch → uncommitted changes →
+//! untracked files → transcript. Validated before anything is created; rolled back on failure.
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use crate::{Error, Manifest, Result, git, install_transcript, safe_relative, write_new_file};
+
+/// A file the import could not write; the rest of the import went ahead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotWritten {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Imported {
+    pub worktree: PathBuf,
+    pub branch: String,
+    /// The agent's working directory inside the worktree.
+    pub cwd: PathBuf,
+    /// A transcript was installed where the harness resumes from.
+    pub resumed: bool,
+    /// Rebuilt locally from the harness and the (possibly fresh) session id; never the manifest's.
+    pub resume_args: Option<Vec<String>>,
+    pub not_written: Vec<NotWritten>,
+}
+
+/// The manifest someone reviewed must be exactly the one inside the bundle, and well-formed.
+pub fn verify(packed: &Manifest, reviewed: &Manifest) -> Result<()> {
+    if serde_json::to_value(packed).ok() != serde_json::to_value(reviewed).ok() {
+        return Err(Error::new("conflict", "manifest does not match the bundle"));
+    }
+    check(packed)
+}
+
+fn check(m: &Manifest) -> Result<()> {
+    if m.head.len() != 40 || !m.head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::new(
+            "invalid_params",
+            "head must be a full commit id",
+        ));
+    }
+    if !m.cwd_rel.is_empty() && !safe_relative(&m.cwd_rel) {
+        return Err(Error::new(
+            "invalid_params",
+            "manifest cwd is not a relative path inside the repository",
+        ));
+    }
+    Ok(())
+}
+
+fn exists(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok()
+}
+
+async fn branch_exists(root: &Path, br: &str) -> bool {
+    git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{br}"),
+        ],
+    )
+    .await
+    .is_ok()
+}
+
+async fn has_commit(root: &Path, commit: &str) -> bool {
+    git(root, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
+        .await
+        .is_ok()
+}
+
+async fn valid_branch(root: &Path, br: &str) -> bool {
+    !br.starts_with('-')
+        && git(root, &["check-ref-format", "--branch", br])
+            .await
+            .is_ok()
+}
+
+/// Import the unpacked bundle in `work` (described by `m`) into the repository at `root`, as a new
+/// worktree on a new branch. `worktree` and `branch` default to `<repo>-handoff-<branch>` next to
+/// the repository and `handoff/<branch>`, with `-2`, `-3`, ... on collisions; chosen ones must not
+/// exist yet. Nothing is left behind on failure.
+pub async fn import(
+    work: &Path,
+    m: &Manifest,
+    root: &Path,
+    worktree: Option<&Path>,
+    branch: Option<&str>,
+) -> Result<Imported> {
+    check(m)?;
+    let bundle = work.join("repo.bundle");
+    let bs = bundle.to_str().unwrap_or_default();
+    if m.bundle != "none" {
+        // The bundle's advertised HEAD must be that commit.
+        let heads = git(work, &["bundle", "list-heads", bs]).await?;
+        if !String::from_utf8_lossy(&heads)
+            .lines()
+            .any(|l| l.starts_with(&m.head))
+        {
+            return Err(Error::new(
+                "conflict",
+                "bundle HEAD does not match the manifest",
+            ));
+        }
+    }
+    if let Some(wt) = worktree {
+        if !wt.is_absolute() {
+            return Err(Error::new(
+                "invalid_params",
+                "the worktree path must be absolute",
+            ));
+        }
+        if exists(wt) {
+            return Err(Error::new(
+                "conflict",
+                format!("{} already exists", wt.display()),
+            ));
+        }
+    }
+    if let Some(br) = branch {
+        if !valid_branch(root, br).await {
+            return Err(Error::new(
+                "invalid_params",
+                format!("{br} is not a valid branch name"),
+            ));
+        }
+        if branch_exists(root, br).await {
+            return Err(Error::new(
+                "conflict",
+                format!("branch {br} already exists"),
+            ));
+        }
+    }
+
+    // Objects → commit.
+    let commit = m.head.as_str();
+    if m.bundle != "none" {
+        if git(root, &["fetch", "--no-tags", bs, "HEAD"])
+            .await
+            .is_err()
+        {
+            git(root, &["fetch", "--no-tags", "origin"]).await?;
+            git(root, &["fetch", "--no-tags", bs, "HEAD"]).await?;
+        }
+    } else if !has_commit(root, commit).await {
+        git(root, &["fetch", "--no-tags", "origin"]).await?;
+    }
+    if !has_commit(root, commit).await {
+        return Err(Error::new(
+            "conflict",
+            "the handed-off commit is not available",
+        ));
+    }
+
+    // Placement.
+    let base = m.branch.clone().unwrap_or_else(|| "detached".into());
+    let slug: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let base_branch = if valid_branch(root, &format!("handoff/{base}")).await {
+        format!("handoff/{base}")
+    } else {
+        format!("handoff/{slug}")
+    };
+    let parent = root.parent().unwrap_or(root).to_path_buf();
+    let repo_name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "repo".into());
+    let mut placed = None;
+    for n in 1..100 {
+        let suffix = if n == 1 {
+            String::new()
+        } else {
+            format!("-{n}")
+        };
+        let wt = worktree
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| parent.join(format!("{repo_name}-handoff-{slug}{suffix}")));
+        let br = branch
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{base_branch}{suffix}"));
+        if !exists(&wt) && !branch_exists(root, &br).await {
+            placed = Some((wt, br));
+            break;
+        }
+    }
+    let Some((wt, br)) = placed else {
+        return Err(Error::new(
+            "conflict",
+            format!("no free worktree and branch name for {base_branch}"),
+        ));
+    };
+    if !valid_branch(root, &br).await {
+        return Err(Error::new(
+            "invalid_params",
+            format!("{br} is not a valid branch name"),
+        ));
+    }
+
+    let wts = wt.to_str().unwrap_or_default().to_string();
+    if let Err(e) = git(root, &["worktree", "add", "-b", &br, &wts, commit]).await {
+        rollback(root, &wt, &br).await;
+        return Err(e);
+    }
+    match fill(work, m, &wt).await {
+        Ok((cwd, not_written, installed)) => Ok(Imported {
+            worktree: wt,
+            branch: br,
+            cwd,
+            resumed: installed.is_some(),
+            resume_args: installed,
+            not_written,
+        }),
+        Err(e) => {
+            rollback(root, &wt, &br).await;
+            Err(e)
+        }
+    }
+}
+
+type Filled = (PathBuf, Vec<NotWritten>, Option<Vec<String>>);
+
+/// Changes, untracked files and the transcript in the new worktree.
+async fn fill(work: &Path, m: &Manifest, wt: &Path) -> Result<Filled> {
+    let patch = work.join("changes.patch");
+    if std::fs::metadata(&patch).map(|m| m.len()).unwrap_or(0) > 0 {
+        git(
+            wt,
+            &[
+                "apply",
+                "--binary",
+                "--whitespace=nowarn",
+                patch.to_str().unwrap_or_default(),
+            ],
+        )
+        .await?;
+    }
+    let (work, m, wt) = (work.to_path_buf(), m.clone(), wt.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        let mut not_written = Vec::new();
+        for rel in &m.untracked {
+            if !safe_relative(rel) {
+                not_written.push(NotWritten {
+                    path: rel.clone(),
+                    reason: "unsafe path".into(),
+                });
+                continue;
+            }
+            // The patch may have created symlinks: never write through one.
+            if let Err(e) = write_new_file(&wt, rel, &work.join("untracked").join(rel)) {
+                not_written.push(NotWritten {
+                    path: rel.clone(),
+                    reason: e.to_string(),
+                });
+            }
+        }
+        // The cwd must resolve inside the worktree (the patch could have made it a symlink).
+        let cwd = match wt.join(&m.cwd_rel).canonicalize() {
+            Ok(c)
+                if !m.cwd_rel.is_empty()
+                    && c.is_dir()
+                    && wt.canonicalize().is_ok_and(|w| c.starts_with(&w)) =>
+            {
+                c
+            }
+            _ => wt.clone(),
+        };
+        let installed = match install_transcript(&m, &work, &cwd, &wt) {
+            Ok(Some(i)) => {
+                not_written.extend(i.not_written);
+                Some(i.resume_args)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("handoff transcript: {e}");
+                not_written.push(NotWritten {
+                    path: m.transcript_rel.clone().unwrap_or_default(),
+                    reason: e.to_string(),
+                });
+                None
+            }
+        };
+        (cwd, not_written, installed)
+    })
+    .await
+    .map_err(|e| Error::new("internal", e.to_string()))
+}
+
+/// Remove what `worktree add` created; both were checked not to exist before.
+async fn rollback(root: &Path, wt: &Path, br: &str) {
+    let wts = wt.to_str().unwrap_or_default();
+    let _ = git(root, &["worktree", "remove", "--force", wts]).await;
+    if std::fs::symlink_metadata(wt).is_ok_and(|m| m.is_dir()) {
+        let _ = std::fs::remove_dir_all(wt);
+    }
+    let _ = git(root, &["worktree", "prune"]).await;
+    let _ = git(root, &["branch", "-D", br]).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sh(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} in {}", dir.display());
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository with one commit and an unpacked bundle (`bundle: none`) for that commit.
+    fn setup(t: &Path, patch: &str) -> (PathBuf, PathBuf, Manifest) {
+        let repo = t.join("repo");
+        std::fs::create_dir_all(repo.join("app")).unwrap();
+        sh(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("app/a.txt"), "one\n").unwrap();
+        sh(&repo, &["add", "-A"]);
+        sh(&repo, &["commit", "-qm", "base"]);
+        let head = sh(&repo, &["rev-parse", "HEAD"]);
+        let work = t.join("work");
+        std::fs::create_dir_all(work.join("untracked/app")).unwrap();
+        std::fs::write(work.join("changes.patch"), patch).unwrap();
+        std::fs::write(work.join("untracked/app/new.txt"), "new\n").unwrap();
+        std::fs::write(work.join("untracked/app/a.txt"), "clobber\n").unwrap();
+        let m = Manifest {
+            v: 1,
+            head,
+            branch: Some("feature".into()),
+            bundle: "none".into(),
+            cwd_rel: "app".into(),
+            untracked: vec!["app/new.txt".into(), "app/a.txt".into()],
+            ..Default::default()
+        };
+        (repo.canonicalize().unwrap(), work, m)
+    }
+
+    const PATCH: &str = "diff --git a/app/a.txt b/app/a.txt\n--- a/app/a.txt\n+++ b/app/a.txt\n@@ -1 +1,2 @@\n one\n+two\n";
+
+    #[tokio::test]
+    async fn imports_into_a_new_worktree() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, m) = setup(t.path(), PATCH);
+        let r = import(&work, &m, &repo, None, None).await.unwrap();
+        let parent = repo.parent().unwrap();
+        assert_eq!(r.worktree, parent.join("repo-handoff-feature"));
+        assert_eq!(r.branch, "handoff/feature");
+        assert_eq!(r.cwd, r.worktree.canonicalize().unwrap().join("app"));
+        assert!(!r.resumed);
+        assert_eq!(
+            std::fs::read_to_string(r.worktree.join("app/a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(r.worktree.join("app/new.txt")).unwrap(),
+            "new\n"
+        );
+        // A tracked file is never replaced by an untracked one; the failure is reported.
+        assert_eq!(r.not_written.len(), 1);
+        assert_eq!(r.not_written[0].path, "app/a.txt");
+
+        // A second import of the same work lands next to the first.
+        let again = import(&work, &m, &repo, None, None).await.unwrap();
+        assert_eq!(again.worktree, parent.join("repo-handoff-feature-2"));
+        assert_eq!(again.branch, "handoff/feature-2");
+    }
+
+    #[tokio::test]
+    async fn failed_patch_leaves_nothing_behind() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, m) = setup(t.path(), "diff --git a/x b/x\ngarbage\n@@ nope\n");
+        let e = import(&work, &m, &repo, None, None).await.unwrap_err();
+        assert_eq!(e.kind, "conflict");
+        assert!(!repo.parent().unwrap().join("repo-handoff-feature").exists());
+        assert!(!branch_exists(&repo, "handoff/feature").await);
+        let list = sh(&repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(list.matches("worktree ").count(), 1, "{list}");
+    }
+
+    #[tokio::test]
+    async fn invalid_manifest_rejected_before_anything() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, mut m) = setup(t.path(), "");
+        m.cwd_rel = "../outside".into();
+        assert_eq!(
+            import(&work, &m, &repo, None, None).await.unwrap_err().kind,
+            "invalid_params"
+        );
+        m.cwd_rel = "app".into();
+        m.head = "abc".into();
+        assert_eq!(
+            import(&work, &m, &repo, None, None).await.unwrap_err().kind,
+            "invalid_params"
+        );
+        assert!(!repo.parent().unwrap().join("repo-handoff-feature").exists());
+        let mut other = m.clone();
+        other.branch = Some("x".into());
+        assert!(verify(&m, &other).is_err());
+    }
+
+    #[tokio::test]
+    async fn chosen_worktree_and_branch() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, m) = setup(t.path(), "");
+        let wt = t.path().canonicalize().unwrap().join("elsewhere/mine");
+        let r = import(&work, &m, &repo, Some(wt.as_path()), Some("me/topic"))
+            .await
+            .unwrap();
+        assert_eq!(r.worktree, wt);
+        assert_eq!(r.branch, "me/topic");
+        assert!(wt.join("app/a.txt").exists());
+        // Taken path, taken branch, bad branch, relative path.
+        let other = t.path().join("other");
+        let kind = |r: Result<Imported>| r.unwrap_err().kind;
+        assert_eq!(
+            kind(import(&work, &m, &repo, Some(wt.as_path()), None).await),
+            "conflict"
+        );
+        assert_eq!(
+            kind(import(&work, &m, &repo, Some(other.as_path()), Some("me/topic")).await),
+            "conflict"
+        );
+        assert_eq!(
+            kind(import(&work, &m, &repo, Some(other.as_path()), Some("a..b")).await),
+            "invalid_params"
+        );
+        assert_eq!(
+            kind(import(&work, &m, &repo, Some(Path::new("rel/wt")), None).await),
+            "invalid_params"
+        );
+        assert!(!other.exists());
+    }
+
+    #[tokio::test]
+    async fn collisions_give_up_after_99() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, m) = setup(t.path(), "");
+        let parent = repo.parent().unwrap();
+        std::fs::create_dir(parent.join("repo-handoff-feature")).unwrap();
+        for n in 2..100 {
+            std::fs::create_dir(parent.join(format!("repo-handoff-feature-{n}"))).unwrap();
+        }
+        let e = import(&work, &m, &repo, None, None).await.unwrap_err();
+        assert_eq!(e.kind, "conflict");
+        assert!(!branch_exists(&repo, "handoff/feature-99").await);
+    }
+}

@@ -33,6 +33,7 @@ vk-relay = { path = "crates/vk-relay" }
 vk-sandbox = { path = "crates/vk-sandbox" }
 vk-assist = { path = "crates/vk-assist" }
 vk-orchestrate = { path = "crates/vk-orchestrate" }
+vk-handoff = { path = "crates/vk-handoff" }
 
 anyhow = "1"
 base64 = "0.22"
