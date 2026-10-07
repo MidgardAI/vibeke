@@ -1,9 +1,23 @@
 // Settings (spec 16 §9.1): Appearance, Device, Alerts (push, per-host notify prefs, DND), Quick
-// replies, System (hosts, devices, pairing, connection info), About (app origin + build).
+// replies, System (hosts, devices, pairing, connection info), Sharing & handoff (invitations,
+// peers, invited devices, handoff prefs; spec 16 §15.2–§15.4), About (app origin + build).
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { BellRing, Download, Lock, Plus, Smartphone, Trash2 } from 'lucide-react';
-import { displayName, hostKind, paneTitle, transportOf, type DeviceInfo, type DevicePrefs, type HostState } from '@vibeke/core';
+import { BellRing, Download, Link2, Lock, Plus, Server, Smartphone, Trash2, Users } from 'lucide-react';
+import {
+  RpcError,
+  displayName,
+  hostKind,
+  paneTitle,
+  transportOf,
+  type DeviceInfo,
+  type DevicePrefs,
+  type HandoffPrefs,
+  type HostState,
+  type InvitationInfo,
+  type InvitedDeviceInfo,
+  type PeerInfo,
+} from '@vibeke/core';
 import { useAllHosts, useApp, useHosts, useNow, usePrefs } from '../app/hooks';
 import { Button, Card, Dot, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle } from '../components/ui';
 import { t } from '../i18n';
@@ -136,7 +150,7 @@ export function SettingsScreen() {
         </div>
       </section>
 
-      <ReceiveHandoffGroup hosts={hosts} />
+      <SharingGroup hosts={hosts} />
 
       <About />
     </div>
@@ -494,21 +508,205 @@ function DeviceShareInfo({ d, now, h }: { d: DeviceInfo; now: number; h: HostSta
   return <div className={exp !== null && exp * 1000 <= now ? 'text-2xs text-danger' : 'text-2xs text-accent'}>{parts.join(' · ')}</div>;
 }
 
-function ReceiveHandoffGroup({ hosts }: { hosts: readonly HostState[] }) {
+/** Spec 16 §15.2–§15.4: per own host, invitations, peers, invited devices and handoff prefs. */
+function SharingGroup({ hosts }: { hosts: readonly HostState[] }) {
   const own = hosts.filter((h) => hostKind(h.record) === 'device' && (h.info?.scope ?? h.record.scope) === 'full');
   if (own.length === 0) return null;
   return (
-    <Group title={t.settings.receiveHandoff}>
+    <Group title={t.settings.sharing}>
       {own.map((h) => {
         const name = h.info?.host_name ?? h.record.name;
         return (
           <div key={h.record.host_id}>
             {own.length > 1 && <div className="px-4 pt-3 text-sm font-semibold">{name}</div>}
-            {h.status === 'online' ? <ReceiveHandoff hostId={h.record.host_id} hostName={name} /> : <Row label={name} hint={t.conn.hostOffline} />}
+            {h.status === 'online' ? <HostSharing h={h} hostName={name} /> : <Row label={name} hint={t.conn.hostOffline} />}
           </div>
         );
       })}
     </Group>
+  );
+}
+
+/** The host does not know the method (an older gateway or server). */
+const unknownMethod = (e: unknown): boolean => e instanceof RpcError && (e.kind === 'method_not_found' || e.code === -32601);
+
+interface SharingData {
+  invitations: InvitationInfo[] | null;
+  devices: InvitedDeviceInfo[] | null;
+  peers: PeerInfo[] | null;
+  prefs: HandoffPrefs | null;
+}
+
+function HostSharing({ h, hostName }: { h: HostState; hostName: string }) {
+  const app = useApp();
+  const id = h.record.host_id;
+  const conn = app.conn(id);
+  const now = useNow(30_000);
+  const [data, setData] = useState<SharingData | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [armed, setArmed] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = async () => {
+    if (!conn) return;
+    const [sl, pl, hp] = await Promise.allSettled([conn.request('share.list', {}), conn.request('peer.list', {}), conn.request('handoff.prefs', {})]);
+    const failed = [sl, pl, hp].find((r): r is PromiseRejectedResult => r.status === 'rejected' && !unknownMethod(r.reason));
+    setErr(failed ? errorMessage(failed.reason) : null);
+    setData({
+      invitations: sl.status === 'fulfilled' ? (sl.value.invitations ?? []) : null,
+      devices: sl.status === 'fulfilled' ? (sl.value.devices ?? []) : null,
+      peers: pl.status === 'fulfilled' ? (pl.value.peers ?? []) : null,
+      prefs: hp.status === 'fulfilled' ? hp.value : null,
+    });
+  };
+
+  useEffect(() => {
+    void load();
+  }, [id]);
+
+  /** Destructive actions ask twice (tap, then tap again). */
+  const act = async (key: string, run: () => Promise<unknown>) => {
+    if (armed !== key) return setArmed(key);
+    setArmed(null);
+    setBusy(key);
+    setErr(null);
+    try {
+      await run();
+      await load();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setAlwaysAsk = async (v: boolean) => {
+    if (!conn || !data?.prefs) return;
+    const prev = data.prefs;
+    setData({ ...data, prefs: { ...prev, always_ask: v } });
+    try {
+      const r = await conn.request('handoff.prefs', { always_ask: v });
+      setData((d) => (d ? { ...d, prefs: r } : d));
+    } catch (e) {
+      setData((d) => (d ? { ...d, prefs: prev } : d));
+      setErr(errorMessage(e));
+    }
+  };
+
+  const until = (s: number | null) => (s === null ? null : (s * 1000 <= now ? t.settings.expiredAt : t.settings.expiresAt)(whenText(s * 1000, now)));
+  const revokeButton = (key: string, label: string, run: () => Promise<unknown>) => (
+    <Button size="sm" variant={armed === key ? 'danger' : 'outline'} busy={busy === key} onClick={() => void act(key, run)}>
+      {armed === key ? t.settings.revokeConfirm : label}
+    </Button>
+  );
+
+  return (
+    <div className="divide-y divide-border">
+      {data?.prefs && (
+        <Row label={t.settings.alwaysAsk} hint={t.settings.alwaysAskHint}>
+          <Toggle label={t.settings.alwaysAsk} checked={data.prefs.always_ask} onChange={(v) => void setAlwaysAsk(v)} />
+        </Row>
+      )}
+      <Row label={t.settings.incomingHandoffs} hint={t.settings.incomingHandoffsHint(hostName)}>
+        <Button size="sm" variant="outline" onClick={() => navigate({ name: 'handoffs', host: id, id: null })}>
+          {t.open}
+        </Button>
+      </Row>
+
+      <ReceiveHandoff hostId={id} hostName={hostName} onCreated={() => void load()} />
+
+      {!data && !err && (
+        <div className="flex justify-center py-3">
+          <Spinner />
+        </div>
+      )}
+
+      {data?.invitations && data.invitations.length > 0 && (
+        <List title={t.settings.invitations}>
+          {data.invitations.map((i) => (
+            <Item
+              key={i.id}
+              icon={<Link2 className="size-4 text-muted" />}
+              title={i.label || (t.settings.inviteKinds[i.kind] ?? i.kind)}
+              sub={[t.settings.inviteKinds[i.kind] ?? i.kind, i.scope, t.settings.openBy(whenText(i.link_expires_at * 1000, now))].join(' · ')}
+            >
+              {revokeButton(`inv:${i.id}`, t.settings.cancelInvite, () => conn!.request('share.revoke', { id: i.id }))}
+            </Item>
+          ))}
+        </List>
+      )}
+
+      {data?.peers && (
+        <List title={t.settings.peers} hint={t.settings.peersHint(hostName)}>
+          {data.peers.length === 0 && <div className="py-1 text-xs text-muted">{t.settings.noPeers}</div>}
+          {data.peers.map((p) => (
+            <Item
+              key={p.id}
+              icon={p.owner === 'teammate' ? <Users className="size-4 text-muted" /> : <Server className="size-4 text-muted" />}
+              title={p.name}
+              sub={[p.owner === 'teammate' ? t.settings.teammate : t.settings.ownHost, until(p.expires_at)].filter(Boolean).join(' · ')}
+              danger={p.expired}
+            >
+              {revokeButton(`peer:${p.id}`, t.remove, () => conn!.request('peer.remove', { id: p.id }))}
+            </Item>
+          ))}
+        </List>
+      )}
+
+      {data?.devices && data.devices.length > 0 && (
+        <List title={t.settings.invitedDevices}>
+          {data.devices.map((d) => {
+            const user = d.sender?.user;
+            const who = [user?.name, user?.email ? `<${user.email}>` : null].filter(Boolean).join(' ');
+            const from = who || d.sender?.host_name || d.name;
+            return (
+              <Item
+                key={d.id}
+                icon={d.kind === 'peer' ? <Server className="size-4 text-muted" /> : <Smartphone className="size-4 text-muted" />}
+                title={from}
+                sub={[
+                  t.settings.kinds[d.kind] ?? d.kind,
+                  d.owner === 'teammate' ? t.settings.teammate : d.owner === 'self' ? t.settings.ownHost : null,
+                  d.sender?.host_name && d.sender.host_name !== from ? d.sender.host_name : null,
+                  d.scope,
+                  until(d.expires_at),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+                danger={d.expires_at !== null && d.expires_at * 1000 <= now}
+              >
+                {revokeButton(`dev:${d.id}`, t.settings.revoke, () => conn!.request('share.revoke', { id: d.id }))}
+              </Item>
+            );
+          })}
+        </List>
+      )}
+
+      {err && <div className="px-4 py-2 text-xs text-danger">{err}</div>}
+    </div>
+  );
+}
+
+function List({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="px-4 py-2">
+      <div className="mb-1 text-2xs font-semibold uppercase tracking-wide text-faint">{title}</div>
+      {hint && <div className="mb-1 text-xs text-muted">{hint}</div>}
+      {children}
+    </div>
+  );
+}
+
+function Item({ icon, title, sub, danger, children }: { icon: ReactNode; title: string; sub: string; danger?: boolean; children?: ReactNode }) {
+  return (
+    <div className="flex min-h-10 items-center gap-2 text-sm">
+      {icon}
+      <div className="min-w-0 flex-1">
+        <div className="truncate">{title}</div>
+        <div className={danger ? 'text-2xs text-danger' : 'text-2xs text-muted'}>{sub}</div>
+      </div>
+      {children}
+    </div>
   );
 }
 

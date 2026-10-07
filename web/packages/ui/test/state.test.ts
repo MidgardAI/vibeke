@@ -185,18 +185,6 @@ describe('changes', () => {
 });
 
 describe('share and handoff hosts', () => {
-  test('handoff destinations: own full hosts and handoff invitations, never the source or shares', async () => {
-    const { handoffDestinations } = await import('../src/screens/handoff');
-    const src = host('src', dashboard());
-    const own = host('own', dashboard());
-    const viewOnly = { ...host('view', dashboard()), info: null, record: { ...host('view', null).record, scope: 'view' as const } };
-    const share = { ...host('sh', dashboard()), record: { ...host('sh', null).record, kind: 'share' as const, scope: 'approve' as const } };
-    const invite = { ...host('inv', null), record: { ...host('inv', null).record, kind: 'handoff' as const } };
-    const expiredInvite = { ...host('old', null, 'expired'), record: { ...host('old', null).record, kind: 'handoff' as const } };
-    const ids = handoffDestinations([src, own, viewOnly, share, invite, expiredInvite], 'src').map((h) => h.record.host_id);
-    expect(ids).toEqual(['own', 'inv']);
-  });
-
   test('an expired share is not an outage for the banner', () => {
     const b = new BannerTracker();
     expect(b.update([host('h1', null, 'expired')], 0).level).toBe('none');

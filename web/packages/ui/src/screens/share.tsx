@@ -113,8 +113,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const HANDOFF_TTLS = ['3600', '86400', '604800'] as const;
 const HANDOFF_TTL_LABELS: Record<(typeof HANDOFF_TTLS)[number], string> = { '3600': '1 h', '86400': '1 day', '604800': '7 days' };
 
-/** Settings → Receive a handoff: an invitation that lets a teammate's app send work to this host. */
-export function ReceiveHandoff({ hostId, hostName }: { hostId: string; hostName: string }) {
+/**
+ * Settings → Sharing & handoff: an invitation that lets a teammate's host send work to this one
+ * (they accept it on one of their hosts, which becomes a peer here until the invitation expires).
+ */
+export function ReceiveHandoff({ hostId, hostName, onCreated }: { hostId: string; hostName: string; onCreated?(): void }) {
   const app = useApp();
   const [ttl, setTtl] = useState<(typeof HANDOFF_TTLS)[number]>('86400');
   const [busy, setBusy] = useState(false);
@@ -128,6 +131,7 @@ export function ReceiveHandoff({ hostId, hostName }: { hostId: string; hostName:
     try {
       const r = await conn.request('share.create', { kind: 'handoff', ttl_s: Number(ttl) });
       setInvite({ link: r.link, openBy: r.open_by });
+      onCreated?.();
     } catch (e) {
       setErr(errorMessage(e));
     } finally {
