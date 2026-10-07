@@ -831,7 +831,7 @@ mod tests {
         let res = execute(&r.root, &wt, &cap, &sel).unwrap();
         assert!(res.source_reverted);
         // Destination has the staged/unstaged split preserved.
-        let st = gitx::run(&wt, &["status", "--porcelain"]).unwrap();
+        let st = gitx::run(&wt, &["status", "--porcelain", "-uall"]).unwrap();
         assert!(st.contains("M  a.txt"), "{st}");
         assert!(st.contains(" M b.txt"), "{st}");
         assert!(st.contains("MM c.txt"), "{st}");
@@ -870,7 +870,7 @@ mod tests {
         )
         .unwrap();
         execute(&r.root, &wt, &cap, &sel).unwrap();
-        let st = gitx::run(&wt, &["status", "--porcelain"]).unwrap();
+        let st = gitx::run(&wt, &["status", "--porcelain", "-uall"]).unwrap();
         assert!(
             st.contains(" M b.txt") && st.contains("?? dir/untracked.txt"),
             "{st}"
@@ -954,7 +954,7 @@ mod tests {
         std::fs::create_dir_all(wt.join("dir/untracked.txt")).unwrap();
         let e = apply(&r.root, &wt, &cap, &sel);
         assert!(e.is_err());
-        let st = gitx::run(&wt, &["status", "--porcelain"]).unwrap();
+        let st = gitx::run(&wt, &["status", "--porcelain", "-uall"]).unwrap();
         assert!(!st.contains("a.txt"), "tracked part rolled back: {st}");
     }
 

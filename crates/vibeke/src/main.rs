@@ -489,7 +489,7 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 eprintln!("unknown command `{noun}`; see vibeke --help");
                 return EXIT_USAGE;
             };
-            let Some((method, positional)) = vk_cli::resolve(noun, verb, &args[2..]) else {
+            let Some((method, positional)) = vk_cli::lookup(noun, verb) else {
                 eprintln!(
                     "unknown command `{noun} {verb}`\n{}",
                     vk_cli::noun_help(noun)

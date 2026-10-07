@@ -2096,8 +2096,15 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                     .with_core(|c| c.task(t).map(|x| x.id.clone()))
                     .unwrap_or_else(|| t.to_string());
                 extras::expect_down(server, &key);
+                let r = container::api(server, method, p).await;
+                if r.is_ok() {
+                    // Stamp it again now that the box is down (see `expect_down`).
+                    extras::expect_down(server, &key);
+                }
+                r
+            } else {
+                container::api(server, method, p).await
             }
-            container::api(server, method, p).await
         }
         "sandbox.allow" => {
             if ctx.pane_scope.is_some() {

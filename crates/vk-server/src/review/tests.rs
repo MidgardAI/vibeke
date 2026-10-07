@@ -862,7 +862,8 @@ async fn binding_ranges_and_pinned_end_candidates() {
     assert_eq!(pkg["observed_commands"][0]["outcome"], "failed");
     assert_eq!(pkg["claims"][0]["command"], "linted");
 
-    // A binding that closes without commits records "no bound end candidate".
+    // A binding that closes without commits but with uncommitted work pins a dirty snapshot
+    // as its end candidate (15 §5, lane 2C "dirty end candidates").
     let e2 = Env::new();
     e2.add_run("r2", &e2.repo);
     e2.turn("r2", "Investigate", &[], "");
@@ -875,12 +876,30 @@ async fn binding_ranges_and_pinned_end_candidates() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     let pkg = review(&e2, &t2).await;
-    assert!(pkg["subject"].is_null());
+    assert_eq!(pkg["subject"]["kind"], "dirty_snapshot", "{pkg}");
+    assert_eq!(pkg["candidates"][0]["source"], "binding_end");
+    assert!(pkg["no_end_candidate"].as_array().unwrap().is_empty());
+
+    // A binding that closes with neither commits nor uncommitted work records "No bound end
+    // candidate".
+    let e3 = Env::new();
+    e3.add_run("r3", &e3.repo);
+    e3.turn("r3", "Investigate", &[], "");
+    let t3 = track(&e3, "r3", json!(["Explain"])).await;
+    ok(&e3, "task.unbind", json!({"task": t3})).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while events(&e3, "review.end_candidate_pinned").is_empty() {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let pkg = review(&e3, &t3).await;
+    assert!(pkg["subject"].is_null(), "{pkg}");
     assert!(
         pkg["no_end_candidate"][0]["note"]
             .as_str()
             .unwrap()
-            .contains("No bound end candidate")
+            .contains("No bound end candidate"),
+        "{pkg}"
     );
 }
 

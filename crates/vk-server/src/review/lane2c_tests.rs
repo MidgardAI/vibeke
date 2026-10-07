@@ -457,7 +457,13 @@ async fn native_deadlines_rank_wake_and_expire_at_the_source() {
     assert_eq!(it["class"], 2, "{it}");
     assert_eq!(it["deadline_source"], "native");
     assert!(it["deadline_in_ms"].as_i64().unwrap() <= 30_000);
-    assert!(it["explanation"].as_str().unwrap().contains("deadline in"));
+    assert!(
+        it["explanation"]
+            .as_str()
+            .unwrap()
+            .starts_with("Deadline in"),
+        "{it}"
+    );
     // A gate deadline counts only while the gate is held.
     put_approval(&e, "i2", "a1", "cargo build", t);
     attention_ext::on_gate_opened(&e.server, "i2", &json!({}), Some(Duration::from_secs(20)));

@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 387,
+  "method_count": 398,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -121,6 +121,20 @@
       "spec": "`{target}` → `{run}` — native abort where available (`abort` RPC, Esc for TUIs)",
       "params": "{target: Target}",
       "result": "{run: AgentRun}"
+    },
+    {
+      "name": "agent.items",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "items"
+      ],
+      "milestone": "M1",
+      "spec": "`{turn?, run?, kind?, after_seq?, limit?: 200}` → `{items: [Item], next_after_seq}` — items of one turn (ordered by `seq`, pageable) or of a whole run (recording order); full scope only",
+      "params": "{turn?: string, run?: Target, kind?: ItemKind, after_seq?: int, limit?: int}",
+      "result": "{items: [Item], next_after_seq: int|null}"
     },
     {
       "name": "agent.limits",
@@ -359,6 +373,20 @@
       "spec": null,
       "params": "{run?: Target, target?: Target, limit?: int = 200}",
       "result": "{run: string, turns: [{id: string, run: string, harness: string, n: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, stop: string|null, ended_at_ms: int|null, source: string}], turn_count: int, totals: {input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null}, usage: any}"
+    },
+    {
+      "name": "agent.turns",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "items"
+      ],
+      "milestone": "M1",
+      "spec": "`{run, after_seq?, limit?: 100}` → `{run, turns: [Turn], next_after_seq}` — the Turn/Item stream (02 §1.1), full scope only; `run` is a handle, a live run id, or an ended run's id. As built (3D) in §2.7a",
+      "params": "{run: Target, after_seq?: int, limit?: int}",
+      "result": "{run: string, turns: [Turn], next_after_seq: int|null}"
     },
     {
       "name": "agent.wait",
@@ -781,6 +809,20 @@
       "result": "{hash: string, sha256: string, size: int, path_on_machine: string, path: string, unpacked?: bool}"
     },
     {
+      "name": "blob.gc",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "blob_store"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{dry_run?: bool = false, older_than_days?: int = 30}",
+      "result": "{dry_run: bool, older_than_days: int, removed: int, bytes: int, kept_referenced: int, kept_young: int, kept_uncollectable: int, hashes: [string]}"
+    },
+    {
       "name": "blob.get",
       "mutating": false,
       "scope": "pane",
@@ -821,6 +863,20 @@
       "spec": "`{hash}` → `{mime, size, created_at, refs}`",
       "params": "{hash: string}",
       "result": "{hash: string, mime: string, size: int, created_at: int, refs: int, path: string}"
+    },
+    {
+      "name": "blob.stats",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "blob_store"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{count: int, bytes: int, by_source: object, path: string}"
     },
     {
       "name": "browser.attach_screencast",
@@ -2423,6 +2479,62 @@
       "spec": "`{}` → `{layouts: [{name, description, cwd, tabs, panes, valid}]}`. `{name}` → `{layout}` — named layouts from `[layouts.<name>]` [M4]",
       "params": "{name?: string}",
       "result": "{layouts: [{name: string, description?: string|null, cwd?: string|null, tabs: int, panes: int, valid: bool}]} | {layout: LayoutSpec}"
+    },
+    {
+      "name": "machine.get",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "machines"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{machine: Target}",
+      "result": "{machine: Machine}"
+    },
+    {
+      "name": "machine.list",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "machines"
+      ],
+      "milestone": "M1",
+      "spec": "`{}` → `{machines: [Machine]}`",
+      "params": "{}",
+      "result": "{machines: [Machine], local: string}"
+    },
+    {
+      "name": "machine.remove",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "machines"
+      ],
+      "milestone": "M1",
+      "spec": "`{machine}` → `{}`",
+      "params": "{machine: Target}",
+      "result": "{removed: string, cursor: Cursor}"
+    },
+    {
+      "name": "machine.upsert",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "machines"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{label: string, kind?: ssh|quic = ssh, id?: string, address?: string, os?: string, arch?: string, vibeke_version?: string, status?: connected|connecting|degraded|offline, reason?: string}",
+      "result": "{machine: Machine, created: bool, cursor: Cursor}"
     },
     {
       "name": "merge.predict",
@@ -4078,6 +4190,20 @@
       "result": "{session: SessionEntry}"
     },
     {
+      "name": "session.info",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "machines"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{session: SessionInfo, machine: Machine|null, cursor: Cursor}"
+    },
+    {
       "name": "session.list",
       "mutating": false,
       "scope": "pane",
@@ -4160,6 +4286,34 @@
       "spec": "`{pane?, client?}` → `{segments: {machine, session, workspace, task, branch, ports, attention, agents_summary, cpu, clock, sync_input}, focus, appearance, client_side: [mode, prefix_indicator]}` — data for the built-in status-bar segments (08 §4) from that client's focus [M4]",
       "params": "{pane?: Target, client?: string}",
       "result": "{segments: object, focus: any, appearance: Appearance, client_side: [string]}"
+    },
+    {
+      "name": "storage.prune",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "hardening"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{events_aged: int, events_capped: int, events_remaining: int, stream_removed: int, blobs_removed: int, blob_bytes: int}"
+    },
+    {
+      "name": "storage.status",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "hardening"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{degraded: string|null, ephemeral: int, archive_rows_skipped: int, db: {path: string, bytes: int}, events: {count: int, first_seq: int, last_seq: int, retention: {sync_days: int, history_days: int, max_rows: int, blob_days: int}}, backups: [{name: string, schema_version: int, created_at: int, bytes: int}], keep_backups: int, blobs: {count: int, bytes: int}, cursor: {machine_uuid: string, session_uuid: string, log_epoch: string}}"
     },
     {
       "name": "tab.close",

@@ -530,7 +530,11 @@ async fn the_stream_is_readable_through_the_api() {
     let i = dispatch(&s, &user(), "agent.items", &json!({"turn": turn1}))
         .await
         .unwrap();
-    assert_eq!(i["items"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        i["items"].as_array().unwrap().len(),
+        4,
+        "user message, command, its result, assistant message"
+    );
     let only_cmd = dispatch(
         &s,
         &user(),
@@ -562,7 +566,11 @@ async fn the_stream_is_readable_through_the_api() {
     let all = dispatch(&s, &user(), "agent.items", &json!({"run": "run1"}))
         .await
         .unwrap();
-    assert_eq!(all["items"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        all["items"].as_array().unwrap().len(),
+        5,
+        "four in the first turn, one in the second"
+    );
 
     for (p, kind) in [
         (json!({}), "invalid_params"),

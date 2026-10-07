@@ -3832,6 +3832,56 @@
         ]
       }
     },
+    "agent.items": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "kind": {
+            "$ref": "#/$defs/ItemKind"
+          },
+          "after_seq": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Item"
+            }
+          },
+          "next_after_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_after_seq"
+        ]
+      }
+    },
     "agent.limits": {
       "mutating": false,
       "scope": "pane",
@@ -4805,6 +4855,57 @@
           "turn_count",
           "totals",
           "usage"
+        ]
+      }
+    },
+    "agent.turns": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/Target"
+          },
+          "after_seq": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Turn"
+            }
+          },
+          "next_after_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run",
+          "turns",
+          "next_after_seq"
         ]
       }
     },
@@ -7084,6 +7185,69 @@
         ]
       }
     },
+    "blob.gc": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          },
+          "older_than_days": {
+            "type": "integer",
+            "default": 30
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "older_than_days": {
+            "type": "integer"
+          },
+          "removed": {
+            "type": "integer"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "kept_referenced": {
+            "type": "integer"
+          },
+          "kept_young": {
+            "type": "integer"
+          },
+          "kept_uncollectable": {
+            "type": "integer"
+          },
+          "hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "dry_run",
+          "older_than_days",
+          "removed",
+          "bytes",
+          "kept_referenced",
+          "kept_young",
+          "kept_uncollectable",
+          "hashes"
+        ]
+      }
+    },
     "blob.get": {
       "mutating": false,
       "scope": "pane",
@@ -7225,6 +7389,37 @@
           "size",
           "created_at",
           "refs",
+          "path"
+        ]
+      }
+    },
+    "blob.stats": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "by_source": {
+            "type": "object"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "bytes",
+          "by_source",
           "path"
         ]
       }
@@ -14512,6 +14707,160 @@
         ]
       }
     },
+    "machine.get": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/Machine"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      }
+    },
+    "machine.list": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "machines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Machine"
+            }
+          },
+          "local": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machines",
+          "local"
+        ]
+      }
+    },
+    "machine.remove": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "machine"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "removed",
+          "cursor"
+        ]
+      }
+    },
+    "machine.upsert": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ssh",
+              "quic"
+            ],
+            "default": "ssh"
+          },
+          "id": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "arch": {
+            "type": "string"
+          },
+          "vibeke_version": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "connecting",
+              "degraded",
+              "offline"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/Machine"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "machine",
+          "created",
+          "cursor"
+        ]
+      }
+    },
     "merge.predict": {
       "mutating": false,
       "scope": "pane",
@@ -21260,6 +21609,40 @@
         ]
       }
     },
+    "session.info": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionInfo"
+          },
+          "machine": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Machine"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "session",
+          "machine",
+          "cursor"
+        ]
+      }
+    },
     "session.list": {
       "mutating": false,
       "scope": "pane",
@@ -21779,6 +22162,209 @@
           "focus",
           "appearance",
           "client_side"
+        ]
+      }
+    },
+    "storage.prune": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "events_aged": {
+            "type": "integer"
+          },
+          "events_capped": {
+            "type": "integer"
+          },
+          "events_remaining": {
+            "type": "integer"
+          },
+          "stream_removed": {
+            "type": "integer"
+          },
+          "blobs_removed": {
+            "type": "integer"
+          },
+          "blob_bytes": {
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "events_aged",
+          "events_capped",
+          "events_remaining",
+          "stream_removed",
+          "blobs_removed",
+          "blob_bytes"
+        ]
+      }
+    },
+    "storage.status": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "degraded": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ephemeral": {
+            "type": "integer"
+          },
+          "archive_rows_skipped": {
+            "type": "integer"
+          },
+          "db": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "bytes"
+            ]
+          },
+          "events": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "first_seq": {
+                "type": "integer"
+              },
+              "last_seq": {
+                "type": "integer"
+              },
+              "retention": {
+                "type": "object",
+                "properties": {
+                  "sync_days": {
+                    "type": "integer"
+                  },
+                  "history_days": {
+                    "type": "integer"
+                  },
+                  "max_rows": {
+                    "type": "integer"
+                  },
+                  "blob_days": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "sync_days",
+                  "history_days",
+                  "max_rows",
+                  "blob_days"
+                ]
+              }
+            },
+            "required": [
+              "count",
+              "first_seq",
+              "last_seq",
+              "retention"
+            ]
+          },
+          "backups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "schema_version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "bytes": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "schema_version",
+                "created_at",
+                "bytes"
+              ]
+            }
+          },
+          "keep_backups": {
+            "type": "integer"
+          },
+          "blobs": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "count",
+              "bytes"
+            ]
+          },
+          "cursor": {
+            "type": "object",
+            "properties": {
+              "machine_uuid": {
+                "type": "string"
+              },
+              "session_uuid": {
+                "type": "string"
+              },
+              "log_epoch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "machine_uuid",
+              "session_uuid",
+              "log_epoch"
+            ]
+          }
+        },
+        "required": [
+          "degraded",
+          "ephemeral",
+          "archive_rows_skipped",
+          "db",
+          "events",
+          "backups",
+          "keep_backups",
+          "blobs",
+          "cursor"
         ]
       }
     },

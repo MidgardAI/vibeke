@@ -994,6 +994,13 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "task",
+        "review-forget",
+        "task.review.forget",
+        &[],
+        "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
+    ),
+    (
+        "task",
         "link",
         "task.link.status",
         &[],
@@ -1088,7 +1095,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "forget",
         "task.forget",
         &["task"],
-        "<task> [--force] drop a missing (or finished) task's record; touches no files. Without <task> (task.review.forget): --task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
+        "<task> [--force] drop a missing (or finished) task's record; touches no files",
     ),
     (
         "task",
@@ -3411,20 +3418,6 @@ pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'stati
         .map(|c| (c.2, c.3))
 }
 
-/// [`lookup`] for an argv: `task forget <task>` is `task.forget` (07, v1 remainder), while
-/// `task forget --task t | --pane p | --workspace w | --before t | --all` (no positional task)
-/// is `task.review.forget` (15 §11). Every other command is [`lookup`].
-pub fn resolve(
-    noun: &str,
-    verb: &str,
-    args: &[String],
-) -> Option<(&'static str, &'static [&'static str])> {
-    if noun == "task" && verb == "forget" && args.first().is_none_or(|a| a.starts_with('-')) {
-        return Some(("task.review.forget", &[]));
-    }
-    lookup(noun, verb)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3585,23 +3578,6 @@ mod tests {
         let (_, pos) = lookup("draft", "combine").unwrap();
         let p = build_params(pos, &["a".into(), "b".into()]).unwrap();
         assert_eq!(p["ids"], json!(["a", "b"]));
-    }
-
-    #[test]
-    fn task_forget_routes_by_its_positional() {
-        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            resolve("task", "forget", &a(&["k7", "--force"])).unwrap().0,
-            "task.forget"
-        );
-        for args in [&["--task", "k7"][..], &["--all", "--dry-run"], &[]] {
-            assert_eq!(
-                resolve("task", "forget", &a(args)).unwrap().0,
-                "task.review.forget",
-                "{args:?}"
-            );
-        }
-        assert_eq!(resolve("task", "list", &[]).unwrap().0, "task.list");
     }
 
     #[test]

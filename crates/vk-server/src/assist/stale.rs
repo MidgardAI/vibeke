@@ -16,9 +16,9 @@ fn digest(parts: &[String]) -> String {
     blake3::hash(parts.join("\u{1}").as_bytes()).to_hex()[..16].to_string()
 }
 
-/// An interaction by id: the live model holds open ones, a resolved or cancelled one is a
-/// closed record in the store. It still exists; only its status changed.
-fn interaction(c: &crate::core::Core, id: &str) -> Option<Interaction> {
+/// An interaction by id: the live model holds open ones; a resolved, cancelled or expired one
+/// leaves it but keeps its closed record in the store, and still exists for staleness.
+fn interaction_of(c: &crate::core::Core, id: &str) -> Option<Interaction> {
     c.model
         .interactions
         .iter()
@@ -29,13 +29,14 @@ fn interaction(c: &crate::core::Core, id: &str) -> Option<Interaction> {
                 .find::<Interaction>("interaction", id)
                 .ok()
                 .flatten()
+                .filter(|i| i.id == id)
         })
 }
 
 /// The current fingerprint of one live object (`None` when it no longer exists).
 pub(super) fn fingerprint(server: &Server, kind: &str, id: &str) -> Option<String> {
     server.with_core(|c| match kind {
-        "interaction" => interaction(c, id)
+        "interaction" => interaction_of(c, id)
             .map(|i| format!("{:?}/{}/{:?}", i.status, i.decision_rev, i.delivery)),
         "run" => c.run(id).map(|r| {
             format!(
@@ -177,7 +178,7 @@ pub(super) fn live_targets(server: &Server, r: &AssistRequest) -> Vec<Value> {
     server.with_core(|c| {
         ids.iter()
             .map(|id| {
-                if let Some(i) = interaction(c, id) {
+                if let Some(i) = interaction_of(c, id) {
                     json!({"id": id, "kind": "interaction", "exists": true, "status": format!("{:?}", i.status).to_lowercase(), "answerable": i.answerable && i.status == InteractionStatus::Open, "delivery": format!("{:?}", i.delivery).to_lowercase()})
                 } else if let Some(run) = c.run(id) {
                     json!({"id": id, "kind": "run", "exists": true, "status": format!("{:?}", run.execution.value).to_lowercase(), "ended": run.ended_at_ms.is_some()})
