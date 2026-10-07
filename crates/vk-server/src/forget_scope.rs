@@ -321,6 +321,18 @@ fn forget_blobs(server: &Server, scope: &Scope, dry: bool) -> Value {
     json!({"screenshots": screenshots, "files": removed})
 }
 
+/// Blob hashes something that survives the forget still points at: remaining screenshot
+/// records and Turn/Item payloads (items and screenshots in scope are already gone when the
+/// uploads are forgotten).
+fn surviving_blob_refs(server: &Server) -> HashSet<String> {
+    let mut v: HashSet<String> = crate::screenshots::load_all(server)
+        .into_iter()
+        .map(|m| m.blob)
+        .collect();
+    v.extend(crate::items::payload_refs(server));
+    v
+}
+
 fn mtime_ms(p: &Path) -> Option<i64> {
     std::fs::metadata(p)
         .ok()?
@@ -337,6 +349,7 @@ fn mtime_ms(p: &Path) -> Option<i64> {
 fn forget_uploads(server: &Server, scope: &Scope, dry: bool) -> Value {
     let rows = server.with_core(|c| c.store.kv_scope("blob_owner").unwrap_or_default());
     let inbox = crate::paths::Paths::inbox();
+    let surviving = surviving_blob_refs(server);
     let (mut removed, mut kept) = (0u64, 0u64);
     let mut drop_keys: Vec<String> = vec![];
     for (hash, owners) in rows {
@@ -376,8 +389,12 @@ fn forget_uploads(server: &Server, scope: &Scope, dry: bool) -> Value {
             }
         }
         let _ = std::fs::remove_dir(&dir);
-        // Its copy in the unified blob store (3D) goes too.
-        crate::blob_store::store(server).remove(&hash);
+        // Its copy in the unified blob store (3D) goes too — unless a surviving screenshot
+        // record or Turn/Item payload has the same content (the same protection as
+        // `forget_blobs`): another pane's retained payload must stay readable.
+        if !surviving.contains(&hash) {
+            crate::blob_store::store(server).remove(&hash);
+        }
     }
     if !dry && !drop_keys.is_empty() {
         let mut c = server.core.lock().unwrap();

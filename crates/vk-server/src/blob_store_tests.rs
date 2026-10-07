@@ -333,3 +333,80 @@ fn payloads_are_readable_by_the_owning_workspace_only() {
         );
     });
 }
+
+/// Final review P1 9: pane A uploads text that pane B's run also holds as a tool-output payload
+/// (one hash). Forgetting pane A removes A's upload but keeps B's payload readable.
+#[tokio::test]
+async fn forgetting_an_upload_keeps_a_payload_another_pane_references() {
+    let (_d, s) = setup("fshare");
+    let run = crate::hardening::testkit::sample_run("runb", "pb");
+    {
+        let mut c = s.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.run(run.clone());
+        s.commit(&mut c, tx).unwrap();
+    }
+    let out = format!(
+        "{}\n{}",
+        String::from_utf8(unique("shared output")).unwrap(),
+        "log line\n".repeat(400)
+    );
+    crate::items::observe_hook(&s, &run, "UserPromptSubmit", &json!({"prompt": "go"}));
+    crate::items::observe_hook(
+        &s,
+        &run,
+        "PostToolUse",
+        &json!({"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "cat log"}, "tool_response": out}),
+    );
+    let refs = crate::items::payload_refs(&s);
+    assert_eq!(refs.len(), 1);
+    let hash = refs.into_iter().next().unwrap();
+    let ext = store(&s).find(&hash).unwrap().exts[0].clone();
+    let bytes = store(&s).read(&hash, &ext).unwrap();
+    // Pane A uploads the identical text.
+    let put = dispatch(
+        &s,
+        &pane_ctx("pa"),
+        "blob.put",
+        &json!({"data_b64": b64(&bytes), "name": "same.txt"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(put["hash"], hash.as_str());
+    // Forget pane A (dry run, then the confirmed plan).
+    let d = dispatch(
+        &s,
+        &user(),
+        "state.forget",
+        &json!({"pane": "pa", "dry_run": true}),
+    )
+    .await
+    .unwrap();
+    let mut confirm = d["scope"].clone();
+    confirm["plan"] = d["plan"].clone();
+    let r = dispatch(&s, &user(), "state.forget", &confirm)
+        .await
+        .unwrap();
+    assert_eq!(r["also"]["uploads"]["removed"], 1, "{r}");
+    // B's payload stays readable.
+    assert!(store(&s).read(&hash, &ext).unwrap() == bytes);
+    let got = dispatch(&s, &pane_ctx("pb"), "blob.get", &json!({"hash": hash}))
+        .await
+        .unwrap();
+    assert_eq!(got["data_b64"], b64(&bytes));
+    // Once nothing references it any more, forgetting B removes it.
+    let d = dispatch(
+        &s,
+        &user(),
+        "state.forget",
+        &json!({"pane": "pb", "dry_run": true}),
+    )
+    .await
+    .unwrap();
+    let mut confirm = d["scope"].clone();
+    confirm["plan"] = d["plan"].clone();
+    dispatch(&s, &user(), "state.forget", &confirm)
+        .await
+        .unwrap();
+    assert!(crate::items::payload_refs(&s).is_empty());
+}
