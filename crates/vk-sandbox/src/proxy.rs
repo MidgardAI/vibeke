@@ -87,6 +87,9 @@ pub struct ProxyConfig {
     pub connect_timeout: Duration,
     /// Check a tunnel's TLS SNI and a forwarded request's `Host` against the checked host.
     pub sni_check: bool,
+    /// How long a tunnel waits for the client's first bytes to be classified (a whole
+    /// ClientHello, or non-TLS). Undecided at the deadline, the tunnel closes.
+    pub sni_timeout: Duration,
 }
 
 impl ProxyConfig {
@@ -99,6 +102,7 @@ impl ProxyConfig {
             ask_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
             sni_check: true,
+            sni_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -750,16 +754,26 @@ where
     });
     if cfg.sni_check {
         let mut chunk = [0u8; 4096];
+        // One deadline for the whole inspection (a client trickling bytes can't extend it).
+        let deadline = tokio::time::Instant::now() + cfg.sni_timeout;
         let verdict = loop {
             match parse_sni(&pending) {
                 Sni::Incomplete => {}
                 Sni::NotTls | Sni::Absent => break Ok(()),
                 Sni::Name(n) => break sni_ok(cfg, &n, host, port),
             }
-            match tokio::time::timeout(Duration::from_secs(30), cr.read(&mut chunk)).await {
+            match tokio::time::timeout_at(deadline, cr.read(&mut chunk)).await {
                 Ok(Ok(n)) if n > 0 => pending.extend_from_slice(&chunk[..n]),
-                // Closed or quiet before a whole ClientHello: relay what was sent.
-                _ => break Ok(()),
+                // Closed, failed or quiet before the first bytes could be classified: the
+                // tunnel closes. Uninspected bytes are never forwarded (a delayed ClientHello
+                // would otherwise name any host).
+                Ok(_) => break Err("connection closed before a complete TLS ClientHello".into()),
+                Err(_) => {
+                    break Err(format!(
+                        "no complete TLS ClientHello within {} s",
+                        cfg.sni_timeout.as_secs()
+                    ));
+                }
             }
         };
         if let Err(reason) = verdict {
@@ -1343,6 +1357,75 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(seen.lock().unwrap().starts_with(&hello));
+    }
+
+    /// Final review P1 4: an incomplete ClientHello held past the inspection deadline, then
+    /// completed with a forbidden name, never reaches the origin: the tunnel closes at the
+    /// deadline. A client that half-closes mid-ClientHello gets nothing forwarded either.
+    #[tokio::test]
+    async fn delayed_or_truncated_client_hello_closes_the_tunnel() {
+        // An origin that records everything it ever receives.
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let o = l.local_addr().unwrap().port();
+        let seen: Arc<std::sync::Mutex<Vec<u8>>> = Arc::default();
+        let s2 = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let seen = s2.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    while let Ok(n) = s.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                    }
+                });
+            }
+        });
+        let mut pol = EgressPolicy::new(NetworkProfile::HarnessApis);
+        pol.local_ports.insert(o);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        let mut c = cfg(pol);
+        c.sni_timeout = Duration::from_millis(300);
+        c.observer = Some(Arc::new(move |e| ev.lock().unwrap().push(e)));
+        let p = EgressProxy::start(c, 0, None).await.unwrap();
+        let hello = client_hello(Some("evil.test"));
+        // Delayed: part now, the rest (naming a forbidden host) after the deadline.
+        let mut s = connect_tunnel_to(p.port, &format!("127.0.0.1:{o}")).await;
+        s.write_all(&hello[..10]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let _ = s.write_all(&hello[10..]).await;
+        let mut out = Vec::new();
+        let r = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
+        assert!(r.is_ok(), "the tunnel was closed");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "uninspected bytes were forwarded"
+        );
+        assert!(events.lock().unwrap().iter().any(|e| matches!(
+            e,
+            EgressEvent::Denied { reason, .. } if reason.contains("ClientHello")
+        )));
+        // Truncated: half a ClientHello, then the client closes its side.
+        let mut s = connect_tunnel_to(p.port, &format!("127.0.0.1:{o}")).await;
+        s.write_all(&hello[..hello.len() / 2]).await.unwrap();
+        s.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a truncated ClientHello was forwarded"
+        );
+        // A complete, allowed ClientHello still goes through.
+        let mut s = connect_tunnel_to(p.port, &format!("127.0.0.1:{o}")).await;
+        let ok = client_hello(Some("localhost"));
+        s.write_all(&ok).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(seen.lock().unwrap().starts_with(&ok));
     }
 
     #[tokio::test]
