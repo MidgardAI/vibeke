@@ -17,6 +17,11 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 - `vibeke doctor --rebuild-index`: rebuild the scrollback search index. Stop the server first.
 - `vibeke doctor --list-backups` and `vibeke doctor --restore-backup NAME`: list the pre-migration copies of the state database (the last three) and restore one. Stop the server first. Restoring rotates the event-log epoch and keeps the replaced database as `state.db.pre-restore`.
 - `vibeke forget --pane p|--workspace w|--before t|--all [--yes] [--dry-run]`: delete archived scrollback through `scrollback.forget`.
+- `vibeke handoff incoming`: list the incoming handoffs on this host (`handoff.incoming.list`).
+- `vibeke handoff accept <id> [--repo PATH | --clone-to PATH] [--worktree PATH] [--branch NAME] [--no-resume] [--trust mise,direnv]`: import an incoming handoff (`handoff.accept`). Without `--repo` or `--clone-to` it uses the clone and worktree path that `handoff.incoming.get` suggests.
+- `vibeke handoff decline <id>`: delete an incoming handoff without importing it.
+- `vibeke handoff resume <id>`: start the agent of an imported handoff again.
+- `vibeke handoff prefs [--always-ask on|off]`: show the remembered placements, or set whether handoffs from your own hosts always wait to be accepted.
 - `vibeke --skill`: print the agent instructions.
 - `vibeke --default-config`: print the configuration template.
 - `vibeke --version`: print the version.

@@ -6,6 +6,7 @@
 pub mod browser_console;
 pub mod client;
 pub mod compat;
+pub mod handoff;
 pub mod mcp;
 pub mod plugin_native;
 pub mod shell_integration;

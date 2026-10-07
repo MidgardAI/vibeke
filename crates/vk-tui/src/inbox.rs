@@ -604,6 +604,8 @@ pub fn view(app: &App) -> View {
             }
         }
     }
+    // Incoming handoffs waiting to be accepted (16 §15.2).
+    lists.push(crate::handoff::inbox_items(app));
     if st.five_minute && omitted.is_none() {
         coverage.push("five-minute view needs a newer server; showing all items".into());
     }
@@ -834,6 +836,10 @@ fn act_on_first(app: &mut App, focus: bool) {
 /// Open what an item is about. Only explicit user actions get here.
 pub fn open_item(app: &mut App, it: &Item, focus: bool) {
     let mi = it.key.machine;
+    if it.key.kind == "handoff" {
+        crate::handoff::open_accept(app, mi, &it.key.id);
+        return;
+    }
     if let Some(int) = it
         .interaction
         .clone()
@@ -1107,7 +1113,10 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         Key::Char('s') => {
             let it = sel.unwrap();
-            if it.stale || it.fallback {
+            if it.key.kind == "handoff" {
+                app.inbox.notice =
+                    Some("a handoff waits until it is accepted, declined or expires".into());
+            } else if it.stale || it.fallback {
                 app.inbox.notice = Some(if it.stale {
                     "machine offline — snooze when it reconnects".into()
                 } else {
@@ -1221,6 +1230,7 @@ fn class_glyph(i: &Item) -> &'static str {
         2 => "⏱",
         3 => match i.key.kind.as_str() {
             "interaction" => "?",
+            "handoff" => "⇣",
             _ => "!",
         },
         4 => "◆",

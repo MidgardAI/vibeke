@@ -634,6 +634,11 @@ pub const ACTION_INFO: &[(&str, &str)] = &[
         "assist_pane_title",
         "Suggest a title for this pane (assistant)",
     ),
+    (
+        "handoffs",
+        "Incoming handoffs (accept, decline) and handoffs being sent",
+    ),
+    ("handoff_send", "Hand off this pane to another host…"),
 ];
 
 /// Actions only reachable from the palette (no keymap entry).
@@ -670,6 +675,8 @@ const EXTRA_ACTIONS: &[&str] = &[
     "notes",
     "assist_briefing",
     "assist_pane_title",
+    "handoffs",
+    "handoff_send",
 ];
 
 pub fn describe(action: &str) -> String {

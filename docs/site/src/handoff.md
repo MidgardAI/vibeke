@@ -23,6 +23,12 @@ The destination needs the agent CLI and its own agent login. It does not need a 
 6. Follow the progress, or close the sheet: the transfer continues in the background and the app
    tells you when it is delivered or failed. A failed transfer can be tried again from the sheet.
 
+In the terminal client, run **Hand off this pane to another host…** (`handoff_send`) from the
+command palette: pick one of the hosts this one is paired with, tick **Interrupt agent if busy**
+if needed and press `enter`. The tab bar shows the progress ("⇢ marvin 42%"), and a notice says
+when the work was delivered or imported. Cancel a send from **Incoming handoffs** (`x`). Pairing
+with a teammate's invitation happens on the command line (`vibeke gateway peer add <link>`).
+
 The destination keeps the work as an **incoming handoff**. Vibeke imports it right away when the
 destination already has a clone of the repository and remembers where the last handoff for that
 repository went (and **always ask** is off). Otherwise the destination shows a notification,
@@ -63,6 +69,45 @@ again with another choice. Declining a handoff deletes it. If the agent did not 
 Handoffs from your own hosts import without asking when the repository and a place for it are
 known. To review every handoff first, turn on **Settings → Sharing & handoff → Always ask before
 importing handoffs** for that host.
+
+### In the terminal client
+
+A waiting handoff shows in the attention inbox (`prefix+i`) as "Incoming handoff from <host>:
+<branch>". Select it and press `enter`, or open **Incoming handoffs** from the command palette
+(`handoffs`), to see what arrived: the sender, the repository and branch with its head commit,
+the untracked files, the secret files the sender kept back ("bring your own: .env"), the agent's
+last message and whether the conversation resumes. Then choose:
+
+- **Repository:** a clone Vibeke found, **Browse…** for another clone, or **Clone to…** a new
+  folder (by default next to the clone Vibeke suggests, or in `~/code`).
+- **Worktree** and **Branch:** prefilled; `enter` on the worktree opens the folder picker (`tab`
+  completes, arrows walk the folders, git repositories are marked), the branch is typed in place.
+- **Resume agent**, **Trust mise config** and **Trust direnv config**.
+
+`a` (or **Accept**) imports it. The overlay shows the progress (cloning, importing, starting the
+agent) and then focuses the new pane. If the import fails, the reason stays on screen so you can
+choose again; a clone whose remotes don't match the sender's origin is listed with its remotes.
+If the agent did not start, press `r` to retry once the agent setup is fixed. `d` declines the
+handoff; `esc` (**Later**) leaves it waiting.
+
+The **Incoming handoffs** list also shows imported and failed handoffs and the panes you are
+sending; there `d` declines, `r` retries the agent of an imported handoff and `x` cancels a send.
+
+### From the command line
+
+```sh
+vibeke handoff incoming                         # id, state, sender, repository, branch, age
+vibeke handoff accept <id>                      # into the suggested clone and worktree path
+vibeke handoff accept <id> --repo ~/code/app --worktree ~/code/app-fix --branch fix/login
+vibeke handoff accept <id> --clone-to ~/code/app --no-resume --trust mise,direnv
+vibeke handoff decline <id>
+vibeke handoff resume <id>                      # start the agent of an imported handoff again
+vibeke handoff prefs --always-ask on            # handoffs from your own hosts always wait
+```
+
+Without `--repo` or `--clone-to`, `accept` uses the clone (and worktree path) Vibeke suggests and
+stops with an error when there is none. The apps use the same `handoff.incoming.list` and
+`handoff.accept` API methods, through the gateway from a fully paired device.
 
 ## Transfer contents
 
@@ -154,4 +199,5 @@ On the destination, check **Handoffs**: the work can already be there; sending t
 again does not create a second one.
 
 If the import succeeds but the agent fails to start, the worktree remains available. Correct the
-agent setup, then resume the agent from the imported handoff.
+agent setup, then resume the agent from the imported handoff: `r` in the terminal client's accept
+overlay or handoffs list, or `vibeke handoff resume <id>`.

@@ -889,6 +889,9 @@ fn right_cluster(app: &App) -> Vec<(String, Style)> {
     if let Some(up) = crate::upload::status(app) {
         right.insert(0, (format!(" {up} "), t.s(t.yellow)));
     }
+    if let Some(h) = crate::handoff::status(app) {
+        right.insert(0, (format!(" {h} "), t.s(t.accent)));
+    }
     if let Some(p) = app.focused_pane()
         && let Some(badge) = crate::osc::exit_badge(app, app.cur, &p, std::time::Instant::now())
     {

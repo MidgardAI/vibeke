@@ -374,6 +374,15 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
             })
             .await
         }
+        // Receiving handoffs (16 §15.2): `vibeke handoff incoming|accept|decline|resume|prefs`.
+        Some("handoff") if vk_cli::handoff::handles(args.get(1).map(String::as_str)) => {
+            let gr = &g;
+            let rest = &args[1..];
+            with_client(gr, |mut c| async move {
+                vk_cli::handoff::run(&mut c, gr, rest).await
+            })
+            .await
+        }
         Some("keys") => commands::keys(&g, &args[1..]),
         Some("setup") => setup::setup(&args[1..]),
         Some("trust") => setup::trust(&g, &args[1..]).await,

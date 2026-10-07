@@ -25,6 +25,9 @@
 //! - [`crate::agent_list`]: every agent on every machine by attention (`prefix+alt+a`).
 //!
 //! Lane 3A: [`crate::collision`]: shared-checkout collisions (pane badge, sidebar line, popup).
+//!
+//! Handoffs (16 §15.2): [`crate::handoff`]: the accept overlay, the handoffs list and sending a
+//! pane to a paired host.
 
 use crate::app::{App, Popup, RpcErr};
 use crate::screen::Grid;
@@ -48,6 +51,7 @@ pub struct State {
     pub scroll: crate::scroll_req::State,
     pub tasks: crate::taskbadge::State,
     pub collision: crate::collision::State,
+    pub handoff: crate::handoff::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -60,6 +64,7 @@ pub enum Reply {
     Elevate(crate::elevate::Reply),
     Tasks(crate::taskbadge::Reply),
     Collision(crate::collision::Reply),
+    Handoff(crate::handoff::Reply),
     /// `tab.renumber`.
     Renumber,
 }
@@ -73,6 +78,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Elevate(r) => crate::elevate::on_reply(app, mi, r, res),
         Reply::Tasks(r) => crate::taskbadge::on_reply(app, mi, r, res),
         Reply::Collision(r) => crate::collision::on_reply(app, mi, r, res),
+        Reply::Handoff(r) => crate::handoff::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
     }
 }
@@ -80,6 +86,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
 /// After (re)connecting machine `mi`.
 pub fn on_connected(app: &mut App, mi: usize) {
     crate::elevate::on_connected(app, mi);
+    crate::handoff::on_connected(app, mi);
 }
 
 /// Palette / key actions owned by 2B modules.
@@ -95,6 +102,7 @@ pub fn action(app: &mut App, action: &str) -> bool {
         || crate::agent_list::action(app, action)
         || crate::taskbadge::action(app, action)
         || crate::collision::action(app, action)
+        || crate::handoff::action(app, action)
 }
 
 /// `[[keys.command]] when = "agent:<harness>"`: only while the focused pane runs that harness
