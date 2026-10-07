@@ -515,8 +515,9 @@ export interface HandoffJob {
   total: number;
   /** The destination's incoming handoff id and its state there (`pending`, `imported`, …). */
   incoming?: string;
-  incoming_state?: string;
-  error?: string;
+  incoming_state?: IncomingHandoffState | null;
+  /** Why it failed (a message, or a JSON-RPC style error object). */
+  error?: string | { kind?: string; message?: string } | null;
   /** Unix seconds. */
   created_at: number;
   updated_at: number;
@@ -528,8 +529,9 @@ export interface HandoffPeer {
   name: string;
   owner: PeerOwner;
   added_at?: number;
-  expires_at: number | null;
-  expired: boolean;
+  /** Unix seconds; absent or null: never (own hosts). */
+  expires_at?: number | null;
+  expired?: boolean;
 }
 
 /** A pending invitation on this host (`share.list`). */
@@ -650,6 +652,13 @@ export interface HandoffFinishResult {
   state: IncomingHandoffState;
   result?: HandoffImportResult | null;
   record?: IncomingHandoff;
+}
+
+/** `handoff.prefs`: placement the receiving host remembers, and whether own handoffs always wait. */
+export interface HandoffPrefs {
+  always_ask: boolean;
+  placement: Record<string, { repo: string; worktree_parent: string }>;
+  repos: string[];
 }
 
 /** Per-device push/notification prefs held by the gateway (`prefs.get/set`). */
@@ -811,6 +820,8 @@ export interface AppApi {
   };
   'handoff.decline': { params: { id: string }; result: { incoming: IncomingHandoff } };
   'handoff.resume': { params: { id: string }; result: { incoming: IncomingHandoff; run?: unknown; agent_error?: { code?: number; message?: string; data?: { kind?: string } } } };
+  /** Read, or set whether the user's own handoffs always wait to be accepted. */
+  'handoff.prefs': { params: { always_ask?: boolean }; result: HandoffPrefs };
   /** Spec 16 §15.3: invite another of the owner's hosts (link open for `ttl_s`, default 15 min). */
   'peer.invite': { params: { ttl_s?: number }; result: { link: string; pid: string; open_by: number } };
   /** This host redeems a peer or handoff invitation; `share_user` shows git user.name/email there. */
@@ -873,6 +884,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.accept',
   'handoff.decline',
   'handoff.resume',
+  'handoff.prefs',
   'handoff.send',
   'handoff.cancel',
 ]);

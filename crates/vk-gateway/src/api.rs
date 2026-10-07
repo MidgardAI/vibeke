@@ -148,6 +148,7 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "handoff.accept"
         | "handoff.decline"
         | "handoff.resume"
+        | "handoff.prefs"
         | "task.check.run"
         | "preview.open"
         | "preview.promote"
@@ -1947,6 +1948,7 @@ mod workspace_tests {
             "handoff.accept",
             "handoff.decline",
             "handoff.resume",
+            "handoff.prefs",
         ] {
             assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
             assert!(kind_allows("device", m), "{m}");

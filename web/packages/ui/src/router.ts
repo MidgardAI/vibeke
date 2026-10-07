@@ -36,6 +36,8 @@ export type Route =
   | { name: 'home' }
   | { name: Tab }
   | { name: 'crew' }
+  /** Incoming handoffs: every host's list, one host's, or one handoff's accept view. */
+  | { name: 'handoffs'; host: string | null; id: string | null }
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
   | WorkspaceRoute
@@ -74,6 +76,8 @@ export function parseRoute(hash: string): Route {
       return { name: a };
     case 'crew':
       return { name: 'crew' };
+    case 'handoffs':
+      return { name: 'handoffs', host: b || null, id: (b && c) || null };
     case 'settings':
       return b ? { name: 'settings', section: b } : { name: 'settings' };
     case 'pair': {
@@ -138,6 +142,8 @@ export function formatRoute(r: Route): string {
       return `#/${r.name}`;
     case 'settings':
       return r.section ? `#/settings/${enc(r.section)}` : '#/settings';
+    case 'handoffs':
+      return r.host ? `#/handoffs/${enc(r.host)}${r.id ? `/${enc(r.id)}` : ''}` : '#/handoffs';
     case 'pair':
       return r.d ? `#/pair?d=${r.d}` : '#/pair';
     case 'workspace': {

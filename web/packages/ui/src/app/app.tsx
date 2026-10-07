@@ -9,10 +9,12 @@ import type { UiPlatform } from '../platform';
 import { mostUrgent, workspaceOfPane } from '../lib/workspaces';
 import { formatRoute, hashFromUrl, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { InboxScreen } from '../screens/inbox';
+import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
 import { SettingsScreen } from '../screens/settings';
 import { QuickScreen } from '../screens/quick';
+import { useHandoffStores } from './handoff-stores';
 import { AppContext, useApp, useHosts, useInboxItems, usePrefs } from './hooks';
 import { KeyboardLayer, type Surface } from './keyboard';
 import { AppModel } from './model';
@@ -124,6 +126,8 @@ function Main() {
   const rows = useWorkspaceRows();
   useThemeEffect(prefs.theme, prefs.termFont);
   useIdleLock();
+  // Incoming handoffs (nav badge) and outgoing jobs (toasts when a sheet closed early).
+  useHandoffStores();
 
   // Notification taps routed into the running app.
   useEffect(() => app.platform.notifications?.onOpen((url) => navigate(hashFromUrl(url))), [app]);
@@ -193,6 +197,12 @@ function Screen({ route }: { route: Route }) {
       return (
         <Framed title={t.settings.title} width="narrow">
           <SettingsScreen />
+        </Framed>
+      );
+    case 'handoffs':
+      return (
+        <Framed title={t.incoming.screenTitle} width="narrow">
+          <IncomingScreen host={route.host} id={route.id} />
         </Framed>
       );
     case 'crew':

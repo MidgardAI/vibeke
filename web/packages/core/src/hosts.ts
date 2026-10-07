@@ -571,7 +571,8 @@ export interface HostManagerApi {
   /**
    * Live app events of one host, in order (deduped by seq). Survives reconnects and re-pairing of
    * the same host id. Shells that run connections elsewhere may forward only the event types the
-   * UI needs (agent.*, interaction.*, task.*, preview.*, tab.*, pane.*, notification.created).
+   * UI needs (agent.*, interaction.*, task.*, preview.*, tab.*, pane.*, handoff.*,
+   * notification.created).
    */
   subscribeEvents(hostId: string, cb: (e: AppEvent) => void): () => void;
 }
