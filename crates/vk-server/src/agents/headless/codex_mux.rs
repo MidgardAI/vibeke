@@ -488,12 +488,29 @@ fn relay(socket: &Path, key: &str, argv: &[String]) -> std::io::Result<()> {
     )?;
     let mut up = stream.try_clone()?;
     std::thread::spawn(move || {
-        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut up);
+        let _ = pump(&mut std::io::stdin().lock(), &mut up);
         let _ = up.shutdown(std::net::Shutdown::Write);
     });
     let mut down = stream;
-    std::io::copy(&mut down, &mut std::io::stdout().lock())?;
-    Ok(())
+    pump(&mut down, &mut std::io::stdout().lock())
+}
+
+/// Copy `r` to `w` until EOF, passing every chunk on as soon as it is read. Not
+/// `std::io::copy`: on Linux it splices fd to fd, and the splice from the mux's AF_UNIX
+/// socket into the holder's stdout pipe never delivered the app-server's replies (the run
+/// hung at `initialize`).
+fn pump(r: &mut impl std::io::Read, w: &mut impl Write) -> std::io::Result<()> {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match r.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        w.write_all(&buf[..n])?;
+        w.flush()?;
+    }
 }
 
 fn spawn_mux(socket: &Path, argv: &[String]) -> std::io::Result<()> {
