@@ -46,6 +46,8 @@ pub struct HumanForm {
     pub sel: usize,
     pub subject: String,
     pub note: String,
+    /// The verdict `note` was written for: choosing another verdict starts a new note.
+    pub note_verdict: String,
     pub phase: HumanPhase,
     pub error: Option<String>,
 }
@@ -151,6 +153,7 @@ pub fn main_key(app: &mut App, ev: KeyEvent) {
                     sel: 0,
                     subject,
                     note: String::new(),
+                    note_verdict: String::new(),
                     phase: HumanPhase::Pick,
                     error: None,
                 }),
@@ -221,6 +224,10 @@ pub fn sub_key(app: &mut App, s: Sub, ev: KeyEvent) {
                         'n' => "failed",
                         _ => "withdrawn",
                     };
+                    if f.note_verdict != verdict {
+                        f.note.clear();
+                        f.note_verdict = verdict.into();
+                    }
                     f.phase = HumanPhase::Note {
                         verdict: verdict.into(),
                     };

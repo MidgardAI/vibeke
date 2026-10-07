@@ -994,7 +994,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "task",
-        "forget",
+        "review-forget",
         "task.review.forget",
         &[],
         "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",

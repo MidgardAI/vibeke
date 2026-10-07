@@ -1538,7 +1538,7 @@ pub fn draw_goto(app: &App, g: &mut Grid, filter: &str, sel: usize) -> (u16, u16
     let (x, y, w, rows) = list_frame(
         app,
         g,
-        "goto · @agent #task :tab ~workspace %preview ^machine !state · > commands · alt+enter split",
+        "goto · @agent #task :tab ~ws %preview ^machine !state · > commands · alt+enter split",
         filter,
     );
     let t = app.theme;

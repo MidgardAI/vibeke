@@ -62,6 +62,26 @@ pub struct Changed {
     pub head: Option<String>,
     pub committed: bool,
     pub files: BTreeSet<String>,
+    /// The subset of `files` with uncommitted state in the worktree (staged, unstaged or
+    /// untracked): the merge check cannot see those.
+    #[serde(default)]
+    pub dirty: BTreeSet<String>,
+}
+
+/// Paths with uncommitted state in `worktree` (staged, unstaged and untracked).
+pub fn dirty_files(worktree: &Path) -> Result<BTreeSet<String>> {
+    let mut files = BTreeSet::new();
+    let diff = gitx::run_bytes(
+        worktree,
+        &["diff", "--name-only", "--no-renames", "-z", "HEAD"],
+    )?;
+    files.extend(gitx::split_nul(&diff));
+    let untracked = gitx::run_bytes(
+        worktree,
+        &["ls-files", "-z", "--others", "--exclude-standard"],
+    )?;
+    files.extend(gitx::split_nul(&untracked));
+    Ok(files)
 }
 
 /// Every path `worktree` changes against `base` (merge-base): committed work, staged,
@@ -185,22 +205,38 @@ pub fn predict(repo: &Path, changes: &[Changed], claims: &[Claim]) -> Vec<Confli
                     paths,
                 }),
                 _ => {
-                    let uncommitted = !(a.committed && b.committed);
-                    out.push(Conflict {
-                        a: a.handle.clone(),
-                        b: b.handle.clone(),
-                        kind: ConflictKind::Overlap,
-                        severity: if uncommitted { Severity::Medium } else { Severity::Low },
-                        detail: if uncommitted {
-                            format!(
+                    // Per path: anything uncommitted on either side cannot be merge-checked.
+                    let both_committed = a.committed && b.committed;
+                    let (unchecked, clean): (Vec<String>, Vec<String>) =
+                        both.into_iter().partition(|f| {
+                            !both_committed || a.dirty.contains(f) || b.dirty.contains(f)
+                        });
+                    if !clean.is_empty() {
+                        out.push(Conflict {
+                            a: a.handle.clone(),
+                            b: b.handle.clone(),
+                            kind: ConflictKind::Overlap,
+                            severity: Severity::Low,
+                            detail: format!(
+                                "both change {} file(s); the commits merge cleanly",
+                                clean.len()
+                            ),
+                            paths: clean,
+                        });
+                    }
+                    if !unchecked.is_empty() {
+                        out.push(Conflict {
+                            a: a.handle.clone(),
+                            b: b.handle.clone(),
+                            kind: ConflictKind::Overlap,
+                            severity: Severity::Medium,
+                            detail: format!(
                                 "both change {} file(s); uncommitted work cannot be merge-checked yet",
-                                both.len()
-                            )
-                        } else {
-                            format!("both change {} file(s); the commits merge cleanly", both.len())
-                        },
-                        paths: both,
-                    });
+                                unchecked.len()
+                            ),
+                            paths: unchecked,
+                        });
+                    }
                 }
             }
         }
@@ -746,6 +782,7 @@ mod tests {
             head: gitx::rev_parse(wt, "HEAD").ok(),
             committed,
             files,
+            dirty: dirty_files(wt).unwrap(),
         }
     }
 

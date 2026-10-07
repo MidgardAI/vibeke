@@ -2,8 +2,9 @@
 //! they run inside tmux wrap sequences meant for the outer terminal as
 //! `ESC P tmux; <payload with every ESC doubled> ESC \`. With passthrough allowed the pane
 //! unwraps them and processes the payload as if the program had written it directly (kitty
-//! graphics, OSC 52, notifications…); otherwise the DCS reaches the engine unchanged, which
-//! ignores it.
+//! graphics, OSC 52, notifications…); otherwise the whole wrapper is swallowed (the VT parser
+//! would end the DCS at the first `ESC` and run the payload as if written directly, which is
+//! exactly what the setting forbids).
 //!
 //! Streaming: a wrapper split across writes is held until it completes. A payload larger
 //! than [`MAX_PAYLOAD`] is dropped.
@@ -23,9 +24,22 @@ pub struct Unwrap {
     esc: bool,
     /// The payload grew past [`MAX_PAYLOAD`]: the rest of the wrapper is skipped.
     overflow: bool,
+    /// Passthrough is not allowed: wrappers are swallowed whole, payload never buffered.
+    discard: bool,
 }
 
 impl Unwrap {
+    /// A filter that removes every tmux wrapper together with its payload. Nothing is ever
+    /// held back at a write boundary (the engine's output must not depend on how the stream
+    /// is cut, and the filter's state is not part of a snapshot), so only a wrapper whose
+    /// introducer arrives whole in one write is recognised.
+    pub fn discarding() -> Self {
+        Unwrap {
+            discard: true,
+            ..Default::default()
+        }
+    }
+
     /// Filter one write: what the engine should see.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len());
@@ -74,12 +88,13 @@ impl Unwrap {
                     if rest.len() >= INTRO.len() {
                         if rest.starts_with(INTRO) {
                             self.payload = Some(Vec::new());
+                            self.overflow = self.discard;
                             i += INTRO.len();
                         } else {
                             out.push(0x1b);
                             i += 1;
                         }
-                    } else if INTRO.starts_with(rest) {
+                    } else if !self.discard && INTRO.starts_with(rest) {
                         // Maybe the start of a wrapper: wait for the next write.
                         self.partial = rest.to_vec();
                         break;
@@ -100,7 +115,7 @@ impl Unwrap {
 }
 
 fn push(p: &mut Vec<u8>, b: u8, overflow: &mut bool) {
-    if p.len() >= MAX_PAYLOAD {
+    if *overflow || p.len() >= MAX_PAYLOAD {
         *overflow = true;
         return;
     }
@@ -141,6 +156,20 @@ mod tests {
         assert_eq!(u.feed(b"\x1bPt"), b"");
         assert!(!u.idle());
         assert_eq!(u.feed(b"x"), b"\x1bPtx");
+    }
+
+    #[test]
+    fn discarding_swallows_the_wrapper_and_its_payload() {
+        let mut u = Unwrap::discarding();
+        let wrapped = b"a\x1bPtmux;\x1b\x1b]2;t\x07\x1b\\b";
+        assert_eq!(u.feed(wrapped), b"ab");
+        // The payload may span writes; a bare ESC at a write boundary is never held.
+        assert_eq!(u.feed(b"x\x1bPtmux;\x1b\x1b]2;t"), b"x");
+        assert_eq!(u.feed(b"\x07\x1b"), b"");
+        assert_eq!(u.feed(b"\\y"), b"y");
+        assert_eq!(u.feed(b"\x1b"), b"\x1b");
+        assert!(u.idle());
+        assert_eq!(u.feed(b"\x1b[31mx"), b"\x1b[31mx");
     }
 
     #[test]
