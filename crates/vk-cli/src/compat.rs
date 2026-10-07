@@ -354,11 +354,7 @@ fn local(g: &Global, op: Local) -> i32 {
                     }
                 }
                 Some(src) => {
-                    let fetched = match source::fetch(
-                        &src,
-                        &source::base(),
-                        &dirs.checkouts.join(".fetch"),
-                    ) {
+                    let fetched = match source::fetch(&src, &source::base(), &dirs.fetch_dir()) {
                         Ok(f) => f,
                         Err(e) => return fail("fetch_failed", e, EXIT_API),
                     };
@@ -484,8 +480,7 @@ fn install_dry_run(g: &Global, src: &str, git_ref: Option<&str>) -> i32 {
     let mut dir = PathBuf::from(src);
     if !dir.exists() {
         match source::parse(src, git_ref) {
-            Ok(Some(s)) => match source::fetch(&s, &source::base(), &dirs.checkouts.join(".fetch"))
-            {
+            Ok(Some(s)) => match source::fetch(&s, &source::base(), &dirs.fetch_dir()) {
                 Ok(f) => {
                     origin.kind = "git".into();
                     origin.path = PathBuf::from(&f.url);

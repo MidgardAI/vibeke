@@ -163,8 +163,7 @@ fn resolve(
         return Ok((dir, None));
     }
     match source::parse(src, git_ref) {
-        Ok(Some(gs)) => match source::fetch(&gs, &source::base(), &dirs().checkouts.join(".fetch"))
-        {
+        Ok(Some(gs)) => match source::fetch(&gs, &source::base(), &dirs().fetch_dir()) {
             Ok(f) => Ok((f.plugin_dir.clone(), Some((f, gs)))),
             Err(e) => Err(fail("fetch_failed", e, EXIT_API)),
         },

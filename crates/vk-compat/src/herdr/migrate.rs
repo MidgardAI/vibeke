@@ -399,7 +399,7 @@ fn herdr_owned(p: &Path) -> bool {
 }
 
 /// `path` with its longest existing ancestor canonicalized and the missing rest appended.
-fn canonical_base(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn canonical_base(path: &Path) -> io::Result<PathBuf> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {

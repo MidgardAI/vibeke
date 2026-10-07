@@ -23,7 +23,8 @@ use super::caps::Capabilities;
 use super::manifest::{Manifest, ManifestError};
 use crate::herdr::registry::{
     Origin, PluginDirs, Registry, RegistryError, copy_tree, escaping_symlink, new_grant_id, nonce,
-    now_ms, remove_checkout, set_tree_writable, sha256_hex, tree_digest, tree_digest_cached,
+    now_ms, overlaps_checkouts, remove_checkout, set_tree_writable, sha256_hex, tree_digest,
+    tree_digest_cached,
 };
 
 impl From<ManifestError> for RegistryError {
@@ -164,7 +165,7 @@ impl NativeStaged {
 pub fn stage(dirs: &PluginDirs, src: &Path, origin: Origin) -> Result<NativeStaged, RegistryError> {
     let root = plugin_root(src)?;
     let (m, digest) = read_manifest(&root)?;
-    if root.starts_with(&dirs.checkouts) {
+    if overlaps_checkouts(dirs, &root, Some(&m.id)) {
         return Err(RegistryError::Conflict(
             "source and managed checkout overlap".into(),
         ));

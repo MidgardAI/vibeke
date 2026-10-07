@@ -76,7 +76,7 @@ async fn resolve_source(
     let gs = source::parse(src, git_ref)
         .map_err(invalid)?
         .ok_or_else(|| invalid(format!("{src}: not a directory, manifest or owner/repo")))?;
-    let parent = dirs(server).checkouts.join(".fetch");
+    let parent = dirs(server).fetch_dir();
     let gs2 = gs.clone();
     let fetched =
         tokio::task::spawn_blocking(move || source::fetch(&gs2, &source::base(), &parent))

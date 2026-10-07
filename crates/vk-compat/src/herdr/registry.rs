@@ -59,6 +59,26 @@ impl PluginDirs {
     pub fn state_dir(&self, id: &str) -> PathBuf {
         self.state.join(id)
     }
+    /// Where `owner/repo` sources are fetched before staging: `<checkouts>/.fetch/`.
+    pub fn fetch_dir(&self) -> PathBuf {
+        self.checkouts.join(".fetch")
+    }
+}
+
+/// Whether the canonical plugin `root` overlaps the managed checkouts: it lies inside them or
+/// contains the checkout dir of `id`. Vibeke's own fetch area ([`PluginDirs::fetch_dir`]) is
+/// the one place inside the checkouts a source may come from. Both sides are compared
+/// canonically: `root` is canonical, and the checkouts path may run through a symlink (`/var`
+/// -> `/private/var` on macOS), which used to hide the overlap there and let fetched sources
+/// through by accident.
+pub(crate) fn overlaps_checkouts(dirs: &PluginDirs, root: &Path, id: Option<&str>) -> bool {
+    let checkouts =
+        super::migrate::canonical_base(&dirs.checkouts).unwrap_or_else(|_| dirs.checkouts.clone());
+    let fetch = checkouts.join(".fetch");
+    if root.starts_with(&fetch) && root != fetch {
+        return false;
+    }
+    root.starts_with(&checkouts) || id.is_some_and(|id| checkouts.join(id).starts_with(root))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -714,8 +734,7 @@ impl Staged {
 /// symlink pointing outside it. No registry change, no lock needed.
 pub fn stage(dirs: &PluginDirs, root: &Path, origin: Origin) -> Result<Staged, RegistryError> {
     let (m, _) = read_manifest(root)?;
-    let id_dir = dirs.checkouts.join(&m.id);
-    if id_dir.starts_with(root) || root.starts_with(&id_dir) || root.starts_with(&dirs.checkouts) {
+    if overlaps_checkouts(dirs, root, Some(&m.id)) {
         return Err(RegistryError::Conflict(
             "source and managed checkout overlap".into(),
         ));
