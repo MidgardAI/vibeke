@@ -375,10 +375,10 @@ export const comparisonRows: ComparisonRow[] = [
         "state": "yes"
       },
       "herdr": {
-        "label": "Planned",
-        "detail": "Planned.",
+        "label": "No",
+        "detail": "No transfer between hosts.",
         "source": "https://herdr.dev/blog/connecting-the-machines/",
-        "state": "partial"
+        "state": "no"
       },
       "cmux": {
         "label": "No",
@@ -1463,10 +1463,10 @@ export const comparisonRows: ComparisonRow[] = [
         "state": "text"
       },
       "herdr": {
-        "label": "Planned",
-        "detail": "Cloud relay planned. SSH available now.",
+        "label": "No",
+        "detail": "No cloud relay. Remote access uses SSH.",
         "source": "https://herdr.dev/blog/connecting-the-machines/",
-        "state": "partial"
+        "state": "no"
       },
       "cmux": {
         "label": "Mobile Connect",
