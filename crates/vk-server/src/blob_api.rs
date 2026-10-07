@@ -36,7 +36,7 @@ pub fn mime_for(path: &Path) -> &'static str {
         Some("html" | "htm") => "text/html",
         Some("txt" | "log" | "md") => "text/plain",
         Some("ans") => "text/x-ansi",
-        Some("json") => "application/json",
+        Some("json" | "jsondata") => "application/json",
         Some("pdf") => "application/pdf",
         Some("tar") => "application/x-tar",
         _ => "application/octet-stream",
@@ -143,9 +143,7 @@ pub fn find(server: &Server, ctx: &Ctx, hash: &str) -> Option<Found> {
     let mut hits: Vec<(PathBuf, Option<String>, i64)> = vec![];
     // Session blob store.
     let dir = server.paths.blobs().join(&hash[..2]);
-    let meta: Option<Value> = std::fs::read(dir.join(format!("{hash}.json")))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok());
+    let meta: Option<Value> = vk_store::blobs::read_meta(&dir, hash);
     let meta_str = |k: &str| {
         meta.as_ref()
             .and_then(|m| m.get(k))

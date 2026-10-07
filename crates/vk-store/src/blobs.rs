@@ -87,6 +87,39 @@ fn ext_ok(ext: &str) -> bool {
     !ext.is_empty() && ext.len() <= 16 && ext.bytes().all(|c| c.is_ascii_alphanumeric())
 }
 
+/// Extension JSON *data* is stored under: `<hash>.json` is the metadata sidecar, so a JSON
+/// payload or upload must not take that name (it would hide the blob from discovery, stats
+/// and collection, and be read back as its own metadata).
+pub const JSON_DATA_EXT: &str = "jsondata";
+
+/// The extension a blob is stored under.
+fn stored_ext(ext: &str) -> &str {
+    if !ext_ok(ext) {
+        "bin"
+    } else if ext.eq_ignore_ascii_case("json") {
+        JSON_DATA_EXT
+    } else {
+        ext
+    }
+}
+
+/// Is `<hash>.json` in `dir` a data file (one written before [`JSON_DATA_EXT`]: its content
+/// hashes to `hash`) rather than the metadata sidecar?
+fn legacy_json_data(dir: &Path, hash: &str) -> bool {
+    crypt::read_file(&dir.join(format!("{hash}.json")))
+        .is_ok_and(|b| blake3::hash(&b).to_hex().as_str() == hash)
+}
+
+/// The metadata sidecar of `hash` in `dir`, never a JSON data file of the same name.
+pub fn read_meta(dir: &Path, hash: &str) -> Option<Value> {
+    if legacy_json_data(dir, hash) {
+        return None;
+    }
+    std::fs::read(dir.join(format!("{hash}.json")))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
     md.modified()
         .ok()
@@ -159,8 +192,12 @@ impl BlobStore {
         mode: MetaMode,
     ) -> std::io::Result<()> {
         let mpath = dir.join(format!("{hash}.json"));
-        if mode == MetaMode::IfAbsent && mpath.exists() {
+        if mode == MetaMode::IfAbsent && mpath.exists() && !legacy_json_data(dir, hash) {
             return Ok(());
+        }
+        if legacy_json_data(dir, hash) {
+            // A JSON data file from before `JSON_DATA_EXT`: move it out of the sidecar's way.
+            let _ = std::fs::rename(&mpath, dir.join(format!("{hash}.{JSON_DATA_EXT}")));
         }
         if meta.is_null() {
             return Ok(());
@@ -179,7 +216,7 @@ impl BlobStore {
         mode: MetaMode,
     ) -> std::io::Result<(String, PathBuf)> {
         self.writable()?;
-        let ext = if ext_ok(ext) { ext } else { "bin" };
+        let ext = stored_ext(ext);
         let hash = blake3::hash(data).to_hex().to_string();
         let dir = self.ensure_dir(&hash)?;
         let path = dir.join(format!("{hash}.{ext}"));
@@ -201,7 +238,7 @@ impl BlobStore {
         mode: MetaMode,
     ) -> std::io::Result<(String, PathBuf)> {
         self.writable()?;
-        let ext = if ext_ok(ext) { ext } else { "bin" };
+        let ext = stored_ext(ext);
         let hash = hash_file(src)?;
         let dir = self.ensure_dir(&hash)?;
         let path = dir.join(format!("{hash}.{ext}"));
@@ -243,7 +280,7 @@ impl BlobStore {
             let Some(ext) = name.strip_prefix(&format!("{hash}.")) else {
                 continue;
             };
-            if ext == "json" {
+            if ext == "json" && !legacy_json_data(&dir, hash) {
                 continue;
             }
             if let Ok(md) = e.metadata() {
@@ -258,9 +295,7 @@ impl BlobStore {
             return None;
         }
         exts.sort();
-        let meta = std::fs::read(dir.join(format!("{hash}.json")))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok());
+        let meta = read_meta(&dir, hash);
         Some(BlobInfo {
             hash: hash.to_string(),
             size,
@@ -392,6 +427,61 @@ mod tests {
         assert_eq!(s.list().len(), 1);
         let mode = std::fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// Final review P2: a JSON payload or upload never takes the metadata sidecar's name; it is
+    /// discovered, counted, read and collected like any blob, and its sidecar stays metadata.
+    /// A JSON data file left by an older version under `<hash>.json` is recognized as data.
+    #[test]
+    fn json_data_does_not_collide_with_the_metadata_sidecar() {
+        let (d, s) = store();
+        let data = br#"{"pane": "p-evil", "source": "screenshot"}"#;
+        let meta = json!({"source": "payload", "pane": "p1"});
+        let (h, p) = s.put(data, "json", &meta, MetaMode::IfAbsent).unwrap();
+        assert!(p.to_string_lossy().ends_with(".jsondata"), "{p:?}");
+        let info = s.find(&h).expect("discovered");
+        assert_eq!(info.exts, [JSON_DATA_EXT]);
+        assert_eq!(info.meta.as_ref().unwrap()["pane"], "p1");
+        assert_eq!(info.source(), "payload");
+        assert_eq!(s.read(&h, JSON_DATA_EXT).unwrap(), data);
+        assert_eq!(s.stats().count, 1);
+        // put_file (an uploaded `data.json`) too.
+        let src = d.path().join("data.json");
+        std::fs::write(&src, br#"{"x": 1}"#).unwrap();
+        let (h2, p2) = s
+            .put_file(
+                &src,
+                "json",
+                &json!({"source": "inbox"}),
+                MetaMode::IfAbsent,
+            )
+            .unwrap();
+        assert!(p2.to_string_lossy().ends_with(".jsondata"));
+        assert_eq!(s.find(&h2).unwrap().source(), "inbox");
+        let r = s.gc(&HashSet::new(), crate::now_ms() + 1_000_000, 1, false);
+        assert_eq!(r.removed, 2, "{r:?}");
+        assert!(s.find(&h).is_none() && s.find(&h2).is_none());
+        // Legacy: JSON data stored as `<hash>.json` with no sidecar.
+        let legacy = br#"{"legacy": true}"#;
+        let lh = blake3::hash(legacy).to_hex().to_string();
+        let dir = s.ensure_dir(&lh).unwrap();
+        std::fs::write(dir.join(format!("{lh}.json")), legacy).unwrap();
+        let info = s.find(&lh).expect("legacy JSON data is discovered");
+        assert_eq!(info.exts, ["json"]);
+        assert!(info.meta.is_none(), "data is not read as metadata");
+        assert!(read_meta(&dir, &lh).is_none());
+        // Writing its metadata moves the data out of the sidecar's way.
+        s.put(
+            legacy,
+            "json",
+            &json!({"source": "payload"}),
+            MetaMode::IfAbsent,
+        )
+        .unwrap();
+        let info = s.find(&lh).unwrap();
+        assert_eq!(info.exts, [JSON_DATA_EXT]);
+        assert_eq!(info.source(), "payload");
+        assert_eq!(s.read(&lh, JSON_DATA_EXT).unwrap(), legacy);
     }
 
     #[test]
