@@ -163,6 +163,26 @@ pub fn pick_image_mime(listing: &str) -> Option<String> {
     types.first().map(|s| s.to_string())
 }
 
+/// Files copied in Finder (macOS). Such a clipboard also carries the file's icon as PNG, so this
+/// must be checked before [`os_clipboard_image`] or a copied screenshot pastes as its icon.
+pub fn os_clipboard_files() -> Vec<std::path::PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    const JXA: &str = r#"ObjC.import("AppKit");
+var u = $.NSPasteboard.generalPasteboard.readObjectsForClassesOptions($([$.NSURL]), $({NSPasteboardURLReadingFileURLsOnlyKey: true}));
+var r = []; if (u) for (var i = 0; i < u.count; i++) r.push(u.objectAtIndex(i).path.js);
+r.join("\n")"#;
+    let Ok(Some(out)) = run_output("osascript", &["-l", "JavaScript", "-e", JXA]) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect()
+}
+
 /// Read an image from the local clipboard, if any: `(mime, bytes)`.
 pub fn os_clipboard_image() -> Result<Option<(String, Vec<u8>)>> {
     if cfg!(target_os = "macos") {

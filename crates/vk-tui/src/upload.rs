@@ -357,6 +357,32 @@ pub fn image_paste(app: &mut App) {
     let Some(pane) = app.focused_pane() else {
         return;
     };
+    let copied = crate::clipboard::os_clipboard_files();
+    if !copied.is_empty() {
+        let files: Vec<Item> = copied
+            .iter()
+            .filter_map(|f| {
+                let m = std::fs::metadata(f).ok().filter(|m| m.is_file())?;
+                Some(Item {
+                    name: f.file_name()?.to_string_lossy().into_owned(),
+                    size: m.len(),
+                    src: Source::Path(f.clone()),
+                })
+            })
+            .collect();
+        // Folders or unreadable files: never fall through to the icon image.
+        if files.len() != copied.len() {
+            app.toast("ctrl+v uploads copied files only — drag folders into the pane");
+            return;
+        }
+        if files.iter().map(|i| i.size).sum::<u64>() > max_bytes(app) {
+            app.toast("copied files too large");
+            return;
+        }
+        let machine = app.cur;
+        begin(app, machine, &pane, String::new(), None, files);
+        return;
+    }
     match crate::clipboard::os_clipboard_image() {
         Ok(Some((mime, data))) => {
             if data.len() as u64 > max_bytes(app) {
@@ -463,8 +489,13 @@ pub fn on_event(app: &mut App, ev: UploadEvent) {
             }
             let text = match &t.parsed {
                 Some(p) => paste::rewrite(&t.original, p, &paths),
-                // Image paste: TUI harnesses (Claude, Codex) attach image paths pasted as text.
-                None => paths.first().map(|p| shell_escape(p)).unwrap_or_default(),
+                // Clipboard image or copied files: TUI harnesses (Claude, Codex) attach image
+                // paths pasted as text.
+                None => paths
+                    .iter()
+                    .map(|p| shell_escape(p))
+                    .collect::<Vec<_>>()
+                    .join(" "),
             };
             if !pane_exists(app, id.machine, &id.pane) {
                 app.toast("upload finished but its pane is gone — not pasted");
@@ -815,6 +846,38 @@ mod tests {
 
     fn key(c: Key) -> KeyEvent {
         KeyEvent::new(c, vk_proto::input::Mods::empty())
+    }
+
+    #[test]
+    fn copied_files_paste_every_uploaded_path() {
+        let (mut app, mut rxs) = test_app(1);
+        let item = |name: &str| Item {
+            name: name.into(),
+            size: 1,
+            src: Source::Bytes(Arc::new(vec![0])),
+        };
+        let id = begin(
+            &mut app,
+            0,
+            "p1",
+            String::new(),
+            None,
+            vec![item("a b.png"), item("c.png")],
+        );
+        for (index, path) in ["/in/a b.png", "/in/c.png"].into_iter().enumerate() {
+            on_event(
+                &mut app,
+                UploadEvent::FileDone {
+                    id: id.clone(),
+                    index,
+                    path: path.into(),
+                },
+            );
+        }
+        assert_eq!(
+            drops(&mut rxs[0]),
+            vec![("p1".to_string(), r"/in/a\ b.png /in/c.png".to_string())]
+        );
     }
 
     #[test]

@@ -3333,4 +3333,18 @@ mod isolation_tests {
         app.on_paste(f.to_string_lossy().into_owned());
         assert!(matches!(app.mode, Mode::Normal));
     }
+
+    #[test]
+    fn remote_paste_of_escaped_screenshot_path_translates() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "Screenshot 2026-10-07 at 07.31.34.png";
+        std::fs::write(dir.path().join(name), "x").unwrap();
+        let (mut app, _rxs) = test_app(1);
+        app.machines[0].local = false;
+        app.machines[0].model.panes.push(pane("p1", json!({})));
+        app.machines[0].focus.pane = Some("p1".into());
+        let escaped = dir.path().join(name).to_string_lossy().replace(' ', "\\ ");
+        app.on_paste(format!("{escaped} "));
+        assert!(matches!(app.mode, Mode::Popup(Popup::PasteAsk { .. })));
+    }
 }
