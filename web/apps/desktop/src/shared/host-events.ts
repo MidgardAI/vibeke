@@ -7,7 +7,7 @@ import type { AppEvent } from '@vibeke/core';
 
 /** Event type prefixes (and exact types) the UI listens to. */
 const PREFIXES = ['agent.', 'interaction.', 'task.', 'preview.', 'tab.', 'pane.'] as const;
-const EXACT = new Set(['notification.created']);
+const EXACT = new Set(['notification.created', 'handoff.job', 'handoff.peers_changed']);
 
 /** Payload of `vk:host-event`. */
 export interface HostEventPayload {

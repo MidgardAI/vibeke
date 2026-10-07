@@ -498,6 +498,40 @@ export interface PeerInfo {
   expired: boolean;
 }
 
+/** Where an outgoing handoff stands (`handoff.send`, spec 16 §15.2). */
+export type HandoffJobState = 'queued' | 'exporting' | 'sending' | 'delivered' | 'failed' | 'cancelled';
+
+/** An outgoing handoff job, kept by the server and run by this host's gateway (`handoff.job` events carry it). */
+export interface HandoffJob {
+  id: string;
+  pane: string;
+  /** Peer id (see `handoff.peers`) and its name when the job was created. */
+  peer: string;
+  peer_name: string;
+  interrupt: boolean;
+  state: HandoffJobState;
+  /** Bytes the destination has, of `total` (0 until the export is done). */
+  sent: number;
+  total: number;
+  /** The destination's incoming handoff id and its state there (`pending`, `imported`, …). */
+  incoming?: string;
+  incoming_state?: string;
+  error?: string;
+  /** Unix seconds. */
+  created_at: number;
+  updated_at: number;
+}
+
+/** A host this one can hand work to (`handoff.peers`; no keys or addresses). */
+export interface HandoffPeer {
+  id: string;
+  name: string;
+  owner: PeerOwner;
+  added_at?: number;
+  expires_at: number | null;
+  expired: boolean;
+}
+
 /** A pending invitation on this host (`share.list`). */
 export interface InvitationInfo {
   /** Pairing id; `share.revoke {id}` cancels it. */
@@ -788,6 +822,14 @@ export interface AppApi {
   'share.list': { params: Record<string, never>; result: { invitations: InvitationInfo[]; devices: InvitedDeviceInfo[] } };
   /** Cancel a pending invitation (pairing id) or revoke an invited device (device id). */
   'share.revoke': { params: { id: string }; result: { cancelled: 'invitation' | 'device' } };
+  /** Spec 16 §15.2: hand a pane's work to a peer; the host's gateway exports and delivers it (the app may close). */
+  'handoff.send': { params: { pane: string; peer: string; interrupt?: boolean }; result: { job: HandoffJob } };
+  /** Outgoing handoffs, newest first (finished ones for 7 days). */
+  'handoff.jobs': { params: Record<string, never>; result: { jobs: HandoffJob[] } };
+  /** Stop a queued or running job; the destination drops what it received. */
+  'handoff.cancel': { params: { id: string }; result: { job: HandoffJob } };
+  /** The hosts `handoff.send` can deliver to, as this host's gateway last published them. */
+  'handoff.peers': { params: Record<string, never>; result: { peers: HandoffPeer[]; updated_at: number | null } };
 }
 
 export type AppMethod = keyof AppApi;
@@ -831,6 +873,8 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.accept',
   'handoff.decline',
   'handoff.resume',
+  'handoff.send',
+  'handoff.cancel',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------

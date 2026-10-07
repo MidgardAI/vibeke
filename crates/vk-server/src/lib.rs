@@ -22,6 +22,7 @@ pub mod fs_api;
 pub mod gateway_api;
 pub mod git_api;
 pub mod handoff;
+pub mod handoff_out;
 pub mod hardening;
 pub mod inbox;
 pub mod items;

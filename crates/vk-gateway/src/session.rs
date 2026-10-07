@@ -241,9 +241,12 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
             }
             Err(_) => break,
         };
-        let Ok(req) = serde_json::from_slice::<Value>(&plain) else {
+        // A request may carry a binary payload after a NUL byte (`handoff.write`, spec 16 §15.2).
+        let (body, payload) = crate::handoff_peer::split_payload(&plain);
+        let Ok(req) = serde_json::from_slice::<Value>(body) else {
             break;
         };
+        let payload = payload.map(|b| Arc::new(b.to_vec()));
         let method = req
             .get("method")
             .and_then(|m| m.as_str())
@@ -308,6 +311,18 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
             _ => {}
         }
 
+        if payload.is_some() && !crate::handoff_peer::takes_payload(&method) {
+            respond(
+                &out,
+                id,
+                Err(ApiError::invalid(format!(
+                    "{method} takes no binary payload"
+                ))),
+            )
+            .await;
+            continue;
+        }
+
         let Ok(permit) = inflight.clone().try_acquire_owned() else {
             respond(
                 &out,
@@ -319,7 +334,9 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
         };
         let (gw, out) = (gw.clone(), out.clone());
         tasks.spawn(async move {
-            let r = handle(&gw, &device, &method, params).await;
+            let r = crate::handoff_peer::PAYLOAD
+                .scope(payload, handle(&gw, &device, &method, params))
+                .await;
             respond(&out, id, r).await;
             drop(permit);
         });

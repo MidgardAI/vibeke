@@ -1968,6 +1968,37 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         &[],
         "recompute the audit log's hash chain (also part of `vibeke doctor`)",
     ),
+    // Gateway-to-gateway handoff (spec 16 §15.2): outgoing jobs the host's gateway runs.
+    // (Receiving — `handoff list|accept|decline` over the server's incoming records — is added
+    // with the incoming store.)
+    (
+        "handoff",
+        "send",
+        "handoff.send",
+        &["peer"],
+        "<peer> [--pane p] [--interrupt] — hand this pane's work (default: the pane you run it in) to another host; the gateway exports and delivers it. Run outside panes or elevated (`vibeke auth elevate`).",
+    ),
+    (
+        "handoff",
+        "jobs",
+        "handoff.jobs",
+        &[],
+        "outgoing handoffs: state, progress, the destination's answer",
+    ),
+    (
+        "handoff",
+        "cancel",
+        "handoff.cancel",
+        &["id"],
+        "<job> — stop an outgoing handoff; the destination drops what it received",
+    ),
+    (
+        "handoff",
+        "peers",
+        "handoff.peers",
+        &[],
+        "hosts this one can hand work to (add one with `vibeke gateway peer add <link>`)",
+    ),
     // Lane 3E (09 §9.1): state encryption.
     (
         "security",
@@ -2145,6 +2176,15 @@ fn adjust(method: &str, p: &mut Value) {
         o.insert("cwd".into(), json!(d));
     }
     match method {
+        "handoff.send" if !o.contains_key("pane") => {
+            // Default: the pane this command runs in.
+            if let Some(p) = ["VIBEKE_PANE_ULID", "VIBEKE_PANE_ID", "VIBEKE_PANE"]
+                .iter()
+                .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+            {
+                o.insert("pane".into(), json!(p));
+            }
+        }
         "pane.move" => {
             let mut to = Map::new();
             for (flag, key) in [
@@ -2500,6 +2540,47 @@ pub fn pretty(method: &str, v: &Value) -> String {
                     p["auto_title"].as_str().unwrap_or(""),
                     p["cwd"].as_str().unwrap_or(""),
                     agent
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "handoff.jobs" => rows("jobs")
+            .iter()
+            .map(|j| {
+                let progress = match (j["sent"].as_u64(), j["total"].as_u64()) {
+                    (Some(s), Some(t)) if t > 0 => format!("{}%", s * 100 / t),
+                    _ => String::new(),
+                };
+                let detail = j["error"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| j["incoming_state"].as_str().map(|s| format!("there: {s}")))
+                    .unwrap_or_default();
+                format!(
+                    "{:<26} {:<10} {:<16} {:<10} {:>4}  {}",
+                    j["id"].as_str().unwrap_or(""),
+                    j["pane"].as_str().unwrap_or(""),
+                    j["peer_name"].as_str().unwrap_or(""),
+                    j["state"].as_str().unwrap_or(""),
+                    progress,
+                    detail
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "handoff.peers" => rows("peers")
+            .iter()
+            .map(|p| {
+                format!(
+                    "{:<26} {:<20} {:<9} {}",
+                    p["id"].as_str().unwrap_or(""),
+                    p["name"].as_str().unwrap_or(""),
+                    p["owner"].as_str().unwrap_or(""),
+                    if p["expired"].as_bool() == Some(true) {
+                        "expired"
+                    } else {
+                        ""
+                    }
                 )
             })
             .collect::<Vec<_>>()
