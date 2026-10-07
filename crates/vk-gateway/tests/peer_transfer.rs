@@ -44,7 +44,7 @@ async fn start_relay() -> SocketAddr {
 }
 
 /// A fake Vibeke server: `client.hello` and `events.subscribe` answered, everything else by
-/// `handle` (`{}` by default).
+/// `handle` (`{}` by default). A `{"error": {kind, message}}` answer is sent as an RPC error.
 fn fake_server(path: PathBuf, handle: Handler) {
     let listener = UnixListener::bind(&path).unwrap();
     tokio::spawn(async move {
@@ -62,8 +62,13 @@ fn fake_server(path: PathBuf, handle: Handler) {
                         "events.subscribe" => json!({"subscription_id": "s", "at": {"seq": 1}}),
                         m => handle(m, &req["params"]),
                     };
-                    let line = json!({"jsonrpc": "2.0", "id": req["id"], "result": result})
-                        .to_string()
+                    let line = match result.get("error") {
+                        Some(e) => json!({"jsonrpc": "2.0", "id": req["id"], "error": {
+                            "code": -32009, "message": e["message"],
+                            "data": {"kind": e["kind"], "details": null, "retryable": false}}}),
+                        None => json!({"jsonrpc": "2.0", "id": req["id"], "result": result}),
+                    }
+                    .to_string()
                         + "\n";
                     if w.write_all(line.as_bytes()).await.is_err() {
                         return;
@@ -158,6 +163,12 @@ async fn pair(a: (&Arc<Gateway>, &Device), b: (&Arc<Gateway>, &Device), kind: &s
     rec
 }
 
+/// What the real server's `handoff.incoming.add` answers: `{incoming: <record>}`.
+fn record(id: &str, state: &str) -> Value {
+    json!({"incoming": {"id": id, "state": state, "result": null, "size": 1,
+                        "from": {"host": "alpha", "owner": "self"}}})
+}
+
 /// A deterministic bundle-sized blob and its sha256.
 fn blob(dir: &Path, name: &str, len: usize, salt: u8) -> (Vec<u8>, String) {
     let data: Vec<u8> = (0..len)
@@ -170,8 +181,13 @@ fn blob(dir: &Path, name: &str, len: usize, salt: u8) -> (Vec<u8>, String) {
 }
 
 fn manifest(repo: &str) -> Value {
+    manifest_of(repo, None)
+}
+
+fn manifest_of(repo: &str, job: Option<&str>) -> Value {
     serde_json::to_value(vk_handoff::Manifest {
         v: 1,
+        source_job: job.map(str::to_string),
         source_host: "alpha".into(),
         repo_name: repo.into(),
         branch: Some("feature".into()),
@@ -192,9 +208,19 @@ async fn offer_write_resume_commit() {
     let rec_b = added.clone();
     let on_b_server: Handler = Arc::new(move |m: &str, p: &Value| match m {
         "handoff.incoming.add" => {
+            match p["manifest"]["repo_name"].as_str() {
+                // The receiving server's quota.
+                Some("full") => {
+                    return json!({"error": {"kind": "rate_limited",
+                                            "message": "5 handoffs from alpha are waiting"}});
+                }
+                // Slow enough for the request to be dropped before it answers.
+                Some("slow") => std::thread::sleep(Duration::from_millis(1500)),
+                _ => {}
+            }
             let mut v = rec_b.lock().unwrap();
             v.push(p.clone());
-            json!({"incoming": format!("in-{}", v.len()), "state": "pending"})
+            record(&format!("in-{}", v.len()), "pending")
         }
         _ => json!({}),
     });
@@ -315,7 +341,10 @@ async fn offer_write_resume_commit() {
         .call("handoff.commit", json!({"id": id}))
         .await
         .unwrap();
-    assert_eq!(r, json!({"incoming": "in-1", "state": "pending"}));
+    assert_eq!(
+        r,
+        json!({"incoming": "in-1", "state": "pending", "result": null})
+    );
     let calls = added.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
     let call = &calls[0];
@@ -395,7 +424,144 @@ async fn offer_write_resume_commit() {
         .await
         .unwrap_err();
     assert_eq!(e.kind, "not_found");
-    conn.call("handoff.offer", third).await.unwrap();
+    let r = conn.call("handoff.offer", third).await.unwrap();
+    ids.push(r["id"].as_str().unwrap().to_string());
+    for id in &ids[1..] {
+        conn.call("handoff.discard", json!({"id": id}))
+            .await
+            .unwrap();
+    }
+    let e = conn
+        .call("handoff.status", json!({"id": ids[1]}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, "not_found");
+
+    // A commit whose request is dropped (its connection closed while the server works) still
+    // finishes; the upload is never left busy.
+    let (slow, sha) = blob(tmp.path(), "slow", 3000, 7);
+    let r = conn
+        .call(
+            "handoff.offer",
+            json!({"manifest": manifest("slow"), "size": 3000, "sha256": sha}),
+        )
+        .await
+        .unwrap();
+    let sid = r["id"].as_str().unwrap().to_string();
+    conn.call_with_payload("handoff.write", json!({"id": sid, "offset": 0}), &slow)
+        .await
+        .unwrap();
+    // As B's connection would when it closes: the request future is dropped.
+    let peer_dev = b.devices().into_iter().find(|d| d.kind == "peer").unwrap();
+    let params = json!({"id": sid});
+    let gave_up = tokio::time::timeout(
+        Duration::from_millis(300),
+        vk_gateway::handoff_peer::dispatch(&b, &peer_dev, "handoff.commit", &params),
+    )
+    .await;
+    assert!(gave_up.is_err(), "the commit answered too early");
+    let mut st = Value::Null;
+    for _ in 0..200 {
+        st = conn
+            .call("handoff.status", json!({"id": sid}))
+            .await
+            .unwrap();
+        if st["state"] == "committed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(st["state"], "committed", "{st}");
+    let n = added.lock().unwrap().len();
+    assert_eq!(st["result"]["incoming"], format!("in-{n}"));
+
+    // The same job exported again after a restart (another checksum) is the same handoff:
+    // an unfinished upload is replaced, a committed one answers from the record.
+    let (j1, sha1) = blob(tmp.path(), "j1", 2000, 8);
+    let r = conn
+        .call(
+            "handoff.offer",
+            json!({"manifest": manifest_of("app", Some("job-7")), "size": 2000, "sha256": sha1}),
+        )
+        .await
+        .unwrap();
+    let first = r["id"].as_str().unwrap().to_string();
+    conn.call_with_payload(
+        "handoff.write",
+        json!({"id": first, "offset": 0}),
+        &j1[..1000],
+    )
+    .await
+    .unwrap();
+    let (j2, sha2) = blob(tmp.path(), "j2", 2000, 9);
+    let r = conn
+        .call(
+            "handoff.offer",
+            json!({"manifest": manifest_of("app", Some("job-7")), "size": 2000, "sha256": sha2}),
+        )
+        .await
+        .unwrap();
+    let second = r["id"].as_str().unwrap().to_string();
+    assert_ne!(second, first);
+    assert_eq!(r["received"], 0);
+    let e = conn
+        .call("handoff.status", json!({"id": first}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, "not_found", "the earlier export was replaced");
+    conn.call_with_payload("handoff.write", json!({"id": second, "offset": 0}), &j2)
+        .await
+        .unwrap();
+    let done = conn
+        .call("handoff.commit", json!({"id": second}))
+        .await
+        .unwrap();
+    let delivered = added.lock().unwrap().len();
+    assert_eq!(done["incoming"], format!("in-{delivered}"));
+    let (_, sha3) = blob(tmp.path(), "j3", 2000, 10);
+    let r = conn
+        .call(
+            "handoff.offer",
+            json!({"manifest": manifest_of("app", Some("job-7")), "size": 2000, "sha256": sha3}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["committed"], true);
+    assert_eq!(r["id"], second.as_str());
+    assert_eq!(r["result"], done);
+    assert_eq!(
+        added.lock().unwrap().len(),
+        delivered,
+        "not delivered twice"
+    );
+
+    // The receiving server's quota fails the commit in words the sender can show.
+    let (full, sha) = blob(tmp.path(), "full", 500, 11);
+    let r = conn
+        .call(
+            "handoff.offer",
+            json!({"manifest": manifest("full"), "size": 500, "sha256": sha}),
+        )
+        .await
+        .unwrap();
+    let fid = r["id"].as_str().unwrap().to_string();
+    conn.call_with_payload("handoff.write", json!({"id": fid, "offset": 0}), &full)
+        .await
+        .unwrap();
+    let e = conn
+        .call("handoff.commit", json!({"id": fid}))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, "rate_limited", "{e:?}");
+    assert!(
+        e.message
+            .contains("the recipient has too many waiting handoffs"),
+        "{e:?}"
+    );
+    // Not busy afterwards: it can be discarded.
+    conn.call("handoff.discard", json!({"id": fid}))
+        .await
+        .unwrap();
     conn.close().await;
 
     // A teammate's host delivers as a teammate (the receiver decides; nothing starts by itself).
@@ -417,7 +583,7 @@ async fn offer_write_resume_commit() {
         .call("handoff.commit", json!({"id": tid}))
         .await
         .unwrap();
-    assert_eq!(r["incoming"], "in-2");
+    assert_eq!(r["incoming"], format!("in-{}", added.lock().unwrap().len()));
     // Teammates may not use the owner's job API.
     for m in [
         "handoff.send",
@@ -506,7 +672,7 @@ async fn a_server_job_is_exported_sent_and_delivered() {
             assert_eq!(sha, p["sha256"].as_str().unwrap(), "delivered intact");
             let mut v = rec_b.lock().unwrap();
             v.push(json!({"params": p, "size": size}));
-            json!({"incoming": "in-job", "state": "imported"})
+            record("in-job", "imported")
         }
         _ => json!({}),
     });
@@ -568,6 +734,7 @@ async fn a_server_job_is_exported_sent_and_delivered() {
     assert_eq!(p["manifest"]["source_host"], "alpha");
     assert_eq!(p["manifest"]["branch"], "main");
     assert_eq!(p["manifest"]["cwd_rel"], "app");
+    assert_eq!(p["manifest"]["source_job"], "job1");
 
     // Neither side keeps a copy.
     let left = |state_dir: &Path| -> Vec<String> {

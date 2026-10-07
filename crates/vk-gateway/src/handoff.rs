@@ -181,6 +181,7 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         pane,
         p.get("interrupt").and_then(|v| v.as_bool()) == Some(true),
         p.get("full").and_then(|v| v.as_bool()) == Some(true),
+        None,
     )
     .await?;
     with_entries(|m| {
@@ -212,7 +213,8 @@ pub struct Exported {
 
 /// Export the work in `pane` at a turn boundary. `actor` names who asks (server audit);
 /// `auth`, when a device asks, is re-authorized before its agent is interrupted. Without a
-/// device (a server job, `handoff.send`) the server already authorized the request.
+/// device (a server job, `handoff.send`) the server already authorized the request. A job's id
+/// goes into the manifest as `source_job`.
 pub async fn export_bundle(
     gw: &Arc<Gateway>,
     actor: &str,
@@ -220,6 +222,7 @@ pub async fn export_bundle(
     pane: &str,
     interrupt: bool,
     full: bool,
+    source_job: Option<&str>,
 ) -> Result<Exported, ApiError> {
     let info = gw.server.call("pane.get", json!({"pane": pane})).await?;
     let cwd = s(&info, "cwd")
@@ -408,6 +411,7 @@ pub async fn export_bundle(
         skipped,
         redactions,
         created_at: now_s(),
+        source_job: source_job.map(str::to_string),
     };
 
     // Pack.
@@ -631,20 +635,11 @@ async fn deliver(
 
     let actor = format!("gateway:{}", dev.name);
     still_authorized(gw, dev)?;
-    let added = gw
-        .server
-        .call_as(
-            &actor,
-            "handoff.incoming.add",
-            json!({"path": path, "manifest": manifest, "sha256": sha,
-                   "from": {"host": clean(&manifest.source_host, 100),
-                            "owner": if teammate { "teammate" } else { "self" }}}),
-        )
-        .await?;
-    let mut rec = added.get("incoming").cloned().unwrap_or_default();
-    let id = s(&rec, "id")
-        .ok_or_else(|| err("internal", "the server returned no incoming handoff"))?
-        .to_string();
+    let from = json!({"host": clean(&manifest.source_host, 100),
+                      "owner": if teammate { "teammate" } else { "self" }});
+    let mut rec =
+        crate::handoff_peer::deliver_to_server(gw, &actor, path, manifest, sha, &from).await?;
+    let id = s(&rec, "id").unwrap_or_default().to_string();
 
     if let Some(repo) = s(p, "repo_path").filter(|_| !teammate) {
         let mut params = json!({"id": id, "repo": {"path": expand_home(repo)},
@@ -660,9 +655,9 @@ async fn deliver(
         rec = accepted.get("incoming").cloned().unwrap_or(rec);
     }
     gw.state.audit(&json!({"ts": now_s(), "event": "handoff.delivered", "device": dev.id, "from": manifest.source_host, "incoming": id, "state": s(&rec, "state")}));
-    Ok(
-        json!({"incoming": id, "state": rec.get("state"), "result": rec.get("result"), "record": rec}),
-    )
+    let mut out = crate::handoff_peer::outcome(&rec);
+    out["record"] = rec;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------------------------

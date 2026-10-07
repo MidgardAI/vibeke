@@ -310,6 +310,7 @@ async fn send(
         pane,
         interrupt,
         false,
+        Some(id),
     )
     .await?;
     let _cleanup = Cleanup(ex.path.clone());

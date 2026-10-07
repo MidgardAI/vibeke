@@ -6,15 +6,19 @@
 //! - `handoff.offer {manifest, size, sha256}` → `{id, received, size}`. Idempotent per (device,
 //!   sha256): offering the same bundle again returns the same id and the bytes already received,
 //!   so a sender that lost its connection resumes instead of starting over. An offer of a bundle
-//!   committed in the last 24 h answers `{id, received: size, committed: true, result}`.
+//!   committed in the last 24 h answers `{id, received: size, committed: true, result}`. A
+//!   manifest's `source_job` identifies the sender's job across re-exports (another checksum
+//!   after a restart): a committed one answers the same way, an unfinished one is replaced.
 //! - `handoff.status {id}` → `{id, received, size, state: receiving|committing|committed,
 //!   result?}`.
 //! - `handoff.write {id, offset}` → `{received}`. The data travels as a binary payload in the same
 //!   encrypted message, after the JSON request and one NUL byte ([`split_payload`]); no base64 in
 //!   the channel. `data_b64` is accepted as well (simple clients, tests). `offset` may be at most
 //!   `received`: a lower offset truncates there and rewrites, so a retried chunk is harmless.
-//! - `handoff.commit {id}` → the server's record `{incoming, state, result?}`, after checking size
-//!   and sha256. Committing again returns the same record.
+//! - `handoff.commit {id}` → `{incoming: <id>, state, result}` from the server's record (as the
+//!   courier's `handoff.finish`), after checking size and sha256. Committing again returns the
+//!   same. The commit runs to the end even when the request is dropped. The server's quota
+//!   (`rate_limited`) reads "the recipient has too many waiting handoffs".
 //! - `handoff.discard {id}`.
 //!
 //! Uploads live in memory and expire 24 h after their last write. A gateway restart forgets them
@@ -85,6 +89,7 @@ struct Upload {
 struct Done {
     device: String,
     sha256: String,
+    source_job: Option<String>,
     size: u64,
     result: Value,
     at: Instant,
@@ -164,25 +169,55 @@ pub fn sender_of(dev: &Device) -> Value {
     from
 }
 
+/// What `handoff.commit` and the courier's `handoff.finish` answer, from the server's record:
+/// `{incoming: <id>, state, result}` (`result` is null until imported).
+pub fn outcome(rec: &Value) -> Value {
+    json!({"incoming": rec.get("id"), "state": rec.get("state"), "result": rec.get("result")})
+}
+
+/// The server refuses more incoming handoffs (its quota): say so in words the sender's job can
+/// show as is.
+pub fn add_error(e: ApiError) -> ApiError {
+    if e.kind == "rate_limited" {
+        ApiError {
+            kind: e.kind,
+            message: format!(
+                "the recipient has too many waiting handoffs ({})",
+                e.message
+            ),
+            details: e.details,
+        }
+    } else {
+        e
+    }
+}
+
 /// Hand a received bundle to the server as an incoming handoff. The server keeps the bundle (it
 /// moves or copies `path` into its own state) and runs the auto-import policy or leaves it
-/// pending for the receiver. Returns the server's record `{incoming, state, result?}`. Shared by
-/// the courier's `handoff.finish` and the peer's `handoff.commit`.
+/// pending for the receiver. Returns the server's record. Shared by the courier's
+/// `handoff.finish` and the peer's `handoff.commit`.
 pub async fn deliver_to_server(
     gw: &Gateway,
+    actor: &str,
     path: &Path,
     manifest: &Manifest,
     sha256: &str,
     from: &Value,
 ) -> ApiResult {
-    let actor = format!("gateway:{}", s(from, "host").unwrap_or("peer"));
-    gw.server
+    let added = gw
+        .server
         .call_as(
-            &actor,
+            actor,
             "handoff.incoming.add",
             json!({"path": path, "manifest": manifest, "sha256": sha256, "from": from}),
         )
         .await
+        .map_err(add_error)?;
+    let rec = added.get("incoming").cloned().unwrap_or_default();
+    if s(&rec, "id").is_none() {
+        return Err(err("internal", "the server returned no incoming handoff"));
+    }
+    Ok(rec)
 }
 
 /// Side effects re-check that the device is still authorized (spec 16 §4.6).
@@ -221,12 +256,16 @@ fn offer(gw: &Gateway, dev: &Device, p: &Value) -> ApiResult {
         return Err(err("too_large", "handoff bundle exceeds 200 MiB"));
     }
     let folder = dir(gw)?;
-    with_uploads(|u| -> ApiResult {
-        if let Some((id, d)) = u
-            .done
-            .iter()
-            .find(|(_, d)| d.device == dev.id && d.sha256 == sha)
-        {
+    let job = manifest.source_job.clone().filter(|j| !j.is_empty());
+    let mut stale = None;
+    let r = with_uploads(|u| -> ApiResult {
+        // The same job exported again (the sender restarted) is the same handoff.
+        let same_job = |device: &str, source: &Option<String>| {
+            device == dev.id && job.is_some() && *source == job
+        };
+        if let Some((id, d)) = u.done.iter().find(|(_, d)| {
+            d.device == dev.id && d.sha256 == sha || same_job(&d.device, &d.source_job)
+        }) {
             return Ok(
                 json!({"id": id, "received": d.size, "size": d.size, "committed": true, "result": d.result}),
             );
@@ -243,6 +282,15 @@ fn offer(gw: &Gateway, dev: &Device, p: &Value) -> ApiResult {
                 ));
             }
             return Ok(json!({"id": id, "received": e.received, "size": e.size}));
+        }
+        // An unfinished upload of an earlier export of this job: replaced by this one.
+        if let Some(old) = u
+            .live
+            .iter()
+            .find(|(_, e)| !e.busy && same_job(&e.device, &e.manifest.source_job))
+            .map(|(id, _)| id.clone())
+        {
+            stale = u.live.remove(&old).map(|e| e.path);
         }
         // Per sender, so one host's abandoned transfers can't block everyone (plus a global cap).
         let mine = u.live.values().filter(|e| e.device == dev.id).count();
@@ -267,7 +315,11 @@ fn offer(gw: &Gateway, dev: &Device, p: &Value) -> ApiResult {
             },
         );
         Ok(json!({"id": id, "received": 0, "size": size}))
-    })
+    });
+    if let Some(p) = stale {
+        let _ = std::fs::remove_file(p);
+    }
+    r
 }
 
 fn status(dev: &Device, p: &Value) -> ApiResult {
@@ -399,65 +451,91 @@ async fn commit(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         Next::Earlier(earlier) => return Ok(earlier),
         Next::Go(path, manifest, sha, size) => (path, manifest, sha, size),
     };
-    let release = || {
-        with_uploads(|u| {
-            if let Some(e) = u.live.get_mut(&id) {
-                e.busy = false;
-                e.committing = false;
-            }
-        })
-    };
-    if let Err(e) = still_authorized(gw, dev) {
-        release();
-        return Err(e);
+    // The commit runs on its own task: a request dropped mid-way (the connection closed) never
+    // leaves the upload busy, and its outcome is still recorded for `handoff.status`, a repeated
+    // commit or offer.
+    let release = Release(Some(id.clone()));
+    let (gw, dev) = (gw.clone(), dev.clone());
+    tokio::spawn(async move {
+        let r = run_commit(&gw, &dev, &id, &path, &manifest, &sha, size).await;
+        release.done(r.is_ok());
+        r
+    })
+    .await
+    .map_err(|e| err("internal", e.to_string()))?
+}
+
+/// Clears `busy`/`committing` of an upload whose commit did not finish, however it ended
+/// (an error, a panic, the runtime shutting down).
+struct Release(Option<String>);
+
+impl Release {
+    fn done(mut self, committed: bool) {
+        if committed {
+            self.0 = None;
+        }
     }
-    let p2 = path.clone();
-    let hashed = blocking(move || hash_file(&p2)).await;
-    match hashed {
-        Ok((n, h)) if n == size && h == sha => {}
-        Ok(_) => {
-            // Corrupt or tampered: drop it; the sender offers again from the start.
-            with_uploads(|u| u.live.remove(&id));
-            let _ = std::fs::remove_file(&path);
-            return Err(err(
-                "conflict",
-                "checksum mismatch; offer the handoff again",
-            ));
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.take() {
+            with_uploads(|u| {
+                if let Some(e) = u.live.get_mut(&id) {
+                    e.busy = false;
+                    e.committing = false;
+                }
+            });
         }
-        Err(e) => {
-            release();
-            return Err(e);
-        }
+    }
+}
+
+async fn run_commit(
+    gw: &Gateway,
+    dev: &Device,
+    id: &str,
+    path: &Path,
+    manifest: &Manifest,
+    sha: &str,
+    size: u64,
+) -> ApiResult {
+    still_authorized(gw, dev)?;
+    let p2 = path.to_path_buf();
+    let (n, h) = blocking(move || hash_file(&p2)).await?;
+    if n != size || h != sha {
+        // Corrupt or tampered: drop it; the sender offers again from the start.
+        with_uploads(|u| u.live.remove(id));
+        let _ = std::fs::remove_file(path);
+        return Err(err(
+            "conflict",
+            "checksum mismatch; offer the handoff again",
+        ));
     }
     let from = sender_of(dev);
-    match deliver_to_server(gw, &path, &manifest, &sha, &from).await {
-        Ok(rec) => {
-            with_uploads(|u| {
-                u.live.remove(&id);
-                u.done.insert(
-                    id.clone(),
-                    Done {
-                        device: dev.id.clone(),
-                        sha256: sha,
-                        size,
-                        result: rec.clone(),
-                        at: Instant::now(),
-                    },
-                );
-            });
-            // The server keeps its own copy (or moved this one away).
-            let _ = std::fs::remove_file(&path);
-            gw.state.audit(
-                &json!({"ts": now_s(), "event": "handoff.received", "device": dev.id,
-                                   "from": from, "size": size, "incoming": rec.get("incoming")}),
-            );
-            Ok(rec)
-        }
-        Err(e) => {
-            release();
-            Err(e)
-        }
-    }
+    let actor = format!("gateway:{}", s(&from, "host").unwrap_or("peer"));
+    let rec = deliver_to_server(gw, &actor, path, manifest, sha, &from).await?;
+    let out = outcome(&rec);
+    with_uploads(|u| {
+        u.live.remove(id);
+        u.done.insert(
+            id.to_string(),
+            Done {
+                device: dev.id.clone(),
+                sha256: sha.to_string(),
+                source_job: manifest.source_job.clone(),
+                size,
+                result: out.clone(),
+                at: Instant::now(),
+            },
+        );
+    });
+    // The server keeps its own copy (or moved this one away).
+    let _ = std::fs::remove_file(path);
+    gw.state.audit(
+        &json!({"ts": now_s(), "event": "handoff.received", "device": dev.id,
+                           "from": from, "size": size, "incoming": out.get("incoming")}),
+    );
+    Ok(out)
 }
 
 fn discard(dev: &Device, p: &Value) -> ApiResult {

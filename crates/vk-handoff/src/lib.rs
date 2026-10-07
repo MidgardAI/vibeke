@@ -53,6 +53,10 @@ pub struct Manifest {
     pub skipped: Vec<Skipped>,
     pub redactions: usize,
     pub created_at: u64,
+    /// The sending host's job id when its gateway delivers the handoff (`handoff.send`), so the
+    /// receiver recognises the same job exported again after a restart (another checksum).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_job: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

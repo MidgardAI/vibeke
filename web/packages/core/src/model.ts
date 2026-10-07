@@ -585,6 +585,8 @@ export interface HandoffManifest {
   skipped: { path: string; reason: string }[];
   redactions: number;
   created_at: number;
+  /** The sending host's job id, when its gateway delivered the handoff. */
+  source_job?: string;
   [k: string]: unknown;
 }
 
