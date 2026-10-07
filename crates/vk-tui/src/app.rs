@@ -334,6 +334,12 @@ pub enum Popup {
     },
     /// A path input with a directory list standing in for a text prompt (`new_workspace`).
     Path(Box<crate::path_picker::PathPrompt>),
+    /// Accept an incoming handoff (16 §15.2); state in `App::ux.handoff.accept`.
+    HandoffAccept,
+    /// Incoming handoffs and the ones being sent; state in `App::ux.handoff`.
+    Handoffs,
+    /// Hand the focused pane off to a paired host; state in `App::ux.handoff.send`.
+    HandoffSend,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1923,6 +1929,10 @@ impl App {
             Mode::Normal => {}
             Mode::Popup(Popup::Path(p)) => {
                 p.picker.paste(&text);
+                return;
+            }
+            Mode::Popup(Popup::HandoffAccept) => {
+                crate::handoff::on_paste(self, &text);
                 return;
             }
             Mode::Popup(_) => {

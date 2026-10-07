@@ -24,6 +24,7 @@ pub mod floats;
 pub mod gallery;
 pub mod gateway;
 pub mod groups;
+pub mod handoff;
 pub mod inbox;
 pub mod input;
 pub mod keymap;

@@ -37,6 +37,8 @@ pub const TYPES: &[&str] = &[
     // v1 TUI: elevation requests (09 §3.2) and scroll requests (07 §2.6).
     "auth.elevate_*",
     "pane.scroll_requested",
+    // Incoming handoffs and sends (16 §15.2).
+    "handoff.*",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -143,6 +145,8 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             crate::scroll_req::on_event(app, i, &v);
         } else if k.starts_with("task.collision_") {
             crate::collision::on_event(app, i, k);
+        } else if k.starts_with("handoff.") {
+            crate::handoff::on_event(app, i, k, &v);
         }
     }
     if !confirms.is_empty() {
