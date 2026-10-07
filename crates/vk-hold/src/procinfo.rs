@@ -329,7 +329,20 @@ mod tests {
             .env("VK_PROCINFO_PROBE", "a=b")
             .spawn()
             .unwrap();
-        let env = super::environ(c.id());
+        // `spawn` returns once the child's exec has started (the vfork parent is released, or
+        // the CLOEXEC pipe closes, when the old mm is dropped), but Linux only records the new
+        // image's argument and environment area a little later in the ELF loader; until then
+        // `/proc/<pid>/environ` reads as empty. Real callers look at processes that are long past
+        // exec (socket peers, pane children), so wait for the child to finish exec here.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let env = loop {
+            let env = super::environ(c.id());
+            if !env.is_empty() || !cfg!(target_os = "linux") || std::time::Instant::now() > deadline
+            {
+                break env;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
         let _ = c.kill();
         let _ = c.wait();
         // macOS does not expose another process's environment (KERN_PROCARGS2 omits it);
