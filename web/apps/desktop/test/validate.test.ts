@@ -78,6 +78,16 @@ describe('IPC validators', () => {
     expect(() => v.settingsPatch({ notifications: 'yes' })).toThrow();
   });
 
+  test('folder picker default path: optional, absolute, bounded', () => {
+    expect(v.defaultDirectory(undefined)).toBeUndefined();
+    expect(v.defaultDirectory(null)).toBeUndefined();
+    expect(v.defaultDirectory('')).toBeUndefined();
+    expect(v.defaultDirectory('/Users/me/code')).toBe('/Users/me/code');
+    for (const bad of ['relative/dir', '~/code', '/a\u0000b', '/a\nb', `/${'x'.repeat(4096)}`, 42, {}, ['/x']]) {
+      expect(() => v.defaultDirectory(bad)).toThrow(v.IpcValidationError);
+    }
+  });
+
   test('pairing inputs', () => {
     expect(v.linkText('  vibeke://pair?d=abc ')).toBe('vibeke://pair?d=abc');
     expect(() => v.linkText('')).toThrow();

@@ -71,6 +71,11 @@ export interface UiPlatform extends Platform {
   clipboard: { writeText(text: string): Promise<void>; readText?(): Promise<string> };
   /** Open an http(s) URL outside the app. */
   openExternal(url: string): void;
+  /**
+   * The OS folder picker (desktop). Only meaningful when the host being configured is this machine;
+   * `defaultPath` must be absolute. Resolves to the chosen folder, or null when canceled.
+   */
+  pickDirectory?(defaultPath?: string): Promise<string | null>;
   /** The OS share sheet (Web Share API), when available. Rejects if the user dismisses it. */
   share?(data: { title?: string; text?: string; url: string }): Promise<void>;
   notifications?: NotificationsCapability;
