@@ -679,7 +679,7 @@ async fn run_inner(
         crate::sidebar::width_path(&opts.session, &crate::nav::client_key()),
     );
     crate::onboarding::maybe_open(&mut app);
-    let mut events = crate::input::Source::new(app.kitty);
+    let mut events = crate::input::Reader::new();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         if app.dirty {
@@ -700,19 +700,19 @@ async fn run_inner(
             let res = crate::scrollback::run_external(&x);
             let _ = term::raw();
             let _ = term::enter(app.kitty);
-            events = crate::input::Source::new(app.kitty);
+            events = crate::input::Reader::new();
             app.prev = Grid::new(0, 0);
             app.dirty = true;
             if let Err(e) = res {
                 app.toast(e);
             }
         }
-        // Re-query the host's light/dark appearance (after a focus change): crossterm can't
-        // parse the replies, so the event reader is stopped while we read them raw.
+        // Re-query the host's light/dark appearance (after a focus change): the event reader
+        // is stopped while the replies are read raw.
         if crate::appearance::take_reprobe(&mut app) {
             drop(events);
             let det = crate::appearance::reprobe();
-            events = crate::input::Source::new(app.kitty);
+            events = crate::input::Reader::new();
             crate::appearance::on_detect(&mut app, det);
         }
         let redraw_in = if app.dirty {
@@ -1758,8 +1758,8 @@ impl App {
 
     // ---- host events --------------------------------------------------------------------
 
-    /// Host input from [`crate::input::Source`]: keys the client decoded itself (kitty hosts,
-    /// with associated text) or crossterm events.
+    /// Host input from [`crate::input::Reader`]: keys the client decoded itself, or events
+    /// (mouse, paste, focus, resize).
     fn on_input(&mut self, i: crate::input::Input) {
         match i {
             crate::input::Input::Event(ev) => self.on_event(ev),

@@ -22,7 +22,9 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 /// Kitty keyboard flags the client pushes (03 §7.1): disambiguate (1), report event types (2),
 /// alternate keys (4), all keys as escapes (8) and associated text (16). crossterm has no
 /// constant for bit 16, so the push is written directly; crossterm's decoder accepts the
-/// extra text field (`CSI code ; mods ; text u`).
+/// extra text field (`CSI code ; mods ; text u`). Bits 8 and 16 stay on although plain text
+/// keys then arrive as reports: `keys.altgr_mode` (auto/chord) needs AltGr/Option keys reported
+/// as the key plus its text, which a host only does with both.
 pub const KITTY_FLAGS: u8 = 0b1_1111;
 
 /// `CSI > flags u`: push [`KITTY_FLAGS`] onto the host's keyboard-mode stack.
@@ -30,6 +32,25 @@ pub fn kitty_push_sequence() -> Vec<u8> {
     format!("\x1b[>{KITTY_FLAGS}u").into_bytes()
 }
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+static MOK_SET: AtomicBool = AtomicBool::new(false);
+
+/// xterm modifyOtherKeys level to ask of a host without the kitty protocol (03 §7.1), only
+/// where it is known to report keys the decoder reads (`CSI 27;m;k~` / `CSI k;m u`) and to
+/// leave the rest alone: tmux (level 2, with `extended-keys` on) and WezTerm (level 1). Other
+/// hosts get none: some half-support it and garble plain keys.
+pub fn modify_other_keys_level(
+    in_tmux: bool,
+    term_program: Option<&str>,
+    wezterm_pane: bool,
+) -> Option<u8> {
+    if in_tmux {
+        return Some(2);
+    }
+    if wezterm_pane || term_program.is_some_and(|p| p.eq_ignore_ascii_case("wezterm")) {
+        return Some(1);
+    }
+    None
+}
 
 /// Query the host and wait (≤ 150 ms, 03 §6.1) for replies, ending at the DA1 sentinel. Also probes
 /// kitty graphics (direct and shared memory), cell/window pixel size and SGR-pixels mouse for
@@ -123,9 +144,13 @@ pub fn enter(kitty: bool) -> std::io::Result<()> {
     if kitty {
         out.write_all(&kitty_push_sequence())?;
         KITTY_PUSHED.store(true, Ordering::SeqCst);
-    } else {
-        // modifyOtherKeys level 2 for hosts without the kitty protocol (03 §7.1).
-        out.write_all(b"\x1b[>4;2m")?;
+    } else if let Some(level) = modify_other_keys_level(
+        std::env::var_os("TMUX").is_some(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var_os("WEZTERM_PANE").is_some(),
+    ) {
+        write!(out, "\x1b[>4;{level}m")?;
+        MOK_SET.store(true, Ordering::SeqCst);
     }
     out.write_all(b"\x1b[?25l")?;
     out.flush()?;
@@ -155,7 +180,10 @@ pub fn leave() {
     if PIXELS.swap(false, Ordering::SeqCst) {
         let _ = out.write_all(b"\x1b[?1016l");
     }
-    let _ = out.write_all(b"\x1b[>4;0m\x1b[0 q\x1b[?25h\x1b[0m");
+    if MOK_SET.swap(false, Ordering::SeqCst) {
+        let _ = out.write_all(b"\x1b[>4;0m");
+    }
+    let _ = out.write_all(b"\x1b[0 q\x1b[?25h\x1b[0m");
     let _ = execute!(
         out,
         DisableFocusChange,
@@ -201,5 +229,24 @@ mod tests {
         assert_eq!(KITTY_FLAGS, 31);
         assert_eq!(kitty_push_sequence(), b"\x1b[>31u");
         assert!(PROBE_TIMEOUT <= Duration::from_millis(150));
+    }
+
+    #[test]
+    fn modify_other_keys_only_where_understood() {
+        assert_eq!(
+            modify_other_keys_level(true, Some("WezTerm"), true),
+            Some(2)
+        );
+        assert_eq!(
+            modify_other_keys_level(false, Some("WezTerm"), false),
+            Some(1)
+        );
+        assert_eq!(modify_other_keys_level(false, None, true), Some(1));
+        assert_eq!(
+            modify_other_keys_level(false, Some("Apple_Terminal"), false),
+            None
+        );
+        assert_eq!(modify_other_keys_level(false, Some("ghostty"), false), None);
+        assert_eq!(modify_other_keys_level(false, None, false), None);
     }
 }
