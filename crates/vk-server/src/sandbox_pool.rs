@@ -27,6 +27,9 @@ const POOL_CHECK: Duration = Duration::from_secs(60);
 #[derive(Default)]
 pub struct PoolState {
     inner: Mutex<PoolInner>,
+    /// Tests: runs inside a slot update right after the list was read.
+    #[cfg(test)]
+    pub after_read: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -50,15 +53,35 @@ fn slots(server: &Server) -> Vec<Slot> {
         .unwrap_or_default()
 }
 
-fn save_slots(server: &Server, v: &[Slot]) {
+/// Read, change and save the slot list as one step under the core lock (one transaction):
+/// two concurrent claims can never both take the same slot, and a refill or recycle never
+/// overwrites a claim made in between. `f` returns what the caller gets; the list is saved
+/// only when it changed.
+fn update_slots<T>(server: &Server, f: impl FnOnce(&mut Vec<Slot>) -> T) -> T {
     let mut c = server.core.lock().unwrap();
-    let mut tx = Tx::new();
-    tx.m.kv(
-        KV_POOL,
-        "slots",
-        Some(serde_json::to_string(v).unwrap_or_default()),
-    );
-    let _ = server.commit(&mut c, tx);
+    let mut v: Vec<Slot> = c
+        .store
+        .kv_get(KV_POOL, "slots")
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let before = v.clone();
+    #[cfg(test)]
+    if let Some(hook) = server.sandbox.pool.after_read.lock().unwrap().as_ref() {
+        hook();
+    }
+    let out = f(&mut v);
+    if v != before {
+        let mut tx = Tx::new();
+        tx.m.kv(
+            KV_POOL,
+            "slots",
+            Some(serde_json::to_string(&v).unwrap_or_default()),
+        );
+        let _ = server.commit(&mut c, tx);
+    }
+    out
 }
 
 /// Container names of unclaimed warm boxes (never pruned).
@@ -232,16 +255,16 @@ pub fn pool_key(cfg: &IsolationConfig, checkout: &Path, req: &IsoRequest) -> Opt
     Some(h.finalize().to_hex()[..12].to_string())
 }
 
-/// Take a warm slot for pool `key` (fresh ones only).
+/// Take a warm slot for pool `key` (fresh ones only). Atomic: read, remove and save happen in
+/// one step, so a slot is handed to exactly one claimer.
 pub fn claim(server: &Server, key: &str, ttl: Duration) -> Option<String> {
-    let mut v = slots(server);
     let now = vk_store::now_ms();
-    let i = v
-        .iter()
-        .position(|s| s.pool == key && now - s.created_ms < ttl.as_millis() as i64)?;
-    let s = v.remove(i);
-    save_slots(server, &v);
-    Some(s.slot)
+    update_slots(server, |v| {
+        let i = v
+            .iter()
+            .position(|s| s.pool == key && now - s.created_ms < ttl.as_millis() as i64)?;
+        Some(v.remove(i).slot)
+    })
 }
 
 /// The context a slot was claimed for.
@@ -280,13 +303,13 @@ pub fn refill(server: &Arc<Server>, key: &str, checkout: &Path, req: &IsoRequest
             let slot = format!("pool:{key}:{}", &ulid()[16..]);
             match warm_up(&srv, &slot, &checkout, &req, &cfg).await {
                 Ok(()) => {
-                    let mut v = slots(&srv);
-                    v.push(Slot {
-                        slot: slot.clone(),
-                        pool: key.clone(),
-                        created_ms: vk_store::now_ms(),
+                    update_slots(&srv, |v| {
+                        v.push(Slot {
+                            slot: slot.clone(),
+                            pool: key.clone(),
+                            created_ms: vk_store::now_ms(),
+                        })
                     });
-                    save_slots(&srv, &v);
                     emit(
                         &srv,
                         "sandbox.warm_ready",
@@ -374,13 +397,16 @@ pub fn check(server: &Arc<Server>) {
     }
     let ttl = cfg.warm_ttl().as_millis() as i64;
     let now = vk_store::now_ms();
-    let (old, keep): (Vec<Slot>, Vec<Slot>) = slots(server)
-        .into_iter()
-        .partition(|s| now - s.created_ms >= ttl || cfg.container.warm_pool == 0);
+    let old: Vec<Slot> = update_slots(server, |v| {
+        let (old, keep): (Vec<Slot>, Vec<Slot>) = std::mem::take(v)
+            .into_iter()
+            .partition(|s| now - s.created_ms >= ttl || cfg.container.warm_pool == 0);
+        *v = keep;
+        old
+    });
     if old.is_empty() {
         return;
     }
-    save_slots(server, &keep);
     let runtime = server
         .sandbox
         .container_runtime()
@@ -414,4 +440,72 @@ pub fn check(server: &Arc<Server>) {
             );
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Final review P1 10: two task creations claim the one warm slot at the same time (the
+    /// second starts while the first sits between reading and saving the list). Exactly one
+    /// gets the slot; the other gets none and its box is named after its own task, so the two
+    /// tasks never share a container or storage.
+    #[test]
+    fn concurrent_claims_of_one_slot_hand_it_out_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = crate::hardening::testkit::server(dir.path(), "pool");
+        update_slots(&s, |v| {
+            v.push(Slot {
+                slot: "pool:k1:0001".into(),
+                pool: "k1".into(),
+                created_ms: vk_store::now_ms(),
+            })
+        });
+        // Widen the window between the read and the save.
+        *s.sandbox.pool.after_read.lock().unwrap() = Some(Box::new(|| {
+            std::thread::sleep(Duration::from_millis(150));
+        }));
+        let ttl = Duration::from_secs(600);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let claims: Vec<Option<String>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..2)
+                .map(|_| {
+                    let (s, b) = (s.clone(), barrier.clone());
+                    sc.spawn(move || {
+                        b.wait();
+                        claim(&s, "k1", ttl)
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        *s.sandbox.pool.after_read.lock().unwrap() = None;
+        let won: Vec<&String> = claims.iter().flatten().collect();
+        assert_eq!(won.len(), 1, "{claims:?}");
+        assert!(slots(&s).is_empty());
+        // The two tasks' container names (slot-named vs task-named) differ.
+        let tasks = ["task-a", "task-b"];
+        let names: Vec<String> = claims
+            .iter()
+            .zip(tasks)
+            .map(|(c, t)| {
+                format!(
+                    "vk-{}",
+                    vk_sandbox::runner::short_id(c.as_deref().unwrap_or(t))
+                )
+            })
+            .collect();
+        assert_ne!(names[0], names[1]);
+        // A refill landing after the claim keeps the claim (no stale overwrite).
+        update_slots(&s, |v| {
+            v.push(Slot {
+                slot: "pool:k1:0002".into(),
+                pool: "k1".into(),
+                created_ms: vk_store::now_ms(),
+            })
+        });
+        assert_eq!(slots(&s).len(), 1);
+        assert_eq!(claim(&s, "k1", ttl).as_deref(), Some("pool:k1:0002"));
+        assert_eq!(claim(&s, "k1", ttl), None);
+    }
 }
