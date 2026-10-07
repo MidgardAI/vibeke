@@ -13,6 +13,7 @@ import {
   fingerprint,
   loadOrCreateDeviceKey,
   pair,
+  pairingKey,
   x25519Public,
   type HostRecord,
   type HostState,
@@ -138,14 +139,27 @@ export class Engine {
   }
 
   async remove(hostId: string): Promise<void> {
+    const key = this.manager?.get(hostId)?.getSnapshot().record.key;
     await this.manager?.remove(hostId);
+    if (key) await this.o.platform.keystore.delete(key).catch(() => {});
   }
 
   async pair(link: PairingLink, deviceName: string, onPending: (fp: string) => void): Promise<HostRecord> {
     await this.start();
     if (!this.devicePrivate || !this.manager) throw new Error('engine not started');
-    const record = await pair({ link, platform: this.o.platform, devicePrivate: this.devicePrivate, deviceName, onPending });
+    // Invitations get their own key: the host keeps them apart from this device's own pairing.
+    const p = this.o.platform;
+    const { devicePrivate, keyName } = await pairingKey(p.keystore, link, this.devicePrivate, (n) => p.random(n));
+    let record: HostRecord;
+    try {
+      record = await pair({ link, platform: p, devicePrivate, keyName, deviceName, onPending });
+    } catch (e) {
+      if (keyName) await p.keystore.delete(keyName).catch(() => {});
+      throw e;
+    }
+    const old = this.manager.get(record.host_id)?.getSnapshot().record.key;
     await this.manager.add(record);
+    if (old && old !== record.key) await p.keystore.delete(old).catch(() => {});
     return record;
   }
 }

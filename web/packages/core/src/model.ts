@@ -445,11 +445,63 @@ export interface DeviceInfo {
   fingerprint: string;
   push: boolean;
   this: boolean;
-  /** `device` | `share` | `handoff` (spec 16 §15). */
+  /** `device` | `share` | `handoff` | `peer` (spec 16 §15). */
   kind?: string;
   /** Unix seconds; shares and handoff invitations expire. */
   expires_at?: number | null;
   limit?: { workspace?: string; pane?: string } | null;
+  /** For `peer` devices: whose host it is and how it introduced itself. */
+  peer?: { owner: PeerOwner; host_name?: string; user?: GitUser } | null;
+}
+
+/** `self`: one of the owner's own hosts; `teammate`: a host that redeemed a handoff invitation. */
+export type PeerOwner = 'self' | 'teammate';
+
+export interface GitUser {
+  name?: string | null;
+  email?: string | null;
+}
+
+/** A host this one can hand work to (`peer.list`; private keys never leave the host). */
+export interface PeerInfo {
+  id: string;
+  name: string;
+  relay: string;
+  host: string;
+  device_id: string;
+  owner: PeerOwner;
+  added_at: number;
+  expires_at: number | null;
+  expired: boolean;
+}
+
+/** A pending invitation on this host (`share.list`). */
+export interface InvitationInfo {
+  /** Pairing id; `share.revoke {id}` cancels it. */
+  id: string;
+  kind: 'share' | 'handoff' | 'peer' | 'device';
+  scope: Scope;
+  label: string | null;
+  limit: { workspace?: string; pane?: string } | null;
+  /** Unix seconds; null for invitations from older gateways. */
+  created: number | null;
+  /** Unix seconds the link must be opened by. */
+  link_expires_at: number;
+  /** Unix seconds the resulting device stops working; null: never (own hosts). */
+  device_expires_at: number | null;
+}
+
+/** A device an invitation produced (`share.list`); `share.revoke {id}` revokes it. */
+export interface InvitedDeviceInfo {
+  id: string;
+  kind: 'share' | 'handoff' | 'peer';
+  name: string;
+  scope: Scope;
+  paired_at: number;
+  owner: PeerOwner | null;
+  sender: { host_name?: string | null; user?: GitUser | null } | null;
+  expires_at: number | null;
+  limit: { workspace?: string; pane?: string } | null;
 }
 
 /** Handoff bundle manifest (vk-gateway handoff.rs `Manifest`). */
@@ -622,6 +674,17 @@ export interface AppApi {
   'handoff.begin': { params: { manifest: HandoffManifest; size: number; sha256: string }; result: { id: string } };
   'handoff.write': { params: { id: string; offset: number; data_b64: string }; result: { received: number } };
   'handoff.finish': { params: { id: string; repo_path?: string; start_agent?: boolean }; result: HandoffFinishResult };
+  /** Spec 16 §15.3: invite another of the owner's hosts (link open for `ttl_s`, default 15 min). */
+  'peer.invite': { params: { ttl_s?: number }; result: { link: string; pid: string; open_by: number } };
+  /** This host redeems a peer or handoff invitation; `share_user` shows git user.name/email there. */
+  'peer.redeem': { params: { link: string; share_user?: boolean }; result: { peer: PeerInfo } };
+  'peer.list': { params: Record<string, never>; result: { peers: PeerInfo[] } };
+  /** By id or name. */
+  'peer.remove': { params: { id: string }; result: Record<string, never> };
+  /** Spec 16 §15.4: pending invitations and the share, handoff and peer devices they produced. */
+  'share.list': { params: Record<string, never>; result: { invitations: InvitationInfo[]; devices: InvitedDeviceInfo[] } };
+  /** Cancel a pending invitation (pairing id) or revoke an invited device (device id). */
+  'share.revoke': { params: { id: string }; result: { cancelled: 'invitation' | 'device' } };
 }
 
 export type AppMethod = keyof AppApi;
@@ -658,6 +721,10 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.begin',
   'handoff.write',
   'handoff.finish',
+  'peer.invite',
+  'peer.redeem',
+  'peer.remove',
+  'share.revoke',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------

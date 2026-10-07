@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as b64 from '../src/b64';
 import { helloBytes, helloDevice, helloPair, helloText, parseHello } from '../src/hello';
-import { base32, fingerprint, hostId, loadOrCreateDeviceKey, x25519Public } from '../src/keys';
+import { base32, fingerprint, hostId, invitationKeyName, loadOrCreateDeviceKey, pairingKey, recordKey, x25519Public } from '../src/keys';
 import { linkExpired, linkJson, linkToUrl, parseLink, type PairingLink } from '../src/link';
 import type { KeyStore } from '../src/platform';
 import { MemKeyStore } from './helpers';
@@ -54,6 +54,23 @@ describe('keys', () => {
     const b = await loadOrCreateDeviceKey(ks);
     expect(a).toEqual(b);
     expect(x25519Public(a).length).toBe(32);
+  });
+  test('invitations get their own key; plain pairing uses the device key', async () => {
+    const ks = new MemKeyStore();
+    const device = await loadOrCreateDeviceKey(ks);
+    const plain = await pairingKey(ks, { pid: 'p0' }, device);
+    expect(plain.devicePrivate).toEqual(device);
+    expect(plain.keyName).toBeUndefined();
+    const inv = await pairingKey(ks, { pid: 'p1', share: { kind: 'share' } }, device);
+    expect(inv.keyName).toBe(invitationKeyName('p1'));
+    expect(inv.devicePrivate).not.toEqual(device);
+    const other = await pairingKey(ks, { pid: 'p2', share: { kind: 'handoff' } }, device);
+    expect(other.devicePrivate).not.toEqual(inv.devicePrivate);
+    // Records connect with their own key; a missing one is an error, never the device key.
+    expect(await recordKey(ks, {}, device)).toEqual(device);
+    expect(await recordKey(ks, { key: inv.keyName }, device)).toEqual(inv.devicePrivate);
+    await ks.delete(inv.keyName!);
+    await expect(recordKey(ks, { key: inv.keyName }, device)).rejects.toThrow(/missing/);
   });
   test('concurrent startups get the same device key (in-process serialization)', async () => {
     // A slow store: without serialization both calls would see "missing" and create two keys.
