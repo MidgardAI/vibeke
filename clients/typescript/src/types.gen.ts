@@ -831,6 +831,19 @@ export type AgentInterruptResult = {
   cursor?: Cursor;
 };
 
+export type AgentItemsParams = {
+  turn?: string;
+  run?: Target;
+  kind?: ItemKind;
+  after_seq?: number;
+  limit?: number;
+};
+
+export type AgentItemsResult = {
+  items: Item[];
+  next_after_seq: number | null;
+};
+
 export type AgentLimitsParams = Record<string, unknown>;
 
 export type AgentLimitsResult = {
@@ -1076,6 +1089,18 @@ export type AgentTurnUsageResult = {
     cost_usd: number | null;
   };
   usage: unknown;
+};
+
+export type AgentTurnsParams = {
+  run: Target;
+  after_seq?: number;
+  limit?: number;
+};
+
+export type AgentTurnsResult = {
+  run: string;
+  turns: Turn[];
+  next_after_seq: number | null;
 };
 
 export type AgentWaitParams = {
@@ -1615,6 +1640,23 @@ export type BlobCommitResult = {
   cursor?: Cursor;
 };
 
+export type BlobGcParams = {
+  dry_run?: boolean;
+  older_than_days?: number;
+};
+
+export type BlobGcResult = {
+  dry_run: boolean;
+  older_than_days: number;
+  removed: number;
+  bytes: number;
+  kept_referenced: number;
+  kept_young: number;
+  kept_uncollectable: number;
+  hashes: string[];
+  cursor?: Cursor;
+};
+
 export type BlobGetParams = {
   hash: string;
   range?: {
@@ -1654,6 +1696,15 @@ export type BlobStatResult = {
   size: number;
   created_at: number;
   refs: number;
+  path: string;
+};
+
+export type BlobStatsParams = Record<string, unknown>;
+
+export type BlobStatsResult = {
+  count: number;
+  bytes: number;
+  by_source: Record<string, unknown>;
   path: string;
 };
 
@@ -3514,6 +3565,48 @@ export type LayoutListResult = {
   layout: LayoutSpec;
 };
 
+export type MachineGetParams = {
+  machine: Target;
+};
+
+export type MachineGetResult = {
+  machine: Machine;
+};
+
+export type MachineListParams = Record<string, unknown>;
+
+export type MachineListResult = {
+  machines: Machine[];
+  local: string;
+};
+
+export type MachineRemoveParams = {
+  machine: Target;
+};
+
+export type MachineRemoveResult = {
+  removed: string;
+  cursor: Cursor;
+};
+
+export type MachineUpsertParams = {
+  label: string;
+  kind?: "ssh" | "quic";
+  id?: string;
+  address?: string;
+  os?: string;
+  arch?: string;
+  vibeke_version?: string;
+  status?: "connected" | "connecting" | "degraded" | "offline";
+  reason?: string;
+};
+
+export type MachineUpsertResult = {
+  machine: Machine;
+  created: boolean;
+  cursor: Cursor;
+};
+
 export type MergePredictParams = {
   repo?: string;
   tasks?: string[];
@@ -5282,6 +5375,14 @@ export type SessionCreateResult = {
   cursor?: Cursor;
 };
 
+export type SessionInfoParams = Record<string, unknown>;
+
+export type SessionInfoResult = {
+  session: SessionInfo;
+  machine: Machine | null;
+  cursor: Cursor;
+};
+
 export type SessionListParams = Record<string, unknown>;
 
 export type SessionListResult = {
@@ -5397,6 +5498,57 @@ export type StatusSegmentsResult = {
   focus: unknown;
   appearance: Appearance;
   client_side: string[];
+};
+
+export type StoragePruneParams = Record<string, unknown>;
+
+export type StoragePruneResult = {
+  events_aged: number;
+  events_capped: number;
+  events_remaining: number;
+  stream_removed: number;
+  blobs_removed: number;
+  blob_bytes: number;
+  cursor?: Cursor;
+};
+
+export type StorageStatusParams = Record<string, unknown>;
+
+export type StorageStatusResult = {
+  degraded: string | null;
+  ephemeral: number;
+  archive_rows_skipped: number;
+  db: {
+    path: string;
+    bytes: number;
+  };
+  events: {
+    count: number;
+    first_seq: number;
+    last_seq: number;
+    retention: {
+      sync_days: number;
+      history_days: number;
+      max_rows: number;
+      blob_days: number;
+    };
+  };
+  backups: {
+    name: string;
+    schema_version: number;
+    created_at: number;
+    bytes: number;
+  }[];
+  keep_backups: number;
+  blobs: {
+    count: number;
+    bytes: number;
+  };
+  cursor: {
+    machine_uuid: string;
+    session_uuid: string;
+    log_epoch: string;
+  };
 };
 
 export type TabCloseParams = {
@@ -6802,6 +6954,7 @@ export interface Methods {
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   "agent.harnesses": { params: AgentHarnessesParams; result: AgentHarnessesResult };
   "agent.interrupt": { params: AgentInterruptParams; result: AgentInterruptResult };
+  "agent.items": { params: AgentItemsParams; result: AgentItemsResult };
   "agent.limits": { params: AgentLimitsParams; result: AgentLimitsResult };
   "agent.list": { params: AgentListParams; result: AgentListResult };
   "agent.manifest_pin": { params: AgentManifestPinParams; result: AgentManifestPinResult };
@@ -6819,6 +6972,7 @@ export interface Methods {
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
   "agent.turn_usage": { params: AgentTurnUsageParams; result: AgentTurnUsageResult };
+  "agent.turns": { params: AgentTurnsParams; result: AgentTurnsResult };
   "agent.wait": { params: AgentWaitParams; result: AgentWaitResult };
   "api.methods": { params: ApiMethodsParams; result: ApiMethodsResult };
   "api.schema": { params: ApiSchemaParams; result: ApiSchemaResult };
@@ -6849,9 +7003,11 @@ export interface Methods {
   "blob.append": { params: BlobAppendParams; result: BlobAppendResult };
   "blob.begin": { params: BlobBeginParams; result: BlobBeginResult };
   "blob.commit": { params: BlobCommitParams; result: BlobCommitResult };
+  "blob.gc": { params: BlobGcParams; result: BlobGcResult };
   "blob.get": { params: BlobGetParams; result: BlobGetResult };
   "blob.put": { params: BlobPutParams; result: BlobPutResult };
   "blob.stat": { params: BlobStatParams; result: BlobStatResult };
+  "blob.stats": { params: BlobStatsParams; result: BlobStatsResult };
   "browser.attach_screencast": { params: BrowserAttachScreencastParams; result: BrowserAttachScreencastResult };
   "browser.click": { params: BrowserClickParams; result: BrowserClickResult };
   "browser.close": { params: BrowserCloseParams; result: BrowserCloseResult };
@@ -6966,6 +7122,10 @@ export interface Methods {
   "layout.export": { params: LayoutExportParams; result: LayoutExportResult };
   "layout.get": { params: LayoutGetParams; result: LayoutGetResult };
   "layout.list": { params: LayoutListParams; result: LayoutListResult };
+  "machine.get": { params: MachineGetParams; result: MachineGetResult };
+  "machine.list": { params: MachineListParams; result: MachineListResult };
+  "machine.remove": { params: MachineRemoveParams; result: MachineRemoveResult };
+  "machine.upsert": { params: MachineUpsertParams; result: MachineUpsertResult };
   "merge.predict": { params: MergePredictParams; result: MergePredictResult };
   "merge.queue.add": { params: MergeQueueAddParams; result: MergeQueueAddResult };
   "merge.queue.cancel": { params: MergeQueueCancelParams; result: MergeQueueCancelResult };
@@ -7084,12 +7244,15 @@ export interface Methods {
   "server.status": { params: ServerStatusParams; result: ServerStatusResult };
   "server.stop": { params: ServerStopParams; result: ServerStopResult };
   "session.create": { params: SessionCreateParams; result: SessionCreateResult };
+  "session.info": { params: SessionInfoParams; result: SessionInfoResult };
   "session.list": { params: SessionListParams; result: SessionListResult };
   "session.rename": { params: SessionRenameParams; result: SessionRenameResult };
   "session.snapshot": { params: SessionSnapshotParams; result: SessionSnapshotResult };
   "session.stop": { params: SessionStopParams; result: SessionStopResult };
   "state.forget": { params: StateForgetParams; result: StateForgetResult };
   "status.segments": { params: StatusSegmentsParams; result: StatusSegmentsResult };
+  "storage.prune": { params: StoragePruneParams; result: StoragePruneResult };
+  "storage.status": { params: StorageStatusParams; result: StorageStatusResult };
   "tab.close": { params: TabCloseParams; result: TabCloseResult };
   "tab.create": { params: TabCreateParams; result: TabCreateResult };
   "tab.floats": { params: TabFloatsParams; result: TabFloatsResult };
@@ -7195,6 +7358,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.get": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.harnesses": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.interrupt": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.items": { mutating: false, scope: "full", paneScope: "forbidden" },
   "agent.limits": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.list": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.manifest_pin": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -7212,6 +7376,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.turn_usage": { mutating: false, scope: "pane", paneScope: "open" },
+  "agent.turns": { mutating: false, scope: "full", paneScope: "forbidden" },
   "agent.wait": { mutating: false, scope: "pane", paneScope: "open" },
   "api.methods": { mutating: false, scope: "pane", paneScope: "open" },
   "api.schema": { mutating: false, scope: "pane", paneScope: "open" },
@@ -7242,9 +7407,11 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "blob.append": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.begin": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.commit": { mutating: true, scope: "pane", paneScope: "open" },
+  "blob.gc": { mutating: true, scope: "full", paneScope: "forbidden" },
   "blob.get": { mutating: false, scope: "pane", paneScope: "open" },
   "blob.put": { mutating: true, scope: "pane", paneScope: "open" },
   "blob.stat": { mutating: false, scope: "pane", paneScope: "open" },
+  "blob.stats": { mutating: false, scope: "full", paneScope: "forbidden" },
   "browser.attach_screencast": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.click": { mutating: true, scope: "pane", paneScope: "open" },
   "browser.close": { mutating: true, scope: "pane", paneScope: "open" },
@@ -7359,6 +7526,10 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "layout.export": { mutating: false, scope: "pane", paneScope: "open" },
   "layout.get": { mutating: false, scope: "pane", paneScope: "open" },
   "layout.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "machine.get": { mutating: false, scope: "pane", paneScope: "open" },
+  "machine.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "machine.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "machine.upsert": { mutating: true, scope: "full", paneScope: "forbidden" },
   "merge.predict": { mutating: false, scope: "pane", paneScope: "open" },
   "merge.queue.add": { mutating: true, scope: "full", paneScope: "forbidden" },
   "merge.queue.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -7477,12 +7648,15 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "server.status": { mutating: false, scope: "pane", paneScope: "open" },
   "server.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
   "session.create": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "session.info": { mutating: false, scope: "pane", paneScope: "open" },
   "session.list": { mutating: false, scope: "pane", paneScope: "open" },
   "session.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
   "session.snapshot": { mutating: false, scope: "pane", paneScope: "open" },
   "session.stop": { mutating: true, scope: "full", paneScope: "forbidden" },
   "state.forget": { mutating: true, scope: "full", paneScope: "forbidden" },
   "status.segments": { mutating: false, scope: "pane", paneScope: "open" },
+  "storage.prune": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "storage.status": { mutating: false, scope: "full", paneScope: "forbidden" },
   "tab.close": { mutating: true, scope: "full", paneScope: "forbidden" },
   "tab.create": { mutating: true, scope: "pane", paneScope: "open" },
   "tab.floats": { mutating: true, scope: "pane", paneScope: "open" },

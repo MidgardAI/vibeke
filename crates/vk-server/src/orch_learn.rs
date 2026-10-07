@@ -79,6 +79,16 @@ pub fn decision_records(server: &Server) -> Vec<DecisionRecord> {
     out
 }
 
+/// A learned-policy KV list, read through an already held core lock.
+fn kv_read<T: serde::de::DeserializeOwned + Default>(c: &crate::core::Core, key: &str) -> T {
+    c.store
+        .kv_get(SCOPE, key)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 fn dismissed(server: &Server) -> HashSet<String> {
     kv_get::<Vec<String>>(server, SCOPE, "dismissed")
         .into_iter()
@@ -179,9 +189,11 @@ async fn accept(server: &Arc<Server>, p: &Value) -> R {
         }
         o => return Err(invalid(format!("target `{o}` is not user or repo"))),
     };
+    // Read-modify-write under one core lock (`kv_get` takes the lock itself: calling it here
+    // would deadlock).
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
-    let mut acc: Vec<Value> = kv_get(server, SCOPE, "accepted");
+    let mut acc: Vec<Value> = kv_read(&c, "accepted");
     acc.push(json!({"id": s0.id, "target": target, "at_ms": vk_store::now_ms()}));
     kv_put(&mut tx, SCOPE, "accepted", &acc);
     tx.event(
@@ -197,11 +209,11 @@ async fn accept(server: &Arc<Server>, p: &Value) -> R {
 fn dismiss(server: &Arc<Server>, p: &Value) -> R {
     gate(server)?;
     let id = req(p, "id")?.to_string();
-    let mut d: Vec<String> = kv_get(server, SCOPE, "dismissed");
+    let mut c = server.core.lock().unwrap();
+    let mut d: Vec<String> = kv_read(&c, "dismissed");
     if !d.contains(&id) {
         d.push(id.clone());
     }
-    let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     kv_put(&mut tx, SCOPE, "dismissed", &d);
     tx.event(

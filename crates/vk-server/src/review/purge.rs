@@ -216,8 +216,12 @@ pub fn run(server: &Server, scope: &Scope, dry_run: bool) -> Report {
                 tomb(&mut tx, "message", &m.id, Some(t), Some(&m.run));
             }
         }
-        // Intent source excerpts (closed history records).
-        for mut i in by_task::<vk_review::intent::TaskIntent>(&c, tracking::K_INTENT, t) {
+        // Intent source excerpts (closed history records; keyed by `task_id`, not `task`).
+        for mut i in c
+            .store
+            .load_by_field::<vk_review::intent::TaskIntent>(tracking::K_INTENT, "$.task_id", t)
+            .unwrap_or_default()
+        {
             if i.source_excerpt.is_none() || !old(i.confirmed_at_ms) {
                 continue;
             }

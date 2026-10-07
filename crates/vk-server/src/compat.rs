@@ -3328,6 +3328,14 @@ mod tests {
             }
             let r = call(&srv, &user(), e.name, &json!({})).await;
             let code = r.as_ref().err().map(|e| e.code.clone());
+            // Served (partial) but off by default: `[compat.herdr] allow_server_stop = false`
+            // answers `unsupported` (spec 07 §8.3). The enabled path is covered by
+            // `gap_methods_dispatch_and_stay_gated` and the `gap` unit tests.
+            if e.name == "server.stop" {
+                assert_eq!(e.status, inventory::Status::Partial);
+                assert_eq!(code.as_deref(), Some("unsupported"), "{r:?}");
+                continue;
+            }
             match e.status {
                 inventory::Status::Missing => assert_eq!(
                     code.as_deref(),

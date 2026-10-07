@@ -217,7 +217,8 @@ async fn reconcile(server: &Arc<Server>, reg: &Registry) {
     process::ensure(server);
 }
 
-/// Fingerprint of what a linked plugin's hot restart watches.
+/// Fingerprint of what a linked plugin's hot restart watches. `watch` globs use the claims
+/// dialect (`*` within a segment, `**` across, `?`).
 pub fn fingerprint(root: &Path, command: &[String], watch: &[String]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let stamp = |p: &Path, h: &mut std::collections::hash_map::DefaultHasher| {
@@ -239,7 +240,7 @@ pub fn fingerprint(root: &Path, command: &[String], watch: &[String]) -> u64 {
         walk(root, root, 0, &mut files);
         files.sort();
         for rel in files {
-            if watch.iter().any(|g| vk_store::glob_match(g, &rel)) {
+            if watch.iter().any(|g| vk_orchestrate::glob_match(g, &rel)) {
                 stamp(&root.join(&rel), &mut h);
             }
         }
