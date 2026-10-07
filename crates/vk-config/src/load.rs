@@ -107,6 +107,7 @@ pub const EXTERNAL_SECTIONS: &[&str] = &[
     "desk",
     "search",
     "events",
+    "orchestrate",
 ];
 
 const BUILTIN_SEGMENTS: &[&str] = &[

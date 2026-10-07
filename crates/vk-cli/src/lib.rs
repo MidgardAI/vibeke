@@ -994,13 +994,6 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ),
     (
         "task",
-        "forget",
-        "task.review.forget",
-        &[],
-        "--task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
-    ),
-    (
-        "task",
         "link",
         "task.link.status",
         &[],
@@ -1095,7 +1088,7 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "forget",
         "task.forget",
         &["task"],
-        "<task> [--force] drop a missing (or finished) task's record; touches no files",
+        "<task> [--force] drop a missing (or finished) task's record; touches no files. Without <task> (task.review.forget): --task t | --pane p | --workspace w | --before t | --all [--dry-run] — purge derived review content (messages, excerpts, prompts, notes, check logs)",
     ),
     (
         "task",
@@ -3258,16 +3251,23 @@ fn forget_also_summary(also: &Value) -> Option<String> {
     .filter(|(_, c)| *c > 0)
     .map(|(k, c)| format!("{c} {k}"))
     .collect();
-    let desk = n(&also["desk"]["calls"]) > 0;
-    if parts.is_empty() && !desk {
+    // `rows` is the dry run's count; a server that only reports `calls` (or could not count)
+    // gets the unquantified line, so desk rows are never silently skipped.
+    let desk = match also["desk"]["rows"].as_u64() {
+        Some(0) => None,
+        Some(r) => Some(format!("{r} session desk rows")),
+        None if n(&also["desk"]["calls"]) > 0 => Some("matching session desk rows".to_string()),
+        None => None,
+    };
+    if parts.is_empty() && desk.is_none() {
         return None;
     }
     let mut s = parts.join(", ");
-    if desk {
+    if let Some(d) = desk {
         if !s.is_empty() {
             s.push_str(", ");
         }
-        s.push_str("matching session desk rows");
+        s.push_str(&d);
     }
     Some(s)
 }
@@ -3409,6 +3409,20 @@ pub fn lookup(noun: &str, verb: &str) -> Option<(&'static str, &'static [&'stati
         .iter()
         .find(|c| c.0 == noun && c.1 == verb)
         .map(|c| (c.2, c.3))
+}
+
+/// [`lookup`] for an argv: `task forget <task>` is `task.forget` (07, v1 remainder), while
+/// `task forget --task t | --pane p | --workspace w | --before t | --all` (no positional task)
+/// is `task.review.forget` (15 §11). Every other command is [`lookup`].
+pub fn resolve(
+    noun: &str,
+    verb: &str,
+    args: &[String],
+) -> Option<(&'static str, &'static [&'static str])> {
+    if noun == "task" && verb == "forget" && args.first().is_none_or(|a| a.starts_with('-')) {
+        return Some(("task.review.forget", &[]));
+    }
+    lookup(noun, verb)
 }
 
 #[cfg(test)]
@@ -3571,6 +3585,23 @@ mod tests {
         let (_, pos) = lookup("draft", "combine").unwrap();
         let p = build_params(pos, &["a".into(), "b".into()]).unwrap();
         assert_eq!(p["ids"], json!(["a", "b"]));
+    }
+
+    #[test]
+    fn task_forget_routes_by_its_positional() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            resolve("task", "forget", &a(&["k7", "--force"])).unwrap().0,
+            "task.forget"
+        );
+        for args in [&["--task", "k7"][..], &["--all", "--dry-run"], &[]] {
+            assert_eq!(
+                resolve("task", "forget", &a(args)).unwrap().0,
+                "task.review.forget",
+                "{args:?}"
+            );
+        }
+        assert_eq!(resolve("task", "list", &[]).unwrap().0, "task.list");
     }
 
     #[test]

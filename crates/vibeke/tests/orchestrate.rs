@@ -170,7 +170,7 @@ fn best_of_n_family_compare_check_pick_and_discard() {
     assert_eq!(made["runs"].as_array().unwrap().len(), 2);
     // The handles resolve like any task handle.
     assert_eq!(
-        s.ok("task.get", json!({"task": format!("{fam}.2")}))["id"],
+        s.ok("task.get", json!({"task": format!("{fam}.2")}))["task"]["id"],
         t2["id"]
     );
     assert_eq!(
@@ -241,8 +241,35 @@ fn best_of_n_family_compare_check_pick_and_discard() {
         )
         .unwrap_err();
     assert!(again.to_string().contains("already picked"), "{again}");
-    let loser = s.ok("task.get", json!({"task": format!("{fam}.2")}));
-    assert_eq!(loser["status"], "archived");
+    // The loser is archived: its record leaves the live model (so `task.get` no longer finds
+    // it), the family keeps the child marked discarded, and the archive is in the event log.
+    let fam_now = s.ok("family.get", json!({"family": fam}));
+    let kid = |h: String| {
+        fam_now["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["handle"] == h)
+            .cloned()
+            .unwrap()
+    };
+    let (winner, loser) = (kid(format!("{fam}.1")), kid(format!("{fam}.2")));
+    assert_eq!(winner["discarded"], false, "{fam_now}");
+    assert_eq!(winner["task"]["id"], t1["id"]);
+    assert_eq!(loser["discarded"], true, "{fam_now}");
+    assert!(loser["task"].is_null(), "{fam_now}");
+    assert!(
+        s.api("task.get", json!({"task": format!("{fam}.2")}))
+            .is_err(),
+        "an archived task is no longer live"
+    );
+    assert!(
+        s.events("task.status_changed").iter().any(|e| {
+            let e = e.to_string();
+            e.contains(t2["id"].as_str().unwrap()) && e.contains("\"archived\"")
+        }),
+        "the loser's archive is in the event log"
+    );
 }
 
 #[test]
@@ -250,11 +277,8 @@ fn split_moves_uncommitted_work_into_a_new_task_and_cleans_the_source() {
     let s = Session::new("[orchestrate.split]\nenabled = true\nquiet_for = \"100ms\"\n");
     let r = s.repo("shared");
     let ws = s.ok("workspace.create", json!({"cwd": r.to_string_lossy()}));
-    let pane = ws["panes"][0]["id"]
-        .as_str()
-        .or_else(|| ws["pane"]["id"].as_str())
-        .unwrap()
-        .to_string();
+    // `workspace.create` → `{workspace, tab, root_pane}` (07 §4).
+    let pane = ws["root_pane"]["id"].as_str().unwrap().to_string();
     // staged edit, unstaged edit, untracked file.
     std::fs::write(r.join("a.txt"), "a1\na2\nSTAGED\n").unwrap();
     git(&r, &["add", "a.txt"]);
