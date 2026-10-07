@@ -175,6 +175,65 @@ pub fn rewrite_session(text: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// Set the Codex session id `old` to `new`: `payload.id` of `session_meta` lines and the `id` of
+/// a legacy first line (`{id, timestamp, instructions}`). Other lines stay byte-for-byte.
+pub fn rewrite_codex_session(text: &str, old: &str, new: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let (body, nl) = match line.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (line, ""),
+        };
+        let changed = body
+            .contains(old)
+            .then(|| serde_json::from_str::<Value>(body).ok())
+            .flatten()
+            .and_then(|mut v| {
+                let meta = v.get("type").and_then(Value::as_str) == Some("session_meta");
+                let legacy = i == 0 && v.get("type").is_none();
+                let slot = if meta {
+                    v.pointer_mut("/payload/id")
+                } else if legacy {
+                    v.get_mut("id")
+                } else {
+                    None
+                }?;
+                if slot.as_str() != Some(old) {
+                    return None;
+                }
+                *slot = Value::String(new.into());
+                Some(v.to_string())
+            });
+        out.push_str(changed.as_deref().unwrap_or(body));
+        out.push_str(nl);
+    }
+    out
+}
+
+/// Whether a rollout for session `id` exists below `sessions` (`.../rollout-<ts>-<id>.jsonl`).
+fn codex_session_exists(sessions: &Path, id: &str) -> bool {
+    let suffix = format!("{id}.jsonl");
+    let mut stack = vec![(sessions.to_path_buf(), 0)];
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            seen += 1;
+            if seen > 200_000 {
+                // Too many to look through: assume taken; a fresh id costs nothing.
+                return true;
+            }
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            match e.file_type() {
+                Ok(t) if t.is_dir() && depth < 6 => stack.push((e.path(), depth + 1)),
+                _ if name.ends_with(&suffix) => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 /// A transcript the harness can resume from.
 #[derive(Debug, Clone)]
 pub struct Installed {
@@ -201,7 +260,8 @@ pub fn install_transcript(
 
 /// Install the unpacked transcript below `home` where the harness resumes from, with the source
 /// paths rewritten to the new worktree. A session that already exists there is never replaced:
-/// Claude gets a fresh session id, Codex a `-handoff-N` file name. `None` when not resumable.
+/// the harness gets a fresh session id, rewritten in the transcript (and for Codex in the rollout's
+/// file name). `None` when not resumable.
 pub fn install_transcript_in(
     home: &Path,
     m: &Manifest,
@@ -305,23 +365,34 @@ pub fn install_transcript_in(
             {
                 return Err(std::io::Error::other("bad transcript path"));
             }
-            let stem = name.trim_end_matches(".jsonl");
+            // `codex resume <id>` finds the rollout by the id at the end of its file name
+            // anywhere below `sessions/`, so an id that exists there gets a fresh one.
+            let sessions = home.join("sessions");
+            let id = if codex_session_exists(&sessions, session) {
+                new_session_id()
+            } else {
+                session.to_string()
+            };
             let mut dest = home.join(rel);
-            let mut n = 0;
-            while std::fs::symlink_metadata(&dest).is_ok() {
-                n += 1;
-                if n >= 100 {
-                    return Err(std::io::Error::other("no free transcript name"));
-                }
-                dest.set_file_name(format!("{stem}-handoff-{n}.jsonl"));
-            }
+            let text = if id == session {
+                text
+            } else {
+                // The id is the last occurrence in the name (`rollout-<ts>-<id>.jsonl`).
+                let at = name.rfind(session).unwrap_or_default();
+                dest.set_file_name(format!(
+                    "{}{id}{}",
+                    &name[..at],
+                    &name[at + session.len()..]
+                ));
+                rewrite_codex_session(&text, session, &id)
+            };
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             write_new(&dest, &text)?;
             Ok(Some(Installed {
-                resume_args: resume_args("codex", Some(session)).unwrap_or_default(),
-                session: session.to_string(),
+                resume_args: resume_args("codex", Some(&id)).unwrap_or_default(),
+                session: id,
                 path: dest,
                 not_written: Vec::new(),
             }))
@@ -505,34 +576,95 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let work = t.path().join("w");
         std::fs::create_dir(&work).unwrap();
-        std::fs::write(work.join("transcript.jsonl"), "{}\n").unwrap();
+        let s1 = "0199aaaa-bbbb-4ccc-8ddd-eeeeffff0001";
+        std::fs::write(
+            work.join("transcript.jsonl"),
+            format!(
+                "{}\n{}\n",
+                json!({"type": "session_meta", "payload": {"id": s1, "cwd": "/src/app"}}),
+                json!({"type": "response_item", "payload": {"text": s1}})
+            ),
+        )
+        .unwrap();
         let home = t.path().join("codex");
         let mut m = Manifest {
             harness: Some("codex".into()),
-            session_id: Some("s1".into()),
+            session_id: Some(s1.into()),
             ..Default::default()
         };
         m.transcript_rel = Some("config.toml".into());
         assert!(install_transcript_in(&home, &m, &work, t.path(), t.path()).is_err());
         m.transcript_rel = Some("sessions/../config.toml".into());
         assert!(install_transcript_in(&home, &m, &work, t.path(), t.path()).is_err());
-        m.transcript_rel = Some("sessions/2026/10/06/rollout-x-s1.jsonl".into());
+        m.transcript_rel = Some(format!(
+            "sessions/2026/10/06/rollout-2026-10-06T08-00-00-{s1}.jsonl"
+        ));
         let first = install_transcript_in(&home, &m, &work, t.path(), t.path())
             .unwrap()
             .unwrap();
+        assert_eq!(first.session, s1);
         assert_eq!(
             first.path,
-            home.join("sessions/2026/10/06/rollout-x-s1.jsonl")
+            home.join(format!(
+                "sessions/2026/10/06/rollout-2026-10-06T08-00-00-{s1}.jsonl"
+            ))
         );
-        // A second copy of the same session gets its own file next to it.
+        assert_eq!(first.resume_args, vec!["resume", s1]);
+
+        // The session exists on this host (on another day, too): a fresh id, in the file name
+        // and the session_meta line, so `codex resume <id>` can only find the handed-off copy.
+        std::fs::remove_file(&first.path).unwrap();
+        let other_day = home.join(format!(
+            "sessions/2026/10/01/rollout-2026-10-01T08-00-00-{s1}.jsonl"
+        ));
+        std::fs::create_dir_all(other_day.parent().unwrap()).unwrap();
+        std::fs::write(&other_day, "original\n").unwrap();
         let second = install_transcript_in(&home, &m, &work, t.path(), t.path())
             .unwrap()
             .unwrap();
+        assert_ne!(second.session, s1);
+        assert!(valid_session_id(&second.session));
         assert_eq!(
             second.path,
-            home.join("sessions/2026/10/06/rollout-x-s1-handoff-1.jsonl")
+            home.join(format!(
+                "sessions/2026/10/06/rollout-2026-10-06T08-00-00-{}.jsonl",
+                second.session
+            ))
         );
-        assert_eq!(second.resume_args, vec!["resume", "s1"]);
+        assert_eq!(
+            second.resume_args,
+            vec!["resume".to_string(), second.session.clone()]
+        );
+        let text = std::fs::read_to_string(&second.path).unwrap();
+        let mut lines = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap());
+        assert_eq!(
+            lines.next().unwrap()["payload"]["id"],
+            second.session.as_str()
+        );
+        assert_eq!(
+            lines.next().unwrap()["payload"]["text"],
+            s1,
+            "only the session id"
+        );
+        assert_eq!(std::fs::read_to_string(&other_day).unwrap(), "original\n");
+    }
+
+    #[test]
+    fn codex_legacy_first_line_id_rewritten() {
+        let t = format!(
+            "{}\n{}\n",
+            json!({"id": "s1", "timestamp": "x", "instructions": null}),
+            json!({"id": "s1", "type": "message"})
+        );
+        let out = rewrite_codex_session(&t, "s1", "s2");
+        let mut lines = out.lines();
+        assert_eq!(
+            serde_json::from_str::<Value>(lines.next().unwrap()).unwrap()["id"],
+            "s2"
+        );
+        assert_eq!(lines.next(), t.lines().nth(1));
     }
 
     #[test]
