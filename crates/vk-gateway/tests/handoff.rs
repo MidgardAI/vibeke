@@ -243,6 +243,11 @@ async fn export_carry_deliver_import_resume() {
     assert_eq!(&add["manifest"], m);
     assert_eq!(add["from"]["owner"], "self");
     assert_eq!(add["from"]["host"], m["source_host"]);
+    assert_eq!(
+        add["from"]["device"],
+        dev.id.as_str(),
+        "quota keyed by the device"
+    );
     assert_eq!(add["actor"], "gateway:phone");
     assert!(
         !Path::new(add["path"].as_str().unwrap()).exists(),
@@ -356,6 +361,7 @@ async fn teammates_deliver_and_own_devices_may_place() {
     assert_eq!(r["state"], "pending");
     let adds = calls_of(&calls, "handoff.incoming.add");
     assert_eq!(adds.last().unwrap()["from"]["owner"], "teammate");
+    assert_eq!(adds.last().unwrap()["from"]["device"], mate.id.as_str());
     assert_eq!(adds.last().unwrap()["actor"], "gateway:invite");
     assert!(calls_of(&calls, "handoff.accept").is_empty());
 

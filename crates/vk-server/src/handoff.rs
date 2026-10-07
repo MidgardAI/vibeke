@@ -63,7 +63,7 @@ HandoffIncoming = {id: string, from: HandoffFrom, manifest: HandoffSummary, size
 
 pub const SHAPES: &str = r##"
 # --- incoming handoffs (16 §15.2); full scope only ---
-# the gateway hands over a received bundle (it may delete its copy afterwards); idempotent by sha256 and by (sender, manifest.source_job). Only gateway clients may call it. rate_limited {reason: quota} when the sender has [handoff] max_waiting_per_sender (5) waiting or all waiting bundles would exceed max_waiting_bytes (1 GiB)
+# the gateway hands over a received bundle (it may delete its copy afterwards); idempotent by sha256 and by (sender, manifest.source_job), the latter also for a declined or imported record (returned as is). Only gateway clients may call it. rate_limited {reason: quota} when the sender has [handoff] max_waiting_per_sender (5) waiting or all waiting bundles would exceed max_waiting_bytes (1 GiB)
 handoff.incoming.add :: {path: string, manifest: object, sha256: string, from: HandoffFrom, actor?: string}
   => {incoming: HandoffIncoming}
 handoff.incoming.list :: {} => {incoming: [HandoffIncoming]}
@@ -736,12 +736,13 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     // that restarted exports the same job again (another checksum, the same `source_job`).
     let records = all(server);
     let job = manifest.source_job.as_deref().filter(|j| !j.is_empty());
+    // A record of the same job stays its tombstone whatever its state: a declined handoff does
+    // not come back when the sender retries.
     if let Some(r) = records.iter().find(|r| {
-        r.state != "declined"
-            && (r.sha256 == sha
-                || job.is_some()
-                    && r.manifest.source_job.as_deref() == job
-                    && r.from.key() == from.key())
+        (r.state != "declined" && r.sha256 == sha)
+            || job.is_some()
+                && r.manifest.source_job.as_deref() == job
+                && r.from.key() == from.key()
     }) {
         return Ok(json!({"incoming": view(r)}));
     }
@@ -1085,15 +1086,22 @@ async fn clone_into(m: &Manifest, to: &Path) -> Result<PathBuf, RpcError> {
     let dest = to
         .to_str()
         .ok_or_else(|| invalid("clone_to is not valid UTF-8"))?;
-    vk_handoff::git(parent, &["clone", "--", origin, dest])
-        .await
-        .map_err(bump)?;
-    repo_root(to).await.ok_or_else(|| {
-        internal(format!(
-            "{} is not a repository after cloning",
-            to.display()
-        ))
-    })
+    // Checked above: `to` is absent or an empty directory, so whatever is there after a failed
+    // clone is the clone's (git keeps a repository whose checkout failed).
+    let existed = std::fs::symlink_metadata(to).is_ok();
+    let cloned = match vk_handoff::git(parent, &["clone", "--", origin, dest]).await {
+        Ok(_) => repo_root(to).await.ok_or_else(|| {
+            internal(format!(
+                "{} is not a repository after cloning",
+                to.display()
+            ))
+        }),
+        Err(e) => Err(bump(e)),
+    };
+    if cloned.is_err() {
+        unclone(to, existed);
+    }
+    cloned
 }
 
 /// The prompt an imported agent starts with (same text the gateway used).
@@ -1154,6 +1162,7 @@ async fn run_accept(server: &Arc<Server>, r: &Incoming, c: &Choice) -> Result<Va
         }
         RepoChoice::CloneTo(to) => {
             let _ = save_phase(server, r, "cloning");
+            // Before cloning: an empty directory chosen as the target stays (emptied) on failure.
             let existed = std::fs::symlink_metadata(to).is_ok();
             let root = clone_into(m, to).await?;
             let out = import_into(server, r, c, root, true).await;
@@ -1169,6 +1178,9 @@ async fn run_accept(server: &Arc<Server>, r: &Incoming, c: &Choice) -> Result<Va
 /// Remove a clone made by [`clone_into`]: the directory, or only its contents when it was an
 /// empty directory before.
 fn unclone(to: &Path, existed: bool) {
+    if std::fs::symlink_metadata(to).is_err() {
+        return;
+    }
     let r = if existed {
         std::fs::read_dir(to).and_then(|d| {
             for e in d.flatten() {

@@ -854,8 +854,32 @@ async fn the_same_sender_job_exported_again_is_one_handoff() {
     let r = fx.add_from(&p2, &m2, &sha2, other).await.unwrap();
     assert_ne!(id_of(&r), id_of(&first));
     let (p3, m3, sha3) = fx.bundle_of("feature", "", Some("job-2"));
-    let r = fx.add_from(&p3, &m3, &sha3, from).await.unwrap();
+    let r = fx.add_from(&p3, &m3, &sha3, from.clone()).await.unwrap();
     assert_ne!(id_of(&r), id_of(&first));
+    assert_eq!(all(&fx.s).len(), 3);
+
+    // Declined, the job stays declined when the sender retries it.
+    fx.call("handoff.decline", json!({"id": id_of(&first)}))
+        .await
+        .unwrap();
+    let (p4, m4, sha4) = fx.bundle_of("feature", PATCH, Some("job-1"));
+    let again = fx.add_from(&p4, &m4, &sha4, from.clone()).await.unwrap();
+    assert_eq!(id_of(&again), id_of(&first));
+    assert_eq!(again["incoming"]["state"], "declined");
+    assert_eq!(again["incoming"]["bundle_path"], Value::Null);
+    assert_eq!(all(&fx.s).len(), 3);
+    // The same for an imported one.
+    let job2 = id_of(&r);
+    fx.call(
+        "handoff.accept",
+        json!({"id": job2, "repo": {"path": fx.clone}, "start_agent": false}),
+    )
+    .await
+    .unwrap();
+    let (p5, m5, sha5) = fx.bundle_of("feature", PATCH, Some("job-2"));
+    let again = fx.add_from(&p5, &m5, &sha5, from).await.unwrap();
+    assert_eq!(id_of(&again), job2);
+    assert_eq!(again["incoming"]["state"], "imported");
     assert_eq!(all(&fx.s).len(), 3);
 }
 
@@ -898,4 +922,50 @@ async fn a_failed_import_into_a_fresh_clone_removes_the_clone() {
         .unwrap();
     assert_eq!(r["incoming"]["state"], "imported", "{r}");
     assert!(fresh.join(".git").is_dir());
+}
+
+#[tokio::test]
+async fn a_clone_that_fails_midway_is_removed() {
+    let fx = fixture("ho-clone-midway");
+    // An origin whose checkout fails after the clone itself succeeded (a name longer than any
+    // file system allows): git keeps the half-made repository.
+    let bad = fx.root.join("bad.git");
+    sh(&fx.root, &["init", "-q", "--bare", "bad.git"]);
+    let empty = sh(&bad, &["hash-object", "-w", "-t", "blob", "/dev/null"]);
+    let long = "x".repeat(300);
+    let mk = std::process::Command::new("git")
+        .args(["mktree"])
+        .current_dir(&bad)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = mk.stdin.as_ref().unwrap();
+        writeln!(stdin, "100644 blob {empty}\t{long}").unwrap();
+    }
+    let out = mk.wait_with_output().unwrap();
+    let tree = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let commit = sh(&bad, &["commit-tree", &tree, "-m", "long"]);
+    sh(&bad, &["update-ref", "refs/heads/main", &commit]);
+    sh(&bad, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    let m = Manifest {
+        origin: Some(bad.display().to_string()),
+        ..Default::default()
+    };
+
+    let to = fx.root.join("half");
+    assert!(clone_into(&m, &to).await.is_err());
+    assert!(!to.exists(), "the half-made clone is gone");
+    // An empty directory chosen as the target is emptied, not removed.
+    let empty_dir = fx.root.join("empty-target");
+    std::fs::create_dir(&empty_dir).unwrap();
+    assert!(clone_into(&m, &empty_dir).await.is_err());
+    assert!(empty_dir.is_dir());
+    assert_eq!(std::fs::read_dir(&empty_dir).unwrap().count(), 0);
+    // A refused target (not empty) is never touched.
+    std::fs::write(empty_dir.join("mine.txt"), "mine").unwrap();
+    assert!(clone_into(&m, &empty_dir).await.is_err());
+    assert!(empty_dir.join("mine.txt").is_file());
 }

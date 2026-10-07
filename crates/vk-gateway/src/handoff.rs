@@ -635,8 +635,11 @@ async fn deliver(
 
     let actor = format!("gateway:{}", dev.name);
     still_authorized(gw, dev)?;
+    // The authenticated device that carried it, so the server's per-sender quota and job
+    // identity never rest on the manifest's host text alone.
     let from = json!({"host": clean(&manifest.source_host, 100),
-                      "owner": if teammate { "teammate" } else { "self" }});
+                      "owner": if teammate { "teammate" } else { "self" },
+                      "device": dev.id});
     let mut rec =
         crate::handoff_peer::deliver_to_server(gw, &actor, path, manifest, sha, &from).await?;
     let id = s(&rec, "id").unwrap_or_default().to_string();
