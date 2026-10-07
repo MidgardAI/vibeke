@@ -16,7 +16,7 @@ CARGO_TERM_COLOR = "always"
 run = "cargo build --workspace"
 
 [tasks.test]
-run = "cargo nextest run --workspace"
+run = "cargo nextest run --workspace --no-fail-fast"
 
 [tasks.lint]
 run = [
