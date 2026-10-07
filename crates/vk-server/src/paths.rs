@@ -74,8 +74,13 @@ impl Paths {
     pub fn holders(&self) -> PathBuf {
         self.runtime.join("holders")
     }
+    /// Named after the last 12 characters of the pane id (60 random bits of a ULID) so the path
+    /// fits `sun_path` (104 bytes on macOS) under a long `$TMPDIR`. The full path is recorded
+    /// with the holder, so recovery never recomputes it and older sockets still reattach.
     pub fn holder_socket(&self, pane: &str) -> PathBuf {
-        self.holders().join(format!("{pane}.sock"))
+        let start = pane.char_indices().rev().nth(11).map_or(0, |(i, _)| i);
+        let short = &pane[start..];
+        self.holders().join(format!("{short}.sock"))
     }
     pub fn db(&self) -> PathBuf {
         self.state.join("state.db")
@@ -339,5 +344,21 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// A holder socket under the longest macOS `$TMPDIR` shape fits `sun_path` (104 bytes).
+    #[test]
+    fn holder_socket_fits_macos_sun_path() {
+        let p = Paths {
+            session: "default".into(),
+            runtime: PathBuf::from(
+                "/var/folders/vp/bwsl4vyx2r30vjbd6hy07b6m0000gn/T/vibeke-501/default",
+            ),
+            state: PathBuf::new(),
+        };
+        let s = p.holder_socket("01M4AFG11S4Y0DZ7THC5P3TYTZ");
+        assert_eq!(s, p.holders().join("Z7THC5P3TYTZ.sock"));
+        assert!(s.as_os_str().len() < 104, "{}", s.display());
+        assert_eq!(p.holder_socket("p1"), p.holders().join("p1.sock"));
     }
 }
