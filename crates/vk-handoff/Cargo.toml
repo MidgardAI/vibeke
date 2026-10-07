@@ -1,0 +1,21 @@
+[package]
+name = "vk-handoff"
+description = "Vibeke handoff bundles (spec 16 §15.2): pack, unpack and the transactional import into a new worktree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vk-redact.workspace = true
+libc.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4"
+tokio.workspace = true
+tracing.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

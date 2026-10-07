@@ -3542,7 +3542,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tar",
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
@@ -3551,9 +3550,26 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "vk-e2e",
+ "vk-handoff",
  "vk-proto",
  "vk-redact",
  "vk-relay",
+]
+
+[[package]]
+name = "vk-handoff"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vk-redact",
  "zstd",
 ]
 

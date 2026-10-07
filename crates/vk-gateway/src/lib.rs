@@ -358,6 +358,8 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
             "no relay configured: pass --relay (or enable local_socket for a desktop app on this machine)"
         );
     }
+    // Bundles from before a restart have no entry any more.
+    handoff::sweep(&gw);
     // Open the local socket first: a desktop app can then tell "server down" (calls answer
     // `unavailable`) from "gateway down" (nothing listening).
     if gw.cfg.local_socket {
