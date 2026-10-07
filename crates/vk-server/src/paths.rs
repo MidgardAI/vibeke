@@ -261,6 +261,7 @@ pub fn harden_umask() -> u32 {
     };
     vk_hold::set_child_umask(user);
     vk_tasks::set_child_umask(user);
+    vk_handoff::set_child_umask(user);
     user
 }
 

@@ -102,6 +102,7 @@ fn mutating(method: &str) -> bool {
         .chain(crate::agents::METHODS.iter())
         .chain(crate::desk::METHODS.iter())
         .chain(crate::drafts::METHODS.iter())
+        .chain(crate::handoff::METHODS.iter())
         .find(|(n, _)| *n == method)
         .map(|(_, m)| *m)
         .unwrap_or(

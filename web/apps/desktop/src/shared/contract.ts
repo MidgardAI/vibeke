@@ -103,6 +103,11 @@ export const RENDERER_METHODS = [
   'peer.remove',
   'share.list',
   'share.revoke',
+  'handoff.incoming.list',
+  'handoff.incoming.get',
+  'handoff.accept',
+  'handoff.decline',
+  'handoff.resume',
 ] as const satisfies readonly AppMethod[];
 
 export type RendererMethod = (typeof RENDERER_METHODS)[number];

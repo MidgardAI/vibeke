@@ -11,6 +11,22 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// `fetch` and `clone` move whole histories.
 const LONG_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// The user's umask for git children and the files an import writes (09 §3.1): a host that runs
+/// with `umask 077` still creates checkouts with the user's own mode bits. `u32::MAX` = unset
+/// (inherit).
+static CHILD_UMASK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Set the umask git children run with and imported files are created with.
+pub fn set_child_umask(mask: u32) {
+    CHILD_UMASK.store(mask & 0o777, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The umask set by [`set_child_umask`], if any.
+pub(crate) fn child_umask() -> Option<u32> {
+    let m = CHILD_UMASK.load(std::sync::atomic::Ordering::Relaxed);
+    (m != u32::MAX).then_some(m)
+}
+
 /// `-c filter.<name>.{clean,smudge,process}=` for every configured filter driver (reading config
 /// runs nothing; an empty command disables the filter).
 async fn filter_overrides(dir: &Path) -> Vec<String> {
@@ -61,10 +77,19 @@ pub async fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         Some(&"fetch" | &"clone") => LONG_TIMEOUT,
         _ => TIMEOUT,
     };
+    let mut cmd = tokio::process::Command::new("git");
+    if let Some(m) = child_umask() {
+        // SAFETY: umask is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::umask(m as libc::mode_t);
+                Ok(())
+            });
+        }
+    }
     let out = tokio::time::timeout(
         timeout,
-        tokio::process::Command::new("git")
-            .arg("--literal-pathspecs")
+        cmd.arg("--literal-pathspecs")
             .args(&filters)
             .args([
                 "-c",

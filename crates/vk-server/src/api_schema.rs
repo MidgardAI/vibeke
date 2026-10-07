@@ -62,6 +62,7 @@ pub fn method_tables() -> Vec<(&'static str, &'static [(&'static str, bool)])> {
         ("review::interval", review::interval::METHODS),
         ("collision", collision::METHODS),
         ("privacy", privacy::METHODS),
+        ("handoff", handoff::METHODS),
     ]
 }
 
@@ -127,6 +128,7 @@ fn build() -> Result<Registry, Vec<String>> {
         .chain(BATCH_3D_DEFS.lines())
         .chain(BATCH_3F_DEFS.lines())
         .chain(BATCH_3A_DEFS.lines())
+        .chain(crate::handoff::DEFS.lines())
     {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -186,6 +188,7 @@ fn build() -> Result<Registry, Vec<String>> {
             BATCH_3F_EVENT_SHAPES,
             BATCH_3A_EVENT_SHAPES,
             crate::orch_shapes::EVENTS,
+            crate::handoff::EVENTS,
         ],
         "event",
         &mut errs,
@@ -503,6 +506,7 @@ pub const METHOD_SHAPES: &[&str] = &[
     BATCH_3B_SHAPES,
     BATCH_3F_SHAPES,
     BATCH_3A_SHAPES,
+    crate::handoff::SHAPES,
 ];
 
 /// Lane 3E (09 §9.1–9.3): `state.forget` and state encryption.

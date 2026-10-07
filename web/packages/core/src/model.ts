@@ -552,16 +552,70 @@ export interface HandoffManifest {
   [k: string]: unknown;
 }
 
-export interface HandoffFinishResult {
-  workspace?: string | null;
-  pane?: string | null;
+/** What an accepted handoff became on the receiving host (vk-server handoff.rs `run_accept`). */
+export interface HandoffImportResult {
+  repo?: string;
+  cloned?: boolean;
   worktree?: string;
   branch?: string;
+  cwd?: string;
   resumed?: boolean;
+  resume_args?: string[] | null;
+  /** Untracked files the import could not write. */
+  not_written?: { path: string; reason: string }[];
   skipped?: { path: string; reason: string }[];
+  trust?: { tool: string; status: 'trusted' | 'not_needed' | 'not_installed' | 'failed' | string; dir?: string; error?: string }[];
+  workspace?: string | null;
+  pane?: string | null;
   run?: unknown;
   /** The import worked but starting the agent failed (JSON-RPC error object). */
   agent_error?: { code?: number; message?: string; data?: { kind?: string } };
+  /** The import worked but no workspace could be opened on it. */
+  workspace_error?: string;
+}
+
+export type IncomingHandoffState = 'pending' | 'importing' | 'imported' | 'failed' | 'declined';
+
+/** A handoff waiting on (or imported by) the receiving host (vk-server handoff.rs `view`). */
+export interface IncomingHandoff {
+  id: string;
+  from: { host: string; owner: 'self' | 'teammate'; user?: string };
+  manifest: {
+    source_host: string;
+    repo_name: string;
+    origin: string | null;
+    branch: string | null;
+    head: string;
+    harness: string | null;
+    session_id: string | null;
+    cwd_rel: string;
+    skipped: { path: string; reason: string }[];
+    last_message: string | null;
+    untracked: number;
+    transcript: boolean;
+    redactions: number;
+    created_at: number;
+  };
+  size: number;
+  bundle_path: string | null;
+  state: IncomingHandoffState;
+  error: { kind: string; message: string; details?: unknown } | null;
+  result: HandoffImportResult | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  expires_at_ms: number;
+}
+
+/**
+ * `handoff.finish`: the bundle was delivered as an incoming handoff. `pending` waits for the
+ * receiver to accept it; `importing`/`imported` when it imports automatically (or `repo_path` was
+ * given by the owner's device).
+ */
+export interface HandoffFinishResult {
+  incoming: string;
+  state: IncomingHandoffState;
+  result?: HandoffImportResult | null;
+  record?: IncomingHandoff;
 }
 
 /** Per-device push/notification prefs held by the gateway (`prefs.get/set`). */
@@ -700,7 +754,29 @@ export interface AppApi {
   'handoff.discard': { params: { id: string }; result: Record<string, never> };
   'handoff.begin': { params: { manifest: HandoffManifest; size: number; sha256: string }; result: { id: string } };
   'handoff.write': { params: { id: string; offset: number; data_b64: string }; result: { received: number } };
-  'handoff.finish': { params: { id: string; repo_path?: string; start_agent?: boolean }; result: HandoffFinishResult };
+  'handoff.finish': {
+    params: { id: string; repo_path?: string; worktree_path?: string; branch?: string; start_agent?: boolean };
+    result: HandoffFinishResult;
+  };
+  /** Spec 16 §15.2: incoming handoffs on this host (full-scope devices). */
+  'handoff.incoming.list': { params: Record<string, never>; result: { incoming: IncomingHandoff[] } };
+  'handoff.incoming.get': {
+    params: { id: string };
+    result: { incoming: IncomingHandoff; suggested: { repos: string[]; repo: string | null; worktree_path: string | null; branch: string } };
+  };
+  'handoff.accept': {
+    params: {
+      id: string;
+      repo: { path: string } | { clone_to: string };
+      worktree_path?: string;
+      branch?: string;
+      start_agent?: boolean;
+      trust?: ('mise' | 'direnv')[];
+    };
+    result: { incoming: IncomingHandoff };
+  };
+  'handoff.decline': { params: { id: string }; result: { incoming: IncomingHandoff } };
+  'handoff.resume': { params: { id: string }; result: { incoming: IncomingHandoff; run?: unknown; agent_error?: { code?: number; message?: string; data?: { kind?: string } } } };
   /** Spec 16 §15.3: invite another of the owner's hosts (link open for `ttl_s`, default 15 min). */
   'peer.invite': { params: { ttl_s?: number }; result: { link: string; pid: string; open_by: number } };
   /** This host redeems a peer or handoff invitation; `share_user` shows git user.name/email there. */
@@ -752,6 +828,9 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'peer.redeem',
   'peer.remove',
   'share.revoke',
+  'handoff.accept',
+  'handoff.decline',
+  'handoff.resume',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------
