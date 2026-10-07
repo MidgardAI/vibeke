@@ -175,6 +175,8 @@ const FULL_READ_ONLY: &[&str] = &[
     "handoff.status",
     "handoff.jobs",
     "handoff.peers",
+    "handoff.incoming.list",
+    "handoff.incoming.get",
     "peer.list",
     "share.list",
     "fs.browse",
