@@ -9,6 +9,7 @@
 import { Channel, ChannelError } from './channel';
 import { helloDevice } from './hello';
 import * as b64 from './b64';
+import { recordKey } from './keys';
 import {
   MUTATING_METHODS,
   normalizeDashboard,
@@ -46,6 +47,11 @@ export interface HostRecord {
   label?: string | null;
   /** What a share covers. */
   limit?: { workspace?: string; pane?: string } | null;
+  /**
+   * Keystore name of this record's own private key (share/handoff invitations get one each, see
+   * `createInvitationKey`); absent: the device key.
+   */
+  key?: string;
 }
 
 export const hostKind = (r: HostRecord): HostKind => r.kind ?? 'device';
@@ -344,13 +350,27 @@ export class HostConnection implements HostConnectionApi {
     if (hostExpired(rec, clock.now())) return this.expire();
     this.set({ status: 'connecting', nextRetryAt: null });
 
+    let devicePrivate = this.o.devicePrivate;
+    if (rec.key) {
+      try {
+        devicePrivate = await recordKey(platform.keystore, rec, this.o.devicePrivate);
+      } catch (e) {
+        if (gen !== this.generation) return;
+        // Without its own key this record can never authenticate again: stop, as for a revoke.
+        this.running = false;
+        this.set({ status: 'revoked', error: (e as Error).message });
+        return;
+      }
+      if (gen !== this.generation) return;
+    }
+
     let channel: Channel;
     try {
       channel = await Channel.connect({
         socket: platform.connect(relayConnectUrl(rec.relay, rec.host_id)),
         hello: helloDevice(),
         hostKey: b64.decodeExact(rec.hk, 32),
-        devicePrivate: this.o.devicePrivate,
+        devicePrivate,
         clock,
         random: (n) => platform.random(n),
       });

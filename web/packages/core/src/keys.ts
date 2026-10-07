@@ -52,3 +52,48 @@ export async function loadOrCreateDeviceKey(
 ): Promise<Uint8Array> {
   return getOrCreateKey(store, DEVICE_KEY_NAME, () => generatePrivateKey(random), (v) => v.length === 32);
 }
+
+/** Keystore name of the key made for one invitation (`pid` is the link's pairing id). */
+export const invitationKeyName = (pid: string): string => `invite_static:${pid}`;
+
+/**
+ * A fresh Noise static key for accepting one share/handoff invitation, stored under
+ * `invitationKeyName(pid)`. The host then holds a separate device for the invitation, so accepting
+ * one never replaces this device's own (full) pairing, which shares the host's device registry.
+ */
+export async function createInvitationKey(
+  store: KeyStore,
+  pid: string,
+  random: (n: number) => Uint8Array = randomBytes,
+): Promise<{ name: string; key: Uint8Array }> {
+  const name = invitationKeyName(pid);
+  const key = await getOrCreateKey(store, name, () => generatePrivateKey(random), (v) => v.length === 32);
+  return { name, key };
+}
+
+/**
+ * The key to pair with for `link`: an invitation (share/handoff) gets its own key, a plain pairing
+ * link uses the device key.
+ */
+export async function pairingKey(
+  store: KeyStore,
+  link: { pid: string; share?: unknown },
+  deviceKey: Uint8Array,
+  random: (n: number) => Uint8Array = randomBytes,
+): Promise<{ devicePrivate: Uint8Array; keyName?: string }> {
+  if (!link.share) return { devicePrivate: deviceKey };
+  const { name, key } = await createInvitationKey(store, link.pid, random);
+  return { devicePrivate: key, keyName: name };
+}
+
+/**
+ * The private key a host record connects with: its own invitation key when it has one, else the
+ * device key. A missing invitation key (storage cleared) is an error: falling back to the device
+ * key would authenticate as a different device.
+ */
+export async function recordKey(store: KeyStore, record: { key?: string }, deviceKey: Uint8Array): Promise<Uint8Array> {
+  if (!record.key) return deviceKey;
+  const k = await store.get(record.key);
+  if (!k || k.length !== 32) throw new Error('the key for this invitation is missing; accept the invitation again');
+  return k;
+}

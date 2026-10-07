@@ -278,7 +278,7 @@ export const en = {
     accept: 'Accept invitation',
     doneShare: (host: string) => `You can now follow ${host}`,
     doneHandoff: (host: string) => `You can now hand work off to ${host}`,
-    replacesOwn: 'You already pair with this host as your own device. Accepting this invitation would replace that pairing.',
+    replacesOwn: 'You already have full access to this host as your own device, so this invitation is not needed.',
     localOnly: 'This link is for the Vibeke desktop app on the same computer as the host.',
     thisComputer: 'This computer (local socket)',
   },

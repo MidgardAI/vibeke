@@ -155,6 +155,7 @@ async fn export_carry_import_resume() {
         kind: "device".into(),
         expires_at: None,
         limit: None,
+        peer: None,
     };
     gw.add_device(dev.clone()).unwrap();
 

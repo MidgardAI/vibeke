@@ -32,6 +32,8 @@ export interface PairOptions {
   link: PairingLink;
   platform: Platform;
   devicePrivate: Uint8Array;
+  /** Keystore name of `devicePrivate` when it is an invitation's own key (kept on the record). */
+  keyName?: string;
   /** Device display name, e.g. "the maintainer's iPhone". */
   deviceName: string;
   /** Device VAPID public key (base64url), if push is set up already. */
@@ -146,6 +148,7 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
       if (link.share.label) record.label = link.share.label;
       if (link.share.limit) record.limit = link.share.limit;
     }
+    if (o.keyName) record.key = o.keyName;
     await o.store?.put(record);
     return record;
   } finally {

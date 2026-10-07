@@ -202,7 +202,9 @@ const EXTRA: &[(&str, &[&str])] = &[
     ),
     (
         "gateway",
-        &["run", "pair", "share", "devices", "revoke", "status"],
+        &[
+            "run", "pair", "share", "devices", "invites", "revoke", "peer", "status",
+        ],
     ),
     ("relay", &[]),
     ("api", &["schema", "methods", "call"]),

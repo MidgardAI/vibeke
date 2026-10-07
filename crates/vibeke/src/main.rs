@@ -48,7 +48,7 @@ usage:
   vibeke shell-integration zsh|bash|fish   OSC 133/7 prompt marks: eval \"$(vibeke shell-integration zsh)\"
   vibeke events tail [--types t] [--after-seq N] [--follow]
   vibeke completion bash|zsh|fish|nu|powershell
-  vibeke gateway run|pair|share|devices|revoke|status   reach this host from phone/desktop apps (E2E via a relay)
+  vibeke gateway run|pair|share|devices|invites|revoke|peer|status   reach this host from phone/desktop apps (E2E via a relay)
   vibeke relay --public-url URL [--app-dir DIR]         run a self-hosted relay
   vibeke api call <method> [json]
   vibeke --skill | --default-config | --version

@@ -11,6 +11,7 @@ import {
   loadOrCreateDeviceKey,
   normalizeInteraction,
   pair as corePair,
+  pairingKey,
   type Batch,
   type Decision,
   type HostConnectionApi,
@@ -144,14 +145,19 @@ export class AppModel {
   async pair(link: PairingLink, deviceName: string, onPending: (fp: string) => void): Promise<HostRecord> {
     if (this.platform.engine) return this.platform.engine.pair(link, deviceName, onPending);
     if (!this.devicePrivate || !(this._manager instanceof HostManager)) throw new Error('app not started');
-    const record = await corePair({
-      link,
-      platform: this.platform,
-      devicePrivate: this.devicePrivate,
-      deviceName,
-      onPending,
-    });
+    // Invitations get their own key: the host keeps them apart from this device's own pairing.
+    const p = this.platform;
+    const { devicePrivate, keyName } = await pairingKey(p.keystore, link, this.devicePrivate, (n) => p.random(n));
+    let record: HostRecord;
+    try {
+      record = await corePair({ link, platform: p, devicePrivate, keyName, deviceName, onPending });
+    } catch (e) {
+      if (keyName) await p.keystore.delete(keyName).catch(() => {});
+      throw e;
+    }
+    const old = this._manager.get(record.host_id)?.getSnapshot().record.key;
     await this._manager.add(record);
+    if (old && old !== record.key) await p.keystore.delete(old).catch(() => {});
     return record;
   }
 
@@ -160,7 +166,10 @@ export class AppModel {
     if (c && c.getSnapshot().status === 'online') {
       await c.request('push.unsubscribe', {}).catch(() => {});
     }
+    const key = c?.getSnapshot().record.key;
     await this.manager.remove(hostId);
+    // An invitation's own key is useless once its record is gone (the engine drops its own).
+    if (key && !this.platform.engine) await this.platform.keystore.delete(key).catch(() => {});
     if (this._push) {
       await this._push.forgetHost(hostId);
       // §8.1: the forgotten host keeps the old VAPID key; rotate so it can no longer push here.

@@ -76,6 +76,8 @@ export function PairScreen({ d }: { d: string | null }) {
   const existing = link ? hosts.find((h) => h.record.host_id === link.host) : undefined;
   const known = !!existing;
   const share = link?.share;
+  // The host would keep both devices (each invitation gets its own key), but this app keeps one
+  // record per host: accepting would swap full access for the invitation's. It isn't needed.
   const replacesOwn = !!share && !!existing && hostKind(existing.record) === 'device';
   const fp = app.deviceFingerprint();
   const local = link ? transportOf(link.relay) === 'local' : false;
@@ -135,7 +137,7 @@ export function PairScreen({ d }: { d: string | null }) {
             <>
               <TextField label={t.pair.deviceName} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
               {phase.k === 'error' && <Notice tone="danger">{phase.message}</Notice>}
-              <Button variant="primary" size="lg" block disabled={expired || unreachable} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
+              <Button variant="primary" size="lg" block disabled={expired || unreachable || replacesOwn} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
                 {share ? t.pair.accept : t.pair.start}
               </Button>
             </>

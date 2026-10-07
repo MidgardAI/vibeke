@@ -14,7 +14,7 @@ use vk_e2e::{PairingLink, Session, b64, keys};
 
 use crate::Gateway;
 use crate::session::{Ws, spawn_writer};
-use crate::state::{Device, Pairing, PairingStatus, Scope, StateDir, now_s};
+use crate::state::{Device, GitUser, Pairing, PairingStatus, PeerInfo, Scope, StateDir, now_s};
 
 static HANDSHAKES: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
 
@@ -73,6 +73,8 @@ pub async fn claim(
         .chars()
         .take(32)
         .collect();
+    // A host redeeming a peer or handoff invitation introduces itself (spec 16 §15.3).
+    let sender = p.get("peer").filter(|v| v.is_object()).map(peer_identity);
     let fingerprint = keys::fingerprint(&remote);
 
     // Reserve atomically under the registry lock: still pending and unexpired, else refuse.
@@ -167,6 +169,7 @@ pub async fn claim(
         t.abort();
     }
     // Consume atomically: the pairing must still be ours, unexpired, then the device is persisted.
+    let (kind, peer) = device_kind_for(current.share.as_ref(), sender);
     let device = Device {
         id: ulid::Ulid::new().to_string().to_lowercase(),
         name: name.clone(),
@@ -178,18 +181,10 @@ pub async fn claim(
         push: Vec::new(),
         prefs: Default::default(),
         push_failures: 0,
-        kind: current
-            .share
-            .as_ref()
-            .map_or_else(|| "device".to_string(), |sh| sh.kind.clone()),
-        expires_at: current.share.as_ref().map(|sh| {
-            if sh.until > 0 {
-                sh.until
-            } else {
-                now_s() + sh.ttl_s
-            }
-        }),
+        kind,
+        expires_at: current.share.as_ref().and_then(|sh| sh.device_expiry()),
         limit: current.share.as_ref().and_then(|sh| sh.limit.clone()),
+        peer,
     };
     let consumed = confirmed
         && (|| -> anyhow::Result<bool> {
@@ -217,8 +212,8 @@ pub async fn claim(
         })()
         .unwrap_or(false);
     if consumed {
-        gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint}));
-        out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope})).await;
+        gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint, "kind": device.kind}));
+        out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope, "kind": device.kind})).await;
     } else {
         // Back to pending: a hijacked claim must not lock the owner out (spec 16 §4.3).
         if let Ok(_lock) = gw.state.lock()
@@ -274,6 +269,7 @@ pub fn create_with(
         confirmed: None,
         confirmed_claim: None,
         share: share.clone(),
+        created_at: now_s(),
     };
     state.save_pairing(&pairing)?;
     let share_json = share.map(|sh| {
@@ -292,6 +288,54 @@ pub fn create_with(
         share: share_json,
     };
     Ok((pairing, link))
+}
+
+/// The `peer` object of a host's `pair.claim`: `{host_name, user?: {name, email}}`, trimmed.
+fn peer_identity(v: &Value) -> PeerInfo {
+    let text = |v: Option<&Value>, max: usize| -> Option<String> {
+        v.and_then(|x| x.as_str())
+            .map(|x| x.trim().chars().take(max).collect::<String>())
+            .filter(|x| !x.is_empty())
+    };
+    let user = v.get("user").filter(|u| u.is_object()).map(|u| GitUser {
+        name: text(u.get("name"), 128),
+        email: text(u.get("email"), 254),
+    });
+    PeerInfo {
+        owner: String::new(),
+        host_name: text(v.get("host_name"), 64),
+        user: user.filter(|u| u.name.is_some() || u.email.is_some()),
+    }
+}
+
+/// The device kind a claim produces: a `peer` invitation makes one of the owner's own hosts; a
+/// handoff invitation redeemed by a host (it sent `peer`) makes a teammate's host; anything else
+/// keeps the invitation's kind (or `device` for a plain pairing).
+pub fn device_kind_for(
+    share: Option<&crate::state::ShareSpec>,
+    sender: Option<PeerInfo>,
+) -> (String, Option<PeerInfo>) {
+    match share.map(|s| s.kind.as_str()) {
+        Some("peer") => {
+            let owner = share
+                .and_then(|s| s.owner.clone())
+                .unwrap_or_else(|| "self".into());
+            let info = PeerInfo {
+                owner,
+                ..sender.unwrap_or_default()
+            };
+            ("peer".into(), Some(info))
+        }
+        Some("handoff") if sender.is_some() => {
+            let info = PeerInfo {
+                owner: "teammate".into(),
+                ..sender.unwrap_or_default()
+            };
+            ("peer".into(), Some(info))
+        }
+        Some(k) => (k.to_string(), None),
+        None => ("device".into(), None),
+    }
 }
 
 pub fn render_qr(text: &str) -> String {
