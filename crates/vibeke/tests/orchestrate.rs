@@ -13,6 +13,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Stand-in for an interactive harness. It announces itself through the real hook shim the way
+/// Claude Code does at startup: `agent.spawn` (and so `task.create` with agents, which a goal's
+/// background pass uses to start each step) waits up to 30 s for that readiness signal. A fake
+/// that never reports holds every step start for the full 30 s, longer than the test waits for
+/// the next step; it only went unnoticed while the run was (wrongly) ended as exited first.
+const FAKE_CLAUDE: &str = r#"#!/bin/sh
+SID=sess-orch-$$
+printf '%s' "{\"session_id\":\"$SID\",\"source\":\"startup\"}" | "$VIBEKE_BIN" hook claude SessionStart >/dev/null 2>&1
+sleep 60
+"#;
+
 struct Session {
     dir: tempfile::TempDir,
 }
@@ -39,7 +50,17 @@ impl Session {
         .unwrap();
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        write_exec(&bin.join("claude"), "#!/bin/sh\nsleep 60\n");
+        write_exec(&bin.join("claude"), FAKE_CLAUDE);
+        // Panes run a login shell, and Debian/Ubuntu's /etc/profile replaces PATH, so the
+        // server's PATH alone does not reach the pane: put the fake harness first from the
+        // isolated HOME's profile, the way a real install is on a user's PATH.
+        let home = d.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join(".profile"),
+            format!("PATH=\"{}:$PATH\"\nexport PATH\n", bin.display()),
+        )
+        .unwrap();
         Session { dir }
     }
 
