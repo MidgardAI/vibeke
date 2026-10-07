@@ -332,6 +332,51 @@ fn put_pane_in_workspace(srv: &Server, ws: &str, pane: &str, task: Option<&str>)
 
 // ---- claims, prediction and the merge queue ----------------------------------------------------
 
+/// Final review P2: entries added and cancelled while a merge runs survive the run's save (the
+/// outcome is merged into the current queue instead of overwriting it with a stale snapshot).
+#[tokio::test(flavor = "multi_thread")]
+async fn queue_changes_during_a_merge_are_kept() {
+    let (d, srv) = server();
+    enable_all(&srv);
+    let mut c = cfg(&srv);
+    c.merge.queue_check = "sleep 1.5".into();
+    set_cfg(&srv, c);
+    let r = repo(d.path());
+    let w1 = worktree(&r, "t/one");
+    let w2 = worktree(&r, "t/two");
+    let w3 = worktree(&r, "t/three");
+    put_task(&srv, "ta", "k1", &r, &w1, "t/one", None);
+    put_task(&srv, "tb", "k2", &r, &w2, "t/two", None);
+    put_task(&srv, "tc", "k3", &r, &w3, "t/three", None);
+    for (w, f) in [(&w1, "one.txt"), (&w2, "two.txt"), (&w3, "three.txt")] {
+        std::fs::write(w.join(f), "x\n").unwrap();
+        git(w, &["add", "-A"]);
+        git(w, &["commit", "-q", "-m", f]);
+    }
+    ok(&srv, "merge.queue.add", json!({"task": "k1"})).await;
+    ok(&srv, "merge.queue.add", json!({"task": "k2"})).await;
+    let s2 = srv.clone();
+    let run = tokio::spawn(async move { ok(&s2, "merge.queue.run", json!({})).await });
+    // While k1's merge (and its 1.5 s check) runs: k3 is added, k2 cancelled.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    ok(&srv, "merge.queue.add", json!({"task": "k3"})).await;
+    ok(&srv, "merge.queue.cancel", json!({"task": "k2"})).await;
+    let run = run.await.unwrap();
+    assert_eq!(run["results"][0]["event"], "merge.merged", "{run}");
+    let all = ok(&srv, "merge.queue.list", json!({"all": true})).await;
+    let state = |task: &str| {
+        all["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["task"] == task)
+            .map(|e| e["state"].as_str().unwrap().to_string())
+    };
+    assert_eq!(state("ta").as_deref(), Some("merged"), "{all}");
+    assert_eq!(state("tb").as_deref(), Some("cancelled"), "{all}");
+    assert_eq!(state("tc").as_deref(), Some("queued"), "{all}");
+}
+
 #[tokio::test]
 async fn claims_prediction_and_the_queue_work_on_real_worktrees() {
     let (d, srv) = server();

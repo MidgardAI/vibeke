@@ -30,19 +30,30 @@ fn queue(server: &Server) -> MergeQueue {
     load_one(server, QUEUE, "main").unwrap_or_default()
 }
 
-fn save_queue(
+type QueueEvents = Vec<(&'static str, Value, Value)>;
+
+/// Change the stored queue as one step under the core lock: read the *current* queue, apply
+/// `f`, save it with `f`'s events. Nothing saved from an older snapshot can overwrite entries
+/// added, cancelled or requeued in the meantime (e.g. while a merge was running).
+fn update_queue<T>(
     server: &Server,
-    q: &MergeQueue,
-    events: Vec<(&str, Value, Value)>,
-) -> Result<(), vk_proto::rpc::RpcError> {
+    f: impl FnOnce(&mut MergeQueue) -> Result<(T, QueueEvents), vk_proto::rpc::RpcError>,
+) -> Result<T, vk_proto::rpc::RpcError> {
     let mut c = server.core.lock().unwrap();
+    let mut q: MergeQueue = c
+        .store
+        .find(QUEUE, "main")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let (out, events) = f(&mut q)?;
     let mut tx = Tx::new();
-    put(&mut tx, QUEUE, "main", Some("main"), q);
+    put(&mut tx, QUEUE, "main", Some("main"), &q);
     for (k, s, d) in events {
         tx.event(k, s, d);
     }
     server.commit(&mut c, tx).map_err(internal)?;
-    Ok(())
+    Ok(out)
 }
 
 fn gate(server: &Server) -> Result<OrchestrateConfig, vk_proto::rpc::RpcError> {
@@ -357,7 +368,6 @@ async fn queue_add(server: &Arc<Server>, p: &Value) -> R {
         )
         .details(json!({"reason": "dirty_worktree"})));
     }
-    let mut q = queue(server);
     let entry = QueueEntry {
         id: format!("q-{}", &crate::core::ulid().to_lowercase()[16..]),
         task: task.id.clone(),
@@ -375,17 +385,21 @@ async fn queue_add(server: &Arc<Server>, p: &Value) -> R {
         conflict_paths: vec![],
         check: None,
     };
-    let added = q.add(entry).map_err(from_orch)?.clone();
-    save_queue(
-        server,
-        &q,
-        vec![(
+    let (added, position) = update_queue(server, |q| {
+        let added = q.add(entry).map_err(from_orch)?.clone();
+        let position = q
+            .order()
+            .iter()
+            .position(|e| e.id == added.id)
+            .map(|i| i + 1);
+        let ev = vec![(
             "merge.queued",
             json!({"entry": added.id, "task": task.id}),
             json!({"handle": added.handle, "target": target, "priority": added.priority}),
-        )],
-    )?;
-    let mut out = json!({"entry": added, "position": q.order().iter().position(|e| e.id == added.id).map(|i| i + 1)});
+        )];
+        Ok(((added, position), ev))
+    })?;
+    let mut out = json!({"entry": added, "position": position});
     if b(p, "run").unwrap_or(false) {
         out["run"] = queue_run(server, &json!({"entry": added.id})).await?;
     }
@@ -421,27 +435,25 @@ fn queue_edit(server: &Arc<Server>, p: &Value, cancel: bool) -> R {
     let which = s(p, "entry")
         .or_else(|| s(p, "task"))
         .ok_or_else(|| invalid("missing param `entry`"))?;
-    let mut q = queue(server);
-    if cancel {
-        q.cancel(which).map_err(from_orch)?;
-    } else {
-        q.requeue(which).map_err(from_orch)?;
-    }
-    let e = q.get(which).cloned();
-    let kind = if cancel {
-        "merge.cancelled"
-    } else {
-        "merge.requeued"
-    };
-    save_queue(
-        server,
-        &q,
-        vec![(
+    let e = update_queue(server, |q| {
+        if cancel {
+            q.cancel(which).map_err(from_orch)?;
+        } else {
+            q.requeue(which).map_err(from_orch)?;
+        }
+        let e = q.get(which).cloned();
+        let kind = if cancel {
+            "merge.cancelled"
+        } else {
+            "merge.requeued"
+        };
+        let ev = vec![(
             kind,
             json!({"entry": e.as_ref().map(|e| e.id.clone())}),
             json!({"handle": e.as_ref().map(|e| e.handle.clone())}),
-        )],
-    )?;
+        )];
+        Ok((e, ev))
+    })?;
     Ok(json!({"entry": e}))
 }
 
@@ -500,13 +512,29 @@ async fn queue_run(server: &Arc<Server>, p: &Value) -> R {
                 json!({"handle": e.handle, "target": e.target, "error": er.to_string()}),
             ),
         };
-        let mut q3 = q2;
-        q3.trim(100);
-        save_queue(
-            server,
-            &q3,
-            vec![(kind, json!({"entry": e.id, "task": e.task}), data.clone())],
-        )?;
+        // Record the outcome on the queue as it is *now*: entries added, cancelled or
+        // requeued while the merge ran stay as they are.
+        let e = update_queue(server, |cur| {
+            let e = match cur.entries.iter_mut().find(|x| x.id == e.id) {
+                Some(slot) => {
+                    let cancelled = slot.state == EntryState::Cancelled;
+                    *slot = e.clone();
+                    // Cancelled mid-merge: a merge that landed is a fact; anything else stays
+                    // cancelled.
+                    if cancelled && e.state != EntryState::Merged {
+                        slot.state = EntryState::Cancelled;
+                    }
+                    slot.clone()
+                }
+                None => {
+                    cur.entries.push(e.clone());
+                    e.clone()
+                }
+            };
+            cur.trim(100);
+            let ev = vec![(kind, json!({"entry": e.id, "task": e.task}), data.clone())];
+            Ok((e, ev))
+        })?;
         results.push(json!({"entry": e, "event": kind, "detail": data}));
         // Stop at the first entry that did not land: later ones may depend on it.
         if kind != "merge.merged" || only.is_some() {
