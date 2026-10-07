@@ -20,6 +20,7 @@ pub mod drafts;
 pub mod fs_api;
 pub mod gateway_api;
 pub mod git_api;
+pub mod handoff;
 pub mod hardening;
 pub mod inbox;
 pub mod items;

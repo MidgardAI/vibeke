@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub use git::{git, git_line};
+pub use git::{git, git_line, set_child_umask};
 pub use import::{Imported, NotWritten, import, verify};
 pub use transcript::{
     Installed, export_transcript, install_transcript, install_transcript_in, redact_lines,
@@ -177,16 +177,33 @@ pub(crate) fn create_new_under(
                 return Err(std::io::Error::other("path crosses a symlink or file"));
             }
             Ok(_) => {}
-            Err(_) => std::fs::create_dir(&p)?,
+            Err(_) => {
+                std::fs::create_dir(&p)?;
+                user_mode(&p, 0o777)?;
+            }
         }
     }
     use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
+    let f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(mode)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(root.join(rel))
+        .open(root.join(rel))?;
+    if let Some(m) = git::child_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(mode & !m))?;
+    }
+    Ok(f)
+}
+
+/// Give a directory this crate just created the user's mode bits (see [`set_child_umask`]).
+fn user_mode(p: &Path, mode: u32) -> std::io::Result<()> {
+    if let Some(m) = git::child_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode & !m))?;
+    }
+    Ok(())
 }
 
 /// Create `root/rel` from `src` without following symlinks in any existing component and without

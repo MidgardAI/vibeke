@@ -447,6 +447,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::review::pr::PANE_FORBIDDEN.contains(&method)
         || crate::collision::PANE_FORBIDDEN.contains(&method)
         || crate::review::ext::PANE_FORBIDDEN.contains(&method)
+        || crate::handoff::PANE_FORBIDDEN.contains(&method)
         || PANE_FORBIDDEN_PREFIXES
             .iter()
             .any(|p| method.starts_with(p))
@@ -624,6 +625,12 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
         return r;
     }
     if let Some(r) = crate::gateway_api::api(server, ctx, method, p).await {
+        return r;
+    }
+    // Incoming handoffs (16 §15.2).
+    if method.starts_with("handoff.")
+        && let Some(r) = Box::pin(crate::handoff::api(server, ctx, method, p)).await
+    {
         return r;
     }
     if let Some(r) = crate::assist::api(server, ctx, method, p).await {
