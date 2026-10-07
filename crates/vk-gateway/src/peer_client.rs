@@ -356,18 +356,31 @@ impl Conn {
         }
     }
 
-    async fn send(&mut self, v: &Value) -> Result<()> {
-        for f in self.session.encrypt(v.to_string().as_bytes())? {
+    async fn send(&mut self, msg: &[u8]) -> Result<()> {
+        for f in self.session.encrypt(msg)? {
             self.ws.send(Message::Binary(f.into())).await?;
         }
         Ok(())
     }
 
-    /// Send one request and wait for its response, skipping notifications.
-    async fn request(&mut self, method: &str, params: Value) -> Result<Value, ApiError> {
+    /// Send one request (with an optional binary payload after a NUL byte, see
+    /// `handoff_peer::split_payload`) and wait for its response, skipping notifications.
+    async fn request_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        payload: Option<&[u8]>,
+    ) -> Result<Value, ApiError> {
         let id = self.next;
         self.next += 1;
-        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        let mut msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+            .to_string()
+            .into_bytes();
+        if let Some(data) = payload {
+            msg.reserve(data.len() + 1);
+            msg.push(0);
+            msg.extend_from_slice(data);
+        }
         self.send(&msg)
             .await
             .map_err(|e| ApiError::unavailable(format!("{e:#}")))?;
@@ -404,6 +417,10 @@ impl Conn {
         }
     }
 
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value, ApiError> {
+        self.request_with(method, params, None).await
+    }
+
     /// Call an app-API method on the peer. Object params get an `op_id` when they have none
     /// (mutating methods need one; the others ignore it).
     pub async fn call(&mut self, method: &str, mut params: Value) -> Result<Value, ApiError> {
@@ -412,6 +429,21 @@ impl Conn {
                 .or_insert_with(|| ulid::Ulid::new().to_string().into());
         }
         self.request(method, params).await
+    }
+
+    /// Like [`call`](Self::call), with `data` as the request's binary payload
+    /// (`handoff.write`): raw bytes in the encrypted channel, no base64.
+    pub async fn call_with_payload(
+        &mut self,
+        method: &str,
+        mut params: Value,
+        data: &[u8],
+    ) -> Result<Value, ApiError> {
+        if let Some(m) = params.as_object_mut() {
+            m.entry("op_id")
+                .or_insert_with(|| ulid::Ulid::new().to_string().into());
+        }
+        self.request_with(method, params, Some(data)).await
     }
 
     /// Like [`call`](Self::call) without adding an `op_id` (devclient's raw mode).

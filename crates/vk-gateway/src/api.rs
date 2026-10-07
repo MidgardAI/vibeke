@@ -89,6 +89,8 @@ const SERVER_READ_ONLY: &[&str] = &[
     "worktree.list",
     "fs.browse",
     "repo.candidates",
+    "handoff.jobs",
+    "handoff.peers",
 ];
 
 /// Minimum scope per method; `None` = unknown method.
@@ -129,6 +131,10 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "tab.rename" | "tab.close" | "tab.focus" => Full,
         // Host-wide directory browsing for path pickers: read-only, but sees all of $HOME.
         "fs.browse" | "repo.candidates" => Full,
+        // Gateway-to-gateway handoffs (spec 16 §15.2): a peer delivers (handoff_peer.rs); the
+        // owner's apps start, follow and cancel outgoing jobs (server records, handoff_send.rs).
+        "handoff.offer" | "handoff.status" | "handoff.commit" | "handoff.send" | "handoff.jobs"
+        | "handoff.cancel" | "handoff.peers" => Full,
         // Host-to-host trust and invitation management (spec 16 §15.3–§15.4, peers.rs).
         "peer.invite" | "peer.redeem" | "peer.list" | "peer.remove" | "share.list"
         | "share.revoke" => Full,
@@ -139,6 +145,9 @@ pub fn required_scope(method: &str) -> Option<Scope> {
 /// Full-scope methods without side effects (no op_id needed).
 const FULL_READ_ONLY: &[&str] = &[
     "handoff.read",
+    "handoff.status",
+    "handoff.jobs",
+    "handoff.peers",
     "peer.list",
     "share.list",
     "fs.browse",
@@ -1264,6 +1273,26 @@ impl Call<'_> {
             m if m.starts_with("peer.") || m == "share.list" || m == "share.revoke" => {
                 crate::peers::dispatch(self.gw, self.device, m, &p).await
             }
+            // Outgoing jobs live in the server; this gateway's worker runs them.
+            "handoff.send" => {
+                req(&p, "peer")?;
+                self.server(method, pick(&p, &["pane", "peer", "interrupt"]))
+                    .await
+            }
+            "handoff.cancel" => {
+                req(&p, "id")?;
+                self.server(method, pick(&p, &["id"])).await
+            }
+            "handoff.jobs" | "handoff.peers" => self.server(method, json!({})).await,
+            // Delivery from another host (or an app using the same protocol).
+            "handoff.offer" | "handoff.status" | "handoff.commit" => {
+                crate::handoff_peer::dispatch(self.gw, self.device, method, &p).await
+            }
+            "handoff.write" | "handoff.discard"
+                if s(&p, "id").is_some_and(crate::handoff_peer::owns) =>
+            {
+                crate::handoff_peer::dispatch(self.gw, self.device, method, &p).await
+            }
             m if m.starts_with("handoff.") => {
                 // A teammate's host has exactly a handoff invitation's rights there.
                 let dev = teammate_as_handoff(self.device);
@@ -1665,6 +1694,23 @@ mod share_tests {
             );
             assert!(kind_allows("device", m), "{m}");
         }
+        // Outgoing jobs: the owner's apps only.
+        for m in [
+            "handoff.send",
+            "handoff.jobs",
+            "handoff.cancel",
+            "handoff.peers",
+        ] {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(
+                !kind_allows("peer", m) && !kind_allows("handoff", m) && !kind_allows("share", m),
+                "{m}"
+            );
+            assert!(kind_allows("device", m), "{m}");
+        }
+        assert!(is_mutating("handoff.send") && is_mutating("handoff.cancel"));
+        assert!(is_mutating("handoff.offer") && is_mutating("handoff.commit"));
+        assert!(!is_mutating("handoff.jobs") && !is_mutating("handoff.status"));
         assert!(is_mutating("peer.redeem") && is_mutating("share.revoke"));
         assert!(!is_mutating("peer.list") && !is_mutating("share.list"));
         assert!(!kind_allows("from-the-future", "ping"));

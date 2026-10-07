@@ -126,7 +126,7 @@ fn s<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
 }
 
 /// Disk work off the async threads.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
 ) -> Result<T, ApiError> {
     tokio::task::spawn_blocking(f)
@@ -150,7 +150,7 @@ pub async fn dispatch(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) 
     }
 }
 
-fn dir(gw: &Gateway) -> Result<PathBuf, ApiError> {
+pub(crate) fn dir(gw: &Gateway) -> Result<PathBuf, ApiError> {
     let d = gw.state.dir.join("handoffs");
     std::fs::create_dir_all(&d).map_err(|e| err("internal", e.to_string()))?;
     #[cfg(unix)]
@@ -166,6 +166,53 @@ fn dir(gw: &Gateway) -> Result<PathBuf, ApiError> {
 
 async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     let pane = s(p, "pane").ok_or_else(|| ApiError::invalid("pane is required"))?;
+    let ex = export_bundle(
+        gw,
+        &format!("gateway:{}", dev.name),
+        Some(dev),
+        pane,
+        p.get("interrupt").and_then(|v| v.as_bool()) == Some(true),
+        p.get("full").and_then(|v| v.as_bool()) == Some(true),
+    )
+    .await?;
+    with_entries(|m| {
+        m.insert(
+            ex.id.clone(),
+            Entry {
+                owner: dev.id.clone(),
+                path: ex.path.clone(),
+                size: ex.size,
+                created: Instant::now(),
+                dir: Dir::Out,
+                busy: false,
+            },
+        )
+    });
+    gw.state.audit(&json!({"ts": now_s(), "event": "handoff.exported", "device": dev.id, "pane": pane, "size": ex.size}));
+    Ok(json!({"id": ex.id, "size": ex.size, "sha256": ex.sha256, "manifest": ex.manifest}))
+}
+
+/// A packed bundle in the handoffs directory (`<id>.out.tar.zst`); the caller owns the file.
+#[derive(Debug, Clone)]
+pub struct Exported {
+    pub id: String,
+    pub path: PathBuf,
+    pub size: u64,
+    pub sha256: String,
+    pub manifest: Manifest,
+}
+
+/// Export the work in `pane` at a turn boundary. `actor` names who asks (server audit);
+/// `auth`, when a device asks, is re-authorized before its agent is interrupted. Without a
+/// device (a server job, `handoff.send`) the server already authorized the request.
+pub async fn export_bundle(
+    gw: &Arc<Gateway>,
+    actor: &str,
+    auth: Option<&Device>,
+    pane: &str,
+    interrupt: bool,
+    full: bool,
+) -> Result<Exported, ApiError> {
     let info = gw.server.call("pane.get", json!({"pane": pane})).await?;
     let cwd = s(&info, "cwd")
         .map(PathBuf::from)
@@ -180,20 +227,18 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         if matches!(state, "working" | "starting") {
-            if p.get("interrupt").and_then(|v| v.as_bool()) != Some(true) {
+            if !interrupt {
                 return Err(err(
                     "busy",
                     "the agent is working; wait for it to finish or pass interrupt: true",
                 ));
             }
             let id = s(&run, "id").unwrap_or("").to_string();
-            still_authorized(gw, dev)?;
+            if let Some(dev) = auth {
+                still_authorized(gw, dev)?;
+            }
             gw.server
-                .call_as(
-                    &format!("gateway:{}", dev.name),
-                    "agent.interrupt",
-                    json!({"target": id}),
-                )
+                .call_as(actor, "agent.interrupt", json!({"target": id}))
                 .await?;
             let r = gw.server.call("agent.wait", json!({"target": id, "until": ["idle", "exited", "error"], "timeout_ms": 30_000})).await;
             if r.is_err() {
@@ -214,7 +259,6 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         .filter(|b| b != "HEAD");
     let origin = git_line(&root, &["remote", "get-url", "origin"]).await;
     let has_remotes = git_line(&root, &["remote"]).await.is_some();
-    let full = p.get("full").and_then(|v| v.as_bool()) == Some(true);
 
     let id = ulid::Ulid::new().to_string().to_lowercase();
     let work = tempfile::Builder::new()
@@ -371,21 +415,13 @@ async fn export(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         let _ = std::fs::remove_file(&out_path);
         return Err(err("too_large", "handoff bundle exceeds 200 MiB"));
     }
-    with_entries(|m| {
-        m.insert(
-            id.clone(),
-            Entry {
-                owner: dev.id.clone(),
-                path: out_path,
-                size,
-                created: Instant::now(),
-                dir: Dir::Out,
-                busy: false,
-            },
-        )
-    });
-    gw.state.audit(&json!({"ts": now_s(), "event": "handoff.exported", "device": dev.id, "pane": pane, "size": size}));
-    Ok(json!({"id": id, "size": size, "sha256": sha, "manifest": manifest}))
+    Ok(Exported {
+        id,
+        path: out_path,
+        size,
+        sha256: sha,
+        manifest,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

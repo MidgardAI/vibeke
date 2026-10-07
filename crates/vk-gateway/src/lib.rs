@@ -6,6 +6,8 @@ pub mod api;
 pub mod cli;
 pub mod events;
 pub mod handoff;
+pub mod handoff_peer;
+pub mod handoff_send;
 pub mod local;
 pub mod notify;
 pub mod pair;
@@ -398,6 +400,8 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
     }
     tokio::spawn(server::run_events(gw.server.path().clone(), gw.hub.clone()));
     tokio::spawn(notify::run(gw.clone()));
+    // Outgoing handoffs (server jobs) and the peer list clients choose from.
+    tokio::spawn(handoff_send::run(gw.clone()));
     tokio::spawn({
         let gw = gw.clone();
         async move {

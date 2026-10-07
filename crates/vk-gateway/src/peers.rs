@@ -259,6 +259,7 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                         ApiError::unavailable(m)
                     }
                 })?;
+            crate::handoff_send::publish_peers(gw, false).await;
             Ok(json!({"peer": rec.public_json()}))
         }
         "peer.list" => {
@@ -270,6 +271,7 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 .filter(|v| !v.is_empty())
                 .ok_or_else(|| ApiError::invalid("id is required"))?;
             remove(&gw.state, id).map_err(|e| ApiError::new("not_found", e.to_string()))?;
+            crate::handoff_send::publish_peers(gw, false).await;
             Ok(json!({}))
         }
         "share.list" => {
