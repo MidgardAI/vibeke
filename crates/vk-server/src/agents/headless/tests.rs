@@ -1712,6 +1712,34 @@ fn acp_terminal_capability_and_isolation() {
     assert_eq!(writes(&cx)[0]["error"]["code"], -32002);
 }
 
+/// Final review P2: resuming a headless run into a split's destination pane continues it in
+/// that pane's cwd (the new worktree) and workspace, not the original cwd.
+#[test]
+fn headless_resume_into_a_pane_uses_its_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = crate::hardening::testkit::server(dir.path(), "resume");
+    let mut pane = crate::hardening::testkit::sample_pane("dest", "wdest");
+    pane.cwd = Some("/work/new-worktree".into());
+    {
+        let mut c = s.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.pane(pane);
+        s.commit(&mut c, tx).unwrap();
+    }
+    let mut run = crate::hardening::testkit::sample_run("r1", "src");
+    run.harness = "codex".into();
+    run.harness_session_id = Some("th-1".into());
+    run.cwd = Some("/work/shared".into());
+    let p = resume_params(&s, &run, Some("dest")).unwrap();
+    assert_eq!(p["cwd"], "/work/new-worktree");
+    assert_eq!(p["pane"], "dest");
+    assert_eq!(p["resume"], "th-1");
+    // Without a pane: where it ran.
+    let p = resume_params(&s, &run, None).unwrap();
+    assert_eq!(p["cwd"], "/work/shared");
+    assert!(p.get("pane").is_none());
+}
+
 /// Codex's own sandbox is switched off only at the sandbox level, with the configured args
 /// inserted after the binary (13 §3, 04 §6.2); the relay argv of a shared app-server.
 #[test]

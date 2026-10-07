@@ -2286,7 +2286,7 @@ async fn resume_run(server: &Arc<Server>, run_id: &str, pane: Option<String>) ->
 pub(crate) async fn resume_from(server: &Arc<Server>, run: AgentRun, pane: Option<String>) -> R {
     if headless::is_headless(&run) {
         // A new headless process continuing the session (thread/resume, --resume, session/load).
-        return headless::resume(server, &run).await;
+        return headless::resume(server, &run, pane.as_deref()).await;
     }
     if run.resume_argv.is_empty() {
         return Err(err(ErrorKind::Unsupported, "no resume handle for this run"));

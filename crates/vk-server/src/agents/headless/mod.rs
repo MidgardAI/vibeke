@@ -1855,17 +1855,39 @@ pub(super) async fn start(server: &Arc<Server>, ctx: Option<&Ctx>, p: &Value) ->
 }
 
 /// `agent.resume` of a headless run: a new headless process continuing the session.
-pub(super) async fn resume(server: &Arc<Server>, run: &AgentRun) -> R {
+pub(super) async fn resume(server: &Arc<Server>, run: &AgentRun, pane: Option<&str>) -> R {
+    let p = resume_params(server, run, pane)?;
+    // With a destination pane, the new headless tab opens in that pane's workspace.
+    let ctx = pane.map(|_| crate::drafts::user_ctx());
+    start(server, ctx.as_ref(), &p).await
+}
+
+/// The `agent.start` parameters that continue `run` headless. With `pane` (e.g. a split's
+/// destination) the run continues there: in that pane's workspace and cwd, not the original
+/// cwd.
+pub(super) fn resume_params(server: &Server, run: &AgentRun, pane: Option<&str>) -> R {
     let sid = run
         .harness_session_id
         .clone()
         .ok_or_else(|| err(ErrorKind::Unsupported, "no session to resume"))?;
+    let cwd = match pane {
+        Some(pid) => Some(
+            server
+                .pane_cwd(pid)
+                .or_else(|| server.with_core(|c| c.pane(pid).and_then(|x| x.cwd.clone())))
+                .ok_or_else(|| invalid(format!("pane {pid} has no working directory")))?,
+        ),
+        None => run.cwd.clone(),
+    };
     let mut p = json!({
         "harness": run.harness,
         "resume": sid,
         "mode": "headless",
-        "cwd": run.cwd,
+        "cwd": cwd,
     });
+    if let Some(pid) = pane {
+        p["pane"] = json!(pid);
+    }
     if let Some(n) = &run.name
         && server.with_core(|c| {
             !c.model
@@ -1883,7 +1905,7 @@ pub(super) async fn resume(server: &Arc<Server>, run: &AgentRun) -> R {
         p["harness"] = json!(run.harness.trim_start_matches("acp:"));
         p["acp"] = json!(harness::shell_join(&argv));
     }
-    start(server, None, &p).await
+    Ok(p)
 }
 
 /// `agent.prompt` on a headless run.
