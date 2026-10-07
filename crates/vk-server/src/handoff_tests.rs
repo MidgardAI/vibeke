@@ -84,6 +84,16 @@ impl Fx {
     /// Pack a bundle on branch `branch` with `patch` as the uncommitted changes. Returns the
     /// bundle path (in the "gateway's" directory), its manifest and sha256.
     fn bundle(&self, branch: &str, patch: &str) -> (PathBuf, Manifest, String) {
+        self.bundle_of(branch, patch, None)
+    }
+
+    /// [`Fx::bundle`] of the sender's job `job` (`manifest.source_job`).
+    fn bundle_of(
+        &self,
+        branch: &str,
+        patch: &str,
+        job: Option<&str>,
+    ) -> (PathBuf, Manifest, String) {
         self.n.set(self.n.get() + 1);
         let n = self.n.get();
         let work = self.root.join(format!("pack-{n}"));
@@ -102,6 +112,7 @@ impl Fx {
             source_root: self.seed.display().to_string(),
             untracked: vec!["app/new.txt".into()],
             created_at: 1,
+            source_job: job.map(str::to_string),
             ..Default::default()
         };
         let gw = self.root.join("gw");
@@ -130,6 +141,22 @@ impl Fx {
             "handoff.incoming.add",
             &json!({"path": path, "manifest": m, "sha256": sha,
                     "from": {"host": "marvin", "owner": owner}, "actor": "gateway:phone"}),
+        )
+        .await
+    }
+
+    async fn add_from(
+        &self,
+        path: &Path,
+        m: &Manifest,
+        sha: &str,
+        from: Value,
+    ) -> Result<Value, RpcError> {
+        dispatch(
+            &self.s,
+            &gateway(),
+            "handoff.incoming.add",
+            &json!({"path": path, "manifest": m, "sha256": sha, "from": from, "actor": "gateway:peer"}),
         )
         .await
     }
@@ -218,9 +245,14 @@ fn the_auto_import_policy_matrix() {
         repo
     );
     assert_eq!(
-        auto_placement("self", false, std::slice::from_ref(&other), Some(&remembered))
-            .unwrap()
-            .0,
+        auto_placement(
+            "self",
+            false,
+            std::slice::from_ref(&other),
+            Some(&remembered)
+        )
+        .unwrap()
+        .0,
         other
     );
 }
@@ -752,4 +784,118 @@ async fn the_sweep_removes_expired_records_and_stray_files() {
         .await
         .unwrap_err();
     assert_eq!(e.data.kind, "not_found");
+}
+
+#[tokio::test]
+async fn waiting_handoffs_are_limited_per_sender_and_in_bytes() {
+    let fx = fixture("ho-quota");
+    let alpha = json!({"host": "alpha", "owner": "teammate", "device": "dev-alpha"});
+    let mut ids = Vec::new();
+    for n in 0..MAX_WAITING_PER_SENDER {
+        let (path, m, sha) = fx.bundle(&format!("b{n}"), PATCH);
+        let r = fx.add_from(&path, &m, &sha, alpha.clone()).await.unwrap();
+        ids.push(id_of(&r));
+    }
+    // A sixth from the same sending device is refused, whatever host name it gives.
+    let (path, m, sha) = fx.bundle("b-more", PATCH);
+    let renamed = json!({"host": "alpha-2", "owner": "teammate", "device": "dev-alpha"});
+    let e = fx
+        .add_from(&path, &m, &sha, renamed.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(e.data.kind, "rate_limited", "{e}");
+    assert_eq!(e.data.details["reason"], "quota");
+    assert_eq!(e.data.details["limit"], "per_sender");
+    assert!(path.is_file(), "the gateway's copy is left to the gateway");
+    // Someone else still gets through.
+    let (p2, m2, sha2) = fx.bundle("b-other", PATCH);
+    fx.add_from(&p2, &m2, &sha2, json!({"host": "beta", "owner": "self"}))
+        .await
+        .unwrap();
+    // Declining one frees a place.
+    fx.call("handoff.decline", json!({"id": ids[0]}))
+        .await
+        .unwrap();
+    fx.add_from(&path, &m, &sha, renamed).await.unwrap();
+
+    // All waiting bundles together are bounded in bytes.
+    let records = all(&fx.s);
+    let waiting: u64 = records
+        .iter()
+        .filter(|r| !r.bundle_path.is_empty())
+        .map(|r| r.size)
+        .sum();
+    let gamma = Sender {
+        host: "gamma".into(),
+        owner: "self".into(),
+        user: None,
+        device: None,
+    };
+    assert!(check_quota(&records, &gamma, 1, (5, waiting + 1)).is_ok());
+    let e = check_quota(&records, &gamma, 2, (5, waiting + 1)).unwrap_err();
+    assert_eq!(e.data.kind, "rate_limited");
+    assert_eq!(e.data.details["limit"], "bytes");
+}
+
+#[tokio::test]
+async fn the_same_sender_job_exported_again_is_one_handoff() {
+    let fx = fixture("ho-job");
+    let from = json!({"host": "alpha", "owner": "teammate", "device": "dev-alpha"});
+    let (p1, m1, sha1) = fx.bundle_of("feature", PATCH, Some("job-1"));
+    let first = fx.add_from(&p1, &m1, &sha1, from.clone()).await.unwrap();
+    // Exported again after a restart: another checksum, the same job.
+    let (p2, m2, sha2) = fx.bundle_of("feature", "", Some("job-1"));
+    assert_ne!(sha1, sha2);
+    let again = fx.add_from(&p2, &m2, &sha2, from.clone()).await.unwrap();
+    assert_eq!(id_of(&again), id_of(&first));
+    assert_eq!(all(&fx.s).len(), 1);
+    // Another sender's job of the same name, or another job, is another handoff.
+    let other = json!({"host": "beta", "owner": "teammate", "device": "dev-beta"});
+    let r = fx.add_from(&p2, &m2, &sha2, other).await.unwrap();
+    assert_ne!(id_of(&r), id_of(&first));
+    let (p3, m3, sha3) = fx.bundle_of("feature", "", Some("job-2"));
+    let r = fx.add_from(&p3, &m3, &sha3, from).await.unwrap();
+    assert_ne!(id_of(&r), id_of(&first));
+    assert_eq!(all(&fx.s).len(), 3);
+}
+
+#[tokio::test]
+async fn a_failed_import_into_a_fresh_clone_removes_the_clone() {
+    let fx = fixture("ho-clone-fail");
+    let r = fx.add("feature", "teammate").await.unwrap();
+    let id = id_of(&r);
+    let taken = fx.root.join("taken");
+    std::fs::create_dir(&taken).unwrap();
+    let fresh = fx.root.join("fresh");
+    let e = fx
+        .call(
+            "handoff.accept",
+            json!({"id": id, "repo": {"clone_to": fresh}, "worktree_path": taken, "start_agent": false}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.data.kind, "conflict", "{e}");
+    assert!(!fresh.exists(), "the clone made for the import is gone");
+    assert!(taken.is_dir());
+    // An empty directory chosen as the clone target stays, empty.
+    let empty = fx.root.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    fx.call(
+        "handoff.accept",
+        json!({"id": id, "repo": {"clone_to": empty}, "worktree_path": taken, "start_agent": false}),
+    )
+    .await
+    .unwrap_err();
+    assert!(empty.is_dir());
+    assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
+    // Retrying at the same place works.
+    let r = fx
+        .call(
+            "handoff.accept",
+            json!({"id": id, "repo": {"clone_to": fresh}, "start_agent": false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["incoming"]["state"], "imported", "{r}");
+    assert!(fresh.join(".git").is_dir());
 }

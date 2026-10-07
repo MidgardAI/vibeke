@@ -6,7 +6,11 @@
 //! kept under `<state>/handoffs/in/<id>.tar.zst` (0700 directory) and the record in the kv store
 //! (`handoff.incoming`), so every client sees the same list through `handoff.incoming.list|get`
 //! and the `handoff.incoming` / `handoff.updated` events. `handoff.accept` runs the transactional
-//! import of `vk-handoff`; a failed import keeps the bundle so the receiver can try again.
+//! import of `vk-handoff`; a failed import keeps the bundle so the receiver can try again (a
+//! fresh clone made for it is removed). `handoff.incoming.add` dedupes by sha256 and by
+//! (sender, `manifest.source_job`), and refuses with `rate_limited` beyond `[handoff]
+//! max_waiting_per_sender` (5) waiting bundles from one sender or `max_waiting_bytes` (1 GiB) in
+//! all.
 //! Records expire after 7 days; a sweep at start and every hour removes expired records, the
 //! bundles of imported or declined ones and files no record refers to.
 //!
@@ -59,7 +63,7 @@ HandoffIncoming = {id: string, from: HandoffFrom, manifest: HandoffSummary, size
 
 pub const SHAPES: &str = r##"
 # --- incoming handoffs (16 §15.2); full scope only ---
-# the gateway hands over a received bundle (it may delete its copy afterwards); idempotent by sha256. Only gateway clients may call it
+# the gateway hands over a received bundle (it may delete its copy afterwards); idempotent by sha256 and by (sender, manifest.source_job). Only gateway clients may call it. rate_limited {reason: quota} when the sender has [handoff] max_waiting_per_sender (5) waiting or all waiting bundles would exceed max_waiting_bytes (1 GiB)
 handoff.incoming.add :: {path: string, manifest: object, sha256: string, from: HandoffFrom, actor?: string}
   => {incoming: HandoffIncoming}
 handoff.incoming.list :: {} => {incoming: [HandoffIncoming]}
@@ -88,6 +92,13 @@ const PREFS: &str = "prefs";
 const TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 const SWEEP_EVERY: Duration = Duration::from_secs(3600);
 const MAX_REMEMBERED_REPOS: usize = 50;
+/// Defaults of `[handoff] max_waiting_per_sender` and `max_waiting_bytes`: handoffs whose bundle
+/// is kept (pending, failed, importing) from one sender, and their bytes from everyone.
+const MAX_WAITING_PER_SENDER: usize = 5;
+const MAX_WAITING_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// `handoff.incoming.add` one at a time: its duplicate and quota checks see every earlier add.
+static ADDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Ids whose bundle file exists before (or while) its record says so: the sweep leaves them.
 static BUSY: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
@@ -99,6 +110,19 @@ pub struct Sender {
     pub owner: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// The gateway's device id of the sending host (peer deliveries); not shown to clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
+impl Sender {
+    /// Who the quota and the job identity are counted for: the sending device, else its name.
+    fn key(&self) -> String {
+        match &self.device {
+            Some(d) => format!("device:{d}"),
+            None => format!("host:{}", self.host),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -565,7 +589,17 @@ fn parse_from(p: &Value) -> Result<Sender, RpcError> {
         .and_then(Value::as_str)
         .map(|u| clean(u, 200))
         .filter(|u| !u.is_empty());
-    Ok(Sender { host, owner, user })
+    let device = f
+        .get("device")
+        .and_then(Value::as_str)
+        .map(|d| clean(d, 100))
+        .filter(|d| !d.is_empty());
+    Ok(Sender {
+        host,
+        owner,
+        user,
+        device,
+    })
 }
 
 /// Take the gateway's bundle: link (or copy) it in, check its checksum and that `manifest` is the
@@ -623,6 +657,61 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(f).await.map_err(internal)?
 }
 
+/// `[handoff] max_waiting_per_sender = 5`, `max_waiting_bytes = 1073741824`.
+fn quota() -> (usize, u64) {
+    let cfg = crate::config_api::current();
+    let h = cfg.extra.get("handoff");
+    let num = |k: &str| {
+        h.and_then(|h| h.get(k))
+            .and_then(|v| v.as_integer())
+            .filter(|n| *n > 0)
+    };
+    (
+        num("max_waiting_per_sender").map_or(MAX_WAITING_PER_SENDER, |n| n as usize),
+        num("max_waiting_bytes").map_or(MAX_WAITING_BYTES, |n| n as u64),
+    )
+}
+
+/// Refuse another bundle when `from` already has `per_sender` waiting, or when all waiting
+/// bundles with this one would exceed `total` bytes.
+fn check_quota(
+    records: &[Incoming],
+    from: &Sender,
+    size: u64,
+    (per_sender, total): (usize, u64),
+) -> Result<(), RpcError> {
+    let now = now_ms();
+    let waiting: Vec<&Incoming> = records
+        .iter()
+        .filter(|r| !r.bundle_path.is_empty() && r.expires_at_ms > now)
+        .filter(|r| matches!(r.state.as_str(), "pending" | "failed" | "importing"))
+        .collect();
+    let key = from.key();
+    let mine = waiting.iter().filter(|r| r.from.key() == key).count();
+    if mine >= per_sender {
+        return Err(err(
+            ErrorKind::RateLimited,
+            format!(
+                "{mine} handoffs from {} are waiting; accept or decline them first",
+                from.host
+            ),
+        )
+        .details(json!({"reason": "quota", "limit": "per_sender", "max": per_sender})));
+    }
+    let bytes: u64 = waiting.iter().map(|r| r.size).sum();
+    if bytes.saturating_add(size) > total {
+        return Err(err(
+            ErrorKind::RateLimited,
+            format!(
+                "waiting handoffs would take more than {} MiB",
+                total / (1024 * 1024)
+            ),
+        )
+        .details(json!({"reason": "quota", "limit": "bytes", "max": total})));
+    }
+    Ok(())
+}
+
 async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if ctx.kind != "gateway" || ctx.pane_scope.is_some() {
         return Err(err(
@@ -642,13 +731,24 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     }
     let from = parse_from(p)?;
 
-    // Idempotent: a gateway that lost the answer hands the same bundle over again.
-    if let Some(r) = all(server)
-        .into_iter()
-        .find(|r| r.sha256 == sha && r.state != "declined")
-    {
-        return Ok(json!({"incoming": view(&r)}));
+    let adding = ADDING.lock().await;
+    // Idempotent: a gateway that lost the answer hands the same bundle over again, and a sender
+    // that restarted exports the same job again (another checksum, the same `source_job`).
+    let records = all(server);
+    let job = manifest.source_job.as_deref().filter(|j| !j.is_empty());
+    if let Some(r) = records.iter().find(|r| {
+        r.state != "declined"
+            && (r.sha256 == sha
+                || job.is_some()
+                    && r.manifest.source_job.as_deref() == job
+                    && r.from.key() == from.key())
+    }) {
+        return Ok(json!({"incoming": view(r)}));
     }
+    let offered = std::fs::symlink_metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    check_quota(&records, &from, offered, quota())?;
 
     let id = ulid::Ulid::new().to_string().to_lowercase();
     let dir = in_dir(server).map_err(internal)?;
@@ -689,6 +789,7 @@ async fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     };
     let saved = save(server, &rec);
     busy(&id, false);
+    drop(adding);
     if let Err(e) = saved {
         let _ = std::fs::remove_file(&dest);
         return Err(e);
@@ -1040,7 +1141,7 @@ async fn start_agent(
 
 async fn run_accept(server: &Arc<Server>, r: &Incoming, c: &Choice) -> Result<Value, RpcError> {
     let m = &r.manifest;
-    let (root, cloned) = match &c.repo {
+    match &c.repo {
         RepoChoice::Path(p) => {
             let root = repo_root(p).await.ok_or_else(|| {
                 err(
@@ -1049,13 +1150,53 @@ async fn run_accept(server: &Arc<Server>, r: &Incoming, c: &Choice) -> Result<Va
                 )
             })?;
             check_origin(&root, m).await?;
-            (root, false)
+            import_into(server, r, c, root, false).await
         }
         RepoChoice::CloneTo(to) => {
             let _ = save_phase(server, r, "cloning");
-            (clone_into(m, to).await?, true)
+            let existed = std::fs::symlink_metadata(to).is_ok();
+            let root = clone_into(m, to).await?;
+            let out = import_into(server, r, c, root, true).await;
+            if out.is_err() {
+                // The clone was made for this import: without it a retry can clone there again.
+                unclone(to, existed);
+            }
+            out
         }
+    }
+}
+
+/// Remove a clone made by [`clone_into`]: the directory, or only its contents when it was an
+/// empty directory before.
+fn unclone(to: &Path, existed: bool) {
+    let r = if existed {
+        std::fs::read_dir(to).and_then(|d| {
+            for e in d.flatten() {
+                let p = e.path();
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    std::fs::remove_dir_all(&p)?;
+                } else {
+                    std::fs::remove_file(&p)?;
+                }
+            }
+            Ok(())
+        })
+    } else {
+        std::fs::remove_dir_all(to)
     };
+    if let Err(e) = r {
+        tracing::warn!("handoff: removing the clone at {}: {e}", to.display());
+    }
+}
+
+async fn import_into(
+    server: &Arc<Server>,
+    r: &Incoming,
+    c: &Choice,
+    root: PathBuf,
+    cloned: bool,
+) -> Result<Value, RpcError> {
+    let m = &r.manifest;
     let _ = save_phase(server, r, "importing");
 
     // The bundle is still the one that arrived, and its manifest the one recorded.
