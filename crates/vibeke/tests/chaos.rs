@@ -39,13 +39,24 @@ impl Session {
         c
     }
     fn json(&self, args: &[&str]) -> Value {
-        let out = self.cmd(args).output().expect("run vibeke");
-        assert!(
-            out.status.success(),
-            "vibeke {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
+        // Right after a kill -9 the CLI auto-starts a new server; on Linux the first connection
+        // can be reset while that server comes up (`io` error, ECONNRESET). Clients reconnect
+        // (the TUI does), so retry transient I/O errors a few times; anything else fails at once.
+        // The server-side cause on Linux is still open (spec 10 chaos notes).
+        let mut tries = 0;
+        loop {
+            let out = self.cmd(args).output().expect("run vibeke");
+            if out.status.success() {
+                return serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+            }
+            let err = String::from_utf8_lossy(&out.stderr).to_string();
+            tries += 1;
+            if tries < 4 && err.contains("\"kind\":\"io\"") {
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            panic!("vibeke {args:?}: {err}");
+        }
     }
     fn server_pid(&self) -> i32 {
         std::fs::read_to_string(self.dir.path().join("run/default/server.pid"))

@@ -387,3 +387,6 @@ Nightly: each target 1 CPU-hour; crashes auto-filed as private issues. M6: submi
 | **M4 VMs + polish** | VM containment + start-time budgets (13 §14); warm-pool/fork tests; parity features' e2e tests (groups, floating panes, palette, FTS archive search) |
 | **M5 compatibility + plugins** | full pinned Herdr public contract inventory green on macOS/Linux; unchanged real plugin suite and socket-client replay/smoke green; installation/migration/lifecycle/routing tests; native scopes and legacy trust/revocation/no-escalation tests (§4.8) |
 | **M6 hardening / Windows / 1.0** | full matrix incl. Windows Terminal and Herdr plugin/automation conformance on Windows; 7 consecutive green nightlies; external security review findings closed; reproducible Linux builds; OSS-Fuzz onboarding; 30 days of dogfood with zero P0; §1.7 product-metric gates met |
+
+
+*Open (2026-10-07):* on GitHub's Ubuntu runner, the first CLI call after a chaos `kill -9` was once answered with `Connection reset by peer` while the auto-started server came up (macOS never shows it). `tests/chaos.rs` now retries transient `io` errors; the server-side cause needs a Linux host with the server log.
