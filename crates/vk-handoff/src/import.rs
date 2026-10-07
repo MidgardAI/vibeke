@@ -85,7 +85,8 @@ async fn valid_branch(root: &Path, br: &str) -> bool {
 /// Import the unpacked bundle in `work` (described by `m`) into the repository at `root`, as a new
 /// worktree on a new branch. `worktree` and `branch` default to `<repo>-handoff-<branch>` next to
 /// the repository and `handoff/<branch>`, with `-2`, `-3`, ... on collisions; chosen ones must not
-/// exist yet. Nothing is left behind on failure.
+/// exist yet. Nothing this import did not create is ever removed, and nothing it created is left
+/// behind on failure.
 pub async fn import(
     work: &Path,
     m: &Manifest,
@@ -180,6 +181,9 @@ pub async fn import(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "repo".into());
+    // Each candidate is claimed atomically: the directory with `mkdir` and the branch with
+    // `git branch` (a ref lock), so an import running at the same time that picked the same
+    // name simply moves on, and a failure removes only what this import created.
     let mut placed = None;
     for n in 1..100 {
         let suffix = if n == 1 {
@@ -193,9 +197,31 @@ pub async fn import(
         let br = branch
             .map(str::to_string)
             .unwrap_or_else(|| format!("{base_branch}{suffix}"));
-        if !exists(&wt) && !branch_exists(root, &br).await {
-            placed = Some((wt, br));
-            break;
+        if !valid_branch(root, &br).await {
+            return Err(Error::new(
+                "invalid_params",
+                format!("{br} is not a valid branch name"),
+            ));
+        }
+        match claim(root, &wt, &br, commit).await? {
+            Claim::Placed => {
+                placed = Some((wt, br));
+                break;
+            }
+            // A chosen path or branch has no alternative.
+            Claim::PathTaken if worktree.is_some() => {
+                return Err(Error::new(
+                    "conflict",
+                    format!("{} already exists", wt.display()),
+                ));
+            }
+            Claim::BranchTaken if branch.is_some() => {
+                return Err(Error::new(
+                    "conflict",
+                    format!("branch {br} already exists"),
+                ));
+            }
+            Claim::PathTaken | Claim::BranchTaken => {}
         }
     }
     let Some((wt, br)) = placed else {
@@ -204,18 +230,7 @@ pub async fn import(
             format!("no free worktree and branch name for {base_branch}"),
         ));
     };
-    if !valid_branch(root, &br).await {
-        return Err(Error::new(
-            "invalid_params",
-            format!("{br} is not a valid branch name"),
-        ));
-    }
 
-    let wts = wt.to_str().unwrap_or_default().to_string();
-    if let Err(e) = git(root, &["worktree", "add", "-b", &br, &wts, commit]).await {
-        rollback(root, &wt, &br).await;
-        return Err(e);
-    }
     match fill(work, m, &wt).await {
         Ok((cwd, not_written, installed)) => Ok(Imported {
             worktree: wt,
@@ -300,7 +315,46 @@ async fn fill(work: &Path, m: &Manifest, wt: &Path) -> Result<Filled> {
     .map_err(|e| Error::new("internal", e.to_string()))
 }
 
-/// Remove what `worktree add` created; both were checked not to exist before.
+enum Claim {
+    Placed,
+    /// The path or the branch exists; nothing was created.
+    PathTaken,
+    BranchTaken,
+}
+
+/// Create the worktree directory, the branch at `commit` and the worktree in it. Either all
+/// three exist afterwards, or only what was there before.
+async fn claim(root: &Path, wt: &Path, br: &str, commit: &str) -> Result<Claim> {
+    if let Some(p) = wt.parent() {
+        std::fs::create_dir_all(p)
+            .map_err(|e| Error::new("conflict", format!("{}: {e}", p.display())))?;
+    }
+    match std::fs::create_dir(wt) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(Claim::PathTaken);
+        }
+        Err(e) => return Err(Error::new("conflict", format!("{}: {e}", wt.display()))),
+    }
+    // `git branch` refuses an existing branch under the ref lock, so the branch is ours iff it
+    // succeeded.
+    if let Err(e) = git(root, &["branch", "--no-track", br, commit]).await {
+        let _ = std::fs::remove_dir(wt);
+        return if branch_exists(root, br).await {
+            Ok(Claim::BranchTaken)
+        } else {
+            Err(e)
+        };
+    }
+    let wts = wt.to_str().unwrap_or_default();
+    if let Err(e) = git(root, &["worktree", "add", wts, br]).await {
+        rollback(root, wt, br).await;
+        return Err(e);
+    }
+    Ok(Claim::Placed)
+}
+
+/// Remove the worktree, its directory and the branch: all created by [`claim`] for this import.
 async fn rollback(root: &Path, wt: &Path, br: &str) {
     let wts = wt.to_str().unwrap_or_default();
     let _ = git(root, &["worktree", "remove", "--force", wts]).await;
@@ -450,6 +504,65 @@ mod tests {
             "invalid_params"
         );
         assert!(!other.exists());
+    }
+
+    #[tokio::test]
+    async fn names_taken_by_someone_else_are_skipped_and_kept() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, m) = setup(t.path(), "");
+        let parent = repo.parent().unwrap();
+        // Another import got here first: its worktree directory (no branch yet) and, for the
+        // next name, its branch (no directory yet).
+        let theirs = parent.join("repo-handoff-feature");
+        std::fs::create_dir(&theirs).unwrap();
+        std::fs::write(theirs.join("keep.txt"), "theirs\n").unwrap();
+        sh(&repo, &["branch", "handoff/feature-2", "HEAD"]);
+        let r = import(&work, &m, &repo, None, None).await.unwrap();
+        assert_eq!(r.worktree, parent.join("repo-handoff-feature-3"));
+        assert_eq!(r.branch, "handoff/feature-3");
+        assert_eq!(
+            std::fs::read_to_string(theirs.join("keep.txt")).unwrap(),
+            "theirs\n"
+        );
+        assert!(branch_exists(&repo, "handoff/feature-2").await);
+        assert!(!parent.join("repo-handoff-feature-2").exists());
+        // A chosen branch someone else holds is a conflict that leaves it and makes nothing.
+        let mine = parent.join("mine");
+        let e = import(&work, &m, &repo, Some(&mine), Some("handoff/feature-2"))
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind, "conflict");
+        assert!(branch_exists(&repo, "handoff/feature-2").await);
+        assert!(!mine.exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_imports_get_their_own_names() {
+        let t = tempfile::tempdir().unwrap();
+        let (repo, work, m) = setup(t.path(), PATCH);
+        let (a, b, c) = tokio::join!(
+            import(&work, &m, &repo, None, None),
+            import(&work, &m, &repo, None, None),
+            import(&work, &m, &repo, None, None)
+        );
+        let mut got: Vec<String> = [a, b, c]
+            .into_iter()
+            .map(|r| {
+                let r = r.unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(r.worktree.join("app/a.txt")).unwrap(),
+                    "one\ntwo\n"
+                );
+                r.branch
+            })
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            ["handoff/feature", "handoff/feature-2", "handoff/feature-3"]
+        );
+        let list = sh(&repo, &["worktree", "list", "--porcelain"]);
+        assert_eq!(list.matches("worktree ").count(), 4, "{list}");
     }
 
     #[tokio::test]
