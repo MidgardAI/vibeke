@@ -969,3 +969,27 @@ async fn a_clone_that_fails_midway_is_removed() {
     assert!(clone_into(&m, &empty_dir).await.is_err());
     assert!(empty_dir.join("mine.txt").is_file());
 }
+
+#[tokio::test]
+async fn concurrent_clones_to_one_target_never_remove_each_other() {
+    let fx = fixture("ho-clone-race");
+    let m = Manifest {
+        origin: Some(fx.origin.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let to = fx.root.join("race");
+    let (a, b) = tokio::join!(clone_into(&m, &to), clone_into(&m, &to));
+    // One clone lands; the other is refused and leaves the winner's files alone.
+    assert!(a.is_ok() != b.is_ok(), "{a:?} {b:?}");
+    let e = a.err().or(b.err()).unwrap();
+    assert_eq!(e.data.kind, "conflict", "{e}");
+    assert!(to.join("app/a.txt").is_file());
+    assert_eq!(sh(&to, &["rev-parse", "HEAD"]), fx.head);
+    // Neither staging directory is left behind.
+    let stray: Vec<_> = std::fs::read_dir(&fx.root)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".vk-clone-"))
+        .collect();
+    assert!(stray.is_empty(), "{stray:?}");
+}

@@ -1082,26 +1082,48 @@ async fn clone_into(m: &Manifest, to: &Path) -> Result<PathBuf, RpcError> {
             }
         }
     }
+    // Clone into a private staging directory next to the target, then rename it into place:
+    // the rename only succeeds while the target is absent or empty, so a concurrent accept that
+    // picked the same target can never have its clone removed by our cleanup.
     let parent = to.parent().unwrap_or(Path::new("/"));
-    let dest = to
+    let name = to
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| invalid("clone_to is not valid UTF-8"))?;
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{name}.vk-clone-"))
+        .tempdir_in(parent)
+        .map_err(|e| {
+            internal(format!(
+                "cannot create a directory in {}: {e}",
+                parent.display()
+            ))
+        })?;
+    let dest = staging.path().join("repo");
+    let dest_s = dest
         .to_str()
         .ok_or_else(|| invalid("clone_to is not valid UTF-8"))?;
-    // Checked above: `to` is absent or an empty directory, so whatever is there after a failed
-    // clone is the clone's (git keeps a repository whose checkout failed).
-    let existed = std::fs::symlink_metadata(to).is_ok();
-    let cloned = match vk_handoff::git(parent, &["clone", "--", origin, dest]).await {
-        Ok(_) => repo_root(to).await.ok_or_else(|| {
-            internal(format!(
-                "{} is not a repository after cloning",
-                to.display()
-            ))
-        }),
-        Err(e) => Err(bump(e)),
-    };
-    if cloned.is_err() {
-        unclone(to, existed);
+    vk_handoff::git(parent, &["clone", "--", origin, dest_s])
+        .await
+        .map_err(bump)?;
+    if repo_root(&dest).await.is_none() {
+        return Err(internal(format!(
+            "{} is not a repository after cloning",
+            to.display()
+        )));
     }
-    cloned
+    std::fs::rename(&dest, to).map_err(|e| {
+        err(
+            ErrorKind::Conflict,
+            format!("{} is no longer free ({e})", to.display()),
+        )
+    })?;
+    repo_root(to).await.ok_or_else(|| {
+        internal(format!(
+            "{} is not a repository after cloning",
+            to.display()
+        ))
+    })
 }
 
 /// The prompt an imported agent starts with (same text the gateway used).
