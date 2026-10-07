@@ -556,7 +556,7 @@ pub fn inbox_items(app: &App) -> Vec<Item> {
             });
         }
     }
-    v.sort_by(|a, b| b.age_ms.cmp(&a.age_ms));
+    v.sort_by_key(|i| std::cmp::Reverse(i.age_ms));
     v
 }
 
@@ -1842,7 +1842,7 @@ fn on_accepted(app: &mut App, mi: usize, id: &str, res: Result<Value, RpcErr>) {
 /// One row of the handoffs list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
-    In(usize, Rec),
+    In(usize, Box<Rec>),
     Out(usize, Job),
 }
 
@@ -1855,7 +1855,7 @@ pub fn entries(app: &App) -> Vec<Entry> {
             .iter()
             .filter(|r| r.state != "declined" && (r.expires_at_ms == 0 || r.expires_at_ms > now))
         {
-            v.push(Entry::In(mi, r.clone()));
+            v.push(Entry::In(mi, Box::new(r.clone())));
         }
     }
     for (&mi, list) in &app.ux.handoff.jobs {

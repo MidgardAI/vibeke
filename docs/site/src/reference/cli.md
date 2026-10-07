@@ -564,6 +564,15 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `search` | `<query>` | `audit.search` | <text> [--types t] [--since-ms ms] [--limit 200] |
 | `verify` | - | `audit.verify` | recompute the audit log's hash chain (also part of `vibeke doctor`) |
 
+## `vibeke handoff`
+
+| Verb | Positionals | Method | Description |
+|---|---|---|---|
+| `send` | `<peer>` | `handoff.send` | <peer> [--pane p] [--interrupt] — hand this pane's work (default: the pane you run it in) to another host; the gateway exports and delivers it. Run outside panes or elevated (`vibeke auth elevate`). |
+| `jobs` | - | `handoff.jobs` | outgoing handoffs: state, progress, the destination's answer |
+| `cancel` | `<id>` | `handoff.cancel` | <job> — stop an outgoing handoff; the destination drops what it received |
+| `peers` | - | `handoff.peers` | hosts this one can hand work to (add one with `vibeke gateway peer add <link>`) |
+
 ## `vibeke security`
 
 | Verb | Positionals | Method | Description |

@@ -218,7 +218,7 @@ fn the_auto_import_policy_matrix() {
         repo
     );
     assert_eq!(
-        auto_placement("self", false, &[other.clone()], Some(&remembered))
+        auto_placement("self", false, std::slice::from_ref(&other), Some(&remembered))
             .unwrap()
             .0,
         other

@@ -1336,6 +1336,233 @@
         "workspaces"
       ]
     },
+    "HandoffFrom": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string",
+          "enum": [
+            "self",
+            "teammate"
+          ]
+        },
+        "user": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "owner"
+      ]
+    },
+    "HandoffIncoming": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/HandoffFrom"
+        },
+        "manifest": {
+          "$ref": "#/$defs/HandoffSummary"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "bundle_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "importing",
+            "imported",
+            "failed",
+            "declined"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "details": {}
+              },
+              "required": [
+                "kind",
+                "message"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        },
+        "expires_at_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "manifest",
+        "size",
+        "bundle_path",
+        "state",
+        "error",
+        "result",
+        "created_at_ms",
+        "updated_at_ms",
+        "expires_at_ms"
+      ]
+    },
+    "HandoffSummary": {
+      "type": "object",
+      "properties": {
+        "source_host": {
+          "type": "string"
+        },
+        "repo_name": {
+          "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd_rel": {
+          "type": "string"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "reason"
+            ]
+          }
+        },
+        "last_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "untracked": {
+          "type": "integer"
+        },
+        "transcript": {
+          "type": "boolean"
+        },
+        "redactions": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_host",
+        "repo_name",
+        "origin",
+        "branch",
+        "head",
+        "harness",
+        "session_id",
+        "cwd_rel",
+        "skipped",
+        "last_message",
+        "untracked",
+        "transcript",
+        "redactions",
+        "created_at"
+      ]
+    },
     "Interaction": {
       "type": "object",
       "properties": {
@@ -12881,6 +13108,72 @@
         ]
       }
     },
+    "fs.browse": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "~"
+          },
+          "prefix": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "git_repo": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "git_repo": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "git_repo"
+              ]
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "parent",
+          "git_repo",
+          "entries",
+          "truncated"
+        ]
+      }
+    },
     "fs.list": {
       "mutating": false,
       "scope": "pane",
@@ -14109,6 +14402,893 @@
         },
         "required": [
           "group"
+        ]
+      }
+    },
+    "handoff.accept": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "clone_to": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "clone_to"
+                ]
+              }
+            ]
+          },
+          "worktree_path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "start_agent": {
+            "type": "boolean",
+            "default": true
+          },
+          "trust": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "mise",
+                "direnv"
+              ]
+            }
+          },
+          "actor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "repo"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      }
+    },
+    "handoff.cancel": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pane": {
+                "type": "string"
+              },
+              "peer": {
+                "type": "string"
+              },
+              "peer_name": {
+                "type": "string"
+              },
+              "interrupt": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "exporting",
+                  "sending",
+                  "delivered",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "sent": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "incoming": {
+                "type": "string"
+              },
+              "incoming_state": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              },
+              "by": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "pane",
+              "peer",
+              "peer_name",
+              "interrupt",
+              "state",
+              "sent",
+              "total",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      }
+    },
+    "handoff.decline": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      }
+    },
+    "handoff.incoming.add": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": "object"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/$defs/HandoffFrom"
+          },
+          "actor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "manifest",
+          "sha256",
+          "from"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      }
+    },
+    "handoff.incoming.get": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          },
+          "suggested": {
+            "type": "object",
+            "properties": {
+              "repos": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "repo": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "worktree_path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repos",
+              "repo",
+              "worktree_path",
+              "branch"
+            ]
+          }
+        },
+        "required": [
+          "incoming",
+          "suggested"
+        ]
+      }
+    },
+    "handoff.incoming.list": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/HandoffIncoming"
+            }
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      }
+    },
+    "handoff.job.update": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "exporting",
+              "sending",
+              "delivered",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "sent": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "incoming": {
+            "type": "string"
+          },
+          "incoming_state": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pane": {
+                "type": "string"
+              },
+              "peer": {
+                "type": "string"
+              },
+              "peer_name": {
+                "type": "string"
+              },
+              "interrupt": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "exporting",
+                  "sending",
+                  "delivered",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "sent": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "incoming": {
+                "type": "string"
+              },
+              "incoming_state": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              },
+              "by": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "pane",
+              "peer",
+              "peer_name",
+              "interrupt",
+              "state",
+              "sent",
+              "total",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      }
+    },
+    "handoff.jobs": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "pane": {
+                  "type": "string"
+                },
+                "peer": {
+                  "type": "string"
+                },
+                "peer_name": {
+                  "type": "string"
+                },
+                "interrupt": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "exporting",
+                    "sending",
+                    "delivered",
+                    "failed",
+                    "cancelled"
+                  ]
+                },
+                "sent": {
+                  "type": "integer"
+                },
+                "total": {
+                  "type": "integer"
+                },
+                "incoming": {
+                  "type": "string"
+                },
+                "incoming_state": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "updated_at": {
+                  "type": "integer"
+                },
+                "by": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "pane",
+                "peer",
+                "peer_name",
+                "interrupt",
+                "state",
+                "sent",
+                "total",
+                "created_at",
+                "updated_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "jobs"
+        ]
+      }
+    },
+    "handoff.peers": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object"
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "peers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "owner": {
+                  "type": "string",
+                  "enum": [
+                    "self",
+                    "teammate"
+                  ]
+                },
+                "added_at": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "expires_at": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "expired": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "owner",
+                "added_at",
+                "expires_at",
+                "expired"
+              ]
+            }
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "peers",
+          "updated_at"
+        ]
+      }
+    },
+    "handoff.peers.set": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "peers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "owner": {
+                  "type": "string"
+                },
+                "added_at": {
+                  "type": "integer"
+                },
+                "expires_at": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "expired": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "peers"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "peers": {
+            "type": "integer"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "peers",
+          "changed"
+        ]
+      }
+    },
+    "handoff.prefs": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "always_ask": {
+            "type": "boolean"
+          },
+          "actor": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "always_ask": {
+            "type": "boolean"
+          },
+          "placement": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "worktree_parent": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "worktree_parent"
+              ]
+            }
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "always_ask",
+          "placement",
+          "repos"
+        ]
+      }
+    },
+    "handoff.resume": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          },
+          "run": {},
+          "agent_error": {},
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      }
+    },
+    "handoff.send": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "peer": {
+            "type": "string"
+          },
+          "interrupt": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "peer"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pane": {
+                "type": "string"
+              },
+              "peer": {
+                "type": "string"
+              },
+              "peer_name": {
+                "type": "string"
+              },
+              "interrupt": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "exporting",
+                  "sending",
+                  "delivered",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "sent": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "incoming": {
+                "type": "string"
+              },
+              "incoming_state": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              },
+              "by": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "pane",
+              "peer",
+              "peer_name",
+              "interrupt",
+              "state",
+              "sent",
+              "total",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "job"
         ]
       }
     },
@@ -19923,6 +21103,48 @@
         "required": [
           "dry_run",
           "actions"
+        ]
+      }
+    },
+    "repo.candidates": {
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "remote": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "remote"
+              ]
+            }
+          }
+        },
+        "required": [
+          "repos"
         ]
       }
     },
@@ -30253,6 +31475,177 @@
         },
         "required": [
           "name"
+        ]
+      }
+    },
+    "handoff.expired": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      },
+      "data": {
+        "type": "object"
+      }
+    },
+    "handoff.incoming": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      }
+    },
+    "handoff.job": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          },
+          "peer": {
+            "type": "string"
+          },
+          "peer_name": {
+            "type": "string"
+          },
+          "interrupt": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "exporting",
+              "sending",
+              "delivered",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "sent": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "incoming": {
+            "type": "string"
+          },
+          "incoming_state": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          },
+          "by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pane",
+          "peer",
+          "peer_name",
+          "interrupt",
+          "state",
+          "sent",
+          "total",
+          "created_at",
+          "updated_at"
+        ]
+      }
+    },
+    "handoff.peers_changed": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "peers": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "peers"
+        ]
+      }
+    },
+    "handoff.updated": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "incoming"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "incoming": {
+            "$ref": "#/$defs/HandoffIncoming"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "incoming",
+          "phase"
         ]
       }
     },

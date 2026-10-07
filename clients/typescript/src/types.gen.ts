@@ -287,6 +287,50 @@ export type Group = {
   workspaces: string[];
 };
 
+export type HandoffFrom = {
+  host: string;
+  owner: "self" | "teammate";
+  user?: string;
+};
+
+export type HandoffIncoming = {
+  id: string;
+  from: HandoffFrom;
+  manifest: HandoffSummary;
+  size: number;
+  bundle_path: string | null;
+  state: "pending" | "importing" | "imported" | "failed" | "declined";
+  error: {
+    kind: string;
+    message: string;
+    details?: unknown;
+  } | null;
+  result: Record<string, unknown> | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  expires_at_ms: number;
+};
+
+export type HandoffSummary = {
+  source_host: string;
+  repo_name: string;
+  origin: string | null;
+  branch: string | null;
+  head: string;
+  harness: string | null;
+  session_id: string | null;
+  cwd_rel: string;
+  skipped: {
+    path: string;
+    reason: string;
+  }[];
+  last_message: string | null;
+  untracked: number;
+  transcript: boolean;
+  redactions: number;
+  created_at: number;
+};
+
 export type Interaction = {
   id: string;
   handle: string;
@@ -3101,6 +3145,22 @@ export type FamilyListResult = {
   families: Record<string, unknown>[];
 };
 
+export type FsBrowseParams = {
+  path?: string;
+  prefix?: string;
+};
+
+export type FsBrowseResult = {
+  path: string;
+  parent: string | null;
+  git_repo: boolean;
+  entries: {
+    name: string;
+    git_repo: boolean;
+  }[];
+  truncated: boolean;
+};
+
 export type FsListParams = {
   pane?: Target;
   path?: string;
@@ -3423,6 +3483,227 @@ export type GroupRenameParams = {
 
 export type GroupRenameResult = {
   group: Group;
+  cursor?: Cursor;
+};
+
+export type HandoffAcceptParams = {
+  id: string;
+  repo: {
+    path: string;
+  } | {
+    clone_to: string;
+  };
+  worktree_path?: string;
+  branch?: string;
+  start_agent?: boolean;
+  trust?: ("mise" | "direnv")[];
+  actor?: string;
+};
+
+export type HandoffAcceptResult = {
+  incoming: HandoffIncoming;
+  cursor?: Cursor;
+};
+
+export type HandoffCancelParams = {
+  id: string;
+};
+
+export type HandoffCancelResult = {
+  job: {
+    id: string;
+    pane: string;
+    peer: string;
+    peer_name: string;
+    interrupt: boolean;
+    state: "queued" | "exporting" | "sending" | "delivered" | "failed" | "cancelled";
+    sent: number;
+    total: number;
+    incoming?: string;
+    incoming_state?: string;
+    error?: string;
+    created_at: number;
+    updated_at: number;
+    by?: string;
+  };
+  cursor?: Cursor;
+};
+
+export type HandoffDeclineParams = {
+  id: string;
+  actor?: string;
+};
+
+export type HandoffDeclineResult = {
+  incoming: HandoffIncoming;
+  cursor?: Cursor;
+};
+
+export type HandoffIncomingAddParams = {
+  path: string;
+  manifest: Record<string, unknown>;
+  sha256: string;
+  from: HandoffFrom;
+  actor?: string;
+};
+
+export type HandoffIncomingAddResult = {
+  incoming: HandoffIncoming;
+  cursor?: Cursor;
+};
+
+export type HandoffIncomingGetParams = {
+  id: string;
+};
+
+export type HandoffIncomingGetResult = {
+  incoming: HandoffIncoming;
+  suggested: {
+    repos: string[];
+    repo: string | null;
+    worktree_path: string | null;
+    branch: string;
+  };
+};
+
+export type HandoffIncomingListParams = Record<string, unknown>;
+
+export type HandoffIncomingListResult = {
+  incoming: HandoffIncoming[];
+};
+
+export type HandoffJobUpdateParams = {
+  id: string;
+  state?: "queued" | "exporting" | "sending" | "delivered" | "failed" | "cancelled";
+  sent?: number;
+  total?: number;
+  incoming?: string;
+  incoming_state?: string;
+  error?: string;
+};
+
+export type HandoffJobUpdateResult = {
+  job: {
+    id: string;
+    pane: string;
+    peer: string;
+    peer_name: string;
+    interrupt: boolean;
+    state: "queued" | "exporting" | "sending" | "delivered" | "failed" | "cancelled";
+    sent: number;
+    total: number;
+    incoming?: string;
+    incoming_state?: string;
+    error?: string;
+    created_at: number;
+    updated_at: number;
+    by?: string;
+  };
+  cursor?: Cursor;
+};
+
+export type HandoffJobsParams = Record<string, unknown>;
+
+export type HandoffJobsResult = {
+  jobs: {
+    id: string;
+    pane: string;
+    peer: string;
+    peer_name: string;
+    interrupt: boolean;
+    state: "queued" | "exporting" | "sending" | "delivered" | "failed" | "cancelled";
+    sent: number;
+    total: number;
+    incoming?: string;
+    incoming_state?: string;
+    error?: string;
+    created_at: number;
+    updated_at: number;
+    by?: string;
+  }[];
+};
+
+export type HandoffPeersParams = Record<string, unknown>;
+
+export type HandoffPeersResult = {
+  peers: {
+    id: string;
+    name: string;
+    owner: "self" | "teammate";
+    added_at: number | null;
+    expires_at: number | null;
+    expired: boolean;
+  }[];
+  updated_at: number | null;
+};
+
+export type HandoffPeersSetParams = {
+  peers: {
+    id: string;
+    name: string;
+    owner?: string;
+    added_at?: number;
+    expires_at?: number | null;
+    expired?: boolean;
+  }[];
+};
+
+export type HandoffPeersSetResult = {
+  peers: number;
+  changed: boolean;
+  cursor?: Cursor;
+};
+
+export type HandoffPrefsParams = {
+  always_ask?: boolean;
+  actor?: string;
+};
+
+export type HandoffPrefsResult = {
+  always_ask: boolean;
+  placement: { [key: string]: {
+    repo: string;
+    worktree_parent: string;
+  } };
+  repos: string[];
+  cursor?: Cursor;
+};
+
+export type HandoffResumeParams = {
+  id: string;
+  actor?: string;
+};
+
+export type HandoffResumeResult = {
+  incoming: HandoffIncoming;
+  run?: unknown;
+  agent_error?: unknown;
+  cursor?: Cursor;
+};
+
+export type HandoffSendParams = {
+  pane?: Target;
+  peer: string;
+  interrupt?: boolean;
+};
+
+export type HandoffSendResult = {
+  job: {
+    id: string;
+    pane: string;
+    peer: string;
+    peer_name: string;
+    interrupt: boolean;
+    state: "queued" | "exporting" | "sending" | "delivered" | "failed" | "cancelled";
+    sent: number;
+    total: number;
+    incoming?: string;
+    incoming_state?: string;
+    error?: string;
+    created_at: number;
+    updated_at: number;
+    by?: string;
+  };
   cursor?: Cursor;
 };
 
@@ -4930,6 +5211,17 @@ export type QuotaTickResult = {
   dry_run: boolean;
   actions: Record<string, unknown>[];
   cursor?: Cursor;
+};
+
+export type RepoCandidatesParams = {
+  origin: string;
+};
+
+export type RepoCandidatesResult = {
+  repos: {
+    path: string;
+    remote: string;
+  }[];
 };
 
 export type SandboxAllowParams = {
@@ -7091,6 +7383,7 @@ export interface Methods {
   "family.check": { params: FamilyCheckParams; result: FamilyCheckResult };
   "family.get": { params: FamilyGetParams; result: FamilyGetResult };
   "family.list": { params: FamilyListParams; result: FamilyListResult };
+  "fs.browse": { params: FsBrowseParams; result: FsBrowseResult };
   "fs.list": { params: FsListParams; result: FsListResult };
   "fs.read": { params: FsReadParams; result: FsReadResult };
   "git.diff": { params: GitDiffParams; result: GitDiffResult };
@@ -7114,6 +7407,19 @@ export interface Methods {
   "group.move": { params: GroupMoveParams; result: GroupMoveResult };
   "group.remove": { params: GroupRemoveParams; result: GroupRemoveResult };
   "group.rename": { params: GroupRenameParams; result: GroupRenameResult };
+  "handoff.accept": { params: HandoffAcceptParams; result: HandoffAcceptResult };
+  "handoff.cancel": { params: HandoffCancelParams; result: HandoffCancelResult };
+  "handoff.decline": { params: HandoffDeclineParams; result: HandoffDeclineResult };
+  "handoff.incoming.add": { params: HandoffIncomingAddParams; result: HandoffIncomingAddResult };
+  "handoff.incoming.get": { params: HandoffIncomingGetParams; result: HandoffIncomingGetResult };
+  "handoff.incoming.list": { params: HandoffIncomingListParams; result: HandoffIncomingListResult };
+  "handoff.job.update": { params: HandoffJobUpdateParams; result: HandoffJobUpdateResult };
+  "handoff.jobs": { params: HandoffJobsParams; result: HandoffJobsResult };
+  "handoff.peers": { params: HandoffPeersParams; result: HandoffPeersResult };
+  "handoff.peers.set": { params: HandoffPeersSetParams; result: HandoffPeersSetResult };
+  "handoff.prefs": { params: HandoffPrefsParams; result: HandoffPrefsResult };
+  "handoff.resume": { params: HandoffResumeParams; result: HandoffResumeResult };
+  "handoff.send": { params: HandoffSendParams; result: HandoffSendResult };
   "image.upload": { params: ImageUploadParams; result: ImageUploadResult };
   "integration.doctor": { params: IntegrationDoctorParams; result: IntegrationDoctorResult };
   "interaction.answer": { params: InteractionAnswerParams; result: InteractionAnswerResult };
@@ -7217,6 +7523,7 @@ export interface Methods {
   "quota.route": { params: QuotaRouteParams; result: QuotaRouteResult };
   "quota.status": { params: QuotaStatusParams; result: QuotaStatusResult };
   "quota.tick": { params: QuotaTickParams; result: QuotaTickResult };
+  "repo.candidates": { params: RepoCandidatesParams; result: RepoCandidatesResult };
   "sandbox.allow": { params: SandboxAllowParams; result: SandboxAllowResult };
   "sandbox.copy_out": { params: SandboxCopyOutParams; result: SandboxCopyOutResult };
   "sandbox.disallow": { params: SandboxDisallowParams; result: SandboxDisallowResult };
@@ -7495,6 +7802,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "family.check": { mutating: true, scope: "full", paneScope: "forbidden" },
   "family.get": { mutating: false, scope: "pane", paneScope: "open" },
   "family.list": { mutating: false, scope: "pane", paneScope: "open" },
+  "fs.browse": { mutating: false, scope: "full", paneScope: "forbidden" },
   "fs.list": { mutating: false, scope: "pane", paneScope: "open" },
   "fs.read": { mutating: false, scope: "pane", paneScope: "open" },
   "git.diff": { mutating: false, scope: "pane", paneScope: "open" },
@@ -7518,6 +7826,19 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "group.move": { mutating: true, scope: "full", paneScope: "forbidden" },
   "group.remove": { mutating: true, scope: "full", paneScope: "forbidden" },
   "group.rename": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.accept": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.cancel": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.decline": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.incoming.add": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.incoming.get": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "handoff.incoming.list": { mutating: false, scope: "full", paneScope: "forbidden" },
+  "handoff.job.update": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.jobs": { mutating: false, scope: "pane", paneScope: "open" },
+  "handoff.peers": { mutating: false, scope: "pane", paneScope: "open" },
+  "handoff.peers.set": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.prefs": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.resume": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "handoff.send": { mutating: true, scope: "full", paneScope: "forbidden" },
   "image.upload": { mutating: true, scope: "pane", paneScope: "open" },
   "integration.doctor": { mutating: false, scope: "full", paneScope: "forbidden" },
   "interaction.answer": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -7621,6 +7942,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "quota.route": { mutating: false, scope: "pane", paneScope: "open" },
   "quota.status": { mutating: false, scope: "pane", paneScope: "open" },
   "quota.tick": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "repo.candidates": { mutating: false, scope: "full", paneScope: "forbidden" },
   "sandbox.allow": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.copy_out": { mutating: true, scope: "full", paneScope: "forbidden" },
   "sandbox.disallow": { mutating: true, scope: "full", paneScope: "forbidden" },
@@ -8466,6 +8788,56 @@ export type GroupRenamedSubject = {
 
 export type GroupRenamedData = {
   name: string;
+};
+
+export type HandoffExpiredSubject = {
+  incoming: string;
+};
+
+export type HandoffExpiredData = Record<string, unknown>;
+
+export type HandoffIncomingSubject = {
+  incoming: string;
+};
+
+export type HandoffIncomingData = {
+  incoming: HandoffIncoming;
+};
+
+export type HandoffJobSubject = {
+  job: string;
+};
+
+export type HandoffJobData = {
+  id: string;
+  pane: string;
+  peer: string;
+  peer_name: string;
+  interrupt: boolean;
+  state: "queued" | "exporting" | "sending" | "delivered" | "failed" | "cancelled";
+  sent: number;
+  total: number;
+  incoming?: string;
+  incoming_state?: string;
+  error?: string;
+  created_at: number;
+  updated_at: number;
+  by?: string;
+};
+
+export type HandoffPeersChangedSubject = Record<string, unknown>;
+
+export type HandoffPeersChangedData = {
+  peers: number;
+};
+
+export type HandoffUpdatedSubject = {
+  incoming: string;
+};
+
+export type HandoffUpdatedData = {
+  incoming: HandoffIncoming;
+  phase: string | null;
 };
 
 export type HarnessManifestLoadedSubject = {
@@ -10401,6 +10773,11 @@ export interface EventMap {
   "group.created": { subject: GroupCreatedSubject; data: GroupCreatedData };
   "group.moved": { subject: GroupMovedSubject; data: GroupMovedData };
   "group.renamed": { subject: GroupRenamedSubject; data: GroupRenamedData };
+  "handoff.expired": { subject: HandoffExpiredSubject; data: HandoffExpiredData };
+  "handoff.incoming": { subject: HandoffIncomingSubject; data: HandoffIncomingData };
+  "handoff.job": { subject: HandoffJobSubject; data: HandoffJobData };
+  "handoff.peers_changed": { subject: HandoffPeersChangedSubject; data: HandoffPeersChangedData };
+  "handoff.updated": { subject: HandoffUpdatedSubject; data: HandoffUpdatedData };
   "harness.manifest_loaded": { subject: HarnessManifestLoadedSubject; data: HarnessManifestLoadedData };
   "integration.tampered": { subject: IntegrationTamperedSubject; data: IntegrationTamperedData };
   "interaction.cancelled": { subject: InteractionCancelledSubject; data: InteractionCancelledData };

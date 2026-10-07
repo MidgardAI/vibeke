@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 398,
+  "method_count": 413,
   "methods": [
     {
       "name": "adapter.delivery_ack",
@@ -2015,6 +2015,20 @@
       "result": "{families: [object]}"
     },
     {
+      "name": "fs.browse",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "browse_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{path?: string = '~', prefix?: string}",
+      "result": "{path: string, parent: string|null, git_repo: bool, entries: [{name: string, git_repo: bool}], truncated: bool}"
+    },
+    {
       "name": "fs.list",
       "mutating": false,
       "scope": "pane",
@@ -2335,6 +2349,188 @@
       "spec": "`{group, …}` → `{group}`",
       "params": "{group: Target, name: string}",
       "result": "{group: Group}"
+    },
+    {
+      "name": "handoff.accept",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, repo: {path: string} | {clone_to: string}, worktree_path?: string, branch?: string, start_agent?: bool = true, trust?: [mise|direnv], actor?: string}",
+      "result": "{incoming: HandoffIncoming}"
+    },
+    {
+      "name": "handoff.cancel",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff_out"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string}",
+      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}"
+    },
+    {
+      "name": "handoff.decline",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, actor?: string}",
+      "result": "{incoming: HandoffIncoming}"
+    },
+    {
+      "name": "handoff.incoming.add",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{path: string, manifest: object, sha256: string, from: HandoffFrom, actor?: string}",
+      "result": "{incoming: HandoffIncoming}"
+    },
+    {
+      "name": "handoff.incoming.get",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string}",
+      "result": "{incoming: HandoffIncoming, suggested: {repos: [string], repo: string|null, worktree_path: string|null, branch: string}}"
+    },
+    {
+      "name": "handoff.incoming.list",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{incoming: [HandoffIncoming]}"
+    },
+    {
+      "name": "handoff.job.update",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff_out"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, state?: queued|exporting|sending|delivered|failed|cancelled, sent?: int, total?: int, incoming?: string, incoming_state?: string, error?: string}",
+      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}"
+    },
+    {
+      "name": "handoff.jobs",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "handoff_out"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{jobs: [{id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}]}"
+    },
+    {
+      "name": "handoff.peers",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "handoff_out"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{}",
+      "result": "{peers: [{id: string, name: string, owner: self|teammate, added_at: int|null, expires_at: int|null, expired: bool}], updated_at: int|null}"
+    },
+    {
+      "name": "handoff.peers.set",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff_out"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{peers: [{id: string, name: string, owner?: string, added_at?: int, expires_at?: int|null, expired?: bool}]}",
+      "result": "{peers: int, changed: bool}"
+    },
+    {
+      "name": "handoff.prefs",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{always_ask?: bool, actor?: string}",
+      "result": "{always_ask: bool, placement: {*: {repo: string, worktree_parent: string}}, repos: [string]}"
+    },
+    {
+      "name": "handoff.resume",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{id: string, actor?: string}",
+      "result": "{incoming: HandoffIncoming, run?: any, agent_error?: any}"
+    },
+    {
+      "name": "handoff.send",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "handoff_out"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, peer: string, interrupt?: bool = false}",
+      "result": "{job: {id: string, pane: string, peer: string, peer_name: string, interrupt: bool, state: queued|exporting|sending|delivered|failed|cancelled, sent: int, total: int, incoming?: string, incoming_state?: string, error?: string, created_at: int, updated_at: int, by?: string}}"
     },
     {
       "name": "image.upload",
@@ -3782,6 +3978,20 @@
       "spec": null,
       "params": "{dry_run?: bool = false}",
       "result": "{dry_run: bool, actions: [object]}"
+    },
+    {
+      "name": "repo.candidates",
+      "mutating": false,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "open",
+      "tables": [
+        "browse_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{origin: string}",
+      "result": "{repos: [{path: string, remote: string}]}"
     },
     {
       "name": "sandbox.allow",

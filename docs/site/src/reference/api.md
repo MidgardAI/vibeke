@@ -186,6 +186,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `family.check` | Write | Full |
 | `family.get` | Read | Pane |
 | `family.list` | Read | Pane |
+| `fs.browse` | Read | Full |
 | `fs.list` | Read | Pane |
 | `fs.read` | Read | Pane |
 | `git.diff` | Read | Pane |
@@ -209,6 +210,19 @@ Clients must accept new fields and event types. The API can change before versio
 | `group.move` | Write | Full |
 | `group.remove` | Write | Full |
 | `group.rename` | Write | Full |
+| `handoff.accept` | Write | Full |
+| `handoff.cancel` | Write | Full |
+| `handoff.decline` | Write | Full |
+| `handoff.incoming.add` | Write | Full |
+| `handoff.incoming.get` | Read | Full |
+| `handoff.incoming.list` | Read | Full |
+| `handoff.job.update` | Write | Full |
+| `handoff.jobs` | Read | Pane |
+| `handoff.peers` | Read | Pane |
+| `handoff.peers.set` | Write | Full |
+| `handoff.prefs` | Write | Full |
+| `handoff.resume` | Write | Full |
+| `handoff.send` | Write | Full |
 | `image.upload` | Write | Pane |
 | `integration.doctor` | Read | Full |
 | `interaction.answer` | Write | Full |
@@ -312,6 +326,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `quota.route` | Read | Pane |
 | `quota.status` | Read | Pane |
 | `quota.tick` | Write | Full |
+| `repo.candidates` | Read | Full |
 | `sandbox.allow` | Write | Full |
 | `sandbox.copy_out` | Write | Full |
 | `sandbox.disallow` | Write | Full |

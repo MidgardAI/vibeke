@@ -443,6 +443,9 @@ class Api:
     async def family_list(self, params: "Optional[t.FamilyListParams]" = None) -> "t.FamilyListResult":
         return await self.call("family.list", params or {})  # type: ignore[arg-type, return-value]
 
+    async def fs_browse(self, params: "Optional[t.FsBrowseParams]" = None) -> "t.FsBrowseResult":
+        return await self.call("fs.browse", params or {})  # type: ignore[arg-type, return-value]
+
     async def fs_list(self, params: "Optional[t.FsListParams]" = None) -> "t.FsListResult":
         return await self.call("fs.list", params or {})  # type: ignore[arg-type, return-value]
 
@@ -511,6 +514,45 @@ class Api:
 
     async def group_rename(self, params: "t.GroupRenameParams") -> "t.GroupRenameResult":
         return await self.call("group.rename", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_accept(self, params: "t.HandoffAcceptParams") -> "t.HandoffAcceptResult":
+        return await self.call("handoff.accept", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_cancel(self, params: "t.HandoffCancelParams") -> "t.HandoffCancelResult":
+        return await self.call("handoff.cancel", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_decline(self, params: "t.HandoffDeclineParams") -> "t.HandoffDeclineResult":
+        return await self.call("handoff.decline", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_incoming_add(self, params: "t.HandoffIncomingAddParams") -> "t.HandoffIncomingAddResult":
+        return await self.call("handoff.incoming.add", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_incoming_get(self, params: "t.HandoffIncomingGetParams") -> "t.HandoffIncomingGetResult":
+        return await self.call("handoff.incoming.get", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_incoming_list(self, params: "Optional[t.HandoffIncomingListParams]" = None) -> "t.HandoffIncomingListResult":
+        return await self.call("handoff.incoming.list", params or {})  # type: ignore[arg-type, return-value]
+
+    async def handoff_job_update(self, params: "t.HandoffJobUpdateParams") -> "t.HandoffJobUpdateResult":
+        return await self.call("handoff.job.update", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_jobs(self, params: "Optional[t.HandoffJobsParams]" = None) -> "t.HandoffJobsResult":
+        return await self.call("handoff.jobs", params or {})  # type: ignore[arg-type, return-value]
+
+    async def handoff_peers(self, params: "Optional[t.HandoffPeersParams]" = None) -> "t.HandoffPeersResult":
+        return await self.call("handoff.peers", params or {})  # type: ignore[arg-type, return-value]
+
+    async def handoff_peers_set(self, params: "t.HandoffPeersSetParams") -> "t.HandoffPeersSetResult":
+        return await self.call("handoff.peers.set", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_prefs(self, params: "Optional[t.HandoffPrefsParams]" = None) -> "t.HandoffPrefsResult":
+        return await self.call("handoff.prefs", params or {})  # type: ignore[arg-type, return-value]
+
+    async def handoff_resume(self, params: "t.HandoffResumeParams") -> "t.HandoffResumeResult":
+        return await self.call("handoff.resume", params)  # type: ignore[arg-type, return-value]
+
+    async def handoff_send(self, params: "t.HandoffSendParams") -> "t.HandoffSendResult":
+        return await self.call("handoff.send", params)  # type: ignore[arg-type, return-value]
 
     async def image_upload(self, params: "t.ImageUploadParams") -> "t.ImageUploadResult":
         return await self.call("image.upload", params)  # type: ignore[arg-type, return-value]
@@ -820,6 +862,9 @@ class Api:
 
     async def quota_tick(self, params: "Optional[t.QuotaTickParams]" = None) -> "t.QuotaTickResult":
         return await self.call("quota.tick", params or {})  # type: ignore[arg-type, return-value]
+
+    async def repo_candidates(self, params: "t.RepoCandidatesParams") -> "t.RepoCandidatesResult":
+        return await self.call("repo.candidates", params)  # type: ignore[arg-type, return-value]
 
     async def sandbox_allow(self, params: "t.SandboxAllowParams") -> "t.SandboxAllowResult":
         return await self.call("sandbox.allow", params)  # type: ignore[arg-type, return-value]

@@ -298,6 +298,54 @@ Group = TypedDict("Group", {
     "workspaces": List[str],
 })
 
+HandoffFrom = TypedDict("HandoffFrom", {
+    "host": str,
+    "owner": Literal["self", "teammate"],
+    "user": NotRequired[str],
+})
+
+HandoffIncomingErrorV0 = TypedDict("HandoffIncomingErrorV0", {
+    "kind": str,
+    "message": str,
+    "details": NotRequired[Any],
+})
+
+HandoffIncoming = TypedDict("HandoffIncoming", {
+    "id": str,
+    "from": "HandoffFrom",
+    "manifest": "HandoffSummary",
+    "size": int,
+    "bundle_path": Optional[str],
+    "state": Literal["pending", "importing", "imported", "failed", "declined"],
+    "error": Optional["HandoffIncomingErrorV0"],
+    "result": Optional[Dict[str, Any]],
+    "created_at_ms": int,
+    "updated_at_ms": int,
+    "expires_at_ms": int,
+})
+
+HandoffSummarySkippedItem = TypedDict("HandoffSummarySkippedItem", {
+    "path": str,
+    "reason": str,
+})
+
+HandoffSummary = TypedDict("HandoffSummary", {
+    "source_host": str,
+    "repo_name": str,
+    "origin": Optional[str],
+    "branch": Optional[str],
+    "head": str,
+    "harness": Optional[str],
+    "session_id": Optional[str],
+    "cwd_rel": str,
+    "skipped": List["HandoffSummarySkippedItem"],
+    "last_message": Optional[str],
+    "untracked": int,
+    "transcript": bool,
+    "redactions": int,
+    "created_at": int,
+})
+
 Interaction = TypedDict("Interaction", {
     "id": str,
     "handle": str,
@@ -3324,6 +3372,24 @@ FamilyListResult = TypedDict("FamilyListResult", {
     "families": List[Dict[str, Any]],
 })
 
+FsBrowseParams = TypedDict("FsBrowseParams", {
+    "path": NotRequired[str],
+    "prefix": NotRequired[str],
+})
+
+FsBrowseResultEntriesItem = TypedDict("FsBrowseResultEntriesItem", {
+    "name": str,
+    "git_repo": bool,
+})
+
+FsBrowseResult = TypedDict("FsBrowseResult", {
+    "path": str,
+    "parent": Optional[str],
+    "git_repo": bool,
+    "entries": List["FsBrowseResultEntriesItem"],
+    "truncated": bool,
+})
+
 FsListParams = TypedDict("FsListParams", {
     "pane": NotRequired["Target"],
     "path": NotRequired[str],
@@ -3674,6 +3740,247 @@ GroupRenameParams = TypedDict("GroupRenameParams", {
 
 GroupRenameResult = TypedDict("GroupRenameResult", {
     "group": "Group",
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffAcceptParamsRepoV0 = TypedDict("HandoffAcceptParamsRepoV0", {
+    "path": str,
+})
+
+HandoffAcceptParamsRepoV1 = TypedDict("HandoffAcceptParamsRepoV1", {
+    "clone_to": str,
+})
+
+HandoffAcceptParams = TypedDict("HandoffAcceptParams", {
+    "id": str,
+    "repo": Union["HandoffAcceptParamsRepoV0", "HandoffAcceptParamsRepoV1"],
+    "worktree_path": NotRequired[str],
+    "branch": NotRequired[str],
+    "start_agent": NotRequired[bool],
+    "trust": NotRequired[List[Literal["mise", "direnv"]]],
+    "actor": NotRequired[str],
+})
+
+HandoffAcceptResult = TypedDict("HandoffAcceptResult", {
+    "incoming": "HandoffIncoming",
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffCancelParams = TypedDict("HandoffCancelParams", {
+    "id": str,
+})
+
+HandoffCancelResultJob = TypedDict("HandoffCancelResultJob", {
+    "id": str,
+    "pane": str,
+    "peer": str,
+    "peer_name": str,
+    "interrupt": bool,
+    "state": Literal["queued", "exporting", "sending", "delivered", "failed", "cancelled"],
+    "sent": int,
+    "total": int,
+    "incoming": NotRequired[str],
+    "incoming_state": NotRequired[str],
+    "error": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+    "by": NotRequired[str],
+})
+
+HandoffCancelResult = TypedDict("HandoffCancelResult", {
+    "job": "HandoffCancelResultJob",
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffDeclineParams = TypedDict("HandoffDeclineParams", {
+    "id": str,
+    "actor": NotRequired[str],
+})
+
+HandoffDeclineResult = TypedDict("HandoffDeclineResult", {
+    "incoming": "HandoffIncoming",
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffIncomingAddParams = TypedDict("HandoffIncomingAddParams", {
+    "path": str,
+    "manifest": Dict[str, Any],
+    "sha256": str,
+    "from": "HandoffFrom",
+    "actor": NotRequired[str],
+})
+
+HandoffIncomingAddResult = TypedDict("HandoffIncomingAddResult", {
+    "incoming": "HandoffIncoming",
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffIncomingGetParams = TypedDict("HandoffIncomingGetParams", {
+    "id": str,
+})
+
+HandoffIncomingGetResultSuggested = TypedDict("HandoffIncomingGetResultSuggested", {
+    "repos": List[str],
+    "repo": Optional[str],
+    "worktree_path": Optional[str],
+    "branch": str,
+})
+
+HandoffIncomingGetResult = TypedDict("HandoffIncomingGetResult", {
+    "incoming": "HandoffIncoming",
+    "suggested": "HandoffIncomingGetResultSuggested",
+})
+
+HandoffIncomingListParams: TypeAlias = Dict[str, Any]
+
+HandoffIncomingListResult = TypedDict("HandoffIncomingListResult", {
+    "incoming": List["HandoffIncoming"],
+})
+
+HandoffJobUpdateParams = TypedDict("HandoffJobUpdateParams", {
+    "id": str,
+    "state": NotRequired[Literal["queued", "exporting", "sending", "delivered", "failed", "cancelled"]],
+    "sent": NotRequired[int],
+    "total": NotRequired[int],
+    "incoming": NotRequired[str],
+    "incoming_state": NotRequired[str],
+    "error": NotRequired[str],
+})
+
+HandoffJobUpdateResultJob = TypedDict("HandoffJobUpdateResultJob", {
+    "id": str,
+    "pane": str,
+    "peer": str,
+    "peer_name": str,
+    "interrupt": bool,
+    "state": Literal["queued", "exporting", "sending", "delivered", "failed", "cancelled"],
+    "sent": int,
+    "total": int,
+    "incoming": NotRequired[str],
+    "incoming_state": NotRequired[str],
+    "error": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+    "by": NotRequired[str],
+})
+
+HandoffJobUpdateResult = TypedDict("HandoffJobUpdateResult", {
+    "job": "HandoffJobUpdateResultJob",
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffJobsParams: TypeAlias = Dict[str, Any]
+
+HandoffJobsResultJobsItem = TypedDict("HandoffJobsResultJobsItem", {
+    "id": str,
+    "pane": str,
+    "peer": str,
+    "peer_name": str,
+    "interrupt": bool,
+    "state": Literal["queued", "exporting", "sending", "delivered", "failed", "cancelled"],
+    "sent": int,
+    "total": int,
+    "incoming": NotRequired[str],
+    "incoming_state": NotRequired[str],
+    "error": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+    "by": NotRequired[str],
+})
+
+HandoffJobsResult = TypedDict("HandoffJobsResult", {
+    "jobs": List["HandoffJobsResultJobsItem"],
+})
+
+HandoffPeersParams: TypeAlias = Dict[str, Any]
+
+HandoffPeersResultPeersItem = TypedDict("HandoffPeersResultPeersItem", {
+    "id": str,
+    "name": str,
+    "owner": Literal["self", "teammate"],
+    "added_at": Optional[int],
+    "expires_at": Optional[int],
+    "expired": bool,
+})
+
+HandoffPeersResult = TypedDict("HandoffPeersResult", {
+    "peers": List["HandoffPeersResultPeersItem"],
+    "updated_at": Optional[int],
+})
+
+HandoffPeersSetParamsPeersItem = TypedDict("HandoffPeersSetParamsPeersItem", {
+    "id": str,
+    "name": str,
+    "owner": NotRequired[str],
+    "added_at": NotRequired[int],
+    "expires_at": NotRequired[Optional[int]],
+    "expired": NotRequired[bool],
+})
+
+HandoffPeersSetParams = TypedDict("HandoffPeersSetParams", {
+    "peers": List["HandoffPeersSetParamsPeersItem"],
+})
+
+HandoffPeersSetResult = TypedDict("HandoffPeersSetResult", {
+    "peers": int,
+    "changed": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffPrefsParams = TypedDict("HandoffPrefsParams", {
+    "always_ask": NotRequired[bool],
+    "actor": NotRequired[str],
+})
+
+HandoffPrefsResultPlacementValue = TypedDict("HandoffPrefsResultPlacementValue", {
+    "repo": str,
+    "worktree_parent": str,
+})
+
+HandoffPrefsResult = TypedDict("HandoffPrefsResult", {
+    "always_ask": bool,
+    "placement": Dict[str, "HandoffPrefsResultPlacementValue"],
+    "repos": List[str],
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffResumeParams = TypedDict("HandoffResumeParams", {
+    "id": str,
+    "actor": NotRequired[str],
+})
+
+HandoffResumeResult = TypedDict("HandoffResumeResult", {
+    "incoming": "HandoffIncoming",
+    "run": NotRequired[Any],
+    "agent_error": NotRequired[Any],
+    "cursor": NotRequired["Cursor"],
+})
+
+HandoffSendParams = TypedDict("HandoffSendParams", {
+    "pane": NotRequired["Target"],
+    "peer": str,
+    "interrupt": NotRequired[bool],
+})
+
+HandoffSendResultJob = TypedDict("HandoffSendResultJob", {
+    "id": str,
+    "pane": str,
+    "peer": str,
+    "peer_name": str,
+    "interrupt": bool,
+    "state": Literal["queued", "exporting", "sending", "delivered", "failed", "cancelled"],
+    "sent": int,
+    "total": int,
+    "incoming": NotRequired[str],
+    "incoming_state": NotRequired[str],
+    "error": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+    "by": NotRequired[str],
+})
+
+HandoffSendResult = TypedDict("HandoffSendResult", {
+    "job": "HandoffSendResultJob",
     "cursor": NotRequired["Cursor"],
 })
 
@@ -5285,6 +5592,19 @@ QuotaTickResult = TypedDict("QuotaTickResult", {
     "dry_run": bool,
     "actions": List[Dict[str, Any]],
     "cursor": NotRequired["Cursor"],
+})
+
+RepoCandidatesParams = TypedDict("RepoCandidatesParams", {
+    "origin": str,
+})
+
+RepoCandidatesResultReposItem = TypedDict("RepoCandidatesResultReposItem", {
+    "path": str,
+    "remote": str,
+})
+
+RepoCandidatesResult = TypedDict("RepoCandidatesResult", {
+    "repos": List["RepoCandidatesResultReposItem"],
 })
 
 SandboxAllowParams = TypedDict("SandboxAllowParams", {
@@ -7618,6 +7938,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "family.check": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "family.get": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "family.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "fs.browse": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "fs.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "fs.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "git.diff": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -7641,6 +7962,19 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "group.move": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "group.remove": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "group.rename": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.accept": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.cancel": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.decline": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.incoming.add": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.incoming.get": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.incoming.list": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.job.update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.jobs": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "handoff.peers": {"mutating": False, "scope": "pane", "pane_scope": "open"},
+    "handoff.peers.set": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.prefs": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.resume": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "handoff.send": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "image.upload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "integration.doctor": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "interaction.answer": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -7744,6 +8078,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "quota.route": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "quota.status": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "quota.tick": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "repo.candidates": {"mutating": False, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.allow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.copy_out": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "sandbox.disallow": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
@@ -8593,6 +8928,56 @@ GroupRenamedSubject = TypedDict("GroupRenamedSubject", {
 
 GroupRenamedData = TypedDict("GroupRenamedData", {
     "name": str,
+})
+
+HandoffExpiredSubject = TypedDict("HandoffExpiredSubject", {
+    "incoming": str,
+})
+
+HandoffExpiredData: TypeAlias = Dict[str, Any]
+
+HandoffIncomingSubject = TypedDict("HandoffIncomingSubject", {
+    "incoming": str,
+})
+
+HandoffIncomingData = TypedDict("HandoffIncomingData", {
+    "incoming": "HandoffIncoming",
+})
+
+HandoffJobSubject = TypedDict("HandoffJobSubject", {
+    "job": str,
+})
+
+HandoffJobData = TypedDict("HandoffJobData", {
+    "id": str,
+    "pane": str,
+    "peer": str,
+    "peer_name": str,
+    "interrupt": bool,
+    "state": Literal["queued", "exporting", "sending", "delivered", "failed", "cancelled"],
+    "sent": int,
+    "total": int,
+    "incoming": NotRequired[str],
+    "incoming_state": NotRequired[str],
+    "error": NotRequired[str],
+    "created_at": int,
+    "updated_at": int,
+    "by": NotRequired[str],
+})
+
+HandoffPeersChangedSubject: TypeAlias = Dict[str, Any]
+
+HandoffPeersChangedData = TypedDict("HandoffPeersChangedData", {
+    "peers": int,
+})
+
+HandoffUpdatedSubject = TypedDict("HandoffUpdatedSubject", {
+    "incoming": str,
+})
+
+HandoffUpdatedData = TypedDict("HandoffUpdatedData", {
+    "incoming": "HandoffIncoming",
+    "phase": Optional[str],
 })
 
 HarnessManifestLoadedSubject = TypedDict("HarnessManifestLoadedSubject", {
@@ -10536,6 +10921,11 @@ EVENT_TYPES = (
     "group.created",
     "group.moved",
     "group.renamed",
+    "handoff.expired",
+    "handoff.incoming",
+    "handoff.job",
+    "handoff.peers_changed",
+    "handoff.updated",
     "harness.manifest_loaded",
     "integration.tampered",
     "interaction.cancelled",
