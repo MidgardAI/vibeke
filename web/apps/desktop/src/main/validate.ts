@@ -193,6 +193,15 @@ export function settingsPatch(v: unknown): RendererSettingsPatch {
   return out;
 }
 
+/**
+ * The folder the native folder picker opens in: absent, or an absolute path. It only seeds the
+ * dialog (the user still chooses), but stays bounded and free of control characters.
+ */
+export function defaultDirectory(v: unknown): string | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  return typeof v === 'string' && v.length <= 4096 && isAbsolute(v) && !/[\0-\x1f]/.test(v) ? v : fail('default path');
+}
+
 /** An absolute executable path as stored by main after the picker validated it. */
 export function storedExecutablePath(v: unknown): string {
   return v === '' || (typeof v === 'string' && isAbsolute(v) && v.length <= 1024 && !/[\0\n]/.test(v)) ? (v as string) : fail('settings.vibekePath');

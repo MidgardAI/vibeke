@@ -335,6 +335,29 @@ export interface FsList {
   secret?: boolean;
 }
 
+/** One `fs.browse` entry: a directory (a `.git` inside marks a repository). */
+export interface BrowseEntry {
+  name: string;
+  git_repo: boolean;
+}
+
+/** `fs.browse`: the host's directories under $HOME and configured roots (full scope). */
+export interface BrowseResult {
+  /** The canonical directory listed. */
+  path: string;
+  /** Its parent, or null when that is outside the browsable roots. */
+  parent: string | null;
+  git_repo: boolean;
+  entries: BrowseEntry[];
+  truncated: boolean;
+}
+
+/** One clone whose remote matches the asked origin (`repo.candidates`). */
+export interface RepoCandidate {
+  path: string;
+  remote: string;
+}
+
 export interface FsRead {
   path: string;
   text?: string | null;
@@ -577,6 +600,10 @@ export interface AppApi {
   'fs.list': { params: { pane: string; path?: string }; result: FsList };
   'fs.read': { params: { pane: string; path: string }; result: FsRead };
   'worktree.list': { params: { pane: string } | { workspace: string }; result: { worktrees: Worktree[] } };
+  /** Host directories for path pickers: `path` absolute or `~`; `prefix` filters names (a leading `.` shows dot-folders). */
+  'fs.browse': { params: { path?: string; prefix?: string }; result: BrowseResult };
+  /** Clones on the host whose remote is `origin` (workspaces and a shallow scan of ~/code, ~/src, …). */
+  'repo.candidates': { params: { origin: string }; result: { repos: RepoCandidate[] } };
   /** `data_b64` is standard (padded) base64, as the server's image.upload expects. */
   'attachment.put': {
     params: { name: string; mime: string; data_b64: string };

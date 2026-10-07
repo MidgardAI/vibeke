@@ -677,6 +677,17 @@ export const en = {
     model: 'Model',
   },
 
+  pathPicker: {
+    placeholder: '~/code/project',
+    folders: 'Folders',
+    browse: 'Browse…',
+    parent: 'Parent folder',
+    git: 'git',
+    empty: 'No folders here',
+    noMatch: 'No matching folders',
+    truncated: 'Not every folder is shown. Type to narrow the list.',
+  },
+
   install: { title: 'Install Vibeke', body: 'Add Vibeke to your home screen for push and a full-screen app.', action: 'Install' },
 
   time: {

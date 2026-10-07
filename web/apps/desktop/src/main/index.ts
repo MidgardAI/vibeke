@@ -383,6 +383,16 @@ async function chooseVibeke(win: BrowserWindow | null): Promise<ChooseVibekeResu
   return { ok: true, path: c.path };
 }
 
+/** A native folder panel (new folders allowed); the chosen folder, or null when canceled. */
+async function pickDirectory(win: BrowserWindow | null, defaultPath?: string): Promise<string | null> {
+  const opts: Electron.OpenDialogOptions = {
+    properties: ['openDirectory', 'createDirectory'],
+    ...(defaultPath ? { defaultPath } : {}),
+  };
+  const r = await (win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts));
+  return r.canceled ? null : (r.filePaths[0] ?? null);
+}
+
 // ---- security -------------------------------------------------------------------------------
 
 app.on('web-contents-created', (_e, wc) => {
@@ -452,6 +462,7 @@ app.whenReady().then(() => {
     startLocalGateway,
     chooseVibeke,
     resetVibeke: () => updateSettings({ vibekePath: '' }),
+    pickDirectory,
     onPrefsChanged: (h) => notifier.invalidatePrefs(h),
     onTheme: () => windows.repaint(),
     log,

@@ -23,6 +23,8 @@ export interface IpcDeps {
   /** Native picker in main + validation; the renderer supplies no path. */
   chooseVibeke(win: BrowserWindow | null): Promise<ChooseVibekeResult>;
   resetVibeke(): DesktopSettings;
+  /** Native folder picker in main; null when canceled. */
+  pickDirectory(win: BrowserWindow | null, defaultPath?: string): Promise<string | null>;
   onPrefsChanged(hostId: string): void;
   onTheme(theme: 'system' | 'light' | 'dark'): void;
   log(msg: string): void;
@@ -116,6 +118,11 @@ export function registerIpc(d: IpcDeps): void {
   handle(INVOKE.chooseVibeke, async (e) => ok(await d.chooseVibeke(BrowserWindow.fromWebContents(e.sender))));
 
   handle(INVOKE.resetVibeke, () => ok(d.resetVibeke()));
+
+  handle(INVOKE.pickDirectory, async (e, defaultPath) => {
+    const start = v.defaultDirectory(defaultPath);
+    return ok(await d.pickDirectory(BrowserWindow.fromWebContents(e.sender), start));
+  });
 
   handle(INVOKE.ready, (e) => {
     d.windows.markReady(e.sender);

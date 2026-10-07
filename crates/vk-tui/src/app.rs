@@ -332,6 +332,8 @@ pub enum Popup {
         filter: String,
         sel: usize,
     },
+    /// A path input with a directory list standing in for a text prompt (`new_workspace`).
+    Path(Box<crate::path_picker::PathPrompt>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1919,6 +1921,10 @@ impl App {
                 return;
             }
             Mode::Normal => {}
+            Mode::Popup(Popup::Path(p)) => {
+                p.picker.paste(&text);
+                return;
+            }
             Mode::Popup(_) => {
                 // Editors in the drafts, desk and assist views.
                 crate::drafts::on_paste(self, &text);
@@ -2239,11 +2245,9 @@ impl App {
                 ws.map(|w| w.display_name().to_string()).unwrap_or_default(),
             ),
             "rename_pane" => self.prompt(PromptKind::RenamePane, "pane title", String::new()),
-            "new_workspace" => self.prompt(
-                PromptKind::NewWorkspace,
-                "new workspace dir",
-                std::env::var("HOME").unwrap_or_default(),
-            ),
+            "new_workspace" => {
+                crate::path_picker::open(self, PromptKind::NewWorkspace, "new workspace dir", "~/")
+            }
             "close_workspace" => {
                 if let Some(w) = ws {
                     self.mode = Mode::Popup(Popup::Confirm {
@@ -2591,11 +2595,9 @@ impl App {
                     });
                 }
             }
-            Key::Char('n') => self.prompt(
-                PromptKind::NewWorkspace,
-                "new workspace dir",
-                std::env::var("HOME").unwrap_or_default(),
-            ),
+            Key::Char('n') => {
+                crate::path_picker::open(self, PromptKind::NewWorkspace, "new workspace dir", "~/")
+            }
             Key::Char('r') => {
                 self.prompt(PromptKind::RenameWorkspace, "workspace name", String::new())
             }
@@ -2679,7 +2681,7 @@ impl App {
         }
     }
 
-    fn submit_prompt(&mut self, p: Prompt) {
+    pub(crate) fn submit_prompt(&mut self, p: Prompt) {
         let v = p.input.trim().to_string();
         match p.kind {
             PromptKind::RenameTab => {

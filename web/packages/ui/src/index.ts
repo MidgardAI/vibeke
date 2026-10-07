@@ -27,4 +27,5 @@ export type { KV, Prefs, Theme } from './lib/prefs';
 export { pairingErrorMessage } from './screens/pair';
 // Primitives, for shell-provided extensions (UiExtensions) to match the app.
 export { Button, Card, Notice, SectionLabel, Segmented, Spinner, TextField, Toggle, Dot, cx } from './components/ui';
+export { PathPicker, type PathPickerProps } from './components/path-picker';
 export { t, en, type Strings } from './i18n';

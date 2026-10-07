@@ -153,6 +153,7 @@ export function createDesktopPlatform(bridge: Bridge, boot: BootInfo): UiPlatfor
     openExternal: (url) => {
       if (/^https?:\/\//i.test(url)) void bridge.invoke(INVOKE.openExternal, url).catch(() => {});
     },
+    pickDirectory: (defaultPath) => call<string | null>(bridge, INVOKE.pickDirectory, defaultPath),
     windows: {
       popOutPane: (host, pane) => win({ op: 'pop-out', host, pane }),
       openMain: (hash) => win({ op: 'open-main', hash }),

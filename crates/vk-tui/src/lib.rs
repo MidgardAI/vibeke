@@ -39,6 +39,7 @@ pub mod parity;
 #[cfg(test)]
 mod parity_tests;
 pub mod paste;
+pub mod path_picker;
 pub mod pending;
 pub mod plugin_ui;
 pub mod plugins;

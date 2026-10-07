@@ -25,6 +25,8 @@ export const INVOKE = {
   chooseVibeke: 'vk:local.choose-binary',
   /** Forget the chosen executable (back to automatic discovery). */
   resetVibeke: 'vk:local.reset-binary',
+  /** Native folder picker (`defaultPath?`: absolute); resolves to the chosen folder or null. */
+  pickDirectory: 'vk:dialog.pick-directory',
   /** The renderer's listeners are registered: main may now send it navigation. */
   ready: 'vk:ready',
   /** Start / stop receiving `EVENT.hostEvent` for one host (`hostId`, `on: boolean`). */
@@ -76,6 +78,8 @@ export const RENDERER_METHODS = [
   'fs.list',
   'fs.read',
   'worktree.list',
+  'fs.browse',
+  'repo.candidates',
   'attachment.put',
   'notification.list',
   'notification.read',

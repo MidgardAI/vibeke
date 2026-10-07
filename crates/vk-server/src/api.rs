@@ -441,6 +441,7 @@ pub fn pane_scope_of(method: &str) -> PaneScope {
         || crate::privacy::PANE_FORBIDDEN.contains(&method)
         || crate::orch::PANE_FORBIDDEN.contains(&method)
         || crate::blob_store::PANE_FORBIDDEN.contains(&method)
+        || crate::browse_api::PANE_FORBIDDEN.contains(&method)
         || crate::hardening::PANE_FORBIDDEN.contains(&method)
         || crate::machines::PANE_FORBIDDEN.contains(&method)
         || crate::items::PANE_FORBIDDEN.contains(&method)
@@ -655,6 +656,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
     }
     // Boxed: these futures are large and would overflow a worker stack in debug builds.
     if let Some(r) = Box::pin(crate::fs_api::api(server, ctx, method, p)).await {
+        return r;
+    }
+    if let Some(r) = crate::browse_api::api(server, method, p).await {
         return r;
     }
     if let Some(r) = crate::desk::api(server, ctx, method, p).await {

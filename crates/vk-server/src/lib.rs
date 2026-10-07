@@ -10,6 +10,7 @@ pub mod api_schema;
 pub mod assist;
 pub mod blob_api;
 pub mod blob_store;
+pub mod browse_api;
 pub mod browser_pane;
 pub mod collision;
 pub mod compat;

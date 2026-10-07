@@ -153,6 +153,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::Elevate => crate::elevate::key(app, ev),
         Popup::Collision => crate::collision::key(app, ev),
         Popup::Agents { filter, sel } => crate::agent_list::key(app, ev, filter, sel),
+        Popup::Path(p) => crate::path_picker::popup_key(app, ev, p),
         Popup::Peek { pane } => match ev.key {
             _ if esc => {}
             Key::Named(NamedKey::Enter) => {
@@ -512,6 +513,10 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
             Popup::Collision => crate::collision::draw(app, g),
             Popup::Agents { filter, sel } => {
                 let (x, y) = crate::agent_list::draw(app, g, filter, *sel);
+                return Some((x, y, CursorShape::Bar));
+            }
+            Popup::Path(p) => {
+                let (x, y) = crate::path_picker::popup_draw(app, g, p);
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::BrowserDrop(a) => crate::browser_io::draw_drop(app, g, a),
