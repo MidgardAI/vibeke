@@ -394,3 +394,6 @@ Policy: unfocused or invisible panes classified `spinner_only` are sent at most 
 
 ### 12.4 Invisible panes
 Panes not visible in any attached client's viewport (other tabs, zoomed-out) are still parsed (needed for detection and snapshots) but generate no render frames. Their damage is folded into a "dirty" flag and sent as one full frame when they become visible.
+
+
+*As built (2026-10-07): pane terminal identity.* Panes inherit the client's `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `LC_TERMINAL` and `LC_TERMINAL_VERSION`, instead of `TERM_PROGRAM=vibeke`. Agent TUIs pick their keyboard protocol from that identity (Claude Code enables kitty keys for iTerm2/Ghostty, so shift+enter works natively). Programs detect Vibeke with `VIBEKE=1` / `VIBEKE_SOCKET`; the nested-TUI checks and `vibeke preview show` use `VIBEKE`. Trade-off: the identity is fixed when the pane starts, so a pane started from iTerm2 still says iTerm2 when attached from Ghostty or the web client; OSC 1337 images from apps that believe they are in iTerm2 are not shown (the engine shows kitty graphics). `keys.shift_enter_legacy = "lf"` (default) covers apps that still don't enable kitty keys.
