@@ -248,6 +248,9 @@ pub struct State {
     gate: vk_assist::sched::PriorityGate,
     /// Serializes read-modify-write of the derived key-value data (`data`).
     kv: Mutex<()>,
+    /// Bumped by every result-cache purge (`forget`/`purge`), under `kv`. A result is cached
+    /// only if no purge ran since it completed, so a purge can't be undone by a late insert.
+    pub(crate) cache_gen: std::sync::atomic::AtomicU64,
     bg: background::Runtime,
     recovered: OnceLock<()>,
 }
@@ -2403,9 +2406,9 @@ fn finish(
     info: Info,
 ) {
     let st = state(server);
-    let done = {
+    let (done, gen_at_done) = {
         let _t = lk(&st.transitions);
-        finish_locked(
+        let done = finish_locked(
             server,
             id,
             result,
@@ -2414,16 +2417,18 @@ fn finish(
             finish_reason,
             prep,
             info,
-        )
+        );
+        // The purge generation when the result was recorded (still under the lock).
+        (done, st.cache_gen.load(std::sync::atomic::Ordering::SeqCst))
     };
     if let Some(r) = done {
-        after_done(server, &r, prep);
+        after_done(server, &r, prep, gen_at_done);
     }
 }
 
 /// Everything that follows a successful result and must not run under the transitions lock:
 /// the result cache and passive notices.
-fn after_done(server: &Arc<Server>, r: &AssistRequest, prep: &Prepared) {
+fn after_done(server: &Arc<Server>, r: &AssistRequest, prep: &Prepared, gen_at_done: u64) {
     let Some(out) = &r.output else {
         return;
     };
@@ -2432,8 +2437,10 @@ fn after_done(server: &Arc<Server>, r: &AssistRequest, prep: &Prepared) {
             .map(|(c, _)| c.result_retention_hours)
             .unwrap_or(24) as i64
             * 3_600_000;
-        data::cache_put(
+        // Skipped when a purge/forget ran since the result was recorded.
+        data::cache_put_unless_purged(
             server,
+            gen_at_done,
             vk_assist::cache::Entry {
                 key: key.clone(),
                 operation: r.operation.clone(),

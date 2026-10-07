@@ -440,6 +440,31 @@ fn capability_records_cache_and_cursors_are_derived_data_in_the_store() {
         "the remaining live entry and the expired one"
     );
     assert_eq!(data::cache_len(&e.server), 0);
+    // Final review P2: a result completed before a purge is not inserted after it (the
+    // purge generation moved); one completed after the purge is.
+    let gen_at_done = state(&e.server)
+        .cache_gen
+        .load(std::sync::atomic::Ordering::SeqCst);
+    data::cache_purge(&e.server, data::CacheScope::All);
+    assert!(!data::cache_put_unless_purged(
+        &e.server,
+        gen_at_done,
+        entry("k4", "as_4", far)
+    ));
+    assert!(
+        data::cache_get(&e.server, "k4").is_none(),
+        "purged result came back"
+    );
+    let now_gen = state(&e.server)
+        .cache_gen
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!(data::cache_put_unless_purged(
+        &e.server,
+        now_gen,
+        entry("k5", "as_5", far)
+    ));
+    assert!(data::cache_get(&e.server, "k5").is_some());
+    data::cache_purge(&e.server, data::CacheScope::All);
     // Cursors and the background planner's state survive.
     let mut cur = vk_assist::remote::Cursors::default();
     cur.0.insert("devbox/main".into(), "42".into());

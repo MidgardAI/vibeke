@@ -110,12 +110,30 @@ pub(super) fn cache_get(server: &Server, key: &str) -> Option<cache::Entry> {
     load_cache(server).get(key, now()).cloned()
 }
 
+#[cfg(test)]
 pub(super) fn cache_put(server: &Server, e: cache::Entry) {
     let _g = lk(&state(server).kv);
+    put_locked(server, e);
+}
+
+fn put_locked(server: &Server, e: cache::Entry) {
     let mut c = load_cache(server);
     c.sweep(now());
     c.put(e);
     let _ = write(server, KV_CACHE, &c);
+}
+
+/// Insert a result unless a purge ran after generation `gen` (checked and inserted under the
+/// same lock purges take): a purge or forget that finished before the insert stays effective.
+/// Returns whether it was inserted.
+pub(super) fn cache_put_unless_purged(server: &Server, gen_at_done: u64, e: cache::Entry) -> bool {
+    let st = state(server);
+    let _g = lk(&st.kv);
+    if st.cache_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_done {
+        return false;
+    }
+    put_locked(server, e);
+    true
 }
 
 pub(super) fn cache_len(server: &Server) -> usize {
@@ -133,7 +151,11 @@ pub(super) enum CacheScope<'a> {
 
 /// Remove derived results from the cache (`forget`/`purge`). Returns how many went.
 pub(super) fn cache_purge(server: &Server, scope: CacheScope<'_>) -> usize {
-    let _g = lk(&state(server).kv);
+    let st = state(server);
+    let _g = lk(&st.kv);
+    // Results completed before this purge must not be inserted after it.
+    st.cache_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut c = load_cache(server);
     let n = match scope {
         CacheScope::All => c.purge_all(),
