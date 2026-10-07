@@ -189,6 +189,7 @@ fn req(level: IsolationLevel, network: NetworkProfile, harnesses: &[&str]) -> Is
     }
 }
 
+#[cfg(target_os = "macos")]
 async fn wait_open_interaction(server: &Server) -> Interaction {
     for _ in 0..200 {
         if let Some(it) = server.with_core(|c| {
@@ -491,6 +492,7 @@ async fn answer(e: &Env, id: &str, decision: &str) {
     assert!(r.contains("\"result\""), "{r}");
 }
 
+#[cfg(target_os = "macos")]
 async fn wait_open_interaction_for(server: &Server, needle: &str) -> Interaction {
     for _ in 0..300 {
         if let Some(it) = server.with_core(|c| {

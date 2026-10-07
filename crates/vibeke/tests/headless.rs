@@ -819,6 +819,7 @@ fn codex_headless_shared_app_server_multiplexes_runs() {
 /// An ACP agent that probes its confinement on each prompt: reads `$PROBE_SECRET` and connects
 /// to `127.0.0.1:$PROBE_PORT`, then reports both outcomes as its answer. It writes no log file
 /// (a sandboxed agent cannot write outside its checkout).
+#[cfg(target_os = "macos")]
 const FAKE_PROBE: &str = r#"
 import json, os, socket, sys
 def out(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()

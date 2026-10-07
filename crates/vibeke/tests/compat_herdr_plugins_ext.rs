@@ -660,6 +660,7 @@ herdr workspace list > "$out/ws.json" 2> "$out/ws.err"; echo "herdr=$?" >> "$out
     );
 }
 
+#[cfg(target_os = "macos")]
 fn field(text: &str, k: &str) -> String {
     text.lines()
         .find_map(|l| l.strip_prefix(&format!("{k}=")))
@@ -788,6 +789,7 @@ fn restricted_mode_refuses_where_no_sandbox_works() {
 
 // ---- review fixes (reviews/2026-10-06-codex-leftovers-review.md) ----------------------------
 
+#[cfg(target_os = "macos")]
 fn sandbox_available() -> bool {
     if vk_sandbox::plugin::probe().is_err() {
         eprintln!("skipped: no working sandbox here (nested?)");

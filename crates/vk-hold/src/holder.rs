@@ -6,7 +6,10 @@ use crate::{procinfo, pty};
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
 use polling::{Event, Events, PollMode, Poller};
-use rustix::fd::{AsFd, AsRawFd};
+use rustix::fd::AsFd;
+// Only `getpeereid` (macOS/BSD) takes a raw fd; Linux reads SO_PEERCRED through rustix.
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+use rustix::fd::AsRawFd;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
