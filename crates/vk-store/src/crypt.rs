@@ -10,6 +10,15 @@
 //! files (no magic) are read as before, so turning encryption on or off never strands data:
 //! files keep the mode they were created with until `security.encryption.migrate` rewrites them.
 //!
+//! Large blobs (over [`CHUNKED_ABOVE`]) use a chunked format instead, so no record ever
+//! exceeds what a reader accepts and a ranged read decrypts only the chunks it needs:
+//! `"VKE2" | key id (8) | blob nonce (12) | chunk size (u32 LE) | plaintext length (u64 LE)`,
+//! then every chunk's ciphertext+tag in order (each chunk `chunk size` bytes of plaintext, the
+//! last one shorter; an empty blob is one empty chunk). Chunk `i` is sealed under the blob
+//! nonce with its last 8 bytes XORed with `i` (big endian) — unique per chunk, never reused —
+//! and the associated data is the whole header plus a final-chunk flag byte, so chunks can't
+//! be reordered, dropped, truncated or moved between blobs undetected.
+//!
 //! The key id is the first 8 bytes of blake3(key). Readers find keys in a process-wide registry
 //! ([`register`]), filled by whoever unlocked the key ([`unlock`]); writers hold their cipher
 //! explicitly. `<state>/encryption.json` records which key and keychain item a state dir uses
@@ -24,13 +33,26 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 
 pub const MAGIC: &[u8; 4] = b"VKE1";
+/// Magic of the chunked (large blob) format.
+pub const MAGIC2: &[u8; 4] = b"VKE2";
+/// Header of the chunked format.
+const HEADER2: usize = 4 + 8 + 12 + 4 + 8;
+/// Plaintext bytes per chunk of the chunked format.
+pub const CHUNK: usize = 1 << 20;
+/// Sealed files with more plaintext than this are written in the chunked format.
+pub const CHUNKED_ABOVE: usize = 4 << 20;
 const AAD_LEN: usize = 4 + 8;
 const HEADER: usize = AAD_LEN + 12 + 4;
 const TAG: usize = 16;
 /// Bytes a record adds to its plaintext.
 pub const OVERHEAD: usize = HEADER + TAG;
-/// Largest record accepted when reading (a corrupt length must not allocate gigabytes).
+/// Largest chunk a chunked header may declare (a corrupt size must not allocate gigabytes),
+/// and the old single-record limit. Scaled down in unit tests so the boundary tests stay fast
+/// (unoptimized AES-GCM runs at a few MB/s); the logic is the same.
+#[cfg(not(test))]
 const MAX_RECORD: usize = 256 << 20;
+#[cfg(test)]
+const MAX_RECORD: usize = 6 << 20;
 
 /// The marker file in a session state dir.
 pub const MARKER: &str = "encryption.json";
@@ -128,6 +150,150 @@ impl StateCipher {
             .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad })
             .ok()
     }
+
+    /// Seal `plain` in the chunked format, writing it to `w` chunk by chunk.
+    pub fn seal_chunked_to<W: std::io::Write>(
+        &self,
+        plain: &[u8],
+        w: &mut W,
+    ) -> std::io::Result<()> {
+        use rand::RngCore;
+        let mut nonce = [0u8; 12];
+        rand::rng().fill_bytes(&mut nonce);
+        let header = chunked_header(&self.id, &nonce, CHUNK as u32, plain.len() as u64);
+        w.write_all(&header)?;
+        let n = chunk_count(plain.len() as u64, CHUNK as u64);
+        let mut aad = header.to_vec();
+        aad.push(0);
+        for i in 0..n {
+            let start = (i as usize) * CHUNK;
+            let end = (start + CHUNK).min(plain.len());
+            *aad.last_mut().unwrap() = u8::from(i + 1 == n);
+            let ct = self
+                .aead
+                .encrypt(
+                    Nonce::from_slice(&chunk_nonce(&nonce, i)),
+                    Payload {
+                        msg: &plain[start..end],
+                        aad: &aad,
+                    },
+                )
+                .expect("AES-GCM encryption of an in-memory buffer cannot fail");
+            w.write_all(&ct)?;
+        }
+        Ok(())
+    }
+
+    /// Seal `plain` in the chunked format.
+    pub fn seal_chunked(&self, plain: &[u8]) -> Vec<u8> {
+        let n = chunk_count(plain.len() as u64, CHUNK as u64) as usize;
+        let mut out = Vec::with_capacity(HEADER2 + plain.len() + n * TAG);
+        self.seal_chunked_to(plain, &mut out)
+            .expect("writing to a Vec cannot fail");
+        out
+    }
+}
+
+fn chunked_header(id: &[u8; 8], nonce: &[u8; 12], chunk: u32, len: u64) -> [u8; HEADER2] {
+    let mut h = [0u8; HEADER2];
+    h[..4].copy_from_slice(MAGIC2);
+    h[4..12].copy_from_slice(id);
+    h[12..24].copy_from_slice(nonce);
+    h[24..28].copy_from_slice(&chunk.to_le_bytes());
+    h[28..36].copy_from_slice(&len.to_le_bytes());
+    h
+}
+
+/// Chunks of a `len`-byte plaintext (an empty one still has one, empty, final chunk).
+fn chunk_count(len: u64, chunk: u64) -> u64 {
+    len.div_ceil(chunk).max(1)
+}
+
+/// The nonce of chunk `i`: the blob nonce with its last 8 bytes XORed with `i`.
+fn chunk_nonce(base: &[u8; 12], i: u64) -> [u8; 12] {
+    let mut n = *base;
+    let tail = u64::from_be_bytes(n[4..12].try_into().unwrap()) ^ i;
+    n[4..12].copy_from_slice(&tail.to_be_bytes());
+    n
+}
+
+/// A parsed chunked header.
+struct Chunked {
+    header: [u8; HEADER2],
+    cipher: Arc<StateCipher>,
+    nonce: [u8; 12],
+    chunk: u64,
+    len: u64,
+    count: u64,
+}
+
+impl Chunked {
+    /// Parse and check a header against the total file size.
+    fn parse(head: &[u8], total: u64) -> Result<Chunked, OpenError> {
+        if head.len() < HEADER2 || &head[..4] != MAGIC2 {
+            return Err(OpenError::Corrupt);
+        }
+        let mut header = [0u8; HEADER2];
+        header.copy_from_slice(&head[..HEADER2]);
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&header[4..12]);
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&header[12..24]);
+        let chunk = u64::from(u32::from_le_bytes(header[24..28].try_into().unwrap()));
+        let len = u64::from_le_bytes(header[28..36].try_into().unwrap());
+        if chunk == 0 || chunk as usize > MAX_RECORD - TAG {
+            return Err(OpenError::Corrupt);
+        }
+        let count = chunk_count(len, chunk);
+        let want = (HEADER2 as u64)
+            .checked_add(len)
+            .and_then(|x| x.checked_add(count.checked_mul(TAG as u64)?));
+        if want != Some(total) {
+            return Err(OpenError::Corrupt);
+        }
+        let cipher = registered(&id).ok_or_else(|| OpenError::MissingKey(hex(&id)))?;
+        Ok(Chunked {
+            header,
+            cipher,
+            nonce,
+            chunk,
+            len,
+            count,
+        })
+    }
+
+    /// File offset and ciphertext length of chunk `i`.
+    fn span(&self, i: u64) -> (u64, usize) {
+        let plain = self.chunk.min(self.len - (i * self.chunk).min(self.len));
+        (
+            HEADER2 as u64 + i * (self.chunk + TAG as u64),
+            plain as usize + TAG,
+        )
+    }
+
+    fn open(&self, i: u64, ct: &[u8]) -> Result<Vec<u8>, OpenError> {
+        let mut aad = self.header.to_vec();
+        aad.push(u8::from(i + 1 == self.count));
+        self.cipher
+            .open_record(&aad, &chunk_nonce(&self.nonce, i), ct)
+            .ok_or(OpenError::Corrupt)
+    }
+
+    /// Decrypt every chunk of an in-memory file; on damage, what came before.
+    fn open_all(&self, data: &[u8]) -> (Vec<u8>, bool) {
+        let mut out = Vec::with_capacity(self.len as usize);
+        for i in 0..self.count {
+            let (at, n) = self.span(i);
+            let Some(ct) = data.get(at as usize..at as usize + n) else {
+                return (out, true);
+            };
+            match self.open(i, ct) {
+                Ok(p) => out.extend_from_slice(&p),
+                Err(_) => return (out, true),
+            }
+        }
+        (out, false)
+    }
 }
 
 static REGISTRY: LazyLock<RwLock<HashMap<[u8; 8], Arc<StateCipher>>>> =
@@ -142,9 +308,9 @@ pub fn registered(id: &[u8; 8]) -> Option<Arc<StateCipher>> {
     REGISTRY.read().unwrap().get(id).cloned()
 }
 
-/// Does this data start a sealed record stream?
+/// Does this data start a sealed record stream (or a chunked sealed blob)?
 pub fn is_sealed(data: &[u8]) -> bool {
-    data.starts_with(MAGIC)
+    data.starts_with(MAGIC) || data.starts_with(MAGIC2)
 }
 
 /// Is the file at `p` sealed? (`false` for a missing or short file.)
@@ -154,7 +320,7 @@ pub fn file_is_sealed(p: &Path) -> bool {
     std::fs::File::open(p)
         .and_then(|mut f| f.read_exact(&mut b))
         .is_ok()
-        && &b == MAGIC
+        && (&b == MAGIC || &b == MAGIC2)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +371,24 @@ pub fn open_lossy(data: &[u8]) -> Result<Opened, OpenError> {
             damaged: false,
         });
     }
+    if data.starts_with(MAGIC2) {
+        let c = match Chunked::parse(data, data.len() as u64) {
+            Ok(c) => c,
+            Err(OpenError::MissingKey(k)) => return Err(OpenError::MissingKey(k)),
+            Err(OpenError::Corrupt) => {
+                return Ok(Opened {
+                    damaged: true,
+                    ..Default::default()
+                });
+            }
+        };
+        let (plain, damaged) = c.open_all(data);
+        return Ok(Opened {
+            data: plain,
+            records: 1,
+            damaged,
+        });
+    }
     let mut out = Opened::default();
     let mut at = 0;
     while at < data.len() {
@@ -216,7 +400,10 @@ pub fn open_lossy(data: &[u8]) -> Result<Opened, OpenError> {
         let mut id = [0u8; 8];
         id.copy_from_slice(&rest[4..12]);
         let len = u32::from_le_bytes(rest[24..28].try_into().unwrap()) as usize;
-        if !(TAG..=MAX_RECORD).contains(&len) || rest.len() < HEADER + len {
+        // Bounded by the data actually present (already in memory), not by a fixed cap: a
+        // single record larger than `MAX_RECORD` written by an older version stays readable
+        // (and migratable).
+        if len < TAG || rest.len() < HEADER + len {
             out.damaged = true;
             break;
         }
@@ -254,11 +441,66 @@ pub fn read_file(p: &Path) -> std::io::Result<Vec<u8>> {
     Ok(open_all(&raw)?)
 }
 
+/// Read `length` plaintext bytes at `offset` of a possibly sealed file (clamped to its end).
+/// A chunked blob decrypts only the chunks the range touches; a record stream is decrypted
+/// whole; a plain file is read in place.
+pub fn read_range(p: &Path, offset: u64, length: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(p)?;
+    let total = f.metadata()?.len();
+    let mut head = [0u8; HEADER2];
+    let n = f.read(&mut head)?;
+    if n >= 4 && &head[..4] == MAGIC2 {
+        let mut rest = n;
+        while rest < HEADER2 {
+            let k = f.read(&mut head[rest..])?;
+            if k == 0 {
+                break;
+            }
+            rest += k;
+        }
+        let c = Chunked::parse(&head[..rest], total)?;
+        let start = offset.min(c.len);
+        let end = start.saturating_add(length).min(c.len);
+        let mut out = Vec::with_capacity((end - start) as usize);
+        if start == end {
+            return Ok(out);
+        }
+        for i in start / c.chunk..=(end - 1) / c.chunk {
+            let (at, len) = c.span(i);
+            let mut ct = vec![0u8; len];
+            f.seek(SeekFrom::Start(at))?;
+            f.read_exact(&mut ct)?;
+            let plain = c.open(i, &ct)?;
+            let base = i * c.chunk;
+            let a = start.max(base) - base;
+            let b = end.min(base + plain.len() as u64) - base;
+            out.extend_from_slice(&plain[a as usize..b as usize]);
+        }
+        return Ok(out);
+    }
+    if n >= 4 && &head[..4] == MAGIC {
+        let all = read_file(p)?;
+        let start = (offset as usize).min(all.len());
+        let end = start.saturating_add(length as usize).min(all.len());
+        return Ok(all[start..end].to_vec());
+    }
+    f.seek(SeekFrom::Start(offset))?;
+    let mut buf = Vec::with_capacity(length.min(total) as usize);
+    f.take(length).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// Plaintext length of a possibly sealed file, from the record headers (no decryption).
 pub fn plain_len(p: &Path) -> std::io::Result<u64> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(p)?;
     let total = f.metadata()?.len();
+    let mut head = [0u8; HEADER2];
+    if total >= HEADER2 as u64 && f.read_exact(&mut head).is_ok() && &head[..4] == MAGIC2 {
+        return Ok(u64::from_le_bytes(head[28..36].try_into().unwrap()));
+    }
+    f.seek(SeekFrom::Start(0))?;
     let mut head = [0u8; HEADER];
     if total < HEADER as u64 || f.read_exact(&mut head[..4]).is_err() || &head[..4] != MAGIC {
         return Ok(total);
@@ -279,12 +521,15 @@ pub fn plain_len(p: &Path) -> std::io::Result<u64> {
     Ok(plain)
 }
 
-/// Write `data` to `p` (0600) via a temp file and rename, sealed when `cipher` is given.
+/// Write `data` to `p` (0600) via a temp file and rename, sealed when `cipher` is given:
+/// one record up to [`CHUNKED_ABOVE`] bytes, the chunked format (streamed) above.
 pub fn write_file(p: &Path, data: &[u8], cipher: Option<&StateCipher>) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    let chunked = cipher.filter(|_| data.len() > CHUNKED_ABOVE);
     let bytes;
     let body: &[u8] = match cipher {
+        _ if chunked.is_some() => &[],
         Some(c) => {
             bytes = c.seal(data);
             &bytes
@@ -302,7 +547,14 @@ pub fn write_file(p: &Path, data: &[u8], cipher: Option<&StateCipher>) -> std::i
         .truncate(true)
         .mode(0o600)
         .open(&tmp)?;
-    f.write_all(body)?;
+    match chunked {
+        Some(c) => {
+            let mut w = std::io::BufWriter::with_capacity(CHUNK + TAG, &mut f);
+            c.seal_chunked_to(data, &mut w)?;
+            w.flush()?;
+        }
+        None => f.write_all(body)?,
+    }
     f.sync_all()?;
     std::fs::rename(&tmp, p)
 }
@@ -557,6 +809,129 @@ mod tests {
         assert!(!file_is_sealed(&p));
         assert_eq!(plain_len(&p).unwrap(), 5);
         assert_eq!(read_file(&p).unwrap(), b"plain");
+    }
+
+    fn pattern(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i.wrapping_mul(31) % 251) as u8).collect()
+    }
+
+    /// Round-trip, ranged reads and migration (plain → sealed → plain) of one size.
+    fn roundtrip(c: &StateCipher, dir: &Path, data: &[u8]) {
+        let n = data.len();
+        let p = dir.join("blob.bin");
+        write_file(&p, data, Some(c)).unwrap();
+        assert!(file_is_sealed(&p), "{n}");
+        assert_eq!(plain_len(&p).unwrap(), n as u64, "{n}");
+        let back = read_file(&p).unwrap();
+        assert!(back == data, "round-trip of {n} bytes");
+        drop(back);
+        // Ranged reads: head, across a chunk boundary, the tail, past the end.
+        for (off, len) in [
+            (0u64, 7u64),
+            (CHUNK as u64 - 5, 10),
+            (n as u64 - n.min(9) as u64, 20),
+            (n as u64 + 3, 5),
+        ] {
+            let got = read_range(&p, off, len).unwrap();
+            let s = (off as usize).min(n);
+            let e = (s + len as usize).min(n);
+            assert_eq!(got, &data[s..e], "range {off}+{len} of {n}");
+        }
+        // Migration to plain and back.
+        let plain = read_file(&p).unwrap();
+        write_file(&p, &plain, None).unwrap();
+        assert!(!file_is_sealed(&p));
+        drop(plain);
+        let again = read_file(&p).unwrap();
+        write_file(&p, &again, Some(c)).unwrap();
+        drop(again);
+        assert!(file_is_sealed(&p));
+        assert!(read_file(&p).unwrap() == data, "re-sealed {n}");
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    /// Final review P1 7: blobs on both sides of the old single-record limit
+    /// (`MAX_RECORD - TAG`) and of the chunked threshold round-trip, read in ranges and
+    /// migrate both ways. A legacy single record over the limit stays readable.
+    #[test]
+    fn large_blobs_round_trip_and_migrate_across_the_record_limit() {
+        let c = cipher();
+        let d = tempfile::tempdir().unwrap();
+        let limit = MAX_RECORD - TAG;
+        let big = pattern(limit + 1);
+        for n in [
+            0,
+            1,
+            CHUNK,
+            CHUNKED_ABOVE,
+            CHUNKED_ABOVE + 1,
+            3 * CHUNK + 17,
+            limit - 1,
+            limit,
+            limit + 1,
+        ] {
+            roundtrip(&c, d.path(), &big[..n]);
+        }
+        // A legacy (pre-chunking) single record over the limit: readable, migratable.
+        let p = d.path().join("legacy.bin");
+        std::fs::write(&p, c.seal(&big)).unwrap();
+        assert_eq!(plain_len(&p).unwrap(), big.len() as u64);
+        assert!(read_file(&p).unwrap() == big);
+        assert_eq!(
+            read_range(&p, limit as u64 - 2, 10).unwrap(),
+            &big[limit - 2..]
+        );
+        let plain = read_file(&p).unwrap();
+        write_file(&p, &plain, Some(&c)).unwrap();
+        assert!(read_file(&p).unwrap() == big);
+    }
+
+    /// The chunked format detects reordering, truncation, a dropped final chunk and a header
+    /// edit, and a ranged read only needs (and only authenticates) the chunks it touches.
+    #[test]
+    fn chunked_blobs_detect_tampering_and_read_ranges_locally() {
+        let c = cipher();
+        let d = tempfile::tempdir().unwrap();
+        let data = pattern(CHUNKED_ABOVE + 3 * CHUNK + 5);
+        let p = d.path().join("b.bin");
+        write_file(&p, &data, Some(&c)).unwrap();
+        let raw = std::fs::read(&p).unwrap();
+        assert!(raw.starts_with(MAGIC2));
+        let ct = CHUNK + TAG;
+        let corrupt = |bytes: &[u8]| {
+            std::fs::write(&p, bytes).unwrap();
+            read_file(&p).is_err()
+        };
+        // Swap chunks 0 and 1.
+        let mut swapped = raw.clone();
+        let (a, b) = (HEADER2, HEADER2 + ct);
+        let first = swapped[a..a + ct].to_vec();
+        let second = swapped[b..b + ct].to_vec();
+        swapped[a..a + ct].copy_from_slice(&second);
+        swapped[b..b + ct].copy_from_slice(&first);
+        assert!(corrupt(&swapped), "reordered chunks");
+        // Truncated by one byte, and with the final chunk dropped entirely.
+        assert!(corrupt(&raw[..raw.len() - 1]), "truncated");
+        let last = (data.len() % CHUNK) + TAG;
+        let mut dropped = raw[..raw.len() - last].to_vec();
+        let shorter = (data.len() - data.len() % CHUNK) as u64;
+        dropped[28..36].copy_from_slice(&shorter.to_le_bytes());
+        assert!(corrupt(&dropped), "final chunk dropped (length edited)");
+        // A damaged chunk 0 doesn't stop a range inside chunk 5; a range touching it fails.
+        let mut bad = raw.clone();
+        bad[HEADER2 + 3] ^= 1;
+        std::fs::write(&p, &bad).unwrap();
+        let off = 5 * CHUNK as u64 + 11;
+        assert_eq!(
+            read_range(&p, off, 100).unwrap(),
+            &data[off as usize..off as usize + 100]
+        );
+        assert!(read_range(&p, 10, 10).is_err());
+        // Distinct nonces per chunk and per blob.
+        assert_ne!(chunk_nonce(&[7; 12], 0), chunk_nonce(&[7; 12], 1));
+        write_file(&p, &data, Some(&c)).unwrap();
+        let other = std::fs::read(&p).unwrap();
+        assert_ne!(&other[12..24], &raw[12..24], "fresh blob nonce");
     }
 
     #[test]

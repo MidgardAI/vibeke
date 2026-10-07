@@ -246,7 +246,6 @@ fn blob_stat(server: &Server, ctx: &Ctx, p: &Value) -> R {
 
 fn blob_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
     use base64::Engine;
-    use std::io::{Read, Seek, SeekFrom};
     let (hash, f) = lookup(server, ctx, p)?;
     let range = p.get("range");
     let offset = range.and_then(|r| u(r, "offset")).unwrap_or(0).min(f.size);
@@ -265,17 +264,8 @@ fn blob_get(server: &Server, ctx: &Ctx, p: &Value) -> R {
         )
         .details(json!({"size": f.size, "max": MAX_GET})));
     }
-    let buf = if vk_store::crypt::file_is_sealed(&f.path) {
-        let all = crate::privacy::read_blob(&f.path).map_err(internal)?;
-        let start = (offset as usize).min(all.len());
-        all[start..(start + length as usize).min(all.len())].to_vec()
-    } else {
-        let mut file = std::fs::File::open(&f.path).map_err(internal)?;
-        file.seek(SeekFrom::Start(offset)).map_err(internal)?;
-        let mut buf = Vec::with_capacity(length as usize);
-        file.take(length).read_to_end(&mut buf).map_err(internal)?;
-        buf
-    };
+    // Sealed or plain; a chunked sealed blob decrypts only the chunks of the range.
+    let buf = vk_store::crypt::read_range(&f.path, offset, length).map_err(internal)?;
     Ok(json!({
         "hash": hash,
         "mime": f.mime,

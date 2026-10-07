@@ -297,6 +297,68 @@ async fn failed_unlock_persists_nothing_in_plaintext_and_retries() {
     assert!(crypt::file_is_sealed(&path));
 }
 
+/// Final review P1 7 (server side): a large sealed blob is written chunked, `blob.get` ranges
+/// decrypt only the chunks they touch, and migration works both ways.
+#[tokio::test]
+async fn large_sealed_blobs_read_in_ranges_and_migrate() {
+    use base64::Engine as _;
+    let e = Env::new();
+    e.encrypt();
+    let n = crypt::CHUNKED_ABOVE + 3 * crypt::CHUNK + 123;
+    let data: Vec<u8> = (0..n).map(|i| (i.wrapping_mul(7) % 253) as u8).collect();
+    let (hash, path) = crate::agent_browser::store_blob(
+        &e.server,
+        &data,
+        "bin",
+        &json!({"kind": "pane_screenshot", "created_at_ms": 1}),
+    )
+    .unwrap();
+    assert!(std::fs::read(&path).unwrap().starts_with(crypt::MAGIC2));
+    let get = |off: usize, len: usize| {
+        let e = &e;
+        let hash = hash.clone();
+        async move {
+            let r = e
+                .call(
+                    "blob.get",
+                    json!({"hash": hash, "range": {"offset": off, "length": len}}),
+                )
+                .await?;
+            Ok::<_, vk_proto::rpc::RpcError>(
+                base64::engine::general_purpose::STANDARD
+                    .decode(r["data_b64"].as_str().unwrap())
+                    .unwrap(),
+            )
+        }
+    };
+    let off = crypt::CHUNK * 2 - 10;
+    assert_eq!(get(off, 20).await.unwrap(), &data[off..off + 20]);
+    assert_eq!(get(n - 5, 50).await.unwrap(), &data[n - 5..]);
+    let st = e.call("blob.stat", json!({"hash": hash})).await.unwrap();
+    assert_eq!(st["size"], n);
+    // Damage chunk 0: a range in a later chunk still reads; one in chunk 0 is refused.
+    let mut raw = std::fs::read(&path).unwrap();
+    let good = raw.clone();
+    raw[40] ^= 1;
+    std::fs::write(&path, &raw).unwrap();
+    let late = crypt::CHUNK * 6 + 3;
+    assert_eq!(get(late, 64).await.unwrap(), &data[late..late + 64]);
+    assert!(get(1, 4).await.is_err());
+    std::fs::write(&path, &good).unwrap();
+    // Migration to plain and back to sealed keeps the bytes.
+    e.call("security.encryption.migrate", json!({"to": "plain"}))
+        .await
+        .unwrap();
+    assert!(!crypt::file_is_sealed(&path));
+    assert!(std::fs::read(&path).unwrap() == data);
+    e.call("security.encryption.migrate", json!({"to": "sealed"}))
+        .await
+        .unwrap();
+    assert!(crypt::file_is_sealed(&path));
+    assert!(crypt::read_file(&path).unwrap() == data);
+    assert_eq!(get(late, 64).await.unwrap(), &data[late..late + 64]);
+}
+
 fn walk_contains(dir: &std::path::Path, needle: &[u8]) -> bool {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return false;
