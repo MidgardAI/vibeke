@@ -532,8 +532,9 @@ status.segments :: {pane?: Target, client?: string}
 api.methods :: {} => {methods: [{name: string, mutating: bool, milestone?: string, capability?: string}]}
 # the JSON Schema bundle of this binary (07 §1.5); with `method`, only that method's params/result
 api.schema :: {method?: string} => {schema: object}
+# `boot_id` changes when the server image changes (start or `server.restart`); `restart_error` says why the last restart could not exec (the old image keeps serving)
 server.status :: {}
-  => {pid: int, version: string, uptime_ms: int, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}
+  => {pid: int, version: string, uptime_ms: int, boot_id?: string, restart_error?: string|null, session: string, machine: string, panes: int, holders: {live: int, orphaned?: int}, clients: int, event_seq: int, socket?: string, degraded?: any, ephemeral?: int, preview?: object, timers?: object, db_size?: int, rss?: int}
 # re-read config.toml (runtime overrides on top); errors leave the applied config in force; full scope only
 server.reload_config :: {} => {changed: [string], errors: [ConfigDiagnostic], warnings?: [ConfigWarning]}
 # with kill_panes false the holders keep running and the next server reattaches; full scope only

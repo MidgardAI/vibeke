@@ -176,6 +176,8 @@ fn server_restart_keeps_panes() {
     let pane = s.workspace("sleep 1000");
     let child = s.pane(&pane)["child_pid"].as_i64().unwrap();
     let before = s.json(&["server", "status"]);
+    let before_boot = before["boot_id"].as_str().unwrap().to_string();
+    let t_restart = Instant::now();
     let out = s.cmd(&["server", "restart"]).output().unwrap();
     assert!(
         out.status.success(),
@@ -183,19 +185,25 @@ fn server_restart_keeps_panes() {
         String::from_utf8_lossy(&out.stderr)
     );
     // `server.restart` answers, then execs: a status call right after can still reach the old
-    // image, so wait until the new one (same pid, fresh uptime) answers.
+    // image, so wait until the new one (same pid, new boot id) answers. Its uptime is not
+    // comparable with the old image's: a young old image (tens of ms) beats any new one.
     let mut after = Value::Null;
-    let before_up = before["uptime_ms"].as_u64().unwrap();
     wait_until("restarted image answers", Duration::from_secs(10), || {
         let Ok(st) = s.cmd(&["server", "status"]).output() else {
             return false;
         };
         let v: Value = serde_json::from_slice(&st.stdout).unwrap_or(Value::Null);
-        let fresh = v["uptime_ms"].as_u64().is_some_and(|u| u < before_up);
+        assert_eq!(v["restart_error"], Value::Null, "{v}");
+        let fresh = v["boot_id"].as_str().is_some_and(|b| b != before_boot);
         after = v;
         fresh
     });
     assert_eq!(after["pid"], before["pid"], "exec keeps the pid");
+    let up = after["uptime_ms"].as_u64().unwrap() as u128;
+    assert!(
+        up < t_restart.elapsed().as_millis(),
+        "the new image started after the restart: {after}"
+    );
     assert!(alive(child), "the pane process survives the restart");
     wait_until("pane recovered", Duration::from_secs(10), || {
         s.pane(&pane)["id"] == pane.as_str()
@@ -206,6 +214,38 @@ fn server_restart_keeps_panes() {
         .unwrap_err();
     assert_eq!(kind(&bad), "invalid_params");
     assert!(!events_of(&mut r, "session.server_restarted").is_empty());
+}
+
+#[test]
+fn server_restart_exec_failure_is_reported() {
+    let s = Session::new();
+    s.workspace("sleep 1000");
+    let before = s.json(&["server", "status"]);
+    // Executable, but its interpreter does not exist: exec fails with ENOENT (no shell
+    // fallback, which only applies to ENOEXEC).
+    let bin = s.dir.path().join("broken-vibeke");
+    std::fs::write(&bin, "#!/nonexistent/vk-interpreter\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = s
+        .cmd(&["server", "restart", "--binary", bin.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a failed exec fails the restart");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("restart failed") && err.contains("broken-vibeke"),
+        "{err}"
+    );
+    // The old image keeps serving and reports why.
+    let st = s.json(&["server", "status"]);
+    assert_eq!(st["boot_id"], before["boot_id"]);
+    assert_eq!(st["pid"], before["pid"]);
+    let e = st["restart_error"].as_str().unwrap();
+    assert!(e.contains("broken-vibeke"), "{e}");
+    let mut r = Rpc::connect(&s.socket());
+    let st = r.call("server.status", json!({})).unwrap();
+    assert!(st["restart_error"].is_string());
 }
 
 #[test]

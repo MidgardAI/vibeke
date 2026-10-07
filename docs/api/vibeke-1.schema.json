@@ -21495,6 +21495,19 @@
           "uptime_ms": {
             "type": "integer"
           },
+          "boot_id": {
+            "type": "string"
+          },
+          "restart_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session": {
             "type": "string"
           },

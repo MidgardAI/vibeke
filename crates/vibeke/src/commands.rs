@@ -1,6 +1,6 @@
 //! Top-level commands that aren't plain API calls.
 
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use vk_cli::client::{self, Client};
 use vk_cli::{EXIT_API, EXIT_OK, EXIT_USAGE, Global};
@@ -213,8 +213,7 @@ async fn restart_local(g: &Global, args: &[String]) -> i32 {
         Ok(_) => c
             .call("server.status", json!({}))
             .await
-            .ok()
-            .and_then(|v| v["uptime_ms"].as_u64()),
+            .unwrap_or(Value::Null),
         Err(e) => {
             vk_cli::print_error(&e);
             return vk_cli::exit_code_for(&e);
@@ -228,15 +227,25 @@ async fn restart_local(g: &Global, args: &[String]) -> i32 {
         }
     };
     drop(c);
-    // The same pid comes back with a fresh uptime once the new image serves.
+    // The same pid comes back with a new boot id once the new image serves (a server without
+    // boot ids: with a fresh uptime). A failed exec leaves the old image serving and says why.
+    let fresh = |st: &Value| match (before["boot_id"].as_str(), st["boot_id"].as_str()) {
+        (Some(old), Some(new)) => old != new,
+        _ => st["uptime_ms"].as_u64() < before["uptime_ms"].as_u64(),
+    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         if let Ok(s) = client::connect(&socket).await {
             let mut c = Client::new(s);
-            if c.hello("cli").await.is_ok()
-                && let Ok(st) = c.call("server.status", json!({})).await
-                && st["uptime_ms"].as_u64() < before
-            {
+            let st = match c.hello("cli").await {
+                Ok(_) => c.call("server.status", json!({})).await.ok(),
+                Err(_) => None,
+            };
+            if let Some(e) = st.as_ref().and_then(|st| st["restart_error"].as_str()) {
+                eprintln!("server restart failed: {e}; the old server is still running");
+                return EXIT_API;
+            }
+            if let Some(st) = st.filter(|st| fresh(st)) {
                 if g.json == Some(true) || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                     println!(
                         "{}",

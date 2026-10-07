@@ -5340,6 +5340,8 @@ export type ServerStatusResult = {
   pid: number;
   version: string;
   uptime_ms: number;
+  boot_id?: string;
+  restart_error?: string | null;
   session: string;
   machine: string;
   panes: number;

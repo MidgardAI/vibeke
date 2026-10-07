@@ -717,6 +717,8 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 "pid": std::process::id(),
                 "version": vk_proto::VERSION,
                 "uptime_ms": server.started.elapsed().as_millis() as u64,
+                "boot_id": server.boot_id,
+                "restart_error": *server.restart_error.lock().unwrap(),
                 "session": server.opts.session,
                 "machine": server.opts.machine,
                 "panes": panes,

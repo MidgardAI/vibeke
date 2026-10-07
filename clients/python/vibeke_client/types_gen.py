@@ -5736,6 +5736,8 @@ ServerStatusResult = TypedDict("ServerStatusResult", {
     "pid": int,
     "version": str,
     "uptime_ms": int,
+    "boot_id": NotRequired[str],
+    "restart_error": NotRequired[Optional[str]],
     "session": str,
     "machine": str,
     "panes": int,

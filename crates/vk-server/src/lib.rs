@@ -163,6 +163,9 @@ pub struct Server {
     pub pending_task_env: Mutex<HashMap<String, Vec<(String, String)>>>,
     pub boot_id: String,
     pub started: Instant,
+    /// Why the last `server.restart` could not exec the new image (`server.status`
+    /// `restart_error`); this image keeps serving. Cleared by the next restart.
+    pub restart_error: Mutex<Option<String>>,
     pub archive: Mutex<Archive>,
     /// Rows waiting for the next FTS flush. Lock order: `archive` → `core` → `fts_buf`; the
     /// batch is drained and indexed under the archive lock, which purges also hold.
@@ -280,6 +283,7 @@ impl Server {
             pending_task_env: Mutex::new(HashMap::new()),
             boot_id: ulid(),
             started: Instant::now(),
+            restart_error: Mutex::new(None),
             fts_buf: Mutex::new(Vec::new()),
             #[cfg(test)]
             after_fts_drain: Mutex::new(None),

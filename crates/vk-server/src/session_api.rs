@@ -288,6 +288,7 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
         }
         None => binary(server),
     };
+    *server.restart_error.lock().unwrap() = None;
     for rt in server.panes.lock().unwrap().values() {
         rt.send(crate::pane::PaneCmd::Snapshot);
     }
@@ -306,6 +307,7 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
             .args(["server", "--session", &session])
             .exec();
         tracing::error!(error = %e, "server.restart: exec failed; still running the old server");
+        *srv.restart_error.lock().unwrap() = Some(format!("exec {}: {e}", exe.display()));
     });
     Ok(json!({"new_pid": std::process::id(), "binary": bin}))
 }
