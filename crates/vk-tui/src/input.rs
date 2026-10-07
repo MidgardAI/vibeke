@@ -379,7 +379,10 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 fn parse(b: &[u8]) -> Step {
     match b[0] {
         0x1b => escape(b),
-        0x0d | 0x0a => Step::Done(
+        // Only CR is Enter. LF is ctrl+j, which re-encodes to LF for the pane: terminals set up
+        // to send `\n` for shift+enter (iTerm2 after Claude Code's `/terminal-setup`) rely on
+        // that byte reaching the agent as a newline, not as a submit.
+        0x0d => Step::Done(
             1,
             vec![named(NamedKey::Enter, Mods::empty(), KeyKind::Press)],
         ),
@@ -799,6 +802,13 @@ mod tests {
         assert_eq!(one(b"\x1bOP").key, Key::Named(NamedKey::F(1)));
         assert_eq!(one(b"\x1b[Z").mods, Mods::SHIFT);
         assert_eq!(one(b"\r").key, Key::Named(NamedKey::Enter));
+        let lf = one(b"\n");
+        assert_eq!((lf.key.clone(), lf.mods), (Key::Char('j'), Mods::CTRL));
+        assert_eq!(
+            vk_term::encode::encode_key(&lf, &Default::default()),
+            b"\n",
+            "LF reaches the pane as LF"
+        );
         assert_eq!(one(b"\x7f").key, Key::Named(NamedKey::Backspace));
         assert_eq!(
             (one(b"\x02").key, one(b"\x02").mods),
