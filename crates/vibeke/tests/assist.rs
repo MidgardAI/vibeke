@@ -652,11 +652,15 @@ fn suggest_task_details_without_background_runs_or_mutations() {
         )
         .unwrap();
     let id = g["request"]["id"].as_str().unwrap().to_string();
-    fake.push(Reply::anthropic(
-        r#"{"title": "x", "criteria": [{"text": "y", "source_refs": ["s42"]}]}"#,
-        1,
-        1,
-    ));
+    // Invalid output gets exactly one repair attempt (14, lane 2D); the repair cites the
+    // unsent source again, so the request fails as invalid output after two calls.
+    for _ in 0..2 {
+        fake.push(Reply::anthropic(
+            r#"{"title": "x", "criteria": [{"text": "y", "source_refs": ["s42"]}]}"#,
+            1,
+            1,
+        ));
+    }
     s.json(&[
         "assist",
         "confirm",
@@ -664,8 +668,10 @@ fn suggest_task_details_without_background_runs_or_mutations() {
         g["preview"]["digest"].as_str().unwrap(),
     ]);
     let failed = s.wait_state(&id, &["done", "failed"]);
-    assert_eq!(failed["state"], "failed");
-    assert_eq!(failed["error"]["category"], "invalid_output");
+    assert_eq!(failed["state"], "failed", "{failed}");
+    assert_eq!(failed["error"]["category"], "invalid_output", "{failed}");
+    assert_eq!(failed["attempts"], 2, "{failed}");
+    assert_eq!(fake.count(), 3);
     assert!(failed.get("output").is_none_or(Value::is_null));
 
     // Idempotent submission.
@@ -905,7 +911,14 @@ fn queued_requests_never_send_after_disable_or_revocation_elsewhere() {
     );
     assert_eq!(qb["state"], "cancelled", "{qb}");
     assert_eq!(qb["error"]["category"], "permission_denied", "{qb}");
-    s.wait_state(a["request"]["id"].as_str().unwrap(), &["done", "failed"]);
+    // The request already at the provider is aborted too: a running request is aborted when
+    // its consent is revoked from any session (14 §8 as built).
+    let qa = s.wait_state(
+        a["request"]["id"].as_str().unwrap(),
+        &["cancelled", "done", "failed"],
+    );
+    assert_eq!(qa["state"], "cancelled", "{qa}");
+    assert_eq!(qa["error"]["category"], "permission_denied", "{qa}");
     assert_eq!(
         fake.count(),
         1,

@@ -5,9 +5,7 @@
 
 # no integration test yet (baseline); success and error paths both still to write
 adapter.delivery_ack
-adapter.gate
 adapter.report_self
-adapter.signal
 agent.interrupt
 agent.manifests_reload
 agent.read
@@ -38,7 +36,6 @@ preview.dismiss
 preview.profile.list
 preview.promote
 sandbox.remove
-tab.close
 tab.focus
 tab.move
 worktree.create

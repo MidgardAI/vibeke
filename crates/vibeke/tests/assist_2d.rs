@@ -1542,11 +1542,19 @@ fn disabling_aborts_an_in_flight_request_and_concurrency_changes_apply_live() {
         json!({"request": g["request"]["id"], "preview_digest": g["preview"]["digest"]}),
     )
     .unwrap();
-    s.until("waiting requests admitted by the new limit", 3, || {
+    // The new limit admits the waiting request at the next dispatch (well before the 5 s the
+    // first one holds its slot), and only that one: the third waits for a free slot.
+    s.until("the waiting request admitted by the new limit", 4, || {
+        (fake.count() == 2).then_some(())
+    });
+    let third = g["request"]["id"].as_str().unwrap().to_string();
+    // When the first finishes its slot goes to the third.
+    s.until("the third request in the freed slot", 20, || {
         (fake.count() == 3).then_some(())
     });
-    for id in &ids {
-        s.json(&["assist", "cancel", id]);
+    for id in ids.iter().chain([&third]) {
+        // Some may have finished by now; cancelling a finished request is a conflict.
+        let _ = s.api("assistant.cancel", json!({"request": id}));
     }
 }
 

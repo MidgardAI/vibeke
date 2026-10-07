@@ -1143,6 +1143,23 @@ fn resolve_target(
                 .find(|i| i.id == id || i.handle == id)
                 .cloned()
         });
+        if found.is_none() {
+            // A resolved or cancelled interaction is a closed record: it exists, it's just not
+            // open, which is what the caller needs to hear (not "not found").
+            let closed = server.with_core(|c| {
+                c.store
+                    .find::<vk_proto::model::Interaction>("interaction", id)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(i) = closed {
+                return Err(err(
+                    ErrorKind::Conflict,
+                    "interaction_not_open: decision cards explain open interactions only",
+                )
+                .details(json!({"reason": "interaction_not_open", "status": i.status})));
+            }
+        }
         Some(found.ok_or_else(|| not_found("interaction", id))?)
     } else {
         None

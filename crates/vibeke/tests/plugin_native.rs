@@ -143,13 +143,16 @@ fn process_plugin_actions_kv_and_ui_end_to_end() {
         rpc.call("ui.contribute", json!({"contributions": []}))
             .is_err()
     );
-    // The contributed pane opens next to a pane.
-    let _ = s.workspace("sh");
+    // The contributed pane opens next to a pane. No client is attached, so there is no
+    // `@focused` default to fall back on: name the target.
+    let next_to = s.workspace("sh");
     let r = rpc.call(
         "ui.pane.open",
-        json!({"plugin": "acme.e2e", "pane": "tail"}),
+        json!({"plugin": "acme.e2e", "pane": "tail", "target": next_to}),
     );
-    assert!(r.is_ok(), "{r:?}");
+    let opened = r.unwrap_or_else(|e| panic!("{e}"));
+    assert!(opened["pane"]["id"].is_string(), "{opened}");
+    assert_ne!(opened["pane"]["id"], json!(next_to));
     // Restart, disable (process stops, contributions go), enable, remove.
     rpc.call("plugin.restart", json!({"plugin": "acme.e2e"}))
         .unwrap();

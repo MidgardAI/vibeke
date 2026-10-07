@@ -535,3 +535,366 @@ fn integration_doctor_reports_version_against_validated_range() {
             .starts_with(&s.dir.path().to_string_lossy().to_string())
     );
 }
+
+/// sha256 of `bytes` as lowercase hex, through the system tool (the test crate has no hasher).
+fn sha256_hex(bytes: &[u8]) -> String {
+    use std::io::Write;
+    for (tool, args) in [("shasum", &["-a", "256"][..]), ("sha256sum", &[][..])] {
+        let Ok(mut child) = Command::new(tool)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        else {
+            continue;
+        };
+        child.stdin.take().unwrap().write_all(bytes).unwrap();
+        let out = child.wait_with_output().unwrap();
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            return s.split_whitespace().next().unwrap().to_string();
+        }
+    }
+    panic!("no shasum or sha256sum");
+}
+
+/// The signed manifest channel over the API (04 §13): `agent.manifests_check` refuses an
+/// unsigned index and caches nothing; with the development opt-in it applies a built-in
+/// harness's manifest from a local `file://` index, announces it once and refuses a replay;
+/// `agent.manifest_pin` freezes only a cached version and unpins; `agent.drift` reports
+/// per-version counters. Nothing leaves the machine: the index is in the test's temp dir.
+#[test]
+fn manifest_channel_check_pin_and_drift_over_the_api() {
+    let s = Session::new();
+    // No background poll: only the explicit checks below touch the channel.
+    std::fs::write(
+        s.dir.path().join("config.toml"),
+        "[update]\nmanifest_check = false\nversion_check = false\n",
+    )
+    .unwrap();
+    let pub_dir = s.dir.path().join("channel");
+    std::fs::create_dir_all(&pub_dir).unwrap();
+    let body =
+        "id = \"gemini\"\n[[screen.rules]]\nid = \"x\"\nstate = \"working\"\nany = ['busy']\n";
+    std::fs::write(pub_dir.join("gemini.toml"), body).unwrap();
+    let index = json!({"serial": 3, "created_at": "2026-10-07", "manifests": [
+        {"id": "gemini", "version": "2", "sha256": sha256_hex(body.as_bytes()), "url": "gemini.toml"},
+        {"id": "not-a-harness", "version": "1", "sha256": "x", "url": "nope.toml"}
+    ]});
+    std::fs::write(pub_dir.join("index.json"), index.to_string()).unwrap();
+    let url = format!("file://{}/index.json", pub_dir.display());
+
+    // Unsigned and no opt-in: refused, nothing cached, nothing to pin.
+    let e = s
+        .api("agent.manifests_check", json!({"url": url}))
+        .unwrap_err();
+    assert!(e.to_string().contains("sign"), "{e}");
+    let e = s
+        .api("agent.manifest_pin", json!({"id": "gemini"}))
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("no remote manifests installed"),
+        "{e}"
+    );
+    assert!(!s.dir.path().join("state/manifests/remote").exists());
+
+    // The development opt-in is read by the server process: restart it with the variable.
+    s.json(&["server", "stop", "--kill-panes"]);
+    let pid: i32 = std::fs::read_to_string(s.dir.path().join("run/default/server.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: probing a pid with signal 0 sends nothing.
+    s.until("the old server gone", 10, || {
+        (unsafe { libc::kill(pid, 0) } != 0).then_some(())
+    });
+    let check = || {
+        let out = s
+            .cmd(&[
+                "api",
+                "call",
+                "agent.manifests_check",
+                &json!({"url": url}).to_string(),
+            ])
+            .env("VIBEKE_ALLOW_UNSIGNED_MANIFESTS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let r = check();
+    assert_eq!(r["serial"], 3, "{r}");
+    assert_eq!(r["applied"], json!(["gemini@2"]), "{r}");
+    assert_eq!(r["unsigned"], true);
+    assert!(
+        r["warnings"][0].as_str().unwrap().contains("UNSIGNED"),
+        "{r}"
+    );
+    assert_eq!(r["announced"], 1);
+    assert!(
+        s.dir
+            .path()
+            .join("state/manifests/remote/gemini.toml")
+            .is_file()
+    );
+    let loaded = s.json(&[
+        "api",
+        "call",
+        "events.read",
+        &json!({"types": ["harness.manifest_loaded"]}).to_string(),
+    ]);
+    let ev = &loaded["events"][0];
+    assert_eq!(ev["data"]["id"], "gemini", "{loaded}");
+    assert_eq!(ev["data"]["source"], "remote");
+    assert_eq!(ev["data"]["verified"], "unsigned-dev");
+    // The same serial again is not newer: nothing changes.
+    let again = check();
+    assert_eq!(again["unchanged"], true, "{again}");
+    assert_eq!(again["index_serial"], 3);
+
+    // Pin: only the cached version; unpin reports whether there was a pin.
+    let e = s
+        .api(
+            "agent.manifest_pin",
+            json!({"id": "gemini", "version": "9"}),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("not cached"), "{e}");
+    let e = s
+        .api("agent.manifest_pin", json!({"id": "codex"}))
+        .unwrap_err();
+    assert!(e.to_string().contains("no cached remote manifest"), "{e}");
+    let pin = s
+        .api("agent.manifest_pin", json!({"id": "gemini"}))
+        .unwrap();
+    assert_eq!(pin["version"], "2", "{pin}");
+    assert!(pin["pinned_at_ms"].as_i64().unwrap() > 0);
+    let pins: Value = serde_json::from_str(
+        &std::fs::read_to_string(s.dir.path().join("state/manifests/pins.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pins["gemini"]["version"], "2", "{pins}");
+    let un = s
+        .api("agent.manifest_pin", json!({"id": "gemini", "unpin": true}))
+        .unwrap();
+    assert_eq!(un["unpinned"], true, "{un}");
+    let un = s
+        .api("agent.manifest_pin", json!({"id": "gemini", "unpin": true}))
+        .unwrap();
+    assert_eq!(un["unpinned"], false, "{un}");
+
+    // Drift counters: no harness version has been observed drifting in this session.
+    let drift = s.json(&["agent", "drift"]);
+    let versions = drift["versions"].as_array().expect("versions");
+    assert!(versions.iter().all(|v| v["drifting"] == false), "{drift}");
+}
+
+/// `sandbox.setup_token` (13 §6): the token comes from stdin (prose around it, as
+/// `claude setup-token` prints it) and lands in the session's private credentials dir, 0600 in a
+/// 0700 dir; something that is not a token is refused and the stored one stays.
+#[test]
+fn sandbox_setup_token_stores_the_token_from_stdin_privately() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let s = Session::new();
+    let token = "sk-ant-oat01-FAKEFAKEFAKEFAKEFAKE";
+    let mut child = s
+        .cmd(&["sandbox", "setup-token"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            format!("Your OAuth token (valid for 1 year):\n\n{token}\n\nStore it securely.\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(r["stored"], true, "{r}");
+    assert_eq!(r["env"], "CLAUDE_CODE_OAUTH_TOKEN");
+    let path = PathBuf::from(r["path"].as_str().unwrap());
+    assert_eq!(
+        path,
+        s.dir.path().join("state/credentials/claude-oauth-token")
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains(token),
+        "the token is never echoed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{token}\n")
+    );
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(mode(path.parent().unwrap()), 0o700);
+
+    let e = s
+        .api(
+            "sandbox.setup_token",
+            json!({"token": "not a token at all"}),
+        )
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("does not look like a setup token"),
+        "{e}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{token}\n")
+    );
+}
+
+/// `sandbox.relaunch` (13 §3): a host run is restarted from its native session inside a
+/// sandbox. It needs a live run with a resume handle and a containing level; the relaunched run
+/// keeps the session, the old one ends, and the move is in the event log. The harness is a
+/// fake `hermes` on the pane's PATH that prints the argv it was resumed with.
+#[cfg(target_os = "macos")]
+#[test]
+fn sandbox_relaunch_moves_a_host_run_into_a_sandbox_from_its_session() {
+    let mut s = Session::new();
+    let work = s.dir.path().join("work");
+    // Inside the workspace: the sandbox lets the agent read its checkout, not the rest of /tmp.
+    let bin = work.join(".fakebin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("hermes"),
+        "#!/bin/sh\necho \"HERMES_ARGV $*\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        bin.join("hermes"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    s.path = format!("{}:{SAFE_PATH}", bin.display());
+    let pane = s.pane(&work);
+
+    let e = s
+        .api("sandbox.relaunch", json!({"run": "nope"}))
+        .unwrap_err();
+    assert!(e.to_string().contains("not found"), "{e}");
+    // A host run that reported itself but has no native session yet: nothing to resume.
+    s.api(
+        "pane.report_agent",
+        json!({"pane_id": pane, "source": "herdr:hermes", "agent": "hermes", "state": "working", "seq": 1}),
+    )
+    .unwrap();
+    let old = s.run_of(&pane).unwrap();
+    let old_id = old["id"].as_str().unwrap().to_string();
+    let e = s
+        .api("sandbox.relaunch", json!({"run": old_id}))
+        .unwrap_err();
+    assert!(e.to_string().contains("no resume handle"), "{e}");
+    s.api(
+        "pane.report_agent_session",
+        json!({"pane_id": pane, "source": "herdr:hermes", "agent": "hermes", "agent_session_id": "h-7", "seq": 2}),
+    )
+    .unwrap();
+    for (p, want) in [
+        (
+            json!({"run": old_id, "isolate": "host"}),
+            "needs an isolation level",
+        ),
+        (
+            json!({"run": old_id, "isolate": "moon"}),
+            "unknown isolation level",
+        ),
+        (
+            json!({"run": old_id, "isolate": "sandbox", "network": "moon"}),
+            "unknown network profile",
+        ),
+    ] {
+        let e = s.api("sandbox.relaunch", p.clone()).unwrap_err();
+        assert!(e.to_string().contains(want), "{p}: {e}");
+    }
+    assert_eq!(
+        s.run_of(&pane).unwrap()["id"],
+        old_id.as_str(),
+        "refusals change nothing"
+    );
+
+    let r = s
+        .api(
+            "sandbox.relaunch",
+            json!({"run": old_id, "isolate": "sandbox", "network": "none"}),
+        )
+        .unwrap();
+    assert_eq!(r["from"], old_id.as_str(), "{r}");
+    assert_eq!(r["level"], "sandbox");
+    let new_id = r["run"]["id"].as_str().unwrap().to_string();
+    assert_ne!(new_id, old_id);
+    assert_eq!(r["run"]["harness"], "hermes");
+    assert_eq!(r["run"]["harness_session_id"], "h-7");
+    assert_eq!(
+        r["run"]["resume_argv"],
+        json!(["hermes", "--resume", "h-7"])
+    );
+    let listed = s.run_of(&pane);
+    assert_eq!(
+        listed.as_ref().map(|r| r["id"].clone()),
+        Some(json!(new_id)),
+        "{}\n{}",
+        s.json(&["pane", "read", &pane]),
+        s.json(&["agent", "list"])
+    );
+    let ev = s.json(&[
+        "api",
+        "call",
+        "events.read",
+        &json!({"types": ["sandbox.relaunched", "agent.started"]}).to_string(),
+    ]);
+    let evs = ev["events"].as_array().unwrap();
+    assert!(
+        evs.iter().any(|e| e["type"] == "sandbox.relaunched"
+            && e["data"]["from"] == old_id.as_str()
+            && e["data"]["level"] == "sandbox"),
+        "{ev}"
+    );
+    assert!(
+        evs.iter().any(|e| e["type"] == "agent.started"
+            && e["data"]["via"] == "relaunch"
+            && e["data"]["resumed_from"] == old_id.as_str()),
+        "{ev}"
+    );
+    // The resumed harness really runs in the pane, from its session.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let screen = s.json(&["pane", "read", &pane]).to_string();
+        if screen.contains("HERMES_ARGV --resume h-7") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the resumed harness in the pane: {screen}"
+        );
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    // The old run is over: relaunching it again is refused.
+    let e = s
+        .api(
+            "sandbox.relaunch",
+            json!({"run": old_id, "isolate": "sandbox"}),
+        )
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("ended") || e.to_string().contains("not found"),
+        "{e}"
+    );
+}

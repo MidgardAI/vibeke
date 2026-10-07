@@ -495,23 +495,32 @@ async fn relaunch(server: &Arc<Server>, p: &Value) -> R {
     };
     let h =
         crate::agents::Harness::from_id(&run.harness).ok_or_else(|| invalid("unknown harness"))?;
-    // Stop the host process (interrupt, then its process group), keep the shell.
-    let ctx = crate::drafts::user_ctx();
-    let _ = Box::pin(crate::api::dispatch(
-        server,
-        &ctx,
-        "agent.interrupt",
-        &json!({"target": run.id}),
-    ))
-    .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    if let Some(st) = server
+    // Stop the host process (interrupt, then its process group), keep the shell. With the
+    // pane's own shell already in front there is nothing to stop, and the interrupt (a bare ESC)
+    // would reach the shell's line editor instead: zsh reads ESC plus the next byte as one meta
+    // key, which ate the first character of the launch line below.
+    let shell_in_front = server
         .pane_rt(&run.pane)
         .and_then(|rt| rt.status.lock().unwrap().clone())
-        && let Some(g) = st.fg_pgid.filter(|g| *g != st.child_pid && *g > 1)
-    {
-        // SAFETY: signalling a process group of a pane this server owns.
-        unsafe { libc::killpg(g as i32, libc::SIGTERM) };
+        .is_some_and(|st| st.fg_pgid == Some(st.child_pid));
+    if !shell_in_front {
+        let ctx = crate::drafts::user_ctx();
+        let _ = Box::pin(crate::api::dispatch(
+            server,
+            &ctx,
+            "agent.interrupt",
+            &json!({"target": run.id}),
+        ))
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if let Some(st) = server
+            .pane_rt(&run.pane)
+            .and_then(|rt| rt.status.lock().unwrap().clone())
+            && let Some(g) = st.fg_pgid.filter(|g| *g != st.child_pid && *g > 1)
+        {
+            // SAFETY: signalling a process group of a pane this server owns.
+            unsafe { libc::killpg(g as i32, libc::SIGTERM) };
+        }
     }
     server.agents.end_run(server, &run.id, "relaunched");
     // Wait for the pane's shell to be back in the foreground.
