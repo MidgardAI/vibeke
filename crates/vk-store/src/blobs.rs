@@ -75,6 +75,8 @@ pub struct BlobStore {
     root: PathBuf,
     /// Seal new blobs (09 §9.1).
     cipher: Option<Arc<StateCipher>>,
+    /// Encryption was asked for but the key is locked: writes fail (never plaintext).
+    paused: bool,
 }
 
 pub fn valid_hash(h: &str) -> bool {
@@ -98,7 +100,23 @@ impl BlobStore {
         BlobStore {
             root: root.into(),
             cipher: None,
+            paused: false,
         }
+    }
+
+    /// Refuse every write through this handle (encryption requested, key locked).
+    pub fn with_paused(mut self, paused: bool) -> Self {
+        self.paused = paused;
+        self
+    }
+
+    fn writable(&self) -> std::io::Result<()> {
+        if self.paused {
+            return Err(std::io::Error::other(
+                "state encryption is requested but the state key is locked: blob writes are paused",
+            ));
+        }
+        Ok(())
     }
 
     /// Seal blobs written through this handle (`None`: plain).
@@ -160,6 +178,7 @@ impl BlobStore {
         meta: &Value,
         mode: MetaMode,
     ) -> std::io::Result<(String, PathBuf)> {
+        self.writable()?;
         let ext = if ext_ok(ext) { ext } else { "bin" };
         let hash = blake3::hash(data).to_hex().to_string();
         let dir = self.ensure_dir(&hash)?;
@@ -181,6 +200,7 @@ impl BlobStore {
         meta: &Value,
         mode: MetaMode,
     ) -> std::io::Result<(String, PathBuf)> {
+        self.writable()?;
         let ext = if ext_ok(ext) { ext } else { "bin" };
         let hash = hash_file(src)?;
         let dir = self.ensure_dir(&hash)?;

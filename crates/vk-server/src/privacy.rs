@@ -117,6 +117,9 @@ pub struct EncStatus {
     pub error: Option<String>,
     /// A key for previously sealed files is unlocked (also with encryption off).
     pub readable: bool,
+    /// Requested but not active: scrollback archiving and blob writes are paused (fail
+    /// closed) until the key unlocks; the unlock is retried every 30 s.
+    pub writes_paused: bool,
 }
 
 #[derive(Default)]
@@ -189,12 +192,13 @@ pub fn init(server: &Arc<Server>) {
     apply(server, &s);
 }
 
-/// Bring the archive cipher and the status in line with `s` (no-op when unchanged).
+/// Bring the archive cipher and the status in line with `s` (no-op when unchanged and in
+/// force). Requested-but-locked is never cached: every call retries the unlock.
 pub fn apply(server: &Server, s: &Settings) {
     let key = (s.encrypt_state, s.keychain.clone());
     {
         let mut a = server.privacy.applied.lock().unwrap();
-        if a.as_ref() == Some(&key) {
+        if a.as_ref() == Some(&key) && !status(server).writes_paused {
             return;
         }
         *a = Some(key);
@@ -233,8 +237,17 @@ pub fn apply(server: &Server, s: &Settings) {
             Err(e) => st.error = Some(e.to_string()),
         }
     }
-    if let Err(e) = server.archive.lock().unwrap().set_cipher(cipher) {
-        st.error.get_or_insert(e.to_string());
+    // Fail closed (09 §9.1): encryption asked for but no key means nothing new is persisted
+    // in plaintext — the archive and blob writes pause until the unlock succeeds.
+    st.writes_paused = s.encrypt_state && cipher.is_none();
+    {
+        let mut a = server.archive.lock().unwrap();
+        if let Err(e) = a.set_paused(st.writes_paused) {
+            st.error.get_or_insert(e.to_string());
+        }
+        if let Err(e) = a.set_cipher(cipher) {
+            st.error.get_or_insert(e.to_string());
+        }
     }
     if let Some(e) = &st.error {
         tracing::error!(error = %e, "state encryption");
@@ -249,6 +262,11 @@ pub fn cipher(server: &Server) -> Option<Arc<StateCipher>> {
 
 pub fn status(server: &Server) -> EncStatus {
     server.privacy.status.lock().unwrap().clone()
+}
+
+/// Encryption is requested but locked: archive and blob writes are paused.
+pub fn writes_paused(server: &Server) -> bool {
+    server.archive.lock().unwrap().paused()
 }
 
 /// Background loop: re-apply changed encryption settings (notifying the user when encryption
@@ -269,7 +287,7 @@ pub fn start(server: &Arc<Server>) {
                     "security",
                     None,
                     "State encryption is not active",
-                    "security.encrypt_state is on but the state key could not be unlocked; new scrollback and blobs are written unencrypted. See `vibeke security status`.",
+                    "security.encrypt_state is on but the state key could not be unlocked; new scrollback and blobs are not saved (nothing is written unencrypted) until it unlocks. Retrying every 30 s. See `vibeke security status`.",
                     "high",
                 );
             }
@@ -471,6 +489,7 @@ fn status_json(server: &Server) -> Value {
         "key_id": st.key_id,
         "keychain": st.keychain.or_else(|| s.keychain.as_ref().ok().map(Keychain::describe)),
         "readable": st.readable,
+        "writes_paused": st.writes_paused,
         "error": st.error,
         "files": {"sealed": sealed, "plain": plain},
         "covers": ["scrollback segments", "session blobs (screenshots, pane screenshots, diffs)"],

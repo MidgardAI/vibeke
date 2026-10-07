@@ -41,6 +41,8 @@ pub struct Archive {
     root: PathBuf,
     open: HashMap<String, PaneSeg>,
     cipher: Option<Arc<StateCipher>>,
+    /// Encryption was asked for but the key is locked: nothing is written (fail closed).
+    paused: bool,
 }
 
 impl Archive {
@@ -49,7 +51,24 @@ impl Archive {
             root: root.to_path_buf(),
             open: HashMap::new(),
             cipher: None,
+            paused: false,
         }
+    }
+
+    /// Stop writing (encryption requested, key locked) or resume. Pausing flushes what was
+    /// buffered before and closes every open segment; rows appended while paused are dropped.
+    pub fn set_paused(&mut self, paused: bool) -> Result<()> {
+        if paused && !self.paused {
+            self.flush()?;
+            self.open.clear();
+        }
+        self.paused = paused;
+        Ok(())
+    }
+
+    /// Writes are paused (see [`Archive::set_paused`]).
+    pub fn paused(&self) -> bool {
+        self.paused
     }
 
     /// Seal segments created from now on (`None`: write plain). Open segments are flushed and
@@ -87,7 +106,7 @@ impl Archive {
     }
 
     pub fn append(&mut self, pane: &str, rows: &[ArchivedRow]) -> Result<()> {
-        if rows.is_empty() {
+        if rows.is_empty() || self.paused {
             return Ok(());
         }
         let dir = self.pane_dir(pane);

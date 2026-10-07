@@ -1584,6 +1584,10 @@ impl Server {
             // Under the archive lock (see `fts_buf`): a purge sees the rows either in both the
             // archive and the buffer, or in neither.
             let mut a = self.archive.lock().unwrap();
+            // Encryption requested but locked: nothing is persisted, not even the index.
+            if a.paused() {
+                return;
+            }
             self.fts_buf.lock().unwrap().extend(
                 rows.iter()
                     .filter(|r| !r.t.is_empty())

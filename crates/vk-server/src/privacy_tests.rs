@@ -219,6 +219,98 @@ impl Env {
     }
 }
 
+/// Final review P1 6: with `encrypt_state = true` and a keychain that fails to unlock, no
+/// scrollback segment, index row or blob is written in plaintext; the status says writes are
+/// paused; and the unlock is retried with unchanged settings, after which writes are sealed.
+#[tokio::test]
+async fn failed_unlock_persists_nothing_in_plaintext_and_retries() {
+    let e = Env::new();
+    // A keychain file whose parent is a regular file: creating the key fails.
+    let blocker = e.dir.path().join("blocker");
+    std::fs::write(&blocker, "not a dir").unwrap();
+    let s = Settings {
+        encrypt_state: true,
+        keychain: Ok(Keychain::File(blocker.join("kc.json"))),
+        ..Default::default()
+    };
+    e.force(s.clone());
+    let st = status(&e.server);
+    assert!(st.requested && !st.active && st.writes_paused, "{st:?}");
+    assert!(st.error.is_some());
+    // Scrollback: nothing archived, nothing indexed.
+    e.archive("p1", 0, "PLAINLEAK");
+    assert!(
+        e.server
+            .archive
+            .lock()
+            .unwrap()
+            .segment_infos("p1")
+            .is_empty(),
+        "a segment was written while locked"
+    );
+    let hits = e
+        .server
+        .with_core(|c| c.store.fts_search("PLAINLEAK", None, 10))
+        .unwrap_or_default();
+    assert!(hits.is_empty(), "indexed while locked");
+    let scrollback = e.server.paths.state.join("scrollback");
+    let leaked = walk_contains(&scrollback, b"PLAINLEAK");
+    assert!(!leaked, "plaintext scrollback on disk");
+    // Blobs: every write path refuses.
+    let r = crate::agent_browser::store_blob(
+        &e.server,
+        b"PLAINBLOB bytes",
+        "png",
+        &json!({"kind": "pane_screenshot"}),
+    );
+    assert!(r.is_err(), "blob written while locked");
+    let src = e.dir.path().join("upload.txt");
+    std::fs::write(&src, "PLAINBLOB upload").unwrap();
+    assert!(
+        crate::blob_store::store(&e.server)
+            .put_file(&src, "txt", &json!({}), vk_store::blobs::MetaMode::Replace)
+            .is_err()
+    );
+    assert!(!walk_contains(&e.server.paths.blobs(), b"PLAINBLOB"));
+    let api = e
+        .call("security.encryption.status", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(api["writes_paused"], true);
+    // The cached settings don't block the retry: the same settings unlock once the keychain
+    // works, and writes resume sealed.
+    std::fs::remove_file(&blocker).unwrap();
+    apply(&e.server, &s);
+    let st = status(&e.server);
+    assert!(st.active && !st.writes_paused, "{st:?}");
+    e.archive("p1", 5, "SEALEDNOW");
+    let segs = e.server.archive.lock().unwrap().segment_infos("p1");
+    assert_eq!(segs.len(), 1);
+    assert!(crypt::file_is_sealed(&segs[0].path));
+    let (_, path) = crate::agent_browser::store_blob(
+        &e.server,
+        b"PLAINBLOB later",
+        "png",
+        &json!({"kind": "pane_screenshot"}),
+    )
+    .unwrap();
+    assert!(crypt::file_is_sealed(&path));
+}
+
+fn walk_contains(dir: &std::path::Path, needle: &[u8]) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let p = e.path();
+        if p.is_dir() {
+            walk_contains(&p, needle)
+        } else {
+            std::fs::read(&p).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle))
+        }
+    })
+}
+
 #[tokio::test]
 async fn encryption_requested_without_a_usable_keychain_stays_off_and_says_why() {
     let e = Env::new();
