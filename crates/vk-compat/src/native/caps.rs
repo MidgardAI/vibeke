@@ -64,6 +64,9 @@ pub struct Capabilities {
     pub ui: Vec<String>,
     /// `plugin.kv.*`.
     pub storage: bool,
+    /// `render.attach`: watch rendered panes and send raw input like a user client (high
+    /// risk). Every other `render.*` surface stays refused.
+    pub render_attach: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -214,6 +217,13 @@ impl Capabilities {
                 Risk::High,
             );
         }
+        if self.render_attach {
+            push(
+                "render_attach".into(),
+                "attach to the session's render stream: see every pane and type into them",
+                Risk::High,
+            );
+        }
         for n in &self.network {
             let risk = if n.trim() == "*" {
                 Risk::High
@@ -286,6 +296,7 @@ impl Capabilities {
                 approved.browser_script,
             ),
             ("storage", self.storage, approved.storage),
+            ("render_attach", self.render_attach, approved.render_attach),
         ];
         for (name, want, have) in flags {
             if want && !have {
@@ -429,6 +440,10 @@ pub fn need(method: &str) -> Need {
     if matches!(method, "server.status" | "session.snapshot") {
         return Base;
     }
+    // The one render surface a plugin can be granted, explicitly.
+    if method == "render.attach" {
+        return Cap("render_attach");
+    }
     if ADMIN_PREFIXES.iter().any(|p| method.starts_with(p)) {
         return Never;
     }
@@ -494,6 +509,7 @@ impl Capabilities {
             "preview_access" => self.preview_access,
             "browser_script" => self.browser_script,
             "storage" => self.storage,
+            "render_attach" => self.render_attach,
             _ => false,
         }
     }
@@ -719,5 +735,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(bad.problems().len(), 3);
+    }
+
+    #[test]
+    fn render_attach_is_an_explicit_high_risk_capability() {
+        let none = Capabilities::default();
+        assert!(none.check("render.attach", &json!({})).is_err());
+        assert!(caps().check("render.attach", &json!({})).is_err());
+        let granted = Capabilities {
+            render_attach: true,
+            ..Default::default()
+        };
+        assert!(granted.check("render.attach", &json!({})).is_ok());
+        // Only attach: the rest of `render.*` stays administrative.
+        assert!(granted.check("render.detach", &json!({})).is_err());
+        assert_eq!(granted.max_risk(), Risk::High);
+        assert_eq!(granted.widened_from(&none), vec!["render_attach"]);
     }
 }

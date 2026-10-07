@@ -615,3 +615,282 @@ fn dev_fingerprint_follows_watched_files() {
     std::fs::write(r.join("dist/a.js"), "22").unwrap();
     assert_ne!(a, observe::fingerprint(r, &[], &watch));
 }
+
+// ---- connection identity: tokenless plugin connections, render attach ------------------------
+
+/// A process plugin that answers `plugin.initialize`, starts a child in its process tree and
+/// records the child's pid, then idles.
+const IDLE_PROCESS: &str = r#"read line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"contributions":[]}}'
+sleep 60 &
+echo $! > "$VIBEKE_PLUGIN_DATA_DIR/child.pid"
+while read l; do
+  case "$l" in
+    *plugin.shutdown*) kill $! 2>/dev/null; exit 0;;
+  esac
+done
+"#;
+
+/// A raw token of `acme.fake` with `caps` (consent of the linked registration).
+fn raw_token(s: &Server, caps: Capabilities) -> (String, String) {
+    let consent = registry(s).native["acme.fake"]
+        .consent
+        .as_ref()
+        .unwrap()
+        .consent_id
+        .clone();
+    tokens::issue(
+        s,
+        TokenInfo {
+            plugin: "acme.fake".into(),
+            consent_id: consent,
+            caps,
+            expires: None,
+            kind: TokenKind::Process,
+            invocation: "test".into(),
+        },
+    )
+}
+
+/// One socket connection as `peer_pid`, line-oriented.
+struct Conn {
+    rd: tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    wr: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl Conn {
+    fn open(s: &Arc<Server>, peer_pid: Option<i32>) -> Conn {
+        let (client, server_end) = tokio::io::duplex(1 << 20);
+        let task = tokio::spawn(crate::run::connection(s.clone(), server_end, peer_pid));
+        let (rd, wr) = tokio::io::split(client);
+        Conn {
+            rd: tokio::io::BufReader::new(rd),
+            wr,
+            task,
+        }
+    }
+
+    async fn call(&mut self, method: &str, params: Value) -> Value {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+        self.wr
+            .write_all(format!("{req}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(10), self.rd.read_line(&mut line))
+            .await
+            .expect("reply")
+            .unwrap();
+        serde_json::from_str(&line).unwrap_or(Value::Null)
+    }
+}
+
+fn denied_kind(v: &Value) -> (&str, &str) {
+    (
+        v["error"]["data"]["kind"].as_str().unwrap_or(""),
+        v["error"]["message"].as_str().unwrap_or(""),
+    )
+}
+
+/// A plugin (sandboxed where the OS sandbox works) with no write capabilities: a fresh
+/// connection from its process tree without its token gets nothing — not `pane.run`, not
+/// `interaction.answer`, not even reads — and holds no pane or elevated identity. With its token
+/// it has exactly its capabilities, revocation closes that connection, and afterwards a
+/// tokenless connection is still refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn tokenless_connection_from_plugin_tree_is_refused() {
+    let (t, s) = server();
+    let sandbox = cfg!(target_os = "macos") && vk_sandbox::seatbelt::available();
+    linked(
+        &s,
+        &t.path().join("p"),
+        &format!(
+            "sandbox = {sandbox}\n[process]\ncommand = [\"sh\", \"main.sh\"]\nrestart = \"never\"\n[capabilities]\nstorage = true\n"
+        ),
+        &[("main.sh", IDLE_PROCESS)],
+    );
+    process::ensure(&s);
+    let pidfile = dirs(&s).state_dir("acme.fake").join("child.pid");
+    for _ in 0..200 {
+        if std::fs::read_to_string(&pidfile).is_ok_and(|p| p.trim().parse::<i32>().is_ok()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let ev: Vec<_> = events(&s, "plugin.crashed")
+        .into_iter()
+        .chain(events(&s, "plugin.launch_failed"))
+        .map(|e| e.data)
+        .collect();
+    assert!(pidfile.is_file(), "plugin child pid: {ev:?}");
+    let child: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let plugin_pid = state(&s).procs.lock().unwrap()["acme.fake"]
+        .pid
+        .lock()
+        .unwrap()
+        .unwrap() as i32;
+    assert_eq!(
+        peer_plugin(&s, Some(child)).as_deref(),
+        Some("acme.fake"),
+        "child of the plugin process"
+    );
+    assert_eq!(
+        peer_plugin(&s, Some(plugin_pid)).as_deref(),
+        Some("acme.fake")
+    );
+    assert_eq!(peer_plugin(&s, Some(std::process::id() as i32)), None);
+
+    for peer in [plugin_pid, child] {
+        let mut c = Conn::open(&s, Some(peer));
+        for (m, p) in [
+            (
+                "pane.run",
+                json!({"pane": "x", "command": "touch /tmp/pwned"}),
+            ),
+            (
+                "interaction.answer",
+                json!({"interaction": "x", "answer": "yes"}),
+            ),
+            ("workspace.list", json!({})),
+        ] {
+            let v = c.call(m, p).await;
+            let (kind, msg) = denied_kind(&v);
+            assert_eq!(kind, "permission_denied", "{m}: {v}");
+            assert!(msg.contains("plugin_token_required"), "{m}: {msg}");
+        }
+        // No other identity: an unknown token is refused at hello.
+        let v = c.call("client.hello", json!({"token": "vkp_nope"})).await;
+        assert_eq!(denied_kind(&v).0, "permission_denied", "{v}");
+        drop(c);
+    }
+
+    // With its token: its own capabilities only, and revocation closes the connection.
+    let (tok, _) = raw_token(
+        &s,
+        Capabilities {
+            storage: true,
+            ..Default::default()
+        },
+    );
+    let mut c = Conn::open(&s, Some(child));
+    let v = c.call("client.hello", json!({"token": tok})).await;
+    assert!(v.get("result").is_some(), "{v}");
+    let v = c.call("workspace.list", json!({})).await;
+    assert!(v.get("result").is_some(), "{v}");
+    let v = c
+        .call("pane.run", json!({"pane": "x", "command": "true"}))
+        .await;
+    let (kind, msg) = denied_kind(&v);
+    assert_eq!(kind, "permission_denied");
+    assert!(msg.contains("panes_write"), "{msg}");
+    tokens::revoke_plugin(&s, "acme.fake");
+    let ended = tokio::time::timeout(Duration::from_secs(5), &mut c.task).await;
+    assert!(ended.is_ok(), "revocation closes the connection");
+
+    // After revocation a fresh tokenless connection from the tree is still refused.
+    let mut c = Conn::open(&s, Some(child));
+    let v = c
+        .call("pane.run", json!({"pane": "x", "command": "true"}))
+        .await;
+    assert_eq!(denied_kind(&v).0, "permission_denied", "{v}");
+    let v = c.call("client.hello", json!({"token": tok})).await;
+    assert_eq!(denied_kind(&v).0, "permission_denied", "revoked token: {v}");
+    drop(c);
+    process::stop(&s, "acme.fake", "test").await;
+}
+
+#[test]
+fn plugin_identity_in_the_environment_marks_a_plugin_peer() {
+    let e = |kv: &[(&str, &str)]| {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(peer_plugin_env(&e(&[("HOME", "/h")])), None);
+    assert_eq!(
+        peer_plugin_env(&e(&[("VIBEKE_PLUGIN_ID", "acme.x")])).as_deref(),
+        Some("acme.x")
+    );
+    assert_eq!(
+        peer_plugin_env(&e(&[("VIBEKE_PLUGIN_TOKEN", "vkp_1")])).as_deref(),
+        Some("")
+    );
+    assert!(kind_matches_peer("native-plugin:acme.x#ab", "acme.x"));
+    assert!(kind_matches_peer("native-plugin:acme.x#ab", ""));
+    assert!(!kind_matches_peer("native-plugin:acme.x#ab", "acme.y"));
+}
+
+/// `render.attach` with a plugin token is refused without the explicit `render_attach`
+/// capability; with it the session keeps the plugin identity (never "tui") and revoking the
+/// token ends the established stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn render_attach_needs_capability_and_ends_on_revocation() {
+    use tokio::io::AsyncReadExt;
+    let (t, s) = server();
+    linked(
+        &s,
+        &t.path().join("p"),
+        "[capabilities]\npanes_read = true\nrender_attach = true\n",
+        &[],
+    );
+    let attach = json!({"client_id": "plug", "protocol": vk_proto::render::PROTOCOL});
+    // Restricted token (no render_attach): refused, recorded as a violation.
+    let (tok, _) = raw_token(
+        &s,
+        Capabilities {
+            panes_read: true,
+            ..Default::default()
+        },
+    );
+    let mut c = Conn::open(&s, None);
+    let v = c.call("client.hello", json!({"token": tok})).await;
+    assert!(v.get("result").is_some(), "{v}");
+    let v = c.call("render.attach", attach.clone()).await;
+    let (kind, msg) = denied_kind(&v);
+    assert_eq!(kind, "permission_denied", "{v}");
+    assert!(msg.contains("render_attach"), "{msg}");
+    assert!(!events(&s, "plugin.capability_violation").is_empty());
+    let _ = tokio::time::timeout(Duration::from_secs(5), c.task).await;
+
+    // Granted: attached as the plugin; revocation ends the stream.
+    let (tok, kind) = raw_token(
+        &s,
+        Capabilities {
+            render_attach: true,
+            ..Default::default()
+        },
+    );
+    let mut c = Conn::open(&s, None);
+    let v = c.call("client.hello", json!({"token": tok})).await;
+    assert!(v.get("result").is_some(), "{v}");
+    let v = c.call("render.attach", attach).await;
+    assert!(v.get("result").is_some(), "{v}");
+    let _hello: vk_proto::render::ServerFrame = vk_proto::frame::asyncio::read_frame(&mut c.rd)
+        .await
+        .unwrap();
+    until(
+        || {
+            s.clients
+                .lock()
+                .unwrap()
+                .get("plug")
+                .is_some_and(|st| st.kind == kind)
+        },
+        "plugin identity on the render client",
+    )
+    .await;
+    tokens::revoke_plugin(&s, "acme.fake");
+    let drained = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buf = vec![0u8; 1 << 16];
+        while c.rd.read(&mut buf).await.is_ok_and(|n| n > 0) {}
+    })
+    .await;
+    assert!(drained.is_ok(), "revocation ends the render stream");
+    let _ = tokio::time::timeout(Duration::from_secs(5), c.task).await;
+}

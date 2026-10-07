@@ -336,9 +336,9 @@ async fn supervise(server: &Arc<Server>, id: &str, h: Handle) {
                 break;
             }
         };
-        if let Some(p) = &launch.profile {
-            let _ = std::fs::remove_file(p);
-        }
+        // The profile stays until the process ends: `sandbox-exec` reads it after exec, so
+        // removing it right after spawn races the launch.
+        let profile = launch.profile.clone();
         let _proxy = launch.proxy;
         let pid = child.id().unwrap_or(0);
         *h.pid.lock().unwrap() = Some(pid);
@@ -520,6 +520,9 @@ async fn supervise(server: &Arc<Server>, id: &str, h: Handle) {
         let _ = tokio::time::timeout(Duration::from_millis(500), reader).await;
         let _ = tokio::time::timeout(Duration::from_millis(500), stderr_task).await;
         tokens::revoke_kind(server, &kind);
+        if let Some(p) = &profile {
+            let _ = std::fs::remove_file(p);
+        }
         super::ui::clear(server, id);
         *h.pid.lock().unwrap() = None;
         let code = status.and_then(|s| s.code());

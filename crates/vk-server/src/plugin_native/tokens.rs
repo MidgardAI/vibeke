@@ -95,10 +95,14 @@ pub fn lookup(server: &Server, kind: &str) -> Option<TokenInfo> {
     Some(info)
 }
 
-/// Drop one token (process exit, invocation finished long after its TTL anyway).
+/// Drop one token (process exit, invocation finished long after its TTL anyway). Open
+/// connections, subscriptions and render streams holding it end (auth epoch).
 pub fn revoke_kind(server: &Server, kind: &str) {
     if let Some((_, h)) = parse_kind(kind) {
-        state(server).tokens.lock().unwrap().remove(h);
+        let gone = state(server).tokens.lock().unwrap().remove(h).is_some();
+        if gone {
+            crate::auth::bump_epoch(server);
+        }
     }
 }
 
@@ -108,7 +112,12 @@ pub fn revoke_plugin(server: &Server, plugin: &str) -> usize {
     let mut t = st.tokens.lock().unwrap();
     let before = t.len();
     t.retain(|_, i| i.plugin != plugin);
-    before - t.len()
+    let n = before - t.len();
+    drop(t);
+    if n > 0 {
+        crate::auth::bump_epoch(server);
+    }
+    n
 }
 
 /// Drop expired tokens (housekeeping).

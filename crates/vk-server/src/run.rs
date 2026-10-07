@@ -328,9 +328,17 @@ where
     };
     let (rd, mut wr) = tokio::io::split(stream);
     let mut rd = BufReader::new(rd);
-    let ancestry = ancestry_pane(&server, peer_pid).or_else(|| env_pane(&server, peer_pid));
+    // A native plugin's process tree (09 §6): refused until it presents its plugin token —
+    // never anonymous full scope, never a pane or elevated identity.
+    let plugin_peer = crate::plugin_native::peer_plugin(&server, peer_pid);
+    let ancestry = if plugin_peer.is_some() {
+        None
+    } else {
+        ancestry_pane(&server, peer_pid).or_else(|| env_pane(&server, peer_pid))
+    };
     // A pane of another session (09 §3.2): refused until it presents a token of ours.
-    let mut foreign = ancestry.is_none() && foreign_pane(&server, peer_pid);
+    let mut foreign =
+        plugin_peer.is_none() && ancestry.is_none() && foreign_pane(&server, peer_pid);
     let mut ctx = Ctx {
         client_id: format!("c-{}", &ulid()[20..]),
         kind: if ancestry.is_some() {
@@ -346,9 +354,18 @@ where
     let mut readonly = false;
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     let mut line = String::new();
+    // Revoking a plugin token closes the connections holding it.
+    let mut revoked = crate::auth::revocations(&server);
     // Handle lines until render.attach (which needs the raw stream) or EOF.
     let attach = loop {
         tokio::select! {
+            Ok(()) = revoked.changed() => {
+                if crate::plugin_native::is_plugin_kind(&ctx.kind)
+                    && crate::plugin_native::authorize_live(&server, &ctx).is_err()
+                {
+                    break None;
+                }
+            }
             n = rd.read_line(&mut line) => {
                 if n? == 0 { break None }
                 let l = std::mem::take(&mut line);
@@ -358,8 +375,16 @@ where
                     let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
                     continue;
                 };
+                let unauth_plugin = plugin_peer
+                    .as_deref()
+                    .filter(|_| !crate::plugin_native::is_plugin_kind(&ctx.kind));
                 if req.method != "render.attach"
-                    && let Err(e) = connection_gate(foreign, readonly, &req.method)
+                    && let Err(e) = match unauth_plugin {
+                        Some(p) if req.method != "client.hello" => {
+                            Err(crate::plugin_native::tokenless_refusal(p, &req.method))
+                        }
+                        _ => connection_gate(foreign, readonly, &req.method),
+                    }
                 {
                     let r = Response::err(req.id.clone().unwrap_or(Value::Null), e);
                     let _ = out_tx.send(serde_json::to_string(&r)?);
@@ -369,7 +394,19 @@ where
                     "client.hello" => {
                         if let Some(tok) = req.params.get("token").and_then(Value::as_str).filter(|t| !t.is_empty()) {
                             // A native plugin's capability-scoped token (07 §7.3, 09 §3.2).
-                            if let Some(k) = crate::plugin_native::hello(&server, tok) { ctx.kind = k; ctx.pane_scope = None; foreign = false; let _ = out_tx.send(api::handle_line(&server, &ctx, l).await); continue; }
+                            if let Some(k) = crate::plugin_native::hello(&server, tok)
+                                .filter(|k| plugin_peer.as_deref().is_none_or(|p| crate::plugin_native::kind_matches_peer(k, p)))
+                            {
+                                ctx.kind = k; ctx.pane_scope = None; foreign = false;
+                                let _ = out_tx.send(api::handle_line(&server, &ctx, l).await);
+                                continue;
+                            }
+                            // A plugin's process tree holds no other identity than its own token.
+                            if let Some(p) = &plugin_peer {
+                                let r = Response::err(req.id.clone().unwrap_or(Value::Null), crate::plugin_native::tokenless_refusal(p, "client.hello"));
+                                let _ = out_tx.send(serde_json::to_string(&r)?);
+                                continue;
+                            }
                             // An approved elevation (09 §3.2): full scope, bound to the pane it was
                             // issued to. Never for a pane of another session.
                             let elevated = (!foreign)
@@ -477,8 +514,19 @@ where
             ))
         } else if foreign {
             Some(foreign_refusal("render.attach"))
+        } else if let Some(p) = plugin_peer
+            .as_deref()
+            .filter(|_| !crate::plugin_native::is_plugin_kind(&ctx.kind))
+        {
+            Some(crate::plugin_native::tokenless_refusal(p, "render.attach"))
         } else {
-            crate::auth::authorize(&server, &ctx, "render.attach").err()
+            // A plugin token needs the explicit `render_attach` capability (09 §6); the
+            // session keeps the plugin identity and ends with its token.
+            crate::auth::authorize(&server, &ctx, "render.attach")
+                .and_then(|()| {
+                    crate::plugin_native::authorize(&server, &ctx, "render.attach", &req.params)
+                })
+                .err()
         };
         if let Some(e) = refusal {
             let r = Response::err(req.id.unwrap_or(Value::Null), e);

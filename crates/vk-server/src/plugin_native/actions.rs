@@ -601,9 +601,16 @@ pub async fn run_argv(
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped());
     let spawned = cmd.spawn();
-    if let Some(p) = &launch.profile {
-        let _ = std::fs::remove_file(p);
+    // Removed once the command ended (`sandbox-exec` reads it after exec).
+    struct RmProfile(Option<std::path::PathBuf>);
+    impl Drop for RmProfile {
+        fn drop(&mut self) {
+            if let Some(p) = &self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
     }
+    let _profile = RmProfile(launch.profile.clone());
     let _proxy = launch.proxy;
     let mut child = match spawned {
         Ok(c) => c,
@@ -613,6 +620,15 @@ pub async fn run_argv(
             return finish(server, &e.id, what, id, false, None, b"", b"", Some(&msg));
         }
     };
+    // A connection from this command's process tree must present its token (09 §6).
+    let pid = child.id().filter(|p| *p > 1);
+    if let Some(pid) = pid {
+        state(server)
+            .action_pids
+            .lock()
+            .unwrap()
+            .insert(pid, e.id.clone());
+    }
     if let (Some(data), Some(mut si)) = (stdin, child.stdin.take()) {
         tokio::spawn(async move {
             let _ = si.write_all(&data).await;
@@ -639,6 +655,9 @@ pub async fn run_argv(
     let status = child.wait().await.ok();
     let out = out.await.unwrap_or_default();
     let er = er.await.unwrap_or_default();
+    if let Some(pid) = pid {
+        state(server).action_pids.lock().unwrap().remove(&pid);
+    }
     tokens::revoke_kind(server, &tkind);
     let code = status.and_then(|s| s.code());
     finish(

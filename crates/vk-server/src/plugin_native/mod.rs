@@ -108,6 +108,9 @@ pub struct State {
     pub logs: Mutex<VecDeque<Value>>,
     /// Running argv invocations per plugin.
     pub running: Mutex<HashMap<String, usize>>,
+    /// Live argv action / hook processes: pid → plugin (process plugins keep theirs in
+    /// [`process::Handle::pid`]). Used to recognize a connection from a plugin's process tree.
+    pub action_pids: Mutex<HashMap<u32, String>>,
     /// Crash times per plugin (restart budget) and plugins disabled for this server.
     pub crashes: Mutex<HashMap<String, Vec<Instant>>>,
     pub crash_disabled: Mutex<HashSet<String>>,
@@ -344,6 +347,102 @@ pub fn violation(server: &Server, info: &tokens::TokenInfo, method: &str, why: &
         json!({"plugin": info.plugin}),
         data,
     );
+}
+
+/// Every live native plugin process of this server: `(pid, plugin)`.
+pub fn live_pids(server: &Server) -> Vec<(u32, String)> {
+    let st = state(server);
+    let mut v: Vec<(u32, String)> = st
+        .procs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(id, h)| {
+            h.pid
+                .lock()
+                .unwrap()
+                .filter(|p| *p > 1)
+                .map(|p| (p, id.clone()))
+        })
+        .collect();
+    v.extend(
+        st.action_pids
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, id)| (*p, id.clone())),
+    );
+    v
+}
+
+/// The native plugin a connecting peer belongs to (09 §6), when it is one: a process in the
+/// tree of a live plugin process (by ancestry, or by the process group every plugin command
+/// starts — `setsid` — so a reparented daemon still counts), or a process carrying a plugin
+/// identity in its environment (`VIBEKE_PLUGIN_ID` / `VIBEKE_PLUGIN_TOKEN`). `Some("")` when
+/// the identity is present but names no plugin. Such a connection must present its plugin
+/// token: without one it is refused, never given anonymous full scope.
+pub fn peer_plugin(server: &Server, pid: Option<i32>) -> Option<String> {
+    let start = pid.filter(|p| *p > 1)? as u32;
+    let live = live_pids(server);
+    if !live.is_empty() {
+        let mut pid = start;
+        for _ in 0..64 {
+            if pid == std::process::id() {
+                break;
+            }
+            if let Some((_, id)) = live.iter().find(|(p, _)| *p == pid) {
+                return Some(id.clone());
+            }
+            let Some(info) = vk_hold::procinfo::info(pid) else {
+                break;
+            };
+            if let Some((_, id)) = live.iter().find(|(p, _)| *p == info.pgid) {
+                return Some(id.clone());
+            }
+            if info.ppid <= 1 || info.ppid == pid {
+                break;
+            }
+            pid = info.ppid;
+        }
+    }
+    peer_plugin_env(&vk_hold::procinfo::environ(start))
+}
+
+/// The plugin identity in a process environment, if any (see [`peer_plugin`]).
+pub fn peer_plugin_env(env: &[(String, String)]) -> Option<String> {
+    let get = |k: &str| {
+        env.iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.clone())
+            .filter(|v| !v.is_empty())
+    };
+    let id = get("VIBEKE_PLUGIN_ID");
+    if id.is_none() && get("VIBEKE_PLUGIN_TOKEN").is_none() {
+        return None;
+    }
+    Some(id.unwrap_or_default())
+}
+
+/// Refusal for a connection from a native plugin's process tree that has not presented its
+/// plugin token (09 §6).
+pub fn tokenless_refusal(plugin: &str, method: &str) -> RpcError {
+    let who = if plugin.is_empty() {
+        "a native plugin".to_string()
+    } else {
+        format!("native plugin {plugin}")
+    };
+    err(
+        ErrorKind::PermissionDenied,
+        format!(
+            "plugin_token_required: {method} refused: this process belongs to {who}; present its plugin token (client.hello {{token: $VIBEKE_PLUGIN_TOKEN}})"
+        ),
+    )
+    .details(json!({"scope": "plugin", "plugin": plugin}))
+}
+
+/// Does a plugin ctx kind belong to the plugin a peer was identified as (`""` = unknown)?
+pub fn kind_matches_peer(kind: &str, peer: &str) -> bool {
+    tokens::parse_kind(kind).is_some_and(|(p, _)| peer.is_empty() || p == peer)
 }
 
 /// `client.hello {token}` hook: the ctx kind for a live plugin token.

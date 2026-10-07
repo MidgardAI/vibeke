@@ -255,7 +255,11 @@ where
     {
         let mut clients = server.clients.lock().unwrap();
         let st = clients.entry(client_id.clone()).or_default();
-        st.kind = "tui".into();
+        st.kind = if crate::plugin_native::is_plugin_kind(&auth.kind) {
+            auth.kind.clone()
+        } else {
+            "tui".into()
+        };
         st.attached_at_ms = vk_store::now_ms();
         st.last_active = Some(Instant::now());
         if st.focus.pane.is_none() {
@@ -512,7 +516,11 @@ impl Session {
     fn ctx(&self) -> Ctx {
         Ctx {
             client_id: self.client_id.clone(),
-            kind: if self.auth.kind.starts_with(crate::auth::ELEVATED_KIND) {
+            // An elevated or plugin caller keeps its identity (expiry and revocation end the
+            // session); only a plain user client becomes "tui".
+            kind: if self.auth.kind.starts_with(crate::auth::ELEVATED_KIND)
+                || crate::plugin_native::is_plugin_kind(&self.auth.kind)
+            {
                 self.auth.kind.clone()
             } else {
                 "tui".into()

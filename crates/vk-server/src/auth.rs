@@ -52,6 +52,12 @@ pub fn revocations(server: &Server) -> watch::Receiver<u64> {
     server.security.auth.epoch.subscribe()
 }
 
+/// Wake every open connection, subscription and render stream to re-check its caller (a
+/// token was revoked).
+pub fn bump_epoch(server: &Server) {
+    server.security.auth.epoch.send_modify(|e| *e += 1);
+}
+
 /// When this connection's elevation ends (ms since the epoch), for elevated connections.
 pub fn elevation_expiry(server: &Server, kind: &str) -> Option<i64> {
     let prefix = kind.strip_prefix(ELEVATED_KIND)?;
