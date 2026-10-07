@@ -112,6 +112,69 @@ pub struct Device {
     pub expires_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<Limit>,
+    /// For `peer` devices (another Vibeke host that hands work to this one): whose host it is and
+    /// how it introduced itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<PeerInfo>,
+}
+
+/// Who a `peer` device is (spec 16 §15.3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerInfo {
+    /// `self` (one of the owner's own hosts) or `teammate` (redeemed a handoff invitation).
+    pub owner: String,
+    /// The sending host's display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
+    /// The git identity the sender chose to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<GitUser>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitUser {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+/// A host this gateway can hand work to (spec 16 §15.3), kept in `peers.json`. Holds the private
+/// key this host authenticates with there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerRecord {
+    pub id: String,
+    /// The other host's display name.
+    pub name: String,
+    /// Relay WebSocket base, or `local:<socket>` for a gateway on this machine.
+    pub relay: String,
+    /// The other host's id on the relay.
+    pub host: String,
+    /// Its Noise static public key (base64url), pinned at pairing.
+    pub host_key: String,
+    /// Our X25519 private key for that host (base64url).
+    pub device_key: String,
+    /// Our device id on that host.
+    #[serde(default)]
+    pub device_id: String,
+    /// `self` or `teammate`.
+    pub owner: String,
+    pub added_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+
+impl PeerRecord {
+    pub fn expired(&self) -> bool {
+        self.expires_at.is_some_and(|t| t <= now_s())
+    }
+
+    /// The record without its private key, for listings.
+    pub fn public_json(&self) -> serde_json::Value {
+        serde_json::json!({"id": self.id, "name": self.name, "relay": self.relay, "host": self.host,
+                           "device_id": self.device_id, "owner": self.owner, "added_at": self.added_at,
+                           "expires_at": self.expires_at, "expired": self.expired()})
+    }
 }
 
 fn device_kind() -> String {
@@ -139,6 +202,21 @@ pub struct ShareSpec {
     pub limit: Option<Limit>,
     #[serde(default)]
     pub label: Option<String>,
+    /// `peer` invitations: `self` for the owner's own hosts. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+impl ShareSpec {
+    /// When the resulting device stops working; `None` for a peer invitation between the owner's
+    /// own hosts (`ttl_s` and `until` both 0).
+    pub fn device_expiry(&self) -> Option<u64> {
+        match (self.until, self.ttl_s) {
+            (0, 0) => None,
+            (0, ttl) => Some(now_s() + ttl),
+            (until, _) => Some(until),
+        }
+    }
 }
 
 impl Device {
@@ -192,6 +270,9 @@ pub struct Pairing {
     pub confirmed_claim: Option<String>,
     #[serde(default)]
     pub share: Option<ShareSpec>,
+    /// Unix seconds the pairing was created (0 for pairings from older gateways).
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +400,58 @@ impl StateDir {
 
     pub fn save_devices(&self, d: &[Device]) -> Result<()> {
         write_json(&self.path("devices.json"), &d)
+    }
+
+    /// Remove expired share/handoff/peer devices from `devices.json` (they are refused at the
+    /// handshake already; this keeps the registry from growing). The caller holds the registry
+    /// lock. Returns the remaining devices and the ids removed.
+    pub fn prune_expired_devices(
+        &self,
+        _lock: &RegistryLock,
+    ) -> Result<(Vec<Device>, Vec<String>)> {
+        let mut all = self.devices()?;
+        let gone: Vec<String> = all
+            .iter()
+            .filter(|d| d.expired())
+            .map(|d| d.id.clone())
+            .collect();
+        if !gone.is_empty() {
+            all.retain(|d| !gone.contains(&d.id));
+            self.save_devices(&all)?;
+            for id in &gone {
+                self.audit(
+                    &serde_json::json!({"ts": now_s(), "event": "device.expired", "device": id}),
+                );
+            }
+        }
+        Ok((all, gone))
+    }
+
+    /// Hosts this gateway can hand work to (`peers.json`, 0600: it holds private keys).
+    pub fn peers(&self) -> Result<Vec<PeerRecord>> {
+        let p = self.path("peers.json");
+        if p.exists() {
+            check_owned(&p)?;
+        }
+        read_json_or_default(&p)
+    }
+
+    pub fn save_peers(&self, peers: &[PeerRecord]) -> Result<()> {
+        write_json(&self.path("peers.json"), &peers)
+    }
+
+    /// Every stored pairing (pending, claimed or done) that still parses, oldest first.
+    pub fn pairings(&self) -> Vec<Pairing> {
+        let Ok(rd) = fs::read_dir(self.dir.join("pairings")) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Pairing> = rd
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| serde_json::from_slice(&fs::read(e.path()).ok()?).ok())
+            .collect();
+        out.sort_by_key(|p| (p.created_at, p.exp));
+        out
     }
 
     pub fn host_prefs(&self) -> Result<HostPrefs> {
@@ -470,10 +603,90 @@ mod tests {
             confirmed: None,
             confirmed_claim: None,
             share: None,
+            created_at: now_s(),
         };
         s.save_pairing(&p).unwrap();
         let back = s.pairing("abc").unwrap().unwrap();
         assert_eq!(back.status, p.status);
         assert!(s.pairing("../x").is_err());
+        assert_eq!(s.pairings().len(), 1);
+    }
+
+    fn device(id: &str, expires_at: Option<u64>) -> Device {
+        Device {
+            id: id.into(),
+            name: id.into(),
+            platform: String::new(),
+            public: format!("k-{id}"),
+            scope: Scope::Full,
+            paired_at: 0,
+            vapid_private: None,
+            push: vec![],
+            prefs: Default::default(),
+            push_failures: 0,
+            kind: "share".into(),
+            expires_at,
+            limit: None,
+            peer: None,
+        }
+    }
+
+    #[test]
+    fn expired_devices_are_pruned() {
+        let t = tempfile::tempdir().unwrap();
+        let s = StateDir::open(t.path().join("gw")).unwrap();
+        s.save_devices(&[
+            device("old", Some(now_s() - 10)),
+            device("live", Some(now_s() + 3600)),
+            device("forever", None),
+        ])
+        .unwrap();
+        let lock = s.lock().unwrap();
+        let (left, gone) = s.prune_expired_devices(&lock).unwrap();
+        assert_eq!(gone, ["old"]);
+        let ids: Vec<_> = left.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["live", "forever"]);
+        assert_eq!(s.devices().unwrap().len(), 2);
+        let audit = fs::read_to_string(t.path().join("gw/audit.log")).unwrap();
+        assert!(audit.contains("device.expired") && audit.contains("\"old\""));
+    }
+
+    #[test]
+    fn share_spec_expiry() {
+        let mut sp = ShareSpec {
+            kind: "peer".into(),
+            ttl_s: 0,
+            until: 0,
+            limit: None,
+            label: None,
+            owner: Some("self".into()),
+        };
+        assert_eq!(sp.device_expiry(), None);
+        sp.until = 5;
+        assert_eq!(sp.device_expiry(), Some(5));
+    }
+
+    #[test]
+    fn peers_file_is_private() {
+        let t = tempfile::tempdir().unwrap();
+        let s = StateDir::open(t.path().join("gw")).unwrap();
+        assert!(s.peers().unwrap().is_empty());
+        let r = PeerRecord {
+            id: "p1".into(),
+            name: "devbox".into(),
+            relay: "wss://r".into(),
+            host: "h".into(),
+            host_key: "hk".into(),
+            device_key: "secret".into(),
+            device_id: "d".into(),
+            owner: "self".into(),
+            added_at: 1,
+            expires_at: None,
+        };
+        s.save_peers(std::slice::from_ref(&r)).unwrap();
+        let mode = fs::metadata(t.path().join("gw/peers.json")).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(s.peers().unwrap()[0].device_key, "secret");
+        assert!(!r.public_json().to_string().contains("secret"));
     }
 }

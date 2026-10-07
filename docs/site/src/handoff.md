@@ -70,7 +70,29 @@ Vibeke imports the work into a new workspace. It does not start an agent automat
 
 Approval access permits answers to requests within the selected scope. It does not give full host administration access.
 
-The gateway refuses expired shares. Use **Settings → Devices** to revoke access earlier. See [device recovery](mobile.md#trust-and-recovery).
+The gateway refuses expired shares and removes them from its device list. Use **Settings → Devices** to revoke access earlier. See [device recovery](mobile.md#trust-and-recovery).
+
+## Pair your hosts with each other
+
+A host can also pair with another host, so the two gateways can deliver work to each other directly. On the destination host, create a peer invitation; on the source host, redeem it:
+
+```sh
+vibeke gateway peer invite                    # on the destination: prints the command to run on the source
+vibeke gateway peer add '<invitation link>'   # add --share-user to show your git name and email
+vibeke gateway peer list
+vibeke gateway peer remove <id or name>
+```
+
+A peer invitation pairs one of your own hosts and never expires. A teammate's handoff invitation can also be redeemed this way; that pairing expires with the invitation. A paired host can only deliver handoffs: it can't see panes, the inbox or other devices.
+
+## Manage invitations
+
+```sh
+vibeke gateway invites        # unused invitation links, and the share, handoff and peer devices they created
+vibeke gateway revoke <id>    # cancel an unused invitation, or revoke a device
+```
+
+Both list the kind, expiry, limit and owner of each entry. Every cancellation and revocation is recorded in the gateway's audit log. When you accept an invitation in the app, the app pairs with a separate key for it, so it never replaces your own pairing with that host.
 
 ## Recover from a connection failure
 

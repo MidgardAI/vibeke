@@ -9,6 +9,8 @@ pub mod handoff;
 pub mod local;
 pub mod notify;
 pub mod pair;
+pub mod peer_client;
+pub mod peers;
 pub mod push;
 pub mod relay_client;
 pub mod server;
@@ -78,7 +80,10 @@ impl Gateway {
     pub fn new(state: StateDir, server: Arc<Server>) -> Result<Arc<Self>> {
         let cfg = state.config()?;
         let keys = state.host_keys()?;
-        let devices = state.devices()?;
+        let devices = {
+            let lock = state.lock()?;
+            state.prune_expired_devices(&lock)?.0
+        };
         let host_name = cfg.host_name.clone().unwrap_or_else(hostname);
         let push = push::Sender::new(cfg.push_allowed_hosts.clone(), cfg.push_subject.clone())?;
         Ok(Arc::new(Gateway {
@@ -104,8 +109,9 @@ impl Gateway {
     pub fn reload_devices(&self) -> Result<()> {
         // Read and swap the cache under the registry lock, so a reload can't race a revocation
         // and put a revoked device back in memory.
-        let _lock = self.state.lock()?;
-        let fresh = self.state.devices()?;
+        // Expired devices leave devices.json here too (the sweep runs every 5 s).
+        let lock = self.state.lock()?;
+        let (fresh, _) = self.state.prune_expired_devices(&lock)?;
         let gone: Vec<String> = {
             let cur = self.devices.read().unwrap();
             cur.iter()

@@ -605,6 +605,26 @@ Moves an agent's work to another host at a **turn boundary**. The app is the cou
 
 **Move to self:** the same with two of your own paired hosts; the app lists every paired host whose scope is `full` or whose device kind is `handoff` as a destination.
 
+### 15.3 Peers: host-to-host trust
+
+A gateway can pair with another gateway as a client (`vk-gateway/src/peer_client.rs`): the same `hello {mode: "pair"}` + Noise IKpsk2 + `pair.claim` as an app, then authenticated IK connections and JSON-RPC calls over `/v1/connect` (or the gateway's local socket when the link's relay is `local:<path>`). The relay needs no changes. This is the transport for gateway-to-gateway handoff delivery.
+
+- **Destination side:** a new device kind `peer` (another host). It may call only `hello`, `ping` and `handoff.offer/status/write/commit/discard` (plus `handoff.begin/write/finish/discard` of §15.2 until delivery moves to the gateways). The device record carries `peer {owner: self|teammate, host_name, user?: {name, email}}`; the identity comes from the `peer` object of the host's `pair.claim {name, platform: "host", peer: {host_name, user?}}`.
+  - `peer.invite {ttl_s?}` (full scope, own devices only) → `{link, pid, open_by}`: a bearer pairing with `share.kind = "peer"`, open for 15 min (`ttl_s` 60–3600). The resulting device has owner `self` and **no expiry**.
+  - A teammate's handoff invitation (`share.create {kind: "handoff"}`) redeemed by a host makes a `peer` device with owner `teammate` and the invitation's expiry; redeemed by an app it stays a `handoff` device. A teammate peer has exactly a handoff device's rights in `handoff.*` (no `repo_path`, never starts an agent).
+- **Source side:** `peers.json` in the gateway state dir (0600, atomic) holds `{id, name, relay, host, host_key, device_key (private), device_id, owner, added_at, expires_at?}`.
+  - `peer.redeem {link, share_user?}` (full scope) pairs this host with the link's host and saves the record (replacing an earlier one for the same host). Only `peer` and handoff invitations are accepted; `share_user` sends `git config --global user.name/email`. Result `{peer}` without the key.
+  - `peer.list` → `{peers}` (no keys); `peer.remove {id}` (id or name).
+  - CLI: `vibeke gateway peer invite [--ttl 15]` (destination), `peer add <link> [--share-user]`, `peer list`, `peer remove <id|name>`.
+
+### 15.4 Managing invitations
+
+- `share.list` (full scope) → `{invitations: [{id (pid), kind, scope, label, limit, created, link_expires_at, device_expires_at}], devices: [{id, kind, name, scope, owner, sender, expires_at, limit}]}`: unused pairing links still open, and the share, handoff and peer devices invitations produced.
+- `share.revoke {id}`: cancels a pending invitation (audit `invitation.cancelled`) or revokes an invited device (audit `device.revoked`, live connections closed). It never touches the owner's own `device`s (`devices.revoke` does).
+- CLI: `vibeke gateway invites` lists both with kind, expiry, limit and owner; `vibeke gateway revoke <id>` cancels an invitation or revokes a device and writes the same audit entry; `vibeke gateway devices` shows kind, expiry and limit columns.
+- Expired devices are removed from `devices.json` at startup and by the 5 s sweep (audit `device.expired`).
+- The app pairs each share/handoff invitation with **its own key** (keystore `invite_static:<pid>`, kept on the host record), so the host never confuses it with the device's own pairing (re-pairing the same key still replaces the old record). The app keeps one record per host, so it does not offer to accept an invitation for a host it already has full access to.
+
 ## 16. Desktop app (G4, build now)
 
 `web/apps/desktop` (`@vibeke/desktop`): an Electron shell over `@vibeke/core` + `@vibeke/ui`. It must feel native on macOS first (Linux and Windows build and run; polish follows), and it adds what a phone can't do well.
