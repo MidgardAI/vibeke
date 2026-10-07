@@ -1,7 +1,7 @@
 // Handoff courier (spec 16 §15.2): the app carries an exported bundle from the source host to the
 // destination in chunks (`handoff.read` → `handoff.begin`/`handoff.write`). Finishing is separate
-// (`handoff.finish`, may answer `needs_repo`) and is never retried automatically: a lost finish
-// result is "unknown, check the destination".
+// (`handoff.finish`, which delivers the bundle as an incoming handoff the receiver accepts) and is
+// never retried automatically: a lost finish result is "unknown, check the destination".
 
 import type { AppApi, AppMethod, HandoffManifest } from './model';
 import { RpcError, type RequestOptions } from './rpc';

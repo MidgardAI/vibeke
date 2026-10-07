@@ -1,5 +1,7 @@
 // Handoff (spec 16 §15.2): export the agent's work on this host, show what will travel, carry the
-// bundle to another host in 2 MiB chunks, and import it there. The app is the courier.
+// bundle to another host in 2 MiB chunks, and deliver it there as an incoming handoff. The app is
+// the courier; the receiving host decides where the work lands (accepting it, or importing it
+// automatically at a remembered place).
 //
 // Rules: every call carries an op_id (core rpc); nothing mutating is retried automatically; a lost
 // `handoff.finish` result is shown as "unknown, check the destination", never re-sent by us.
@@ -21,7 +23,7 @@ import {
   type HostState,
 } from '@vibeke/core';
 import { useAllHosts, useApp } from '../app/hooks';
-import { Button, Dot, Notice, Sheet, Spinner, TextField, cx } from '../components/ui';
+import { Button, Dot, Notice, Sheet, Spinner, cx } from '../components/ui';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
 import { byteSize } from '../lib/format';
@@ -43,7 +45,6 @@ type Step =
   | { k: 'confirm'; dest: Dest; exp: ExportedHandoff }
   | { k: 'sending'; dest: Dest; exp: ExportedHandoff; sent: number; total: number }
   | { k: 'finishing'; dest: Dest; exp: ExportedHandoff; destId: string }
-  | { k: 'needs_repo'; dest: Dest; exp: ExportedHandoff; destId: string; repo: string; error?: string }
   | { k: 'done'; dest: Dest; result: HandoffFinishResult }
   | { k: 'unknown'; dest: Dest }
   | { k: 'error'; dest: Dest; message: string; retry: (() => void) | null };
@@ -132,20 +133,20 @@ export function HandoffSheet({ row, open, onClose }: { row: PaneRow; open: boole
       setStep({ k: 'error', dest, message: errorMessage(e), retry: () => void doSend(dest, exp) });
       return;
     }
-    await doFinish(dest, exp, destId, undefined);
+    await doFinish(dest, exp, destId);
   };
 
-  const doFinish = async (dest: Dest, exp: ExportedHandoff, destId: string, repoPath: string | undefined) => {
+  const doFinish = async (dest: Dest, exp: ExportedHandoff, destId: string) => {
     const dst = app.conn(dest.hostId);
     if (!dst) return;
     setStep({ k: 'finishing', dest, exp, destId });
     try {
-      const result = await dst.request('handoff.finish', { id: destId, ...(repoPath ? { repo_path: repoPath } : {}) }, { timeoutMs: 300_000 });
+      const result = await dst.request('handoff.finish', { id: destId }, { timeoutMs: 300_000 });
       // The source copy is no longer needed.
       const id = pendingExport.current;
       pendingExport.current = null;
       if (id) void discardHandoff(source() ?? null, id, null, null);
-      app.haptic(result.agent_error ? 'warning' : 'success');
+      app.haptic(result.state === 'failed' || result.result?.agent_error ? 'warning' : 'success');
       if (!dest.invite) void dst.refresh().catch(() => {});
       setStep({ k: 'done', dest, result });
     } catch (e) {
@@ -154,22 +155,15 @@ export function HandoffSheet({ row, open, onClose }: { row: PaneRow; open: boole
         app.haptic('warning');
         return setStep({ k: 'unknown', dest });
       }
-      if (e instanceof RpcError && e.kind === 'needs_repo') {
-        const d = (e.data?.details ?? {}) as { origin?: string | null; repo_name?: string };
-        return setStep({ k: 'needs_repo', dest, exp, destId, repo: d.origin ?? d.repo_name ?? exp.manifest.repo_name });
-      }
-      if (repoPath && e instanceof RpcError && (e.kind === 'not_found' || e.kind === 'invalid_params')) {
-        return setStep({ k: 'needs_repo', dest, exp, destId, repo: exp.manifest.origin ?? exp.manifest.repo_name, error: errorMessage(e) });
-      }
       // A known failure (or not sent at all): the user may try again.
       const known = e instanceof RpcError || e instanceof NotConnectedError;
-      setStep({ k: 'error', dest, message: errorMessage(e), retry: known ? () => void doFinish(dest, exp, destId, repoPath) : null });
+      setStep({ k: 'error', dest, message: errorMessage(e), retry: known ? () => void doFinish(dest, exp, destId) : null });
     }
   };
 
   return (
     <Sheet open={open} onClose={close} title={t.handoff.title}>
-      <Body step={step} dests={dests} onPick={(d) => void doExport(d, false)} onInterrupt={(d) => void doExport(d, true)} onSend={(d, x) => void doSend(d, x)} onFinish={(d, x, id, p) => void doFinish(d, x, id, p)} onCancel={() => (cancel.current.cancelled = true)} onClose={close} onBack={() => (dropExport(), reset())} />
+      <Body step={step} dests={dests} onPick={(d) => void doExport(d, false)} onInterrupt={(d) => void doExport(d, true)} onSend={(d, x) => void doSend(d, x)} onCancel={() => (cancel.current.cancelled = true)} onClose={close} onBack={() => (dropExport(), reset())} />
     </Sheet>
   );
 }
@@ -180,7 +174,6 @@ function Body({
   onPick,
   onInterrupt,
   onSend,
-  onFinish,
   onCancel,
   onClose,
   onBack,
@@ -190,7 +183,6 @@ function Body({
   onPick(d: Dest): void;
   onInterrupt(d: Dest): void;
   onSend(d: Dest, exp: ExportedHandoff): void;
-  onFinish(d: Dest, exp: ExportedHandoff, destId: string, repoPath: string): void;
   onCancel(): void;
   onClose(): void;
   onBack(): void;
@@ -260,32 +252,40 @@ function Body({
     }
     case 'finishing':
       return <Working text={t.handoff.finishing(step.dest.name)} />;
-    case 'needs_repo':
-      return <NeedsRepo step={step} onSubmit={(p) => onFinish(step.dest, step.exp, step.destId, p)} />;
     case 'done': {
-      const r = step.result;
-      const pane = typeof r.pane === 'string' ? r.pane : null;
+      const r = step.result.result ?? null;
+      const imported = step.result.state === 'imported';
+      const pane = imported && typeof r?.pane === 'string' ? r.pane : null;
       return (
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-lg font-medium">
             <CheckCircle2 className="size-6 text-ok" />
-            {t.handoff.success(step.dest.name)}
+            {imported ? t.handoff.success(step.dest.name) : t.handoff.delivered(step.dest.name)}
           </div>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-            {r.branch && (
-              <>
-                <dt className="text-muted">{t.handoff.newBranch}</dt>
-                <dd className="font-mono">{r.branch}</dd>
-              </>
-            )}
-            {r.worktree && (
-              <>
-                <dt className="text-muted">{t.handoff.worktree}</dt>
-                <dd className="break-all font-mono">{r.worktree}</dd>
-              </>
-            )}
-          </dl>
-          {r.agent_error && (
+          {step.result.state === 'pending' && <Notice>{t.handoff.pending}</Notice>}
+          {step.result.state === 'importing' && <Notice>{t.handoff.importing}</Notice>}
+          {step.result.state === 'failed' && (
+            <Notice tone="warn">
+              {t.handoff.importFailed} {step.result.record?.error?.message ?? ''}
+            </Notice>
+          )}
+          {imported && r && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              {r.branch && (
+                <>
+                  <dt className="text-muted">{t.handoff.newBranch}</dt>
+                  <dd className="font-mono">{r.branch}</dd>
+                </>
+              )}
+              {r.worktree && (
+                <>
+                  <dt className="text-muted">{t.handoff.worktree}</dt>
+                  <dd className="break-all font-mono">{r.worktree}</dd>
+                </>
+              )}
+            </dl>
+          )}
+          {r?.agent_error && (
             <Notice tone="warn">
               {t.handoff.agentError} {r.agent_error.message ?? r.agent_error.data?.kind ?? ''}
             </Notice>
@@ -410,34 +410,5 @@ function Item({ label, children }: { label: string; children: ReactNode }) {
       <dt className="text-muted">{label}</dt>
       <dd className="min-w-0">{children}</dd>
     </>
-  );
-}
-
-function NeedsRepo({ step, onSubmit }: { step: Extract<Step, { k: 'needs_repo' }>; onSubmit(path: string): void }) {
-  const [path, setPath] = useState('');
-  return (
-    <form
-      className="space-y-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (path.trim()) onSubmit(path.trim());
-      }}
-    >
-      <Notice>{t.handoff.needsRepo(step.repo)}</Notice>
-      <TextField
-        label={t.handoff.repoPath}
-        placeholder={t.handoff.repoPlaceholder}
-        value={path}
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        onChange={(e) => setPath(e.target.value)}
-      />
-      <div className="text-xs text-muted">{t.handoff.repoPathHint}</div>
-      {step.error && <Notice tone="danger">{step.error}</Notice>}
-      <Button type="submit" block variant="primary" disabled={!path.trim()}>
-        {t.handoff.continue}
-      </Button>
-    </form>
   );
 }

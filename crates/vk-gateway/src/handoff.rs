@@ -1,8 +1,10 @@
 //! Handoff (spec 16 §15.2): export an agent's work at a turn boundary as a bundle, carry it
-//! through the app, import it on another host as a new worktree and resume the agent there.
+//! through the app and deliver it to this host's server as an incoming handoff, which the receiver
+//! accepts (or the server imports automatically) as a new worktree with the agent resumed there.
 //!
-//! Bundle format, unpacking and the repository-side import live in `vk-handoff`; this module does
-//! the export, the transfer and the server calls around the import.
+//! Bundle format, unpacking and the repository-side import live in `vk-handoff`; the import and
+//! the incoming records live in the server (`handoff.incoming.*`, `handoff.accept`). This module
+//! does the export, the transfer and the delivery.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -15,7 +17,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 use vk_handoff::{
     MAX_BUNDLE, MAX_UNTRACKED, Manifest, Skipped, clean, expand_home, git, git_line, hash_file,
-    known_harness, regular_under, safe_relative, same_remote, secret_path,
+    regular_under, safe_relative, secret_path,
 };
 
 pub use vk_handoff::claude_project_dir;
@@ -146,6 +148,11 @@ pub async fn dispatch(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) 
         "handoff.begin" => begin(gw, dev, p),
         "handoff.write" => write(dev, p).await,
         "handoff.finish" => finish(gw, dev, p).await,
+        "handoff.incoming.list"
+        | "handoff.incoming.get"
+        | "handoff.accept"
+        | "handoff.decline"
+        | "handoff.resume" => incoming(gw, dev, method, p).await,
         _ => Err(err("method_not_found", method)),
     }
 }
@@ -544,7 +551,7 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
         e.busy = true;
         Ok(r)
     })?;
-    let r = import(gw, dev, p, &path, &manifest, &sha).await;
+    let r = deliver(gw, dev, p, &path, &manifest, &sha).await;
     match &r {
         Ok(_) => remove_entry(&id, &dev.id),
         Err(_) => with_entries(|m| {
@@ -556,7 +563,11 @@ async fn finish(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     r
 }
 
-async fn import(
+/// Hand the verified bundle to the server as an incoming handoff (spec 16 §15.2). The server keeps
+/// its own copy and decides: a pending record the receiver accepts later, or an automatic import.
+/// A full device may still place the work right away (`repo_path`, `worktree_path`, `branch`),
+/// which accepts the record on its behalf.
+async fn deliver(
     gw: &Arc<Gateway>,
     dev: &Device,
     p: &Value,
@@ -581,153 +592,71 @@ async fn import(
         }
     }
 
-    // Unpack (regular files only, relative paths only).
-    let work = tempfile::Builder::new()
-        .prefix("import-")
-        .tempdir_in(dir(gw)?)
-        .map_err(|e| err("internal", e.to_string()))?;
-    let (p2, w2) = (path.to_path_buf(), work.path().to_path_buf());
-    let packed: Manifest = tokio::task::spawn_blocking(move || vk_handoff::unpack(&p2, &w2))
-        .await
-        .map_err(|e| err("internal", e.to_string()))?
-        .map_err(|e| err("invalid_params", format!("bad bundle: {e}")))?;
-    vk_handoff::verify(&packed, manifest)?;
-
-    // Find the repository.
-    let root = match s(p, "repo_path") {
-        Some(rp) => git_line(&expand_home(rp), &["rev-parse", "--show-toplevel"])
-            .await
-            .map(PathBuf::from)
-            .ok_or_else(|| err("not_found", "repo_path is not a git repository"))?,
-        None => find_repo(gw, &packed).await.ok_or_else(|| ApiError {
-            kind: "needs_repo".into(),
-            message: format!(
-                "no local clone of {} found; pass repo_path",
-                packed.origin.as_deref().unwrap_or(&packed.repo_name)
-            ),
-            details: json!({"origin": packed.origin, "repo_name": packed.repo_name}),
-        })?,
-    };
-    let wt_choice = s(p, "worktree_path").map(expand_home);
-    let imported = vk_handoff::import(
-        work.path(),
-        &packed,
-        &root,
-        wt_choice.as_deref(),
-        s(p, "branch"),
-    )
-    .await?;
-    let (wt, br, new_cwd, resumed) = (
-        &imported.worktree,
-        &imported.branch,
-        &imported.cwd,
-        imported.resumed,
-    );
-
-    // Workspace + agent.
+    let actor = format!("gateway:{}", dev.name);
     still_authorized(gw, dev)?;
-    let ws = gw
+    let added = gw
         .server
         .call_as(
-            &format!("gateway:{}", dev.name),
-            "workspace.create",
-            json!({"cwd": new_cwd}),
+            &actor,
+            "handoff.incoming.add",
+            json!({"path": path, "manifest": manifest, "sha256": sha,
+                   "from": {"host": clean(&manifest.source_host, 100),
+                            "owner": if teammate { "teammate" } else { "self" }}}),
         )
         .await?;
-    let pane = ws
-        .pointer("/root_pane/id")
-        .or_else(|| ws.get("root_pane"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let mut result = json!({"workspace": ws.pointer("/workspace/id"), "pane": pane, "worktree": wt, "branch": br, "resumed": resumed,
-                            "skipped": packed.skipped, "not_written": imported.not_written});
-    // A teammate's invitation stages the work; only the host's owner starts agents on it.
-    let start = !teammate
-        && p.get("start_agent")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-    if teammate {
-        let _ = gw
-            .server
-            .call_as(
-                &format!("gateway:{}", dev.name),
-                "notification.send",
-                json!({"title": format!("Handoff from {}", clean(&packed.source_host, 60)),
-                       "body": format!("Branch {br} is ready in {}{}", wt.display(),
-                                       if resumed { " (resumable session)" } else { "" }),
-                       "urgency": "normal", "pane": pane}),
-            )
-            .await;
-        result["staged"] = true.into();
-    }
-    if let (true, Some(pane), Some(harness)) = (
-        start,
-        pane,
-        packed.harness.clone().filter(|h| known_harness(h)),
-    ) {
-        let note = format!(
-            "This session was handed off from {} ({}). The work continues in {} on branch {}. Files not carried over: {}.",
-            clean(&packed.source_host, 60),
-            clean(&packed.source_cwd, 200),
-            new_cwd.display(),
-            br,
-            if packed.skipped.is_empty() {
-                "none".to_string()
-            } else {
-                packed
-                    .skipped
-                    .iter()
-                    .take(20)
-                    .map(|s| clean(&s.path, 120))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        );
-        let mut params = json!({"pane": pane, "harness": harness, "prompt": note});
-        // Rebuilt from the harness and a validated session id; never the manifest's argv.
-        if let Some(args) = imported.resume_args.as_ref().filter(|_| resumed) {
-            params["args"] = json!(args);
+    let mut rec = added.get("incoming").cloned().unwrap_or_default();
+    let id = s(&rec, "id")
+        .ok_or_else(|| err("internal", "the server returned no incoming handoff"))?
+        .to_string();
+
+    if let Some(repo) = s(p, "repo_path").filter(|_| !teammate) {
+        let mut params = json!({"id": id, "repo": {"path": expand_home(repo)},
+                                "start_agent": p.get("start_agent").and_then(|v| v.as_bool()).unwrap_or(true)});
+        if let Some(w) = s(p, "worktree_path") {
+            params["worktree_path"] = json!(expand_home(w));
+        }
+        if let Some(b) = s(p, "branch") {
+            params["branch"] = json!(b);
         }
         still_authorized(gw, dev)?;
-        match gw
-            .server
-            .call_as(&format!("gateway:{}", dev.name), "agent.start", params)
-            .await
-        {
-            Ok(r) => result["run"] = r.get("run").cloned().unwrap_or(r),
-            Err(e) => result["agent_error"] = e.to_json(),
-        }
+        let accepted = gw.server.call_as(&actor, "handoff.accept", params).await?;
+        rec = accepted.get("incoming").cloned().unwrap_or(rec);
     }
-    gw.state.audit(&json!({"ts": now_s(), "event": "handoff.imported", "device": dev.id, "from": packed.source_host, "worktree": wt}));
-    Ok(result)
+    gw.state.audit(&json!({"ts": now_s(), "event": "handoff.delivered", "device": dev.id, "from": manifest.source_host, "incoming": id, "state": s(&rec, "state")}));
+    Ok(
+        json!({"incoming": id, "state": rec.get("state"), "result": rec.get("result"), "record": rec}),
+    )
 }
 
-async fn find_repo(gw: &Gateway, m: &Manifest) -> Option<PathBuf> {
-    let origin = m.origin.as_deref()?;
-    let snap = gw.server.call("session.snapshot", json!({})).await.ok()?;
-    let mut seen = Vec::new();
-    for w in snap
-        .get("workspaces")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-    {
-        let Some(root) = s(w, "root_path") else {
-            continue;
-        };
-        let Some(top) = git_line(Path::new(root), &["rev-parse", "--show-toplevel"]).await else {
-            continue;
-        };
-        if seen.contains(&top) {
-            continue;
-        }
-        seen.push(top.clone());
-        if git_line(Path::new(&top), &["remote", "get-url", "origin"])
-            .await
-            .is_some_and(|o| same_remote(&o, origin))
-        {
-            return Some(PathBuf::from(top));
+// ---------------------------------------------------------------------------------------------
+// incoming handoffs on this host (full-scope devices)
+
+/// The server's incoming-handoff methods, with only the params they take.
+async fn incoming(gw: &Arc<Gateway>, dev: &Device, method: &str, p: &Value) -> ApiResult {
+    let keys: &[&str] = match method {
+        "handoff.incoming.list" => &[],
+        "handoff.incoming.get" | "handoff.decline" | "handoff.resume" => &["id"],
+        "handoff.accept" => &[
+            "id",
+            "repo",
+            "worktree_path",
+            "branch",
+            "start_agent",
+            "trust",
+        ],
+        _ => return Err(err("method_not_found", method)),
+    };
+    let mut params = json!({});
+    for k in keys {
+        if let Some(v) = p.get(*k).filter(|v| !v.is_null()) {
+            params[*k] = v.clone();
         }
     }
-    None
+    if matches!(method, "handoff.incoming.list" | "handoff.incoming.get") {
+        return gw.server.call(method, params).await;
+    }
+    still_authorized(gw, dev)?;
+    gw.server
+        .call_as(&format!("gateway:{}", dev.name), method, params)
+        .await
 }

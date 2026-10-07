@@ -119,19 +119,46 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "interaction.answer_batch"
         | "notification.read"
         | "attention.update" => Approve,
-        "pane.send_text" | "pane.send_keys" | "pane.rename" | "pane.close" | "pane.focus"
-        | "agent.prompt" | "agent.start" | "tab.create" | "attachment.put" | "stt.transcribe"
-        | "devices.revoke" | "share.create" | "handoff.export" | "handoff.read"
-        | "handoff.discard" | "handoff.begin" | "handoff.write" | "handoff.finish"
-        | "task.check.run" | "preview.open" | "preview.promote" | "preview.forget"
-        | "tab.rename" | "tab.close" | "tab.focus" => Full,
+        "pane.send_text"
+        | "pane.send_keys"
+        | "pane.rename"
+        | "pane.close"
+        | "pane.focus"
+        | "agent.prompt"
+        | "agent.start"
+        | "tab.create"
+        | "attachment.put"
+        | "stt.transcribe"
+        | "devices.revoke"
+        | "share.create"
+        | "handoff.export"
+        | "handoff.read"
+        | "handoff.discard"
+        | "handoff.begin"
+        | "handoff.write"
+        | "handoff.finish"
+        | "handoff.incoming.list"
+        | "handoff.incoming.get"
+        | "handoff.accept"
+        | "handoff.decline"
+        | "handoff.resume"
+        | "task.check.run"
+        | "preview.open"
+        | "preview.promote"
+        | "preview.forget"
+        | "tab.rename"
+        | "tab.close"
+        | "tab.focus" => Full,
         _ => return None,
     })
 }
 
 pub fn is_mutating(method: &str) -> bool {
     // Chunk reads have no side effect; caching them would hold whole bundles in memory.
-    method != "handoff.read" && matches!(required_scope(method), Some(Scope::Approve | Scope::Full))
+    !matches!(
+        method,
+        "handoff.read" | "handoff.incoming.list" | "handoff.incoming.get"
+    ) && matches!(required_scope(method), Some(Scope::Approve | Scope::Full))
         || matches!(
             method,
             "push.subscribe" | "push.unsubscribe" | "push.test" | "prefs.set"
@@ -1721,6 +1748,30 @@ mod workspace_tests {
         }
         assert!(kind_allows("share", "tab.create"));
         assert!(kind_allows("share", "fs.read"));
+    }
+
+    #[test]
+    fn incoming_handoffs_are_for_full_devices() {
+        for m in [
+            "handoff.incoming.list",
+            "handoff.incoming.get",
+            "handoff.accept",
+            "handoff.decline",
+            "handoff.resume",
+        ] {
+            assert_eq!(required_scope(m), Some(Scope::Full), "{m}");
+            assert!(kind_allows("device", m), "{m}");
+            assert!(!kind_allows("share", m), "{m}");
+            assert!(
+                !kind_allows("handoff", m),
+                "{m}: an invitation only delivers"
+            );
+        }
+        assert!(!is_mutating("handoff.incoming.list"));
+        assert!(!is_mutating("handoff.incoming.get"));
+        assert!(is_mutating("handoff.accept"));
+        assert!(is_mutating("handoff.decline"));
+        assert!(is_mutating("handoff.resume"));
     }
 
     #[test]

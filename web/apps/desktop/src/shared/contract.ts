@@ -93,6 +93,11 @@ export const RENDERER_METHODS = [
   'handoff.begin',
   'handoff.write',
   'handoff.finish',
+  'handoff.incoming.list',
+  'handoff.incoming.get',
+  'handoff.accept',
+  'handoff.decline',
+  'handoff.resume',
 ] as const satisfies readonly AppMethod[];
 
 export type RendererMethod = (typeof RENDERER_METHODS)[number];
