@@ -182,9 +182,20 @@ fn server_restart_keeps_panes() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let after = s.json(&["server", "status"]);
+    // `server.restart` answers, then execs: a status call right after can still reach the old
+    // image, so wait until the new one (same pid, fresh uptime) answers.
+    let mut after = Value::Null;
+    let before_up = before["uptime_ms"].as_u64().unwrap();
+    wait_until("restarted image answers", Duration::from_secs(10), || {
+        let Ok(st) = s.cmd(&["server", "status"]).output() else {
+            return false;
+        };
+        let v: Value = serde_json::from_slice(&st.stdout).unwrap_or(Value::Null);
+        let fresh = v["uptime_ms"].as_u64().is_some_and(|u| u < before_up);
+        after = v;
+        fresh
+    });
     assert_eq!(after["pid"], before["pid"], "exec keeps the pid");
-    assert!(after["uptime_ms"].as_u64() < before["uptime_ms"].as_u64());
     assert!(alive(child), "the pane process survives the restart");
     wait_until("pane recovered", Duration::from_secs(10), || {
         s.pane(&pane)["id"] == pane.as_str()
