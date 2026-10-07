@@ -239,7 +239,7 @@ fn create(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
         // Created before (a reconciled or replayed request): the same terminal.
         return Some(ok(&r.id, json!({"terminalId": s.id})));
     }
-    Some(create_new(cx, native_ref, r)?)
+    create_new(cx, native_ref, r)
 }
 
 fn create_new(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {

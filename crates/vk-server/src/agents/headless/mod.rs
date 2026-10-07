@@ -548,41 +548,41 @@ impl Session {
             #[cfg(test)]
             let mut test_spawn = test_spawn;
             let owner = self.pane.clone();
-            let mut spawn = |dir: &std::path::Path, argv: Vec<String>, title: String| {
-                #[cfg(test)]
-                if let Some(f) = test_spawn.as_mut() {
-                    return f(dir, argv, title);
-                }
-                server
-                    .split_pane(
-                        &owner,
-                        vk_proto::layout::Direction::Down,
-                        0.5,
-                        Some(&dir.to_string_lossy()),
-                        Some(argv),
-                        Some(title),
-                        None,
-                        &format!("agent:{owner}"),
-                    )
-                    .map(|p| p.id)
-                    .map_err(|e| e.to_string())
+            let resp = {
+                let mut spawn = |dir: &std::path::Path, argv: Vec<String>, title: String| {
+                    #[cfg(test)]
+                    if let Some(f) = test_spawn.as_mut() {
+                        return f(dir, argv, title);
+                    }
+                    server
+                        .split_pane(
+                            &owner,
+                            vk_proto::layout::Direction::Down,
+                            0.5,
+                            Some(&dir.to_string_lossy()),
+                            Some(argv),
+                            Some(title),
+                            None,
+                            &format!("agent:{owner}"),
+                        )
+                        .map(|p| p.id)
+                        .map_err(|e| e.to_string())
+                };
+                let mut cx = acp_term::Ctx {
+                    server,
+                    owner: &self.pane,
+                    cwd: &self.rec.cwd,
+                    isolated: self.rec.isolated,
+                    saved: &mut self.rec.terminals,
+                    terms: &self.terms,
+                    waits: &mut self.term_waits,
+                    persist: &mut persist,
+                    spawn: &mut spawn,
+                    #[cfg(test)]
+                    crash_after_spawn: self.crash_after_spawn,
+                };
+                acp_term::handle(&mut cx, native_ref, r)
             };
-            let mut cx = acp_term::Ctx {
-                server,
-                owner: &self.pane,
-                cwd: &self.rec.cwd,
-                isolated: self.rec.isolated,
-                saved: &mut self.rec.terminals,
-                terms: &self.terms,
-                waits: &mut self.term_waits,
-                persist: &mut persist,
-                spawn: &mut spawn,
-                #[cfg(test)]
-                crash_after_spawn: self.crash_after_spawn,
-            };
-            let resp = acp_term::handle(&mut cx, native_ref, r);
-            drop(cx);
-            drop(spawn);
             #[cfg(test)]
             {
                 self.term_spawn = test_spawn;
