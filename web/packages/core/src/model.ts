@@ -618,6 +618,44 @@ export interface HandoffFinishResult {
   record?: IncomingHandoff;
 }
 
+/** A host the source can send to (`handoff.peers`: the gateway's peers, as vk-server sees them). */
+export interface HandoffPeer {
+  id: string;
+  name: string;
+  owner: PeerOwner;
+  /** Unix seconds; absent or null: never (own hosts). */
+  expires_at?: number | null;
+}
+
+export type HandoffJobState = 'queued' | 'exporting' | 'sending' | 'delivered' | 'failed' | 'cancelled';
+
+/** An outgoing handoff (`handoff.send` / `handoff.jobs`, event `handoff.job`). */
+export interface HandoffJob {
+  id: string;
+  pane: string;
+  /** Peer id. */
+  peer: string;
+  peer_name: string;
+  state: HandoffJobState;
+  /** Bytes the destination has acknowledged. */
+  sent: number;
+  /** Bundle size; 0 until exported. */
+  total: number;
+  /** What the destination made of it once delivered (`pending` waits for the recipient). */
+  incoming_state?: IncomingHandoffState | null;
+  /** Why it failed (a message, or a JSON-RPC style error object). */
+  error?: string | { kind?: string; message?: string } | null;
+  created_at_ms?: number;
+  updated_at_ms?: number;
+}
+
+/** `handoff.prefs`: placement the receiving host remembers, and whether own handoffs always wait. */
+export interface HandoffPrefs {
+  always_ask: boolean;
+  placement: Record<string, { repo: string; worktree_parent: string }>;
+  repos: string[];
+}
+
 /** Per-device push/notification prefs held by the gateway (`prefs.get/set`). */
 export interface DevicePrefs {
   privacy: 'full' | 'summary' | 'minimal';
@@ -777,6 +815,14 @@ export interface AppApi {
   };
   'handoff.decline': { params: { id: string }; result: { incoming: IncomingHandoff } };
   'handoff.resume': { params: { id: string }; result: { incoming: IncomingHandoff; run?: unknown; agent_error?: { code?: number; message?: string; data?: { kind?: string } } } };
+  /** Read, or set whether the user's own handoffs always wait to be accepted. */
+  'handoff.prefs': { params: { always_ask?: boolean }; result: HandoffPrefs };
+  /** Spec 16 §15.2: the source host sends `pane`'s work to `peer` itself (the app may close). */
+  'handoff.send': { params: { pane: string; peer: string; interrupt?: boolean }; result: { job: HandoffJob } };
+  'handoff.jobs': { params: Record<string, never>; result: { jobs: HandoffJob[] } };
+  'handoff.cancel': { params: { id: string }; result: { job?: HandoffJob } };
+  /** Hosts this one can send to. */
+  'handoff.peers': { params: Record<string, never>; result: { peers: HandoffPeer[] } };
   /** Spec 16 §15.3: invite another of the owner's hosts (link open for `ttl_s`, default 15 min). */
   'peer.invite': { params: { ttl_s?: number }; result: { link: string; pid: string; open_by: number } };
   /** This host redeems a peer or handoff invitation; `share_user` shows git user.name/email there. */
@@ -831,6 +877,9 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'handoff.accept',
   'handoff.decline',
   'handoff.resume',
+  'handoff.prefs',
+  'handoff.send',
+  'handoff.cancel',
 ]);
 
 // ---- normalization ------------------------------------------------------------------------

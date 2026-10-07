@@ -9,7 +9,7 @@ const ev = (type: string, extra: Partial<AppEvent> = {}): AppEvent => ({ seq: 7,
 
 describe('host event forwarding (main → renderer)', () => {
   test('only the types the UI needs cross the bridge', () => {
-    for (const t of ['agent.turn_started', 'agent.state_changed', 'agent.usage', 'interaction.opened', 'notification.created', 'task.updated', 'preview.up', 'tab.created', 'pane.closed'])
+    for (const t of ['agent.turn_started', 'agent.state_changed', 'agent.usage', 'interaction.opened', 'notification.created', 'task.updated', 'preview.up', 'tab.created', 'pane.closed', 'handoff.job', 'handoff.incoming', 'handoff.updated', 'handoff.expired'])
       expect(isForwardedEventType(t)).toBe(true);
     for (const t of ['notification.read', 'session.started', 'workspace.created', 'device.revoked', 'push.sent', 'agent', '', 'Agent.x', 'agent.<script>', 1, null])
       expect(isForwardedEventType(t)).toBe(false);
@@ -109,5 +109,12 @@ describe('renderer method allow-list', () => {
     }
     // Connection management and Web Push stay with the engine.
     for (const m of ['events.subscribe', 'push.subscribe', 'push.test', 'hello']) expect(() => v.method(m)).toThrow(v.IpcValidationError);
+  });
+
+  test('the handoff send, job and incoming methods pass the bridge validator', () => {
+    for (const m of ['handoff.send', 'handoff.jobs', 'handoff.cancel', 'handoff.peers', 'handoff.prefs', 'handoff.incoming.list', 'handoff.accept', 'peer.invite', 'peer.redeem', 'share.list', 'share.revoke'] as const) {
+      expect(RENDERER_METHODS).toContain(m);
+      expect(v.method(m)).toBe(m);
+    }
   });
 });
