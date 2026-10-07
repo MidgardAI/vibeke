@@ -181,13 +181,28 @@ impl Record {
     }
 
     fn persist(&self, server: &Server, pane: &str) {
-        let v = serde_json::to_string(self).ok();
+        let _ = self.try_persist(server, pane);
+    }
+
+    /// Persist, reporting a failure (what must be durable before a side effect).
+    fn try_persist(&self, server: &Server, pane: &str) -> Result<(), String> {
+        let v = serde_json::to_string(self).map_err(|e| e.to_string())?;
+        #[cfg(test)]
+        if FAIL_PERSIST.with(|f| f.get()) {
+            return Err("injected persistence failure".into());
+        }
         server.with_core(|c| {
             let mut tx = Tx::new();
-            tx.m.kv(KV_SCOPE, pane, v);
-            let _ = c.commit(tx);
-        });
+            tx.m.kv(KV_SCOPE, pane, Some(v));
+            c.commit(tx).map(|_| ()).map_err(|e| e.to_string())
+        })
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: make [`Record::try_persist`] fail on this thread.
+    pub(crate) static FAIL_PERSIST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,7 +433,17 @@ pub struct Session {
     terms: acp_term::Terms,
     /// `terminal/wait_for_exit` requests waiting: (terminal id, request id).
     term_waits: Vec<(String, Value)>,
+    /// Tests: start terminal commands with this instead of a pane.
+    #[cfg(test)]
+    pub term_spawn: Option<TestSpawn>,
+    /// Tests: stop right after a terminal command started, before its pane is recorded.
+    #[cfg(test)]
+    pub crash_after_spawn: bool,
 }
+
+#[cfg(test)]
+pub type TestSpawn =
+    Box<dyn FnMut(&std::path::Path, Vec<String>, String) -> Result<String, String> + Send>;
 
 fn stream_ix(s: Stream) -> usize {
     match s {
@@ -453,6 +478,10 @@ impl Session {
             transcript: transcript::Transcript::default(),
             terms: Default::default(),
             term_waits: vec![],
+            #[cfg(test)]
+            term_spawn: None,
+            #[cfg(test)]
+            crash_after_spawn: false,
         }
     }
 
@@ -506,6 +535,38 @@ impl Session {
     ) -> Vec<Act> {
         let before = self.rec.terminals.clone();
         let resp = {
+            // The record as it is, with the terminals under change swapped in on each persist.
+            let snapshot = self.rec.clone();
+            let pane = self.pane.clone();
+            let mut persist = |t: &[acp_term::Saved]| {
+                let mut rec = snapshot.clone();
+                rec.terminals = t.to_vec();
+                rec.try_persist(server, &pane)
+            };
+            #[cfg(test)]
+            let test_spawn = self.term_spawn.take();
+            #[cfg(test)]
+            let mut test_spawn = test_spawn;
+            let owner = self.pane.clone();
+            let mut spawn = |dir: &std::path::Path, argv: Vec<String>, title: String| {
+                #[cfg(test)]
+                if let Some(f) = test_spawn.as_mut() {
+                    return f(dir, argv, title);
+                }
+                server
+                    .split_pane(
+                        &owner,
+                        vk_proto::layout::Direction::Down,
+                        0.5,
+                        Some(&dir.to_string_lossy()),
+                        Some(argv),
+                        Some(title),
+                        None,
+                        &format!("agent:{owner}"),
+                    )
+                    .map(|p| p.id)
+                    .map_err(|e| e.to_string())
+            };
             let mut cx = acp_term::Ctx {
                 server,
                 owner: &self.pane,
@@ -514,8 +575,19 @@ impl Session {
                 saved: &mut self.rec.terminals,
                 terms: &self.terms,
                 waits: &mut self.term_waits,
+                persist: &mut persist,
+                spawn: &mut spawn,
+                #[cfg(test)]
+                crash_after_spawn: self.crash_after_spawn,
             };
-            acp_term::handle(&mut cx, native_ref, r)
+            let resp = acp_term::handle(&mut cx, native_ref, r);
+            drop(cx);
+            drop(spawn);
+            #[cfg(test)]
+            {
+                self.term_spawn = test_spawn;
+            }
+            resp
         };
         if self.rec.terminals != before {
             // Persisted before the response is written (a restart must find the pane).

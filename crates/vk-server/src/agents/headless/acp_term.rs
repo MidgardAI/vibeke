@@ -19,9 +19,14 @@
 //! run's pane when the process exited. Terminal ids and their panes are kept in the run's
 //! record: a restarted server watches the panes again (a pane gone meanwhile reports an exit
 //! with unknown status), and the journal replay re-issues the requests still unanswered.
+//!
+//! **At most once.** `terminal/create` first persists an *intent* (the terminal id and the
+//! request's native ref, no pane yet) and only then starts the command; a persistence error
+//! refuses the request without starting anything. The pane is recorded right after. A replayed
+//! or reconciled create that finds an intent without a pane (the server stopped in between)
+//! answers that the terminal's state is unknown and never starts the command again.
 
 use super::*;
-use vk_proto::layout::Direction;
 
 /// Bytes of output kept per terminal (the newest).
 const MAX_OUTPUT: usize = 1 << 20;
@@ -38,6 +43,10 @@ pub struct Saved {
     pub pane: String,
     #[serde(default)]
     pub limit: Option<u64>,
+    /// An intent recorded before the command started; `pane` is not known yet. Found on
+    /// replay it means the command may or may not have started: never started again.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +79,10 @@ pub struct Req {
     pub params: Value,
 }
 
+/// Starts a terminal's command: `(cwd, argv, title)` → the pane id.
+pub type Spawn<'a> =
+    dyn FnMut(&std::path::Path, Vec<String>, String) -> Result<String, String> + 'a;
+
 /// What a request needs from the session.
 pub struct Ctx<'a> {
     pub server: &'a Arc<Server>,
@@ -81,6 +94,14 @@ pub struct Ctx<'a> {
     pub terms: &'a Terms,
     /// `wait_for_exit` requests not answered yet: (terminal id, request id).
     pub waits: &'a mut Vec<(String, Value)>,
+    /// Persist the run's record with `saved` as its terminals (must succeed before a command
+    /// starts).
+    pub persist: &'a mut dyn FnMut(&[Saved]) -> Result<(), String>,
+    /// Start the command (a pane split below the run's pane).
+    pub spawn: &'a mut Spawn<'a>,
+    /// Tests: stop right after the command started, before its pane is recorded (a crash).
+    #[cfg(test)]
+    pub crash_after_spawn: bool,
 }
 
 fn error(id: &Value, code: i64, msg: &str) -> Value {
@@ -149,7 +170,7 @@ pub fn handle(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
         .unwrap_or("")
         .to_string();
     match r.method.as_str() {
-        "terminal/create" => Some(create(cx, native_ref, r)),
+        "terminal/create" => create(cx, native_ref, r),
         "terminal/output" => {
             let pane = cx.terms.lock().unwrap().get(&tid).map(|t| t.pane.clone());
             let Some(pane) = pane else {
@@ -204,11 +225,25 @@ pub fn handle(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
     }
 }
 
-fn create(cx: &mut Ctx, native_ref: &str, r: &Req) -> Value {
+fn create(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
     if let Some(s) = cx.saved.iter().find(|s| s.create_ref == native_ref) {
+        if s.pending {
+            // The server stopped between starting the command and recording its pane: it may
+            // have run. Never start it again.
+            return Some(error(
+                &r.id,
+                -32603,
+                "terminal state unknown: the server stopped while starting this command; it is not started again",
+            ));
+        }
         // Created before (a reconciled or replayed request): the same terminal.
-        return ok(&r.id, json!({"terminalId": s.id}));
+        return Some(ok(&r.id, json!({"terminalId": s.id})));
     }
+    Some(create_new(cx, native_ref, r)?)
+}
+
+fn create_new(cx: &mut Ctx, native_ref: &str, r: &Req) -> Option<Value> {
+    let fail = |code: i64, msg: &str| Some(error(&r.id, code, msg));
     let root = std::path::Path::new(cx.cwd);
     let want = r
         .params
@@ -216,11 +251,7 @@ fn create(cx: &mut Ctx, native_ref: &str, r: &Req) -> Value {
         .and_then(Value::as_str)
         .unwrap_or(cx.cwd);
     let Some(dir) = dir_within(root, want) else {
-        return error(
-            &r.id,
-            -32002,
-            "terminal refused: cwd is outside the session cwd",
-        );
+        return fail(-32002, "terminal refused: cwd is outside the session cwd");
     };
     let Some(command) = r
         .params
@@ -228,7 +259,7 @@ fn create(cx: &mut Ctx, native_ref: &str, r: &Req) -> Value {
         .and_then(Value::as_str)
         .filter(|c| !c.is_empty())
     else {
-        return error(&r.id, -32602, "command required");
+        return fail(-32602, "command required");
     };
     let args: Vec<String> = r
         .params
@@ -273,46 +304,63 @@ fn create(cx: &mut Ctx, native_ref: &str, r: &Req) -> Value {
     .chars()
     .take(40)
     .collect();
-    // Subscribed before the pane exists: a command that exits at once is still seen exiting.
-    let events = cx.server.events.subscribe();
-    let pane = match cx.server.split_pane(
-        cx.owner,
-        Direction::Down,
-        0.5,
-        Some(&dir.to_string_lossy()),
-        Some(argv),
-        Some(format!("acp: {label}")),
-        None,
-        &format!("agent:{}", cx.owner),
-    ) {
-        Ok(p) => p,
-        Err(e) => return error(&r.id, -32603, &format!("terminal not started: {e}")),
-    };
     let id = format!("term_{}", crate::core::ulid());
     let limit = r.params.get("outputByteLimit").and_then(Value::as_u64);
+    // The intent is durable before anything runs; without it, nothing runs.
     cx.saved.push(Saved {
         id: id.clone(),
         create_ref: native_ref.to_string(),
-        pane: pane.id.clone(),
+        pane: String::new(),
         limit,
+        pending: true,
     });
+    if let Err(e) = (cx.persist)(cx.saved) {
+        cx.saved.retain(|s| s.id != id);
+        return fail(
+            -32603,
+            &format!("terminal not started: its record could not be saved ({e})"),
+        );
+    }
+    // Subscribed before the pane exists: a command that exits at once is still seen exiting.
+    let events = cx.server.events.subscribe();
+    let pane = match (cx.spawn)(&dir, argv, format!("acp: {label}")) {
+        Ok(p) => p,
+        Err(e) => {
+            // Nothing started: the intent goes.
+            cx.saved.retain(|s| s.id != id);
+            let _ = (cx.persist)(cx.saved);
+            return fail(-32603, &format!("terminal not started: {e}"));
+        }
+    };
+    #[cfg(test)]
+    if cx.crash_after_spawn {
+        return None;
+    }
+    if let Some(s) = cx.saved.iter_mut().find(|s| s.id == id) {
+        s.pane = pane.clone();
+        s.pending = false;
+    }
+    if let Err(e) = (cx.persist)(cx.saved) {
+        tracing::warn!(terminal = %id, error = %e, "terminal pane not recorded");
+    }
     cx.terms.lock().unwrap().insert(
         id.clone(),
         Term {
-            pane: pane.id.clone(),
+            pane: pane.clone(),
             limit,
             ..Term::default()
         },
     );
-    watch(cx.server, &id, &pane.id, cx.owner, cx.terms, Some(events));
-    ok(&r.id, json!({"terminalId": id}))
+    watch(cx.server, &id, &pane, cx.owner, cx.terms, Some(events));
+    Some(ok(&r.id, json!({"terminalId": id})))
 }
 
 /// After a restart: watch the saved terminals' panes again; a pane gone meanwhile has exited
 /// with unknown status.
 pub fn rewatch(server: &Arc<Server>, owner: &str, saved: &[Saved], terms: &Terms) {
     for s in saved {
-        if terms.lock().unwrap().contains_key(&s.id) {
+        // An intent without a pane has nothing to watch (its create answers "unknown").
+        if s.pending || terms.lock().unwrap().contains_key(&s.id) {
             continue;
         }
         terms.lock().unwrap().insert(

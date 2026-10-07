@@ -1163,6 +1163,136 @@ mod sessions {
         assert!(s.terms.lock().unwrap().is_empty());
     }
 
+    /// A fake terminal starter that runs a non-idempotent "command" (appends to `log`).
+    fn appending_spawn(log: PathBuf) -> TestSpawn {
+        Box::new(move |_dir, _argv, _title| {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+                .unwrap();
+            writeln!(f, "ran").unwrap();
+            Ok("tp1".into())
+        })
+    }
+
+    fn runs(log: &std::path::Path) -> usize {
+        std::fs::read_to_string(log)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Final review P1 11: the server crashes after a terminal's command started but before its
+    /// pane was recorded. The restarted server replays and reconciles the request: the command
+    /// is reported as unknown and runs exactly once overall. A persistence failure before the
+    /// start refuses the request without running anything.
+    #[tokio::test]
+    async fn acp_terminal_create_runs_at_most_once_across_a_crash() {
+        let mut t = T::new("acp:fake", Kind::Acp);
+        let log = t.work().join("ran.log");
+        let mut s = t.session();
+        s.term_spawn = Some(appending_spawn(log.clone()));
+        s.crash_after_spawn = true;
+        let acts = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                7,
+                "terminal/create",
+                json!({"sessionId": "sess-1", "command": "echo once >> counter"}),
+            ),
+        );
+        assert!(act_writes(&acts).is_empty(), "crashed before answering");
+        assert_eq!(runs(&log), 1);
+        // The intent was durable before the command ran.
+        let saved = Record::load(&t.server, &t.pane).unwrap().terminals;
+        assert_eq!(saved.len(), 1);
+        assert!(saved[0].pending && saved[0].pane.is_empty(), "{saved:?}");
+        drop(s);
+
+        // Restart: replay the journal and reconcile with a starter that would run it again.
+        let mut s = t.session();
+        s.term_spawn = Some(appending_spawn(log.clone()));
+        s.begin_replay();
+        for (st, off, b) in &t.journal {
+            s.on_output(&t.server, *st, *off, b);
+        }
+        let acts = s.replay_done(&t.server);
+        let w = act_writes(&acts);
+        let answer = w
+            .iter()
+            .find(|(_, v)| v["id"] == 7)
+            .map(|(_, v)| v.clone())
+            .expect("the create is answered after the restart");
+        assert_eq!(answer["error"]["code"], -32603, "{answer}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown")
+        );
+        assert_eq!(runs(&log), 1, "the command ran exactly once");
+        // Asked again live (same request): still unknown, still not run.
+        let again = t.feed(
+            &mut s,
+            Stream::Stdout,
+            &terminal_req(
+                7,
+                "terminal/create",
+                json!({"sessionId": "sess-1", "command": "echo once >> counter"}),
+            ),
+        );
+        if let Some((_, v)) = act_writes(&again).first() {
+            assert!(v.get("result").is_none(), "{v}");
+        }
+        assert_eq!(runs(&log), 1);
+
+        // Persistence fails before the start: refused, nothing runs.
+        let mut t2 = T::new("acp:fake", Kind::Acp);
+        let log2 = t2.work().join("ran.log");
+        let mut s2 = t2.session();
+        s2.term_spawn = Some(appending_spawn(log2.clone()));
+        FAIL_PERSIST.with(|f| f.set(true));
+        let acts = t2.feed(
+            &mut s2,
+            Stream::Stdout,
+            &terminal_req(
+                8,
+                "terminal/create",
+                json!({"sessionId": "sess-1", "command": "echo x"}),
+            ),
+        );
+        FAIL_PERSIST.with(|f| f.set(false));
+        let w = act_writes(&acts);
+        assert_eq!(w[0].1["error"]["code"], -32603, "{w:?}");
+        assert!(
+            w[0].1["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not started")
+        );
+        assert_eq!(runs(&log2), 0);
+        assert!(s2.rec.terminals.is_empty());
+        // The normal path records the pane and answers the terminal id.
+        let acts = t2.feed(
+            &mut s2,
+            Stream::Stdout,
+            &terminal_req(
+                9,
+                "terminal/create",
+                json!({"sessionId": "sess-1", "command": "echo x"}),
+            ),
+        );
+        let w = act_writes(&acts);
+        assert!(w[0].1["result"]["terminalId"].is_string(), "{w:?}");
+        let saved = Record::load(&t2.server, &t2.pane).unwrap().terminals;
+        assert_eq!(saved.len(), 1);
+        assert!(!saved[0].pending);
+        assert_eq!(saved[0].pane, "tp1");
+        assert_eq!(runs(&log2), 1);
+    }
+
     /// An isolated run's ACP agent gets no host-side terminals or fs: refused even if it asks.
     #[tokio::test]
     async fn isolated_acp_runs_refuse_host_terminals_and_fs() {
